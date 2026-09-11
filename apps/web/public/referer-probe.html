@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Same policy as the real app. The point of this probe is to prove that the
+      browser is NOT suppressing the Referer header -- the single property that
+      decides whether YouTube's embedded player works (its absence produces
+      "Error 153: Video player configuration error").
+
+      A same-origin iframe receives the FULL referring URL; a cross-origin one
+      receives only the origin. Either way it must be non-empty. An empty value
+      here means the embed test will fail for YouTube and Twitch.
+    -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>referer probe</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 10px 12px;
+        background: #12141a;
+        color: #e8eaef;
+        font: 12px/1.6 ui-monospace, Consolas, monospace;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .ok {
+        color: #5ee08a;
+      }
+      .bad {
+        color: #ff6b6b;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="out">measuring…</pre>
+    <script>
+      // Prefer the modern API; fall back to document.referrer.
+      fetch(location.href, { method: 'HEAD' })
+        .catch(() => null)
+        .then(function () {
+          var ref = document.referrer;
+          var lines = [];
+          lines.push('document.referrer = ' + (ref ? ref : '(EMPTY -- referrers are suppressed!)'));
+          lines.push('location.origin   = ' + location.origin);
+          lines.push('referrerPolicy    = ' + (document.referrerPolicy || '(unset)'));
+          var el = document.getElementById('out');
+          el.textContent = lines.join('\n');
+          el.className = ref ? 'ok' : 'bad';
+          // Machine-readable hooks for the parent frame.
+          document.body.dataset.referer = ref;
+          document.body.dataset.suppressed = ref ? 'false' : 'true';
+        });
+    </script>
+  </body>
+</html>
