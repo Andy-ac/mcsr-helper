@@ -1,4 +1,10 @@
-# 强制 shell 脚本用 LF —— 否则在 Windows 上 checkout 后传到 Linux 会因 CRLF 报
+# 默认：让 git 自动识别文本文件，并统一用 LF 存进仓库。
+# 这和 .editorconfig 的 end_of_line = lf 保持一致；
+# 不写这一行的后果是在 Windows 上每改一个文件都会看到
+# "LF will be replaced by CRLF" 的噪音警告，并产生无意义的整文件 diff。
+* text=auto eol=lf
+
+# 强制 shell 脚本用 LF —— 否则传到 Linux 会因 CRLF 报
 # "bash: $'\r': command not found"，而且报错信息完全看不出是换行符的问题。
 *.sh text eol=lf
 *.service text eol=lf
