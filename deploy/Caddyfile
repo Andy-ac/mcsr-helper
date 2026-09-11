@@ -60,8 +60,12 @@
 	handle /api/* {
 		reverse_proxy 127.0.0.1:3001 {
 			header_up X-Real-IP {remote_host}
-			# API 响应不做缓存
-			header_down Cache-Control "no-store"
+			# ⚠️ 这里**不**设置 Cache-Control。
+			# 之前写的是 `header_down Cache-Control "no-store"` —— 看起来安全，实则有害：
+			# 它会把 API 自己想设的缓存策略全部覆盖掉，于是"公开读接口可以激进缓存"
+			# 这条优化根本没法实现。
+			# 现在由 API 为**每个响应**显式声明策略（见 services/api/src/index.ts 的中间件），
+			# 那才是知道"这个端点的内容能不能缓存"的地方。
 		}
 	}
 

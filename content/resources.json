@@ -1,0 +1,123 @@
+{
+  "$comment": [
+    "M1 阶段的资源库内容。改完运行：",
+    "  pnpm -F @mcsr/api import              # 预演，只打印将要发生什么",
+    "  pnpm -F @mcsr/api import -- --apply   # 真正写库",
+    "",
+    "重要：**这个文件是唯一真相**。从文件里删掉一条，导入时线上也会被删掉。",
+    "id 可以省略，脚本会从 url 推导；两条记录推出了同一个 id 会报错，",
+    "那时给其中一条显式写一个不同的 id。",
+    "",
+    "下面这些是起始内容（URL 均已在调研阶段实测可达），请按你的判断增删。"
+  ],
+  "resources": [
+    {
+      "kind": "website",
+      "title": "MCSR Ranked",
+      "titleEn": "MCSR Ranked",
+      "url": "https://mcsrranked.com",
+      "lang": "en",
+      "tags": ["ranked", "leaderboard", "pvp"],
+      "featured": true,
+      "status": "published",
+      "summary": "MCSR 的排位赛平台 —— Elo 排行榜、比赛记录、每周赛。社区里最活跃的日常对战环境。",
+      "body": "排位赛平台，用 Elo 匹配 1v1 速通对局。\n\n- **排行榜**：按赛季和地区筛选\n- **比赛记录**：每场的种子、地形、用时、完赛情况\n- **每周赛**：固定的周赛种子与榜单\n\n它的公开 API 无需鉴权，可以直接读取玩家资料、比赛历史与实时对局。"
+    },
+    {
+      "kind": "website",
+      "title": "MCSR Ranked API 文档",
+      "titleEn": "MCSR Ranked API Docs",
+      "url": "https://docs.mcsrranked.com/",
+      "lang": "en",
+      "tags": ["api", "documentation", "ranked"],
+      "featured": false,
+      "status": "published",
+      "summary": "上面那个平台的官方 API 文档，做 MCSR 相关工具时先看这里。",
+      "body": "官方 OpenAPI 文档。公开读取无需鉴权，限流为每 10 分钟 500 次。\n\n做工具之前先读它，能省掉大量反推接口的时间。"
+    },
+    {
+      "kind": "website",
+      "title": "PaceMan",
+      "titleEn": "PaceMan",
+      "url": "https://paceman.gg",
+      "lang": "en",
+      "tags": ["pace", "live", "tools"],
+      "featured": true,
+      "status": "published",
+      "summary": "实时进度追踪与直播叠加层 —— 配合追踪器客户端，可以在 OBS 里显示当前 pace。",
+      "body": "读取速通计时器的事件日志，实时计算 pace 并提供叠加层。\n\n支持 Julti / Jingle 等常用客户端。"
+    },
+    {
+      "kind": "website",
+      "title": "speedrun.com · Minecraft: Java Edition",
+      "titleEn": "speedrun.com · Minecraft: Java Edition",
+      "url": "https://www.speedrun.com/mc",
+      "lang": "en",
+      "tags": ["leaderboard", "records", "official"],
+      "featured": true,
+      "status": "published",
+      "summary": "官方排行榜。任何速度记录最终以这里为准。",
+      "body": "所有正式分类的排行榜与规则。\n\n**注意**：种子类分类（Set Seed / Random Seed）已经迁移到 [Category Extensions](https://www.speedrun.com/mcce)，在旧的分类下提交会被拒绝。"
+    },
+    {
+      "kind": "website",
+      "title": "speedrun.com · Category Extensions",
+      "titleEn": "speedrun.com · Category Extensions",
+      "url": "https://www.speedrun.com/mcce",
+      "lang": "en",
+      "tags": ["leaderboard", "seed", "official"],
+      "featured": false,
+      "status": "published",
+      "summary": "种子类与其它衍生分类的所在地。找种子相关记录请来这里，不是主榜。",
+      "body": "Set Seed / Random Seed 以及各种衍生分类都在这里。\n\n主榜 (`/mc`) 上的种子类提交会被拒绝，两边的分类 id 也不一样 —— 写工具时别搞混。"
+    },
+    {
+      "kind": "tool",
+      "title": "Ninjabrain Bot",
+      "titleEn": "Ninjabrain Bot",
+      "url": "https://github.com/Ninjabrain1/Ninjabrain-Bot",
+      "lang": "en",
+      "tags": ["stronghold", "calculator", "tools"],
+      "featured": true,
+      "status": "published",
+      "summary": "要塞定位计算器 —— 1.16.1 速通里精确到几格的三角定位工具。",
+      "body": "最常用的要塞定位工具。输入末影之眼的角度与坐标，算出要塞位置。\n\n- 支持盲传 / 神传等高级技巧\n- 有本地 HTTP API（仅监听 `localhost:52533`），可以被其他工具读取\n- 采用 GPL-3.0 许可，若要打包进自己的程序需注意开源义务"
+    },
+    {
+      "kind": "tool",
+      "title": "MCSR Ranked 模组",
+      "titleEn": "MCSR Ranked Mod",
+      "url": "https://modrinth.com/mod/mcsr-ranked",
+      "lang": "en",
+      "tags": ["mod", "ranked", "1.16.1"],
+      "featured": false,
+      "status": "published",
+      "summary": "排位赛客户端模组。想在 MCSR Ranked 上打排位就需要它。",
+      "body": "1.16.1 的排位赛客户端。\n\n它会生成本地事件数据供其它工具读取，也是生成个人 API Private Key 的地方。"
+    },
+    {
+      "kind": "website",
+      "title": "Minecraft Wiki",
+      "titleEn": "Minecraft Wiki",
+      "url": "https://minecraft.wiki",
+      "lang": "en",
+      "tags": ["reference", "wiki"],
+      "featured": false,
+      "status": "published",
+      "summary": "查机制、地形、结构生成的最权威来源。速度运算里经常要回头查它。",
+      "body": "查游戏机制的首选。\n\n内容采用 CC BY-SA 3.0 许可；如果要引用它的内容，注意署名与相同方式共享的要求。"
+    },
+    {
+      "kind": "tool",
+      "title": "PaceMan Tracker",
+      "titleEn": "PaceMan Tracker",
+      "url": "https://github.com/PaceMan-MCSR/PaceMan-Tracker",
+      "lang": "en",
+      "tags": ["pace", "tracker", "tools"],
+      "featured": false,
+      "status": "published",
+      "summary": "PaceMan 的追踪器源码 —— 实际上也是它那套接口的事实规格。",
+      "body": "PaceMan 客户端源码，以 Java 编写。\n\nPaceMan 官方没有 API 文档，所以这个仓库同时也是社区第三方客户端反推接口的依据。"
+    }
+  ]
+}

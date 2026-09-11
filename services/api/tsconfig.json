@@ -4,7 +4,8 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "paths": {
-      "@mcsr/shared": ["../../packages/shared/src/index.ts"]
+      "@mcsr/shared": ["../../packages/shared/src/index.ts"],
+      "@mcsr/shared/resources": ["../../packages/shared/src/resources.ts"]
     }
   },
   "include": ["src/**/*.ts", "build.mjs"]

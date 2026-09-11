@@ -1,23 +1,24 @@
 /**
- * MCSR Helper API —— M0 骨架。
+ * MCSR Helper API。
  *
- * M0 阶段只有一个端点（/api/health），它的作用是**让部署管线端到端可验证**：
- * 如果 /api/health 在线上返回 200，说明 Caddy → 反向代理 → Node 进程
- * 这条链路是通的。只部署静态文件的话，这条链路根本没被测试到。
- *
- * 后续：M1 加用户与邮箱验证，M2 加 UGC 管线（见 docs/v1-plan.md §7）。
+ * M0：只有 /api/health，用来验证部署管线。
+ * M1：加入资源库的公开读接口（无需登录 —— 见 docs/v1-plan.md §0.1 的访问模型）。
+ * M2：加入用户系统、邮箱验证、提交与审核。
  */
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 
+import { getDb } from './db';
+import { resourcesRoute } from './routes/resources';
+
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10);
 // 生产环境必须只监听回环地址：对外由 Caddy 反代。
 // 直接监听 0.0.0.0 会让 API 绕过 HTTPS 暴露在公网上。
 const HOST = process.env.HOST ?? '127.0.0.1';
 
-const SERVICE_VERSION = '0.0.1-m0';
+const SERVICE_VERSION = '0.2.0-m1';
 
 export const app = new Hono();
 
@@ -61,6 +62,21 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 
+/**
+ * 默认缓存策略：**不缓存**。
+ *
+ * ⚠️ 这个中间件必须存在于"每个响应都带明确 Cache-Control"这件事上。
+ * 什么都不设的话浏览器会启发式缓存 —— 我们在静态资源上已经因为这个问题
+ * 排查过一轮，症状是"东西明明改好了，页面上还是旧的"。
+ *
+ * 需要公开缓存的端点（比如资源库的读接口）在自己的 handler 里用
+ * `c.header('Cache-Control', ...)` 覆盖它。
+ */
+app.use('/api/*', async (c, next) => {
+  c.header('Cache-Control', 'no-store');
+  await next();
+});
+
 app.get('/api/health', (c) =>
   c.json({
     status: 'ok' as const,
@@ -70,15 +86,15 @@ app.get('/api/health', (c) =>
   }),
 );
 
+app.route('/api/resources', resourcesRoute);
+
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。
 //
 // 为什么要有它：页面里用 document.referrer 判断"浏览器有没有发 Referer"是个**代理指标**，
-// 而且会被同源策略、iframe 拦截等因素污染（我们为此误判过一轮）。
+// 而且会被同源策略、iframe 拦截等因素污染（我们为此误判过两轮）。
 // 这个端点返回的是**服务器实际收到的 Referer 请求头** —— 也就是 YouTube 那边
 // 会收到的东西，是真正的 ground truth。
-//
-// 返回 HTML 而不是 JSON：它要被 iframe 加载，且同源所以父页面能直接读它的 DOM。
 // ---------------------------------------------------------------------------
 app.get('/api/dev/referer-probe', (c) => {
   const referer = c.req.header('referer') ?? '';
@@ -124,6 +140,16 @@ app.onError((err, c) => {
 });
 
 if (process.env.NODE_ENV !== 'test') {
+  // 启动时就打开数据库并跑迁移 —— 让配置/权限问题在进程启动时暴露，
+  // 而不是等到第一个请求进来才 500。
+  try {
+    getDb();
+    console.log('[api] 数据库就绪');
+  } catch (error) {
+    console.error('[api] 数据库初始化失败:', error);
+    process.exit(1);
+  }
+
   serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
     console.log(`[api] listening on http://${HOST}:${info.port}`);
   });

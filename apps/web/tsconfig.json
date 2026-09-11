@@ -8,6 +8,7 @@
       "@mcsr/shared": ["../../packages/shared/src/index.ts"],
       "@mcsr/shared/seed": ["../../packages/shared/src/seed.ts"],
       "@mcsr/shared/i18n": ["../../packages/shared/src/i18n/index.ts"],
+      "@mcsr/shared/resources": ["../../packages/shared/src/resources.ts"],
       "@mcsr/ui": ["../../packages/ui/src/index.ts"],
       "@/*": ["./src/*"]
     }

@@ -17,6 +17,9 @@ await esbuild.build({
   format: 'esm',
   target: 'node22',
   sourcemap: true,
+  // 迁移用的 .sql 内联成字符串模块。
+  // 这样"单文件部署、不传 node_modules"的模型不用为迁移文件破例。
+  loader: { '.sql': 'text' },
   // 这几个不要打进去：原生模块与运行时依赖
   external: [],
   banner: { js: '// MCSR Helper API — bundled by esbuild' },

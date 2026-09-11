@@ -8,12 +8,14 @@
     "dev": "tsx watch src/index.ts",
     "build": "node build.mjs",
     "start": "node dist/server.js",
+    "content:import": "tsx src/import.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
     "@mcsr/shared": "workspace:*",
-    "hono": "^4.13.7"
+    "hono": "^4.13.7",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
