@@ -30,10 +30,17 @@
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
 
 		# 内容安全策略。
-		# frame-src 是这里唯一宽松的地方 —— 三个视频平台的官方播放器都靠 iframe 嵌入，
-		# 少写一个域名，对应平台的视频就会静默地播不出来。
+		#
+		# frame-src 里**必须包含 'self'**。
+		# ⚠️ 踩过的坑：frame-src 一旦出现，它就**完全覆盖** default-src 对 iframe 的约束 ——
+		#    只写三个视频平台域名的话，**本站自己的页面反而不能被 iframe 加载**。
+		#    症状极其隐蔽：iframe 被静默拦掉，浏览器不会请求那个地址（访问日志里查无此人），
+		#    但 iframe 的 load 事件照常触发，父页面拿到一个空文档 ——
+		#    于是"自检探针"读到了空值，报出"浏览器没有发送 Referer"的假警报，
+		#    而实际上 YouTube 播得好好的。
+		#
 		# 新增视频平台时必须同步改这里（以及 packages/shared/src/constants.ts 的 VIDEO_PLATFORMS）。
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 		-Server
 	}

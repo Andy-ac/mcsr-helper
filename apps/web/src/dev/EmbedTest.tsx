@@ -70,44 +70,48 @@ export function EmbedTest() {
       .catch(() => setHeaders({ error: '无法读取响应头' }));
   }, []);
 
-  // ② 探针结果：主路径是探针主动 postMessage 上报，不依赖读取时机。
-  //    第一版只在 iframe 的 load 事件里读 DOM，而探针当时是异步写数据的，
-  //    于是永远读到空值 —— 报出"没有发送 Referer"的假阴性（而 YouTube 其实正常）。
+  // ② 探针结果。
+  //
+  // 探针现在是一个 **API 端点**（/api/dev/referer-probe），它把服务器实际收到的
+  // Referer 请求头渲染进 HTML 的 data 属性。父页面同源，直接读它的 DOM。
+  //
+  // 为什么不再用静态页 + document.referrer：
+  //   1. document.referrer 只是个**代理指标**，而服务器收到的头才是 YouTube 会收到的东西；
+  //   2. 静态探针曾经被自己的 CSP 静默拦掉（frame-src 少了 'self'），
+  //      而 iframe 的 load 事件照常触发 → 父页面读到空文档 → 报出"没有 Referer"的假警报。
+  //
+  // 所以这里**必须**先确认 data-probe-ready 标记，没看到标记就绝不下结论 ——
+  // "探针没加载"和"Referer 是空的"必须能被区分开。
   useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      const data = e.data as { type?: string; referer?: string } | null;
-      if (!data || data.type !== 'mcsr-referer-probe') return;
-      const ref = typeof data.referer === 'string' ? data.referer : '';
+    const frame = probeRef.current;
+    if (!frame) return;
+
+    const readDom = () => {
+      let doc: Document | null | undefined;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        return; // 跨域或被拦：交给超时处理
+      }
+      const body = doc?.body;
+      if (body?.dataset.probeReady !== 'yes') {
+        // 加载到了别的东西（CSP 拦截页、错误页）—— 不能据此判断 Referer
+        return;
+      }
+      const ref = body.dataset.referer ?? '';
       setProbe({ state: 'done', referer: ref, suppressed: ref.length === 0 });
     };
-    globalThis.addEventListener('message', onMessage);
 
-    // 兜底：同源可直接读 DOM（探针现在同步写入，load 时已经就绪）
-    const frame = probeRef.current;
-    const readDom = () => {
-      if (!frame) return;
-      try {
-        const ref = frame.contentDocument?.body?.dataset.referer ?? '';
-        setProbe((prev) =>
-          prev.state === 'done'
-            ? prev
-            : { state: 'done', referer: ref, suppressed: ref.length === 0 },
-        );
-      } catch {
-        /* 忽略：主路径是 postMessage */
-      }
-    };
-    frame?.addEventListener('load', readDom);
+    frame.addEventListener('load', readDom);
 
-    // 超时兜底：4 秒内没拿到任何结果，就明确报"探针没响应"，
-    // 而不是让它一直停在"测量中"，更不是冒充"Referer 是空的"。
+    // 超时：4 秒内没读到有效探针结果，明确报"探针没响应"，
+    // 而不是停在"测量中"，更不是冒充"Referer 是空的"。
     const timer = globalThis.setTimeout(() => {
       setProbe((prev) => (prev.state === 'done' ? prev : { state: 'timeout' }));
     }, 4000);
 
     return () => {
-      globalThis.removeEventListener('message', onMessage);
-      frame?.removeEventListener('load', readDom);
+      frame.removeEventListener('load', readDom);
       globalThis.clearTimeout(timer);
     };
   }, []);
@@ -190,8 +194,8 @@ export function EmbedTest() {
               '⚠️ 探针没有响应（4 秒超时）—— 这是探针本身的问题，不是 Referer 的问题。若三个播放器都正常，可忽略此项。'}
             {probe.state === 'done' &&
               (probe.suppressed
-                ? '❌ 浏览器没有发送 Referer —— YouTube 一定会报 Error 153'
-                : `✅ 已发送：${probe.referer}`)}
+                ? '❌ 服务器没有收到 Referer —— YouTube 一定会报 Error 153'
+                : `✅ 服务器实际收到：${probe.referer}`)}
           </dd>
 
           <dt>CSP frame-src</dt>
@@ -352,14 +356,12 @@ export function EmbedTest() {
         </div>
       </section>
 
-      {/* 离屏探针 iframe。
-          带缓存穿透参数：探针文件是静态资源，一旦被浏览器缓存，
-          这个页面的诊断结论就会失真 —— 踩过一次：探针已经修好，
-          页面上却仍然报旧结果，差点又去排查不存在的问题。 */}
+      {/* 离屏探针 iframe：指向 API 端点，由服务器回报它实际收到的 Referer 头。
+          带缓存穿透参数，避免诊断工具自己被缓存。 */}
       <iframe
         ref={probeRef}
         className="et__probe"
-        src={`/referer-probe.html?t=${Date.now()}`}
+        src={`/api/dev/referer-probe?t=${Date.now()}`}
         title="referer probe"
       />
     </div>

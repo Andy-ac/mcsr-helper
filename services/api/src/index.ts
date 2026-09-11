@@ -70,6 +70,44 @@ app.get('/api/health', (c) =>
   }),
 );
 
+// ---------------------------------------------------------------------------
+// TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。
+//
+// 为什么要有它：页面里用 document.referrer 判断"浏览器有没有发 Referer"是个**代理指标**，
+// 而且会被同源策略、iframe 拦截等因素污染（我们为此误判过一轮）。
+// 这个端点返回的是**服务器实际收到的 Referer 请求头** —— 也就是 YouTube 那边
+// 会收到的东西，是真正的 ground truth。
+//
+// 返回 HTML 而不是 JSON：它要被 iframe 加载，且同源所以父页面能直接读它的 DOM。
+// ---------------------------------------------------------------------------
+app.get('/api/dev/referer-probe', (c) => {
+  const referer = c.req.header('referer') ?? '';
+  const escaped = referer.replace(/[&<>"']/g, (ch) => {
+    const map: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+    return map[ch] ?? ch;
+  });
+
+  return c.html(`<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>referer probe</title>
+<style>body{margin:0;padding:10px 12px;background:#12141a;color:#e8eaef;
+font:12px/1.6 ui-monospace,Consolas,monospace}pre{margin:0;white-space:pre-wrap;word-break:break-all}</style>
+</head>
+<body data-referer="${escaped}" data-probe-ready="yes">
+<pre>服务器收到的 Referer = ${referer ? escaped : '(空 —— 浏览器确实没有发送 Referer)'}</pre>
+</body>
+</html>`);
+});
+
 app.notFound((c) => c.json({ error: 'not_found', path: new URL(c.req.url).pathname }, 404));
 
 app.onError((err, c) => {
