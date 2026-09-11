@@ -21,7 +21,9 @@ export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse>
       signal,
     });
   } catch {
-    throw new Error('连不上 API —— 本地开发时后端可能没启动。用 pnpm dev（全起）或 pnpm dev:web（Web+API）');
+    throw new Error(
+      '连不上 API —— 本地开发时后端可能没启动。用 pnpm dev（全起）或 pnpm dev:web（Web+API）',
+    );
   }
 
   if (!res.ok) {

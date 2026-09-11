@@ -15,11 +15,17 @@ import './embed-test.css';
  *   所以这里测的**就是生产将要跑的东西**。
  */
 
-type Probe = {
-  state: 'measuring' | 'done';
-  referer: string;
-  suppressed: boolean;
-};
+/**
+ * 探针结果有三态，**不能只有两态**。
+ *
+ * 之前只有「测量中 / 完成」，于是一个坏掉的探针和一个真的被压制的 Referer
+ * 长得一模一样 —— 而这两种情况的处理方式完全相反。我们正是因此白查了一轮
+ * （探针报"没有 Referer"，可 YouTube 播得好好的）。
+ */
+type Probe =
+  | { state: 'measuring' }
+  | { state: 'timeout' }
+  | { state: 'done'; referer: string; suppressed: boolean };
 
 const DEFAULTS = {
   // bilibili 官方播放器文档里用的示例视频
@@ -38,7 +44,7 @@ function isVodId(value: string) {
 
 export function EmbedTest() {
   const host = globalThis.location.hostname;
-  const [probe, setProbe] = useState<Probe>({ state: 'measuring', referer: '', suppressed: false });
+  const [probe, setProbe] = useState<Probe>({ state: 'measuring' });
   const [headers, setHeaders] = useState<Record<string, string>>({});
   const [ids, setIds] = useState(DEFAULTS);
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
@@ -93,9 +99,16 @@ export function EmbedTest() {
     };
     frame?.addEventListener('load', readDom);
 
+    // 超时兜底：4 秒内没拿到任何结果，就明确报"探针没响应"，
+    // 而不是让它一直停在"测量中"，更不是冒充"Referer 是空的"。
+    const timer = globalThis.setTimeout(() => {
+      setProbe((prev) => (prev.state === 'done' ? prev : { state: 'timeout' }));
+    }, 4000);
+
     return () => {
       globalThis.removeEventListener('message', onMessage);
       frame?.removeEventListener('load', readDom);
+      globalThis.clearTimeout(timer);
     };
   }, []);
 
@@ -167,12 +180,18 @@ export function EmbedTest() {
           </dd>
 
           <dt>Referer 探针</dt>
-          <dd className={probe.state !== 'done' ? '' : probe.suppressed ? 'et__bad' : 'et__good'}>
-            {probe.state === 'measuring'
-              ? '测量中…'
-              : probe.suppressed
+          <dd
+            className={
+              probe.state === 'done' ? (probe.suppressed ? 'et__bad' : 'et__good') : 'et__bad'
+            }
+          >
+            {probe.state === 'measuring' && '测量中…'}
+            {probe.state === 'timeout' &&
+              '⚠️ 探针没有响应（4 秒超时）—— 这是探针本身的问题，不是 Referer 的问题。若三个播放器都正常，可忽略此项。'}
+            {probe.state === 'done' &&
+              (probe.suppressed
                 ? '❌ 浏览器没有发送 Referer —— YouTube 一定会报 Error 153'
-                : `✅ 已发送：${probe.referer}`}
+                : `✅ 已发送：${probe.referer}`)}
           </dd>
 
           <dt>CSP frame-src</dt>
