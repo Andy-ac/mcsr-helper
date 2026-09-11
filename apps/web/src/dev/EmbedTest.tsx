@@ -333,11 +333,14 @@ export function EmbedTest() {
         </div>
       </section>
 
-      {/* 离屏探针 iframe */}
+      {/* 离屏探针 iframe。
+          带缓存穿透参数：探针文件是静态资源，一旦被浏览器缓存，
+          这个页面的诊断结论就会失真 —— 踩过一次：探针已经修好，
+          页面上却仍然报旧结果，差点又去排查不存在的问题。 */}
       <iframe
         ref={probeRef}
         className="et__probe"
-        src="/referer-probe.html"
+        src={`/referer-probe.html?t=${Date.now()}`}
         title="referer probe"
       />
     </div>

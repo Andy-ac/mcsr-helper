@@ -15,14 +15,11 @@ node -v && pnpm -v
 
 pnpm install
 
-# 只起 Web（浏览器里开发，最快）
-pnpm dev:web
-
-# 起 Web + API（前端 /api 会代理到本地 3001）
-pnpm dev:all
-
-# 起 Web + Electron 桌面壳
+# 全起：Web + API + Electron 桌面壳 ← 平时用这个
 pnpm dev
+
+# 只在浏览器里开发（Web + API，不开桌面壳）
+pnpm dev:web
 ```
 
 `pnpm dev:web` 之后打开 <http://localhost:5173> 即可。
@@ -48,10 +45,10 @@ docs/           方案与调研事实表
 
 | 命令 | 作用 |
 |---|---|
-| `pnpm dev:web` | 只起前端（Vite，5173） |
+| `pnpm dev` | **全起**：Web + API + Electron 桌面壳 ← 平时用这个 |
+| `pnpm dev:web` | Web + API（浏览器里开发，不开桌面壳） |
 | `pnpm dev:api` | 只起后端（3001） |
-| `pnpm dev:all` | 前端 + 后端 |
-| `pnpm dev` | 前端 + Electron |
+| `pnpm dev:desktop` | 只起桌面壳（需另开 `pnpm dev:web`） |
 | `pnpm build` | 构建 web + api + desktop |
 | `pnpm build:installer` | 打 Windows 安装包（M3） |
 | `pnpm typecheck` | 全仓类型检查 |

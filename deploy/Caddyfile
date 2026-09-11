@@ -74,9 +74,19 @@
 		@hashed path /assets/*
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
 
-		# index.html 绝不能缓存，否则用户会一直拿到旧版本的前端
-		@html path / /index.html
-		header @html Cache-Control "no-cache"
+		# ⚠️ 其余**一律**不缓存。
+		#
+		# 这里踩过一次坑：最初写的是 `path / /index.html`，看起来覆盖了首页就够了，
+		# 但 SPA 的任意路由（/embed-test 之类）和 .html 文件**都不匹配**，
+		# 于是它们没有任何 Cache-Control，浏览器会启用启发式缓存。
+		#
+		# 后果很隐蔽：用户一直拿到旧 HTML，而旧 HTML 引用的是带 hash 的旧资源名，
+		# 那个文件已经被新部署删掉了 —— 于是表现为"我明明改了，页面上还是旧的"，
+		# 或者一个已经修好的页面看起来仍然是坏的。
+		#
+		# 所以规则改成白名单反选：**只有带 hash 的 /assets/* 可缓存，其他全部 no-cache**。
+		@nocache not path /assets/*
+		header @nocache Cache-Control "no-cache"
 	}
 
 	log {

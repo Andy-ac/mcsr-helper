@@ -111,6 +111,36 @@ ssh "${SSH_OPTS[@]}" "$MCSR_SSH_HOST" bash -s <<REMOTE
 set -euo pipefail
 SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 
+# Caddyfile：每次部署都同步 —— 配置即代码。
+#
+# ⚠️ 这里踩过三个坑，都记下来：
+#
+# 1. 最初只在 --bootstrap 时上传它，于是改了 Caddyfile 永远不生效。
+#    这类"改了没反应"最难查，因为部署脚本本身报的是成功。
+#
+# 2. 只按"文件是否变化"决定要不要重载是错的：如果上一次重载失败，
+#    文件已经装上了、内容也就"无变化"了，于是永远不会再重载。
+#    所以这里改成：校验通过就**总是**重载（reload 是优雅的、毫秒级、幂等）。
+#
+# 3. 校验必须带上 MCSR_DOMAIN。Caddyfile 首行是域名占位符，变量为空时会退化成
+#    一个孤立的左花括号，Caddy 会把它当成全局选项块解析，然后报出完全误导性的
+#    "unrecognized global option: encode"。systemd 里有这个变量，shell 里没有。
+if [ -f /tmp/Caddyfile ]; then
+  if ! cmp -s /tmp/Caddyfile /etc/caddy/Caddyfile; then
+    echo "    Caddyfile 有变化，安装并校验"
+  else
+    echo "    Caddyfile 内容未变，仍会校验并重载以确保生效"
+  fi
+  \$SUDO install -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile
+  if \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    \$SUDO systemctl reload caddy
+    echo "    Caddy 已重载"
+  else
+    echo "    ✗ Caddyfile 校验失败，已保留旧配置继续运行。错误如下："
+    \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -5 || true
+  fi
+fi
+
 # 前端：先解到临时目录再整体替换，避免解包中途失败留下半成品
 rm -rf ${WEB_DIR}.new && mkdir -p ${WEB_DIR}.new
 tar -xzf /tmp/web.tgz -C ${WEB_DIR}.new
