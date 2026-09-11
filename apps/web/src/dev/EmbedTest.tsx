@@ -26,9 +26,15 @@ const DEFAULTS = {
   bilibili: 'BV1B7411m7LV',
   // 一个众所周知允许嵌入的视频，仅作连通性测试，换成你想测的即可
   youtube: 'dQw4w9WgXcQ',
-  // 取自你数据库 MatchVod 表里的真实 Twitch VOD
-  twitch: '2457619433',
+  // Twitch 用**频道名**而不是 VOD ID：VOD 会过期，频道不会。
+  // （第一版填的是你数据库 MatchVod 表里的 2457619433，那个 VOD 是 2025-05 的，早就失效了）
+  twitch: 'twitchdev',
 };
+
+/** 纯数字 → VOD；其他 → 频道名。 */
+function isVodId(value: string) {
+  return /^\d+$/.test(value.trim());
+}
 
 export function EmbedTest() {
   const host = globalThis.location.hostname;
@@ -58,30 +64,53 @@ export function EmbedTest() {
       .catch(() => setHeaders({ error: '无法读取响应头' }));
   }, []);
 
-  // ② 同源探针：证明浏览器到底有没有发 Referer（跨域读不到，同源可以读）
+  // ② 探针结果：主路径是探针主动 postMessage 上报，不依赖读取时机。
+  //    第一版只在 iframe 的 load 事件里读 DOM，而探针当时是异步写数据的，
+  //    于是永远读到空值 —— 报出"没有发送 Referer"的假阴性（而 YouTube 其实正常）。
   useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      const data = e.data as { type?: string; referer?: string } | null;
+      if (!data || data.type !== 'mcsr-referer-probe') return;
+      const ref = typeof data.referer === 'string' ? data.referer : '';
+      setProbe({ state: 'done', referer: ref, suppressed: ref.length === 0 });
+    };
+    globalThis.addEventListener('message', onMessage);
+
+    // 兜底：同源可直接读 DOM（探针现在同步写入，load 时已经就绪）
     const frame = probeRef.current;
-    if (!frame) return;
-    const read = () => {
+    const readDom = () => {
+      if (!frame) return;
       try {
-        const doc = frame.contentDocument;
-        const ref = doc?.body?.dataset.referer ?? '';
-        setProbe({ state: 'done', referer: ref, suppressed: ref.length === 0 });
+        const ref = frame.contentDocument?.body?.dataset.referer ?? '';
+        setProbe((prev) =>
+          prev.state === 'done'
+            ? prev
+            : { state: 'done', referer: ref, suppressed: ref.length === 0 },
+        );
       } catch {
-        setProbe({ state: 'done', referer: '', suppressed: true });
+        /* 忽略：主路径是 postMessage */
       }
     };
-    frame.addEventListener('load', read);
-    return () => frame.removeEventListener('load', read);
+    frame?.addEventListener('load', readDom);
+
+    return () => {
+      globalThis.removeEventListener('message', onMessage);
+      frame?.removeEventListener('load', readDom);
+    };
   }, []);
 
   const urls = useMemo(
     () => ({
       bilibili: `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(ids.bilibili)}&autoplay=0&danmaku=false`,
       youtube: `https://www.youtube.com/embed/${encodeURIComponent(ids.youtube)}`,
-      // ⚠️ Twitch 的 parent 是**必填**参数，缺了会直接报错。
-      //    它必须是实际承载页面的域名 —— 在 localhost 开发时就是 "localhost"。
-      twitch: `https://player.twitch.tv/?video=${encodeURIComponent(ids.twitch)}&parent=${encodeURIComponent(host)}&autoplay=false`,
+      // ⚠️ Twitch 有两个容易踩的点：
+      //   1. parent 是**必填**，必须是实际承载页面的域名（localhost 开发时就是 "localhost"）
+      //   2. VOD 的 video 参数**必须带 "v" 前缀**。官方文档原文：
+      //      "In this context (the video player), the video ID must have a 'v' prefix."
+      //      漏了前缀不会报参数错误，播放器只会显示不出来。
+      twitch: isVodId(ids.twitch)
+        ? `https://player.twitch.tv/?video=v${encodeURIComponent(ids.twitch.trim())}&parent=${encodeURIComponent(host)}&autoplay=false`
+        : `https://player.twitch.tv/?channel=${encodeURIComponent(ids.twitch.trim())}&parent=${encodeURIComponent(host)}&autoplay=false`,
     }),
     [ids, host],
   );
@@ -186,14 +215,21 @@ export function EmbedTest() {
           <Panel
             name="Twitch"
             state={loaded.twitch}
-            note={`parent 参数已自动填为当前域名；Twitch 要求最小 400×300，播放器需要手动点一下才开始`}
+            note={`parent 已自动填为当前域名。纯数字 = VOD（会自动补上官方要求的 "v" 前缀）；其他 = 频道名。Twitch 要求最小 400×300，播放需要手动点一下。频道离线时播放器仍会正常渲染，那也说明嵌入是通的。`}
           >
             <IdRow
-              label="VOD ID"
+              label="频道 / VOD"
               value={ids.twitch}
-              placeholder="纯数字"
+              placeholder="频道名，或 VOD 数字 ID"
               onChange={(v) => setIds((s) => ({ ...s, twitch: v }))}
             />
+            {/* 实时显示最终生成的 URL —— 参数拼错时一眼就能看出来 */}
+            <p
+              className="et__notes"
+              style={{ listStyle: 'none', paddingLeft: 0, wordBreak: 'break-all' }}
+            >
+              {urls.twitch}
+            </p>
             <div className="et__frame">
               <iframe
                 key={urls.twitch}
@@ -278,6 +314,14 @@ export function EmbedTest() {
                 <td>Twitch「请到 Twitch 观看」</td>
                 <td>parent 参数不匹配</td>
                 <td>确认 parent 等于地址栏的域名（含 localhost）</td>
+              </tr>
+              <tr>
+                <td>Twitch 播放器全黑 / 不出来</td>
+                <td>VOD 的 video 参数漏了 "v" 前缀，或该 VOD 已过期</td>
+                <td>
+                  页面上的 URL 已经自动补 "v"；若仍不显示，多半是 <b>VOD 已被 Twitch 删除</b>
+                  （普通主播的 回放只保留 14–60 天）—— 换成频道名再试
+                </td>
               </tr>
               <tr>
                 <td>bilibili 空白</td>

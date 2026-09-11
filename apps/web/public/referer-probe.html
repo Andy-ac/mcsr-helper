@@ -3,14 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      Same policy as the real app. The point of this probe is to prove that the
-      browser is NOT suppressing the Referer header -- the single property that
-      decides whether YouTube's embedded player works (its absence produces
-      "Error 153: Video player configuration error").
+      和主站相同的策略。这个探针唯一的目的是证明浏览器**没有压制** Referer ——
+      而这一点决定了 YouTube 嵌入播放器能否工作（缺失会产生
+      "Error 153: Video player configuration error"）。
 
-      A same-origin iframe receives the FULL referring URL; a cross-origin one
-      receives only the origin. Either way it must be non-empty. An empty value
-      here means the embed test will fail for YouTube and Twitch.
+      同源 iframe 会收到完整来源 URL，跨域只会收到 origin。两种都必须非空。
+      这里是空的 = YouTube 和 Twitch 都会失败。
     -->
     <meta name="referrer" content="strict-origin-when-cross-origin" />
     <title>referer probe</title>
@@ -38,22 +36,36 @@
   <body>
     <pre id="out">measuring…</pre>
     <script>
-      // Prefer the modern API; fall back to document.referrer.
-      fetch(location.href, { method: 'HEAD' })
-        .catch(() => null)
-        .then(function () {
-          var ref = document.referrer;
-          var lines = [];
-          lines.push('document.referrer = ' + (ref ? ref : '(EMPTY -- referrers are suppressed!)'));
-          lines.push('location.origin   = ' + location.origin);
-          lines.push('referrerPolicy    = ' + (document.referrerPolicy || '(unset)'));
-          var el = document.getElementById('out');
-          el.textContent = lines.join('\n');
-          el.className = ref ? 'ok' : 'bad';
-          // Machine-readable hooks for the parent frame.
-          document.body.dataset.referer = ref;
-          document.body.dataset.suppressed = ref ? 'false' : 'true';
-        });
+      /*
+       * ⚠️ 全部**同步**执行，不要放进 Promise/回调里。
+       *
+       * 第一版把这个写进了 fetch().then()，结果父页面在 iframe 的 load 事件里
+       * 读到的永远是空值 —— load 早于异步回调执行，于是报出
+       * "❌ 浏览器没有发送 Referer" 的假阴性（而 YouTube 其实播得好好的）。
+       *
+       * document.referrer 本来就是同步可用的，没有任何理由延后读取。
+       */
+      (function () {
+        var ref = document.referrer;
+        var policy = document.referrerPolicy || '(unset)';
+
+        document.body.dataset.referer = ref;
+        document.body.dataset.suppressed = ref ? 'false' : 'true';
+
+        var el = document.getElementById('out');
+        el.textContent =
+          'document.referrer = ' + (ref || '(EMPTY -- referrers are suppressed!)') + '\n' +
+          'location.origin   = ' + location.origin + '\n' +
+          'referrerPolicy    = ' + policy;
+        el.className = ref ? 'ok' : 'bad';
+
+        // 主动上报给父页面 —— 不依赖父页面读取时机，也不依赖同源 DOM 访问。
+        try {
+          parent.postMessage({ type: 'mcsr-referer-probe', referer: ref, policy: policy }, '*');
+        } catch (e) {
+          /* 忽略 */
+        }
+      })();
     </script>
   </body>
 </html>
