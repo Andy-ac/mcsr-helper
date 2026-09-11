@@ -1,0 +1,32 @@
+# ---- deps / build output ----
+node_modules/
+dist/
+build/
+release/
+*.tsbuildinfo
+
+# ---- pnpm ----
+.pnpm-store/
+.npmrc.local
+
+# ---- deploy secrets (NEVER commit) ----
+deploy/deploy.env
+.env
+.env.local
+.env.*.local
+
+# ---- editor / OS ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- logs / scratch ----
+*.log
+debug.log
+npm-debug.log*
+poc/
+tmp/
+.cache/

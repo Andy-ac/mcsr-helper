@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 这个包同时跑在浏览器（web/Electron renderer）和 Node（api）里，
+    // 所以 lib 要包含 DOM —— URL / fetch 这类全局在这个包里是合法的。
+    // 但**不要**在这里使用 window / document 等只有浏览器才有的 API。
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src/**/*.ts"]
+}

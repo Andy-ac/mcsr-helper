@@ -1,0 +1,45 @@
+# electron-builder 配置（M3 使用；现在先建好，便于 `pnpm build:installer` 提前验证打包链路）
+#
+# 发布通道：安装包与 latest.yml 放 Cloudflare R2（不用自己的 VPS ——
+# 大陆用户下载 ~100MB 走境外 VPS 会被跨境链路拖累）。
+# 先填好 host/路径，等 M3 拿到 R2 桶之后再跑 `pnpm build:installer`。
+
+appId: com.mcsr.helper
+productName: MCSR Helper
+copyright: Copyright © 2026 MCSR Helper
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/node_modules/**/{test,__tests__,tests,example,examples,docs,doc}/**'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # 未购买代码签名证书时保持为 null（见 docs/v1-plan.md §6）。
+  # 代价：用户首次运行会遇到 SmartScreen「未知发布者」提示。
+  # 买入 OV 证书后把证书路径写到这里即可，无需改其他配置。
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: MCSR Helper
+  deleteAppDataOnUninstall: false
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+# 自动更新源。M3 时把 <R2_PUBLIC_HOST> 换成真实值，
+# 并把 R2 桶配置为公开只读（安装包本来就要给所有人下载）。
+publish:
+  provider: generic
+  url: https://<R2_PUBLIC_HOST>/mcsr-helper/releases
+  channel: latest

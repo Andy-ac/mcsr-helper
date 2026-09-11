@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# MCSR Helper — Caddy 反向代理配置
+#
+# 部署到 /etc/caddy/Caddyfile，并把 MCSR_DOMAIN / R2_PUBLIC_HOST 通过
+# systemd 的 EnvironmentFile 注入（见 deploy/mcsr-helper-caddy.env.example）。
+#
+# Caddy 会自动申请并续期 Let's Encrypt 证书 —— 这就是选它而不是 nginx 的原因。
+# 前置条件：域名 A 记录已指向服务器 IP，且 80/443 已放行。
+# ---------------------------------------------------------------------------
+
+{$MCSR_DOMAIN} {
+	encode zstd gzip
+
+	# =========================================================================
+	# 响应头
+	# =========================================================================
+	header {
+		# ⚠️⚠️ 绝对不要改成 no-referrer 或 same-origin。
+		#
+		# YouTube 的 Required Minimum Functionality 要求嵌入播放器的客户端
+		# "必须通过 HTTP Referer 请求头标识自己"；Referer 缺失会让嵌入播放器
+		# 直接报 "Error 153: Video player configuration error"。
+		# strict-origin-when-cross-origin 是 YouTube 官方推荐值。
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+
+		# 我们自己不需要摄像头/麦克风/定位，全关掉
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+
+		# 内容安全策略。
+		# frame-src 是这里唯一宽松的地方 —— 三个视频平台的官方播放器都靠 iframe 嵌入，
+		# 少写一个域名，对应平台的视频就会静默地播不出来。
+		# 新增视频平台时必须同步改这里（以及 packages/shared/src/constants.ts 的 VIDEO_PLATFORMS）。
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+		-Server
+	}
+
+	# =========================================================================
+	# API —— 反向代理到本机的 Node 进程（只监听 127.0.0.1:3001）
+	# =========================================================================
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001 {
+			header_up X-Real-IP {remote_host}
+			# API 响应不做缓存
+			header_down Cache-Control "no-store"
+		}
+	}
+
+	# =========================================================================
+	# 安装包与自动更新源 —— 重定向到 Cloudflare R2。
+	#
+	# 为什么不用本机分发：大陆用户下载 ~100MB 的 Electron 安装包，
+	# 走境外 VPS 会被跨境链路拖累（实测其他跨境线路每天有 5–12 小时劣化窗口）。
+	# R2 的免费额度足够支撑到几千用户。
+	#
+	# M3 之前 R2 桶还不存在，这个块可以先注释掉。
+	# =========================================================================
+	# handle /installer/* {
+	# 	redir https://{$R2_PUBLIC_HOST}/mcsr-helper/releases{uri} permanent
+	# }
+
+	# =========================================================================
+	# 静态前端 —— SPA 回退到 index.html
+	# =========================================================================
+	handle {
+		root * /srv/mcsr-helper/web
+		try_files {path} /index.html
+		file_server
+
+		# 带 hash 的构建产物可以长期缓存
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+		# index.html 绝不能缓存，否则用户会一直拿到旧版本的前端
+		@html path / /index.html
+		header @html Cache-Control "no-cache"
+	}
+
+	log {
+		output file /var/log/caddy/mcsr-helper.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}

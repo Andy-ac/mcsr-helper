@@ -1,0 +1,28 @@
+packages:
+  - apps/*
+  - packages/*
+  - services/*
+
+# ---------------------------------------------------------------------------
+# 允许执行安装脚本的依赖。
+#
+# pnpm 10 起默认**不执行**依赖的 postinstall（防供应链攻击的默认值）。
+# 但下面这几个必须放行，否则装完是坏的：
+#   - electron            下载 Electron 运行时（约 100MB）—— 不放行则没有 electron.exe
+#   - electron-winstaller electron-builder 打 Windows 安装包时需要
+#   - esbuild             放置平台原生的 esbuild.exe
+#   - @biomejs/biome      放置平台原生的 biome 二进制
+#
+# ⚠️ 键名是 `allowBuilds`（不是 `onlyBuiltDependencies`），且必须写在这个文件里 ——
+#    pnpm 11 已不再读取 package.json 的 `pnpm` 字段。写错地方会**静默不生效**，
+#    表现是 `pnpm dev` 时 Electron 找不到可执行文件。
+# ---------------------------------------------------------------------------
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  '@biomejs/biome': true
+
+# Electron + electron-builder 在 pnpm 的符号链接布局下偶有找不到 preload / native 依赖的问题。
+# 如果 `pnpm build:installer` 报 "Cannot find module" 或打包后白屏，把下面这行取消注释再重装。
+# nodeLinker: hoisted

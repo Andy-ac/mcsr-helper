@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      ⚠️ 不要删这一行，也不要改成 no-referrer / same-origin。
+
+      YouTube 的 Required Minimum Functionality 要求嵌入播放器的客户端
+      "必须通过 HTTP Referer 请求头标识自己"。如果页面抑制了 Referer，
+      嵌入的播放器会直接报 "Error 153: Video player configuration error"。
+      strict-origin-when-cross-origin 是 YouTube 官方推荐值，同时也是浏览器的现代默认值
+      —— 这里显式写出来，是为了防止以后有人"出于隐私考虑"把它改掉。
+
+      对应地，生产环境的 Caddy 也设置了同一策略（见 deploy/Caddyfile）。
+    -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+    <title>MCSR Helper</title>
+    <meta name="description" content="MCSR 社区的资源库与日历 / Resource hub and calendar for the MCSR community" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

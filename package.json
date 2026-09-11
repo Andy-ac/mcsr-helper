@@ -1,0 +1,29 @@
+{
+  "name": "mcsr-helper",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.8.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -n web,desktop -c cyan,magenta \"pnpm -F @mcsr/web dev\" \"pnpm -F @mcsr/desktop dev\"",
+    "dev:web": "pnpm -F @mcsr/web dev",
+    "dev:api": "pnpm -F @mcsr/api dev",
+    "dev:all": "concurrently -n web,api,desktop -c cyan,yellow,magenta \"pnpm -F @mcsr/web dev\" \"pnpm -F @mcsr/api dev\" \"pnpm -F @mcsr/desktop dev\"",
+    "build": "pnpm -F @mcsr/web build && pnpm -F @mcsr/api build && pnpm -F @mcsr/desktop build",
+    "build:installer": "pnpm -F @mcsr/desktop dist",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "check": "pnpm typecheck && pnpm lint",
+    "deploy": "bash deploy/deploy.sh",
+    "clean": "node -e \"const{rmSync}=require('fs');for(const d of ['node_modules','apps/web/dist','apps/desktop/dist','apps/desktop/release','services/api/dist','packages/shared/dist','packages/ui/dist'])rmSync(d,{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "concurrently": "^10.0.5",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,52 @@
+# /etc/systemd/system/mcsr-helper-api.service
+#
+# 安装：
+#   sudo cp deploy/mcsr-helper-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-api
+#
+# 注意 HOST 固定为 127.0.0.1：API 绝不能被公网直连，
+# 对外只能经由 Caddy 的 HTTPS。
+
+[Unit]
+Description=MCSR Helper API
+Documentation=https://github.com/your-org/mcsr-helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcsr
+Group=mcsr
+WorkingDirectory=/srv/mcsr-helper/api
+
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3001
+# M1 起改用 EnvironmentFile=/srv/mcsr-helper/api/.env（存 SQLite 路径、邮件服务密钥等）
+# EnvironmentFile=/srv/mcsr-helper/api/.env
+
+ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
+Restart=always
+RestartSec=3
+
+# ---- 加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/mcsr-helper/api/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+# 日志进 journald：journalctl -u mcsr-helper-api -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcsr-helper-api
+
+[Install]
+WantedBy=multi-user.target
