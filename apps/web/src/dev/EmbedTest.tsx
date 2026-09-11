@@ -25,7 +25,7 @@ import './embed-test.css';
 type Probe =
   | { state: 'measuring' }
   | { state: 'timeout' }
-  | { state: 'done'; referer: string; suppressed: boolean };
+  | { state: 'done'; referer: string; suppressed: boolean; via: 'iframe' | 'fetch' };
 
 const DEFAULTS = {
   // bilibili 官方播放器文档里用的示例视频
@@ -99,16 +99,37 @@ export function EmbedTest() {
         return;
       }
       const ref = body.dataset.referer ?? '';
-      setProbe({ state: 'done', referer: ref, suppressed: ref.length === 0 });
+      setProbe({ state: 'done', referer: ref, suppressed: ref.length === 0, via: 'iframe' });
     };
 
     frame.addEventListener('load', readDom);
 
-    // 超时：4 秒内没读到有效探针结果，明确报"探针没响应"，
-    // 而不是停在"测量中"，更不是冒充"Referer 是空的"。
+    // 超时后先走 fetch 退路，再决定要不要报"没响应"。
+    //
+    // 为什么要退路：iframe 这条路会受一堆策略影响（frame-src / frame-ancestors /
+    // 各种拦截），而我们已经因为这类问题误判过两次。fetch 和 iframe 的 Referer
+    // 由**同一个 Referrer-Policy** 决定，所以退路给出的证据同样有效 ——
+    // 而且它不涉及嵌套，没有那么多能出错的地方。
     const timer = globalThis.setTimeout(() => {
-      setProbe((prev) => (prev.state === 'done' ? prev : { state: 'timeout' }));
-    }, 4000);
+      fetch('/api/dev/referer-probe', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((data: { referer?: string; probeReady?: boolean }) => {
+          if (!data?.probeReady) throw new Error('probe not ready');
+          const ref = typeof data.referer === 'string' ? data.referer : '';
+          setProbe({
+            state: 'done',
+            referer: ref,
+            suppressed: ref.length === 0,
+            via: 'fetch',
+          });
+        })
+        .catch(() => {
+          setProbe((prev) => (prev.state === 'done' ? prev : { state: 'timeout' }));
+        });
+    }, 3000);
 
     return () => {
       frame.removeEventListener('load', readDom);
@@ -191,11 +212,11 @@ export function EmbedTest() {
           >
             {probe.state === 'measuring' && '测量中…'}
             {probe.state === 'timeout' &&
-              '⚠️ 探针没有响应（4 秒超时）—— 这是探针本身的问题，不是 Referer 的问题。若三个播放器都正常，可忽略此项。'}
+              '⚠️ 探针没有响应（iframe 与 fetch 两条路都失败）—— 这是探针本身的问题，不是 Referer 的问题。若三个播放器都正常，可忽略此项。'}
             {probe.state === 'done' &&
               (probe.suppressed
-                ? '❌ 服务器没有收到 Referer —— YouTube 一定会报 Error 153'
-                : `✅ 服务器实际收到：${probe.referer}`)}
+                ? `❌ 服务器没有收到 Referer —— YouTube 一定会报 Error 153（经 ${probe.via} 测得）`
+                : `✅ 服务器实际收到：${probe.referer}　（经 ${probe.via} 测得）`)}
           </dd>
 
           <dt>CSP frame-src</dt>

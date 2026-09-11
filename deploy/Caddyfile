@@ -39,8 +39,17 @@
 		#    于是"自检探针"读到了空值，报出"浏览器没有发送 Referer"的假警报，
 		#    而实际上 YouTube 播得好好的。
 		#
-		# 新增视频平台时必须同步改这里（以及 packages/shared/src/constants.ts 的 VIDEO_PLATFORMS）。
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		# frame-ancestors 用 'self' 而不是 'none'。
+		# ⚠️ 踩过的坑：'none' 的含义是"**任何页面**都不许嵌我，**包括同源**"。
+		#    而这个 header 块是全局的，/api/* 的响应也会带上它 ——
+		#    于是自检页无法 iframe 自己的探针端点，表现为"探针超时"。
+		#    更隐蔽的是：frame-ancestors 会**覆盖** X-Frame-Options，
+		#    所以下面那行 SAMEORIGIN 看起来允许，实际照样被拦。
+		#
+		# 'self' 仍然阻止**其他站点**嵌套本站（点击劫持防护的核心目的），只是允许自己嵌自己。
+		#
+		# 新增视频平台时必须同步改这里的 frame-src（以及 packages/shared/src/constants.ts 的 VIDEO_PLATFORMS）。
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 
 		-Server
 	}

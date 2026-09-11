@@ -82,6 +82,14 @@ app.get('/api/health', (c) =>
 // ---------------------------------------------------------------------------
 app.get('/api/dev/referer-probe', (c) => {
   const referer = c.req.header('referer') ?? '';
+
+  // 内容协商：自检页优先用 iframe（和 YouTube 嵌入是同一条路径），
+  // 但 iframe 万一被策略挡住，它需要一条退路 —— 用 fetch 再测一次。
+  // 两条路都由同一个 Referrer-Policy 决定，所以退路同样是有效证据。
+  if (c.req.header('accept')?.includes('application/json')) {
+    return c.json({ referer, probeReady: true });
+  }
+
   const escaped = referer.replace(/[&<>"']/g, (ch) => {
     const map: Record<string, string> = {
       '&': '&amp;',
