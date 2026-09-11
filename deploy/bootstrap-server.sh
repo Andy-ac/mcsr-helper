@@ -64,7 +64,21 @@ EOF
 
 systemctl daemon-reload
 systemctl enable mcsr-helper-api >/dev/null 2>&1 || true
-systemctl enable --now caddy
+
+# ⚠️ 必须 restart，不能只写 `enable --now`。
+#
+# apt 安装 caddy 时它**已经自己启动过一次**了（用的是当时还不存在的 Caddyfile
+# 和当时还不存在的 systemd 环境变量）。而 `systemctl enable --now` 对**已在运行**
+# 的服务什么都不做 —— 于是新写入的 Caddyfile 和 MCSR_DOMAIN 都不会生效。
+#
+# 症状极其隐蔽：`systemctl is-active caddy` 显示 active、端口 80 也能通，
+# 所以看起来一切正常；但 443 根本没监听，证书也不会签发，
+# 日志里只有一行 warn：
+#   "server is listening only on the HTTP port, so no automatic HTTPS will be applied"
+#
+# 这个 bug 在第一次真实部署时踩到了，所以在这里显式 restart。
+systemctl enable caddy >/dev/null 2>&1 || true
+systemctl restart caddy
 
 # 防火墙：只放行 SSH / HTTP / HTTPS。API 的 3001 端口**故意不放行**。
 if command -v ufw >/dev/null 2>&1; then

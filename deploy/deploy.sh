@@ -34,7 +34,25 @@ API_DIR="${MCSR_API_DIR:-/srv/mcsr-helper/api}"
 API_SERVICE="${MCSR_API_SERVICE:-mcsr-helper-api}"
 SSH_PORT="${MCSR_SSH_PORT:-22}"
 
-SSH_OPTS=(-p "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
+# ⚠️ ssh 用 -p 指定端口，而 scp 用的是 **大写 -P**。
+# 写混了的后果非常迷惑：scp 会把端口号当成一个"要上传的本地文件"，
+# 报 `scp: stat local "22": No such file or directory` —— 看起来像路径问题，其实是参数问题。
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new)
+SCP_OPTS=(-o StrictHostKeyChecking=accept-new)
+if [[ "$SSH_PORT" != "22" ]]; then
+  SSH_OPTS+=(-p "$SSH_PORT")
+  SCP_OPTS+=(-P "$SSH_PORT")
+fi
+# 如果配置了私钥就用它，并禁止回退到其他密钥/agent —— 避免"用了错误的密钥却以为是密码问题"
+if [[ -n "${MCSR_SSH_KEY:-}" ]]; then
+  KEY_PATH="${MCSR_SSH_KEY/#\~/$HOME}"
+  if [[ ! -f "$KEY_PATH" ]]; then
+    echo "✗ MCSR_SSH_KEY 指向的私钥不存在: $KEY_PATH" >&2
+    exit 1
+  fi
+  SSH_OPTS+=(-i "$KEY_PATH" -o IdentitiesOnly=yes)
+  SCP_OPTS+=(-i "$KEY_PATH" -o IdentitiesOnly=yes)
+fi
 STEP=0
 say() { STEP=$((STEP + 1)); printf '\n\033[36m[%d] %s\033[0m\n' "$STEP" "$*"; }
 ok() { printf '\033[32m    ✓ %s\033[0m\n' "$*"; }
@@ -72,7 +90,7 @@ printf '    web %s  api %s\n' \
   "$(du -h "$TMP/web.tgz" | cut -f1)" "$(du -h "$TMP/api.tgz" | cut -f1)"
 
 say "上传到 $MCSR_SSH_HOST"
-scp "${SSH_OPTS[@]}" -q \
+scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   "$MCSR_SSH_HOST:/tmp/"
@@ -121,8 +139,23 @@ ok "部署完成"
 # ---------- 线上自检 ----------
 if [[ -n "${MCSR_HEALTHCHECK_URL:-}" ]]; then
   say "线上自检 $MCSR_HEALTHCHECK_URL"
+
+  # ⚠️ 自检必须能绕开两件事：
+  #   1. 本机 DNS —— 在中国大陆查境外域名可能被拦截/污染，会得到"域名没生效"的
+  #      假象（我们踩过：同一个权威服务器，两个地点问出两个答案）。
+  #   2. NAT hairpin —— 这台服务器是内网 10.0.0.2 + 公网 NAT，
+  #      从服务器 curl 自己的公网 IP 会直接失败。
+  # 所以把域名硬解析到服务器的公网 IP，让检查只验证"服务是否真的在跑"。
+  CURL_RESOLVE=()
+  SSH_HOST_ONLY="${MCSR_SSH_HOST##*@}"
+  if [[ -n "$MCSR_DOMAIN" && "$SSH_HOST_ONLY" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    CURL_RESOLVE+=(--resolve "$MCSR_DOMAIN:443:$SSH_HOST_ONLY")
+    CURL_RESOLVE+=(--resolve "$MCSR_DOMAIN:80:$SSH_HOST_ONLY")
+    echo "    （自检时把 $MCSR_DOMAIN 固定解析到 $SSH_HOST_ONLY，以排除本机 DNS 干扰）"
+  fi
+
   for i in 1 2 3 4 5; do
-    if curl -fsS --max-time 10 "$MCSR_HEALTHCHECK_URL"; then
+    if curl -fsS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 "$MCSR_HEALTHCHECK_URL"; then
       echo ""
       ok "线上自检通过 —— https://$MCSR_DOMAIN 已可用"
       exit 0
