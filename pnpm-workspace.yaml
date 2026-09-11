@@ -7,21 +7,29 @@ packages:
 # 允许执行安装脚本的依赖。
 #
 # pnpm 10 起默认**不执行**依赖的 postinstall（防供应链攻击的默认值）。
-# 但下面这几个必须放行，否则装完是坏的：
+# 只有下面这两个**确实需要**跑脚本：
 #   - electron            下载 Electron 运行时（约 100MB）—— 不放行则没有 electron.exe
-#   - electron-winstaller electron-builder 打 Windows 安装包时需要
-#   - esbuild             放置平台原生的 esbuild.exe
-#   - @biomejs/biome      放置平台原生的 biome 二进制
+#   - electron-winstaller electron-builder 打 Windows 安装包时选择 7-Zip 架构
 #
-# ⚠️ 键名是 `allowBuilds`（不是 `onlyBuiltDependencies`），且必须写在这个文件里 ——
-#    pnpm 11 已不再读取 package.json 的 `pnpm` 字段。写错地方会**静默不生效**，
-#    表现是 `pnpm dev` 时 Electron 找不到可执行文件。
+# esbuild / @biomejs/biome 显式设为 **false**（= 我知情且不需要）：
+#   它们的原生二进制通过 optionalDependencies（如 @esbuild/win32-x64）分发，
+#   不需要任何脚本就会就位。它们的 postinstall 只是"跑一下二进制核对版本号"，
+#   而这一步要 spawn 子进程并捕获 stdout —— 在部分环境下会失败，导致**整个 install 中断**。
+#
+# ⚠️ 两条会浪费你很久的规则：
+#   1. 键名是 `allowBuilds`（不是 `onlyBuiltDependencies`），且必须写在这个文件里 ——
+#      pnpm 11 已不再读取 package.json 的 `pnpm` 字段。写错位置会**静默不生效**。
+#   2. 每个有构建脚本的依赖都必须**显式**写 true 或 false。
+#      pnpm 11 默认 `strictDepBuilds: true`：只要有构建脚本处于"未决"状态，
+#      整个 install 就以 exit 1 失败。而 install 失败会让 node_modules/.bin
+#      的链接不生成 —— 后果是 `pnpm typecheck` 会悄悄回退到 PATH 上的全局 tsc，
+#      报出与真实问题毫无关系的错误（我们踩过：全局 TS 5.0.2 不认识 target ES2023）。
 # ---------------------------------------------------------------------------
 allowBuilds:
   electron: true
   electron-winstaller: true
-  esbuild: true
-  '@biomejs/biome': true
+  esbuild: false
+  '@biomejs/biome': false
 
 # Electron + electron-builder 在 pnpm 的符号链接布局下偶有找不到 preload / native 依赖的问题。
 # 如果 `pnpm build:installer` 报 "Cannot find module" 或打包后白屏，把下面这行取消注释再重装。
