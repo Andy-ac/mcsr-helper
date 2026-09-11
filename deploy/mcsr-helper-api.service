@@ -23,8 +23,12 @@ WorkingDirectory=/srv/mcsr-helper/api
 Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3001
-# M1 起改用 EnvironmentFile=/srv/mcsr-helper/api/.env（存 SQLite 路径、邮件服务密钥等）
-# EnvironmentFile=/srv/mcsr-helper/api/.env
+# DB_PATH 显式给出，不依赖 cwd。否则"从别的目录启动服务"会静默打开另一个库文件 ——
+# 表现为"数据不见了"，而且要查很久才会想到是路径问题。
+Environment=DB_PATH=/srv/mcsr-helper/api/data/mcsr.db
+# node:sqlite 目前会打印一行 ExperimentalWarning。功能正常，只是噪音；
+# 关掉它以免掩盖真正的警告。
+Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
 
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always

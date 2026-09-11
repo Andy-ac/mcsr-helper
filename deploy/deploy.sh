@@ -92,6 +92,7 @@ printf '    web %s  api %s\n' \
 say "上传到 $MCSR_SSH_HOST"
 scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
+  content/resources.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
@@ -154,6 +155,58 @@ mkdir -p ${API_DIR}
 tar -xzf /tmp/api.tgz -C ${API_DIR}
 \$SUDO chown -R mcsr:mcsr ${API_DIR}
 
+# systemd 单元：和 Caddyfile 一样属于"配置即代码"，每次部署都同步。
+# ⚠️ 它原先也只在 --bootstrap 时上传 —— 和 Caddyfile 是同一个坑：
+#    改了配置却永远不生效，而部署脚本报的是成功。
+#    单元文件改动需要 daemon-reload，否则 systemctl 用的还是旧定义。
+if [ -f /tmp/mcsr-helper-api.service ]; then
+  if ! cmp -s /tmp/mcsr-helper-api.service /etc/systemd/system/mcsr-helper-api.service; then
+    echo "    systemd 单元有变化，安装并 daemon-reload"
+    \$SUDO install -m 0644 /tmp/mcsr-helper-api.service /etc/systemd/system/mcsr-helper-api.service
+    \$SUDO systemctl daemon-reload
+  else
+    echo "    systemd 单元未变"
+  fi
+fi
+
+# ---------- 内容导入 ----------
+#
+# ⚠️ 数据库**只存在于服务器上**，绝不由本地覆盖。
+#    早先想过把本地 .db 一起传上去 —— M1 阶段能用（内容全部来自
+#    content/resources.json，库是派生数据），但 M2 之后库里会有用户提交的内容，
+#    覆盖就等于删库，而且部署脚本还会报成功。
+#    所以改成：传内容文件 + 在服务器上跑导入脚本。
+#    导入脚本只碰 source='import' 的记录，用户提交的内容不受影响
+#    （这条不变量有测试守着，见 services/api/src/resources.test.ts）。
+if [ -f /tmp/resources.json ]; then
+  mkdir -p /srv/mcsr-helper/content
+  \$SUDO install -m 0644 /tmp/resources.json /srv/mcsr-helper/content/resources.json
+
+  # 以 mcsr 用户身份运行导入，因为数据库目录属于它。
+  # 用 root 跑会在 WAL 模式下生成 root 属主的 -wal / -shm 文件，
+  # 之后服务（以 mcsr 运行）就写不进去了 —— 而且是静默失败。
+  #
+  # ⚠️ 不能写成 "\$SUDO -u mcsr ..."：当以 root 直接登录时 \$SUDO 是空字符串，
+  #    那行会变成 "-u mcsr env ..."，bash 把 -u 当成命令名报
+  #    "line 76: -u: command not found"。用函数按身份分派更稳。
+  as_mcsr() {
+    if [ "\$(id -u)" -eq 0 ]; then
+      runuser -u mcsr -- "\$@"
+    else
+      sudo -u mcsr "\$@"
+    fi
+  }
+
+  cd /srv/mcsr-helper
+  # DB_PATH 显式给出，避免"cwd 不同 → 打开了另一个库文件"这种静默错误。
+  if as_mcsr env DB_PATH=${API_DIR}/data/mcsr.db \\
+       node ${API_DIR}/import.js --apply --file /srv/mcsr-helper/content/resources.json; then
+    echo "    内容导入完成"
+  else
+    echo "    ✗ 内容导入失败（服务仍会启动，沿用现有数据）"
+  fi
+fi
+
 \$SUDO systemctl restart ${API_SERVICE}
 sleep 1
 \$SUDO systemctl is-active --quiet ${API_SERVICE} && echo "    API 服务运行中" || {
@@ -162,7 +215,7 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-rm -f /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh
+rm -f /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json
 REMOTE
 ok "部署完成"
 

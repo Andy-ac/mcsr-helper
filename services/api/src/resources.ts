@@ -188,8 +188,16 @@ export type ResourceInput = Omit<Resource, 'createdAt' | 'updatedAt' | 'summary'
  *
  * 用 UPSERT 而不是"先删后插"：后者的空档期会让并发读取看到"条目不存在"。
  * createdAt 只在首次插入时写入，之后保持不变（UPSERT 里用 CASE 判断）。
+ *
+ * source 标记这条记录的归属：'import' = 由 content/resources.json 管理，
+ * 'user' = 用户提交（M2 起）。**导入脚本只会碰 'import' 的那些** ——
+ * 否则每次部署都会把用户提交的内容删掉。
  */
-export function upsertResource(input: ResourceInput, now = Date.now()): 'inserted' | 'updated' {
+export function upsertResource(
+  input: ResourceInput,
+  options: { source?: 'import' | 'user'; now?: number } = {},
+): 'inserted' | 'updated' {
+  const { source = 'import', now = Date.now() } = options;
   const db = getDb();
   const normalized = normalizeResourceInput(input);
 
@@ -199,8 +207,8 @@ export function upsertResource(input: ResourceInput, now = Date.now()): 'inserte
 
   db.prepare(
     `INSERT INTO resources
-       (id, kind, title, title_en, url, summary, body, lang, tags, featured, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, kind, title, title_en, url, summary, body, lang, tags, featured, status, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        kind       = excluded.kind,
        title      = excluded.title,
@@ -212,6 +220,7 @@ export function upsertResource(input: ResourceInput, now = Date.now()): 'inserte
        tags       = excluded.tags,
        featured   = excluded.featured,
        status     = excluded.status,
+       source     = excluded.source,
        updated_at = excluded.updated_at`,
   ).run(
     input.id,
@@ -225,6 +234,7 @@ export function upsertResource(input: ResourceInput, now = Date.now()): 'inserte
     JSON.stringify(normalized.tags),
     input.featured ? 1 : 0,
     input.status,
+    source,
     now,
     now,
   );
@@ -233,19 +243,21 @@ export function upsertResource(input: ResourceInput, now = Date.now()): 'inserte
 }
 
 /**
- * 删除不在给定 id 集合里的条目 —— 让导入文件成为**唯一真相**。
+ * 删除**导入来源**里不在给定 id 集合中的条目。
  *
- * 这是刻意的：如果只 upsert 不删除，你在 JSON 里删掉一条，线上却还在，
- * 久而久之内容和文件对不上，谁也说不清哪边是对的。
- * 导入脚本会先用 dry-run 打印将要删除的条目再执行。
+ * ⚠️ 这里必须限定 `source = 'import'`。
+ * 不加这个条件的后果：M2 上线后，用户提交的资源会在**每次部署**时被静默删掉，
+ * 而部署脚本会报成功。这类"静默数据丢失"是最难发现也最不可接受的失败方式。
  */
-export function deleteResourcesNotIn(ids: string[]): string[] {
+export function deleteImportedNotIn(ids: string[]): string[] {
   const db = getDb();
-  const existing = db.prepare('SELECT id FROM resources').all() as Array<{ id: string }>;
+  const existing = db
+    .prepare("SELECT id FROM resources WHERE source = 'import'")
+    .all() as unknown as Array<{ id: string }>;
   const keep = new Set(ids);
   const doomed = existing.map((r) => r.id).filter((id) => !keep.has(id));
 
-  const stmt = db.prepare('DELETE FROM resources WHERE id = ?');
+  const stmt = db.prepare("DELETE FROM resources WHERE id = ? AND source = 'import'");
   db.exec('BEGIN');
   try {
     for (const id of doomed) stmt.run(id);
@@ -255,6 +267,20 @@ export function deleteResourcesNotIn(ids: string[]): string[] {
     throw error;
   }
   return doomed;
+}
+
+/** 按来源统计，用来在导入脚本里给出"我在管多少条、别人有多少条"的清晰信息。 */
+export function countBySource(): { import: number; user: number } {
+  const db = getDb();
+  const rows = db
+    .prepare('SELECT source, COUNT(*) AS n FROM resources GROUP BY source')
+    .all() as unknown as Array<{ source: string; n: number }>;
+  const out = { import: 0, user: 0 };
+  for (const row of rows) {
+    if (row.source === 'user') out.user = row.n;
+    else out.import = row.n;
+  }
+  return out;
 }
 
 export function countResources(): number {

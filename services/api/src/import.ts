@@ -1,25 +1,27 @@
 /**
- * 资源库导入脚本（M1 阶段的"管理员录入"）。
+ * 资源库导入脚本（M1 阶段的"管理员录入"，M2 之后仍然负责策展内容）。
  *
  * 为什么先做脚本而不是后台界面：
  *   M1 的目标是**让游客能浏览**。内容从哪来是次要问题 —— 用脚本能立刻开始录，
  *   而且内容文件进版本管理，改了什么一目了然。后台录入界面放到 M2（和审核流一起做）。
  *
  * 用法：
- *   pnpm -F @mcsr/api import              # 预演：只打印将要发生什么，不写库
- *   pnpm -F @mcsr/api import -- --apply   # 真正写库
+ *   pnpm -F @mcsr/api content:import                  # 预演：只打印，不写库
+ *   pnpm -F @mcsr/api content:import -- --apply      # 真正写库
+ *   node dist/import.js --apply --file /path/to.json  # 服务器上（构建产物）
  *
- * 内容文件默认 content/resources.json（仓库根目录），可用 --file 指定。
+ * ⚠️ 它只管理 `source = 'import'` 的记录。用户提交的内容（M2 起）不会被它碰到 ——
+ *    见 db/migrations/002_resource_source.ts 里的说明。
  */
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { normalizeResourceInput, ResourceSchema } from '@mcsr/shared/resources';
 import { z } from 'zod';
 
 import { closeDb, dbPath } from './db';
 import {
-  countResources,
-  deleteResourcesNotIn,
+  countBySource,
+  deleteImportedNotIn,
   type ResourceInput,
   upsertResource,
 } from './resources';
@@ -53,25 +55,35 @@ function idFromUrl(url: string): string {
   }
 }
 
+/**
+ * 路径解析：相对路径按**当前工作目录**解析。
+ *
+ * 之前写的是 `resolve(process.cwd(), '../../', file)` —— 那假设了"cwd 一定是
+ * services/api"。本地跑没问题，服务器上（cwd 是 /srv/mcsr-helper）就会指到一个
+ * 不存在的地方。把层级写死在脚本里，是"本地能跑、线上找不到文件"的常见来源。
+ */
+function resolveContentFile(file: string): string {
+  return isAbsolute(file) ? file : resolve(process.cwd(), file);
+}
+
 function parseArgs(argv: string[]) {
   const apply = argv.includes('--apply');
-  const fileArgIndex = argv.indexOf('--file');
-  const fromFlag = fileArgIndex >= 0 ? argv[fileArgIndex + 1] : undefined;
-  return { apply, file: fromFlag ?? 'content/resources.json' };
+  const fileIndex = argv.indexOf('--file');
+  const fromFlag = fileIndex >= 0 ? argv[fileIndex + 1] : undefined;
+  return { apply, file: resolveContentFile(fromFlag ?? 'content/resources.json') };
 }
 
 function main() {
   const { apply, file } = parseArgs(process.argv.slice(2));
-  const abs = resolve(process.cwd(), '../../', file);
 
-  console.log(`[import] 内容文件: ${abs}`);
+  console.log(`[import] 内容文件: ${file}`);
   console.log(`[import] 数据库  : ${dbPath()}`);
   console.log(`[import] 模式    : ${apply ? '写入 (--apply)' : '预演（加 --apply 才会写库）'}`);
   console.log('');
 
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(abs, 'utf8'));
+    raw = JSON.parse(readFileSync(file, 'utf8'));
   } catch (error) {
     console.error(`✗ 读取失败: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -128,7 +140,7 @@ function main() {
 
   console.log(`[import] 解析到 ${entries.length} 条：`);
   for (const e of entries) {
-    console.log(`   ${e.featured ? '★' : ' '} ${e.id.padEnd(34)} ${e.kind.padEnd(8)} ${e.title}`);
+    console.log(`   ${e.featured ? '★' : ' '} ${e.id.padEnd(38)} ${e.kind.padEnd(8)} ${e.title}`);
   }
 
   if (!apply) {
@@ -137,18 +149,23 @@ function main() {
     return;
   }
 
-  console.log(`\n[import] 写入前库中共 ${countResources()} 条`);
+  const before = countBySource();
+  console.log(
+    `\n[import] 写入前：本文件管理 ${before.import} 条，用户提交 ${before.user} 条（后者不会被碰）`,
+  );
+
   const stats = { inserted: 0, updated: 0 };
   for (const entry of entries) {
-    stats[upsertResource(entry)] += 1;
+    stats[upsertResource(entry, { source: 'import' })] += 1;
   }
-  const removed = deleteResourcesNotIn(entries.map((e) => e.id));
+  const removed = deleteImportedNotIn(entries.map((e) => e.id));
 
   if (removed.length > 0) {
     console.log(`[import] 删除 ${removed.length} 条（已从内容文件中移除）: ${removed.join(', ')}`);
   }
+  const after = countBySource();
   console.log(`[import] 新增 ${stats.inserted} 条，更新 ${stats.updated} 条`);
-  console.log(`[import] 写入后库中共 ${countResources()} 条`);
+  console.log(`[import] 写入后：本文件管理 ${after.import} 条，用户提交 ${after.user} 条`);
 
   closeDb();
 }

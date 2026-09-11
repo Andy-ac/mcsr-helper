@@ -13,8 +13,15 @@ export default defineConfig({
   // 工作区内的包直接以源码形式引用，省掉构建步骤与 watch 失效问题
   resolve: {
     alias: {
+      // ⚠️ Vite 的 alias 是**前缀替换**，不是精确匹配。
+      //    所以 `@mcsr/shared` 这条会把 `@mcsr/shared/resources` 也吃掉，
+      //    拼成 `.../src/index.ts/resources` —— 报错信息是
+      //    "Could not load ../../packages/shared/src/index.ts/resources"，
+      //    看起来像路径写错，实际是别名顺序问题。
+      //    **子路径必须排在裸包名前面**，新增子路径导出时要记得在这里补一条。
       '@mcsr/shared/seed': resolvePath('../../packages/shared/src/seed.ts'),
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
+      '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

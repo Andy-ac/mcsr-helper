@@ -15,9 +15,10 @@
     "build": "pnpm -F @mcsr/web build && pnpm -F @mcsr/api build && pnpm -F @mcsr/desktop build",
     "build:installer": "pnpm -F @mcsr/desktop dist",
     "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "check": "pnpm typecheck && pnpm lint",
+    "check": "pnpm typecheck && pnpm test && pnpm lint",
     "deploy": "bash deploy/deploy.sh",
     "clean": "node -e \"const{rmSync}=require('fs');for(const d of ['node_modules','apps/web/dist','apps/desktop/dist','apps/desktop/release','services/api/dist','packages/shared/dist','packages/ui/dist'])rmSync(d,{recursive:true,force:true})\""
   },

@@ -17,10 +17,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import { m001Resources } from './migrations/001_resources';
+import { m002ResourceSource } from './migrations/002_resource_source';
 
-/** 新增迁移时在这里按顺序追加。 */
+/** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string }> = [
   { name: '001_resources', sql: m001Resources },
+  { name: '002_resource_source', sql: m002ResourceSource },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
