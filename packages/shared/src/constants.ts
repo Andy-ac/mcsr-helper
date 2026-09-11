@@ -9,8 +9,18 @@
 
 export const SITE = {
   name: 'MCSR Helper',
-  /** 生产环境的规范来源。买好域名后改这里，Electron 与 Caddy 都读它。 */
-  productionOrigin: 'https://mcsr-helper.example.com',
+  /**
+   * 生产环境的规范来源。Electron 与 Caddy 都读它。
+   *
+   * ⚠️ 前置条件：必须先在域名后台把这个子域名的 A 记录指向你的 VPS IP。
+   * 目前它没有自己的 A 记录，会落到 cloud-ip.cc 服务商的泛解析上
+   * （解析到 185.206.180.131 / .174，那是 ClouDNS 的落地页，不是你的服务器）。
+   *
+   * ⚠️ 这个域名**不要**用作邮件发信域名：cloud-ip.cc 在 Spamhaus DBL 上被列名为
+   * phishing-related（127.0.1.4）+ botnet C&C（127.0.1.6）。
+   * 发信请另买一个域名，用 mail.<你的域名> 做发信子域。详见 docs/v1-plan.md §9.2。
+   */
+  productionOrigin: 'https://legacy.example.invalid',
   /** 开发环境前端地址。 */
   devServerOrigin: 'http://localhost:5173',
 } as const;
