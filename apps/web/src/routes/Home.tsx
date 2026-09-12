@@ -5,11 +5,6 @@ import { Link } from 'react-router';
 import { fetchHealth, type HealthResponse } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
 
-type Health =
-  | { state: 'loading' }
-  | { state: 'ok'; data: HealthResponse }
-  | { state: 'down'; error: string };
-
 export function Home() {
   const { t } = useTranslation();
   const [reloadKey, setReloadKey] = useState(0);

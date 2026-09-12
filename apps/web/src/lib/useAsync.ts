@@ -52,7 +52,8 @@ export function useAsync<T>(
     };
     // loader 每次渲染都是新函数，所以依赖由调用方显式给出 —— 这是刻意的，
     // 避免"看起来在依赖 loader，实际每次都重新请求"的隐性全量刷新。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // （原来这里写的是 eslint-disable；本项目用的是 Biome，那条注释从来没生效过。）
+    // biome-ignore lint/correctness/useExhaustiveDependencies: 依赖由调用方传入，本 hook 无法静态检查
   }, deps);
 
   return state;

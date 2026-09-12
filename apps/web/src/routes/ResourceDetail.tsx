@@ -5,7 +5,7 @@ import { Link, useParams } from 'react-router';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import { ResourceIcon } from '@/components/ResourceIcon';
-import { ApiError, fetchResource } from '@/lib/api';
+import { ApiError, fetchResource, fetchResources } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
 
 export function ResourceDetailPage() {
@@ -88,13 +88,48 @@ export function ResourceDetailPage() {
 
       {r.summary ? <p className="detail__summary">{r.summary}</p> : null}
 
+      {/* 比列表卡片完整得多的信息表 —— 这是"点开后看到更多"的主要载体 */}
+      <h2 className="related__title">{t('resources.infoTitle')}</h2>
+      <dl className="infotable">
+        <dt>{t('resources.infoSite')}</dt>
+        <dd>
+          <a href={r.url} target="_blank" rel="noopener noreferrer">
+            {r.url}
+          </a>
+        </dd>
+
+        <dt>{t('resources.infoKind')}</dt>
+        <dd>{r.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}</dd>
+
+        <dt>{t('resources.infoLang')}</dt>
+        <dd>{r.lang === 'zh-CN' ? t('resources.langZh') : t('resources.langEn')}</dd>
+
+        <dt>{t('resources.infoTags')}</dt>
+        <dd>{r.tags.length > 0 ? r.tags.join(' / ') : '—'}</dd>
+
+        <dt>{t('resources.infoImage')}</dt>
+        <dd>
+          {r.imageUrl
+            ? `${t('resources.imageCustom')} — ${r.imageUrl}`
+            : `${faviconOf(r.url) ?? t('resources.imageGenerated')}`}
+        </dd>
+
+        <dt>{t('resources.infoAdded')}</dt>
+        <dd>{new Date(r.createdAt).toLocaleString()}</dd>
+
+        <dt>{t('resources.infoUpdated')}</dt>
+        <dd>{new Date(r.updatedAt).toLocaleString()}</dd>
+
+        <dt>{t('resources.infoId')}</dt>
+        <dd>{r.id}</dd>
+      </dl>
+
       {/*
         ⚠️ Markdown 必须经过 rehype-sanitize 再渲染。
 
         body 是**用户/管理员提交的内容**，而 react-markdown 默认允许原始 HTML。
         不过滤的话，一个 <img onerror=...> 就能在每个访问者浏览器里执行脚本。
-        M2 开放用户提交之后，这条防线会变成必需项 —— 现在就先装上，
-        免得那时候忘记。
+        M2 开放用户提交之后，这条防线会变成必需项 —— 现在就先装上，免得那时候忘记。
       */}
       <div className="markdown">
         <ReactMarkdown
@@ -113,8 +148,70 @@ export function ResourceDetailPage() {
           {r.body}
         </ReactMarkdown>
       </div>
+
+      <RelatedResources currentId={r.id} tag={r.tags[0]} />
     </article>
   );
+}
+
+/**
+ * 同标签的其它条目。
+ *
+ * 复用现有的列表接口（`?tag=`）而不是新增一个"相关推荐"端点 —— 在 M1 的规模下
+ * 这只是把同一个查询再跑一次，不值得为它加一套后端逻辑。
+ */
+function RelatedResources({ currentId, tag }: { currentId: string; tag?: string }) {
+  const { t } = useTranslation();
+  const state = useAsync(
+    (signal) => (tag ? fetchResources({ tag, pageSize: 6 }, signal) : Promise.resolve(null)),
+    [tag],
+  );
+
+  if (!tag || state.status !== 'ok' || !state.data) return null;
+
+  const others = state.data.items.filter((i) => i.id !== currentId).slice(0, 5);
+  if (others.length === 0) return null;
+
+  return (
+    <section className="related">
+      <h2 className="related__title">
+        {t('resources.related')} · <span className="tagchip tagchip--sm">{tag}</span>
+      </h2>
+      <ul className="reslist">
+        {others.map((item) => (
+          <li className="rescard" key={item.id}>
+            <div className="rescard__icon">
+              <ResourceIcon
+                id={item.id}
+                title={item.title}
+                url={item.url}
+                imageUrl={item.imageUrl}
+              />
+            </div>
+            <div className="rescard__body">
+              <div className="rescard__head">
+                <Link className="rescard__title" to={`/resources/${encodeURIComponent(item.id)}`}>
+                  {item.title}
+                </Link>
+              </div>
+              {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** 详情页信息表要显示图标来源，所以这里也保留一份（和 ResourceIcon 保持一致）。 */
+function faviconOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return null;
+    return `${u.origin}/favicon.ico`;
+  } catch {
+    return null;
+  }
 }
 
 /** 供 fetchResource 的错误分支判断用。导出是为了让调用方能直接 instanceof。 */

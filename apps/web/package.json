@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-font-coverage.mjs",
+    "check:font": "node scripts/check-font-coverage.mjs",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@fontsource/silkscreen": "^5.3.0",
     "@mcsr/shared": "workspace:*",
     "@mcsr/ui": "workspace:*",
     "i18next": "^26.4.2",

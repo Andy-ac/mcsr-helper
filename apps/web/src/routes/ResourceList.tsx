@@ -162,7 +162,12 @@ export function ResourceList() {
         </div>
       ) : null}
 
-      {list.status === 'loading' ? <p className="state">{t('resources.loading')}</p> : null}
+      {/*
+        加载中显示骨架屏而不是一句"加载中…"：
+        骨架保持和真实卡片相同的结构，数据到达时不会跳版。
+        这是"页面更丝滑"里最容易被忽略但体感最强的一项。
+      */}
+      {list.status === 'loading' ? <SkeletonList /> : null}
 
       {list.status === 'error' ? (
         <div className="state state--error">
@@ -279,4 +284,23 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** 与真实卡片同构的占位。行数刻意和真实内容一致，避免加载完成时高度突变。 */
+function SkeletonList({ count = 6 }: { count?: number }) {
+  return (
+    <ul className="reslist" aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <li className="rescard" key={`skel-${String(i)}`}>
+          <span className="skel skel--icon" />
+          <div className="rescard__body">
+            <span className="skel skel--line" style={{ width: '55%' }} />
+            <span className="skel skel--line" style={{ width: '30%', height: 10 }} />
+            <span className="skel skel--line" style={{ width: '90%' }} />
+            <span className="skel skel--line" style={{ width: '70%' }} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }

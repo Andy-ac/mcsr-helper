@@ -72,6 +72,27 @@ const tag = z
   .max(TAG_MAX_LEN)
   .regex(/^[\p{L}\p{N}_.-]+$/u, { message: '标签只能包含字母、数字、下划线、连字符和点号' });
 
+/**
+ * 配图引用。允许两种形式：
+ *   · 绝对地址  `https://...`
+ *   · 站内路径  `/icons/xxx.png`（**必须**以单个 `/` 开头）
+ *
+ * 为什么允许站内路径：图标**自托管**在 /icons/ 下，而不是热链对方的 favicon。
+ * 热链的问题很实在 —— GitHub 头像走 avatars.githubusercontent.com，
+ * 在大陆访问很慢甚至不通；而我们的用户主要就在大陆。
+ *
+ * ⚠️ 刻意**不允许** `//evil.com/x.png` 这种协议相对写法：
+ * 它会被解析成跨域地址，等于绕过了上面那条"站内"的意图。
+ * `^\/[^/]` 正好排除了它以双斜杠开头的情况。
+ */
+const imageRef = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((v) => /^https?:\/\//i.test(v) || /^\/[^/]/.test(v), {
+    message: '配图必须是 http(s) 链接，或以单个 / 开头的站内路径',
+  });
+
 // ---------------------------------------------------------------------------
 // 实体
 // ---------------------------------------------------------------------------
@@ -88,9 +109,9 @@ export const ResourceSchema = z.object({
   /**
    * 卡片配图。**允许为空** —— 为空时前端退回到 <origin>/favicon.ico，
    * 再失败就渲染一个首字母方块。这样新条目零配置就有图，
-   * 想指定正式配图的再填。
+   * 想指定正式配图的再填（可以填站内路径，把图自托管）。
    */
-  imageUrl: httpUrl.nullable(),
+  imageUrl: imageRef.nullable(),
   /** 列表页用的一句话简介；为空时由 body 推导 */
   summary: z.string().trim().max(SUMMARY_MAX).nullable(),
   /** 详情页的 Markdown 正文，**渲染前必须 sanitize** */
@@ -176,7 +197,8 @@ export function normalizeResourceInput(
   const tags = [...new Set(input.tags.map((t) => t.trim().toLowerCase()))].sort();
 
   const rawImage = input.imageUrl?.trim() ?? '';
-  const imageUrl = /^https?:\/\//i.test(rawImage) ? rawImage : null;
+  // 绝对地址或站内路径都接受；其余（空串、javascript:、协议相对 //）一律丢掉
+  const imageUrl = /^https?:\/\//i.test(rawImage) || /^\/[^/]/.test(rawImage) ? rawImage : null;
 
   return {
     summary: summary.slice(0, SUMMARY_MAX) || null,

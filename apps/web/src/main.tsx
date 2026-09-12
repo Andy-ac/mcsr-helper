@@ -1,12 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '@/App';
-// 像素字体：只取 latin 子集（最小），中文交给系统字体。
-// ⚠️ 必须自托管（走 npm 包），不能换成 Google Fonts CDN ——
-//    一是 CSP 是 font-src 'self'，二是大陆访问不到。
-import '@fontsource/silkscreen/latin-400.css';
-import '@fontsource/silkscreen/latin-700.css';
 import '@/i18n';
+// 像素字体通过 styles.css 里的 @font-face 以相对路径引入 ——
+// 走构建资源管线，产出带 hash 的文件并落到 /assets/ 下，
+// 从而享受 Caddy 给 /assets/* 配的 immutable 长缓存。
 import '@/styles.css';
 
 const found = document.getElementById('root');

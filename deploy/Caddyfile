@@ -94,6 +94,16 @@
 		@hashed path /assets/*
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
 
+		# 自托管的资源图标（/icons/*.png）。
+		#
+		# 用一天，**不用** immutable：这些文件名不带 hash（就是 mcsrranked.png 这种），
+		# 换一张图文件名不变，immutable 会让用户一年都看到旧图 —— 正是下面
+		# 那段注释里描述过的同类问题。
+		# 一天足够让一次浏览里的重复请求走缓存，又不至于换了图标第二天还看不到。
+		# 真要立刻失效，改文件名即可（imageUrl 跟着改）。
+		@icons path /icons/*
+		header @icons Cache-Control "public, max-age=86400"
+
 		# ⚠️ 其余**一律**不缓存。
 		#
 		# 这里踩过一次坑：最初写的是 `path / /index.html`，看起来覆盖了首页就够了，
@@ -105,7 +115,11 @@
 		# 或者一个已经修好的页面看起来仍然是坏的。
 		#
 		# 所以规则改成白名单反选：**只有带 hash 的 /assets/* 可缓存，其他全部 no-cache**。
-		@nocache not path /assets/*
+		#
+		# ⚠️ 例外必须在这里排除，而不是靠上面那句 header 在前生效 ——
+		#    Caddy 会把**所有**匹配到的 header 指令都写进响应，后面的覆盖前面的，
+		#    所以 `not path /assets/*` 会把 /icons/* 也一起标成 no-cache。
+		@nocache not path /assets/* /icons/*
 		header @nocache Cache-Control "no-cache"
 	}
 
