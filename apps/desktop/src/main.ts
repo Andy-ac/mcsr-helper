@@ -14,9 +14,12 @@
  *
  * 代价：必须联网。v1 明确接受。
  */
+
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import path2 from 'node:path';
 import { SITE } from '@mcsr/shared';
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, session, shell } from 'electron';
 import {
   checkForUpdates,
   downloadUpdate,
@@ -58,10 +61,130 @@ async function loadWithRetry(win: BrowserWindow, url: string, attempts = 30) {
   }
 }
 
+/**
+ * 未打包时把窗口状态存在系统临时目录里也无所谓，但用 userData 更干净 ——
+ * 打包后会落到 %APPDATA%\MCSR Helper\ 下。
+ */
+function windowStateFile(): string {
+  return path2.join(app.getPath('userData'), 'window-state.json');
+}
+
+interface WindowState {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  maximized?: boolean;
+}
+
+const DEFAULT_STATE: WindowState = { width: 1280, height: 860 };
+
+/**
+ * 读回上次的窗口尺寸与位置。
+ *
+ * ⚠️ 必须校验坐标还在**当前**的屏幕范围内。
+ *    用户上次把窗口放在副屏上，这次副屏拔了 —— 直接用存下来的 x/y
+ *    会让窗口出现在一个不存在的位置上：进程在跑、任务栏有图标、
+ *    但**窗口永远看不见**。而用户只会说"打不开"。
+ *    这类 bug 在自己单屏的机器上永远复现不了。
+ */
+function loadWindowState(): WindowState {
+  let saved: WindowState;
+  try {
+    saved = JSON.parse(readFileSync(windowStateFile(), 'utf8')) as WindowState;
+  } catch {
+    return DEFAULT_STATE;
+  }
+  if (!Number.isFinite(saved.width) || !Number.isFinite(saved.height)) return DEFAULT_STATE;
+
+  const state: WindowState = {
+    width: Math.max(900, Math.round(saved.width)),
+    height: Math.max(600, Math.round(saved.height)),
+    maximized: saved.maximized === true,
+  };
+
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    const visible = screen.getAllDisplays().some((d) => {
+      const b = d.workArea;
+      // 要求窗口标题栏区域至少有一部分落在某个屏幕里
+      return (
+        saved.x! + state.width > b.x + 40 &&
+        saved.x! < b.x + b.width - 40 &&
+        saved.y! + 40 > b.y &&
+        saved.y! < b.y + b.height - 40
+      );
+    });
+    if (visible) {
+      state.x = Math.round(saved.x!);
+      state.y = Math.round(saved.y!);
+    }
+  }
+
+  return state;
+}
+
+function saveWindowState(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  try {
+    // 最大化时 getBounds 返回的是最大化后的尺寸 —— 存它的话，
+    // 用户取消最大化之后就恢复不回原来的大小了。所以用 getNormalBounds。
+    const b = win.getNormalBounds();
+    writeFileSync(
+      windowStateFile(),
+      JSON.stringify(
+        { width: b.width, height: b.height, x: b.x, y: b.y, maximized: win.isMaximized() },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+  } catch {
+    /* 存不下就算了，不值得为此报错 */
+  }
+}
+
+/**
+ * 权限请求：**默认全拒**。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么必须有这个
+ * ---------------------------------------------------------------------------
+ * 渲染进程加载的是**远程网页**。在没有这个处理器时，页面里的任何脚本
+ * （包括被 XSS 注入的）都可以申请摄像头、麦克风、屏幕共享、定位、通知 ——
+ * 而 Electron 的默认行为在某些情况下是**允许**的。
+ *
+ * 服务端的 CSP 里有 Permissions-Policy 会拦掉一部分，但那是**网页层**的策略；
+ * 这里是应用层，两道都要有。而且 CSP 是随页面下发的 ——
+ * 万一它哪天被改错或漏掉，这一层还在。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 白名单只开两个，理由都是「不做就没法用」
+ * ---------------------------------------------------------------------------
+ *   · fullscreen  —— 视频嵌入要能全屏。M4 会大量用到。
+ *   · clipboard-sanitized-write —— "复制种子值"这类按钮。
+ *     sanitized 版本由浏览器负责把内容清理成纯文本，比原始 clipboard-write 安全。
+ *
+ * 其余一律拒绝。以后要加，就在下面显式加一条**并写清为什么** ——
+ * 这个函数的价值就在于每一条允许都是有人做过决定的。
+ */
+function lockDownPermissions(): void {
+  const ALLOWED = new Set(['fullscreen', 'clipboard-sanitized-write']);
+
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(ALLOWED.has(permission));
+  });
+
+  // 有些 API 走的是"检查"而不是"请求"（例如某些媒体设备枚举），
+  // 只设请求处理器会漏掉它们。
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED.has(permission));
+}
+
 function createMainWindow() {
+  const state = loadWindowState();
   const win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: state.width,
+    height: state.height,
+    ...(state.x !== undefined ? { x: state.x, y: state.y } : {}),
     minWidth: 900,
     minHeight: 600,
     show: false,
@@ -81,7 +204,16 @@ function createMainWindow() {
   });
 
   // 首帧渲染完成后再显示，避免启动白闪
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (state.maximized) win.maximize();
+    win.show();
+  });
+
+  /*
+   * ⚠️ 在 'close' 里存，不是在 'closed' 里。
+   *    'closed' 触发时窗口已经销毁，getNormalBounds() 拿不到东西了。
+   */
+  win.on('close', () => saveWindowState(win));
 
   // 站外链接一律交给系统浏览器打开。
   // 这不只是体验问题：以后接第三方 OAuth 登录时，
@@ -128,6 +260,10 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     // Windows 通知与任务栏归组需要它
     app.setAppUserModelId('com.mcsr.helper');
+
+    // 权限白名单必须**在创建任何窗口之前**设好，
+    // 否则第一个页面的权限请求会走到没有处理器的默认路径上。
+    lockDownPermissions();
 
     // ------------------------------------------------------------------
     // 自动更新
