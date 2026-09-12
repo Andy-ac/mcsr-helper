@@ -26,7 +26,8 @@
  */
 
 import { SITE } from '@mcsr/shared';
-import type { UserRole } from '@mcsr/shared/auth';
+import type { Actor, Capability, UserRole } from '@mcsr/shared/permissions';
+import { checkPermission } from '@mcsr/shared/permissions';
 import type { MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { SessionRow, UserRow } from '../users';
@@ -134,21 +135,50 @@ export const requireVerified: MiddlewareHandler<{ Variables: AuthVariables }> = 
 };
 
 /**
- * 需要指定的角色。
+ * 需要某项**能力**。规则本身在 shared/permissions.ts 的矩阵里，这里只负责执行。
  *
- * 权限模型是"角色 × 资源类型"的二维矩阵，**不做 per-item ACL**（§3 的三条约束之一）。
- * 所以这里只回答"这个角色能不能审核"，不回答"能不能审核这一条"。
+ * ---------------------------------------------------------------------------
+ * 为什么用能力，而不是在各处写 requireRole('reviewer','admin')
+ * ---------------------------------------------------------------------------
+ * 之前就是那样写的，三个问题：
  *
- * 用可变参数而不是一个 `isReviewer` 布尔：以后加角色时，调用点写的是
- * `requireRole('reviewer', 'admin')` —— 读起来就是一条显式的规则，
- * 而不是去翻某个函数里到底判断了什么。
+ *   1. **规则散落在每条路由上**。想知道"谁能审资源"得把所有路由翻一遍，
+ *      而漏看一条就是一条权限漏洞。现在规则只有一份。
+ *   2. **类型维度表达不出来**。M4 会有日历和种子，都要审核。用角色列表的话，
+ *      "审核员能不能审种子"在代码里没有落点 —— 只能每条路由各自决定，
+ *      于是必然不一致。
+ *   3. **前端只能靠猜**。前端要决定按钮显不显示，就得把角色列表再抄一遍。
+ *      抄两遍的规则一定漂移，而漂移的两种方向都有害：
+ *      "界面有按钮、点下去 403"（烦人），以及更糟的
+ *      "界面没按钮、接口其实敞开着"（危险）。现在两边读同一个矩阵。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 三种拒绝要返回**三种不同的响应**
+ * ---------------------------------------------------------------------------
+ * 它们对用户意味着完全不同的下一步：
+ *   · 401 unauthenticated    → 去登录
+ *   · 403 forbidden          → 这个操作与你无关，别找了
+ *   · 403 email_not_verified → 去验证邮箱，验证完就能用
+ * 一律 403 的话，第三种会被当成第二种：用户以为"我没这个权限"，
+ * 而不是"我还差一步"。
  */
-export function requireRole(...roles: UserRole[]): MiddlewareHandler<{ Variables: AuthVariables }> {
-  const allowed = new Set<string>(roles);
+export function requireCapability(
+  capability: Capability,
+): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     const user = c.get('user');
-    if (!user) return c.json({ error: 'unauthorized' }, 401);
-    if (!allowed.has(user.role)) return c.json({ error: 'forbidden' }, 403);
+    const actor: Actor | null = user
+      ? { role: user.role as UserRole, emailVerified: user.email_verified_at !== null }
+      : null;
+
+    const result = checkPermission(actor, capability);
+    if (!result.ok) {
+      if (result.reason === 'unauthenticated') {
+        return c.json({ error: 'unauthorized' }, 401);
+      }
+      return c.json({ error: result.reason, capability }, 403);
+    }
+
     await next();
   };
 }

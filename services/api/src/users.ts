@@ -383,3 +383,42 @@ export function writeAudit(entry: {
     console.error('[audit] 写入失败（不影响主流程）:', error);
   }
 }
+
+// ---------------------------------------------------------------------------
+// 角色（身份组）
+// ---------------------------------------------------------------------------
+
+/**
+ * 改一个用户的角色。
+ *
+ * 只改这一列，**不动 updated_at** —— 那个字段表示"用户资料最后修改时间"，
+ * 角色是管理员的操作，不是用户自己改的资料。混在一起会让"这个人的资料
+ * 最近被改过"这个判断变得不可信。
+ */
+export function setUserRole(userId: string, role: string, _now: number): void {
+  getDb().prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+}
+
+/** 管理员人数。"不能降级最后一个管理员"那条锁定保护要查它。 */
+export function countAdmins(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'")
+    .get() as { n: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * 用户列表（后台用）。
+ *
+ * ⚠️ 返回的**含 email** —— 只有 admin 能调到（路由上有 user.moderate 把关），
+ *    而且响应带了 no-store。用户邮箱是这里最敏感的东西，
+ *    任何一处疏漏都会让它出现在不该出现的地方。
+ */
+export function listUsers(limit: number, offset: number): { items: UserRow[]; total: number } {
+  const db = getDb();
+  const items = db
+    .prepare(`SELECT ${USER_COLUMNS} FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(limit, offset) as unknown as UserRow[];
+  const totalRow = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
+  return { items, total: Number(totalRow.n) };
+}

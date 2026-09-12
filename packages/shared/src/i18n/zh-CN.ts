@@ -173,6 +173,26 @@ export const zhCN = {
     roleAdmin: '管理员',
     canSubmitYes: '可以提交内容',
     canSubmitNo: '验证邮箱之后才能提交内容',
+    /**
+     * 身份组与权限。
+     *
+     * 文案按「内容类型 + 动作」两段拼，而不是给 10 个能力各写一句 ——
+     * 能力名本身就是 `<类型>.<动作>` 的形式（见 shared/permissions.ts），
+     * 拆开翻译让 6 个类型 + 5 个动作覆盖全部组合，
+     * 而且 M4 新增能力时（比如 calendar.review）**不用加任何词条**。
+     */
+    capTitle: '我的权限',
+    capTypeResource: '资源库',
+    capTypeCalendar: '日历',
+    capTypeVideo: '视频',
+    capTypeSeed: '种子分享',
+    capTypeUser: '账号管理',
+    capTypeAudit: '审计日志',
+    capActionSubmit: '提交',
+    capActionEditOwn: '修改自己提交的',
+    capActionReview: '审核',
+    capActionModerate: '管理身份组',
+    capActionRead: '查看',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误

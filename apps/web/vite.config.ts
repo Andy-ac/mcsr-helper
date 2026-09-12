@@ -23,6 +23,7 @@ export default defineConfig({
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
       '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
       '@mcsr/shared/auth': resolvePath('../../packages/shared/src/auth.ts'),
+      '@mcsr/shared/permissions': resolvePath('../../packages/shared/src/permissions.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

@@ -1604,6 +1604,39 @@ html:not(.vt) .route-fade {
   margin: 0;
 }
 
+/* 账号页的"我的权限"。一行一个内容类型，右边是能做的动作。
+   用"类型 | 动作标签"的表格形状，而不是一句话罗列 ——
+   权限列表是要被**扫读**的（"我能不能审种子"），句子形态做不到这一点。 */
+.caplist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.caplist__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.caplist__row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.caplist__type {
+  flex: 0 0 6.5em;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.caplist__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* 提示条。三种语义，三种颜色： */
 .notice {
   border-radius: var(--r-sm);

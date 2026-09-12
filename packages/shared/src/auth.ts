@@ -14,7 +14,7 @@
  *    参见 docs/v1-plan.md §9.2 末尾的后备方案。
  */
 import { z } from 'zod';
-import { LOCALES } from './constants';
+import { LOCALES, USER_ROLES } from './constants';
 
 /**
  * 重新导出这两个类型，让 `@mcsr/shared/auth` 成为账号相关类型的**唯一入口**。
@@ -128,7 +128,14 @@ export const UserPublicSchema = z.object({
   id: z.string(),
   displayName: z.string(),
   avatarUrl: z.string().nullable(),
-  role: z.enum(['user', 'reviewer', 'admin']),
+  /*
+   * ⚠️ 从 USER_ROLES 推导，**不要再写一遍字面量**。
+   *    角色的定义在 permissions.ts 的权限矩阵里，这里只是把它接进 schema。
+   *    写死一份字面量的后果是：加角色时漏改这里，
+   *    于是新角色的用户会让整个 user 对象校验失败 ——
+   *    表现为"新角色的人一登录就报错"，而错误信息看不出和角色有关。
+   */
+  role: z.enum(USER_ROLES),
   /** MC 弱验证绑定，M5 才填。这里先占位，避免之后改动公开形态。 */
   mcName: z.string().nullable(),
   createdAt: z.number().int(),

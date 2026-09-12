@@ -8,7 +8,8 @@
     "./i18n": "./src/i18n/index.ts",
     "./seed": "./src/seed.ts",
     "./resources": "./src/resources.ts",
-    "./auth": "./src/auth.ts"
+    "./auth": "./src/auth.ts",
+    "./permissions": "./src/permissions.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

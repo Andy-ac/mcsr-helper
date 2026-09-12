@@ -15,30 +15,27 @@
  * 后者与 resourcesRoute 的 `/:id` 不冲突：路径段数不同，
  * 而且方法是 POST vs GET/PATCH。
  */
+import {
+  assignableRoles,
+  capabilitiesByType,
+  RoleChangeInputSchema,
+} from '@mcsr/shared/permissions';
 import { RejectInputSchema } from '@mcsr/shared/resources';
 import { Hono } from 'hono';
 
-import { type AuthVariables, requireRole } from '../auth/middleware';
+import { type AuthVariables, requireCapability } from '../auth/middleware';
 import { getDb } from '../db';
 import { resourceExists } from '../resources';
 import { approveRevision, listReviewQueue, rejectRevision } from '../revisions';
-import { writeAudit } from '../users';
+import { countAdmins, findUserById, listUsers, setUserRole, writeAudit } from '../users';
 
 export const adminRoute = new Hono<{ Variables: AuthVariables }>();
-
-/**
- * 能审核的角色。
- *
- * ⚠️ 定义成一个常量而不是在每个路由里各写一遍 —— 一遍写漏就是一条权限漏洞，
- * 而"写漏"这种事在复制粘贴里太容易发生了。
- */
-const REVIEWER = ['reviewer', 'admin'] as const;
 
 // ---------------------------------------------------------------------------
 // 待审队列
 // ---------------------------------------------------------------------------
 
-adminRoute.get('/admin/queue', requireRole(...REVIEWER), (c) => {
+adminRoute.get('/admin/queue', requireCapability('resource.review'), (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 50) || 50, 200);
   const offset = Math.max(Number(c.req.query('offset') ?? 0) || 0, 0);
   const { items, total } = listReviewQueue(limit, offset);
@@ -75,7 +72,7 @@ adminRoute.get('/admin/queue', requireRole(...REVIEWER), (c) => {
  * 不能（PATCH 只写 revisions），所以审核员看到的内容和他批准的内容是同一份。
  * 这挡住了"先提交无害版本过审、再改成广告"这个经典攻击 —— §3 的设计约束之二。
  */
-adminRoute.post('/resources/:id/approve', requireRole(...REVIEWER), (c) => {
+adminRoute.post('/resources/:id/approve', requireCapability('resource.review'), (c) => {
   const user = c.get('user');
   if (!user) return c.json({ error: 'unauthorized' }, 401);
 
@@ -110,7 +107,7 @@ adminRoute.post('/resources/:id/approve', requireRole(...REVIEWER), (c) => {
  * 没有理由的驳回等于让作者瞎猜该改什么，而这个系统里作者看不到审核员的联系方式。
  * 理由会存进 revision 和 audit_log，展示给作者。
  */
-adminRoute.post('/resources/:id/reject', requireRole(...REVIEWER), async (c) => {
+adminRoute.post('/resources/:id/reject', requireCapability('resource.review'), async (c) => {
   const user = c.get('user');
   if (!user) return c.json({ error: 'unauthorized' }, 401);
 
@@ -166,7 +163,7 @@ adminRoute.post('/resources/:id/reject', requireRole(...REVIEWER), async (c) => 
  * 不留删除接口是刻意的：一个可以被清理的审计日志，在被需要的那一刻
  * 往往恰好已经被清理过了（而且清理它的多半就是需要被审计的那个人）。
  */
-adminRoute.get('/admin/audit', requireRole(...REVIEWER), (c) => {
+adminRoute.get('/admin/audit', requireCapability('audit.read'), (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 100) || 100, 500);
   const offset = Math.max(Number(c.req.query('offset') ?? 0) || 0, 0);
 
@@ -207,5 +204,102 @@ adminRoute.get('/admin/audit', requireRole(...REVIEWER), (c) => {
       createdAt: r.created_at,
     })),
     total: Number(totalRow.n),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 身份组管理
+//
+// 这是"授权别人权限"的接口，也就是权限系统里权限最高的一个。
+// 它自己的入口由 requireCapability('user.moderate') 把守，
+// 而 user.moderate 只有 admin 有（见 permissions.ts 的矩阵）。
+// ---------------------------------------------------------------------------
+
+adminRoute.get('/admin/users', requireCapability('user.moderate'), (c) => {
+  const limit = Math.min(Number(c.req.query('limit') ?? 100) || 100, 500);
+  const offset = Math.max(Number(c.req.query('offset') ?? 0) || 0, 0);
+  // 用户列表含邮箱，绝不能进任何缓存
+  c.header('Cache-Control', 'no-store');
+
+  const { items, total } = listUsers(limit, offset);
+  const me = c.get('user');
+
+  return c.json({
+    items: items.map((u) => ({
+      id: u.id,
+      email: u.email,
+      displayName: u.display_name,
+      role: u.role,
+      status: u.status,
+      emailVerified: u.email_verified_at !== null,
+      createdAt: u.created_at,
+      /** 前端据此把"改我自己"的入口置灰 —— 见下面那条锁定保护 */
+      isSelf: u.id === me?.id,
+    })),
+    total,
+    /** 界面上的角色选择器按权限从低到高排列，不是字母序 */
+    roles: assignableRoles(),
+  });
+});
+
+/**
+ * 改别人的角色。
+ *
+ * ⚠️⚠️ 这里有一条**锁定保护**：不能把最后一个管理员降级。
+ *
+ * 没有这条保护的话，一个管理员手滑把自己降成普通用户之后，
+ * 这个系统就**再也没有人能改角色了** —— 唯一的恢复手段是去服务器上
+ * 直接改数据库（见 services/api/src/admin-cli.ts，那条路是刻意留着的后门）。
+ * 这类"把自己锁在门外"的事故在所有权限系统里都会发生一次，
+ * 而防住它只需要一个 COUNT。
+ */
+adminRoute.patch('/admin/users/:id/role', requireCapability('user.moderate'), async (c) => {
+  const actor = c.get('user');
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+
+  const targetId = c.req.param('id');
+  const target = findUserById(targetId);
+  if (!target) return c.json({ error: 'not_found' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = RoleChangeInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', reason_required: true }, 400);
+  }
+
+  const nextRole = parsed.data.role;
+  const now = Date.now();
+
+  if (target.role === nextRole) {
+    return c.json({ ok: true, id: targetId, role: nextRole, unchanged: true });
+  }
+
+  // 锁定保护：降级的目标是管理员，而且他是最后一个
+  if (target.role === 'admin' && nextRole !== 'admin' && countAdmins() <= 1) {
+    return c.json(
+      { error: 'last_admin', message: '不能降级最后一个管理员，否则没人能再改角色了' },
+      409,
+    );
+  }
+
+  setUserRole(targetId, nextRole, now);
+
+  writeAudit({
+    actorId: actor.id,
+    action: 'user.role_change',
+    entityType: 'user',
+    entityId: targetId,
+    reason: `${target.role} -> ${nextRole}｜${parsed.data.reason}`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  return c.json({
+    ok: true,
+    id: targetId,
+    role: nextRole,
+    previousRole: target.role,
+    /** 顺便告诉前端这个角色现在能做什么，免得界面再算一遍 */
+    capabilities: capabilitiesByType(nextRole),
   });
 });

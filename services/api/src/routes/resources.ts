@@ -14,7 +14,7 @@
 import { ResourceQuerySchema, ResourceSubmissionSchema } from '@mcsr/shared/resources';
 import { Hono } from 'hono';
 
-import { type AuthVariables, requireAuth, requireVerified } from '../auth/middleware';
+import { type AuthVariables, requireCapability } from '../auth/middleware';
 import {
   findResourceByUrl,
   getResource,
@@ -89,7 +89,7 @@ resourcesRoute.get('/:id', (c) => {
  *    "收到了但忽略"是更差的做法：提交者会以为字段生效了，
  *    而读代码的人也会以为这里可以传。
  */
-resourcesRoute.post('/', requireAuth, requireVerified, async (c) => {
+resourcesRoute.post('/', requireCapability('resource.submit'), async (c) => {
   const user = c.get('user');
   if (!user) return c.json({ error: 'unauthorized' }, 401);
 
@@ -145,7 +145,7 @@ resourcesRoute.post('/', requireAuth, requireVerified, async (c) => {
  * 所以"改完之后线上还是旧版"不是靠某个 if 判断保护出来的，
  * 而是结构上不可能改坏。详见 revisions.ts 的 reviseResource。
  */
-resourcesRoute.patch('/:id', requireAuth, requireVerified, async (c) => {
+resourcesRoute.patch('/:id', requireCapability('resource.editOwn'), async (c) => {
   const user = c.get('user');
   if (!user) return c.json({ error: 'unauthorized' }, 401);
 

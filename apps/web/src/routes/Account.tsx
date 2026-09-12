@@ -1,9 +1,11 @@
+import { capabilitiesByType } from '@mcsr/shared/permissions';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
 import { Notice } from '@/components/Form';
 import { logout, sendVerifyEmail } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
+import { describeCapabilities } from '@/lib/capabilities';
 
 /**
  * 账号页。
@@ -135,6 +137,35 @@ export function Account() {
           <dt>{t('auth.accountJoined')}</dt>
           <dd>{new Date(user.createdAt).toLocaleDateString()}</dd>
         </dl>
+
+        {/*
+          身份组能做什么。
+
+          这一节存在的理由不只是"给用户看"：它是**前端与服务端读同一份权限矩阵**
+          的落点。前端要决定某个按钮显不显示时，用的是同一个 can()／
+          capabilitiesByType()，所以不会出现"界面有按钮、点下去 403"，
+          更不会出现"界面没按钮、但接口其实敞开着"。
+        */}
+        <h2 className="related__title">
+          {t('auth.capTitle')} · {roleLabel}
+        </h2>
+        <div className="caplist">
+          {describeCapabilities(
+            capabilitiesByType(user.role),
+            t as unknown as (key: string) => string,
+          ).map((group) => (
+            <div className="caplist__row" key={group.type}>
+              <span className="caplist__type">{group.label}</span>
+              <span className="caplist__actions">
+                {group.actions.map((action) => (
+                  <span className="tagchip tagchip--sm" key={action.capability}>
+                    {action.label}
+                  </span>
+                ))}
+              </span>
+            </div>
+          ))}
+        </div>
 
         <div className="authform__actions">
           {!user.emailVerified ? (

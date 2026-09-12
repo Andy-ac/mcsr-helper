@@ -24,6 +24,10 @@ await esbuild.build({
   entryPoints: {
     server: path.join(root, 'src/index.ts'),
     import: path.join(root, 'src/import.ts'),
+    // 身份组管理命令行。单独打包的理由和 import 一样：它要在服务器上跑，
+    // 而服务器上既没有 src/ 也没有 tsx。
+    // 为什么需要一条不走 HTTP 的路，见 src/admin-cli.ts 的文件头。
+    admin: path.join(root, 'src/admin-cli.ts'),
   },
   outdir: path.join(root, 'dist'),
   bundle: true,
