@@ -9,18 +9,21 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
-
+import { type AuthVariables, loadUser, sameOriginOnly } from './auth/middleware';
 import { getDb } from './db';
+import { checkMailConfig, mailDriverName } from './email/transport';
+import { authRoute } from './routes/auth';
 import { resourcesRoute } from './routes/resources';
+import { deleteExpiredSessions } from './users';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10);
 // 生产环境必须只监听回环地址：对外由 Caddy 反代。
 // 直接监听 0.0.0.0 会让 API 绕过 HTTPS 暴露在公网上。
 const HOST = process.env.HOST ?? '127.0.0.1';
 
-const SERVICE_VERSION = '0.2.0-m1';
+const SERVICE_VERSION = '0.3.0-m2';
 
-export const app = new Hono();
+export const app = new Hono<{ Variables: AuthVariables }>();
 
 app.use('*', logger());
 
@@ -86,6 +89,21 @@ app.get('/api/health', (c) =>
   }),
 );
 
+// ---------------------------------------------------------------------------
+// 认证相关的两个全局中间件。
+//
+// ⚠️ 顺序有讲究：
+//   1. sameOriginOnly 先跑 —— 它在做 IO 之前就能把跨站请求拒掉
+//   2. loadUser 后跑 —— 它要查数据库，只在真要处理请求时才做
+// ---------------------------------------------------------------------------
+
+// CSRF 第二层（第一层是 cookie 的 SameSite=Lax）。见 auth/middleware.ts 文件头。
+app.use('/api/*', sameOriginOnly);
+
+// 从会话 cookie 还原当前用户。**不拦截** —— 需要登录的路由自己声明 requireAuth。
+app.use('/api/*', loadUser);
+
+app.route('/api/auth', authRoute);
 app.route('/api/resources', resourcesRoute);
 
 // ---------------------------------------------------------------------------
@@ -149,6 +167,35 @@ if (process.env.NODE_ENV !== 'test') {
     console.error('[api] 数据库初始化失败:', error);
     process.exit(1);
   }
+
+  // 发信配置自检。**在这里做**，不是在第一次有人注册的时候做 ——
+  // 那时候你已经不在看日志了，而失败的表现是"用户说他没收到邮件"。
+  console.log(`[api] 发信驱动: ${mailDriverName()}`);
+  for (const problem of checkMailConfig()) {
+    console.warn(`[api] ⚠️ 邮件配置: ${problem}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // 过期会话清理。
+  //
+  // 为什么不在请求路径上顺手删：那会让"读"变成"读+写"。
+  // 这台机器是 1 核 + WAL，读可以并发而**写会串行化** ——
+  // 在会话校验这条每个请求都要走的路径上引入写，代价太大。
+  //
+  // 只在启动时和每小时做一次：会话有效期是 30 天，晚清理几小时毫无影响。
+  // -------------------------------------------------------------------------
+  function sweepSessions(): void {
+    try {
+      const removed = deleteExpiredSessions(Date.now());
+      if (removed > 0) console.log(`[api] 清理过期会话 ${removed} 条`);
+    } catch (error) {
+      // 清理失败不该影响服务 —— 它只是个后台任务
+      console.error('[api] 清理过期会话失败:', error);
+    }
+  }
+  sweepSessions();
+  // unref()：这个定时器不应该阻止进程退出（systemd stop 时要能干净地停下来）
+  setInterval(sweepSessions, 60 * 60 * 1000).unref();
 
   serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
     console.log(`[api] listening on http://${HOST}:${info.port}`);

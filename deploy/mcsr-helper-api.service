@@ -30,6 +30,24 @@ Environment=DB_PATH=/srv/mcsr-helper/api/data/mcsr.db
 # 关掉它以免掩盖真正的警告。
 Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
 
+# ---- 邮件（M2）----
+#
+# ⚠️ 发信域名**不能**是 cloud-ip.cc —— 它在 Spamhaus DBL 上被列名为
+#    phishing (127.0.0.1.4) + botnet C&C (127.0.0.1.6)。详见 docs/v1-plan.md §9.2。
+#    测投递率必须换一个干净域名；换域名只需要改下面这几行，代码不用动。
+#
+# 下面三行是**故意注释掉**的：没配置时驱动是 console，验证邮件只会打进日志，
+# 而进程启动时会打印一条 ⚠️ 警告。这样"忘了配"是一个可见的状态，
+# 而不是"用户说他没收到邮件"。
+#
+# Environment=MCSR_MAIL_DRIVER=resend
+# Environment=MCSR_MAIL_FROM=noreply@mail.<你的干净域名>
+# Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
+# Environment=RESEND_API_KEY=re_xxxxxxxx
+#
+# 邮件里的链接指向哪里。不设时用 shared/constants.ts 里的 productionOrigin。
+Environment=MCSR_PUBLIC_ORIGIN=https://legacy.example.invalid
+
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always
 RestartSec=3

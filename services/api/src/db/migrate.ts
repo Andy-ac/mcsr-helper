@@ -19,12 +19,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { m001Resources } from './migrations/001_resources';
 import { m002ResourceSource } from './migrations/002_resource_source';
 import { m003ResourceCardFields } from './migrations/003_resource_card_fields';
+import { m004Auth } from './migrations/004_auth';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string }> = [
   { name: '001_resources', sql: m001Resources },
   { name: '002_resource_source', sql: m002ResourceSource },
   { name: '003_resource_card_fields', sql: m003ResourceCardFields },
+  { name: '004_auth', sql: m004Auth },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

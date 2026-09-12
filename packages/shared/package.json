@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./seed": "./src/seed.ts",
-    "./resources": "./src/resources.ts"
+    "./resources": "./src/resources.ts",
+    "./auth": "./src/auth.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
