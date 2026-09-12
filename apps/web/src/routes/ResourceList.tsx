@@ -1,12 +1,8 @@
-import {
-  DEFAULT_PAGE_SIZE,
-  type ResourceListItem,
-  type ResourceQuery,
-} from '@mcsr/shared/resources';
-import { useEffect, useState } from 'react';
+import { DEFAULT_PAGE_SIZE, type ResourceQuery } from '@mcsr/shared/resources';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useSearchParams } from 'react-router';
-import { ResourceIcon } from '@/components/ResourceIcon';
+import { useSearchParams } from 'react-router';
+import { ResourceCard } from '@/components/ResourceCard';
 import { fetchResources, fetchTags } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
 
@@ -66,6 +62,9 @@ export function ResourceList() {
   const list = useAsync((signal) => fetchResources(query, signal), [listQuery]);
   const tags = useAsync((signal) => fetchTags(signal), []);
 
+  const activeTabKey = query.kind ?? 'all';
+  const tabIndicator = useTabIndicator(activeTabKey);
+
   const hasFilters = Boolean(query.q || query.kind || query.lang || query.tag);
 
   function clearAll() {
@@ -94,7 +93,7 @@ export function ResourceList() {
       </header>
 
       {/* 子 tab：按类型分流。点击时清掉分页，但保留搜索与语言筛选。 */}
-      <div className="tabs" role="tablist">
+      <div className="tabs" role="tablist" ref={tabIndicator.containerRef}>
         {TABS.map((tab) => {
           const active = query.kind === tab.kind;
           return (
@@ -110,6 +109,19 @@ export function ResourceList() {
             </button>
           );
         })}
+
+        {/*
+          滑动指示器。位置由 useTabIndicator 量出来 ——
+          CSS 做不到"跟着兄弟元素的宽度走"（除非把三个 tab 做成等宽，
+          但中英文切换后比例又会很难看）。
+        */}
+        {tabIndicator.style ? (
+          <span
+            aria-hidden="true"
+            className={`tabs__indicator${tabIndicator.ready ? ' is-ready' : ''}`}
+            style={tabIndicator.style}
+          />
+        ) : null}
       </div>
 
       <div className="filters">
@@ -230,60 +242,74 @@ export function ResourceList() {
   );
 }
 
-function ResourceCard({ item }: { item: ResourceListItem }) {
-  const { t } = useTranslation();
-  return (
-    <li className="rescard">
-      {/* 物品栏格子：图片 / favicon / 首字母方块 */}
-      <div className="rescard__icon">
-        <ResourceIcon id={item.id} title={item.title} url={item.url} imageUrl={item.imageUrl} />
-      </div>
+/**
+ * tab 下方的滑动指示器。
+ *
+ * 为什么要用 JS 量而不是纯 CSS：指示器要停在**当前激活那个按钮**的正下方，
+ * 而按钮的宽度由文字内容决定。CSS 做不到"跟着兄弟元素的宽度走" ——
+ * 除非把三个 tab 做成等宽，但那样中英文切换后比例会很难看
+ * （"全部/网站/工具"和 "All/Websites/Tools" 需要的宽度差很多）。
+ *
+ * 三个必须重新测量的时机，少任何一个都会看到指示器停在错的位置：
+ *   1. **激活项变化** —— 正常点击。注意这一条**不能**靠 ResizeObserver 兜：
+ *      切换 tab 时按钮的尺寸并没有变，observer 不会触发。所以它必须是一个
+ *      显式的依赖（见下面那条 biome-ignore）。
+ *   2. **容器或按钮尺寸变化** —— 窗口缩放、窄屏下 tab 换行、切换语言后文字变长。
+ *      观察了每一个按钮，所以"前面那个 tab 变宽把后面的挤走"也能覆盖到。
+ *   3. **字体加载完成** —— 字体是 font-display:swap 异步加载的，加载前按钮
+ *      用的是系统字体的宽度，加载后会变。不重测的话，首屏打开时指示器会
+ *      停在一个**已经不存在的**位置上。这个最容易漏，因为它在开发机上
+ *      往往因为字体已被缓存而看不出来。
+ */
+function useTabIndicator(activeKey: string) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<{ left: number; width: number } | null>(null);
+  const [ready, setReady] = useState(false);
 
-      <div className="rescard__body">
-        <div className="rescard__head">
-          <Link className="rescard__title" to={`/resources/${encodeURIComponent(item.id)}`}>
-            {item.title}
-          </Link>
-        </div>
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeKey 是**纯触发器**，effect 体内不读取它
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
-        {item.titleEn && item.titleEn !== item.title ? (
-          <p className="rescard__alt">{item.titleEn}</p>
-        ) : null}
+    const measure = () => {
+      const active = container.querySelector<HTMLElement>('.tabs__item.is-active');
+      if (!active) {
+        setRect(null);
+        return;
+      }
+      setRect({ left: active.offsetLeft, width: active.offsetWidth });
+    };
 
-        {/* 主要标签：精选（金）、官方（钻石青）、类型（中性） */}
-        <div className="badges">
-          {item.featured ? (
-            <span className="badge badge--featured">{t('resources.featured')}</span>
-          ) : null}
-          {item.official ? (
-            <span className="badge badge--official">{t('resources.official')}</span>
-          ) : null}
-          <span className="badge badge--kind">
-            {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
-          </span>
-        </div>
+    measure();
 
-        {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    for (const button of container.querySelectorAll('.tabs__item')) observer.observe(button);
 
-        <div className="rescard__foot">
-          <span className="rescard__host">{hostOf(item.url)}</span>
-          {item.tags.slice(0, 4).map((tag) => (
-            <span key={tag} className="tagchip tagchip--sm">
-              {tag}
-            </span>
-          ))}
-        </div>
-      </div>
-    </li>
-  );
-}
+    if (document.fonts) {
+      document.fonts.ready.then(measure).catch(() => {
+        /* 字体加载失败不影响功能：用当前测量值即可 */
+      });
+    }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return url;
-  }
+    // 首次测量**之后**才打开过渡。否则指示器会从 left:0 一路滑到当前 tab ——
+    // 页面刚打开就自己动一下，看起来像 bug。
+    const frame = requestAnimationFrame(() => setReady(true));
+
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [activeKey]);
+
+  return {
+    containerRef,
+    ready,
+    // 用 transform 而不是 left：transform 走合成层，滑动才是 60fps 的
+    style: rect
+      ? { transform: `translateX(${String(rect.left)}px)`, width: `${String(rect.width)}px` }
+      : undefined,
+  };
 }
 
 /** 与真实卡片同构的占位。行数刻意和真实内容一致，避免加载完成时高度突变。 */
@@ -291,13 +317,17 @@ function SkeletonList({ count = 6 }: { count?: number }) {
   return (
     <ul className="reslist" aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
-        <li className="rescard" key={`skel-${String(i)}`}>
-          <span className="skel skel--icon" />
-          <div className="rescard__body">
-            <span className="skel skel--line" style={{ width: '55%' }} />
-            <span className="skel skel--line" style={{ width: '30%', height: 10 }} />
-            <span className="skel skel--line" style={{ width: '90%' }} />
-            <span className="skel skel--line" style={{ width: '70%' }} />
+        // 结构和真实卡片保持一致：li 是网格项，.rescard 是里面撑满的那个盒子。
+        // 少一层的话骨架和真实卡片的宽度会差一点，加载完成时能看到一个轻微的横跳。
+        <li key={`skel-${String(i)}`}>
+          <div className="rescard">
+            <span className="skel skel--icon" />
+            <div className="rescard__body">
+              <span className="skel skel--line" style={{ width: '55%' }} />
+              <span className="skel skel--line" style={{ width: '30%', height: 10 }} />
+              <span className="skel skel--line" style={{ width: '90%' }} />
+              <span className="skel skel--line" style={{ width: '70%' }} />
+            </div>
           </div>
         </li>
       ))}

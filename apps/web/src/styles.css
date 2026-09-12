@@ -1,29 +1,51 @@
-/* ------------------------------------------------------------------
-   MCSR Helper —— Minecraft 风格主题
+/* ==================================================================
+   MCSR Helper —— 现代化界面 + Minecraft 元素
+   ==================================================================
+
    ------------------------------------------------------------------
+   设计取向：MC 的"内容"留下，MC 的"表面"换掉
+   ------------------------------------------------------------------
+   上一版把 MC 的语言铺满了整个界面：到处是 2px 黑色描边 + 左上亮/右下暗的
+   斜面 + 方角。那是**精确**的 MC GUI 复刻，但读起来是"2014 年的游戏界面"，
+   不是"现代应用"。
 
-   字体：Fusion Pixel Font 12px（zh_hans 子集）
-     · 开源：OFL-1.1 / MIT 双许可，见 src/fonts/OFL.txt
-     · 子集化到 GB2312（7,368 字）→ 226 KB。完整版是 896 KB，
-       而只保留"当前内容用到的字"是 28 KB 但新增内容就会漏字。
-       GB2312 覆盖日常中文，漏掉的罕见字走系统字体兜底。
-     · ⚠️ 像素字体在**整数倍**字号下才清晰：12px 是设计尺寸，24px 是 2 倍。
-       18px / 15px 这类倍数会把每个"像素"变成 1.5 个设备像素，边缘发灰。
-       所以全站只用 12px 和 24px 两档（见下面的 --fs-* 变量）。
+   MC 的身份其实不靠描边和斜面成立。真正让人认出它的是两样东西：
+     · 像素字形本身（Fusion Pixel Font）
+     · 游戏的那套颜色：草绿、金、钻石青、泥土、红石
 
-   字体分工（按需求："标题和较大的字用像素字体，具体详细内容保留原字体"）：
-     · 像素字体 12px —— 导航、标签页、徽章、按钮、卡片标题、计数、表单标签
-     · 像素字体 24px —— 页面标题、hero、详情页标题
-     · 系统字体     —— 简介、Markdown 正文、搜索输入框（长文本用像素字体读起来很累）
+   所以这一版把 MC 收进**字体和调色板**，把表面的形状语言整体换成现代的：
+     · 圆角（8 / 12 / 16 / 胶囊）取代方角
+     · 1px 半透明细线取代 2px 黑描边
+     · 分层柔和投影取代 inset 斜面
+     · 统一的缓动曲线与 140 / 200 / 300ms 三档时长
+     · 悬停时轻微抬起（translateY）—— 现代卡片最直接的可点击暗示
 
-   形状语言：
-     方角 + 斜面（左上亮、右下暗）。按下时斜面反转 —— MC 按钮的经典反馈。
-   ------------------------------------------------------------------ */
+   斜面（bevel）**只在两个地方保留**，因为它们正是 MC 的招牌：
+     · 图标槽（.rescard__icon / .detail__icon）—— 物品栏格子
+     · 主按钮按下时斜面反转 —— MC 按钮的经典反馈
+   保留得少，反而更醒目。
+
+   ------------------------------------------------------------------
+   字体分工
+   ------------------------------------------------------------------
+   需求是"各标题和比较大的字用 MC 风格，仅有具体详细内容保留原字体"。
+   所以**界面文字一律用像素字体**（导航、标题、标签页、徽章、按钮、计数、
+   表头、页脚、标签云），**只有成段的正文用系统字体**（简介、Markdown 正文、
+   搜索输入框 —— 长文本用像素字体读起来很累）。
+
+   ⚠️ 像素字体只在**整数倍**字号下清晰：12px 是设计尺寸，24px 是 2 倍。
+      18px / 15px 会让每个"像素"变成 1.5 个设备像素，边缘发灰。
+      所以全站只有 --fs-px-sm(12) 和 --fs-px-lg(24) 两档。
+
+   ⚠️ 字体子集的覆盖有构建期检查守着：
+      apps/web/scripts/check-font-coverage.mjs
+      界面文字里出现子集之外的字符会让**构建失败**，而不是安静地掉回系统字体。
+   ================================================================== */
 
 @font-face {
   font-family: 'Fusion Pixel 12';
-  /* 用相对路径引入，让 Vite 把它当成构建资源：产出带 hash 的文件、
-     落到 /assets/ 下、享受 Caddy 的 immutable 长缓存。
+  /* 相对路径引入，让 Vite 当成构建资源处理：产出带 hash 的文件、落到 /assets/ 下、
+     从而享受 Caddy 给 /assets/* 配的 immutable 长缓存。
      （放 public/ 目录则不会被 hash，也就拿不到长缓存。） */
   src: url('./fonts/fusion-pixel-12px-zh_hans-subset.woff2') format('woff2');
   font-weight: 400;
@@ -31,41 +53,74 @@
   font-display: swap;
 }
 
+/* ==================================================================
+   设计变量
+   ================================================================== */
+
 :root {
-  --bg: #17181a;
-  --bg-deep: #0f1011;
-  --panel: #2b2d2f;
-  --panel-alt: #232527;
-  --line: #3f4245;
-  --line-soft: #33363a;
+  /* ---- 表面层次 ----
+     三级：页面底 → 卡片 → 抬起的浮层。
+     对比度刻意做得很低（每级只差几个百分点），现代界面靠投影而不是靠
+     色块分区来建立层次，色块分区一多就会显得很"方格"。 */
+  --bg: #131519;
+  --bg-deep: #0d0f12;
+  --surface: #1a1d23;
+  --surface-2: #20242c;
+  --surface-3: #262b34;
 
-  --bevel-light: rgba(255, 255, 255, 0.18);
-  --bevel-dark: rgba(0, 0, 0, 0.55);
-  --bevel-light-strong: rgba(255, 255, 255, 0.3);
-  --bevel-dark-strong: rgba(0, 0, 0, 0.7);
+  /* ---- 描边：半透明细线，不是实心黑边 ---- */
+  --line: rgba(255, 255, 255, 0.075);
+  --line-strong: rgba(255, 255, 255, 0.14);
 
-  --fg: #e6e8ea;
-  --fg-muted: #a8adb2;
-  --fg-faint: #6f767c;
+  /* ---- 文字 ---- */
+  --fg: #e9ecf1;
+  --fg-muted: #a3aab7;
+  --fg-faint: #6d7482;
 
+  /* ---- 游戏调色板。只作强调色，不做大面积填充。 ---- */
   --grass: #7fb238;
-  --grass-bright: #94d64a;
+  --grass-bright: #9ad84f;
+  --grass-ink: #101c06;
   --gold: #ffaa00;
   --diamond: #4aedd9;
   --dirt: #866043;
-  --redstone: #e04a3a;
+  --redstone: #e8564a;
 
-  /* 像素字体只在这两档下清晰 */
+  /* ---- 圆角 ---- */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  /* ---- 投影：分层、低透明度、大模糊 ----
+     单层重阴影会显得很"塑料"，两层（近处锐利 + 远处弥散）才像真实的光。 */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --sh-2: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 18px -8px rgba(0, 0, 0, 0.6);
+  --sh-3: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.75);
+  --sh-glow: 0 0 0 3px rgba(127, 178, 56, 0.22);
+
+  /* ---- 动效 ----
+     一条缓动曲线贯穿全站。--ease 是"快出慢入"（类似 out-expo），
+     比 ease 更有"跟手"的感觉，是现代界面默认的那种手感。 */
+  --ease: cubic-bezier(0.22, 0.75, 0.25, 1);
+  --t-fast: 140ms;
+  --t: 200ms;
+  --t-slow: 300ms;
+
+  /* 像素字体只有这两档清晰 */
   --fs-px-sm: 12px;
   --fs-px-lg: 24px;
 
   --font-pixel: 'Fusion Pixel 12', ui-monospace, monospace;
   --font-body: ui-sans-serif, system-ui, 'Segoe UI', 'Noto Sans SC', 'PingFang SC',
     'Microsoft YaHei', sans-serif;
+  /* 等宽**只**给代码块用。界面文字一律走像素字体 ——
+     三个字族混在一起是上一版显得杂乱的原因之一。 */
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
-  --sidebar-w: 196px;
-  --sidebar-w-collapsed: 60px;
+  --sidebar-w: 208px;
+  --sidebar-w-collapsed: 64px;
 }
 
 * {
@@ -86,6 +141,23 @@ body {
   font-size: 14px;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 一层极淡的顶部光晕。纯粹是为了让纯色背景不那么"平"，
+   幅度小到几乎注意不到 —— 注意到就说明调过头了。 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 420px;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    120% 100% at 22% 0%,
+    rgba(127, 178, 56, 0.09) 0%,
+    rgba(127, 178, 56, 0) 62%
+  );
 }
 
 a {
@@ -96,19 +168,22 @@ a:hover {
   text-decoration: underline;
 }
 
+/* 全站统一的键盘焦点指示。
+   ⚠️ 用 :focus-visible 而不是 :focus —— 鼠标点击不该出现焦点环，
+      否则每次点按钮都会闪一下，那是很明显的廉价感。 */
+:where(a, button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--grass-bright);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
 code {
   font-family: var(--font-mono);
   font-size: 0.9em;
   background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
   padding: 1px 5px;
-}
-
-/* 像素字体的通用工具类。行高要留足，否则中文会顶到上下边。 */
-.px {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  line-height: 1.9;
 }
 
 .sr-only {
@@ -123,138 +198,208 @@ code {
   border: 0;
 }
 
-/* ---------------- 布局：左侧边栏 + 内容区 ---------------- */
+/* 像素字体的通用工具类。行高要留足，否则中文会顶到上下边。 */
+.px {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.9;
+}
+
+/* ==================================================================
+   布局：左侧边栏 + 内容区
+   ================================================================== */
 
 .shell {
   display: flex;
   min-height: 100%;
+  position: relative;
+  z-index: 1;
 }
 
-/* 侧边栏：**刻意不画边框、不填面板底色** —— 让它像直接刻在背景上。
-   只有当前项和悬停项才有可见的底色。 */
+/* 侧边栏：**刻意不画边框、不填底色**，让它像直接刻在背景上。
+   只有悬停项和当前项才有可见的底色，而且是一个圆角胶囊。
+   这是"嵌入背景"最直接的实现 —— 少画东西，而不是多画东西。 */
 .sidebar {
   flex: 0 0 var(--sidebar-w);
   width: var(--sidebar-w);
   background: transparent;
-  padding: 18px 0 18px 14px;
+  padding: 20px 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  transition: flex-basis 0.16s ease, width 0.16s ease;
+  gap: 2px;
+  /* flex-basis 是可动画的。用 --t-slow 配 --ease，收起/展开是滑过去的，
+     不是跳过去的。 */
+  transition:
+    flex-basis var(--t-slow) var(--ease),
+    width var(--t-slow) var(--ease),
+    padding var(--t-slow) var(--ease);
   position: sticky;
   top: 0;
   align-self: flex-start;
   max-height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 独立成 view transition 的一个组：路由切换时内容区交叉淡入，
+     而侧边栏**完全不动**。不加这个的话整页（含侧边栏）会一起淡，
+     看起来像页面闪了一下。 */
+  view-transition-name: sidebar;
 }
 .sidebar.is-collapsed {
   flex-basis: var(--sidebar-w-collapsed);
   width: var(--sidebar-w-collapsed);
   padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* 侧边栏在路由切换时保持静止。
+   ::view-transition-old/new 默认是交叉淡入；给同一元素显式关掉动画，
+   它就完全不动 —— 这正是我们要的。 */
+::view-transition-old(sidebar),
+::view-transition-new(sidebar) {
+  animation: none;
 }
 
 .sidebar__brand {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   color: var(--fg);
-  text-decoration: none;
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
-  padding: 6px 10px 14px 10px;
+  padding: 8px 10px 18px;
   white-space: nowrap;
   overflow: hidden;
+  border-radius: var(--r-sm);
 }
 .sidebar__brand:hover {
   text-decoration: none;
 }
 
-/* 一个小草方块 —— 纯 CSS */
+/* 一个小草方块 —— 纯 CSS。保留斜面，因为这是 MC 最直白的符号。 */
 .sidebar__mark {
-  flex: 0 0 14px;
-  width: 14px;
-  height: 14px;
-  background: var(--grass);
-  box-shadow: inset 3px 3px 0 rgba(255, 255, 255, 0.25), inset -3px -3px 0 rgba(0, 0, 0, 0.35);
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(160deg, var(--grass-bright), var(--grass) 55%, #5d8a26);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.3),
+    var(--sh-1);
+}
+
+/* 收起时藏起文字。
+   ⚠️ 用 opacity + max-width 过渡，不用 display:none ——
+      display 不可动画，切换时会"啪"地消失，那是很生硬的一下。 */
+.sidebar__brandtext,
+.sidebar__label,
+.sidebar__stage {
+  opacity: 1;
+  max-width: 200px;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    opacity var(--t) var(--ease),
+    max-width var(--t-slow) var(--ease);
 }
 .sidebar.is-collapsed .sidebar__brandtext,
 .sidebar.is-collapsed .sidebar__label,
 .sidebar.is-collapsed .sidebar__stage {
-  display: none;
+  opacity: 0;
+  max-width: 0;
 }
 
 .sidebar__stage {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
-  color: var(--bg-deep);
+  color: var(--grass-ink);
   background: var(--gold);
-  padding: 0 5px;
+  border-radius: var(--r-xs);
+  padding: 0 6px;
   margin-left: auto;
+  line-height: 1.6;
 }
 
 .sidebar__group {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  padding: 14px 10px 6px;
+  padding: 16px 10px 6px;
   white-space: nowrap;
+  overflow: hidden;
 }
 .sidebar.is-collapsed .sidebar__group {
-  padding: 14px 0 6px;
+  padding: 16px 0 6px;
   text-align: center;
   font-size: 0;
 }
 .sidebar.is-collapsed .sidebar__group::after {
   content: '···';
   font-size: var(--fs-px-sm);
+  letter-spacing: 1px;
 }
 
 .sidebar__item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-muted);
-  padding: 8px 10px;
+  padding: 9px 10px;
   cursor: pointer;
-  text-decoration: none;
+  border-radius: var(--r-sm);
   white-space: nowrap;
   overflow: hidden;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
 .sidebar__item:hover {
   color: var(--fg);
   background: rgba(255, 255, 255, 0.05);
   text-decoration: none;
 }
+/* 当前项：淡草绿胶囊 + 左侧一小段色条。
+   不用整块高饱和度填充 —— 那会把侧边栏又变回"色块分区"。 */
 .sidebar__item.is-active {
   color: var(--fg);
-  background: rgba(127, 178, 56, 0.14);
-  box-shadow: inset 3px 0 0 var(--grass);
+  background: rgba(127, 178, 56, 0.13);
+}
+.sidebar__item.is-active .sidebar__block {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35);
 }
 .sidebar__item[aria-disabled='true'] {
   color: var(--fg-faint);
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-/* 每个分区一个方块图标，颜色不同 —— 收起时只显示这个 */
+/* 每个分区一个方块图标，颜色不同 —— 收起时只显示这个。
+   这也是保留斜面的地方：小方块带上斜面立刻就像 MC 的物品。 */
 .sidebar__block {
   flex: 0 0 14px;
   width: 14px;
   height: 14px;
-  box-shadow: inset 3px 3px 0 rgba(255, 255, 255, 0.22), inset -3px -3px 0 rgba(0, 0, 0, 0.4);
+  border-radius: 3px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.32);
+  transition: box-shadow var(--t-fast) var(--ease);
 }
 .sidebar__block--resources {
-  background: #866043;
+  background: var(--dirt);
 }
 .sidebar__block--calendar {
-  background: #7fb238;
+  background: var(--grass);
 }
 .sidebar__block--videos {
-  background: #a04a3a;
+  background: #b4553f;
 }
 .sidebar__block--seeds {
-  background: #4aedd9;
+  background: var(--diamond);
 }
 .sidebar__block--profile {
   background: #8a6fa8;
@@ -262,7 +407,7 @@ code {
 
 .sidebar__foot {
   margin-top: auto;
-  padding-top: 14px;
+  padding-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -271,14 +416,18 @@ code {
 .sidebar__toggle {
   background: transparent;
   border: 0;
+  border-radius: var(--r-sm);
   color: var(--fg-faint);
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
-  padding: 8px 10px;
+  padding: 9px 10px;
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
 }
 .sidebar__toggle:hover {
   color: var(--fg);
@@ -289,6 +438,7 @@ code {
   display: flex;
   gap: 4px;
   padding: 0 10px;
+  transition: padding var(--t-slow) var(--ease);
 }
 .sidebar.is-collapsed .sidebar__lang {
   flex-direction: column;
@@ -297,21 +447,32 @@ code {
 }
 .sidebar__lang button {
   flex: 1;
-  background: transparent;
-  border: 2px solid var(--bg-deep);
-  box-shadow: inset 2px 2px 0 var(--bevel-light), inset -2px -2px 0 var(--bevel-dark);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
   color: var(--fg-faint);
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   padding: 6px 0;
   cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.sidebar__lang button:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
 }
 .sidebar__lang button.is-active {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(127, 178, 56, 0.16);
+  border-color: rgba(127, 178, 56, 0.4);
 }
 
-/* ---------------- 内容区 ---------------- */
+/* ==================================================================
+   内容区
+   ================================================================== */
 
 .content {
   flex: 1;
@@ -323,251 +484,386 @@ code {
 .main {
   flex: 1;
   width: 100%;
-  max-width: 1100px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 26px 22px 64px;
+  padding: 30px 26px 72px;
 }
 
-/* 路由切换的淡入 —— 见 App.tsx 里的 key={pathname} */
-.route-fade {
-  animation: route-in 0.22s ease-out;
-}
+/* ---------------- 路由切换 ----------------
+
+   两条路，用 html 上的类区分，**不会同时生效**：
+
+   ① 浏览器支持 View Transitions 时（Chrome / Edge / Electron 内置 Chromium）：
+      由 react-router 的 viewTransition 触发，浏览器对整棵 DOM 做交叉淡入。
+      这是真正的"旧页面和新页面同时存在再互换"，比"先变空再淡入"自然得多。
+      侧边栏用 view-transition-name 钉住不动。
+
+   ② 不支持时（Firefox / Safari）：退回纯 CSS 关键帧。
+
+   ⚠️ 两条必须互斥。否则在 Chrome 上会同时播两个动画，叠加之后看起来是
+      "淡入两次"，反而比只有一条时更糟。main.tsx 里的脚本负责加 .vt 类。
+   ------------------------------------------------------------------ */
 @keyframes route-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-/* 尊重系统的"减少动效"设置 —— 前庭功能敏感的用户会因此不适 */
-@media (prefers-reduced-motion: reduce) {
-  .route-fade {
-    animation: none;
+
+/* 只在**不支持** View Transitions 时才用 CSS 关键帧兜底 */
+html:not(.vt) .route-fade {
+  animation: route-in var(--t-slow) var(--ease) both;
+}
+
+/* 支持时的根交叉淡入。
+   旧页面淡出得快、新页面淡入得慢一点（180 vs 260ms），
+   这样视觉重心会落在新内容上，而不是在中点"糊"一下。 */
+::view-transition-old(root) {
+  animation: vt-out 180ms var(--ease) both;
+}
+::view-transition-new(root) {
+  animation: vt-in 260ms var(--ease) both;
+}
+@keyframes vt-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
   }
-  .sidebar {
-    transition: none;
+}
+@keyframes vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }
 
-/* ---------------- 按钮 ---------------- */
+/* ==================================================================
+   按钮
+   ================================================================== */
 
 .cta,
 .mcsr-btn,
 .filters__clear,
 .pager button {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   line-height: 1.7;
   color: var(--fg);
-  background: #6d7175;
-  border: 0;
-  padding: 7px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 8px 15px;
   cursor: pointer;
   text-decoration: none;
-  box-shadow: inset 2px 2px 0 var(--bevel-light-strong), inset -2px -2px 0 var(--bevel-dark-strong);
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+  box-shadow: var(--sh-1);
 }
 .cta:hover,
 .mcsr-btn:hover:not(:disabled),
 .filters__clear:hover,
 .pager button:hover:not(:disabled) {
-  background: #7d8185;
+  background: #2f3540;
+  border-color: var(--line-strong);
   color: var(--fg);
   text-decoration: none;
+  transform: translateY(-1px);
+  box-shadow: var(--sh-2);
 }
 .cta:active,
 .mcsr-btn:active:not(:disabled),
 .filters__clear:active,
 .pager button:active:not(:disabled) {
-  box-shadow: inset -2px -2px 0 var(--bevel-light), inset 2px 2px 0 var(--bevel-dark-strong);
+  transform: translateY(0);
+  box-shadow: var(--sh-1);
 }
 .pager button:disabled {
   color: var(--fg-faint);
-  background: #4a4d50;
+  background: var(--surface);
   cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
+
+/* 主按钮：保留 MC 的**按下时斜面反转**。
+   这是全站仅存的两处斜面之一，正因为少见才有效。 */
 .cta {
   background: var(--grass);
-  color: #12200a;
+  border-color: transparent;
+  color: var(--grass-ink);
+  box-shadow:
+    inset 2px 2px 0 rgba(255, 255, 255, 0.3),
+    inset -2px -2px 0 rgba(0, 0, 0, 0.3);
 }
 .cta:hover {
   background: var(--grass-bright);
-  color: #12200a;
+  color: var(--grass-ink);
 }
+.cta:active {
+  box-shadow:
+    inset -2px -2px 0 rgba(255, 255, 255, 0.35),
+    inset 2px 2px 0 rgba(0, 0, 0, 0.35);
+}
+
 .mcsr-btn--sm {
-  padding: 5px 10px;
+  padding: 5px 11px;
 }
 .mcsr-btn--ghost {
   background: transparent;
+  border-color: transparent;
   box-shadow: none;
   color: var(--fg-faint);
-  padding: 4px 8px;
+  padding: 4px 9px;
 }
 .mcsr-btn--ghost:hover:not(:disabled) {
   color: var(--grass-bright);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: transparent;
 }
 
-/* ---------------- 页头 ---------------- */
+/* ==================================================================
+   页头
+   ================================================================== */
 
 .pagehead {
-  margin-bottom: 18px;
+  margin-bottom: 22px;
 }
 .pagehead__title {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-lg);
-  line-height: 1.5;
-  margin: 0 0 8px;
+  line-height: 1.4;
+  margin: 0 0 10px;
+  letter-spacing: 0.5px;
 }
+/* 副标题也是"界面文字"而不是正文，按需求用像素字体。
+   字号与正文一致（12px），靠颜色而不是字号拉开层次。 */
 .pagehead__sub {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.9;
   color: var(--fg-muted);
   margin: 0;
+  max-width: 72ch;
 }
 
 .hero {
-  margin-bottom: 30px;
+  margin-bottom: 34px;
 }
 .hero__title {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-lg);
-  line-height: 1.6;
-  margin: 0 0 12px;
+  line-height: 1.5;
+  margin: 0 0 14px;
 }
 .hero__sub {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.9;
   color: var(--fg-muted);
-  margin: 0 0 16px;
-  max-width: 620px;
+  margin: 0 0 18px;
+  max-width: 68ch;
 }
 
-/* ---------------- 子 tab ---------------- */
+/* ==================================================================
+   子 tab —— 带滑动指示器
+   ================================================================== */
 
 .tabs {
   display: flex;
-  margin-bottom: 16px;
-  border-bottom: 2px solid var(--bg-deep);
+  gap: 2px;
+  margin-bottom: 18px;
+  position: relative;
+  border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
 .tabs__item {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  background: var(--panel-alt);
+  background: transparent;
   border: 0;
-  border-top: 2px solid var(--line-soft);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
   padding: 10px 18px;
   cursor: pointer;
   position: relative;
-  top: 2px;
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
 }
 .tabs__item:hover {
   color: var(--fg);
-  background: var(--panel);
+  background: rgba(255, 255, 255, 0.035);
 }
 .tabs__item.is-active {
   color: var(--fg);
-  background: var(--panel);
-  box-shadow: inset 0 2px 0 var(--grass);
-  border-top-color: var(--panel);
 }
 
-/* ---------------- 筛选 ---------------- */
+/* 指示器：一条滑过去的色条。
+   位置由 JS 量出来（见 ResourceList.tsx）—— CSS 做不到"跟着兄弟元素的宽度走"。
+   用 transform 而不是 left，让浏览器走合成层，滑动才顺。 */
+.tabs__indicator {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--grass);
+  box-shadow: 0 0 12px rgba(127, 178, 56, 0.55);
+  pointer-events: none;
+}
+/* 首次测量时不要动画，否则指示器会从 0 位置滑到当前 tab ——
+   页面刚打开就动一下，看起来像 bug。测量完加上 is-ready 才开始过渡。 */
+.tabs__indicator.is-ready {
+  transition:
+    transform var(--t-slow) var(--ease),
+    width var(--t-slow) var(--ease);
+}
+
+/* ==================================================================
+   筛选
+   ================================================================== */
 
 .filters {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .filters__search {
   flex: 1;
   min-width: 200px;
 }
-/* 搜索框用系统字体：用户在里面打字，像素字体在输入时反而不便阅读 */
+/* 搜索框刻意用系统字体：用户在里面打字，像素字体在输入时反而不便阅读，
+   而且输入光标落在像素字形之间会显得错位。这是刻意的例外。 */
 .filters__search input {
   width: 100%;
-  background: var(--bg-deep);
-  border: 2px solid #0a0a0a;
-  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.6);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
   color: var(--fg);
   font-family: var(--font-body);
   font-size: 13px;
-  padding: 8px 11px;
+  padding: 9px 13px;
   outline: none;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.filters__search input::placeholder {
+  color: var(--fg-faint);
+}
+.filters__search input:hover {
+  border-color: var(--line-strong);
 }
 .filters__search input:focus {
   border-color: var(--grass);
+  background: var(--surface-2);
+  box-shadow: var(--sh-glow);
 }
 .filters__select {
-  background: var(--panel);
-  border: 2px solid var(--bg-deep);
-  box-shadow: inset 2px 2px 0 var(--bevel-light), inset -2px -2px 0 var(--bevel-dark);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
   color: var(--fg-muted);
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
-  padding: 8px 10px;
-  outline: none;
+  padding: 9px 11px;
   cursor: pointer;
+  outline: none;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.filters__select:hover {
+  border-color: var(--line-strong);
+  color: var(--fg);
 }
 
-/* ---------------- 标签 ---------------- */
+/* ==================================================================
+   标签
+   ================================================================== */
 
 .tagcloud {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 .tagcloud__label {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  margin-right: 2px;
+  margin-right: 4px;
 }
 
 .tagchip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--line-soft);
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
   color: var(--fg-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 2px 9px;
+  /* 原来是等宽字体 11px —— 界面文字不该有第三个字族。统一到像素字体。 */
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.6;
+  padding: 3px 11px;
   cursor: pointer;
   text-decoration: none;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
 }
 .tagchip:hover {
   color: var(--fg);
-  border-color: var(--grass);
+  border-color: rgba(127, 178, 56, 0.5);
+  background: rgba(127, 178, 56, 0.1);
   text-decoration: none;
 }
 .tagchip.is-active {
   background: var(--grass);
   border-color: var(--grass);
-  color: #12200a;
+  color: var(--grass-ink);
 }
 .tagchip__count {
-  opacity: 0.65;
+  opacity: 0.6;
   font-size: 10px;
 }
 .tagchip--sm {
   cursor: default;
-  padding: 1px 7px;
+  padding: 2px 9px;
+}
+.tagchip--sm:hover {
+  color: var(--fg-muted);
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.045);
 }
 
-/* ---------------- 卡片 ---------------- */
+/* ==================================================================
+   卡片
+   ================================================================== */
 
 .resultcount {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .reslist {
@@ -575,30 +871,65 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 10px;
+  gap: 14px;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
 }
-
-.rescard {
+/* li 是网格项，卡片本身是里面的 <a>。
+   让 li 撑满格子、卡片再撑满 li，同一行的卡片就自动等高 ——
+   否则列表会参差不齐，那是最容易看出"没打磨"的地方。 */
+.reslist > li {
   display: flex;
-  gap: 13px;
-  background: var(--panel);
-  border: 2px solid var(--bg-deep);
-  box-shadow: inset 2px 2px 0 var(--bevel-light), inset -2px -2px 0 var(--bevel-dark);
-  padding: 13px;
-  transition: box-shadow 0.09s ease;
+}
+
+/* ⚠️ 整张卡片就是一个 <a>（需求：点击卡片任何位置都能跳转）。
+   不采用"标题是链接 + 伪元素盖住整卡"的写法，因为那种做法
+   会挡住文字的选中，而且焦点框只框住标题、看不出整卡可点。 */
+.rescard {
+  flex: 1;
+  display: flex;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 15px;
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--sh-1);
+  transition:
+    transform var(--t) var(--ease),
+    box-shadow var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease);
+  will-change: transform;
 }
 .rescard:hover {
-  box-shadow: inset 2px 2px 0 var(--bevel-light-strong), inset -2px -2px 0 var(--bevel-dark),
-    0 0 0 2px var(--grass);
+  text-decoration: none;
+  transform: translateY(-3px);
+  background: var(--surface-2);
+  border-color: rgba(127, 178, 56, 0.35);
+  box-shadow: var(--sh-3);
+}
+.rescard:active {
+  transform: translateY(-1px);
+}
+/* 键盘聚焦时整卡高亮 —— 与鼠标悬停用同一套视觉，保持一致 */
+.rescard:focus-visible {
+  outline: 2px solid var(--grass-bright);
+  outline-offset: 2px;
+  border-color: rgba(127, 178, 56, 0.5);
 }
 
+/* 图标槽 —— 物品栏格子。**保留 MC 的斜面**，这是全站仅存的两处之一。
+   圆角刻意做小（6px）：MC 的物品栏是方的，完全圆角就失去那个意思了。 */
 .rescard__icon {
   flex: 0 0 64px;
   width: 64px;
   height: 64px;
+  border-radius: var(--r-xs);
   background: var(--bg-deep);
-  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.7), inset -2px -2px 0 var(--bevel-light);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -619,10 +950,12 @@ code {
   justify-content: center;
   font-family: var(--font-pixel);
   font-size: var(--fs-px-lg);
-  color: rgba(255, 255, 255, 0.92);
-  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.4);
   user-select: none;
-  box-shadow: inset 3px 3px 0 rgba(255, 255, 255, 0.18), inset -3px -3px 0 rgba(0, 0, 0, 0.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.32);
 }
 
 .rescard__body {
@@ -630,7 +963,7 @@ code {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .rescard__head {
@@ -646,21 +979,22 @@ code {
   color: var(--fg);
   text-decoration: none;
 }
-.rescard__title:hover {
+.rescard:hover .rescard__title {
   color: var(--grass-bright);
-  text-decoration: none;
 }
 .rescard__alt {
   color: var(--fg-faint);
-  font-size: 11.5px;
-  font-family: var(--font-mono);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
   margin: 0;
 }
 
+/* 简介是**成段的正文**，按需求保留系统字体。
+   像素字体在长句里读起来很累，而且中文标点的间距会很难看。 */
 .rescard__summary {
   color: var(--fg-muted);
   font-size: 12.5px;
-  line-height: 1.65;
+  line-height: 1.7;
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -671,19 +1005,21 @@ code {
 .rescard__foot {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex-wrap: wrap;
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: 6px;
 }
 .rescard__host {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
   color: var(--fg-faint);
   margin-right: 2px;
 }
 
-/* ---------------- 徽章 ---------------- */
+/* ==================================================================
+   徽章
+   ================================================================== */
 
 .badges {
   display: flex;
@@ -695,19 +1031,20 @@ code {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   line-height: 1.7;
-  padding: 0 7px;
+  padding: 1px 8px;
   border: 1px solid var(--line);
+  border-radius: var(--r-pill);
   color: var(--fg-faint);
   white-space: nowrap;
 }
 .badge--featured {
   color: var(--gold);
-  border-color: var(--gold);
+  border-color: rgba(255, 170, 0, 0.45);
   background: rgba(255, 170, 0, 0.12);
 }
 .badge--official {
   color: var(--diamond);
-  border-color: var(--diamond);
+  border-color: rgba(74, 237, 217, 0.4);
   background: rgba(74, 237, 217, 0.1);
 }
 .badge--kind {
@@ -715,14 +1052,16 @@ code {
   border-color: var(--line);
 }
 
-/* ---------------- 分页 ---------------- */
+/* ==================================================================
+   分页
+   ================================================================== */
 
 .pager {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  margin-top: 24px;
+  gap: 16px;
+  margin-top: 28px;
 }
 .pager__pos {
   font-family: var(--font-pixel);
@@ -730,7 +1069,9 @@ code {
   color: var(--fg-faint);
 }
 
-/* ---------------- 状态 / 骨架屏 ---------------- */
+/* ==================================================================
+   状态 / 骨架屏
+   ================================================================== */
 
 .state {
   color: var(--fg-muted);
@@ -740,13 +1081,14 @@ code {
 .state--empty,
 .state--error {
   text-align: center;
-  padding: 40px 20px;
-  background: var(--panel-alt);
-  border: 2px dashed var(--line);
+  padding: 46px 24px;
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 .state__title {
   color: var(--fg);
@@ -759,20 +1101,21 @@ code {
 }
 .state--error {
   color: var(--redstone);
-  border-color: rgba(224, 74, 58, 0.4);
+  border-color: rgba(232, 86, 74, 0.35);
 }
 
 /* 骨架屏：加载时保持和真实卡片一样的结构，切换时不跳版 */
 .skel {
   display: block;
+  border-radius: var(--r-xs);
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04) 25%,
-    rgba(255, 255, 255, 0.09) 37%,
-    rgba(255, 255, 255, 0.04) 63%
+    rgba(255, 255, 255, 0.035) 25%,
+    rgba(255, 255, 255, 0.08) 37%,
+    rgba(255, 255, 255, 0.035) 63%
   );
   background-size: 400% 100%;
-  animation: skel 1.3s ease-in-out infinite;
+  animation: skel 1.4s ease-in-out infinite;
 }
 @keyframes skel {
   0% {
@@ -780,11 +1123,6 @@ code {
   }
   100% {
     background-position: 0 50%;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .skel {
-    animation: none;
   }
 }
 .skel--line {
@@ -797,38 +1135,51 @@ code {
   flex: 0 0 64px;
 }
 
-/* ---------------- 详情页 ---------------- */
+/* ==================================================================
+   详情页
+   ================================================================== */
 
 .detail {
-  max-width: 820px;
+  max-width: 840px;
 }
 .detail__back {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  margin-bottom: 18px;
+  margin-bottom: 20px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
   text-decoration: none;
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
 }
 .detail__back:hover {
   color: var(--grass-bright);
+  background: rgba(255, 255, 255, 0.05);
   text-decoration: none;
 }
 
 .detail__head {
   display: flex;
-  gap: 20px;
+  gap: 22px;
   align-items: flex-start;
-  margin-bottom: 20px;
-  padding-bottom: 20px;
-  border-bottom: 2px solid var(--bg-deep);
+  margin-bottom: 22px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
 }
 .detail__icon {
   flex: 0 0 96px;
   width: 96px;
   height: 96px;
+  border-radius: var(--r-sm);
   background: var(--bg-deep);
-  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.7), inset -2px -2px 0 var(--bevel-light);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.7),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.09);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -850,21 +1201,31 @@ code {
 .detail__title {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-lg);
-  line-height: 1.5;
-  margin: 0 0 6px;
+  line-height: 1.4;
+  margin: 0 0 8px;
 }
 .detail__alt {
   color: var(--fg-faint);
-  font-size: 12.5px;
-  font-family: var(--font-mono);
-  margin: 0 0 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 0 0 14px;
 }
 .detail__meta {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
+}
+
+/* ⚠️ 这个类之前**在样式表里根本不存在** —— 详情页一直在用一个没有样式的
+   class，于是"最后更新"那行一直是浏览器默认的段落样式。
+   只有把界面真正看一遍才会发现这种问题，静态检查查不出来。 */
+.detail__updated {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 12px 0 0;
 }
 
 .detail__tags {
@@ -872,66 +1233,78 @@ code {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
+/* 简介是成段正文 → 系统字体 */
 .detail__summary {
   color: var(--fg-muted);
   font-size: 14px;
   line-height: 1.75;
   border-left: 3px solid var(--grass);
-  padding-left: 14px;
-  margin: 0 0 22px;
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  padding: 2px 0 2px 16px;
+  margin: 0 0 26px;
 }
 
 /* 详情信息表 —— 卡片点开后能看到比列表更完整的信息 */
 .infotable {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 1px;
-  background: var(--line-soft);
-  border: 2px solid var(--bg-deep);
-  margin: 0 0 24px;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  margin: 0 0 28px;
   font-size: 13px;
+  background: var(--surface);
 }
 .infotable dt {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
-  background: var(--panel-alt);
+  background: var(--surface-2);
   color: var(--fg-faint);
-  padding: 9px 14px;
+  padding: 10px 15px;
   margin: 0;
   white-space: nowrap;
+  border-bottom: 1px solid var(--line);
 }
 .infotable dd {
-  background: var(--panel);
+  background: var(--surface);
   color: var(--fg-muted);
-  padding: 9px 14px;
+  padding: 10px 15px;
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--line);
 }
+/* 最后一行不要下边框，否则圆角处会多出一条线 */
+.infotable dt:nth-last-of-type(1),
+.infotable dd:nth-last-of-type(1) {
+  border-bottom: 0;
+}
+/* URL 也用像素字体 —— 它是界面文字，而且长度可控 */
 .infotable dd a {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
 }
 
 /* 同标签的其它条目 */
 .related {
-  margin-top: 34px;
-  padding-top: 20px;
-  border-top: 2px solid var(--bg-deep);
+  margin-top: 38px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
 }
 .related__title {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-faint);
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
-/* ---------------- Markdown 正文 ---------------- */
+/* ==================================================================
+   Markdown 正文 —— 这是"具体详细内容"，**整体保留系统字体**
+   ================================================================== */
 
-/* 正文用系统字体（需求："具体详细内容保留原字体"）。
-   像素字体在长段落里读起来很累，而且中文标点的间距会很难看。 */
 .markdown {
   font-size: 14px;
   line-height: 1.8;
@@ -941,6 +1314,7 @@ code {
 .markdown > :first-child {
   margin-top: 0;
 }
+/* 正文里的各级标题属于"标题"，回到像素字体 */
 .markdown h1,
 .markdown h2,
 .markdown h3,
@@ -948,7 +1322,7 @@ code {
   font-family: var(--font-pixel);
   color: var(--fg);
   line-height: 1.7;
-  margin: 1.7em 0 0.7em;
+  margin: 1.8em 0 0.8em;
   font-size: var(--fs-px-sm);
 }
 .markdown p {
@@ -957,10 +1331,13 @@ code {
 .markdown ul,
 .markdown ol {
   margin: 0 0 1em;
-  padding-left: 1.4em;
+  padding-left: 1.5em;
 }
 .markdown li {
-  margin-bottom: 0.35em;
+  margin-bottom: 0.4em;
+}
+.markdown li::marker {
+  color: var(--grass);
 }
 .markdown strong {
   color: var(--fg);
@@ -969,14 +1346,15 @@ code {
   font-family: var(--font-mono);
   font-size: 0.88em;
   background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
   padding: 1px 5px;
 }
 .markdown pre {
   background: var(--bg-deep);
-  border: 2px solid var(--bg-deep);
-  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.6);
-  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 14px 16px;
   overflow-x: auto;
   margin: 0 0 1em;
 }
@@ -988,13 +1366,13 @@ code {
 }
 .markdown blockquote {
   margin: 0 0 1em;
-  padding-left: 14px;
-  border-left: 3px solid var(--line);
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--line-strong);
   color: var(--fg-faint);
 }
 .markdown hr {
   border: 0;
-  border-top: 2px solid var(--bg-deep);
+  border-top: 1px solid var(--line);
   margin: 1.8em 0;
 }
 .markdown table {
@@ -1007,38 +1385,46 @@ code {
 }
 .markdown th,
 .markdown td {
-  border: 1px solid var(--line-soft);
-  padding: 5px 10px;
+  border: 1px solid var(--line);
+  padding: 6px 11px;
   text-align: left;
 }
 .markdown th {
   color: var(--fg);
-  background: var(--panel);
+  background: var(--surface-2);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
 }
 .markdown img {
   max-width: 100%;
   height: auto;
+  border-radius: var(--r-sm);
   image-rendering: pixelated;
 }
 
-/* ---------------- 首页 ---------------- */
+/* ==================================================================
+   首页
+   ================================================================== */
 
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 .card {
-  background: var(--panel);
-  border: 2px solid var(--bg-deep);
-  box-shadow: inset 2px 2px 0 var(--bevel-light), inset -2px -2px 0 var(--bevel-dark);
-  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
+  box-shadow: var(--sh-1);
 }
 .card--muted {
-  background: var(--panel-alt);
+  background: var(--surface);
+  border-style: dashed;
+  box-shadow: none;
 }
 .card__title {
   font-family: var(--font-pixel);
@@ -1048,7 +1434,8 @@ code {
 }
 .card__meta {
   color: var(--fg-faint);
-  font-size: 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
   margin: 0;
   margin-top: auto;
 }
@@ -1059,7 +1446,7 @@ code {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
   font-size: 12.5px;
   color: var(--fg-muted);
 }
@@ -1067,17 +1454,19 @@ code {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--grass-bright);
-  margin-right: 7px;
+  margin-right: 8px;
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 3px 9px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.6;
+  padding: 3px 11px;
   border: 1px solid var(--line);
+  border-radius: var(--r-pill);
   color: var(--fg-muted);
   max-width: 100%;
   overflow: hidden;
@@ -1086,79 +1475,132 @@ code {
 }
 .pill--ok {
   color: var(--grass-bright);
-  border-color: rgba(127, 178, 56, 0.5);
+  border-color: rgba(127, 178, 56, 0.45);
   background: rgba(127, 178, 56, 0.1);
 }
 .pill--bad {
   color: var(--redstone);
-  border-color: rgba(224, 74, 58, 0.5);
-  background: rgba(224, 74, 58, 0.1);
+  border-color: rgba(232, 86, 74, 0.45);
+  background: rgba(232, 86, 74, 0.1);
 }
 .pill--wait {
   color: var(--fg-faint);
 }
 
-/* ---------------- 字段（SeedInput 等共享组件） ---------------- */
+/* ==================================================================
+   字段（SeedInput 等共享组件）
+   ================================================================== */
 
 .mcsr-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 .mcsr-field__label {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-muted);
 }
+/* 种子输入框用等宽字体：里面填的是一长串 64 位数字，
+   等宽字体下更容易核对有没有抄错。这是刻意的例外。 */
 .mcsr-field__input {
-  background: var(--bg-deep);
-  border: 2px solid #0a0a0a;
-  box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.6);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: 13px;
-  padding: 7px 10px;
+  padding: 8px 12px;
   outline: none;
   width: 100%;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
 }
 .mcsr-field__input:focus {
   border-color: var(--grass);
+  box-shadow: var(--sh-glow);
 }
 .mcsr-field__hint {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
   color: var(--fg-faint);
   margin: 0;
   word-break: break-all;
 }
 .mcsr-field__error {
-  font-size: 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
   color: var(--redstone);
   margin: 0;
 }
 
-/* ---------------- 页脚 ---------------- */
+/* ==================================================================
+   页脚
+   ================================================================== */
 
 .footer {
-  padding: 18px 22px;
+  padding: 20px 26px;
   color: var(--fg-faint);
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   text-align: center;
-  border-top: 2px solid var(--bg-deep);
+  border-top: 1px solid var(--line);
 }
 
-@media (max-width: 780px) {
+/* ==================================================================
+   减少动效 —— 前庭功能敏感的用户会因动画而不适。
+   只关动效，不关功能：所有过渡归零，滑块直接到位。
+   ================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .rescard:hover {
+    transform: none;
+  }
+}
+
+/* ==================================================================
+   窄屏
+   ================================================================== */
+
+@media (max-width: 820px) {
   .sidebar {
     position: fixed;
     z-index: 20;
     background: var(--bg);
-    box-shadow: 2px 0 0 var(--bg-deep);
     height: 100%;
     overflow-y: auto;
+    box-shadow: var(--sh-3);
   }
-  .sidebar:not(.is-collapsed) {
-    box-shadow: 2px 0 0 var(--bg-deep), 0 0 0 100vmax rgba(0, 0, 0, 0.5);
+  .sidebar.is-collapsed {
+    box-shadow: none;
+  }
+  /* 展开时压暗背后的内容，让"这是一个浮层"变得明确 */
+  .sidebar:not(.is-collapsed)::after {
+    content: '';
+    position: fixed;
+    inset: 0 0 0 var(--sidebar-w);
+    background: rgba(0, 0, 0, 0.55);
+    z-index: -1;
+    animation: scrim-in var(--t) var(--ease) both;
+  }
+  @keyframes scrim-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .main {
+    padding: 22px 16px 60px;
   }
   .reslist {
     grid-template-columns: 1fr;
@@ -1168,5 +1610,12 @@ code {
   }
   .infotable {
     grid-template-columns: 1fr;
+  }
+  .infotable dt {
+    padding-bottom: 2px;
+    border-bottom: 0;
+  }
+  .infotable dd {
+    padding-top: 2px;
   }
 }

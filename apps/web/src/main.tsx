@@ -7,6 +7,25 @@ import '@/i18n';
 // 从而享受 Caddy 给 /assets/* 配的 immutable 长缓存。
 import '@/styles.css';
 
+/**
+ * 标记浏览器是否支持 View Transitions API。
+ *
+ * 支持时（Chrome / Edge / Electron 内置的 Chromium），路由切换走浏览器原生的
+ * 交叉淡入 —— 新旧两棵 DOM 同时存在再互换，比"先变空再淡入"自然得多。
+ *
+ * ⚠️ 这个类必须在这里加，而且 CSS 里的兜底关键帧必须写成
+ *    `html:not(.vt) .route-fade`。两条路**必须互斥**：
+ *    否则 Chrome 上会同时播原生交叉淡入和 CSS 关键帧，
+ *    叠加之后是"淡入两次"，比只有一条路的时候更难看。
+ *
+ * 不用 document.startViewTransition 是否存在来判断前景，而是用它来加类 ——
+ * 这样"支持但被用户关掉动效"的情况由 prefers-reduced-motion 单独处理，
+ * 两件事互不干扰。
+ */
+if ('startViewTransition' in document) {
+  document.documentElement.classList.add('vt');
+}
+
 const found = document.getElementById('root');
 if (!found) throw new Error('#root not found in index.html');
 // 显式标注类型：下面的分支在 .then() 回调里使用它，而 TS 不会把模块级的收窄

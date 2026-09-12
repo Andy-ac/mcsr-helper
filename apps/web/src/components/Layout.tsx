@@ -57,7 +57,7 @@ export function Layout() {
   return (
     <div className="shell">
       <aside className={`sidebar${collapsed ? ' is-collapsed' : ''}`}>
-        <NavLink to="/" className="sidebar__brand">
+        <NavLink to="/" className="sidebar__brand" viewTransition>
           <span className="sidebar__mark" aria-hidden="true" />
           <span className="sidebar__brandtext">{t('common.appName')}</span>
           <span className="sidebar__stage">M1</span>
@@ -76,6 +76,10 @@ export function Layout() {
               <NavLink
                 key={s.to}
                 to={s.to}
+                // viewTransition：让浏览器对整页做交叉淡入。
+                // 侧边栏用 CSS 的 view-transition-name 钉住不动（见 styles.css），
+                // 所以看起来只有内容区在换。
+                viewTransition
                 className={({ isActive }) => `sidebar__item${isActive ? ' is-active' : ''}`}
                 title={t(s.labelKey)}
               >
@@ -128,9 +132,12 @@ export function Layout() {
 
       <div className="content">
         {/*
-          key={pathname} 让每次路由切换都重新挂载这个 div，
-          CSS 动画才会重新播放 —— 最省事也最可靠的路由过渡做法，
-          不需要引入 motion 库。动画本身在 styles.css 的 .route-fade。
+          key={pathname} 让每次路由切换都重新挂载这个 div。
+
+          ⚠️ 它现在**只服务于 CSS 兜底动画**（不支持 View Transitions 的浏览器）。
+             在支持 View Transitions 的浏览器上，动画由浏览器原生的交叉淡入负责，
+             这个 key 只是让它照常重挂 —— 无害，因为路由切换本来就会换组件。
+             两条路的互斥由 styles.css 里的 `html:not(.vt)` 保证。
         */}
         <main className="main" ref={mainRef}>
           <div className="route-fade" key={location.pathname}>

@@ -15,6 +15,28 @@ deploy/deploy.env
 .env.local
 .env.*.local
 
+# ---- 数据库（绝不要提交）----
+#
+# ⚠️ 本项目的规矩是「数据库**只存在于服务器上**」（见 docs/v1-plan.md §6
+#    和 deploy/deploy.sh 里那段说明）。本地不该有库，更不该提交它。
+#
+# 这里踩过一次：开发调试时留下了一个本地库（services/api/data/mcsr.db），
+# 它被误提交进了版本库，后来跑测试又在这个库上生成了运行时文件
+# mcsr.db-wal / mcsr.db-shm，也被一起提交了。
+#
+# 当时里面只有资源库的 9 条内容，没有造成实际损失。但 M2 之后
+# 这个库里会有用户邮箱、密码哈希、会话和服务器的完整数据 ——
+# 一旦进过版本库，**即使后来删掉，历史里也还在**，清干净很麻烦。
+#
+# -wal / -shm 尤其不能提交：它们只在写入过程中存在，
+# 且内容与主库文件强耦合，单独拿出来毫无意义。
+services/api/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # ---- editor / OS ----
 .vscode/*
 !.vscode/extensions.json

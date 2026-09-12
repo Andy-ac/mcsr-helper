@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { Link, useParams } from 'react-router';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
+import { ResourceCard } from '@/components/ResourceCard';
 import { ResourceIcon } from '@/components/ResourceIcon';
 import { ApiError, fetchResource, fetchResources } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
@@ -179,24 +180,9 @@ function RelatedResources({ currentId, tag }: { currentId: string; tag?: string 
       </h2>
       <ul className="reslist">
         {others.map((item) => (
-          <li className="rescard" key={item.id}>
-            <div className="rescard__icon">
-              <ResourceIcon
-                id={item.id}
-                title={item.title}
-                url={item.url}
-                imageUrl={item.imageUrl}
-              />
-            </div>
-            <div className="rescard__body">
-              <div className="rescard__head">
-                <Link className="rescard__title" to={`/resources/${encodeURIComponent(item.id)}`}>
-                  {item.title}
-                </Link>
-              </div>
-              {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}
-            </div>
-          </li>
+          // 复用列表页的卡片组件 —— 之前这里自己写了一份精简版，
+          // 结果是那一份只有标题可点。共用之后"点卡片任何位置"对两处同时成立。
+          <ResourceCard key={item.id} item={item} />
         ))}
       </ul>
     </section>
