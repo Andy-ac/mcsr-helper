@@ -18,26 +18,28 @@ import {
 
 import { getDb } from './db';
 
-/** 数据库里的一行（snake_case，tags 是 JSON 文本，featured 是 0/1）。 */
+/** 数据库里的一行（snake_case，tags 是 JSON 文本，featured/official 是 0/1）。 */
 interface ResourceRow {
   id: string;
   kind: string;
   title: string;
   title_en: string | null;
   url: string;
+  image_url: string | null;
   summary: string | null;
   body: string;
   lang: string;
   tags: string;
   featured: number;
+  official: number;
   status: string;
   created_at: number;
   updated_at: number;
 }
 
 const SELECT_COLUMNS = `
-  id, kind, title, title_en, url, summary, body, lang, tags,
-  featured, status, created_at, updated_at
+  id, kind, title, title_en, url, image_url, summary, body, lang, tags,
+  featured, official, status, created_at, updated_at
 `;
 
 /** tags 是 JSON 文本列；解析失败不应该让整个列表 500，退化成空数组并留个日志。 */
@@ -59,11 +61,13 @@ function toResource(row: ResourceRow): Resource {
     title: row.title,
     titleEn: row.title_en,
     url: row.url,
+    imageUrl: row.image_url,
     summary: row.summary,
     body: row.body,
     lang: row.lang as Resource['lang'],
     tags: parseTags(row.tags),
     featured: row.featured === 1,
+    official: row.official === 1,
     status: row.status as Resource['status'],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -179,8 +183,11 @@ export function listTopTags(limit = 30): Array<{ tag: string; count: number }> {
 // 写入（M1 只被导入脚本调用；M2 会加用户提交）
 // ---------------------------------------------------------------------------
 
-export type ResourceInput = Omit<Resource, 'createdAt' | 'updatedAt' | 'summary'> & {
+export type ResourceInput = Omit<Resource, 'createdAt' | 'updatedAt' | 'summary' | 'imageUrl'> & {
+  // summary 与 imageUrl 允许缺省：导入文件里常常不写，
+  // 前者从 body 推导，后者退回到 favicon。
   summary?: string | null;
+  imageUrl?: string | null;
 };
 
 /**
@@ -207,18 +214,21 @@ export function upsertResource(
 
   db.prepare(
     `INSERT INTO resources
-       (id, kind, title, title_en, url, summary, body, lang, tags, featured, status, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, kind, title, title_en, url, image_url, summary, body, lang, tags,
+        featured, official, status, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        kind       = excluded.kind,
        title      = excluded.title,
        title_en   = excluded.title_en,
        url        = excluded.url,
+       image_url  = excluded.image_url,
        summary    = excluded.summary,
        body       = excluded.body,
        lang       = excluded.lang,
        tags       = excluded.tags,
        featured   = excluded.featured,
+       official   = excluded.official,
        status     = excluded.status,
        source     = excluded.source,
        updated_at = excluded.updated_at`,
@@ -228,11 +238,13 @@ export function upsertResource(
     input.title,
     normalized.titleEn,
     input.url,
+    normalized.imageUrl,
     normalized.summary,
     input.body,
     input.lang,
     JSON.stringify(normalized.tags),
     input.featured ? 1 : 0,
+    input.official ? 1 : 0,
     input.status,
     source,
     now,

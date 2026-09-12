@@ -28,6 +28,7 @@ const base = {
   lang: 'en' as const,
   tags: [] as string[],
   featured: false,
+  official: false,
   status: 'published' as const,
 };
 
@@ -128,5 +129,78 @@ describe('查询', () => {
     const tools = listResources({ tag: 'tools', page: 1, pageSize: 50 });
     assert.equal(tools.total, 1, 'tag=tools 不应该匹配到 tools-extra');
     assert.equal(tools.items[0]?.id, 'tag-1');
+  });
+});
+
+describe('卡片字段', () => {
+  it('official 与 featured 是两个独立维度，互不影响', () => {
+    upsertResource({
+      ...base,
+      id: 'both',
+      title: '两个都有',
+      url: 'https://both.example',
+      featured: true,
+      official: true,
+    });
+    upsertResource({
+      ...base,
+      id: 'only-feat',
+      title: '只精选',
+      url: 'https://f.example',
+      featured: true,
+    });
+    upsertResource({
+      ...base,
+      id: 'only-off',
+      title: '只官方',
+      url: 'https://o.example',
+      official: true,
+    });
+
+    const result = listResources({ page: 1, pageSize: 50 });
+    const byId = new Map(result.items.map((i) => [i.id, i]));
+
+    assert.deepEqual(
+      { f: byId.get('both')?.featured, o: byId.get('both')?.official },
+      { f: true, o: true },
+    );
+    assert.deepEqual(
+      { f: byId.get('only-feat')?.featured, o: byId.get('only-feat')?.official },
+      { f: true, o: false },
+    );
+    assert.deepEqual(
+      { f: byId.get('only-off')?.featured, o: byId.get('only-off')?.official },
+      { f: false, o: true },
+      'official 不应该被 featured 的逻辑带偏',
+    );
+  });
+
+  it('imageUrl 为空字符串时规范成 null，非 http(s) 的一律丢弃', () => {
+    upsertResource({
+      ...base,
+      id: 'img-empty',
+      title: '空图',
+      url: 'https://e.example',
+      imageUrl: '   ',
+    });
+    upsertResource({
+      ...base,
+      id: 'img-bad',
+      title: '坏图',
+      url: 'https://b.example',
+      imageUrl: 'javascript:alert(1)',
+    });
+    upsertResource({
+      ...base,
+      id: 'img-ok',
+      title: '好图',
+      url: 'https://ok.example',
+      imageUrl: 'https://ok.example/cover.png',
+    });
+
+    const byId = new Map(listResources({ page: 1, pageSize: 50 }).items.map((i) => [i.id, i]));
+    assert.equal(byId.get('img-empty')?.imageUrl, null, '空白 URL 应当被规范化成 null');
+    assert.equal(byId.get('img-bad')?.imageUrl, null, 'javascript: 伪协议必须被丢弃');
+    assert.equal(byId.get('img-ok')?.imageUrl, 'https://ok.example/cover.png');
   });
 });

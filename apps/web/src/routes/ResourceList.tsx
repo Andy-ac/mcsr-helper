@@ -6,8 +6,16 @@ import {
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useSearchParams } from 'react-router';
+import { ResourceIcon } from '@/components/ResourceIcon';
 import { fetchResources, fetchTags } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
+
+/** 子 tab：全部 / 网站 / 工具。新增 kind 时在这里加一条即可。 */
+const TABS = [
+  { key: 'all', labelKey: 'resources.tabAll', kind: undefined },
+  { key: 'website', labelKey: 'resources.tabWebsite', kind: 'website' as const },
+  { key: 'tool', labelKey: 'resources.tabTool', kind: 'tool' as const },
+] as const;
 
 /**
  * 资源库列表页。
@@ -52,7 +60,6 @@ export function ResourceList() {
       );
     }, 300);
     return () => globalThis.clearTimeout(timer);
-    // query.q 参与依赖是有意的：它变化时（比如点了"清除筛选"）要重新对齐
   }, [searchInput, query.q, setParams]);
 
   const listQuery = JSON.stringify(query);
@@ -86,6 +93,25 @@ export function ResourceList() {
         <p className="pagehead__sub">{t('resources.subtitle')}</p>
       </header>
 
+      {/* 子 tab：按类型分流。点击时清掉分页，但保留搜索与语言筛选。 */}
+      <div className="tabs" role="tablist">
+        {TABS.map((tab) => {
+          const active = query.kind === tab.kind;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className={`tabs__item${active ? ' is-active' : ''}`}
+              onClick={() => setParam('kind', tab.kind)}
+            >
+              {t(tab.labelKey)}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="filters">
         <div className="filters__search">
           <label className="sr-only" htmlFor="rq">
@@ -99,17 +125,6 @@ export function ResourceList() {
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
-
-        <select
-          className="filters__select"
-          value={query.kind ?? ''}
-          aria-label={t('resources.allKinds')}
-          onChange={(e) => setParam('kind', e.target.value || undefined)}
-        >
-          <option value="">{t('resources.allKinds')}</option>
-          <option value="website">{t('resources.kindWebsite')}</option>
-          <option value="tool">{t('resources.kindTool')}</option>
-        </select>
 
         <select
           className="filters__select"
@@ -214,31 +229,45 @@ function ResourceCard({ item }: { item: ResourceListItem }) {
   const { t } = useTranslation();
   return (
     <li className="rescard">
-      <div className="rescard__head">
-        <Link className="rescard__title" to={`/resources/${encodeURIComponent(item.id)}`}>
-          {item.title}
-        </Link>
-        {item.featured ? (
-          <span className="badge badge--featured">{t('resources.featured')}</span>
-        ) : null}
-        <span className="badge">
-          {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
-        </span>
+      {/* 物品栏格子：图片 / favicon / 首字母方块 */}
+      <div className="rescard__icon">
+        <ResourceIcon id={item.id} title={item.title} url={item.url} imageUrl={item.imageUrl} />
       </div>
 
-      {item.titleEn && item.titleEn !== item.title ? (
-        <p className="rescard__alt">{item.titleEn}</p>
-      ) : null}
+      <div className="rescard__body">
+        <div className="rescard__head">
+          <Link className="rescard__title" to={`/resources/${encodeURIComponent(item.id)}`}>
+            {item.title}
+          </Link>
+        </div>
 
-      {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}
+        {item.titleEn && item.titleEn !== item.title ? (
+          <p className="rescard__alt">{item.titleEn}</p>
+        ) : null}
 
-      <div className="rescard__foot">
-        <span className="rescard__host">{hostOf(item.url)}</span>
-        {item.tags.slice(0, 5).map((tag) => (
-          <span key={tag} className="tagchip tagchip--sm">
-            {tag}
+        {/* 主要标签：精选（金）、官方（钻石青）、类型（中性） */}
+        <div className="badges">
+          {item.featured ? (
+            <span className="badge badge--featured">{t('resources.featured')}</span>
+          ) : null}
+          {item.official ? (
+            <span className="badge badge--official">{t('resources.official')}</span>
+          ) : null}
+          <span className="badge badge--kind">
+            {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
           </span>
-        ))}
+        </div>
+
+        {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}
+
+        <div className="rescard__foot">
+          <span className="rescard__host">{hostOf(item.url)}</span>
+          {item.tags.slice(0, 4).map((tag) => (
+            <span key={tag} className="tagchip tagchip--sm">
+              {tag}
+            </span>
+          ))}
+        </div>
       </div>
     </li>
   );

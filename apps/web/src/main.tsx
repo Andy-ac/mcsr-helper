@@ -1,6 +1,11 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '@/App';
+// 像素字体：只取 latin 子集（最小），中文交给系统字体。
+// ⚠️ 必须自托管（走 npm 包），不能换成 Google Fonts CDN ——
+//    一是 CSP 是 font-src 'self'，二是大陆访问不到。
+import '@fontsource/silkscreen/latin-400.css';
+import '@fontsource/silkscreen/latin-700.css';
 import '@/i18n';
 import '@/styles.css';
 

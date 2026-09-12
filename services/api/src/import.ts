@@ -26,14 +26,23 @@ import {
   upsertResource,
 } from './resources';
 
-/** 导入文件里每条记录的形态：id 可省（省略时从 url 推导），时间戳由脚本生成。 */
+/**
+ * 导入文件里每条记录的形态。
+ *
+ * id / summary / imageUrl 都可省；
+ * `official` 给了默认值 false —— 内容文件里只在**确实是官方**的条目上写一行，
+ * 不必每一条都写 `"official": false`。少写就少错。
+ */
 const ImportEntrySchema = ResourceSchema.omit({
   createdAt: true,
   updatedAt: true,
   summary: true,
+  imageUrl: true,
 }).extend({
   id: z.string().min(1).max(64).optional(),
   summary: z.string().max(300).nullable().optional(),
+  imageUrl: z.string().max(2000).nullable().optional(),
+  official: z.boolean().default(false),
 });
 
 const ImportFileSchema = z.object({
@@ -108,6 +117,7 @@ function main() {
     const normalized = normalizeResourceInput({
       body: entry.body,
       summary: entry.summary ?? null,
+      imageUrl: entry.imageUrl ?? null,
       tags: entry.tags,
       titleEn: entry.titleEn,
     });
@@ -117,11 +127,13 @@ function main() {
       title: entry.title,
       titleEn: normalized.titleEn,
       url: entry.url,
+      imageUrl: normalized.imageUrl,
       summary: normalized.summary,
       body: entry.body,
       lang: entry.lang,
       tags: normalized.tags,
       featured: entry.featured,
+      official: entry.official,
       status: entry.status,
     };
   });

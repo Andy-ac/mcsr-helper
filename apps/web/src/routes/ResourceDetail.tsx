@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { Link, useParams } from 'react-router';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
+import { ResourceIcon } from '@/components/ResourceIcon';
 import { ApiError, fetchResource } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
 
@@ -40,32 +41,43 @@ export function ResourceDetailPage() {
       </Link>
 
       <header className="detail__head">
-        <h1 className="detail__title">{r.title}</h1>
-        {r.titleEn && r.titleEn !== r.title ? <p className="detail__alt">{r.titleEn}</p> : null}
-
-        <div className="detail__meta">
-          {r.featured ? (
-            <span className="badge badge--featured">{t('resources.featured')}</span>
-          ) : null}
-          <span className="badge">
-            {r.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
-          </span>
-          <span className="badge">
-            {r.lang === 'zh-CN' ? t('resources.langZh') : t('resources.langEn')}
-          </span>
-          <span className="detail__updated">
-            {t('resources.lastUpdated', { date: new Date(r.updatedAt).toLocaleDateString() })}
-          </span>
+        {/* 和列表卡片同一种图标槽，只是更大 —— 视觉上"点进来还是那一格" */}
+        <div className="detail__icon">
+          <ResourceIcon id={r.id} title={r.title} url={r.url} imageUrl={r.imageUrl} />
         </div>
 
-        <a className="cta" href={r.url} target="_blank" rel="noopener noreferrer">
-          {t('resources.visit')} ↗
-        </a>
+        <div className="detail__heading">
+          <h1 className="detail__title">{r.title}</h1>
+          {r.titleEn && r.titleEn !== r.title ? <p className="detail__alt">{r.titleEn}</p> : null}
+
+          <div className="detail__meta">
+            {r.featured ? (
+              <span className="badge badge--featured">{t('resources.featured')}</span>
+            ) : null}
+            {r.official ? (
+              <span className="badge badge--official">{t('resources.official')}</span>
+            ) : null}
+            <span className="badge badge--kind">
+              {r.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
+            </span>
+            <span className="badge badge--kind">
+              {r.lang === 'zh-CN' ? t('resources.langZh') : t('resources.langEn')}
+            </span>
+          </div>
+
+          <a className="cta" href={r.url} target="_blank" rel="noopener noreferrer">
+            {t('resources.visit')} ↗
+          </a>
+
+          <p className="detail__updated">
+            {t('resources.lastUpdated', { date: new Date(r.updatedAt).toLocaleDateString() })}
+          </p>
+        </div>
       </header>
 
       {r.tags.length > 0 ? (
         <div className="detail__tags">
-          <span className="tagcloud__label">{t('resources.tagsLabel')}</span>
+          <span className="tagcloud__label">{t('resources.subTagsLabel')}</span>
           {r.tags.map((tag) => (
             <Link key={tag} className="tagchip" to={`/resources?tag=${encodeURIComponent(tag)}`}>
               {tag}

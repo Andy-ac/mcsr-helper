@@ -85,14 +85,28 @@ export const ResourceSchema = z.object({
   /** 另一种语言的标题，可选 —— 内容不翻译，但标题允许双语以便检索 */
   titleEn: z.string().trim().max(TITLE_MAX).nullable(),
   url: httpUrl,
+  /**
+   * 卡片配图。**允许为空** —— 为空时前端退回到 <origin>/favicon.ico，
+   * 再失败就渲染一个首字母方块。这样新条目零配置就有图，
+   * 想指定正式配图的再填。
+   */
+  imageUrl: httpUrl.nullable(),
   /** 列表页用的一句话简介；为空时由 body 推导 */
   summary: z.string().trim().max(SUMMARY_MAX).nullable(),
   /** 详情页的 Markdown 正文，**渲染前必须 sanitize** */
   body: z.string().max(BODY_MAX),
   lang: z.enum(LOCALES),
+  /** 子标签：自由填写，用于筛选与聚合 */
   tags: z.array(tag).max(TAGS_MAX),
-  /** 精选条目置顶 */
+  /**
+   * 主要标签。和 kind 一起构成卡片上的那排徽章。
+   *
+   * 精选与官方是**两个独立维度**，不是互斥枚举：
+   * 一个条目可以既非精选也非官方，也可以"官方但未精选"。
+   * 所以用两个布尔，而不是一个 type 字段。
+   */
   featured: z.boolean(),
+  official: z.boolean(),
   status: z.enum(CONTENT_STATUSES),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -142,24 +156,33 @@ export type ResourceListResponse = z.infer<typeof ResourceListResponseSchema>;
 /**
  * 把用户/导入文件给的字段整理成规范形态。
  *
- * 做三件事：
+ * 做四件事：
  *   1. summary 为空时从 body 推导（去掉 Markdown 标记，截断）
  *   2. 标签去重、排序、转小写（保证 `Tools` 和 `tools` 是同一个标签）
- *   3. 去掉空标题的英文标题（空字符串一律转成 null）
+ *   3. 空字符串一律转成 null（英文标题、配图 URL）——
+ *      库里只应该有一种"没有值"的表示，否则查询和渲染都要判断两次
+ *   4. 配图 URL 做一次协议校验
  */
 export function normalizeResourceInput(
-  // summary 允许**缺省**（导入文件里常常不写，让它从 body 推导），
-  // 所以这里用可选属性，而不是 `string | null`。
-  input: Pick<Resource, 'body' | 'tags' | 'titleEn'> & { summary?: string | null },
-): { summary: string | null; tags: string[]; titleEn: string | null } {
+  // summary / imageUrl 允许**缺省**（导入文件里常常不写），
+  // 所以用可选属性，而不是 `string | null`。
+  input: Pick<Resource, 'body' | 'tags' | 'titleEn'> & {
+    summary?: string | null;
+    imageUrl?: string | null;
+  },
+): { summary: string | null; tags: string[]; titleEn: string | null; imageUrl: string | null } {
   const summary = input.summary?.trim() ? input.summary.trim() : deriveSummary(input.body);
 
   const tags = [...new Set(input.tags.map((t) => t.trim().toLowerCase()))].sort();
+
+  const rawImage = input.imageUrl?.trim() ?? '';
+  const imageUrl = /^https?:\/\//i.test(rawImage) ? rawImage : null;
 
   return {
     summary: summary.slice(0, SUMMARY_MAX) || null,
     tags,
     titleEn: input.titleEn?.trim() ? input.titleEn.trim() : null,
+    imageUrl,
   };
 }
 
