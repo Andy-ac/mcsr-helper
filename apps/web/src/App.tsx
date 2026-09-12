@@ -1,9 +1,14 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router';
 import { Layout } from '@/components/Layout';
+import { Account } from '@/routes/Account';
 import { Home } from '@/routes/Home';
+import { Login } from '@/routes/Login';
 import { NotFound } from '@/routes/NotFound';
+import { PasswordReset } from '@/routes/PasswordReset';
+import { Register } from '@/routes/Register';
 import { ResourceList } from '@/routes/ResourceList';
+import { VerifyEmail } from '@/routes/VerifyEmail';
 
 /**
  * 详情页懒加载。
@@ -19,14 +24,9 @@ const ResourceDetailPage = lazy(() =>
 );
 
 /**
- * 应用路由。
- *
- * 用 BrowserRouter（真实路径）而不是 HashRouter：Caddy 已经配了 SPA 回退
- * （`try_files {path} /index.html`），所以 `/resources/xxx` 这种深链接能直接用，
- * 也更好看、更利于分享。
- *
- * `/embed-test` 不在这里 —— 它在 main.tsx 里就被分流了（那是个一次性自检页，
- * 不属于应用本身，删掉时不用动这里）。
+ * 认证相关的页面也懒得拆 —— 它们比详情页小得多，而且
+ * 登录/注册是**直达链接**（邮件、书签、别人发的地址）。
+ * 懒加载会让这些路径多一次"先加载再渲染"的往返，得不偿失。
  */
 export default function App() {
   return (
@@ -43,6 +43,18 @@ export default function App() {
               </Suspense>
             }
           />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          {/*
+            这两个路径**必须和邮件模板里的链接完全一致**：
+              · verifyUrl()  → /verify-email?token=…
+              · resetUrl()   → /reset-password?token=…
+            见 services/api/src/email/messages.ts。
+            改这里就要同时改那里，否则用户点开邮件会落到 404。
+          */}
+          <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/reset-password" element={<PasswordReset />} />
+          <Route path="/me" element={<Account />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

@@ -105,6 +105,104 @@ export const zhCN = {
     related: '同标签的其它条目',
     openSite: '访问站点',
   },
+  /**
+   * 账号相关。
+   *
+   * 文案里有一条贯穿始终的原则：**浏览不需要登录，登录只是为了提交**。
+   * 所以这里没有"请先登录才能继续"这类说法 —— 用户没登录也能看完整站，
+   * 提示语必须让这一点看起来是有意的，而不是他漏掉了什么。
+   */
+  auth: {
+    // 登录
+    loginTitle: '登录',
+    loginSubtitle: '登录之后才能提交内容。浏览全站不需要登录。',
+    loggingIn: '登录中…',
+    loginAction: '登录',
+    forgotPassword: '忘记密码？',
+    noAccount: '还没有账号？',
+    // 注册
+    registerTitle: '注册',
+    registerSubtitle: '注册后需要验证邮箱才能提交内容。',
+    registering: '注册中…',
+    registerAction: '注册',
+    hasAccount: '已经有账号了？',
+    displayName: '昵称',
+    displayNamePlaceholder: '别人看到的名字',
+    email: '邮箱',
+    emailPlaceholder: 'you@example.com',
+    password: '密码',
+    passwordPlaceholder: '至少 8 位',
+    newPassword: '新密码',
+    // 注册结果（刻意不透露邮箱是否已注册）
+    registerDone: '如果这个邮箱还没有注册，我们已经发送了一封验证邮件。',
+    registerDoneHint: '如果已经注册过，请直接登录，或用「忘记密码」重置。',
+    // 验证邮箱
+    verifyTitle: '验证邮箱',
+    verifyWorking: '正在验证…',
+    verifyOk: '邮箱已验证',
+    verifyOkHint: '现在可以提交内容了。',
+    verifyFailed: '这个链接无效或已过期',
+    verifyFailedHint: '验证链接 24 小时内有效，而且只能用一次。登录之后可以重新发一封。',
+    verifyResend: '重新发送验证邮件',
+    verifyResending: '发送中…',
+    verifyResent: '已重新发送。之前那封邮件里的链接已经失效了。',
+    verifyNeeded: '验证邮箱之后才能提交内容。',
+    verifyNoToken: '这个链接不完整，缺少验证参数。',
+    // 找回密码
+    resetRequestTitle: '找回密码',
+    resetRequestSubtitle: '输入注册时用的邮箱，我们会发一封重置邮件。',
+    resetRequestAction: '发送重置邮件',
+    resetRequesting: '发送中…',
+    resetRequestDone: '如果这个邮箱对应一个账号，我们已经发送了一封重置密码的邮件。',
+    resetRequestDoneHint: '链接 1 小时内有效。没收到的话，检查一下垃圾箱。',
+    resetTitle: '设置新密码',
+    resetSubtitle: '设置之后，你在其它设备上的登录状态会全部失效。',
+    resetAction: '设置新密码',
+    resetWorking: '正在设置…',
+    resetOk: '密码已更新',
+    resetOkHint: '请用新密码登录。',
+    // 账号页
+    accountTitle: '我的账号',
+    accountEmail: '邮箱',
+    accountVerified: '邮箱已验证',
+    accountUnverified: '邮箱未验证',
+    accountRole: '角色',
+    accountJoined: '注册于',
+    roleUser: '普通用户',
+    roleReviewer: '审核员',
+    roleAdmin: '管理员',
+    canSubmitYes: '可以提交内容',
+    canSubmitNo: '验证邮箱之后才能提交内容',
+    logoutAction: '退出登录',
+    loggingOut: '退出中…',
+    // 错误
+    invalidCredentials: '邮箱或密码不对',
+    emailNotVerified: '邮箱还没验证，验证之后才能提交内容。',
+    rateLimited: '尝试太频繁了，请等 {{seconds}} 秒后再试',
+    accountSuspended: '这个账号已被停用。',
+    sendFailed: '邮件发送失败，请稍后再试。',
+    invalidToken: '这个链接无效或已过期。',
+    genericError: '出错了，请稍后再试。',
+    /**
+     * 字段级校验文案。
+     *
+     * ⚠️ 这些是**客户端**按 `(字段, Zod 错误码)` 映射出来的，不是服务端返回的原文。
+     *    服务端的校验消息是中文写死的，直接显示会让英文界面突然冒出一句中文 ——
+     *    而且只在出错时出现，正常路径的测试永远看不到。
+     *    映射逻辑见 apps/web/src/lib/auth.tsx 的 fieldIssueText。
+     *    新增校验规则时要同步加一条，否则会退回显示服务端原文。
+     */
+    err: {
+      emailFormat: '邮箱格式不正确',
+      passwordMin: '密码至少 {{min}} 位',
+      passwordMax: '密码不能超过 {{max}} 位',
+      nameMin: '昵称至少 {{min}} 个字符',
+      nameMax: '昵称不能超过 {{max}} 个字符',
+      required: '这一项不能为空',
+      tooLong: '内容太长了',
+      invalid: '填写的内容不合法',
+    },
+  },
 };
 
 /**

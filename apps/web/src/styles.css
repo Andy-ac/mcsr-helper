@@ -404,6 +404,28 @@ code {
 .sidebar__block--profile {
   background: #8a6fa8;
 }
+/* 登录/注册用中性灰：它们不是"分区"，是操作。
+   给它们上色会让人以为那是第四个内容区。 */
+.sidebar__block--login {
+  background: #5c6675;
+}
+.sidebar__block--register {
+  background: #4a5563;
+}
+
+/* 未验证邮箱的标记。金色描边、方角，和徽章一套语言。 */
+.sidebar__flag {
+  margin-left: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.5;
+  color: var(--gold);
+  border: 1px solid rgba(255, 170, 0, 0.5);
+  background: rgba(255, 170, 0, 0.12);
+  border-radius: var(--r-xs);
+  padding: 0 5px;
+  flex: 0 0 auto;
+}
 
 .sidebar__foot {
   margin-top: auto;
@@ -1533,6 +1555,96 @@ html:not(.vt) .route-fade {
   font-size: var(--fs-px-sm);
   color: var(--redstone);
   margin: 0;
+}
+
+/* 输入框的"正文"变体。
+   默认的 .mcsr-field__input 用等宽字体 —— 那是给种子值准备的（一长串
+   64 位数字，等宽下更容易核对有没有抄错）。但邮箱和密码不是那种东西，
+   等宽字体反而显得像命令行。 */
+.mcsr-field__input--prose {
+  font-family: var(--font-body);
+}
+
+/* ==================================================================
+   账号表单
+   ================================================================== */
+
+.authform {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 400px;
+}
+/* 刻意**没有**给表单加 autofocus。
+   它看起来是省了一次点击，实际代价是：手机上会立刻弹出键盘并可能顶动页面，
+   读屏用户在页面刚加载完就被拽到输入框里、跳过了标题和说明。
+   表单只有几个字段，本来也不需要这一步。这个取舍是 lint 规则
+   （a11y/noAutofocus）和实际体验指向同一个方向的情况。 */
+.authform--wide {
+  max-width: 620px;
+}
+.authform__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.authform__link {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.authform__link:hover {
+  color: var(--grass-bright);
+}
+.authform__alt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0;
+}
+
+/* 提示条。三种语义，三种颜色： */
+.notice {
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px 15px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+.notice p {
+  margin: 0;
+}
+.notice p + p {
+  margin-top: 6px;
+}
+.notice--ok {
+  border-color: rgba(127, 178, 56, 0.42);
+  background: rgba(127, 178, 56, 0.1);
+  color: var(--fg);
+}
+.notice--bad {
+  border-color: rgba(232, 86, 74, 0.42);
+  background: rgba(232, 86, 74, 0.1);
+  color: var(--fg);
+}
+.notice--info {
+  border-color: rgba(74, 237, 217, 0.32);
+  background: rgba(74, 237, 217, 0.07);
+  color: var(--fg);
+}
+.notice__sub {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+/* 服务端返回的具体原因。字号更小、颜色更淡：
+   上面那两句是给"不知道该做什么"的人看的，这一句是给排查问题的人看的。 */
+.notice__detail {
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
 }
 
 /* ==================================================================

@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '@/App';
 import '@/i18n';
+import { AuthProvider } from '@/lib/auth';
 // 像素字体通过 styles.css 里的 @font-face 以相对路径引入 ——
 // 走构建资源管线，产出带 hash 的文件并落到 /assets/ 下，
 // 从而享受 Caddy 给 /assets/* 配的 immutable 长缓存。
@@ -54,7 +55,15 @@ if (path === '/embed-test') {
 } else {
   createRoot(container).render(
     <StrictMode>
-      <App />
+      {/*
+        AuthProvider 包在 App **外面**（而不是放进 Layout 里）：
+        登录状态是整站级别的，而 Layout 在路由切换时会重新渲染。
+        放进 Layout 的话，每次换页都会重新判断一次登录态 ——
+        接口慢的时候侧边栏会闪一下"未登录"。
+      */}
+      <AuthProvider>
+        <App />
+      </AuthProvider>
     </StrictMode>,
   );
 }

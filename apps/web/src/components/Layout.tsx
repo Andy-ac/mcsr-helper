@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { setLocale } from '@/i18n';
+import { useAuth } from '@/lib/auth';
 
 /**
  * 分区导航的数据。
@@ -15,7 +16,9 @@ const SECTIONS = [
   { to: '/calendar', labelKey: 'nav.calendar', block: 'calendar', milestone: 'M4' },
   { to: '/videos', labelKey: 'nav.videos', block: 'videos', milestone: 'M4' },
   { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: 'M4' },
-  { to: '/me', labelKey: 'nav.profile', block: 'profile', milestone: 'M5' },
+  // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
+  // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。
+  { to: '/me', labelKey: 'nav.profile', block: 'profile', milestone: '' },
 ] as const;
 
 const COLLAPSE_KEY = 'mcsr.sidebar.collapsed';
@@ -23,6 +26,7 @@ const COLLAPSE_KEY = 'mcsr.sidebar.collapsed';
 export function Layout() {
   const { t, i18n } = useTranslation();
   const location = useLocation();
+  const auth = useAuth();
 
   // 折叠状态存在 localStorage 里：这是"我的偏好"，刷新后应该保持。
   const [collapsed, setCollapsed] = useState(() => {
@@ -91,6 +95,48 @@ export function Layout() {
         </nav>
 
         <div className="sidebar__foot">
+          {/*
+            登录状态。
+
+            ⚠️ 加载中（auth.loading）时刻意**什么都不显示**，不要显示"未登录"。
+               显示"未登录"然后半秒后跳成用户名，是一次没必要的视觉抖动，
+               而且会让已经登录的用户以为掉线了。
+          */}
+          {auth.loading ? null : auth.user ? (
+            <NavLink
+              to="/me"
+              className={({ isActive }) => `sidebar__item${isActive ? ' is-active' : ''}`}
+              viewTransition
+              title={auth.user.displayName}
+            >
+              <span className="sidebar__block sidebar__block--profile" aria-hidden="true" />
+              <span className="sidebar__label">{auth.user.displayName}</span>
+              {/* 未验证邮箱时挂一个标记。这是唯一挡住提交内容的东西，
+                  放在侧边栏能让用户自己发现，而不用等提交时才知道。 */}
+              {auth.user.emailVerified ? null : (
+                <span className="sidebar__flag" title={t('auth.accountUnverified')}>
+                  !
+                </span>
+              )}
+            </NavLink>
+          ) : (
+            <>
+              <NavLink to="/login" className="sidebar__item" viewTransition title={t('nav.login')}>
+                <span className="sidebar__block sidebar__block--login" aria-hidden="true" />
+                <span className="sidebar__label">{t('nav.login')}</span>
+              </NavLink>
+              <NavLink
+                to="/register"
+                className="sidebar__item"
+                viewTransition
+                title={t('nav.register')}
+              >
+                <span className="sidebar__block sidebar__block--register" aria-hidden="true" />
+                <span className="sidebar__label">{t('nav.register')}</span>
+              </NavLink>
+            </>
+          )}
+
           <div className="sidebar__lang">
             <button
               type="button"
