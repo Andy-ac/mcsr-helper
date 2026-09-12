@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node build.mjs --watch",
     "build": "node build.mjs",
-    "dist": "pnpm build && electron-builder --win --config electron-builder.yml",
+    "dist": "node build.mjs && node scripts/dist.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

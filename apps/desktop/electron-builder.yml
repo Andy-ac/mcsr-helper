@@ -1,8 +1,8 @@
-# electron-builder 配置（M3 使用；现在先建好，便于 `pnpm build:installer` 提前验证打包链路）
+# electron-builder 配置
 #
-# 发布通道：安装包与 latest.yml 放 Cloudflare R2（不用自己的 VPS ——
-# 大陆用户下载 ~100MB 走境外 VPS 会被跨境链路拖累）。
-# 先填好 host/路径，等 M3 拿到 R2 桶之后再跑 `pnpm build:installer`。
+# 发布通道：安装包与 latest.yml 由 deploy.sh 上传到 VPS 的
+# /srv/mcsr-helper/releases/，再由 Caddy 从 /installer/* 提供。
+# 为什么暂时不用 R2，见下面 publish 那段。
 
 appId: com.mcsr.helper
 productName: MCSR Helper
@@ -37,9 +37,23 @@ nsis:
   deleteAppDataOnUninstall: false
   artifactName: ${productName}-Setup-${version}.${ext}
 
-# 自动更新源。M3 时把 <R2_PUBLIC_HOST> 换成真实值，
-# 并把 R2 桶配置为公开只读（安装包本来就要给所有人下载）。
+# 自动更新源。
+#
+# ⚠️ 现在走**自己的 VPS**（Caddy 的 /installer/* → /srv/mcsr-helper/releases/），
+#    而不是计划里写的 Cloudflare R2。原因是 R2 需要你先去开桶，
+#    而 M3 的验收标准（发新版本 → 应用内提示 → 更新成功）用任何静态托管都能验。
+#
+# 代价是大陆用户下载 ~100MB 会走跨境链路，实测可能只有几百 KB/s。
+# 这在 M3 阶段可以接受（我们自己测），但**面向真实用户之前应该换成 R2**。
+#
+# 什么时候换：拿到 R2 桶之后，把 url 改成
+#     https://<R2_PUBLIC_HOST>/mcsr-helper/releases
+# 并恢复 deploy/Caddyfile 里那段被注释掉的 /installer/* 跳转。
+# **只需要改这两处，客户端不用重新发版** —— electron-updater 的地址是
+# 从打包进去的 app-update.yml 读的，所以换源要发一个新版本才生效；
+# 但旧版本会一直用旧地址，直到它更新到那个新版本为止。
+# 这也是为什么换源要趁早：越晚换，停留在旧源上的用户越多。
 publish:
   provider: generic
-  url: https://<R2_PUBLIC_HOST>/mcsr-helper/releases
+  url: https://mcsrhelper.com/installer
   channel: latest

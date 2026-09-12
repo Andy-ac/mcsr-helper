@@ -193,6 +193,27 @@ export const zhCN = {
     capActionReview: '审核',
     capActionModerate: '管理身份组',
     capActionRead: '查看',
+  },
+  /**
+   * 桌面端自动更新的提示文案。
+   *
+   * ⚠️ 这些文案住在**网页**里，不在安装包里 —— 所以改一个错别字不需要发版。
+   *    这是刻意的方案，理由见 apps/web/src/components/UpdateBanner.tsx 的文件头。
+   *    （如果提示由主进程的原生对话框显示，这些字就会固化在用户已经装好的 exe 里，
+   *      想改就得发版，而用户还得先更新才能看到改好的更新提示。）
+   */
+  update: {
+    checking: '正在检查更新…',
+    available: '发现新版本 {{version}}',
+    download: '下载',
+    downloading: '正在下载新版本 {{version}}… {{percent}}%',
+    downloadingNoPercent: '正在下载新版本 {{version}}…',
+    ready: '新版本 {{version}} 已就绪',
+    restart: '重启并安装',
+    none: '已经是最新版本',
+    error: '更新出错：{{message}}',
+    retry: '重试',
+    dismiss: '关闭提示',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误

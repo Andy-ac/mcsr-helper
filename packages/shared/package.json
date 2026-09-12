@@ -9,7 +9,8 @@
     "./seed": "./src/seed.ts",
     "./resources": "./src/resources.ts",
     "./auth": "./src/auth.ts",
-    "./permissions": "./src/permissions.ts"
+    "./permissions": "./src/permissions.ts",
+    "./desktop": "./src/desktop.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -81,17 +81,46 @@
 	}
 
 	# =========================================================================
-	# 安装包与自动更新源 —— 重定向到 Cloudflare R2。
+	# 安装包与自动更新源
 	#
-	# 为什么不用本机分发：大陆用户下载 ~100MB 的 Electron 安装包，
-	# 走境外 VPS 会被跨境链路拖累（实测其他跨境线路每天有 5–12 小时劣化窗口）。
-	# R2 的免费额度足够支撑到几千用户。
+	# 现在由**本机**提供（/srv/mcsr-helper/releases/）。
+	# 计划里原本写的是 Cloudflare R2，理由是大陆用户下载 ~100MB 走境外 VPS
+	# 会被跨境链路拖累。但 R2 需要先开桶，而 M3 的验收标准
+	# （发新版本 → 应用内提示 → 更新成功）用任何静态托管都能验，
+	# 所以先用本机把链路跑通，面向真实用户之前再换。
 	#
-	# M3 之前 R2 桶还不存在，这个块可以先注释掉。
+	# 换成 R2 时：把下面这段换成 redir 到 R2，
+	# 并同步改 apps/desktop/electron-builder.yml 的 publish.url。
+	#
+	# ⚠️ handle 而不是 handle_path：electron-updater 请求的是
+	#    /installer/latest.yml 这个**完整路径**，而 root 指向 releases/ 之后
+	#    它要找的是 releases/installer/latest.yml —— 对不上。
+	#    所以这里显式用 uri strip_prefix 把 /installer 前缀去掉。
 	# =========================================================================
-	# handle /installer/* {
-	# 	redir https://{$R2_PUBLIC_HOST}/mcsr-helper/releases{uri} permanent
-	# }
+	handle /installer/* {
+		uri strip_prefix /installer
+		root * /srv/mcsr-helper/releases
+		file_server
+
+		# ⚠️ latest.yml**绝不能**被缓存。
+		#    它是自动更新的"有没有新版本"的唯一依据；一旦被 CDN 或浏览器缓存住，
+		#    用户会一直看到"已是最新版本"，而我们完全不知道 ——
+		#    这类静默失效在更新系统里是最难查的一种。
+		#    安装包本身相反：文件名带版本号，可以长期缓存。
+		# ⚠️ 用 `*latest.yml` 而不是 `/latest.yml`。
+		#
+		# 上面那句 `uri strip_prefix /installer` 会改写 URI，但 **path 匹配器
+		# 比对的是改写前的原始 URI** —— 于是 `/latest.yml` 匹配不上
+		# `/installer/latest.yml`，这条规则静默失效（实测：安装包拿到了
+		# immutable，而 latest.yml 一个 Cache-Control 都没有）。
+		#
+		# 通配符形式不带前导斜杠，按后缀匹配，改写前后都成立。
+		# 这类"规则写了但没生效"的错误不会报任何错，只能靠看响应头发现。
+		@manifest path *latest.yml
+		header @manifest Cache-Control "no-cache"
+		@pkgs path *.exe *.nsis.7z *.blockmap
+		header @pkgs Cache-Control "public, max-age=31536000, immutable"
+	}
 
 	# =========================================================================
 	# 静态前端 —— SPA 回退到 index.html

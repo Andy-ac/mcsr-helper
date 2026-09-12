@@ -5,6 +5,7 @@
 #   bash deploy/deploy.sh              # 日常部署
 #   bash deploy/deploy.sh --bootstrap  # 首次部署（先初始化服务器）
 #   bash deploy/deploy.sh --skip-build # 跳过本地构建（只推已有产物）
+#   bash deploy/deploy.sh --with-installer  # 顺带发布桌面安装包与 latest.yml
 #
 # 做的事：本地构建 → 打包 → scp 到服务器 → 解包 → 重启 API → 自检
 #
@@ -63,10 +64,13 @@ ok() { printf '\033[32m    ✓ %s\033[0m\n' "$*"; }
 
 BUILD=1
 BOOTSTRAP="${MCSR_BOOTSTRAP:-0}"
+# 发布安装包是**显式**动作：它 109MB，不该成为日常部署的副产品。
+WITH_INSTALLER=0
 for arg in "$@"; do
   case "$arg" in
     --skip-build) BUILD=0 ;;
     --bootstrap) BOOTSTRAP=1 ;;
+    --with-installer) WITH_INSTALLER=1 ;;
     *) echo "未知参数: $arg" >&2; exit 1 ;;
   esac
 done
@@ -93,6 +97,28 @@ tar -czf "$TMP/api.tgz" -C services/api/dist .
 printf '    web %s  api %s\n' \
   "$(du -h "$TMP/web.tgz" | cut -f1)" "$(du -h "$TMP/api.tgz" | cut -f1)"
 
+# ---------- 桌面安装包 ----------
+# ⚠️ 顺序：**先传安装包，再传 latest.yml**。
+#    反过来的话中间有一个窗口期，latest.yml 指向的 exe 还没到位，
+#    此时检查更新的客户端会拿到 404 —— 而 electron-updater 只会报
+#    "更新失败"，不会告诉你"是清单先到了"。
+INSTALLER_TGZ=""
+if [[ "$WITH_INSTALLER" == "1" ]]; then
+  say "打包桌面安装包"
+  if [[ ! -f apps/desktop/release/latest.yml ]]; then
+    echo "✗ apps/desktop/release/latest.yml 不存在。先跑：" >&2
+    echo "    pnpm build:installer" >&2
+    exit 1
+  fi
+  # 只打包 latest.yml + exe + blockmap。
+  # 不要把 release/ 整个目录打进去 —— 里面还有 win-unpacked/（解包目录，
+  # 几百 MB 且对客户端毫无用处）。
+  INSTALLER_TGZ="$TMP/installer.tgz"
+  ( cd apps/desktop/release && tar -czf "$INSTALLER_TGZ" latest.yml ./*.exe ./*.exe.blockmap )
+  printf '    installer %s\n' "$(du -h "$INSTALLER_TGZ" | cut -f1)"
+  ok "安装包已打包（在后台传，先继续部署其余部分）"
+fi
+
 say "上传到 $MCSR_SSH_HOST"
 # Caddy 的域名是通过 systemd drop-in 注入的，所以它同样是"配置即代码"的一部分，
 # 必须跟着每次部署走 —— 见下面远程块里的详细说明。
@@ -101,6 +127,14 @@ cat > "$TMP/caddy-domain.conf" <<CADDYENV
 Environment=MCSR_DOMAIN=${MCSR_DOMAIN}
 Environment=MCSR_LEGACY_DOMAIN=${MCSR_LEGACY_DOMAIN}
 CADDYENV
+
+# 安装包不在常规 scp 列表里：它是可选的，而且 109MB 传起来很慢。
+if [[ -n "$INSTALLER_TGZ" ]]; then
+  # 单独一次 scp，传完再继续 —— 和其余产物混在一起的话，
+  # 一个 109MB 的文件会拖慢整个部署，而且失败时很难判断卡在哪一个。
+  scp "${SCP_OPTS[@]}" -q "$INSTALLER_TGZ" "$MCSR_SSH_HOST:/tmp/installer.tgz"
+  printf '    安装包已上传\n'
+fi
 
 scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
@@ -215,6 +249,22 @@ if [ -f /tmp/mcsr-helper-api.service ]; then
   fi
 fi
 
+# ---------- 桌面安装包 ----------
+#
+# 解到 /srv/mcsr-helper/releases/，由 Caddy 从 /installer/* 提供
+# （见 deploy/Caddyfile 里那个 handle 块）。
+#
+# ⚠️ **不删旧版本的 exe**。安装包文件名带版本号，新旧互不冲突；
+#    而删掉一个可能正被某个客户端下载中的文件，会让那次更新静默失败
+#    —— 客户端只会看到"下载失败"，而我们这边什么都不会发现。
+if [ -f /tmp/installer.tgz ]; then
+  mkdir -p /srv/mcsr-helper/releases
+  tar -xzf /tmp/installer.tgz -C /srv/mcsr-helper/releases
+  \$SUDO chown -R mcsr:mcsr /srv/mcsr-helper/releases
+  echo "    安装包已就位："
+  ls -1 /srv/mcsr-helper/releases/ | sed 's/^/      /'
+fi
+
 # ---------- 内容导入 ----------
 #
 # ⚠️ 数据库**只存在于服务器上**，绝不由本地覆盖。
@@ -261,7 +311,7 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-rm -f /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf
 REMOTE
 ok "部署完成"
 

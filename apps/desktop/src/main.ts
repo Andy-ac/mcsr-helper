@@ -16,7 +16,14 @@
  */
 import path from 'node:path';
 import { SITE } from '@mcsr/shared';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import {
+  checkForUpdates,
+  downloadUpdate,
+  getLastStatus,
+  initUpdater,
+  installUpdate,
+} from './updater';
 
 const isDev = !app.isPackaged;
 const APP_URL = isDev
@@ -122,18 +129,29 @@ if (!app.requestSingleInstanceLock()) {
     // Windows 通知与任务栏归组需要它
     app.setAppUserModelId('com.mcsr.helper');
 
-    if (!isDev) {
-      // M3 才启用自动更新；此时没有发布通道，静默跳过而不是报错
-      try {
-        const { autoUpdater } = await import('electron-updater');
-        autoUpdater.autoDownload = true;
-        autoUpdater.checkForUpdatesAndNotify().catch(() => {});
-      } catch {
-        /* 未配置发布源时忽略 */
-      }
-    }
+    // ------------------------------------------------------------------
+    // 自动更新
+    //
+    // ⚠️ IPC 的注册必须在**创建窗口之前**完成。
+    //    反过来的话存在一个窗口期：窗口已经能发消息了，而主进程还没在监听，
+    //    那几条消息会被静默丢弃 —— 表现为"点检查更新没反应"，
+    //    而且只在启动瞬间点才会复现。
+    // ------------------------------------------------------------------
+    await initUpdater({ isPackaged: app.isPackaged, version: app.getVersion() });
+
+    // invoke：渲染进程主动拉当前状态（见 preload 里那段说明）
+    ipcMain.handle('mcsr:update-get-status', () => getLastStatus());
+    // send：单向触发，不需要返回值。三个都**不接受参数** ——
+    // 渲染进程加载的是远程网页，任何参数都等于把攻击面递出去。
+    ipcMain.on('mcsr:update-check', () => void checkForUpdates());
+    ipcMain.on('mcsr:update-download', () => void downloadUpdate());
+    ipcMain.on('mcsr:update-install', () => installUpdate());
 
     mainWindow = createMainWindow();
+
+    // 窗口出来之后再检查：此时渲染进程才可能订阅得上事件，
+    // 而且不让网络请求和窗口渲染抢启动时间。
+    if (app.isPackaged) void checkForUpdates();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();

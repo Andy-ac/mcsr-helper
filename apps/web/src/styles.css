@@ -1681,6 +1681,62 @@ html:not(.vt) .route-fade {
 }
 
 /* ==================================================================
+   更新提示条（仅桌面端）
+   ================================================================== */
+
+/* 放在内容区最顶部，横跨整宽。刻意不做成浮层 ——
+   浮层会挡住下面的内容，而这个提示并不需要立刻处理。 */
+.updatebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 22px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.updatebar--ok {
+  background: rgba(127, 178, 56, 0.14);
+  border-bottom-color: rgba(127, 178, 56, 0.35);
+}
+.updatebar--bad {
+  background: rgba(232, 86, 74, 0.12);
+  border-bottom-color: rgba(232, 86, 74, 0.35);
+}
+.updatebar__text {
+  flex: 1;
+  min-width: 0;
+}
+.updatebar__action {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  background: var(--grass);
+  color: var(--grass-ink);
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.updatebar__action:hover {
+  background: var(--grass-bright);
+}
+.updatebar__close {
+  background: transparent;
+  border: 0;
+  color: var(--fg-faint);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.updatebar__close:hover {
+  color: var(--fg);
+}
+
+/* ==================================================================
    页脚
    ================================================================== */
 

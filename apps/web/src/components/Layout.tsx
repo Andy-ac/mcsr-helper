@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useLocation } from 'react-router';
+import { UpdateBanner } from '@/components/UpdateBanner';
 import { setLocale } from '@/i18n';
 import { useAuth } from '@/lib/auth';
 
@@ -177,6 +178,13 @@ export function Layout() {
       </aside>
 
       <div className="content">
+        {/*
+          更新提示条挂在 content 顶部而不是 main 里面：
+          main 有路由过渡动画（key={pathname} 会让整个子树重挂），
+          提示条放在里面会在每次换页时重新挂载、重新拉一次状态 ——
+          既浪费一次 IPC，也可能让进度条闪一下。
+        */}
+        <UpdateBanner />
         {/*
           key={pathname} 让每次路由切换都重新挂载这个 div。
 
