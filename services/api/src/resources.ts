@@ -300,3 +300,116 @@ export function countResources(): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM resources').get() as { n: number } | undefined;
   return row?.n ?? 0;
 }
+
+// ---------------------------------------------------------------------------
+// id 与查重（导入与用户提交共用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 从 URL 推导一个稳定的 slug 作 id。
+ *
+ * ⚠️ 导入脚本和用户提交**共用这一个实现**。
+ *    各写一份的后果是：同一个站点由导入进去和由用户提交进来会得到两种不同的 id，
+ *    而 id 是详情页 URL 的一部分 —— 那意味着同一个资源有了两个可访问的地址，
+ *    分享出去的链接会指向"另一个"条目。
+ *
+ * 曾经这个函数住在 import.ts 里。搬过来的理由就是上面那条：
+ * 只有一个实现，才谈得上"两边的 id 一致"。
+ */
+export function idFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}${u.pathname}`
+      .replace(/^www\./, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase()
+      .slice(0, 64);
+  } catch {
+    return url.replace(/[^a-z0-9]+/gi, '-').slice(0, 64);
+  }
+}
+
+/**
+ * 条目是否存在 —— **刻意不过滤发布状态**。
+ *
+ * ⚠️⚠️ 必须和 `getResource` 严格区分开，这个区别踩过一次：
+ *
+ *   `getResource` 是**公开读接口**用的，SQL 里带着 `status = 'published'`。
+ *   而审核员批准的是一个 **pending** 条目、作者编辑的是自己的 **pending** 条目 ——
+ *   这些条目在 `getResource` 眼里根本不存在。
+ *
+ *   拿 `getResource` 去判断"条目在不在"，表现是所有审核和编辑操作
+ *   一律返回 `404 not_found`，**而错误码看起来像 id 传错了** ——
+ *   排查时第一反应会去核对 URL、核对客户端拼的 id，
+ *   完全不会想到问题出在"那个函数过滤了状态"。
+ *
+ *   所以这里单独给一个不带状态条件的存在性检查。名字起得不一样是刻意的：
+ *   调用点写 `resourceExists(id)` 时，读代码的人会意识到它不是公开读。
+ */
+export function resourceExists(id: string): boolean {
+  return getDb().prepare('SELECT 1 FROM resources WHERE id = ?').get(id) !== undefined;
+}
+
+/**
+ * 条目的作者 id。
+ *
+ * 返回 `null` 有两种情况，而且**调用方必须把它们当成同一种拒绝**：
+ *   · 条目不存在
+ *   · 条目是导入的（author_id 为 NULL）
+ * 导入的条目不归任何人所有，所以谁都不能编辑它 —— 这一点靠
+ * "严格相等比较"来保证：`null !== user.id` 恒为真，权限自然被拒。
+ * 如果这里改成返回一个空字符串之类的"哨兵值"，就会出现
+ * "匿名提交者能改导入条目"这种漏洞。
+ */
+export function resourceOwner(id: string): string | null {
+  const row = getDb().prepare('SELECT author_id FROM resources WHERE id = ?').get(id) as
+    | { author_id: string | null }
+    | undefined;
+  return row?.author_id ?? null;
+}
+
+/** 按 URL 查已有条目 —— 用户提交时用它防止同一个站点被提交两次。 */ export function findResourceByUrl(
+  url: string,
+): { id: string; title: string } | null {
+  // 归一化之后比较：末尾斜杠、www 前缀、大小写都不该让"同一个站点"变成两条。
+  const normalize = (value: string): string => {
+    try {
+      const u = new URL(value.trim());
+      const path = u.pathname.replace(/\/+$/, '');
+      return `${u.hostname.replace(/^www\./i, '').toLowerCase()}${path}${u.search}`;
+    } catch {
+      return value.trim().toLowerCase();
+    }
+  };
+
+  const target = normalize(url);
+  const rows = getDb().prepare('SELECT id, url, title FROM resources').all() as unknown as Array<{
+    id: string;
+    url: string;
+    title: string;
+  }>;
+  const hit = rows.find((r) => normalize(r.url) === target);
+  return hit ? { id: hit.id, title: hit.title } : null;
+}
+
+/**
+ * 给用户提交分配 id。
+ *
+ * 上面的 URL 查重已经挡掉了绝大多数撞车，这里只处理"两条**不同**URL
+ * 推出了同一个 slug"的情况（例如 `example.com/a` 和 `example.com/A`）。
+ * 加个数字后缀比直接失败好：那条内容本身是合法的，不该因为 id 撞了就提交不了。
+ */
+export function uniqueResourceId(url: string): string {
+  const db = getDb();
+  const base = idFromUrl(url) || 'resource';
+  const taken = (id: string): boolean =>
+    db.prepare('SELECT 1 FROM resources WHERE id = ?').get(id) !== undefined;
+
+  if (!taken(base)) return base;
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${base}-${String(n)}`;
+    if (!taken(candidate)) return candidate;
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}

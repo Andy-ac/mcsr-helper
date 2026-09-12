@@ -228,3 +228,95 @@ export function deriveSummary(body: string, max = SUMMARY_MAX): string {
 }
 
 export type { ContentStatus, Locale, ResourceKind };
+
+// ---------------------------------------------------------------------------
+// 提交与审核（M2 的 UGC 管线）
+// ---------------------------------------------------------------------------
+
+/**
+ * 版本的审核状态。
+ *
+ * ⚠️ 三个状态里**没有** "current" —— "哪一版在线上"由 `resources.current_revision`
+ *    表示，而不是由版本自己的状态表示。这两个问题必须分开：
+ *    一个版本可以在历史上被批准过、现在已经被新版本取代，但它**仍然是已批准**的。
+ *    把它们混成一个字段，就会出现"历史版本的状态被后来者改写"这种
+ *    没法审计的情况。
+ */
+export const REVISION_STATUSES = ['pending', 'approved', 'rejected'] as const;
+export type RevisionStatus = (typeof REVISION_STATUSES)[number];
+
+/**
+ * 提交/编辑时报上去的字段。
+ *
+ * ⚠️ **刻意不含 `featured` / `official` / `status`。**
+ *    这三个是"编辑决定"，不是"作者填写的内容"：
+ *      · featured / official 是编辑精选与官方标记，用户可以自己标就失去意义了；
+ *      · status 是审核结果，由管线推进，不可能让提交者自己写。
+ *    把它们排除在输入 schema 之外，而不是"收到了但忽略" ——
+ *    后者会让攻击者以为字段生效了，也让读代码的人以为可以传。
+ */
+export const ResourceSubmissionSchema = z.object({
+  kind: z.enum(RESOURCE_KINDS),
+  title: z.string().trim().min(1).max(TITLE_MAX),
+  titleEn: z.string().trim().max(TITLE_MAX).nullable().optional(),
+  url: httpUrl,
+  imageUrl: imageRef.nullable().optional(),
+  summary: z.string().trim().max(SUMMARY_MAX).nullable().optional(),
+  body: z.string().max(BODY_MAX),
+  lang: z.enum(LOCALES),
+  tags: z.array(tag).max(TAGS_MAX).default([]),
+});
+export type ResourceSubmission = z.infer<typeof ResourceSubmissionSchema>;
+
+/** 审核驳回时必须给理由 —— 没有理由的驳回等于让作者瞎猜。 */
+export const REJECT_REASON_MAX = 500;
+
+export const RejectInputSchema = z.object({
+  reason: z.string().trim().min(1, { message: '必须填写驳回理由' }).max(REJECT_REASON_MAX),
+});
+export type RejectInput = z.infer<typeof RejectInputSchema>;
+
+/** 版本快照（数据库里的样子）。 */
+export const ResourceRevisionSchema = z.object({
+  id: z.string(),
+  resourceId: z.string(),
+  revision: z.number().int().positive(),
+  /** 内容快照，字段与 ResourceSchema 一致（但不含 id / status / featured / official） */
+  kind: z.enum(RESOURCE_KINDS),
+  title: z.string(),
+  titleEn: z.string().nullable(),
+  url: z.string(),
+  imageUrl: z.string().nullable(),
+  summary: z.string().nullable(),
+  body: z.string(),
+  lang: z.enum(LOCALES),
+  tags: z.array(z.string()),
+  status: z.enum(REVISION_STATUSES),
+  editorId: z.string().nullable(),
+  editorName: z.string().nullable(),
+  createdAt: z.number().int(),
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.number().int().nullable(),
+  reviewReason: z.string().nullable(),
+});
+export type ResourceRevision = z.infer<typeof ResourceRevisionSchema>;
+
+/** 待审队列里的一项。带上作者与资源标题，审核界面就不用再发一次请求。 */
+export const ReviewQueueItemSchema = z.object({
+  resourceId: z.string(),
+  revision: z.number().int().positive(),
+  title: z.string(),
+  kind: z.enum(RESOURCE_KINDS),
+  url: z.string(),
+  /** true = 这是对**已发布**条目的修改（线上仍展示旧版）；false = 全新条目 */
+  isEdit: z.boolean(),
+  authorName: z.string().nullable(),
+  createdAt: z.number().int(),
+});
+export type ReviewQueueItem = z.infer<typeof ReviewQueueItemSchema>;
+
+export const ReviewQueueResponseSchema = z.object({
+  items: z.array(ReviewQueueItemSchema),
+  total: z.number().int().nonnegative(),
+});
+export type ReviewQueueResponse = z.infer<typeof ReviewQueueResponseSchema>;

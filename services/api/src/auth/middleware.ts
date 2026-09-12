@@ -26,6 +26,7 @@
  */
 
 import { SITE } from '@mcsr/shared';
+import type { UserRole } from '@mcsr/shared/auth';
 import type { MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { SessionRow, UserRow } from '../users';
@@ -131,6 +132,26 @@ export const requireVerified: MiddlewareHandler<{ Variables: AuthVariables }> = 
   }
   await next();
 };
+
+/**
+ * 需要指定的角色。
+ *
+ * 权限模型是"角色 × 资源类型"的二维矩阵，**不做 per-item ACL**（§3 的三条约束之一）。
+ * 所以这里只回答"这个角色能不能审核"，不回答"能不能审核这一条"。
+ *
+ * 用可变参数而不是一个 `isReviewer` 布尔：以后加角色时，调用点写的是
+ * `requireRole('reviewer', 'admin')` —— 读起来就是一条显式的规则，
+ * 而不是去翻某个函数里到底判断了什么。
+ */
+export function requireRole(...roles: UserRole[]): MiddlewareHandler<{ Variables: AuthVariables }> {
+  const allowed = new Set<string>(roles);
+  return async (c, next) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
+    if (!allowed.has(user.role)) return c.json({ error: 'forbidden' }, 403);
+    await next();
+  };
+}
 
 /**
  * 对会改变状态的请求做同源校验（CSRF 第二层，见文件头）。

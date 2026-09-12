@@ -12,6 +12,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { type AuthVariables, loadUser, sameOriginOnly } from './auth/middleware';
 import { getDb } from './db';
 import { checkMailConfig, mailDriverName } from './email/transport';
+import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
 import { resourcesRoute } from './routes/resources';
 import { deleteExpiredSessions } from './users';
@@ -105,6 +106,10 @@ app.use('/api/*', loadUser);
 
 app.route('/api/auth', authRoute);
 app.route('/api/resources', resourcesRoute);
+// 审核类接口（需要 reviewer / admin 角色）集中在 routes/admin.ts。
+// 挂在 /api 上是因为它们的路径是 /admin/queue 与 /resources/:id/approve ——
+// 后者与上面那条不冲突：路径段数不同，而且方法是 POST vs GET/PATCH。
+app.route('/api', adminRoute);
 
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。

@@ -22,6 +22,7 @@ import { closeDb, dbPath } from './db';
 import {
   countBySource,
   deleteImportedNotIn,
+  idFromUrl,
   type ResourceInput,
   upsertResource,
 } from './resources';
@@ -49,20 +50,12 @@ const ImportFileSchema = z.object({
   resources: z.array(ImportEntrySchema).min(1),
 });
 
-/** 从 URL 推导一个稳定的 slug 作 id，这样重复导入不会产生新条目。 */
-function idFromUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.hostname}${u.pathname}`
-      .replace(/^www\./, '')
-      .replace(/[^a-z0-9]+/gi, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase()
-      .slice(0, 64);
-  } catch {
-    return url.replace(/[^a-z0-9]+/gi, '-').slice(0, 64);
-  }
-}
+/**
+ * ⚠️ 这个函数已经搬到 resources.ts，导入与用户提交共用同一个实现。
+ *    两边各写一份的话，同一个站点会因为来源不同而得到两个不同的 id，
+ *    而 id 是详情页 URL 的一部分 —— 同一个资源就有了两个可访问地址。
+ */
+// (idFromUrl 现在从 ./resources 导入)
 
 /**
  * 路径解析：相对路径按**当前工作目录**解析。
