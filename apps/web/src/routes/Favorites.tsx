@@ -5,6 +5,7 @@ import { Notice } from '@/components/Form';
 import { RatingStars } from '@/components/MarksPanel';
 import { fetchFavorites } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { resourceKindLabel } from '@/lib/resourceKind';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -71,9 +72,7 @@ function FavoriteCard({ item }: { item: FavoriteItem }) {
   return (
     <li className={`minecard${item.published ? '' : ' rescard--hidden'}`}>
       <div className="minecard__head">
-        <span className={`badge badge--kind`}>
-          {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
-        </span>
+        <span className={`badge badge--kind`}>{resourceKindLabel(item.kind, t)}</span>
         <span className="minecard__title">{item.title}</span>
         {item.marks.rating !== null ? (
           <RatingStars rating={{ average: item.marks.rating, count: 1 }} />

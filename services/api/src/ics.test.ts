@@ -47,6 +47,8 @@ function makeEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     location: null,
     tags: ['TOURNAMENT'],
     stage: null,
+    level: null,
+    scope: null,
     lang: 'zh-CN',
     authorId: 'u1',
     authorName: '甲',

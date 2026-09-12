@@ -28,7 +28,15 @@ export const en: TranslationSchema = {
     resources: 'Resources',
     calendar: 'Calendar',
     seeds: 'Seeds',
-    videos: 'Videos',
+    /*
+     * ⚠️ This key points at the `/videos` section, now called "Entertainment
+     * videos" — it sits next to the new "Live" section (the old "Videos" was
+     * split in two at the user's request). The key keeps the name `videos`
+     * because the route is still `/videos`; changing the value rather than the
+     * key avoids a repo-wide rename that would miss somewhere.
+     */
+    videos: 'Entertainment videos',
+    live: 'Live',
     profile: 'Profile',
     admin: 'Admin',
     submit: 'Submit',
@@ -69,6 +77,16 @@ export const en: TranslationSchema = {
     allLangs: 'All languages',
     kindWebsite: 'Website',
     kindTool: 'Tool',
+    /*
+     * "Video resource" — a resource-library entry type.
+     *
+     * ⚠️ Not the same thing as the "Entertainment videos" section, and the
+     * wording has to keep them apart: a video *resource* goes through
+     * submit → review → tags ("this video is worth cataloguing"), while the
+     * video wall is post-and-it-is-live ("this video is fun"). Both are videos;
+     * one is reference material, the other is content.
+     */
+    kindVideo: 'Video resource',
     langZh: 'Chinese',
     langEn: 'English',
     resultCount: '{{count}} entries',
@@ -212,6 +230,7 @@ export const en: TranslationSchema = {
     capTypeResource: 'Resources',
     capTypeCalendar: 'Calendar',
     capTypeVideo: 'Videos',
+    capTypeLive: 'Live list',
     capTypeSeed: 'Seeds',
     capTypeUser: 'Account management',
     capTypeAudit: 'Audit log',
@@ -227,6 +246,7 @@ export const en: TranslationSchema = {
     //    capabilities.ts tells them apart by full capability name.
     capActionModerate: 'Manage roles',
     capActionRead: 'View',
+    capActionManage: 'Maintain',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors
@@ -234,6 +254,13 @@ export const en: TranslationSchema = {
     emailNotVerified:
       'This email is not confirmed yet — your account is complete only once you confirm it.',
     videoExists: 'That video is already on the site — try another, or look for it on the wall.',
+    /*
+     * ⚠️ "already recorded" and "already on the wall" are different things:
+     * the former is a duplicate in an **editor-maintained list**, the latter is
+     * a user-posted video. Telling an editor to "look for it on the wall" would
+     * send them looking for something that is not there.
+     */
+    liveExists: 'That channel is already in the live list — one entry per channel per platform.',
     // Ranked Seeds (upstream covers only ~80%, so "not found" is normal, not an error)
     seedNotFound:
       'That match ID is not in the seed database — upstream only covers about 80% of historical matches, so this is likely one of the missing ones.',
@@ -612,6 +639,33 @@ export const en: TranslationSchema = {
       THIRD_PLACE: 'Third-place match',
       FINAL: 'Final',
     },
+    /*
+     * Professionalism level / participation scope (the two dimensions added by
+     * migration 011).
+     *
+     * ⚠️ The only difference from the `tag` / `stage` groups above: these two go
+     *    through i18n from day one rather than being hard-coded in a shared map.
+     *    Those two are legacy (see the note at the end of shared/calendar.ts) —
+     *    do not copy them.
+     *
+     * ⚠️ Both are **nullable** (a ranked milestone has no meaningful level), so
+     *    every filter group needs an explicit "any" option: otherwise "not filled
+     *    in" and "not filtering" look identical while meaning opposite things.
+     */
+    level: {
+      PRO: 'Professional',
+      SEMI_PRO: 'Semi-professional',
+      AMATEUR: 'Amateur',
+      CASUAL: 'Casual',
+    },
+    scope: {
+      GLOBAL: 'Worldwide',
+      CONTINENT: 'Continental',
+      COUNTRY: 'National',
+      REGION: 'Regional',
+    },
+    /** The "no filter" option shared by all three single-choice dimensions. */
+    filterAny: 'Any',
 
     yes: 'Yes',
     no: 'No',
@@ -641,6 +695,8 @@ export const en: TranslationSchema = {
       allDay: 'All day',
       tags: 'Tags',
       stage: 'Stage',
+      level: 'Level',
+      scope: 'Scope',
       location: 'Location',
       url: 'Link',
       lang: 'Language',
@@ -654,9 +710,17 @@ export const en: TranslationSchema = {
     listSubtitle:
       'Tournaments, community events and ranked season milestones. Times are stored in the zone the organiser published them in — so every entry carries its zone name.',
     filterTagsLabel: 'Which kinds to show',
-    filterTagsHint: 'Tap a chip again to turn that kind off.',
-    filterTagsLocked:
-      'Keep at least one. The server cannot express "show none" — with no tags left it returns everything, and the page would be lying to you.',
+    /*
+     * ⚠️ `filterTagsHint` / `filterTagsLocked` were removed here.
+     *
+     * They served the "the last tag cannot be switched off" rule, whose only
+     * reason was that the server cannot express "no tags selected" (an empty
+     * array and no parameter are the same query) — so the UI could neither
+     * really reach zero nor tell the truth about it.
+     *
+     * Client-side filtering removed that reason: selecting none now means
+     * showing none, which is honest. The two keys became orphans.
+     */
     showPast: 'Show finished',
     resultCount: '{{count}} event(s)',
     empty: 'No events match these filters',
@@ -771,6 +835,19 @@ export const en: TranslationSchema = {
     hintStage:
       'Optional. It is only a label, with no bracket hierarchy — an event running across a whole week can simply leave it empty.',
     stageNone: 'Not set',
+    /*
+     * The two dimensions added by migration 011.
+     *
+     * ⚠️ The empty option deliberately does **not** reuse `stageNone`'s wording
+     *    ("Not set" vs "Not applicable / Any"): for a ranked milestone the level
+     *    and scope genuinely do not exist, and telling someone they "did not set
+     *    it" makes them feel they missed a field — so they pick one at random and
+     *    the data gets polluted.
+     */
+    hintLevel: 'Optional. How competitive the event is — a ranked milestone can leave this empty.',
+    hintScope:
+      'Optional. Who can take part — not "where it is played", so it still means something for an online event.',
+    dimNone: 'Not applicable / Any',
     descriptionPlaceholder:
       'Markdown supported. Say what the event is, how to take part, and anything to watch out for.',
     hintDescription: '{{used}} / {{max}} characters.',
@@ -809,6 +886,62 @@ export const en: TranslationSchema = {
       'An edit is already waiting for review — only one pending edit per event is allowed.',
   },
   /**
+   * Month grid and the top filter bar (calendar rework).
+   *
+   * A separate section rather than adding to `calendar`: that one already holds
+   * 99 keys (form, card, detail page) and thirty more would disappear into it.
+   * These two pieces are **one interface** — changed together, read together.
+   */
+  calendarGrid: {
+    // ---- The two views ----
+    viewMonth: 'Month',
+    viewList: 'List',
+    viewSwitchLabel: 'View',
+
+    // ---- Month / year switching ----
+    prevMonth: 'Previous month',
+    nextMonth: 'Next month',
+    prevYear: 'Previous year',
+    nextYear: 'Next year',
+    today: 'Today',
+    pickMonth: 'Choose a month',
+
+    // ---- The grid ----
+    /*
+     * ⚠️ The accessible name has to carry *what is on*, not just a day number:
+     * a screen-reader user tabbing through the grid would otherwise hear 42
+     * numbers, which is no information at all. Naming the first event at least
+     * lets them decide whether this day is worth opening.
+     */
+    dayLabel: '{{date}}, {{count}} event(s), first is "{{first}}"',
+    dayLabelEmpty: '{{date}}, no events',
+    /** Collapsed overflow inside a cell. The `+` is part of the string. */
+    moreCount: '+{{count}}',
+    rangeCount: '{{count}} event(s) in this view',
+
+    // ---- Selected-day panel ----
+    dayPanelLabel: 'Events on the selected day',
+    pickDayHint: 'Pick a day to see what is on.',
+    noEventsOnDay: 'Nothing scheduled for this day yet.',
+    addOnDay: 'Add an event on this day',
+
+    // ---- Filter bar ----
+    filterLevel: 'Level',
+    filterScope: 'Scope',
+    filterStage: 'Stage',
+    /*
+     * ⚠️ This sentence exists to say that tags are not the same kind of filter
+     * as the other three. Without it, someone who picked "Professional" and
+     * then sees amateur events (matched because a *tag* hit) has no way to work
+     * out why.
+     */
+    filterHint:
+      'Tags are multi-select — any match shows. Level, Scope and Stage are single-select.',
+    filterReset: 'Clear filters',
+    noTagsSelected: 'No tags selected.',
+    noTagsHint: 'Turn at least one tag on to see events.',
+  },
+  /**
    * Video wall (M4).
    *
    * Q6: **posting makes a video visible immediately — there is no review.** The
@@ -822,11 +955,18 @@ export const en: TranslationSchema = {
    */
   videos: {
     // ---- Page shell ----
-    title: 'Video wall',
+    /*
+     * ⚠️ The section was **renamed**: 「视频」→「娱乐视频」, "Videos" → "Entertainment
+     * videos" (see docs/calendar-video-rework.md). Only the strings that **name the
+     * section** change — `title` / `subtitle` / `viewAll` here, plus the zh strings
+     * that spelled out 视频墙. The bare "wall" metaphor elsewhere ("on the wall")
+     * stays: it describes the layout, not the name, and it still reads fine.
+     */
+    title: 'Entertainment videos',
     subtitle:
-      'Bilibili and YouTube videos the community has posted — tutorials, montages, match recordings. No login needed to watch.',
+      'Bilibili and YouTube videos the community has posted — tutorials, montages, match recordings. Constantly changing. No login needed to watch. For live streams, see the "Live" section.',
     pasteAction: 'Post a video',
-    viewAll: 'Video wall',
+    viewAll: 'Entertainment videos',
     viewMine: 'My posts',
 
     // ---- Filters ----
@@ -1254,5 +1394,179 @@ export const en: TranslationSchema = {
       STABLES: 'Stables',
       TREASURE: 'Treasure room',
     },
+  },
+  /**
+   * The "Entertainment videos" section (the old "Videos", renamed — see
+   * docs/calendar-video-rework.md).
+   *
+   * ⚠️ Only the **name** changed; the `videos.*` section is essentially
+   * untouched, because what changed is what this section is called, not how it
+   * works (Q6: post and it is live, rolling).
+   */
+  enterVideo: {
+    /*
+     * The one line on the entertainment-video page that points at 「直播」.
+     *
+     * ⚠️ Both sections are "videos", so something has to explain **why there are
+     *    two** — otherwise either page looks like a duplicate of the other. The
+     *    split is real and deliberate: that one is rolling (anyone can post, it
+     *    changes constantly), this one is a slow-moving list a few editors keep.
+     */
+    pointingToLive:
+      'Looking for live streams? Head to the "Live" section — a curated list of streamers.',
+    gotoLive: 'Go to Live',
+    /*
+     * ⚠️ Strictly this belongs in the submit-resource section (`submit.*`); it
+     *    lives here only because those are the sections I could edit this round,
+     *    and this is UI text **about video**. `submit.hintKindVideo` would be a
+     *    better home next time the strings are reorganised.
+     */
+    resourceKindHint:
+      'Paste a link to a single Bilibili / YouTube video and the detail page will embed a player. Any other link is an ordinary resource with just an outbound link.',
+  },
+  /**
+   * The "Live" section — an editor-maintained list of MCSR streamers.
+   *
+   * ⚠️ Two things in this section must stay **true**:
+   *   1. **It lists channels, not individual streams.** Every row points at a
+   *      channel, not "the stream that happens to be on right now". Wording
+   *      that implies otherwise is something the user notices within a week.
+   *   2. **Only YouTube actually embeds** (Twitch / Bilibili are recorded but
+   *      not embedded). That is deliberate: Twitch has not been tested, and
+   *      there is no evidence Bilibili live can be embedded — and getting it
+   *      wrong shows up as a **black rectangle**. So the UI has to say "this
+   *      takes you to the channel" rather than letting people think the player
+   *      is broken.
+   */
+  live: {
+    // ---- Page shell ----
+    title: 'Live',
+    subtitle: 'MCSR streamer channels worth following.',
+    /*
+     * ★ The single most important line in this section.
+     *
+     * We do **not** detect liveness (no API keys, no polling — deliberately out
+     * of scope), so there is no "live now" badge. Wording that implies one is a
+     * lie the user notices within a week: a channel is clearly offline and we
+     * show nothing either way. Saying "these are channels" is always true.
+     */
+    recordsChannels:
+      'These are **channels**, not a "who is live right now" board — we do not detect liveness, so there is no live badge.',
+    relationToVideos:
+      'How this differs from "Entertainment videos": that one is whatever anyone posted (constantly changing), this one is a slow-moving curated list.',
+
+    gotoChannel: 'Open the channel',
+
+    /*
+     * Three different reasons for "no embed", and they must stay separate.
+     *
+     * ⚠️ Collapsing them into one "embedding is not supported here" turns the
+     *    third case into a **switch that silently does nothing**: the editor
+     *    clearly turned channel embedding on and sees nothing, so they conclude
+     *    the page is broken — when the real cause is that the handle is not a
+     *    `UC...` channel id.
+     */
+    noEmbedPlatform:
+      'Live embedding for this platform is unverified, so this row links out instead.',
+    noEmbedNoId: 'This row has no live video id recorded, so there is no player.',
+    noEmbedNotChannelId:
+      'Channel embedding is on for this row, but the handle is not a UC… channel id, so it cannot embed (that mode only accepts those).',
+
+    empty: 'No channels recorded yet',
+    emptyHint: 'This list is kept by the content editors and changes slowly.',
+    loadFailed: 'Failed to load. Please try again later.',
+  },
+  /**
+   * The **editing** UI for the live list (editors and above only).
+   *
+   * A separate section rather than folded into `live`: that one is read by
+   * visitors (who is streaming), this one by editors (maintaining the list).
+   * Mixing them makes "one sentence for a visitor" fight with "one sentence for
+   * an editor".
+   */
+  liveManage: {
+    title: 'Manage the live list',
+    subtitle:
+      'Only content editors see this interface. Visitors get the public version, without hidden rows.',
+    addTitle: 'Add a channel',
+    editTitle: 'Edit this row',
+    addAction: 'Add',
+    saveAction: 'Save',
+    saving: 'Saving…',
+    cancel: 'Cancel',
+    close: 'Close',
+
+    // ---- Fields ----
+    fieldPlatform: 'Platform',
+    fieldHandle: 'Channel handle',
+    fieldName: 'Display name',
+    fieldNote: 'One-line note',
+    fieldLiveVideoId: 'Current live video id',
+    fieldEmbedChannel: 'Embed by channel',
+    fieldSortOrder: 'Order',
+
+    /*
+     * ⚠️ The handle hint has to say "not a link" explicitly. This is the field
+     *    people get wrong: what they have in hand *is* a link, and the server
+     *    schema rejects it ("we build the link from the platform").
+     */
+    hintHandle:
+      'The handle itself (e.g. @Someone, or the UC… string) — not a link. We build the link per platform.',
+    hintName: 'The human-readable name; spaces are fine.',
+    hintNote: 'Optional. One line on what they stream — it is what visitors judge the link by.',
+    hintLiveVideoId:
+      'Optional. **Only a video id produces a player**; it changes with every stream, so it is "for the current one", not a property of the channel.',
+    /*
+     * ⚠️ This hint carries three facts at once: YouTube only, `UC…` ids only, and
+     *    experimental. Drop any one and an editor turns on a switch that does
+     *    nothing.
+     */
+    hintEmbedChannel:
+      'Experimental, off by default. It can only work for YouTube rows whose handle is a UC… channel id; when it does not work the player area is a black box that looks like our bug.',
+    hintSortOrder: 'Lower numbers come first.',
+
+    // ---- Row actions ----
+    hiddenBadge: 'Hidden',
+    hide: 'Hide',
+    show: 'Show',
+    delete: 'Delete',
+    confirmDelete: 'Deleting cannot be undone. Are you sure?',
+    confirmYes: 'Delete it',
+    confirmNo: 'Keep it',
+
+    // ---- Outcomes ----
+    added: 'Added',
+    saved: 'Saved',
+    hidden: 'Hidden',
+    shown: 'Shown',
+    deleted: 'Deleted',
+    /** ⚠️ A no-op is **success**, not an error (it was already in that state). */
+    changedNothing: 'It was already in that state — nothing changed.',
+    exists: 'That channel is already recorded',
+    existsHint:
+      'One row per platform + handle. The row marked below is it — edit that one instead of adding another.',
+
+    /*
+     * ⚠️ `needLogin` / `forbidden` / `gotoExisting` are **deliberately absent**:
+     *    · needLogin / forbidden — this panel renders only when
+     *      `useCan('live.manage')` is true, so anyone who can see it has the
+     *      capability; those two sentences are unreachable by construction.
+     *      An expired session is handled by `apiErrorText`'s 401 branch.
+     *    · gotoExisting — `live_exists` is answered by **highlighting the row**,
+     *      which is already on this page, so a "go there" link is redundant.
+     */
+    loadFailed: 'Failed to load. Please try again later.',
+
+    /*
+     * Field-level errors. `LiveChannelInputSchema` runs client-side first, so
+     * these are **local** strings — the server's message is hard-coded Chinese
+     * and showing it would put a Chinese sentence in the English UI.
+     */
+    errHandleRequired: 'A channel handle is required.',
+    errHandleIsUrl: 'Put the handle here, not a link — we build the link per platform.',
+    errHandleSpace: 'The handle cannot contain spaces.',
+    errNameRequired: 'A name is required.',
+    errSortOrder: 'Order must be a whole number from 0 to 9999 (lower comes first).',
+    errGeneric: 'A field did not pass validation — check the ones marked above.',
   },
 };

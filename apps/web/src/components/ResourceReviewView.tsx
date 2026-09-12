@@ -1,6 +1,7 @@
 import type { ReviewDetail } from '@mcsr/shared/review';
 import { useTranslation } from 'react-i18next';
 import { Markdown } from '@/components/Markdown';
+import { resourceKindLabel } from '@/lib/resourceKind';
 
 /**
  * 资源库条目的审核视图 —— **类型相关的那一半**。
@@ -41,7 +42,9 @@ const FIELDS: {
   {
     key: 'kind',
     labelKey: 'submit.kind',
-    format: (v, t) => (v === 'website' ? t('resources.kindWebsite') : t('resources.kindTool')),
+    // ⚠️ 走共享的 resourceKindLabel，不要写三元式 ——
+    //    加了第三个 kind 之后二元三元式会把"视频"显示成"网站"（不报错）。
+    format: (v, t) => resourceKindLabel(String(v), t),
   },
   {
     key: 'lang',

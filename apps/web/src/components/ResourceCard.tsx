@@ -2,6 +2,7 @@ import type { ResourceListItem } from '@mcsr/shared/resources';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { ResourceIcon } from '@/components/ResourceIcon';
+import { resourceKindLabel } from '@/lib/resourceKind';
 
 /**
  * 资源卡片 —— 列表页和详情页的"相关条目"共用同一个组件。
@@ -78,9 +79,7 @@ export function ResourceCard({
             {hidden ? (
               <span className="badge badge--hidden">{t('moderate.hiddenBadge')}</span>
             ) : null}
-            <span className="badge badge--kind">
-              {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
-            </span>
+            <span className="badge badge--kind">{resourceKindLabel(item.kind, t)}</span>
           </div>
 
           {item.summary ? <p className="rescard__summary">{item.summary}</p> : null}

@@ -1,5 +1,6 @@
 import { capabilitiesByType, ROLE_LABEL_KEYS, type UserRole } from '@mcsr/shared/permissions';
 import { useTranslation } from 'react-i18next';
+import { em } from '@/components/Emphasis';
 import { describeCapabilities } from '@/lib/capabilities';
 
 /**
@@ -56,7 +57,7 @@ export function RoleGuide() {
   return (
     <section className="roleguide">
       <h3 className="related__title">{t('auth.roleGuideTitle')}</h3>
-      <p className="muted">{t('auth.roleGuideIntro')}</p>
+      <p className="muted">{em(t('auth.roleGuideIntro'))}</p>
 
       <div className="roleguide__list">
         {DISPLAY_ORDER.map((role) => {
@@ -68,7 +69,15 @@ export function RoleGuide() {
                   {t(ROLE_LABEL_KEYS[role])}
                 </span>
               </div>
-              <p className="roleguide__note">{t(RANK_NOTES[role])}</p>
+              {/*
+                ⚠️ 这里必须走 `em()` —— 而且这一处**比看起来重要**：
+                等级说明是通过 `RANK_NOTES` 这张**映射表**取的
+                （`t(RANK_NOTES[role])`），所以"按字面量 grep 词条 key"
+                那种改法会**漏掉整张表** —— 五个角色全都带星号露出来。
+                2026-09-13 就是这么漏的，最后是**渲染检查**（扫 innerText 里的
+                `**`）才把它抓出来的：逐个改字面量调用点治不了间接引用。
+              */}
+              <p className="roleguide__note">{em(t(RANK_NOTES[role]))}</p>
 
               <ul className="roleguide__caps">
                 {groups.flatMap((group) =>
@@ -76,7 +85,15 @@ export function RoleGuide() {
                     // 每条都是"类型 · 具体能做什么"，类型来自矩阵，措辞来自 CAP_TEXT
                     <li key={action.capability}>
                       <span className="roleguide__type">{group.label}</span>
-                      {CAP_TEXT[action.capability] ?? action.label}
+                      {/*
+                        ⚠️ 必须走 `em()`：这张表里有三条自己用了 `**…**`
+                        （editAny / editUnpublished / moderate）。
+                        不走的话用户看到的是 `修改任何**已上架**的条目` ——
+                        而这一处特别容易漏，因为**这些话在组件里、不在词条里**，
+                        所以"扫 i18n 文件找 `**`"那种改法完全看不到它。
+                        2026-09-13 就是渲染检查才抓到的。
+                      */}
+                      {em(CAP_TEXT[action.capability] ?? action.label)}
                     </li>
                   )),
                 )}

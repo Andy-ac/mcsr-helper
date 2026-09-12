@@ -98,6 +98,16 @@ const KNOWN_CODES: readonly string[] = [
   'seed_service_unavailable',
   /** 写接口被运维开关关掉了（MCSR_SEED_WRITE_DISABLED） */
   'seed_write_disabled',
+  // ---- 直播频道清单 ----
+  /**
+   * 同一个平台下同一个频道已经记过了（409）。
+   *
+   * ⚠️ 这是这份清单**最常见**的正常结果（同一个主播被两个人加），
+   *    所以它必须有一条能操作的文案 —— 走 apiErrorText，
+   *    理由和 video_exists 完全一样：登记成"某个页面自己处理"
+   *    就等于把一个还没做的事写成做完了。
+   */
+  'live_exists',
 ];
 
 /**

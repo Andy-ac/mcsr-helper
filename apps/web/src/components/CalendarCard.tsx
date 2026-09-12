@@ -71,9 +71,13 @@ export function CalendarCard({ event, now }: { event: CalendarEvent; now: number
               <span className="badge badge--kind">{t('calendar.allDayBadge')}</span>
             ) : null}
             {/*
-              标签和轮次一律走词条，**不显示枚举原始值**。
+              标签 / 轮次 / 专业程度 / 参与范围一律走词条，**不显示枚举原始值**。
               `RANKED_MILESTONE` / `QUARTERFINAL` 这种字符串对用户没有意义，
               而且它和旁边那句翻译过的中文放在一起，会让人以为它们是两回事。
+
+              ⚠️ 后两维**可空**（排位节点没有它们），所以是 `? … : null` ——
+              **不是**"忘了渲染"。空值不显示是对的：显示一个空的徽章
+              会让卡片上出现一块没有内容的色块。
             */}
             {event.tags.map((tag) => (
               <span key={tag} className="badge badge--kind">
@@ -82,6 +86,17 @@ export function CalendarCard({ event, now }: { event: CalendarEvent; now: number
             ))}
             {event.stage ? (
               <span className="badge badge--kind">{t(`calendar.stage.${event.stage}`)}</span>
+            ) : null}
+            {/*
+              专业程度和参与范围用**另一种底色**（badge--dim），和标签/轮次区分开：
+              同一排里四个不同维度的徽章如果长得一模一样，用户读到的是
+              "一个有五个标签的活动"，而不是"它在四个维度上各有取值"。
+            */}
+            {event.level ? (
+              <span className="badge badge--dim">{t(`calendar.level.${event.level}`)}</span>
+            ) : null}
+            {event.scope ? (
+              <span className="badge badge--dim">{t(`calendar.scope.${event.scope}`)}</span>
             ) : null}
           </div>
 

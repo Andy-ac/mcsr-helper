@@ -78,6 +78,14 @@ const CalendarEditPage = lazy(() =>
 );
 const VideosPage = lazy(() => import('@/routes/Videos').then((m) => ({ default: m.Videos })));
 const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.Seeds })));
+/**
+ * 「直播」板块（与「娱乐视频」并列）。
+ *
+ * ⚠️ 它是**编辑维护的名单**，不是用户内容 —— 所以页面里对有权重的人
+ *    会多出一块编辑界面，而那个判断读的是权限矩阵（`live.manage`），
+ *    不是在前端另写一份"谁是编辑"。
+ */
+const LivePage = lazy(() => import('@/routes/Live').then((m) => ({ default: m.Live })));
 
 /**
  * 认证相关的页面也懒得拆 —— 它们比详情页小得多，而且
@@ -249,6 +257,20 @@ export default function App() {
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <VideosPage />
+              </Suspense>
+            }
+          />
+          {/*
+            `/live` —— 和 `/videos` 并列的第二个视频类板块（编辑维护的 streamer 名单）。
+            它**没有子路由**：编辑界面就在同一页上、按能力显示，
+            因为"看名单"和"改名单"是同一份数据的两个视角，拆成两个路径
+            会让编辑每次改完都要跳一次页面。
+          */}
+          <Route
+            path="/live"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <LivePage />
               </Suspense>
             }
           />

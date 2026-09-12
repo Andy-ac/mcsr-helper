@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import { draftFromResource, ResourceForm } from '@/components/ResourceForm';
 import {
@@ -215,7 +216,7 @@ export function EditResource() {
         不说的话，用户会以为自己的修改已经生效了 —— 然后发现页面上没变，
         于是再改一遍，然后得到 409。
       */}
-      <p className="submitnote">{t('edit.liveUnchanged')}</p>
+      <p className="submitnote">{em(t('edit.liveUnchanged'))}</p>
 
       {failure ? (
         <Notice kind="bad">

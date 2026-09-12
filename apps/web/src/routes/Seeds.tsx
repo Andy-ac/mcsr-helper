@@ -1,6 +1,7 @@
 import type { SeedInfo, SeedQueryResult, SeedRecord } from '@mcsr/shared/seed';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import {
   buildSeedFilterParams,
@@ -371,7 +372,7 @@ export function Seeds() {
               预期的种子去开世界。这一句只在真的不一样时才出现。
             */}
             {resultKey !== null && resultKey !== builtKey ? (
-              <p className="seed__stale">{t('seedsPage.resultStale')}</p>
+              <p className="seed__stale">{em(t('seedsPage.resultStale'))}</p>
             ) : null}
             <SeedResultCard
               record={result.seed}

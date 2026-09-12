@@ -1,12 +1,48 @@
 import type { CalendarEventInput } from '@mcsr/shared/calendar';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { CalendarForm, emptyCalendarDraft } from '@/components/CalendarForm';
 import { Notice } from '@/components/Form';
 import { submitCalendarEvent } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
+
+/**
+ * 把 `?date=2026-11-14` 变成一个"预填了日期的草稿"。
+ *
+ * 月历表的当天面板就是靠这个链接过来的（「在这天加活动」）—— 复用这张表单，
+ * 而不是另做一个迷你表单：两个表单一定会漂移，而漂移的表现是
+ * "从日历加的活动少填了某个字段"。
+ *
+ * ⚠️ 只认**形状对**的值，并且**只预填日期、不预填时刻**。
+ *    链接是用户可以手打的，`?date=hello` 直接塞进输入框会让表单带着一个
+ *    非法值打开，而第一条校验错误指向一个"看起来是空的"字段。
+ *
+ * ⚠️ 时刻留空而不是给一个 00:00：给 00:00 的话用户很可能直接提交，
+ *    于是每场从日历加的活动都变成"午夜开始"—— 那种错在日历上看起来很正常。
+ */
+function draftFromDateParam(raw: string | null): ReturnType<typeof emptyCalendarDraft> {
+  const draft = emptyCalendarDraft();
+  if (!raw) return draft;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return draft;
+
+  /*
+   * 还要确认它真的是一个存在的日期 —— 形状对但日子不存在是可能的
+   * （2026-02-30），而 `input[type=datetime-local]` 拿到一个不存在的日期
+   * 会把它清空，于是"我明明点了 2 月 30 日"变成"表单是空的"，
+   * 中间没有任何提示。
+   */
+  const [y, m, d] = raw.split('-').map(Number) as [number, number, number];
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
+    return draft;
+  }
+
+  draft.startsAtLocal = `${raw}T00:00`;
+  draft.allDay = true;
+  return draft;
+}
 
 /**
  * 提交日历活动 —— `/calendar/submit`。
@@ -26,10 +62,20 @@ export function CalendarSubmit() {
   const { t } = useTranslation();
   const auth = useAuth();
   const errorText = useApiErrorText();
+  const [params] = useSearchParams();
   // 今天所有角色都有 calendar.submit，所以下面那条分支目前走不到。
   // 留着的理由是它是**服务端那道闸门的镜像**：能力收紧的那天，
   // 界面会自动跟着收紧，而不是让用户填完一整张表再拿到 403。
   const canSubmit = useCan('calendar.submit');
+
+  /*
+   * ⚠️ 只在**第一次渲染时**算一次，之后 `?date=` 不再影响表单。
+   *
+   *    用 `useState(初始化函数)` 而不是每次渲染都算：用户从日历点了 11 月 14 日
+   *    进来、改成了 11 月 20 日，之后地址栏里的 `?date=` 不该把他的修改顶掉
+   *    （地址栏不会因为他的修改而变，所以每次渲染都重算＝把编辑丢掉）。
+   */
+  const [initialDraft, setInitialDraft] = useState(() => draftFromDateParam(params.get('date')));
 
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -113,7 +159,15 @@ export function CalendarSubmit() {
         </header>
         <Notice kind="ok">{t('submit.doneRevision', { revision: done.revision })}</Notice>
         <div className="submitdone">
-          <button type="button" className="cta" onClick={() => setDone(null)}>
+          <button
+            type="button"
+            className="cta"
+            onClick={() => {
+              setDone(null);
+              // 再提交一条时把预填清掉：上一条的日期不该跟着下一条
+              setInitialDraft(emptyCalendarDraft());
+            }}
+          >
             {t('calendar.submitAnother')}
           </button>
           <Link className="authform__link" to="/calendar">
@@ -141,7 +195,7 @@ export function CalendarSubmit() {
       {failure ? <Notice kind="bad">{failure}</Notice> : null}
 
       <CalendarForm
-        initial={emptyCalendarDraft()}
+        initial={initialDraft}
         actionLabel={t('calendar.submitAction')}
         busyLabel={t('submit.submitting')}
         busy={busy}

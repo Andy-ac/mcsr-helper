@@ -1,4 +1,4 @@
-import { CALENDAR_TAGS, EVENT_STAGES, LOCALES } from '@mcsr/shared';
+import { CALENDAR_TAGS, EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, LOCALES } from '@mcsr/shared';
 import {
   ALL_DAY_TIME,
   type CalendarEvent,
@@ -61,6 +61,15 @@ export interface CalendarDraft {
   tags: string[];
   /** 空串 = 不填轮次（stage 是可选的） */
   stage: string;
+  /**
+   * 专业程度 / 参与范围（011 新增）。空串 = 不填。
+   *
+   * ⚠️ 三个维度都用**空串**表示"没填"，而不是 `null` —— 它们是 `<select>`
+   *    的值，而 DOM 里"没选"就是空串。真正转成 `null` 发生在提交那一步
+   *    （`draft.stage || null`），只在一个地方做，见 buildInput。
+   */
+  level: string;
+  scope: string;
   lang: string;
   noteToReviewer: string;
 }
@@ -86,6 +95,8 @@ export function emptyCalendarDraft(): CalendarDraft {
     location: '',
     tags: [],
     stage: '',
+    level: '',
+    scope: '',
     lang: LOCALES[0],
     noteToReviewer: '',
   };
@@ -106,6 +117,8 @@ export function draftFromEvent(event: CalendarEvent): CalendarDraft {
     location: event.location ?? '',
     tags: event.tags,
     stage: event.stage ?? '',
+    level: event.level ?? '',
+    scope: event.scope ?? '',
     lang: event.lang,
     // ⚠️ 「给审核员的话」**不在事件的字段里**（它不属于内容，服务端也不存它）。
     //     所以编辑时它总是从空白开始 —— 复现上一轮那句话反而会让人以为
@@ -376,6 +389,9 @@ export function CalendarForm({
       location: draft.location.trim() || null,
       tags: draft.tags,
       stage: draft.stage || null,
+      // 空串 → null，只在这一处做转换（草稿里三个维度都是空串表示"没填"）
+      level: draft.level || null,
+      scope: draft.scope || null,
       lang: draft.lang,
       noteToReviewer: draft.noteToReviewer.trim() || null,
     };
@@ -480,6 +496,47 @@ export function CalendarForm({
             {EVENT_STAGES.map((s) => (
               <option key={s} value={s}>
                 {t(`calendar.stage.${s}`)}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {/*
+          011 新增的两维。和 stage 放同一排，因为它们是同一类东西：
+          **都是可空的单选标签**，都用来让筛选更准。
+
+          ⚠️ 两处都保留了"不填"的空选项，而且文案和 stage 那条不同：
+          stage 那条说的是"不填"，这两条说的是**"不适用"** ——
+          因为排位节点这类事件本来就没有专业程度可言，
+          "不填"会让录入者觉得自己漏了一项，而"不适用/不限"才是事实。
+        */}
+        <Field id="cal-level" label={t('calendar.fields.level')} hint={t('calendar.hintLevel')}>
+          <select
+            id="cal-level"
+            className="mcsr-field__input"
+            value={draft.level}
+            onChange={(e) => set('level', e.target.value)}
+          >
+            <option value="">{t('calendar.dimNone')}</option>
+            {EVENT_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {t(`calendar.level.${l}`)}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field id="cal-scope" label={t('calendar.fields.scope')} hint={t('calendar.hintScope')}>
+          <select
+            id="cal-scope"
+            className="mcsr-field__input"
+            value={draft.scope}
+            onChange={(e) => set('scope', e.target.value)}
+          >
+            <option value="">{t('calendar.dimNone')}</option>
+            {EVENT_SCOPES.map((s) => (
+              <option key={s} value={s}>
+                {t(`calendar.scope.${s}`)}
               </option>
             ))}
           </select>

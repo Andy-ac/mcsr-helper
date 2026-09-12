@@ -24,7 +24,7 @@
  */
 import { z } from 'zod';
 import { isValidTimeZone, wallClockToUtc } from './calendar-time';
-import { CALENDAR_TAGS, EVENT_STAGES, LOCALES } from './constants';
+import { CALENDAR_TAGS, EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, LOCALES } from './constants';
 
 /** 描述长度上限。和 v1-plan 里其它正文的量级一致。 */
 export const EVENT_DESCRIPTION_MAX = 20000;
@@ -80,6 +80,15 @@ export const CalendarEventInputSchema = z
       .max(CALENDAR_TAGS.length),
 
     stage: z.enum(EVENT_STAGES).nullish(),
+
+    /**
+     * 专业程度 / 参与范围 —— 两维**都可空**，见 constants.ts 里的说明。
+     *
+     * ⚠️ 它们和 `stage` 一样是**单选**，不是数组。理由：一场比赛的专业程度
+     *    和参与范围各自只有一个答案；做成多选以后筛选就变成"或"，而用户想的是"且"。
+     */
+    level: z.enum(EVENT_LEVELS).nullish(),
+    scope: z.enum(EVENT_SCOPES).nullish(),
 
     lang: z.enum(LOCALES).default('zh-CN'),
 
@@ -160,6 +169,9 @@ export interface CalendarEvent {
   location: string | null;
   tags: string[];
   stage: string | null;
+  /** 专业程度 / 参与范围。**可空** —— 排位节点没有这两维。 */
+  level: string | null;
+  scope: string | null;
   lang: string;
   authorId: string | null;
   authorName: string | null;
@@ -200,3 +212,16 @@ export const EVENT_STAGE_LABELS: Record<string, string> = {
   THIRD_PLACE: '季军赛',
   FINAL: '决赛',
 };
+
+/*
+ * ⚠️ `EVENT_LEVEL_LABELS` / `EVENT_SCOPE_LABELS` **不存在，是故意的**。
+ *
+ * 上面两个映射里写死的是中文，那是历史遗留；而**新增**的两维从一开始就走 i18n
+ * 词条（`calendar.level.*` / `calendar.scope.*`）。理由见 `CalendarReviewView`
+ * 文件头：写死中文的映射在英文界面下会冒出一句中文，而这类问题只在切语言时
+ * 才出现，正常路径的测试永远看不到。
+ *
+ * 那为什么不顺手把上面两个也搬走？——因为它们是**已上线**的中文界面唯一在用的
+ * 文案来源，搬它们要同时改三处调用点（审核视图、日历卡片、ICS 之外的展示），
+ * 属于另一件事。留一条注释说明"新的别学它"，比混在一起改安全。
+ */

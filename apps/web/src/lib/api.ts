@@ -13,6 +13,7 @@
 import type { VideoPlatform } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
 import type { CalendarEvent, CalendarEventInput } from '@mcsr/shared/calendar';
+import type { LiveChannel, LiveChannelInput } from '@mcsr/shared/live';
 import type { UserRole } from '@mcsr/shared/permissions';
 import type {
   FavoriteItem,
@@ -156,10 +157,21 @@ export interface ApiExtra {
   use?: string;
 }
 
-async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
+/*
+ * `cache` 的来历（只在**编辑自己**那条路上会传值，匿名访客一律走默认）：
+ *
+ *   几个公开列表端点带 `public, max-age=60, stale-while-revalidate=300`
+ *   —— 匿名访客应当吃这个缓存。但同一个 URL 在**编辑自己的浏览器里**也存了一份，
+ *   于是编辑隐藏/删除一条之后界面去"刷新公开列表"，拿到的却是最多 60 秒前的
+ *   那份旧响应。表现是"我明明隐藏了，公开列表里怎么还有"；他会再点一次
+ *   （还是旧的），最后以为界面坏了。见 `fetchLiveChannelsFresh`。
+ *
+ *   默认 `undefined` = 交给浏览器按响应头决定，和加这个参数之前完全一样。
+ */
+async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCache): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, { headers: { accept: 'application/json' }, signal });
+    res = await fetch(path, { headers: { accept: 'application/json' }, signal, cache });
   } catch (error) {
     // abort 是我方主动取消，不应该显示成错误
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
@@ -198,6 +210,22 @@ export function buildResourceQuery(query: Partial<ResourceQuery>, includeHidden 
   return s ? `?${s}` : '';
 }
 
+/**
+ * 资源列表。**公开**（`includeHidden` 那条除外，它要 `resource.moderate`）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ `includeHidden` 为真时**绕开浏览器缓存** —— 这不是顺手加的
+ * ---------------------------------------------------------------------------
+ * `/api/resources` 带 `public, max-age=60`（见 `routes/resources.ts` 的
+ * PUBLIC_CACHE）。访客吃缓存是对的。但治理者点「下架」之后，页面重新拉
+ * 列表，命中的是 60 秒内的旧响应 —— 那条**还在列表里**，于是他看到
+ * "我明明下架了它怎么还在"，再点一次还是旧的。服务端一直是对的。
+ *
+ * 判据直接绑在 `includeHidden` 上，不另开一个参数：能传 `includeHidden`
+ * 的就只有"看得见下架开关"的治理者（`ResourceList.tsx` 里 `showHidden`
+ * 只在 `resource.moderate` 下出现），而**正是这条路**需要新鲜数据。
+ * 访客那条路连 `includeHidden` 都是 false，依旧吃那 60 秒缓存。
+ */
 export function fetchResources(
   query: Partial<ResourceQuery>,
   signal?: AbortSignal,
@@ -206,6 +234,7 @@ export function fetchResources(
   return request<ResourceListResponse>(
     `/api/resources${buildResourceQuery(query, includeHidden)}`,
     signal,
+    includeHidden ? 'no-store' : undefined,
   );
 }
 
@@ -653,6 +682,21 @@ export interface CalendarQuery {
   to?: number | null;
   /** 标签多选（Q1）。命中任意一个即可。 */
   tags?: string[];
+  /**
+   * 三个**单选**维度（011 新增了后两个）。不传 / 传空 = 不限。
+   *
+   * ⚠️ 它们和 `tags` 的语义**不同**，这一点在界面上也要看得出来：
+   *   · `tags` 多选 → 任一命中（"赛事**或**社区活动"）
+   *   · 这三个 → 就是这个（"我只看**职业**赛"）
+   * 把单选维度也做成数组，筛选就变成了"或"，而用户想要的是"且"。
+   *
+   * ⚠️ 服务端会**对着枚举校验**这些值，非法值一律当"不限"。
+   *    所以界面即使传了一个拼错的值，也只会多返回几条，
+   *    不会返回一个"看起来完全正确的空结果"。
+   */
+  level?: string | null;
+  scope?: string | null;
+  stage?: string | null;
   page?: number;
   pageSize?: number;
 }
@@ -675,6 +719,13 @@ export function fetchCalendarEvents(
   if (query.from !== undefined && query.from !== null) params.set('from', String(query.from));
   if (query.to !== undefined && query.to !== null) params.set('to', String(query.to));
   if (query.tags && query.tags.length > 0) params.set('tags', query.tags.join(','));
+  // 单选维度：null / 空串都是"不限"，一律不拼进 URL（和 buildResourceQuery 同一个约定）。
+  // ⚠️ 不能把空串拼成 `?level=` —— 服务端会把它当"不限"（结果一样），
+  //    但 URL 里会留一堆 `level=&scope=&stage=` 的噪音，而分享出去的链接
+  //    看起来像"筛过什么"，其实什么都没筛。
+  if (query.level) params.set('level', query.level);
+  if (query.scope) params.set('scope', query.scope);
+  if (query.stage) params.set('stage', query.stage);
   if (query.page && query.page > 1) params.set('page', String(query.page));
   if (query.pageSize) params.set('pageSize', String(query.pageSize));
   const s = params.toString();
@@ -784,10 +835,28 @@ export interface VideoQuery {
  * ⚠️ 空的筛选项一律**不拼进 URL**。`?platform=` 会是一个合法的 400
  *    （platform 是封闭枚举，空串不是它的取值），而用户看到的是
  *    "查询参数不合法" —— 指不到"你把筛选清空了"这件事上。
+ *
+ * ---------------------------------------------------------------------------
+ * `fresh` 的来历（和 `fetchLiveChannelsFresh` 是同一个 bug，见那里的长注释）
+ * ---------------------------------------------------------------------------
+ * `/api/videos` 带 `public, max-age=60`（见 `routes/videos.ts` 的 PUBLIC_CACHE）。
+ * 匿名访客吃这个缓存是对的 —— 视频墙本来就在 rolling，晚 60 秒无所谓。
+ *
+ * 但**下架的人自己**的浏览器里也存着同一份缓存，于是：
+ *
+ *   编辑在卡片上点「隐藏」→ `refreshKey` +1 → 重新请求 `/api/videos`
+ *   → 命中的是 60 秒内的旧响应 → **那条还在墙上**。
+ *
+ * 编辑看到的是"我明明隐藏了，它怎么还在"，再点一次（还是旧的），
+ * 最后以为隐藏功能坏了。服务端一直是对的，错的是这一层缓存。
+ *
+ * ⚠️ 只有**有下架权的人**传 `fresh`（`Videos.tsx` 里按 `resource.moderate`
+ *    分派）：访客和白名单作者仍然走缓存，那正是这条 60 秒缓存存在的意义。
  */
 export function fetchVideos(
   query: VideoQuery = {},
   signal?: AbortSignal,
+  fresh = false,
 ): Promise<VideoListResponse> {
   const params = new URLSearchParams();
   if (query.platform) params.set('platform', query.platform);
@@ -795,7 +864,11 @@ export function fetchVideos(
   if (query.page && query.page > 1) params.set('page', String(query.page));
   if (query.pageSize) params.set('pageSize', String(query.pageSize));
   const s = params.toString();
-  return request<VideoListResponse>(`/api/videos${s ? `?${s}` : ''}`, signal);
+  return request<VideoListResponse>(
+    `/api/videos${s ? `?${s}` : ''}`,
+    signal,
+    fresh ? 'no-store' : undefined,
+  );
 }
 
 /** 我贴过的（**含被隐藏的**）。服务端不过滤状态，理由见 routes/videos.ts。 */
@@ -920,4 +993,90 @@ export function saveSeedRecord(
   input: SeedCreateInput,
 ): Promise<{ ok: true; matchId: number; record: SeedRecord | null }> {
   return sendJson('POST', '/api/ranked-seeds/save', input);
+}
+
+// ---------------------------------------------------------------------------
+// 直播频道清单
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这一组和视频那一组的**权限形状相反**：
+ *   · 视频：任何登录用户都能贴（Q6 的 rolling）
+ *   · 直播：只有 `live.manage`（editor 及以上）—— 一份少数人维护、变动很慢的名单
+ * 所以这里没有"贴一条"的公开入口，写操作全部要能力。
+ */
+
+/** 公开列表：**不需要登录**。只出 visible 的行。 */
+export function fetchLiveChannels(signal?: AbortSignal): Promise<{ items: LiveChannel[] }> {
+  return request<{ items: LiveChannel[] }>('/api/live', signal);
+}
+
+/**
+ * 公开列表 —— 但**绕过浏览器缓存**。只给"编辑改完立刻要看结果"那条路用。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么必须有它（这是一个真跑出来的 bug，不是预防性的）
+ * ---------------------------------------------------------------------------
+ * `GET /api/live` 带 `public, max-age=60, stale-while-revalidate=300`。匿名访客
+ * 吃这个缓存是对的（名单变动很慢）。但编辑**自己**的浏览器里也存着一份同样的
+ * 缓存，于是：
+ *
+ *   编辑点「隐藏」→ 面板刷新公开列表 → 命中的是 60 秒内的旧响应 →
+ *   公开列表里**那一条还在**。编辑看到的是"我隐藏了但它还在"，
+ *   再点一次（还是旧的），最后以为界面坏了。
+ *
+ * 实测证据（`.cache/livecache.mjs`，同一个页面里连发五次请求）：
+ *   隐藏之后页面的 fetch 仍然拿到那一行，而 Resource Timing 里
+ *   `transferSize: 0`（= 根本没走网络，是缓存给的）；带时间戳绕开缓存的那一次
+ *   才拿到过滤后的结果 —— 也就是说**服务端一直是对的**，错的是这一层缓存。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么是 `no-store`，而不是给地址加一个 `?ts=${Date.now()}`
+ * ---------------------------------------------------------------------------
+ * 假参数只是把缓存**键**换掉：它留下的是一份没人会清理的垃圾缓存条目，
+ * 而且服务端日志里会多出一串毫无意义的查询串。`no-store` 说的是真话 ——
+ * "这个请求不要缓存"，浏览器也照做。
+ *
+ * ⚠️ 只在编辑那条路上用它（`Live.tsx` 里按 `live.manage` 分派）：
+ *    匿名访客仍然走 `fetchLiveChannels` 吃缓存，那是这条 60 秒缓存存在的意义。
+ */
+export function fetchLiveChannelsFresh(signal?: AbortSignal): Promise<{ items: LiveChannel[] }> {
+  return request<{ items: LiveChannel[] }>('/api/live', signal, 'no-store');
+}
+
+/**
+ * 编辑视图：**含被隐藏的行**，需要 `live.manage`。
+ *
+ * ⚠️ 它是**另一个端点**，不是 `fetchLiveChannels` 加一个参数：
+ *    两者的缓存规则相反（公开列表可以缓存 60 秒，这一条必须 no-store）。
+ *    共用一个端点的话，那条 60 秒的公共缓存迟早会把隐藏行发给别人。
+ */
+export function fetchLiveChannelsForManage(
+  signal?: AbortSignal,
+): Promise<{ items: LiveChannel[] }> {
+  return request<{ items: LiveChannel[] }>('/api/live/manage', signal);
+}
+
+export function createLiveChannel(
+  input: LiveChannelInput,
+): Promise<{ ok: true; channel: LiveChannel }> {
+  return sendJson('POST', '/api/live', input);
+}
+
+export function updateLiveChannel(
+  id: string,
+  input: LiveChannelInput,
+): Promise<{ ok: true; channel: LiveChannel }> {
+  return sendJson('PATCH', `/api/live/${encodeURIComponent(id)}`, input);
+}
+
+/** 隐藏 / 显示。空操作回 `changed: false`，那是**成功**不是错误。 */
+export function setLiveChannelVisibility(
+  id: string,
+  status: 'visible' | 'hidden',
+): Promise<{ ok: true; id: string; status: string; changed: boolean }> {
+  return sendJson('PATCH', `/api/live/${encodeURIComponent(id)}/visibility`, { status });
+}
+
+export function deleteLiveChannel(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/live/${encodeURIComponent(id)}`);
 }

@@ -39,8 +39,18 @@ export const SITE = {
   mailSubdomain: 'mail.mcsrhelper.com',
 } as const;
 
-/** 资源库条目的类型。 */
-export const RESOURCE_KINDS = ['website', 'tool'] as const;
+/**
+ * 资源库条目的类型。
+ *
+ * ⚠️ 加取值要**重建 `resources` 表** —— SQLite 改不了 CHECK 约束
+ *    （`kind` 在迁移 001 里是 `CHECK (kind IN ('website','tool'))`）。
+ *    迁移 012 为加 `'video'` 做了一次重建，过程和代价记在那里。
+ *    所以：**加一个 kind 不是"加一行"**，先想清楚值不值得。
+ *
+ * ⚠️ 而重建之后，界面上有**一处二元三元式**会静默出错 —— 见
+ *    `apps/web/src/lib/resourceKind.ts` 的说明（现在是那个文件在管显示）。
+ */
+export const RESOURCE_KINDS = ['website', 'tool', 'video'] as const;
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 
 /** UGC 审核状态（资源库 / 日历 / 种子分享共用同一条管线）。 */
@@ -68,6 +78,21 @@ export type UserRole = (typeof USER_ROLES)[number];
 /** 允许嵌入的视频平台。新增平台时必须同步更新 VideoEmbed 组件与 CSP。 */
 export const VIDEO_PLATFORMS = ['bilibili', 'youtube', 'twitch'] as const;
 export type VideoPlatform = (typeof VIDEO_PLATFORMS)[number];
+
+/**
+ * 「直播」板块里记的**频道**所在平台。
+ *
+ * ⚠️ 和 `VIDEO_PLATFORMS` 是**两回事**，别合并：
+ *   · `VIDEO_PLATFORMS` = "我们能嵌哪个平台的**视频**"（三个都行）
+ *   · `LIVE_PLATFORMS`  = "我们记录哪些平台的**频道**"（渠道比嵌入能力宽）
+ * 现在两者取值恰好相同，但它们是两个问题；合并的那一刻，加一个平台
+ * 就会被逼着同时改"能不能嵌"和"记不记录"两件事。
+ *
+ * ⚠️ **能不能嵌**是另一张表的事，见 `shared/live.ts` 的 `liveEmbedUrl`：
+ *    目前只有 YouTube 会真的嵌出去，Twitch 只记录不嵌（还没测过）。
+ */
+export const LIVE_PLATFORMS = ['youtube', 'twitch', 'bilibili'] as const;
+export type LivePlatform = (typeof LIVE_PLATFORMS)[number];
 
 /** 支持的语言。UI 双语；内容只打标签不翻译。 */
 export const LOCALES = ['zh-CN', 'en'] as const;
@@ -192,6 +217,41 @@ export const EVENT_STAGES = [
   'FINAL',
 ] as const;
 export type EventStage = (typeof EVENT_STAGES)[number];
+
+/**
+ * 赛事的**专业程度**。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么它是独立的一维，而不是塞进标签里
+ * ---------------------------------------------------------------------------
+ * 标签（`CALENDAR_TAGS`）回答的是"**这是什么**"（赛事 / 社区活动 / 排位节点），
+ * 这一维回答的是"**它有多正式**"。两件事正交：一场社区活动可以是职业选手
+ * 之间的高奖金比赛，一场"官方"赛事也可以是娱乐性质的表演赛。
+ * 硬塞进标签会逼录入者在两个都对的答案里挑一个 —— 无论挑哪个，筛选都会漏掉它。
+ *
+ * ⚠️ **可空**，而且这不是"还没填"的委婉说法：排位节点没有专业程度可言。
+ *    硬要求填会逼人瞎填一个，而瞎填的数据比空值更难用（空值至少是诚实的）。
+ *
+ * ⚠️ 取值是**有序**的（从职业到休闲），界面上按这个顺序排。
+ *    将来如果要按"正式程度"排序或做筛选区间，这个顺序就是依据 ——
+ *    所以**不要**为了字母序好看去重排这个数组。
+ */
+export const EVENT_LEVELS = ['PRO', 'SEMI_PRO', 'AMATEUR', 'CASUAL'] as const;
+export type EventLevel = (typeof EVENT_LEVELS)[number];
+
+/**
+ * 赛事的**参与范围**（地理覆盖）。
+ *
+ * ⚠️ 同样是**可空**、**有序**（从大到小）的。取值里最细的一档是「地区」：
+ *    MCSR 的社区很大一部分是**按国家/地区**组织的（中日韩、巴西、欧洲各国都有
+ *    自己的社区赛事），所以"国家"之下还留一档是有用的，而不是凑数。
+ *
+ * ⚠️ 它和 `location` 字段不是一回事：`location` 是"在哪打"（自由文本，
+ *    可能写"线上"），而这一维是"**谁**能参加"。一场线上赛可以是全球性的，
+ *    也可以在某个国家内部 —— 所以地点填"线上"时这一维照样有意义。
+ */
+export const EVENT_SCOPES = ['GLOBAL', 'CONTINENT', 'COUNTRY', 'REGION'] as const;
+export type EventScope = (typeof EVENT_SCOPES)[number];
 
 /** 各平台视频 ID 的形状校验（只校验形状，**绝不抓取元数据**）。 */
 export const VIDEO_ID_PATTERNS: Record<VideoPlatform, RegExp> = {

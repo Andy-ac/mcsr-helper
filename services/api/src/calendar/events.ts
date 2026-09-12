@@ -39,6 +39,9 @@ interface EventRow {
   location: string | null;
   tags: string;
   stage: string | null;
+  /** 011 新增的两维筛选项。可空 —— 排位节点没有专业程度/参与范围。 */
+  level: string | null;
+  scope: string | null;
   lang: string;
   author_id: string | null;
   current_revision: number | null;
@@ -96,6 +99,8 @@ function toColumns(
     location: input.location ?? null,
     tags: JSON.stringify(input.tags),
     stage: input.stage ?? null,
+    level: input.level ?? null,
+    scope: input.scope ?? null,
     lang: input.lang,
   };
 }
@@ -118,6 +123,8 @@ export interface EventPayload {
   location: string | null;
   tags: string[];
   stage: string | null;
+  level: string | null;
+  scope: string | null;
   lang: string;
 }
 
@@ -135,6 +142,8 @@ function toPayload(input: CalendarEventInput): EventPayload {
     location: input.location ?? null,
     tags: input.tags,
     stage: input.stage ?? null,
+    level: input.level ?? null,
+    scope: input.scope ?? null,
     lang: input.lang,
   };
 }
@@ -161,6 +170,15 @@ function payloadToColumns(p: EventPayload) {
     location: p.location,
     tags: JSON.stringify(p.tags),
     stage: p.stage,
+    /*
+     * ⚠️ `?? null` 而不是直接 `p.level`：快照是**历史数据**，而 011 之前的
+     *    快照里根本没有这两个字段。直接取值会得到 `undefined`，
+     *    而 node:sqlite 对 `undefined` 绑参是**报错**的（对 null 才正常）。
+     *    也就是说：一条在 011 之前提交、一直没审的待审事件，
+     *    会在审核通过的那一刻把整个审批动作炸掉 —— 而错误信息指向的是绑参数量。
+     */
+    level: p.level ?? null,
+    scope: p.scope ?? null,
     lang: p.lang,
   };
 }
@@ -186,6 +204,8 @@ export function toCalendarEvent(row: EventRow): CalendarEvent {
     //    而 deepStrictEqual 会比较原型，测试里两边打印出来一模一样却判不相等
     tags: JSON.parse(row.tags) as string[],
     stage: row.stage,
+    level: row.level,
+    scope: row.scope,
     lang: row.lang,
     authorId: row.author_id,
     authorName: author?.display_name ?? null,
@@ -223,9 +243,10 @@ export function submitEvent(input: {
     db.prepare(
       `INSERT INTO calendar_events
          (id, title, title_en, description_md, starts_at_local, starts_at_tz, starts_at_utc,
-          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage, lang,
+          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage,
+          level, scope, lang,
           author_id, current_revision, pending_revision, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
     ).run(
       input.id,
       cols.title,
@@ -242,6 +263,8 @@ export function submitEvent(input: {
       cols.location,
       cols.tags,
       cols.stage,
+      cols.level,
+      cols.scope,
       cols.lang,
       input.authorId,
       input.now,
@@ -566,7 +589,8 @@ export function approveEvent(input: {
          title = ?, title_en = ?, description_md = ?,
          starts_at_local = ?, starts_at_tz = ?, starts_at_utc = ?,
          ends_at_local = ?, ends_at_tz = ?, ends_at_utc = ?,
-         all_day = ?, url = ?, location = ?, tags = ?, stage = ?, lang = ?,
+         all_day = ?, url = ?, location = ?, tags = ?, stage = ?,
+         level = ?, scope = ?, lang = ?,
          status = 'published', current_revision = ?, pending_revision = NULL, updated_at = ?
        WHERE id = ?`,
     ).run(
@@ -584,6 +608,8 @@ export function approveEvent(input: {
       cols.location,
       cols.tags,
       cols.stage,
+      cols.level,
+      cols.scope,
       cols.lang,
       input.revision,
       input.now,
@@ -673,6 +699,10 @@ export interface ListEventsOptions {
   toUtc?: number | null;
   /** 标签筛选：命中任意一个即可（Q1 的多选语义）。 */
   tags?: string[];
+  /** 专业程度 / 参与范围 / 轮次。**单选**，`null`/缺省表示不限。 */
+  level?: string | null;
+  scope?: string | null;
+  stage?: string | null;
   status?: string;
   limit?: number;
   offset?: number;
@@ -684,6 +714,13 @@ export interface ListEventsOptions {
  * ⚠️ 标签筛选用 `json_each` 在 SQL 里做，而不是取出来在内存里过滤 ——
  *    Node 的 `node:sqlite` 自带 JSON1 扩展，而这个表以后会有很多行，
  *    在内存里过滤意味着分页会算错（先 LIMIT 再过滤，页大小就不是页大小了）。
+ *
+ * ⚠️ 而 `level` / `scope` / `stage` 是**单值等值**条件，直接 `= ?` 就行。
+ *    注意它们和 `tags` 的语义差别：标签是"任一命中"，这三个是"就是这个"。
+ *    混起来的后果是"我筛了职业赛，结果业余的也出来了"，而那种错很难被看出来。
+ *
+ * ⚠️ 三者都用 `!== undefined && !== null` 判断，**不能用真值判断** ——
+ *    它们来自查询参数，而"参数没传"和"参数传了空"必须落到同一个结果（不过滤）。
  */
 export function listEvents(opts: ListEventsOptions = {}): {
   rows: EventRow[];
@@ -712,6 +749,17 @@ export function listEvents(opts: ListEventsOptions = {}): {
       `EXISTS (SELECT 1 FROM json_each(calendar_events.tags) AS t WHERE t.value IN (${placeholders}))`,
     );
     args.push(...opts.tags);
+  }
+  // 三个单选维度。它们可空，所以 `= NULL` 永远不成立 ——
+  // 但"不限"本来就不该加条件，所以这里不为"筛没填的"提供入口（见下面注释）。
+  for (const [column, value] of [
+    ['level', opts.level],
+    ['scope', opts.scope],
+    ['stage', opts.stage],
+  ] as const) {
+    if (value === undefined || value === null || value === '') continue;
+    where.push(`${column} = ?`);
+    args.push(value);
   }
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';

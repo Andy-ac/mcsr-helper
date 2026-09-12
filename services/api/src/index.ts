@@ -16,6 +16,7 @@ import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
 import { calendarRoute } from './routes/calendar';
 import { desktopRoute } from './routes/desktop';
+import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
 import { moderationRoute } from './routes/moderation';
 import { resourcesRoute } from './routes/resources';
@@ -151,6 +152,14 @@ app.route('/api', calendarRoute);
 // ⚠️ 视频**不进审核队列**（用户 Q6 确认）：本体托管在 B站/YouTube，我们只存 ID，
 // 标题是唯一自由文本；事后手段是作者可删、有 resource.moderate 的人可隐藏。
 app.route('/api', videosRoute);
+/*
+ * 直播频道清单。和视频墙是**两个板块**，也挂在 /api 上（路由自带 /live 前缀）。
+ *
+ * ⚠️ 它的权限形状和视频**相反**：视频是"任何登录用户都能贴"（rolling），
+ *    而这份清单只有 `live.manage`（编辑及以上）—— 它是一份少数人维护、
+ *    变动很慢的名单。两者的差别写在 routes/live.ts 的文件头。
+ */
+app.route('/api', liveRoute);
 /*
  * Ranked Seeds 的上游代理。
  *

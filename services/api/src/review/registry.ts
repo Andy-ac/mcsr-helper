@@ -352,6 +352,8 @@ function liveEventPayload(row: {
   location: string | null;
   tags: string;
   stage: string | null;
+  level: string | null;
+  scope: string | null;
   lang: string;
 }): EventPayload {
   return {
@@ -367,6 +369,8 @@ function liveEventPayload(row: {
     location: row.location,
     tags: JSON.parse(row.tags) as string[],
     stage: row.stage,
+    level: row.level,
+    scope: row.scope,
     lang: row.lang,
   };
 }

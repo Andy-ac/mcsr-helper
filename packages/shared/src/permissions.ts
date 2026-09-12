@@ -121,6 +121,17 @@ export const CAPABILITIES = [
   // ---- 视频（M4，用户自贴链接）----
   'video.submit',
 
+  // ---- 直播频道清单（记录哪些 streamer，见 shared/live.ts）----
+  /**
+   * 维护「直播」板块的频道清单。**只有编辑及以上**。
+   *
+   * ⚠️ 和其他能力不同，它**没有对应的 `.submit`**：这份清单不是 UGC，
+   *    用户的原话是"记录一些重要的 MCSR streamer"——那是一份**编辑维护**的名单，
+   *    慢、稳、由少数人决定（和 Q6 的"视频贴了就可见"恰好相反）。
+   *    所以这里只有一个 `manage`，没有"任何人都能加一条"的入口。
+   */
+  'live.manage',
+
   // ---- 种子分享（M4）----
   'seed.submit',
   'seed.review',
@@ -183,6 +194,8 @@ const EDITOR_CAPS: readonly Capability[] = [
   'resource.feature',
   'resource.moderate',
   'resource.editUnpublished',
+  // 直播清单由编辑维护（见 CAPABILITIES 里 live.manage 的说明）
+  'live.manage',
 ];
 
 const MATRIX: Record<UserRole, readonly Capability[]> = {

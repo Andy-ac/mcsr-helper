@@ -8,6 +8,7 @@ import {
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { fetchMarks, saveMarks } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
@@ -173,7 +174,9 @@ export function MarksPanel({
           onChange={(e) => setNoteDraft(e.target.value)}
           placeholder={t('marks.notePlaceholder')}
         />
-        <p className="mcsr-field__hint">{t('marks.noteHint', { used: noteDraft.trim().length })}</p>
+        <p className="mcsr-field__hint">
+          {em(t('marks.noteHint', { used: noteDraft.trim().length }))}
+        </p>
         <div className="marks__actions">
           <button
             type="button"

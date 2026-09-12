@@ -398,6 +398,18 @@ code {
 .sidebar__block--videos {
   background: #b4553f;
 }
+/*
+ * 「直播」—— 第七个分区色。
+ *
+ * ⚠️ 它必须和上面六个**都不一样**：收起侧边栏时只剩这个小方块，
+ *    而那时它是唯一能区分分区的线索（见 Layout.tsx 里 SECTIONS 的注释）。
+ *    现有六个已经把暖色系用掉了（土棕 / 草绿 / 赭红 / 钻青 / 紫 / 灰），
+ *    所以这里取冷色里的蓝 —— 和「娱乐视频」的赭红在色相环上几乎相对，
+ *    两个视频类板块并排时不会看混。
+ */
+.sidebar__block--live {
+  background: #4a86d9;
+}
 .sidebar__block--seeds {
   background: var(--diamond);
 }
@@ -832,11 +844,41 @@ html:not(.vt) .route-fade {
   margin-right: 4px;
 }
 
+/*
+ * ===========================================================================
+ * 标签 chip —— 整个站只有这一处定义
+ * ===========================================================================
+ *
+ * ⚠️ 这里原来**有两份**定义：`.tagchip`（不带元素限定）和 `button.tagchip`
+ *    （文件末尾另有一份）。两份的 padding、背景、transition 都不一样，
+ *    改动时必然只改一处 —— 而"看起来改了没生效"是最难查的一类问题。
+ *    现在合成一处。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 选中态为什么必须写这么多条（这是一个真实 bug 的修复）
+ * ---------------------------------------------------------------------------
+ * 通用 hover `button.tagchip:hover:not(:disabled)` 的特异度是 **(0,3,1)**，
+ * 而选中态 `.tagchip--on` 只有 (0,2,0) —— **hover 赢**。后果是鼠标一悬停，
+ * 选中样式就被中性色覆盖：亮绿文字变成 `--fg`、绿描边变灰，
+ * 看起来就像"高亮没了"（用户报的"标签亮暗有问题"）。
+ *
+ * 所以修复不能只把颜色改回来，要**让选中态在所有交互状态下都赢**：
+ *   · 删掉那条 `button.tagchip:hover`（它本来就是重复定义，见下）；
+ *   · 选中态自己把 `:hover` / `:focus-visible` / `:active` 都写出来 ——
+ *     它们都带一个伪类，特异度 (0,3,0) 高于基础 `.tagchip:hover` 的 (0,2,0)。
+ *
+ * ⚠️ 不要靠"选择器先后顺序"来取胜。顺序是一种隐式约定，
+ *    下一个人往文件末尾追加一条规则就可能再次翻车，而且不会有任何报错。
+ *
+ * 另一条：**选中 = 填充**（草绿底 + 近黑字），未选中 = 描边。
+ * 填充和描边的差别一眼能分；而"描边 + 淡底"在深色界面上和未选中只差一点点 ——
+ * 那正是它容易被看成"没选中"的原因。而且这对配色的对比度是 7:1。
+ */
 .tagchip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
   color: var(--fg-muted);
@@ -852,21 +894,59 @@ html:not(.vt) .route-fade {
     border-color var(--t-fast) var(--ease),
     background var(--t-fast) var(--ease);
 }
+
+/* 未选中时的悬停：略微提亮，但**不**模仿选中态（否则会有"到底选中没有"的错觉）。 */
 .tagchip:hover {
   color: var(--fg);
-  border-color: rgba(127, 178, 56, 0.5);
-  background: rgba(127, 178, 56, 0.1);
+  border-color: var(--line-strong);
   text-decoration: none;
 }
-.tagchip.is-active {
+
+.tagchip:focus-visible {
+  outline: 2px solid var(--grass-bright);
+  outline-offset: 2px;
+}
+
+.tagchip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/*
+ * ★ 选中态。四条一起写出来，覆盖指针悬停 / 键盘聚焦 / 按下 ——
+ *   少写一条，那个交互状态下的高亮就又会掉回未选中的样子。
+ *
+ * ⚠️ 而且这四个状态**颜色完全相同**，这是刻意的：选中态悬停时**什么都不变**。
+ *
+ *    上一版在悬停时把描边改成红色（想表达"再点一下就取消"），
+ *    但那是**破坏性**的语义，而这里是一个筛选开关 —— 用户把它读成
+ *    "这个标签出问题了"。更要命的是它正好属于用户报的那一类：
+ *    "指着它的时候高亮变了"。所以现在一点反馈都不给：
+ *    填充本身已经说明"它是选中的"，鼠标形态说明"它可点"，
+ *    而点击的结果是他自己要求的那件事。
+ *
+ *    （这一点有 computed-style 检查守着：`.cache/tagchip-check.mjs` 会强制
+ *      `:hover` 然后断言 color / background / border **一个都没变**。）
+ */
+.tagchip--on,
+.tagchip--on:hover,
+.tagchip--on:focus-visible,
+.tagchip--on:active {
   background: var(--grass);
-  border-color: var(--grass);
+  border-color: var(--grass-bright);
+  /* 近黑色的字压在草绿上，对比度约 7:1。用白字会掉到 2:1 以下。 */
   color: var(--grass-ink);
 }
+
 .tagchip__count {
   opacity: 0.6;
   font-size: 10px;
 }
+
+/*
+ * 只读标签（卡片上的标签、权限说明里的能力名）：不是开关，不该有悬停反馈。
+ * ⚠️ 它要在 `.tagchip:hover` 之后定义，并且带 `--sm` 就够赢了（(0,3,0) > (0,2,0)）。
+ */
 .tagchip--sm {
   cursor: default;
   padding: 2px 9px;
@@ -874,7 +954,7 @@ html:not(.vt) .route-fade {
 .tagchip--sm:hover {
   color: var(--fg-muted);
   border-color: var(--line);
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--surface);
 }
 
 /* ==================================================================
@@ -1072,6 +1152,22 @@ html:not(.vt) .route-fade {
 .badge--kind {
   color: var(--fg-muted);
   border-color: var(--line);
+}
+/*
+ * 「专业程度 / 参与范围」用的徽章底色，和 `--kind`（标签、轮次）区分开。
+ *
+ * ⚠️ 为什么要区分：卡片上那一排徽章是**四个不同维度**（标签 / 轮次 /
+ *    专业程度 / 参与范围）的取值。如果它们长得一模一样，用户读到的是
+ *    "一个有五个标签的活动"，而不是"它在四个维度上各有取值" ——
+ *    前者让人以为标签可以随便叠，后者才是事实。
+ *
+ * 做法是**更淡**而不是换一个颜色：这两个维度是背景信息（"有多正式""谁能参加"），
+ * 不该和标签抢注意力。
+ */
+.badge--dim {
+  color: var(--fg-faint);
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* ==================================================================
@@ -2478,40 +2574,10 @@ textarea.mcsr-field__input {
   gap: 8px;
   align-items: stretch;
 }
-/* 已选中的标签：草绿描边 + 一个 ×。
-   和"可选标签"用同一种形状、不同颜色 —— 用户一眼就能分出
-   "我选了哪些"和"还有哪些能选"。 */
-.tagchip--on {
-  color: var(--grass-bright);
-  border-color: rgba(127, 178, 56, 0.5);
-  background: rgba(127, 178, 56, 0.12);
-  cursor: pointer;
-}
-.tagchip--on:hover {
-  border-color: var(--redstone);
-  color: var(--redstone);
-}
-button.tagchip {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  color: var(--fg-muted);
-  padding: 3px 10px;
-  transition:
-    color var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease);
-}
-button.tagchip:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--line-strong);
-}
-button.tagchip:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
+/* 「已选中的标签」在这里**只**补一点语义，不再碰颜色。
+   ⚠️ 这里原来写着 `.tagchip--on:hover { border-color: var(--redstone) }` ——
+      那是这次要修的 bug 的一部分（悬停时高亮变色），而且红色是破坏性语义，
+      用在一个筛选开关上是错的。颜色统一定义在文件上方那一组里。 */
 
 /* ---- 配图 ---- */
 .imagepicker {
@@ -2679,11 +2745,11 @@ button.tagchip:disabled {
   margin-right: 4px;
 }
 /* 治理条里的「精选 / 官方」是开关，不是筛选 —— 用和已选标签一样的样式，
-   因为它们表达的是同一件事："这个状态是开着的"。 */
-.moderatebar .tagchip {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-}
+   因为它们表达的是同一件事："这个状态是开着的"。
+   ⚠️ 这里原来还有一条 `.moderatebar .tagchip { font-family / font-size }`，
+      而基础 `.tagchip` 写的就是这两个值、一模一样 —— 删掉。
+      一条没有作用的规则留着，下一个人会以为它"有作用"，
+      然后在改字体时跑去改这里、发现改了不起作用。 */
 
 /* ---- 列表页：已下架条目的标记 ---- */
 .badge--hidden {
@@ -4030,3 +4096,639 @@ button.tagchip:disabled {
 .seed__saveform .notice {
   margin-bottom: 12px;
 }
+
+/* ==================================================================
+   月历表（/calendar 的网格视图）—— 样式从下面这个锚点往下追加。
+   类名一律用 grid__ / grid- 前缀；本仓的样式是全局的，没有 CSS Modules 兜着。
+   写完把锚点注释删掉。
+   ================================================================== */
+
+/* ==================================================================
+   月历表 + 顶部筛选栏（日历改版）
+   ------------------------------------------------------------------
+   全部类名以 .grid__ / .grid- / .daypanel 开头，不与别的版块撞名。
+   ⚠️ 这里**没有**任何 tagchip 的选中样式 —— 全站只有一处定义（见上方那一组）。
+   ================================================================== */
+
+.viewswitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  /* fieldset 的默认边框和内边距要清掉，否则会画出一个框 */
+  border: 0;
+  padding: 0;
+  margin-block: 0;
+  min-width: 0;
+}
+
+/* ---- 顶部筛选栏 ---- */
+.grid-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+/*
+ * 每一维是一个 fieldset，标签（legend）在 chip **上面**一行。
+ * ⚠️ `<legend>` 不能作为 flex 子项参与排版（它渲染在边框区），
+ *    所以这里用纵向 flex：标签一行、chip 一行。
+ *    "标签在左、chip 在右"那种排法必须放弃 fieldset 回到手写 ARIA，
+ *    不值得 —— 上下排反而让每个维度自成一块，更好读。
+ */
+.grid-filters__row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.grid-filters__label {
+  /* legend 的默认样式 */
+  padding: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.grid-filters__chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.grid-filters__tail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.grid-filters__hint {
+  margin: 0;
+  flex: 1 1 320px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  line-height: 1.7;
+}
+.grid-filters__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ---- 工具条：年月切换 + 计数 ---- */
+.grid-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.grid-toolbar__count {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+.grid-nav {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.grid-nav__step,
+.grid-nav__today,
+.grid-nav__label {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.grid-nav__step:hover,
+.grid-nav__today:hover,
+.grid-nav__label:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.grid-nav__label {
+  min-width: 120px;
+  text-align: center;
+  color: var(--fg);
+}
+.grid-nav__label.is-open {
+  border-color: var(--grass-bright);
+}
+/* 新月份的数据还在路上时的提示。
+   ⚠️ 只是**变淡**，不是转圈 —— 网格里仍然是上个月的内容（那是刻意的，
+      见 CalendarList 文件头），而一个转圈会让人以为网格也空了。 */
+.grid-nav__label.is-pending {
+  opacity: 0.6;
+}
+.grid-nav__step--sm {
+  padding: 2px 8px;
+}
+
+.grid-nav__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-3);
+  padding: 10px;
+  min-width: 260px;
+}
+.grid-nav__yearrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.grid-nav__year {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+.grid-nav__months {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.grid-nav__month {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  padding: 5px 4px;
+  cursor: pointer;
+}
+.grid-nav__month:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+/* ---- 网格本体 ---- */
+.grid {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+.grid__head,
+.grid__body {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.grid__head {
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-deep);
+}
+.grid__weekday {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  text-align: center;
+  padding: 7px 4px;
+}
+.grid__body {
+  /* 每行之间一条细线：单元格自己画边框会在 7 列下变成双线 */
+  gap: 1px;
+  background: var(--line);
+}
+.grid__day {
+  /* ⚠️ 用 button 而不是 div：格子里要能点、能被键盘选中。
+     按钮的默认样式全部要清掉，否则会带上系统字体和圆角。 */
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 76px;
+  padding: 6px 7px;
+  background: var(--surface);
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.grid__day:hover {
+  background: var(--surface-2);
+}
+.grid__day:focus-visible {
+  outline: 2px solid var(--grass-bright);
+  outline-offset: -2px;
+}
+.grid__num {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+/* 相邻月份的补白格：变暗，但仍然接收点击（点了会跳到那个月，见 selectDay） */
+.grid__day--outside .grid__num {
+  color: var(--fg-faint);
+}
+.grid__day--outside {
+  background: var(--bg-deep);
+}
+/* 过去的日子变暗。
+   ⚠️ 只压暗日期数字和标记条，**不压暗整格**：整格一起暗会让网格看起来
+     像有一半没加载出来，而那正是"页面坏了"的观感。 */
+.grid__day--past .grid__num {
+  color: var(--fg-faint);
+}
+.grid__day--today .grid__num {
+  color: var(--grass-ink);
+  background: var(--grass-bright);
+  border-radius: var(--r-pill);
+  padding: 0 6px;
+}
+.grid__day--selected {
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--grass-bright);
+}
+
+.grid__bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+.grid__bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  width: 100%;
+  background: var(--fg-faint);
+}
+.grid__bar--TOURNAMENT {
+  background: var(--gold);
+}
+.grid__bar--COMMUNITY {
+  background: var(--diamond);
+}
+.grid__bar--RANKED_MILESTONE {
+  background: var(--grass-bright);
+}
+/* 已结束的活动：条子减淡到 55%。
+   不用 display:none —— 那等于在一个"这个月发生了什么"的视图里
+   把发生过的事藏起来。 */
+.grid__bar--past {
+  opacity: 0.55;
+}
+.grid__more {
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+
+/* 骨架：只在第一次加载时出现（见 CalendarList 的 GridSkeleton） */
+.grid--skeleton .grid__day--skeleton {
+  cursor: default;
+  min-height: 76px;
+}
+
+/* ---- 网格 + 当天面板的布局 ---- */
+
+/*
+ * ⚠️ 同一份 DOM 顺序，只用 grid-template-columns 换布局：
+ *    桌面 = 网格在左、面板在右；窄屏 = 面板落到网格下方。
+ *    用 DOM 顺序 + order 属性也能做，但那样**读屏和视觉顺序会不一致**，
+ *    而键盘 Tab 走的是 DOM 顺序 —— 屏幕阅读器用户会听到一个和屏幕不一样的顺序。
+ */
+.grid-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .grid-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* View Transition 的挂点。
+   ⚠️ 名字必须**稳定**：带上月份的话浏览器每次都当成一个全新的元素，
+      过渡就退化成"旧的淡出、新的淡入"，而不是网格从一个布局形变到另一个。 */
+.grid-morph {
+  view-transition-name: gridmorph;
+  min-width: 0;
+}
+
+/*
+  月份切换的动画方向。
+   ⚠️ 方向由 JS 写在 <html data-grid-dir> 上，动画结束就删掉 ——
+      留在上面会让**下一次**由别的原因触发的过渡也按这个方向滑。
+*/
+html[data-grid-dir='next'] ::view-transition-old(gridmorph) {
+  animation: grid-out-next 220ms var(--ease) both;
+}
+html[data-grid-dir='next'] ::view-transition-new(gridmorph) {
+  animation: grid-in-next 260ms var(--ease) both;
+}
+html[data-grid-dir='prev'] ::view-transition-old(gridmorph) {
+  animation: grid-out-prev 220ms var(--ease) both;
+}
+html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
+  animation: grid-in-prev 260ms var(--ease) both;
+}
+@keyframes grid-out-next {
+  to {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+}
+@keyframes grid-in-next {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+@keyframes grid-out-prev {
+  to {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+@keyframes grid-in-prev {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+}
+
+/*
+   ⚠️ 系统设了"减少动态效果"时把这三个动画都关掉。
+      横向滑动是前庭反应最强的一类动画（比淡入淡出强得多），
+      而这是无障碍要求，不是可选的美化。
+*/
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(gridmorph),
+  ::view-transition-new(gridmorph) {
+    animation: none;
+  }
+}
+
+/* ---- 当天详情面板 ---- */
+.daypanel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 14px;
+}
+.daypanel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.daypanel__title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--fg);
+}
+.daypanel__add {
+  font-size: var(--fs-px-sm);
+  padding: 4px 10px;
+}
+.daypanel__empty,
+.daypanel__hint {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  line-height: 1.8;
+}
+/* 面板里的卡片窄一些，去掉列表里的左右留白 */
+.daypanel__list {
+  margin: 0;
+}
+
+/* ==================================================================
+   直播板块（/live，与「娱乐视频」并列）
+   类名一律 live__ / live- 前缀。
+
+   ⚠️ 这里**不重新定义**播放器、徽章、标签 chip 的任何样式 ——
+      它们分别住在 .video-embed / .badge / .tagchip 里，全站各只有一份。
+      这一节只管"这一页独有的排布"。
+   ================================================================== */
+
+/* ---- 页面上方那两句"说明书" ---- */
+.live__explain {
+  max-width: 62ch;
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--fg-muted);
+}
+/* 第二句是补充（和娱乐视频的分工），压淡一档 —— 两句一样重会读成一段话 */
+.live__explain--muted {
+  color: var(--fg-faint);
+  margin-bottom: 22px;
+}
+
+/* ---- 卡片列表 ---- */
+.live-list {
+  list-style: none;
+  margin: 0 0 28px;
+  padding: 0;
+  display: grid;
+  /* 自适应列宽：卡片里有播放器，太窄时播放器会小到没法用 */
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.live-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-1);
+}
+
+/*
+ * 已隐藏的行：降饱和 + 虚化边框。
+ * ⚠️ 这些行**只出现在编辑界面**（公开接口不下发 hidden）。
+ *    所以这个样式不是在"对访客隐藏什么"，而是在告诉编辑
+ *    "这一条现在不在公开列表里" —— 一个只有编辑看得见的真相。
+ */
+.live-card--hidden {
+  filter: saturate(0.4);
+  border-style: dashed;
+}
+
+.live-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.live-card__name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.live-card__note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg-muted);
+}
+
+/* "这一行嵌不出来"的解释行 —— 中性色，不是错误色：
+   大部分情况下它是**正常状态**（没填视频 ID），报警式配色会误导 */
+.live-card__noembed {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.8;
+  color: var(--fg-faint);
+}
+
+.live-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: auto; /* 卡片高度不齐时，把这一行压到底部 */
+}
+.live-card__handle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  /* 频道标识可能很长（UC 开头那串 24 位），别让它把卡片撑破 */
+  overflow-wrap: anywhere;
+}
+
+/* ---- 编辑面板 ---- */
+.livemanage {
+  margin-top: 40px;
+  padding-top: 24px;
+  /* 一条分界线把"访客看到的部分"和"编辑的部分"分开 ——
+     它们共用同一页，没有这条线会看起来是连续的同一块内容 */
+  border-top: 1px solid var(--line);
+}
+
+.livemanage__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.livemanage__title {
+  margin: 0;
+  font-size: 17px;
+  color: var(--fg);
+}
+.livemanage__sub {
+  max-width: 62ch;
+  margin: 6px 0 16px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg-faint);
+}
+.livemanage__empty {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+.livemanage__list {
+  /* 编辑列表一行一行读比网格好 —— 每行有几颗按钮，网格会把它们挤成两行 */
+  grid-template-columns: 1fr;
+  margin-bottom: 20px;
+}
+
+.livemanage__handle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * ★ `live_exists` 时指向的那一行。
+ *
+ * ⚠️ 这个高亮是有功能的，不是装饰：服务端回了 `existingId`，
+ *    而"已经记过了"这句话只有配上"就是这一行"才可操作 ——
+ *    否则加的人要自己在一长串里找。
+ */
+.livemanage__row--target {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(255, 170, 0, 0.18);
+}
+
+/* "你开了频道嵌入但它永远不会生效" —— 这一条值得用金色提醒 */
+.livemanage__warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--gold);
+  background: rgba(255, 170, 0, 0.07);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--fg-muted);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+}
+
+.livemanage__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.livemanage__confirm {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+}
+
+.livemanage__form {
+  margin: 4px 0 24px;
+  padding: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.livemanage__formtitle {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+/* ---- 资源库「视频资料」里嵌出来的播放器 ---- */
+.resource-video {
+  max-width: 720px;
+  margin: 4px 0 20px;
+}
+

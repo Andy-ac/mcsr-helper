@@ -71,6 +71,7 @@ const TYPE_KEYS: Record<string, string> = {
   resource: 'auth.capTypeResource',
   calendar: 'auth.capTypeCalendar',
   video: 'auth.capTypeVideo',
+  live: 'auth.capTypeLive',
   seed: 'auth.capTypeSeed',
   user: 'auth.capTypeUser',
   audit: 'auth.capTypeAudit',
@@ -92,13 +93,33 @@ const CAP_OVERRIDES: Record<string, string> = {
   'user.moderate': 'auth.capActionModerate',
 };
 
-/** 动作名 → 词条 key。 */
+/** 动作名 → 词条 key。
+ *
+ * ⚠️ 这张表**必须覆盖权限矩阵里出现的每一个动作名**，漏一个的后果是
+ *    那个能力在「我的」页面上以**原始英文动作名**出现（`editAny`），
+ *    而它旁边的每一项都是翻译过的中文 —— 看起来像界面没做完，
+ *    实际上只是这张表少了一行。
+ *
+ * ⚠️ 漏了**不会报错**：下面的兜底是"显示动作名本身"（那个兜底是对的，
+ *    总比空白强），所以它只会安静地退化成一个英文词。
+ *    `.cache/deadkeys.mjs` 会把"有词条但没人引用"的 key 报出来 ——
+ *    `capActionEditAny` 就是这样被抓到的（2026-09-13）。
+ */
 const ACTION_KEYS: Record<string, string> = {
   submit: 'auth.capActionSubmit',
   editOwn: 'auth.capActionEditOwn',
+  editAny: 'auth.capActionEditAny',
+  editUnpublished: 'auth.capActionEditUnpublished',
   review: 'auth.capActionReview',
   moderate: 'auth.capActionModerate',
+  feature: 'auth.capActionFeature',
   read: 'auth.capActionRead',
+  /*
+   * `live.manage` —— 直播清单是**编辑维护**的，所以它的动作叫 manage 而不是 submit。
+   * 词汇上是有意的：`submit` 在这套矩阵里一律指"用户提交、需要审核"，
+   * 而这份名单没有人会去审（它本来就是编辑自己写的）。
+   */
+  manage: 'auth.capActionManage',
 };
 
 export function describeCapabilities(

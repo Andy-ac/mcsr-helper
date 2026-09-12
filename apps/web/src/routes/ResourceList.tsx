@@ -197,7 +197,7 @@ export function ResourceList() {
             <button
               key={tag}
               type="button"
-              className={`tagchip${query.tag === tag ? ' is-active' : ''}`}
+              className={`tagchip${query.tag === tag ? ' tagchip--on' : ''}`}
               onClick={() => setParam('tag', query.tag === tag ? undefined : tag)}
             >
               {tag}

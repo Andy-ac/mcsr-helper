@@ -2,6 +2,7 @@ import type { ResourceDetail } from '@mcsr/shared/resources';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { updateResourceFlags, updateResourceVisibility } from '@/lib/api';
 import { useCan } from '@/lib/capabilities';
 
@@ -117,7 +118,7 @@ export function ModerationBar({ resource }: { resource: ResourceDetail }) {
       */}
       {hidden ? (
         <>
-          <p className="submitnote">{t('moderate.hiddenNote')}</p>
+          <p className="submitnote">{em(t('moderate.hiddenNote'))}</p>
           <p className="muted">
             <Link to="/resources">{t('resources.backToList')}</Link>
             {' · '}

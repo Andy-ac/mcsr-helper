@@ -33,7 +33,17 @@ import { canReviewAny, useCan } from '@/lib/capabilities';
 const SECTIONS = [
   { to: '/resources', labelKey: 'nav.resources', block: 'resources', milestone: '' },
   { to: '/calendar', labelKey: 'nav.calendar', block: 'calendar', milestone: '' },
+  /*
+   * 原「视频」拆成两个板块（用户要求）：
+   *   · `/videos` = **娱乐视频**：用户贴的 B站/YouTube 链接，即贴即可见、rolling
+   *   · `/live`   = **直播**：一份**编辑维护**的 MCSR streamer 名单，变动很慢
+   *
+   * ⚠️ 两者的权限形状**相反**（谁都能贴 vs 只有 live.manage），
+   *    所以它们是两个板块而不是一个板块下的两个标签 —— 导航分开，
+   *    用户才知道"这里的东西不是我贴的"。
+   */
   { to: '/videos', labelKey: 'nav.videos', block: 'videos', milestone: '' },
+  { to: '/live', labelKey: 'nav.live', block: 'live', milestone: '' },
   { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: '' },
   // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
   // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。

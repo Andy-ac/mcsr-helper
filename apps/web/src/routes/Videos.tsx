@@ -4,11 +4,13 @@ import type { Video } from '@mcsr/shared/videos';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useSearchParams } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import { VideoCard } from '@/components/VideoCard';
 import { VideoForm } from '@/components/VideoForm';
 import { fetchMyVideos, fetchVideos, type VideoQuery } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { useCan } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -72,6 +74,23 @@ export function Videos() {
 
   const query: VideoQuery = { platform, authorId, page, pageSize: DEFAULT_PAGE_SIZE };
 
+  /*
+   * 有下架权的人看视频墙时**绕开浏览器缓存**（`fetchVideos` 的第三个参数）。
+   *
+   * ⚠️ 这不是优化，是修一个真跑出来的 bug：`/api/videos` 带
+   *    `public, max-age=60`，所以编辑点完「隐藏」、`refreshKey` +1 重拉列表时，
+   *    命中的是 60 秒内的旧响应 —— **那条还挂在墙上**。他会以为隐藏坏了。
+   *    服务端一直是对的，错的只是这一层缓存。
+   *
+   * ⚠️ 为什么可以放进依赖数组（上面那条注释刚警告过多余的依赖）：
+   *    只有登录且真有 resource.moderate 的人才会从 false 翻到 true，
+   *    也就是**只多一次请求**，而且只在治理者身上。访客 `auth.user` 一直是
+   *    null、`canModerate` 一直是 false，依赖不变，不会有第二个请求。
+   *    这和上面 `mineView ? auth.user?.id : ''` 防的那件事不是一回事 ——
+   *    那条防的是**每个访客**都被 me 接口的返回触发重拉。
+   */
+  const canModerate = useCan('resource.moderate');
+
   const state = useAsync<WallData>(
     async (signal) => {
       if (mineView) {
@@ -88,7 +107,7 @@ export function Videos() {
           pageSize: res.items.length || DEFAULT_PAGE_SIZE,
         };
       }
-      return fetchVideos(query, signal);
+      return fetchVideos(query, signal, canModerate);
     },
     /*
      * 依赖里每个值都列出来（本仓用 Biome，没有 eslint-disable 那条路）。
@@ -105,6 +124,7 @@ export function Videos() {
       page,
       refreshKey,
       mineView ? (auth.user?.id ?? '') : '',
+      canModerate,
     ],
   );
 
@@ -163,6 +183,22 @@ export function Videos() {
           ) : null}
         </div>
         <p className="pagehead__sub">{t('videos.subtitle')}</p>
+        {/*
+          指向「直播」的一行。
+
+          ⚠️ 两个板块都是"视频"，所以必须有一句话说明**为什么有两个** ——
+             否则用户点进任何一个都会觉得另一个是重复的。
+               · 这里：rolling，谁都能贴，一直在变
+               · /live：编辑维护的一份名单，变动很慢
+          放在副标题下面而不是页脚：它是"你要找的东西可能不在这页"的提示，
+          而那种提示必须在用户开始翻列表**之前**就出现。
+        */}
+        <p className="pagehead__sub videos__toLive">
+          {t('enterVideo.pointingToLive')}{' '}
+          <Link className="authform__link" to="/live">
+            {t('enterVideo.gotoLive')}
+          </Link>
+        </p>
       </header>
 
       {formOpen && auth.user ? (
@@ -218,7 +254,7 @@ export function Videos() {
               <span className="tagcloud__label">{t('videos.allPlatforms')}</span>
               <button
                 type="button"
-                className={`tagchip${platform === undefined ? ' is-active' : ''}`}
+                className={`tagchip${platform === undefined ? ' tagchip--on' : ''}`}
                 onClick={() => setParam('platform', undefined)}
               >
                 {t('videos.allPlatforms')}
@@ -227,7 +263,7 @@ export function Videos() {
                 <button
                   key={p}
                   type="button"
-                  className={`tagchip${platform === p ? ' is-active' : ''}`}
+                  className={`tagchip${platform === p ? ' tagchip--on' : ''}`}
                   onClick={() => setParam('platform', p)}
                 >
                   {t(platformKey(p))}
@@ -243,7 +279,7 @@ export function Videos() {
               {authorId ? (
                 <button
                   type="button"
-                  className="tagchip is-active"
+                  className="tagchip tagchip--on"
                   title={t('videos.clearAuthor')}
                   onClick={() => setParam('authorId', undefined)}
                 >
@@ -313,7 +349,7 @@ export function Videos() {
                   否则作者会以为"这些也还在墙上"，而墙上其实一条都没有。
                 */}
                 {mineView && hiddenCount > 0 ? (
-                  <p className="submitnote">{t('videos.mineHiddenNote')}</p>
+                  <p className="submitnote">{em(t('videos.mineHiddenNote'))}</p>
                 ) : null}
 
                 <ul className="video-wall">

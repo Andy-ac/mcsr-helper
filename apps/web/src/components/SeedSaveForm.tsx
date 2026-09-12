@@ -3,6 +3,7 @@ import { isSeedString, normalizeSeedInput } from '@mcsr/shared/seed';
 import { type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { Field, Notice } from '@/components/Form';
 import { saveSeedRecord } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
@@ -355,7 +356,7 @@ export function SeedSaveForm({
         {fieldError('theEndSeed')}
       </Field>
 
-      <p className="mcsr-field__hint">{t('seedsPage.saveQuotaNote')}</p>
+      <p className="mcsr-field__hint">{em(t('seedsPage.saveQuotaNote'))}</p>
 
       <div className="authform__actions">
         <button type="submit" className="cta" disabled={busy}>

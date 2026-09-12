@@ -238,8 +238,23 @@ function eventLines(event: CalendarEvent, opts: IcsOptions): string[] {
   push(prop('LOCATION', event.location ? escapeIcsText(event.location) : null));
   push(prop('URL', event.url ?? null));
 
-  // Q1 的标签 + Q20 的阶段都映射成 CATEGORIES —— 这正是 RFC 里为"分类"准备的东西
-  const categories = [...event.tags, ...(event.stage ? [event.stage] : [])];
+  /*
+   * Q1 的标签 + Q20 的阶段 + 011 的专业程度/参与范围都映射成 CATEGORIES ——
+   * 这正是 RFC 里为"分类"准备的东西。
+   *
+   * ⚠️ 顺序是**从粗到细**（标签 → 轮次 → 专业程度 → 参与范围）。
+   *    客户端不保证按顺序显示，但把相关的排在一起对按 CATEGORIES 分组的
+   *    客户端更友好；而打乱顺序没有任何好处。
+   *
+   * ⚠️ 空值跳过（`prop()` 对空值返回 null，但这里是数组拼接，要自己挡掉）——
+   *    拼出一个 `CATEGORIES:A,,B` 这种带空项的列表，严格的解析器会判为坏值。
+   */
+  const categories = [
+    ...event.tags,
+    ...(event.stage ? [event.stage] : []),
+    ...(event.level ? [event.level] : []),
+    ...(event.scope ? [event.scope] : []),
+  ];
   if (categories.length > 0) {
     push(prop('CATEGORIES', categories.map(escapeIcsText).join(',')));
   }

@@ -63,6 +63,27 @@ const FIELDS: {
     labelKey: 'calendar.fields.stage',
     format: (v, t) => t(`calendar.stage.${String(v)}`),
   },
+  /*
+   * 011 新增的两维。
+   *
+   * ⚠️ 顺序是有意的：标签 → 轮次 → 专业程度 → 参与范围，和 ICS 的 CATEGORIES
+   *    用的是同一个顺序。同一份内容在两个地方按不同顺序排列，
+   *    读的人会以为它们是不同的东西。
+   *
+   * ⚠️ 两维**都可能为空**（排位节点没有这两维），而 `display()` 对空值
+   *    直接显示 `—`、不会调到 format —— 所以这里不需要再兜一次空值，
+   *    但要知道"显示成 — 是正确的"而不是漏了渲染。
+   */
+  {
+    key: 'level',
+    labelKey: 'calendar.fields.level',
+    format: (v, t) => t(`calendar.level.${String(v)}`),
+  },
+  {
+    key: 'scope',
+    labelKey: 'calendar.fields.scope',
+    format: (v, t) => t(`calendar.scope.${String(v)}`),
+  },
   { key: 'location', labelKey: 'calendar.fields.location' },
   { key: 'url', labelKey: 'calendar.fields.url' },
   {

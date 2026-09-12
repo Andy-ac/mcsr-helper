@@ -26,6 +26,8 @@ import { m007EditorRole } from './migrations/007_editor_role';
 import { m008OwnerRole } from './migrations/008_owner_role';
 import { m009ResourceMarks } from './migrations/009_resource_marks';
 import { m010CalendarVideo } from './migrations/010_calendar_video';
+import { m011EventDimensions } from './migrations/011_event_dimensions';
+import { m012ResourceVideoAndLive } from './migrations/012_resource_video_and_live';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -51,6 +53,24 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
   { name: '009_resource_marks', sql: m009ResourceMarks },
   // 同 009：只建新表（calendar_events / videos / content_revisions），不动任何已有结构
   { name: '010_calendar_video', sql: m010CalendarVideo },
+  /*
+   * 011：给 calendar_events 加 level / scope 两列。
+   *
+   * ⚠️ `ADD COLUMN` 是 SQLite 里少数几个**不重建表**的结构变更，
+   *    所以这条既不需要关外键、也不需要 noTransaction —— 失败能整体回滚。
+   *    和 007 / 008 那两条重建 users 表的迁移**不是**一回事，
+   *    别看到"改表结构"就条件反射地加 noTransaction（那会白白丢掉回滚）。
+   */
+  { name: '011_event_dimensions', sql: m011EventDimensions },
+  /*
+   * 012：resource kind 加 'video'（**重建 resources 表**）+ 建 live_channels。
+   *
+   * ⚠️ 又是 noTransaction —— 重建表要关外键，而那个 PRAGMA 在事务里无效。
+   *    也就是**失败没有回滚**：这一条比 007/008 更要紧，因为它动的是
+   *    存着用户内容的表。部署前必须先在**生产库副本**上演练，
+   *    并且 `VACUUM INTO` 备份 + 回读校验（见 .cache/rehearse-migration.mjs）。
+   */
+  { name: '012_resource_video_and_live', sql: m012ResourceVideoAndLive, noTransaction: true },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

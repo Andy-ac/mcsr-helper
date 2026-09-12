@@ -18,7 +18,7 @@
  * 既然这条 URL 要进用户的手机设置里，就让它长得像个日历文件。
  */
 
-import { SITE, type UserRole } from '@mcsr/shared';
+import { EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, SITE, type UserRole } from '@mcsr/shared';
 import { CalendarEventInputSchema } from '@mcsr/shared/calendar';
 import { checkPermission } from '@mcsr/shared/permissions';
 import { Hono } from 'hono';
@@ -113,12 +113,38 @@ calendarRoute.get('/calendar', (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
 
+  /*
+   * 三个**单选**维度：level / scope / stage。
+   *
+   * ⚠️ 和 tags 的处理刻意不同：
+   *   · tags 走 csv() → 数组 → "任一命中"（多选）
+   *   · 这三个是单值等值条件
+   * 把单选维度也写成数组会得到一个"或"的语义，而界面上它们是"就是这个"。
+   *
+   * ⚠️ 值要**对着 shared 的枚举校验**，不能原样透传。理由和 tags 一样：
+   *    查询参数是用户可以手打的，而 `?level=PRO` 传错成 `?level=pro`
+   *    会让查询悄悄返回空 —— 看起来像"日历里没有这类赛事"，
+   *    而实际上库里有一条 PRO 的。非法值一律当"不限"，宁可多给也不要给错的答案。
+   */
+  const oneOf = (value: string | undefined, allowed: readonly string[]): string | null => {
+    if (!value) return null;
+    return allowed.includes(value) ? value : null;
+  };
+
   const { rows, total } = listEvents({
     // 默认只列"还没结束的"（Q5）：过去的赛事堆在顶上会让日历看起来像档案库。
     // 想看历史就显式传 from=0（前端用「显示已结束」开关传它）。
+    //
+    // ⚠️ 月历表传的是**月初和月末**，于是语义变成"与这个月相交的事件"：
+    //    `COALESCE(ends_at_utc, starts_at_utc) >= 月初 AND starts_at_utc <= 月末`。
+    //    这不是巧合，是刻意的 —— 跨月的事件必须在两个月里都出现，
+    //    否则它会在自己的第二个月里凭空消失。
     fromUtc: from === undefined ? Date.now() : Number(from) || 0,
     toUtc: to ? Number(to) || null : null,
     tags: csv(c.req.query('tags')),
+    level: oneOf(c.req.query('level'), EVENT_LEVELS),
+    scope: oneOf(c.req.query('scope'), EVENT_SCOPES),
+    stage: oneOf(c.req.query('stage'), EVENT_STAGES),
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });

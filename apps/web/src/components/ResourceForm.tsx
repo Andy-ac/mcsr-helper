@@ -11,6 +11,9 @@ import { useTranslation } from 'react-i18next';
 import { Field } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
 import { ApiError, fetchTags, uploadImage } from '@/lib/api';
+// ⚠️ 类型名走**唯一一份**映射（见 resourceKind.ts 的文件头）——
+//    这里以前自己拼 key，于是加了第三种 kind 之后这个下拉框会把它显示成「工具」。
+import { resourceKindLabel } from '@/lib/resourceKind';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -354,7 +357,16 @@ export function ResourceForm({
   return (
     <form className="authform submitform" onSubmit={submit} noValidate>
       <div className="formrow">
-        <Field id="sub-kind" label={t('submit.kind')} hint={t('submit.hintKind')}>
+        <Field
+          id="sub-kind"
+          label={t('submit.kind')}
+          /*
+           * ⚠️ 选「视频资料」时把提示**换掉**（而不是并排显示两条）：
+           *    这一栏最常见的错法是"贴了一个普通网页链接"，而那一句才是
+           *    当下真正要说的。通用那句可以在别的类型下继续用。
+           */
+          hint={draft.kind === 'video' ? t('enterVideo.resourceKindHint') : t('submit.hintKind')}
+        >
           <select
             id="sub-kind"
             className="mcsr-field__input"
@@ -363,7 +375,18 @@ export function ResourceForm({
           >
             {RESOURCE_KINDS.map((k) => (
               <option key={k} value={k}>
-                {t(`resources.kind${k === 'website' ? 'Website' : 'Tool'}`)}
+                {/*
+                 * ⚠️⚠️ 这里原来写的是
+                 *     t(`resources.kind${k === 'website' ? 'Website' : 'Tool'}`)
+                 *   —— 一个**二元**三元式。加 `'video'` 这个 kind 之后，
+                 *   视频资料在**这个下拉框里**会被显示成「工具」
+                 *   （因为 k !== 'website'），而且不报错、不崩溃。
+                 *
+                 *   这和 `lib/resourceKind.ts` 文件头记的那 5 处是同一个 bug，
+                 *   只是它是**第 6 处**、而且它拼的是 key 所以没被那次收拢覆盖到。
+                 *   现在走同一个函数：新增 kind 时 `KIND_KEYS` 编译不过。
+                 */}
+                {resourceKindLabel(k, t)}
               </option>
             ))}
           </select>

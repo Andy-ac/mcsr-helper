@@ -144,6 +144,8 @@ export function apiErrorText(error: unknown, t: Translate): string {
         return t('auth.emailNotVerified');
       case 'video_exists':
         return t('auth.videoExists');
+      case 'live_exists':
+        return t('auth.liveExists');
       case 'seed_not_found':
         return t('auth.seedNotFound');
       case 'seed_exists':

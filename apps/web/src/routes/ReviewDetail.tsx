@@ -3,6 +3,7 @@ import { REJECT_REASON_MAX, REVIEW_TYPE_LABELS } from '@mcsr/shared/review';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router';
+import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import { ReviewError } from '@/components/ReviewError';
 import { ApiError, approveReview, fetchReviewDetail, rejectReview } from '@/lib/api';
@@ -149,7 +150,7 @@ export function ReviewDetailPage() {
         <p className="muted">{t('review.prevRejections', { count: detail.previousRejections })}</p>
       ) : null}
 
-      {item.isEdit ? <p className="submitnote">{t('review.editExplain')}</p> : null}
+      {item.isEdit ? <p className="submitnote">{em(t('review.editExplain'))}</p> : null}
 
       <Body detail={detail} />
 
