@@ -193,27 +193,6 @@ export const zhCN = {
     capActionReview: '审核',
     capActionModerate: '管理身份组',
     capActionRead: '查看',
-  },
-  /**
-   * 桌面端自动更新的提示文案。
-   *
-   * ⚠️ 这些文案住在**网页**里，不在安装包里 —— 所以改一个错别字不需要发版。
-   *    这是刻意的方案，理由见 apps/web/src/components/UpdateBanner.tsx 的文件头。
-   *    （如果提示由主进程的原生对话框显示，这些字就会固化在用户已经装好的 exe 里，
-   *      想改就得发版，而用户还得先更新才能看到改好的更新提示。）
-   */
-  update: {
-    checking: '正在检查更新…',
-    available: '发现新版本 {{version}}',
-    download: '下载',
-    downloading: '正在下载新版本 {{version}}… {{percent}}%',
-    downloadingNoPercent: '正在下载新版本 {{version}}…',
-    ready: '新版本 {{version}} 已就绪',
-    restart: '重启并安装',
-    none: '已经是最新版本',
-    error: '更新出错：{{message}}',
-    retry: '重试',
-    dismiss: '关闭提示',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误
@@ -243,6 +222,43 @@ export const zhCN = {
       tooLong: '内容太长了',
       invalid: '填写的内容不合法',
     },
+  },
+  /**
+   * 桌面端自动更新的提示文案。
+   *
+   * ⚠️ 这些文案住在**网页**里，不在安装包里 —— 所以改一个错别字不需要发版。
+   *    这是刻意的方案，理由见 apps/web/src/components/UpdateBanner.tsx 的文件头。
+   *    （如果提示由主进程的原生对话框显示，这些字就会固化在用户已经装好的 exe 里，
+   *      想改就得发版，而用户还得先更新才能看到改好的更新提示。）
+   */
+  /**
+   * 桌面客户端下载入口。
+   *
+   * ⚠️ smartScreen* 两条不是客套话，是必需品：我们没有代码签名证书
+   *    （计划 §8 明确接受这个代价），Windows 一定会拦。
+   *    不提前说明的话，用户的反应是关掉不装 —— 那是合理的反应，
+   *    因为我们确实看起来像个可疑程序。
+   */
+  download: {
+    title: '桌面客户端',
+    desc: '把资源库、日历和种子分享装进一个窗口，可以一直开着。Windows 10 / 11，64 位。',
+    action: '下载',
+    smartScreenSummary: '安装时 Windows 提示「未知发布者」怎么办？',
+    smartScreenBody:
+      '这是正常的 —— 我们没有购买代码签名证书。点提示里的「更多信息」，再点「仍要运行」即可。这个提示每次新版本安装时都会出现。',
+  },
+  update: {
+    checking: '正在检查更新…',
+    available: '发现新版本 {{version}}',
+    download: '下载',
+    downloading: '正在下载新版本 {{version}}… {{percent}}%',
+    downloadingNoPercent: '正在下载新版本 {{version}}…',
+    ready: '新版本 {{version}} 已就绪',
+    restart: '重启并安装',
+    none: '已经是最新版本',
+    error: '更新出错：{{message}}',
+    retry: '重试',
+    dismiss: '关闭提示',
   },
 };
 

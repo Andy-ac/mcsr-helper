@@ -14,6 +14,7 @@ import { getDb } from './db';
 import { checkMailConfig, mailDriverName } from './email/transport';
 import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
+import { desktopRoute } from './routes/desktop';
 import { resourcesRoute } from './routes/resources';
 import { deleteExpiredSessions } from './users';
 
@@ -110,6 +111,8 @@ app.route('/api/resources', resourcesRoute);
 // 挂在 /api 上是因为它们的路径是 /admin/queue 与 /resources/:id/approve ——
 // 后者与上面那条不冲突：路径段数不同，而且方法是 POST vs GET/PATCH。
 app.route('/api', adminRoute);
+// 桌面客户端的分发信息（公开读）。见 routes/desktop.ts 的文件头。
+app.route('/api', desktopRoute);
 
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。

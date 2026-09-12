@@ -2,6 +2,7 @@ import { Button } from '@mcsr/ui';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { DesktopDownload } from '@/components/DesktopDownload';
 import { fetchHealth, type HealthResponse } from '@/lib/api';
 import { useAsync } from '@/lib/useAsync';
 
@@ -21,6 +22,8 @@ export function Home() {
           </Link>
         </p>
       </section>
+
+      <DesktopDownload />
 
       <section className="cards">
         <article className="card">

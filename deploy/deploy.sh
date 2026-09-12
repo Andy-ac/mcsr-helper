@@ -113,8 +113,19 @@ if [[ "$WITH_INSTALLER" == "1" ]]; then
   # 只打包 latest.yml + exe + blockmap。
   # 不要把 release/ 整个目录打进去 —— 里面还有 win-unpacked/（解包目录，
   # 几百 MB 且对客户端毫无用处）。
+  # ⚠️ 只打包 latest.yml 里指的那个版本，**不是**目录下所有 exe。
+  #    release/ 会同时留着历史版本（服务端也刻意保留它们，
+  #    免得删掉一个正被某个客户端下载中的文件）。用 ./*.exe 的话，
+  #    第二版起每次部署都要把全部历史版本重传一遍 ——
+  #    第二版传 218MB，第三版 327MB，增长得毫无意义。
+  INSTALLER_VERSION="$(sed -n 's/^version: *//p' apps/desktop/release/latest.yml | head -1)"
+  if [[ -z "$INSTALLER_VERSION" ]]; then
+    echo "✗ 读不出 latest.yml 里的 version" >&2
+    exit 1
+  fi
   INSTALLER_TGZ="$TMP/installer.tgz"
-  ( cd apps/desktop/release && tar -czf "$INSTALLER_TGZ" latest.yml ./*.exe ./*.exe.blockmap )
+  ( cd apps/desktop/release && tar -czf "$INSTALLER_TGZ" latest.yml ./*"$INSTALLER_VERSION".exe ./*"$INSTALLER_VERSION".exe.blockmap )
+  echo "    只打包版本 $INSTALLER_VERSION"
   printf '    installer %s\n' "$(du -h "$INSTALLER_TGZ" | cut -f1)"
   ok "安装包已打包（在后台传，先继续部署其余部分）"
 fi

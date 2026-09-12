@@ -151,7 +151,26 @@ if (!app.requestSingleInstanceLock()) {
 
     // 窗口出来之后再检查：此时渲染进程才可能订阅得上事件，
     // 而且不让网络请求和窗口渲染抢启动时间。
-    if (app.isPackaged) void checkForUpdates();
+    if (app.isPackaged) {
+      void checkForUpdates();
+
+      /*
+       * ⚠️ 还要**定期**再查。
+       *
+       * 只在启动时查一次的话，一个开着不关的应用永远不会知道有新版本 ——
+       * 而这个应用恰恰是那种会一直开着的（速通玩家一边跑图一边看）。
+       * 用户唯一的办法是重启，而他没有理由重启。
+       *
+       * 4 小时是个折中：一天最多多打 6 次请求（每次只拉几百字节的 latest.yml，
+       * 不是安装包），而新版本最多晚 4 小时被发现 —— 对社区项目足够。
+       */
+      const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+      const timer = setInterval(() => void checkForUpdates(), CHECK_INTERVAL_MS);
+      // unref：这个定时器不该阻止进程退出（关窗口要能干净地退出）
+      timer.unref();
+
+      app.on('before-quit', () => clearInterval(timer));
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
