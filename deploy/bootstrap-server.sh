@@ -55,11 +55,19 @@ say "5/5 安装 systemd 单元与 Caddyfile"
 install -m 0644 "$UNIT_SRC" /etc/systemd/system/mcsr-helper-api.service
 
 install -m 0644 "$CADDY_SRC" /etc/caddy/Caddyfile
-# 用 systemd override 注入域名，避免把域名写死在 Caddyfile 里
+# 用 systemd override 注入域名，避免把域名写死在 Caddyfile 里。
+#
+# ⚠️ 这个文件在首次初始化时由这里写，之后由 **deploy.sh 每次部署同步**
+#    （它同样是"配置即代码"）。只在 bootstrap 写的话，换域名时 Caddy 会一直
+#    监听旧域名而部署脚本报成功 —— 我们在 Caddyfile 和 API 单元上都踩过这个坑。
+#
+# ⚠️ 改了这里必须 **restart**，不能用 reload：reload 只让 Caddy 重读 Caddyfile，
+#    进程的环境变量还是旧的。deploy.sh 里用 CADDY_NEEDS_RESTART 处理了这件事。
 mkdir -p /etc/systemd/system/caddy.service.d
 cat > /etc/systemd/system/caddy.service.d/mcsr-helper.conf <<EOF
 [Service]
 Environment=MCSR_DOMAIN=${DOMAIN}
+Environment=MCSR_LEGACY_DOMAIN=${MCSR_LEGACY_DOMAIN:-legacy.example.invalid}
 EOF
 
 systemctl daemon-reload

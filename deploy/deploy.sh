@@ -28,6 +28,10 @@ set -a && source deploy/deploy.env && set +a
 
 : "${MCSR_SSH_HOST:?deploy.env 里缺 MCSR_SSH_HOST}"
 : "${MCSR_DOMAIN:?deploy.env 里缺 MCSR_DOMAIN}"
+# 旧域名：只用于 301 跳转到新域名。
+# 给一个默认值而不是允许为空 —— Caddyfile 里那行一旦退化成孤立的花括号，
+# Caddy 会把它当成全局选项块解析，报出与真正原因毫无关系的错误。
+: "${MCSR_LEGACY_DOMAIN:=legacy.example.invalid}"
 
 WEB_DIR="${MCSR_WEB_DIR:-/srv/mcsr-helper/web}"
 API_DIR="${MCSR_API_DIR:-/srv/mcsr-helper/api}"
@@ -90,10 +94,19 @@ printf '    web %s  api %s\n' \
   "$(du -h "$TMP/web.tgz" | cut -f1)" "$(du -h "$TMP/api.tgz" | cut -f1)"
 
 say "上传到 $MCSR_SSH_HOST"
+# Caddy 的域名是通过 systemd drop-in 注入的，所以它同样是"配置即代码"的一部分，
+# 必须跟着每次部署走 —— 见下面远程块里的详细说明。
+cat > "$TMP/caddy-domain.conf" <<CADDYENV
+[Service]
+Environment=MCSR_DOMAIN=${MCSR_DOMAIN}
+Environment=MCSR_LEGACY_DOMAIN=${MCSR_LEGACY_DOMAIN}
+CADDYENV
+
 scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
   content/resources.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
+  "$TMP/caddy-domain.conf" \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
 
@@ -112,11 +125,12 @@ ssh "${SSH_OPTS[@]}" "$MCSR_SSH_HOST" bash -s <<REMOTE
 set -euo pipefail
 SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 
-# Caddyfile：每次部署都同步 —— 配置即代码。
+# ---------------------------------------------------------------------------
+# Caddy：域名 drop-in + Caddyfile，两者都每次部署都同步 —— 配置即代码。
 #
-# ⚠️ 这里踩过三个坑，都记下来：
+# ⚠️ 这里踩过四个坑，全记下来：
 #
-# 1. 最初只在 --bootstrap 时上传它，于是改了 Caddyfile 永远不生效。
+# 1. 最初只在 --bootstrap 时上传 Caddyfile，于是改了它永远不生效。
 #    这类"改了没反应"最难查，因为部署脚本本身报的是成功。
 #
 # 2. 只按"文件是否变化"决定要不要重载是错的：如果上一次重载失败，
@@ -126,19 +140,51 @@ SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 # 3. 校验必须带上 MCSR_DOMAIN。Caddyfile 首行是域名占位符，变量为空时会退化成
 #    一个孤立的左花括号，Caddy 会把它当成全局选项块解析，然后报出完全误导性的
 #    "unrecognized global option: encode"。systemd 里有这个变量，shell 里没有。
+#
+# 4. **域名本身也要同步**。MCSR_DOMAIN 是通过 systemd drop-in 注入 Caddy 的
+#    （bootstrap-server.sh 写的），而那个 drop-in 原先也只在 --bootstrap 时写 ——
+#    和坑 1 一模一样。换域名时它会一直监听旧域名、给旧域名签证书，
+#    而部署脚本报成功。
+#
+#    ⚠️⚠️ 而且这条**不能靠 reload 生效**：`systemctl reload caddy` 只是让 Caddy
+#         重新读 Caddyfile，**进程的环境变量还是旧的**。Environment= 的改动
+#         必须 restart 才会被进程看到。
+#         所以下面用 CADDY_NEEDS_RESTART 标记：只有 drop-in 真的变了才重启
+#         （重启会让 TLS 握手短暂不可用，没必要每次都做）。
+# ---------------------------------------------------------------------------
+CADDY_NEEDS_RESTART=0
+if [ -f /tmp/caddy-domain.conf ]; then
+  DROPIN=/etc/systemd/system/caddy.service.d/mcsr-helper.conf
+  if ! \$SUDO cmp -s /tmp/caddy-domain.conf "\$DROPIN"; then
+    echo "    Caddy 域名 drop-in 有变化，安装（之后需要 restart 才生效）"
+    \$SUDO mkdir -p /etc/systemd/system/caddy.service.d
+    \$SUDO install -m 0644 /tmp/caddy-domain.conf "\$DROPIN"
+    \$SUDO systemctl daemon-reload
+    CADDY_NEEDS_RESTART=1
+  fi
+fi
+
 if [ -f /tmp/Caddyfile ]; then
-  if ! cmp -s /tmp/Caddyfile /etc/caddy/Caddyfile; then
+  if ! \$SUDO cmp -s /tmp/Caddyfile /etc/caddy/Caddyfile; then
     echo "    Caddyfile 有变化，安装并校验"
   else
-    echo "    Caddyfile 内容未变，仍会校验并重载以确保生效"
+    echo "    Caddyfile 内容未变，仍会校验并确认生效"
   fi
   \$SUDO install -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile
-  if \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
-    \$SUDO systemctl reload caddy
-    echo "    Caddy 已重载"
+  if \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' MCSR_LEGACY_DOMAIN='${MCSR_LEGACY_DOMAIN}' \
+       caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    if [ "\$CADDY_NEEDS_RESTART" = "1" ]; then
+      # 首次给新域名签证书会花几秒到几十秒，所以这里等它就绪
+      \$SUDO systemctl restart caddy
+      echo "    Caddy 已重启（域名变更必须重启，reload 读不到新的环境变量）"
+    else
+      \$SUDO systemctl reload caddy
+      echo "    Caddy 已重载"
+    fi
   else
     echo "    ✗ Caddyfile 校验失败，已保留旧配置继续运行。错误如下："
-    \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -5 || true
+    \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' MCSR_LEGACY_DOMAIN='${MCSR_LEGACY_DOMAIN}' \
+      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -5 || true
   fi
 fi
 
@@ -215,7 +261,7 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-rm -f /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json
+rm -f /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf
 REMOTE
 ok "部署完成"
 

@@ -42,6 +42,7 @@ const MAIL_DIR = mkdtempSync(join(tmpdir(), 'mcsr-mail-'));
 process.env.MCSR_MAIL_DIR = MAIL_DIR;
 
 const { app } = await import('../index');
+const { SITE } = await import('@mcsr/shared');
 const { closeDb, getDb } = await import('../db');
 const { hashPassword, needsRehash, verifyPassword, PASSWORD_PARAMS, activeParams } = await import(
   './password'
@@ -722,9 +723,29 @@ describe('CSRF：跨站请求被拒绝', () => {
     const { email } = await registerUser();
     const res = await call('POST', '/api/auth/login', {
       json: { email, password: GOOD_PASSWORD },
-      headers: { origin: 'https://legacy.example.invalid' },
+      /*
+       * ⚠️ 引用 SITE.productionOrigin，**不要**把域名写死在这里。
+       *
+       * 这条测试原来写的是 'https://legacy.example.invalid'。站点搬到
+       * 自有域名（mcsrhelper.com）之后它开始失败 —— 而它失败的原因是
+       * "域名换了"，跟 CSRF 有没有坏毫无关系。
+       * 写死域名的测试会在每次换域名时制造一次假警报，
+       * 而假警报最坏的后果是让人开始习惯性忽略红色的测试。
+       */
+      headers: { origin: SITE.productionOrigin },
     });
     assert.equal(res.status, 200);
+  });
+
+  it('旧域名的 POST 不再放行 —— 搬迁之后它只是个跳转', async () => {
+    // 这条是**显式**记录搬迁后的预期行为，而不是让它隐含在别处。
+    // 旧域名现在 301 到新域名，浏览器发起的 POST 不会从它那里过来。
+    const { email } = await registerUser();
+    const res = await call('POST', '/api/auth/login', {
+      json: { email, password: GOOD_PASSWORD },
+      headers: { origin: SITE.legacyOrigin },
+    });
+    assert.equal(res.status, 403);
   });
 
   it('没有 Origin 的请求放行（Electron 主进程、curl 等）', async () => {

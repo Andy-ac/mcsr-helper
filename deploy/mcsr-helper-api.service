@@ -46,7 +46,7 @@ Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
 # Environment=RESEND_API_KEY=re_xxxxxxxx
 #
 # 邮件里的链接指向哪里。不设时用 shared/constants.ts 里的 productionOrigin。
-Environment=MCSR_PUBLIC_ORIGIN=https://legacy.example.invalid
+Environment=MCSR_PUBLIC_ORIGIN=https://mcsrhelper.com
 
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always
