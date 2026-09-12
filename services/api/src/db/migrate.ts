@@ -21,14 +21,36 @@ import { m002ResourceSource } from './migrations/002_resource_source';
 import { m003ResourceCardFields } from './migrations/003_resource_card_fields';
 import { m004Auth } from './migrations/004_auth';
 import { m005Revisions } from './migrations/005_revisions';
+import { m006UploadsAndNotes } from './migrations/006_uploads_and_notes';
+import { m007EditorRole } from './migrations/007_editor_role';
+import { m008OwnerRole } from './migrations/008_owner_role';
+import { m009ResourceMarks } from './migrations/009_resource_marks';
+import { m010CalendarVideo } from './migrations/010_calendar_video';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
-const MIGRATIONS: ReadonlyArray<{ name: string; sql: string }> = [
+const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
   { name: '001_resources', sql: m001Resources },
   { name: '002_resource_source', sql: m002ResourceSource },
   { name: '003_resource_card_fields', sql: m003ResourceCardFields },
   { name: '004_auth', sql: m004Auth },
   { name: '005_revisions', sql: m005Revisions },
+  { name: '006_uploads_and_notes', sql: m006UploadsAndNotes },
+  /*
+   * ⚠️ 重建 users 表才能改 CHECK 约束（SQLite 不支持 ALTER 约束），
+   *    而**重建必须关掉外键**：开启外键时 DROP TABLE 会做一次隐式 DELETE，
+   *    从而触发 sessions / email_tokens 的 ON DELETE CASCADE ——
+   *    也就是"加一个角色"顺手把所有人的登录态清空、验证令牌丢掉。
+   *
+   *    而 `PRAGMA foreign_keys` **在事务里是无效的**（SQLite 明文规定），
+   *    所以这条迁移必须跳出事务。这就是 noTransaction 存在的唯一理由。
+   */
+  { name: '007_editor_role', sql: m007EditorRole, noTransaction: true },
+  // 同 007：加角色要重建 users 表，因而必须关外键、因而必须跳出事务。
+  { name: '008_owner_role', sql: m008OwnerRole, noTransaction: true },
+  // 纯加表，不动已有结构 —— 这条可以老老实实待在事务里
+  { name: '009_resource_marks', sql: m009ResourceMarks },
+  // 同 009：只建新表（calendar_events / videos / content_revisions），不动任何已有结构
+  { name: '010_calendar_video', sql: m010CalendarVideo },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
@@ -45,6 +67,24 @@ export function runMigrations(db: DatabaseSync): string[] {
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.name)) continue;
+
+    /*
+     * ⚠️ 绝大多数迁移包在事务里：失败就整个回滚，不留半截状态。
+     *
+     * 例外只有一种：迁移里要用 `PRAGMA foreign_keys`（重建表时必须关它），
+     * 而那个 PRAGMA **在事务里是无效的**。这类迁移要自己保证幂等与顺序，
+     * 代价是失败时没有回滚 —— 所以 MIGRATIONS 里标了 noTransaction 的，
+     * 部署前必须拿真实数据库的副本演练过。
+     */
+    if (migration.noTransaction) {
+      db.exec(migration.sql);
+      db.prepare('INSERT INTO _migrations (name, applied_at) VALUES (?, ?)').run(
+        migration.name,
+        Date.now(),
+      );
+      justApplied.push(migration.name);
+      continue;
+    }
 
     db.exec('BEGIN');
     try {

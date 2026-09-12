@@ -48,11 +48,13 @@ export interface RevisionRow {
   reviewed_by: string | null;
   reviewed_at: number | null;
   review_reason: string | null;
+  note_to_reviewer: string | null;
 }
 
 const REVISION_COLUMNS = `
   id, resource_id, revision, kind, title, title_en, url, image_url, summary,
-  body, lang, tags, status, editor_id, created_at, reviewed_by, reviewed_at, review_reason
+  body, lang, tags, status, editor_id, created_at, reviewed_by, reviewed_at, review_reason,
+  note_to_reviewer
 `;
 
 /** 把提交内容规范成快照字段。和导入走同一套规范化，两边的形态不会漂。 */
@@ -109,6 +111,8 @@ export interface QueueRow {
   url: string;
   is_edit: number;
   author_name: string | null;
+  /** 这一版是谁提交的。审核界面用它判断"是不是你自己提的" */
+  editor_id: string | null;
   created_at: number;
 }
 
@@ -124,7 +128,7 @@ export function listReviewQueue(limit = 50, offset = 0): { items: QueueRow[]; to
   const items = db
     .prepare(
       `SELECT r.id AS resource_id, r.pending_revision AS revision,
-              rv.title, rv.kind, rv.url, rv.created_at,
+              rv.title, rv.kind, rv.url, rv.created_at, rv.editor_id,
               (r.current_revision IS NOT NULL) AS is_edit,
               u.display_name AS author_name
        FROM resources r
@@ -149,7 +153,19 @@ export function listReviewQueue(limit = 50, offset = 0): { items: QueueRow[]; to
   return { items, total: Number(totalRow.n) };
 }
 
-/** 某个作者提交过的条目（含状态），"我的提交"列表用。 */
+/**
+ * 某个作者提交过的条目（含状态），「我的提交」列表用。
+ *
+ * ⚠️ 这里**必须**带上最近一次被驳回的理由。
+ *
+ *    没有它的话，整套驳回机制就是空转的：审核员被强制写下的那句"需要改什么"
+ *    只会躺在数据库和审计日志里，而唯一需要读它的人（作者）根本看不到。
+ *    他看到的只有"已驳回"三个字，于是原样再提交一次 —— 然后被同一个人
+ *    用同一个理由再驳回一次。审核员写理由的成本全白费了。
+ *
+ * 取"最近一次"而不是"当前的"：条目可能被驳回 → 改 → 又通过，
+ * 那时旧理由不该继续显示成待处理的问题。用 created_at 倒序取第一条。
+ */
 export function listByAuthor(authorId: string): Array<{
   id: string;
   title: string;
@@ -157,11 +173,18 @@ export function listByAuthor(authorId: string): Array<{
   pending_revision: number | null;
   current_revision: number | null;
   updated_at: number;
+  last_reject_reason: string | null;
+  reviewed_at: number | null;
 }> {
   return getDb()
     .prepare(
-      `SELECT id, title, status, pending_revision, current_revision, updated_at
-       FROM resources WHERE author_id = ? ORDER BY updated_at DESC`,
+      `SELECT r.id, r.title, r.status, r.pending_revision, r.current_revision, r.updated_at,
+              (SELECT rv.review_reason FROM resource_revisions rv
+                WHERE rv.resource_id = r.id AND rv.status = 'rejected'
+                ORDER BY rv.created_at DESC LIMIT 1) AS last_reject_reason,
+              (SELECT MAX(rv2.reviewed_at) FROM resource_revisions rv2
+                WHERE rv2.resource_id = r.id) AS reviewed_at
+       FROM resources r WHERE r.author_id = ? ORDER BY r.updated_at DESC`,
     )
     .all(authorId) as Array<{
     id: string;
@@ -170,6 +193,8 @@ export function listByAuthor(authorId: string): Array<{
     pending_revision: number | null;
     current_revision: number | null;
     updated_at: number;
+    last_reject_reason: string | null;
+    reviewed_at: number | null;
   }>;
 }
 
@@ -224,8 +249,8 @@ export function submitNewResource(input: {
     db.prepare(
       `INSERT INTO resource_revisions
          (id, resource_id, revision, kind, title, title_en, url, image_url, summary,
-          body, lang, tags, status, editor_id, created_at)
-       VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+          body, lang, tags, status, editor_id, created_at, note_to_reviewer)
+       VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
     ).run(
       newId(),
       input.id,
@@ -240,6 +265,7 @@ export function submitNewResource(input: {
       fields.tags,
       input.authorId,
       input.now,
+      input.submission.note ?? null,
     );
 
     db.exec('COMMIT');
@@ -292,8 +318,8 @@ export function reviseResource(input: {
     db.prepare(
       `INSERT INTO resource_revisions
          (id, resource_id, revision, kind, title, title_en, url, image_url, summary,
-          body, lang, tags, status, editor_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+          body, lang, tags, status, editor_id, created_at, note_to_reviewer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
     ).run(
       newId(),
       input.resourceId,
@@ -309,6 +335,7 @@ export function reviseResource(input: {
       fields.tags,
       input.editorId,
       input.now,
+      input.submission.note ?? null,
     );
 
     /*
@@ -321,14 +348,35 @@ export function reviseResource(input: {
      * （那个 bug 被测试里"两个方向都要断言"的写法逮到 —— 只验证"回到 pending"
      *   的测试会让它溜过去，因为状态确实变成了 pending，测试反而会通过。）
      *
-     * 正确的规则：**status 描述的是线上内容的状态。**
-     *   · 有线上版本（current_revision 不为空）→ 线上没变，状态就不该变
-     *   · 没有线上版本（从未通过审核）→ 回到 pending，表示又有一版在等审核
+     * ---------------------------------------------------------------------
+     * 判据是 **status 本身**，不是 current_revision（2026-09-12 修正）
+     * ---------------------------------------------------------------------
+     * 原来写的是 `WHEN current_revision IS NULL THEN 'pending'`，它隐含一个假设：
+     * "没有 current_revision ⟹ 从未上架过"。这个假设对用户提交的条目成立，
+     * 但**对导入的条目不成立** —— 它们是从 JSON 导进来的，
+     * status 直接就是 'published'，而根本没有版本号。
+     *
+     * 在只允许作者编辑的年代，这段代码碰不到导入的条目（author_id 是 NULL，
+     * 谁都不是作者），所以那个假设一直没被挑战。wiki 式编辑一上线，
+     * 第一个路人改了一条导入条目，它就会**当场从资源库里消失** ——
+     * 直到审核通过才回来。这正是上面那段注释警告过的同一个 bug，
+     * 只是换了一个入口。
+     *
+     * 所以判据改成直接看 status：
+     *   · status = 'published'  → 线上有内容在展示，改一次不该让它消失
+     *   · status = 'hidden'     → 被编辑者下架了，改一次也不该改变这个决定
+     *   · 其它（pending/rejected/draft）→ 回到 pending，表示又有一版在等审核
+     * 这既更简单（不依赖"版本号存在与否"这种间接推断），也更贴近那句话本身：
+     * **status 描述的是线上内容的状态。**
+     *
+     * ⚠️ 'hidden' 是后来补上的：第一版只写了 published，于是"一条被下架的条目
+     *    被人改了一下"会把它踢回 pending —— 而下架是一个明确的编辑决定，
+     *    不该被一次内容修改（甚至只是别人路过提了个改动）顺手撤销。
      */
     db.prepare(
       `UPDATE resources
          SET pending_revision = ?,
-             status = CASE WHEN current_revision IS NULL THEN 'pending' ELSE status END,
+             status = CASE WHEN status IN ('published', 'hidden') THEN status ELSE 'pending' END,
              updated_at = ?
        WHERE id = ?`,
     ).run(revision, input.now, input.resourceId);
@@ -387,7 +435,15 @@ export function approveRevision(input: {
       `UPDATE resources
          SET kind = ?, title = ?, title_en = ?, url = ?, image_url = ?, summary = ?,
              body = ?, lang = ?, tags = ?,
-             status = 'published', current_revision = ?, pending_revision = NULL, updated_at = ?
+             /*
+              * ⚠️ 保留 'hidden'：内容被编辑者主动下架之后，
+              *    一次修改通过审核**不该**把它悄悄恢复上架。
+              *    下架是一个明确的编辑决定，只应该由人显式地撤销
+              *    （见 setResourceVisibility）。写成无条件 'published' 的话，
+              *    作者改个错别字就能把一条被下架的内容重新推回站上。
+              */
+             status = CASE WHEN status = 'hidden' THEN 'hidden' ELSE 'published' END,
+             current_revision = ?, pending_revision = NULL, updated_at = ?
        WHERE id = ?`,
     ).run(
       rev.kind,
@@ -421,29 +477,49 @@ export function approveRevision(input: {
 /**
  * 驳回待审版本。
  *
- * ⚠️ 驳回之后条目应该变成什么状态，**取决于它有没有线上版本**：
+ * ---------------------------------------------------------------------------
+ * ⚠️ 驳回改的是**待审版本**，不该动"线上这一条还在不在"
+ * ---------------------------------------------------------------------------
+ * 所以状态规则直接看**当前状态**，不是看有没有版本号：
  *
- *   · 从来没有发布过（current_revision IS NULL）→ status = 'rejected'，
- *     它从列表里消失，作者能看到"被驳回了"。
- *   · 已经发布过（改的是老条目）→ status 保持 'published'。
- *     ⚠️ 如果这里也写成 'rejected'，那个条目的**线上版本会跟着消失** ——
- *     一个老条目只因为有人改了它一次没通过审核，就从站上没了。
- *     这正是"提交修改"和"提交新条目"必须区分对待的地方。
+ *   · 线上正展示着（published / hidden）→ **保持原状**。
+ *     一次修改被驳回，和"这个条目该不该在站上"是两件事。
+ *   · 从没上架过（pending / rejected / draft）→ 标成 'rejected'，
+ *     作者在「我的提交」里看到"被驳回了"。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 这里踩过**两次**同一个坑，都是"用 current_revision 判断有没有上架过"
+ * ---------------------------------------------------------------------------
+ * 导入的条目（从 content/resources.json 进来的那 9 条）status 就是
+ * 'published'，但 **current_revision 是 NULL** —— 它们不是走审核流程进来的，
+ * 没有版本号。于是 `current_revision === null` 这个判断会把它们当成
+ * "从没上架过"。
+ *
+ * 第一次是 reviseResource（改一条导入条目 → 状态被改成 pending → 条目消失）；
+ * 第二次就是这里（**改一条导入条目被驳回 → 状态被改成 rejected → 条目消失**）。
+ * 现象一样："我只改了一下，那条内容就没了。"
+ *
+ * 教训写在这里，因为它是这个数据模型里最容易再犯的地方：
+ * **判断"线上有没有内容"要看 status，不要看 current_revision。**
+ * 后者的存在只是"这一版是审核通过的"，而不是"线上有东西"。
+ *
+ * ⚠️ 保留 'hidden' 也是刻意的：内容被编辑者主动下架之后，
+ *    一次修改被驳回不该把它悄悄恢复上架 —— 下架是一个明确的编辑决定。
  */
 export function rejectRevision(input: {
   resourceId: string;
   reviewerId: string;
   reason: string;
   now: number;
-}): { revision: number; resourceRejected: boolean } | null {
+}): { revision: number; resourceRejected: boolean; status: string } | null {
   const db = getDb();
   db.exec('BEGIN IMMEDIATE');
 
   try {
     const resource = db
-      .prepare('SELECT pending_revision, current_revision FROM resources WHERE id = ?')
+      .prepare('SELECT pending_revision, current_revision, status FROM resources WHERE id = ?')
       .get(input.resourceId) as
-      | { pending_revision: number | null; current_revision: number | null }
+      | { pending_revision: number | null; current_revision: number | null; status: string }
       | undefined;
     if (!resource?.pending_revision) {
       db.exec('ROLLBACK');
@@ -466,13 +542,16 @@ export function rejectRevision(input: {
        WHERE id = ?`,
     ).run(input.reviewerId, input.now, input.reason, rev.id);
 
-    const resourceRejected = resource.current_revision === null;
+    // 线上正展示着的（published / hidden）保持原状；从没上架过的标成 rejected
+    const wasLive = resource.status === 'published' || resource.status === 'hidden';
+    const nextStatus = wasLive ? resource.status : 'rejected';
+
     db.prepare(
       `UPDATE resources SET status = ?, pending_revision = NULL, updated_at = ? WHERE id = ?`,
-    ).run(resourceRejected ? 'rejected' : 'published', input.now, input.resourceId);
+    ).run(nextStatus, input.now, input.resourceId);
 
     db.exec('COMMIT');
-    return { revision: rev.revision, resourceRejected };
+    return { revision: rev.revision, resourceRejected: !wasLive, status: nextStatus };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;

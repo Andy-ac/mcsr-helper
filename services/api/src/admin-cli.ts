@@ -32,9 +32,19 @@
  *    （没有对应的用户），reason 里会带上命令行给的理由。
  */
 
+import { DISPLAY_NAME_MAX, DISPLAY_NAME_MIN, PASSWORD_MAX, PASSWORD_MIN } from '@mcsr/shared/auth';
 import { USER_ROLES, type UserRole } from '@mcsr/shared/permissions';
+import { hashPassword } from './auth/password';
 import { closeDb, dbPath } from './db';
-import { countAdmins, findUserByEmail, listUsers, setUserRole, writeAudit } from './users';
+import {
+  countAdmins,
+  createUser,
+  findUserByEmail,
+  listUsers,
+  markEmailVerified,
+  setUserRole,
+  writeAudit,
+} from './users';
 
 function usage(): never {
   /*
@@ -53,11 +63,17 @@ function usage(): never {
       `  node ${self} list`,
       `  node ${self} show <邮箱>`,
       `  node ${self} role <邮箱> <角色> <理由>`,
+      `  node ${self} create <邮箱> <密码> <昵称> [角色]`,
       '',
       `可用角色：${USER_ROLES.join(' / ')}`,
       '',
       '例：',
       `  node ${self} role me@example.com admin "项目发起人，需要管理审核员"`,
+      `  node ${self} create friend@example.com '一个足够长的密码' '朋友的昵称' user`,
+      '',
+      'create 会**直接建一个已验证的账号**，不走注册接口、不发任何邮件。',
+      '只在你确实需要它的时候用（测试账号、对方收不到验证信）；',
+      '正常注册仍然走网页，那条路有邮箱验证这道闸门。',
       '',
       '本地开发时把路径换成 dist/admin.js。',
       '',
@@ -164,6 +180,79 @@ switch (command) {
 
     console.log(`[admin] ${email}: ${user.role} -> ${role}`);
     console.log('[admin] 已写入审计记录');
+    break;
+  }
+
+  case 'create': {
+    /*
+     * 直接建一个**已验证**的账号，不经注册接口。
+     *
+     * -----------------------------------------------------------------------
+     * 为什么需要它
+     * -----------------------------------------------------------------------
+     * 注册接口的路径是"发一封验证邮件 → 用户点链接"，这在两种情况下走不通：
+     *
+     *   1. **测试账号**。`@example.test` 是 RFC 6761 保留域名，
+     *      根本收不到信 —— 而注册接口会**真的**让发信服务往那里投递，
+     *      退信会算在发信域名的声誉上。为了造两个测试账号去损伤
+     *      mcsrhelper.com 的投递声誉，是明显不划算的。
+     *   2. **帮别人开账号**。对方邮箱暂时收不到信时，
+     *      有一条不依赖邮件投递的路。
+     *
+     * ⚠️ 它和注册接口**不冲突**：注册接口仍然会给邮箱发信、仍然不能自动验证。
+     *    这条路要求"能登录服务器"，和上面改角色那条是同一个门槛。
+     */
+    const [email, password, displayName, role = 'user'] = args;
+    if (!email || !password || !displayName) usage();
+
+    for (const [label, value, min, max] of [
+      ['邮箱', email, 3, 254],
+      ['密码', password, PASSWORD_MIN, PASSWORD_MAX],
+      ['昵称', displayName, DISPLAY_NAME_MIN, DISPLAY_NAME_MAX],
+    ] as const) {
+      if (value.length < min || value.length > max) {
+        console.error(`✗ ${label}长度必须在 ${String(min)}–${String(max)} 之间`);
+        process.exit(1);
+      }
+    }
+    if (!(USER_ROLES as readonly string[]).includes(role)) {
+      console.error(`✗ 未知角色「${role}」。可用：${USER_ROLES.join(' / ')}`);
+      process.exit(1);
+    }
+    if (findUserByEmail(email)) {
+      console.error(`✗ ${email} 已经存在。要改密码请用 passwd，要改角色请用 role。`);
+      process.exit(1);
+    }
+
+    const now = Date.now();
+    const passwordHash = await hashPassword(password);
+    const user = createUser({
+      email,
+      passwordHash,
+      displayName,
+      // 测试账号一律中文界面。这个字段用户自己能在账号页改。
+      locale: 'zh-CN',
+      now,
+    });
+
+    if (role !== 'user') setUserRole(user.id, role as UserRole, now);
+    // 已验证：不这样做的话，author 这类账号连提交都会被挡在门外，
+    // 而它永远收不到那封验证信。
+    markEmailVerified(user.id, now);
+
+    writeAudit({
+      actorId: null,
+      action: 'user.create',
+      entityType: 'user',
+      entityId: user.id,
+      reason: `(CLI) 直接创建 role=${role} verified=yes`,
+      ip: null,
+      now,
+    });
+
+    console.log(`[admin] 已创建 ${email}（${displayName}）角色=${role} 邮箱=已验证`);
+    console.log('[admin] 已写入审计记录');
+    console.log(`[admin] 提醒：这个密码只有你知道，密码本身不会写进审计日志`);
     break;
   }
 

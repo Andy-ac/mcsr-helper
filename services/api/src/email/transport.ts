@@ -117,10 +117,35 @@ function formatFrom(cfg: MailConfig): string {
 }
 
 /**
+ * RFC 6761 / 2606 保留的域名：**互联网上不存在这些邮箱**。
+ *
+ * 往它们发信的结局是必然退信（或者更糟：被当成"发信方在乱发"），
+ * 而退信率是发信域名声誉的一部分 —— 为了给测试账号发一封信去损伤
+ * mcsrhelper.com 的投递声誉，是明显不划算的。
+ *
+ * `example.com/net/org` 和 `.test` / `.invalid` / `.example` / `.localhost`
+ * 是标准里明确保留给文档与测试用的，任何真实用户都不可能拥有它们。
+ */
+const RESERVED_DOMAINS =
+  /@(?:[^@.]*\.)*(?:example\.(?:com|net|org)|test|invalid|example|localhost)$/i;
+
+/**
  * 发一封信。**不抛异常**（见文件头）。
  */
 export async function sendMail(message: MailMessage): Promise<MailResult> {
   const cfg = readConfig();
+
+  /*
+   * ⚠️ 只在**真实发信**时拦保留域名。
+   *
+   * console / file 这两个开发驱动要照常工作 —— 本地和测试里用的就是
+   * 这类地址（测试里断言 .eml 内容时更是如此）。把它们一起拦掉的话，
+   * 测的就不是真实代码路径了。
+   */
+  if (cfg.driver === 'resend' && RESERVED_DOMAINS.test(message.to)) {
+    console.log(`[mail] 收件人是保留域名，跳过真实投递（避免退信损伤发信声誉）: to=${message.to}`);
+    return { ok: true, driver: 'skipped' };
+  }
 
   try {
     switch (cfg.driver) {
@@ -245,6 +270,24 @@ function sendToFile(cfg: MailConfig, message: MailMessage): MailResult {
 // ---------------------------------------------------------------------------
 
 function sendToConsole(cfg: MailConfig, message: MailMessage): MailResult {
+  /*
+   * ⚠️ 测试环境下只打一行。
+   *
+   * 完整邮件正文（几百行）在测试里是纯噪音：没有任何测试断言它的 stdout
+   * （要验内容的几条走 file 驱动，直接读落盘的 .eml）。
+   * 而它的代价是真实的：整套测试输出 133 KB，其中 668 行是邮件全文 ——
+   * Windows 匿名管道缓冲区只有几十 KB，子进程写满就**阻塞事件循环**，
+   * 于是它发给 `node --test` 运行器的 IPC 消息被拖到错位，
+   * 运行器解不出那一帧，报出 "Unable to deserialize cloned data"。
+   *
+   * 那个报错看起来像并发/内存问题，其实是**输出把管道堵死了** ——
+   * 所以降低并发度治不好它（试过，3/6 照样抖）。
+   */
+  if (process.env.NODE_ENV === 'test') {
+    console.log(`[mail] console 驱动（测试精简输出）to=${message.to}`);
+    return { ok: true, driver: 'console' };
+  }
+
   console.log(
     [
       '',

@@ -6,7 +6,8 @@
  *   POST /api/auth/login
  *   POST /api/auth/logout
  *   GET  /api/auth/me
- *   POST /api/auth/verify/send      重发验证邮件
+ *   POST /api/auth/verify/send      重发验证邮件（需登录）
+ *   POST /api/auth/verify/resend    重发验证邮件（未登录，见下）
  *   POST /api/auth/verify           用 token 完成验证
  *   POST /api/auth/reset/request    请求重置密码
  *   POST /api/auth/reset/confirm    用 token 设置新密码
@@ -30,8 +31,32 @@
  * SPA 启动时必然要问一次"我是谁"。如果未登录返回 401，
  * 每个访客的控制台里都会有一条红色错误，而那是**正常状态**，不是错误。
  * 用 200 + `{ user: null }` 把"未登录"和"请求失败"在协议层面区分开。
+ *
+ * ---------------------------------------------------------------------------
+ * 偏离三：邮箱未验证 = 不能登录（这条推翻了早先"验证挡提交不挡登录"的原则）
+ * ---------------------------------------------------------------------------
+ * 早先的设计是"注册即可登录，只是不能提交内容"。现在反过来：**验证通过才算注册完成**，
+ * 未验证的账号连登录都不行（403 `email_not_verified`）。
+ *
+ * 为什么值得推翻：早先那套里，一个邮箱写错的账号是一个**能登录、能用一半功能、
+ * 并且永远收不到我们任何邮件**的账号 —— 用户以为自己注册好了，直到某天想提交内容
+ * 才撞上"请先验证邮箱"，而那时那封信早就过期了。把验证提到登录之前，
+ * 用户在有上下文的时候（刚注册完、正盯着注册页）就知道自己还没完成，
+ * 而不是几周后在另一个页面上被拦下来。
+ *
+ * 代价有两个，都是刻意接受的，写在这里以免以后被当成 bug：
+ *   1. 未验证的用户拿不到会话，"重发验证邮件"因此**不能要求登录** ——
+ *      否则用户会被锁死在"没验证 → 不能登录 → 不能重发 → 没验证"的循环里。
+ *      所以有了下面的 /verify/resend：不需要登录，但响应必须与
+ *      "已注册未验证 / 已注册已验证 / 邮箱不存在 / 发信失败"四种情况完全一致。
+ *   2. 重置密码会顺便置为已验证 —— 见 /reset/confirm 处的说明。
  */
-import { LoginInputSchema, PasswordSchema, RegisterInputSchema } from '@mcsr/shared/auth';
+import {
+  LoginInputSchema,
+  PasswordSchema,
+  RegisterInputSchema,
+  VerifyResendInputSchema,
+} from '@mcsr/shared/auth';
 import { type Context, Hono } from 'hono';
 import {
   type AuthVariables,
@@ -44,7 +69,7 @@ import { hashPassword, verifyPassword } from '../auth/password';
 import { clear, clientIp, hit, keyFor, LIMITS } from '../auth/ratelimit';
 import { generateToken, hashToken, SESSION_TTL_MS, tokenTtlMs } from '../auth/tokens';
 import { buildResetMail, buildVerifyMail } from '../email/messages';
-import { sendMail } from '../email/transport';
+import { type MailResult, sendMail } from '../email/transport';
 import {
   createEmailToken,
   createSession,
@@ -94,6 +119,45 @@ function logSent(kind: string, to: string, result: { driver: string; id?: string
   console.log(`[auth] ${kind}已交给 ${result.driver}  id=${result.id ?? '(无)'}  to=${to}`);
 }
 
+/**
+ * 给用户发一封新的验证邮件。
+ *
+ * 抽成一处是因为"注册时发第一封"和"用户点重发"必须是**同一套**语义：
+ * 都先作废旧的验证令牌、都只留恰好一个有效凭证。
+ * 早先这两段是各写一遍的，改了一处忘了另一处，就是"重发之后旧链接依然能用"
+ * 这类漏洞的典型来源 —— 而它不会有任何测试失败来提醒你。
+ *
+ * ⚠️ 失败怎么处理由调用方决定，这里只如实返回：
+ * 注册时发信失败**不影响注册结果**（账号已经建好了，还能重发），
+ * 而重发时失败必须让用户知道，否则他会一直等一封不会来的信。
+ */
+function issueVerifyToken(user: {
+  id: string;
+  email: string;
+  locale: string;
+}): Promise<MailResult> {
+  const now = Date.now();
+  const token = generateToken();
+
+  // 先作废旧令牌，再发新的。
+  //
+  // 反过来的话，用户连点五次重发就会手里有五条都有效的链接，
+  // 而"这些链接还能用多久"是没有上界的 —— 其中一封邮件要是后来泄漏了，
+  // 它仍然是有效凭证。作废旧令牌把有效凭证收敛到恰好一个。
+  invalidateEmailTokens(user.id, 'verify', now);
+  createEmailToken({
+    tokenHash: hashToken(token),
+    userId: user.id,
+    kind: 'verify',
+    email: user.email,
+    expiresAt: now + tokenTtlMs('verify'),
+    now,
+  });
+
+  const mail = buildVerifyMail({ to: user.email, token, locale: user.locale as 'zh-CN' | 'en' });
+  return sendMail(mail);
+}
+
 // ---------------------------------------------------------------------------
 // 注册
 // ---------------------------------------------------------------------------
@@ -108,9 +172,10 @@ function logSent(kind: string, to: string, result: { driver: string; id?: string
  * 攻击者拿一份邮箱列表挨个试一遍，就能知道谁是我们社区的人，
  * 然后用这些信息去做定向钓鱼。
  *
- * 代价是用户注册完要多走一步登录。这个代价是划算的：
- * 无论自动登录与否，用户都必须去邮箱点验证链接（提交内容需要验证），
- * 所以"多一次登录"其实没有多出一次上下文切换。
+ * 代价是用户注册完要多走一步登录。这个代价在这里是划算的，
+ * 而且比早先更划算：既然未验证的账号**根本不能登录**（见偏离三），
+ * 注册时下发会话就等于下发一个连不上任何东西的会话。
+ * 注册的终点不是"拿到会话"，而是"点开邮件里的链接"。
  */
 authRoute.post('/register', async (c) => {
   const ip = clientIp(c);
@@ -129,10 +194,11 @@ authRoute.post('/register', async (c) => {
   // 统一的响应体。**下面所有分支都必须返回它**。
   const accepted = {
     ok: true as const,
-    // 文案刻意覆盖两种真实情况，让响应本身不泄漏信息：
-    // 已注册的人知道该去登录，未注册的人知道该去收信。
+    // 文案刻意覆盖三种真实情况，让响应本身不泄漏信息：
+    // 没注册的人知道该去收信，注册过的人知道该去登录，
+    // 而"注册过但没验证"的人拿到的是一张能自救的说明书（重设密码即可完成验证）。
     message:
-      '如果这个邮箱还没有注册，我们已经发送了一封验证邮件；如果已经注册过，请直接登录，或用「忘记密码」重置。',
+      '如果这个邮箱还没有注册，我们已经发送了一封验证邮件 —— 点开邮件里的链接才算注册完成。如果已经注册过，可以直接登录；如果一直收不到验证邮件，用「忘记密码」重设一次密码也可以完成验证。',
   };
 
   const existing = findUserByEmail(email);
@@ -164,18 +230,7 @@ authRoute.post('/register', async (c) => {
 
   // 邮箱验证令牌。失败**不影响注册结果** —— 账号已经建好了，
   // 用户可以稍后从"重发验证邮件"再要一封。见 email/transport.ts 文件头。
-  const token = generateToken();
-  createEmailToken({
-    tokenHash: hashToken(token),
-    userId: user.id,
-    kind: 'verify',
-    email: user.email,
-    expiresAt: now + tokenTtlMs('verify'),
-    now,
-  });
-
-  const mail = buildVerifyMail({ to: user.email, token, locale });
-  const result = await sendMail(mail);
+  const result = await issueVerifyToken(user);
   if (!result.ok) {
     console.error(`[auth] 验证邮件发送失败 (driver=${result.driver}): ${result.error}`);
   } else {
@@ -262,6 +317,21 @@ authRoute.post('/login', async (c) => {
     return c.json({ error: 'account_suspended' }, 403);
   }
 
+  /*
+   * 邮箱未验证 = 不能登录。见文件头"偏离三"。
+   *
+   * 位置很讲究，有三处不能再挪：
+   *   - 在密码校验**之后**：否则拿一份邮箱列表挨个试就能问出
+   *     "谁注册了但没验证"，那是账号存在性的一个子集。
+   *   - 在 suspended 检查**之后**：封禁是更强的结论，
+   *     一个被封的账号不该从响应里泄露它的验证状态。
+   *   - 在 clear(failureKey) **之前**：没登录成功就不该清失败计数，
+   *     否则"未验证的账号"可以拿来反复试探密码而不触发限流。
+   */
+  if (user.email_verified_at === null) {
+    return c.json({ error: 'email_not_verified' }, 403);
+  }
+
   // 登录成功：清掉失败计数，避免"试错几次 + 成功"之后还留着计数
   clear(failureKey);
 
@@ -342,26 +412,7 @@ authRoute.post('/verify/send', requireAuth, async (c) => {
   const limited = hit(`resend|${user.id}`, LIMITS.resendVerify.limit, LIMITS.resendVerify.windowMs);
   if (!limited.ok) return rateLimited(c, limited.retryAfterSec);
 
-  const now = Date.now();
-  const token = generateToken();
-
-  // 先把旧的验证令牌全部作废，再发新的。
-  //
-  // 反过来的话，用户连点五次重发就会手里有五条都有效的链接，
-  // 而"这些链接还能用多久"是没有上界的 —— 其中一封邮件要是后来泄漏了，
-  // 它仍然是有效凭证。作废旧令牌把有效凭证收敛到恰好一个。
-  invalidateEmailTokens(user.id, 'verify', now);
-  createEmailToken({
-    tokenHash: hashToken(token),
-    userId: user.id,
-    kind: 'verify',
-    email: user.email,
-    expiresAt: now + tokenTtlMs('verify'),
-    now,
-  });
-
-  const mail = buildVerifyMail({ to: user.email, token, locale: user.locale as 'zh-CN' | 'en' });
-  const result = await sendMail(mail);
+  const result = await issueVerifyToken(user);
   if (!result.ok) {
     console.error(`[auth] 重发验证邮件失败 (driver=${result.driver}): ${result.error}`);
     return c.json({ error: 'send_failed' }, 502);
@@ -369,6 +420,77 @@ authRoute.post('/verify/send', requireAuth, async (c) => {
   logSent('重发的验证邮件', user.email, result);
 
   return c.json({ ok: true });
+});
+
+/**
+ * 重发验证邮件，**不需要登录**。
+ *
+ * 为什么必须有这个端点：未验证的账号登不进来（见文件头"偏离三"），
+ * 于是上面那条"要登录才能重发"的路，对最需要它的人恰恰不可用 ——
+ * 用户会卡在"邮箱没验证 → 不能登录 → 不能重发 → 邮箱还是没验证"里，
+ * 而唯一的出口是重设密码，那要求他能收到同一封信。
+ *
+ * 反枚举：下面四种真实情况（邮箱不存在 / 已注册未验证 / 已经验证过 / 发信失败）
+ * 返回**逐字节相同**的响应。这里尤其不能图省事说上一句"这封信已经发过了"，
+ * 因为"有没有发信"本身就回答了"这个邮箱注册过没有"。
+ *
+ * 副作用是：用户分不清"信发出去了"和"这个邮箱根本没注册"。
+ * 这是刻意的取舍 —— 他真正的下一步两种情况下都是"去看邮箱"，
+ * 而分不清的代价远小于一份可撞库的会员名单。
+ */
+authRoute.post('/verify/resend', async (c) => {
+  const ip = clientIp(c);
+  const body = await c.req.json().catch(() => null);
+  const parsed = VerifyResendInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+  const { email } = parsed.data;
+
+  /*
+   * 两道限流，都在任何数据库查询**之前** —— 顺序反过来的话，
+   * "直接返回"和"查完库再返回"的耗时差异就成了一个可测量的存在性信号。
+   *
+   *   1. (IP + 邮箱)：同一个人反复点。
+   *   2. 只按邮箱：防"换 IP 给同一个人反复发信"的邮件轰炸 ——
+   *      对受害者来说，来自十个 IP 的十封信和来自一个 IP 的十封信毫无区别，
+   *      而我们的成本是一样的。
+   */
+  const perCaller = hit(
+    keyFor('resend', ip, email),
+    LIMITS.resendVerify.limit,
+    LIMITS.resendVerify.windowMs,
+  );
+  if (!perCaller.ok) return rateLimited(c, perCaller.retryAfterSec);
+
+  const perAddress = hit(
+    keyFor('resend-addr', email),
+    LIMITS.resendVerify.limit,
+    LIMITS.resendVerify.windowMs,
+  );
+  if (!perAddress.ok) return rateLimited(c, perAddress.retryAfterSec);
+
+  // 统一响应体。**下面所有分支都必须返回它**。
+  const accepted = {
+    ok: true as const,
+    message: '如果这个邮箱注册过且还没验证，我们已经重新发送了一封验证邮件。',
+  };
+
+  const user = findUserByEmail(email);
+  if (!user) return c.json(accepted, 200);
+
+  // 已经验证过了：什么都不做，但**不能说出来**。
+  // "这封不用发"是一个只有我们自己知道的事实，不能变成响应里的一个字符。
+  if (user.email_verified_at !== null) return c.json(accepted, 200);
+
+  const result = await issueVerifyToken(user);
+  if (!result.ok) {
+    console.error(`[auth] 重发验证邮件失败 (driver=${result.driver}): ${result.error}`);
+  } else {
+    logSent('重发的验证邮件', user.email, result);
+  }
+
+  return c.json(accepted, 200);
 });
 
 /**
@@ -503,6 +625,19 @@ authRoute.post('/reset/confirm', async (c) => {
 
   const result = redeemEmailToken(hashToken(token), 'reset', now, (row) => {
     updateUserPassword(row.user_id, passwordHash, now);
+
+    /*
+     * ⚠️ 重置密码**顺便算作邮箱验证通过**。
+     *
+     * 这不是顺手加的一行，而是必需的：既然未验证的账号不能登录（偏离三），
+     * 一个"忘了密码、邮箱又还没验证"的用户如果只重置密码而不置验证位，
+     * 会拿到一个仍然登不进去的新密码 —— 他会以为重置失败了。
+     *
+     * 而这样做在安全上没有让步：能点开我们发到那个地址的重置链接，
+     * 和能点开验证链接，是**完全相同**的一份证明（都证明他控制这个邮箱），
+     * 区别只是邮件模板。
+     */
+    markEmailVerified(row.user_id, now);
     return row.user_id;
   });
 

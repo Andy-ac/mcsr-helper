@@ -26,6 +26,11 @@ Environment=PORT=3001
 # DB_PATH 显式给出，不依赖 cwd。否则"从别的目录启动服务"会静默打开另一个库文件 ——
 # 表现为"数据不见了"，而且要查很久才会想到是路径问题。
 Environment=DB_PATH=/srv/mcsr-helper/api/data/mcsr.db
+# 上传的图片落在同一个 data 目录里（它已经存在、且 mcsr 用户可写）。
+# ⚠️ 显式写出来而不是靠 "./data/uploads" 的默认值：那个默认值是相对于
+#    WorkingDirectory 的，一旦有人改了 WorkingDirectory 或 DB_PATH，
+#    图片会**静默地**换地方 —— 表现是"老图全 404，新图能看"。
+Environment=UPLOAD_DIR=/srv/mcsr-helper/api/data/uploads
 # node:sqlite 目前会打印一行 ExperimentalWarning。功能正常，只是噪音；
 # 关掉它以免掩盖真正的警告。
 Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
@@ -52,6 +57,26 @@ Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
 # 文件格式见 deploy/mail.env.example。首次部署时手工创建一次。
 # 前缀的 `-` 表示"文件不存在也照常启动" —— 本地和其它环境没有这个文件。
 EnvironmentFile=-/etc/mcsr-helper/mail.env
+
+# ---- Ranked Seeds 上游代理（M4）----
+#
+# 三个变量都**有代码内的默认值**，所以一个都不设也能正常工作：
+#   MCSR_SEED_API_BASE       默认 http://198.51.100.20:8001/api/v2
+#   MCSR_SEED_TIMEOUT_MS     默认 5000
+#   MCSR_SEED_WRITE_DISABLED 默认关闭（也就是**允许**补录）
+#
+# ⚠️ 上游是**明文 HTTP** 上的一个公网 IP —— 这正是我们做后端代理的原因：
+#    浏览器在 https 页面上不允许请求 http 资源（混合内容），而种子查询
+#    必须能在线上工作。代理不是"顺手加的一层"，它是这条功能成立的前提。
+#    所以**不要**让前端直连上游，也不要把上游地址下发给客户端。
+#
+# ⚠️ 下面这行是**紧急开关**。出事时（被刷、被扫、上游改了 schema 而我们还没跟上）
+#    把注释去掉、`systemctl daemon-reload && systemctl restart mcsr-helper-api`，
+#    写入路径立刻停掉 —— 它会往**上游用户自己的数据库**里插记录。
+#    代码每次请求都读 process.env，所以不需要重新打包和上传产物；
+#    但 restart 是必须的，Environment= 的改动不会被 reload 看到。
+#
+# Environment=MCSR_SEED_WRITE_DISABLED=1
 
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always

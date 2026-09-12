@@ -31,6 +31,8 @@ export const zhCN = {
     videos: '视频',
     profile: '我的',
     admin: '管理',
+    submit: '提交',
+    review: '审核',
     login: '登录',
     register: '注册',
     logout: '退出登录',
@@ -55,6 +57,7 @@ export const zhCN = {
     hint: '种子会被原样保存为字符串，不会丢失精度。',
   },
   resources: {
+    submitAction: '提交一条',
     title: '资源库',
     subtitle: '社区整理的网站、工具与参考资料 —— 不需要登录就能看。',
     searchPlaceholder: '搜索标题、简介或标签…',
@@ -122,7 +125,7 @@ export const zhCN = {
     noAccount: '还没有账号？',
     // 注册
     registerTitle: '注册',
-    registerSubtitle: '注册后需要验证邮箱才能提交内容。',
+    registerSubtitle: '注册后要去邮箱点验证链接，验证通过才算注册完成。',
     registering: '注册中…',
     registerAction: '注册',
     hasAccount: '已经有账号了？',
@@ -134,20 +137,37 @@ export const zhCN = {
     passwordPlaceholder: '至少 8 位',
     newPassword: '新密码',
     // 注册结果（刻意不透露邮箱是否已注册）
-    registerDone: '如果这个邮箱还没有注册，我们已经发送了一封验证邮件。',
-    registerDoneHint: '如果已经注册过，请直接登录，或用「忘记密码」重置。',
+    registerDone:
+      '如果这个邮箱还没有注册，我们已经发送了一封验证邮件 —— 点开邮件里的链接才算注册完成。',
+    registerDoneHint:
+      '如果已经注册过，可以直接登录；如果一直收不到验证邮件，用「忘记密码」重设一次密码也可以完成验证。',
     // 验证邮箱
     verifyTitle: '验证邮箱',
     verifyWorking: '正在验证…',
     verifyOk: '邮箱已验证',
-    verifyOkHint: '现在可以提交内容了。',
+    verifyOkHint: '现在可以登录了。',
     verifyFailed: '这个链接无效或已过期',
-    verifyFailedHint: '验证链接 24 小时内有效，而且只能用一次。登录之后可以重新发一封。',
+    verifyFailedHint:
+      '验证链接 24 小时内有效，而且只能用一次。想再要一封的话，去登录页填好邮箱 —— 那里有「重发验证邮件」，不需要先登录。',
     verifyResend: '重新发送验证邮件',
     verifyResending: '发送中…',
     verifyResent: '已重新发送。之前那封邮件里的链接已经失效了。',
-    verifyNeeded: '验证邮箱之后才能提交内容。',
+    verifyNeeded: '邮箱验证通过之后才能登录。',
     verifyNoToken: '这个链接不完整，缺少验证参数。',
+    /**
+     * 登录被"邮箱未验证"挡下时，登录页上那块自救面板。
+     *
+     * ⚠️ 这块面板是**必需**的，不是装饰：未验证的账号登不进来，
+     *    所以"去账号页点重发"那条路对这些人根本不存在（那个按钮要登录），
+     *    必须在这里就地给一个能用的重发入口 —— 否则他唯一的出路是重设密码，
+     *    而那要求他能收到同一封信。
+     */
+    verifyBlockTitle: '这个邮箱还没验证',
+    verifyBlockHint:
+      '验证通过才算注册完成。去邮箱点我们发的那封验证邮件里的链接就行 —— 信找不到了的话，在下面重发一封。',
+    verifyBlockResend: '重发验证邮件',
+    verifyBlockSent: '如果这个邮箱注册过且还没验证，我们已经重新发了一封。',
+    verifyBlockNeedEmail: '请先在上面填好邮箱地址。',
     // 找回密码
     resetRequestTitle: '找回密码',
     resetRequestSubtitle: '输入注册时用的邮箱，我们会发一封重置邮件。',
@@ -170,7 +190,25 @@ export const zhCN = {
     accountJoined: '注册于',
     roleUser: '普通用户',
     roleReviewer: '审核员',
+    roleEditor: '内容编辑',
+    roleOwner: '所有者',
     roleAdmin: '管理员',
+    roleGuideTitle: '五种身份分别能做什么',
+    roleGuideIntro:
+      '下面是每一级身份拥有的权限。**能做什么从权限矩阵直接读出来**，所以这张表不会和实际行为不一致。',
+    roleGuest: '游客（未登录）',
+    guestCan1: '浏览资源库、搜索、筛选、看详情页 —— 整站内容都不需要登录',
+    guestCan2: '不能提交、不能修改、不能审核（登录只是为了参与，不是为了看）',
+    rankNoteOwner:
+      '最高一级。能力上和管理员一样，多出来的是**等级**：只有 owner 能设置/取消管理员，而 owner 自己的角色在网页上谁也改不了 —— 要改只能在服务器上跑 admin.js。',
+    rankNoteAdmin:
+      '管理账号与角色：能把普通用户提升为审核员或内容编辑。但**管理员之间平级** —— 不能改其他管理员，不能把自己降级，也不能把别人提升为管理员。',
+    rankNoteEditor:
+      '站点的内容负责人：自己写的内容可以自己批准，还能决定内容以什么姿态出现在站上（精选、下架）。',
+    rankNoteReviewer:
+      '流水线审核：能批准或驳回别人的提交，但**不能批准自己提交的内容** —— 那要由另一位审核员来做（自己提交的东西可以自己驳回，等于撤回）。',
+    rankNoteUser:
+      '社区成员。可以提交内容、修改自己提交的东西，也可以对任何已上架的条目提出修改（改动同样要过审核）。',
     canSubmitYes: '可以提交内容',
     canSubmitNo: '验证邮箱之后才能提交内容',
     /**
@@ -190,14 +228,27 @@ export const zhCN = {
     capTypeAudit: '审计日志',
     capActionSubmit: '提交',
     capActionEditOwn: '修改自己提交的',
+    capActionEditAny: '改已上架的条目',
+    capActionEditUnpublished: '改未上架的条目',
+    capActionFeature: '设置精选 / 官方',
+    capActionModerateContent: '下架 / 恢复内容',
     capActionReview: '审核',
+    // ⚠️ user.moderate（账号治理）。和 resource.moderate（内容治理）动作名相同，
+    //    靠 capabilities.ts 里的 CAP_OVERRIDES 按完整能力名区分。
     capActionModerate: '管理身份组',
     capActionRead: '查看',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误
     invalidCredentials: '邮箱或密码不对',
-    emailNotVerified: '邮箱还没验证，验证之后才能提交内容。',
+    emailNotVerified: '这个邮箱还没验证。验证通过才算注册完成，请去邮箱点验证链接。',
+    videoExists: '这个视频已经在站上了 —— 换一个，或者去视频墙里找找它。',
+    // Ranked Seeds（上游只覆盖约 80%，所以"查不到"是常态而不是异常）
+    seedNotFound:
+      '这条比赛 ID 不在种子里库里 —— 上游只收录了约 80% 的历史比赛，这条可能是另外那 20%。',
+    seedExists: '这条比赛 ID 已经录过了，不用再录一遍。',
+    seedServiceUnavailable: '种子服务暂时不可用，请稍后再试。',
+    seedWriteDisabled: '种子录入暂时关闭了，这不是你的问题 —— 请稍后再试或告诉我们。',
     rateLimited: '尝试太频繁了，请等 {{seconds}} 秒后再试',
     accountSuspended: '这个账号已被停用。',
     sendFailed: '邮件发送失败，请稍后再试。',
@@ -259,6 +310,883 @@ export const zhCN = {
     error: '更新出错：{{message}}',
     retry: '重试',
     dismiss: '关闭提示',
+  },
+  /**
+   * 提交内容（M2 的 UGC 入口）。
+   *
+   * 一条贯穿始终的原则：**不要让人填完才被拒**。
+   * 没登录、邮箱没验证、权限不够，都要在打开表单**之前**说清楚，
+   * 而且每个"不行"都要给出下一步（去登录 / 去验证 / 去看已有的那一条）。
+   * 表单本身可以很长（正文可能几千字），填完才被拦下来是最伤人的体验。
+   */
+  submit: {
+    tagAdd: '添加',
+    tagRemove: '点击移除这个标签',
+    tagExistingHint: '已被用过的标签（推荐直接用，方便别人筛选）：',
+    imageUpload: '本地上传',
+    imageUploading: '上传中…',
+    imageClear: '清除配图',
+    errImageTooLarge: '图片超过 {{mb}} MB，请压缩之后再传。',
+    errImageType: '这不是支持的图片格式。支持 PNG / JPG / WebP / GIF。',
+    errImageFailed: '上传失败，请重试。',
+    note: '给审核员的话（可选）',
+    notePlaceholder: '例如：这是社区修正；或者上一轮驳回的那处已经改好了。',
+    pageTitle: '提交资源',
+    subtitle: '推荐一个 MCSR 相关的网站或工具。提交后需要审核，通过后才会出现在资源库里。',
+    flowNote:
+      '提交不会立刻上线：内容先进入待审队列，由审核员看过之后才会出现在资源库里。审核结果会出现在「我的」页面里。',
+
+    title: '标题',
+    titlePlaceholder: '例如：MCSR Ranked 排行榜',
+    hintTitle: '用条目主要语言写。120 字以内。',
+    titleEn: '英文标题',
+    titleEnPlaceholder: '可选，例如：MCSR Ranked Leaderboard',
+    hintTitleEn: '另一种语言的标题，方便两边的人搜到。内容本身不需要翻译。',
+
+    url: '链接',
+    urlPlaceholder: 'https://example.com',
+    hintUrl: '必须是完整的 http:// 或 https:// 地址。',
+
+    imageUrl: '配图',
+    imagePlaceholder: '留空则自动取站点图标',
+    hintImage: '可以本地上传（不超过 {{mb}} MB），也可以填一个链接。留空则自动取站点图标。',
+
+    summary: '一句话简介',
+    summaryPlaceholder: '留空则从正文自动提取',
+    hintSummary: '列表页上显示的那句话。',
+
+    body: '正文',
+    bodyPlaceholder: '支持 Markdown。写清楚这是什么、怎么用、有什么坑。',
+    writeTab: '编辑',
+    previewTab: '预览',
+    previewEmpty: '还没有内容。',
+
+    tags: '标签',
+    tagsPlaceholder: '例如：ranked, 排行榜, 1.16.1',
+    hintTags: '逗号或空格分隔，最多 12 个。版本号（如 1.16.1）也是常用标签。',
+
+    kind: '类型',
+    hintKind: '网站 = 打开就能用的站点；工具 = 需要下载或安装的程序。',
+    lang: '语言',
+    hintLang: '条目主要内容的语言。',
+
+    action: '提交审核',
+    submitting: '提交中…',
+    reviewNote: '提交后进入待审队列，通过后自动上线。',
+
+    needLogin: '提交内容需要先登录。浏览是不需要登录的 —— 只有提交需要。',
+    needVerify:
+      '提交前需要先验证邮箱。这是唯一挡住提交的东西：我们要确保每条内容背后都有一个能收到回复的人。',
+    gotoVerify: '去验证邮箱',
+
+    doneTitle: '已提交',
+    doneSub: '内容已进入待审队列，审核结果会出现在「我的」页面里。',
+    doneRevision: '这是第 {{revision}} 版。审核员会看到它，通过后自动上线。',
+    submitAnother: '再提交一条',
+    viewMine: '查看我的提交',
+
+    errDuplicate: '这个链接已经收录过了。',
+    openExisting: '去看已有条目',
+    errAlreadyPending: '这个条目已经有一份修改在等待审核了。等审核结果出来之后再改。',
+    errNotAuthor: '这个条目不是你提交的，所以你不能修改它。',
+    errNeedVerify: '邮箱还没验证，验证之后就能提交了。',
+    errForbidden: '当前账号没有提交内容的权限。',
+  },
+  /**
+   * 审核（**通用**，M4 的日历/视频/种子会复用同一套界面）。
+   *
+   * 文案里特别注意两处，它们是审核界面最容易做错的地方：
+   *   · 驳回 vs 批准必须说清楚"线上发生了什么"（已发布条目的修改被驳回时，
+   *     老内容仍然在线上 —— 不说的话审核员会以为自己把条目撤掉了）；
+   *   · 401 和 403 的提示完全不同（去登录 / 你确实没权限），
+   *     混成一句"出错了"会让有权限的人怀疑自己掉线了。
+   */
+  review: {
+    mineBadge: '你提的',
+    selfReviewBlocked:
+      '这是你自己提交的内容，需要**另一位审核员**来批准。你可以驳回它（等于撤回）。',
+    noteFromSubmitter: '提交者给审核员的话',
+    queueTitle: '待审队列',
+    queueCount: '共 {{count}} 项待审',
+    queueEmpty: '当前没有待审内容',
+    tabAll: '全部',
+    nothingPending: '队列是空的',
+    nothingPendingHint: '没有待审内容 —— 有新提交时会出现在这里。',
+    refresh: '刷新',
+
+    isEdit: '修改',
+    isNew: '新条目',
+    unknownAuthor: '未知作者',
+    unknownTypeWarning:
+      '队列里有当前界面还不支持的类型。请刷新页面；如果仍然出现，说明前端版本落后于服务端。',
+
+    detailTitle: '审核',
+    unknownType: '这个内容类型不存在（或者打错了地址）。',
+    prevRejections: '该作者之前被驳回过 {{count}} 次。仅供参考。',
+    editExplain: '这是对已发布条目的修改 —— 线上的内容**一个字都没变**，只有批准之后才会替换。',
+    changed: '已改动',
+    showOldBody: '展开线上版本的正文',
+
+    decide: '审核决定',
+    approve: '批准并上线',
+    approving: '批准中…',
+    reject: '驳回',
+    rejecting: '驳回中…',
+    rejectReason: '驳回理由（必填）',
+    rejectPlaceholder: '写清楚需要改什么 —— 作者会原样看到这段话。',
+    rejectHint: '{{used}} / {{max}} 字。没有理由的驳回等于让作者瞎猜，他会原样再提交一次。',
+
+    approvedNotice: '已批准 r{{revision}}，内容已经上线。',
+    rejectedNotice: '已驳回 r{{revision}}。',
+    liveKept: '这个条目原本已经发布，所以线上的旧版本保留不变。',
+    alreadyHandled: '这个条目刚刚已经被另一位审核员处理了 —— 这是并发审核的正常结果，不是出错。',
+    actionFailed: '操作失败，请重试。',
+
+    needLogin: '审核需要先登录。',
+    forbidden: '你没有审核这类内容的权限。',
+    forbiddenHint: '{{name}}，你的账号当前没有审核权限。需要的话请联系管理员调整角色。',
+    forbiddenHintAnon: '这个页面需要审核权限。',
+    gone: '这个条目已经没有待审内容了 —— 可能刚刚被处理掉。',
+    backToQueue: '返回待审队列',
+    openItem: '查看条目页',
+    loadFailed: '加载失败，请稍后重试。',
+  },
+  /**
+   * 「我的提交」。
+   *
+   * 整个审核管线的闭环就在这里：审核员被强制填写的驳回理由，
+   * 唯一的读者是作者。这个页面不存在的话，那句理由写进数据库就再没有人看过。
+   */
+  mine: {
+    edit: '修改',
+    resubmit: '修改并重新提交',
+    pendingHint: '已经有另一份修改在等待审核了。等这一份出结果之后可以再改。',
+    reviewedAt: '审核于 {{date}}',
+    title: '我的提交',
+    subtitle: '你提交过的内容，以及它们现在处于哪一步。',
+    empty: '还没有提交过内容',
+    emptyHint: '看到值得收录的网站或工具，可以推荐到资源库里。',
+    loadFailed: '加载失败，请稍后重试。',
+    submitNew: '提交新内容',
+    liveRevision: '线上 r{{revision}}',
+    pendingRevision: '待审 r{{revision}}',
+    openItem: '查看条目页',
+    rejectReasonTitle: '被驳回的原因',
+  },
+  /**
+   * 编辑已有条目（M2 第二轮）。
+   *
+   * 两种进入方式，文案要能同时兼容：
+   *   · 从条目详情页点「建议修改」—— wiki 式，改的是别人的或导入的条目
+   *   · 从「我的提交」点「修改并重新提交」—— 自己被驳回的条目
+   */
+  edit: {
+    title: '修改条目',
+    subtitle: '改完之后会重新进入审核队列 —— 审核通过之前，线上仍然是现在这一版。',
+    suggestAction: '建议修改',
+    liveUnchanged:
+      '提交这个修改**不会**立刻改变页面上的内容：它会进入待审队列，审核通过之后才会替换现在的版本。',
+    /** 表单底部的提交按钮 */
+    action: '提交修改',
+    /** 详情页上的入口按钮（内容编辑 / 管理员看到的是这个词） */
+    modifyAction: '修改',
+    editorHint: '你改完可以直接在审核队列里批准这一版。',
+    busyNotice:
+      '现在有一份修改（r{{revision}}）正在等审核 —— 一条内容同时只允许一份待审修改，所以暂时不能提交新的改动。等那份出结果之后再改，或者先去审核队列看看它改了什么。',
+    busyGoReview: '去审核队列看那一份',
+    submitting: '提交中…',
+    doneTitle: '修改已提交',
+    doneSub: '这一版已经进入待审队列。审核通过后，页面上的内容才会换成它。',
+    notFound: '找不到这个条目，或者它还不是你的（未上架的条目只有作者能打开）。',
+    loadFailed: '加载失败，请稍后重试。',
+  },
+  /**
+   * 内容治理：精选 / 官方 / 下架。
+   *
+   * 这些是**编辑决定**，不是审核决定：
+   * 审核回答"这一版能不能上线"，治理回答"已经在线的这一条要不要
+   * 继续以这个姿态出现"。所以文案也要能看出这个区别 ——
+   * "下架"不是"驳回"，它不针对某一版，而是针对线上这一条。
+   */
+  moderate: {
+    title: '内容治理',
+    hide: '下架',
+    restore: '恢复上架',
+    failed: '操作失败，请重试。',
+    hiddenNote: '这条内容已经**下架**，资源库里不再显示它。要重新上架，就在这一页点「恢复上架」。',
+    showHidden: '显示已下架',
+    hiddenBadge: '已下架',
+  },
+  /**
+   * 账号管理（只有 admin）。
+   *
+   * 文案里贯穿的一件事：**每个禁用的控件都要说明为什么**。
+   * "其他管理员改不了"是一个策略决定，不是界面故障 ——
+   * 用户看到灰色选择框时必须有地方能读到这句话。
+   */
+  admin: {
+    title: '账号管理',
+    subtitle: '共 {{count}} 个账号。改角色必须填写理由，理由会进审计日志。',
+    colAccount: '账号',
+    colVerified: '邮箱已验证',
+    colCreated: '注册时间',
+    colRole: '权限组',
+    selfBadge: '我',
+    yes: '是',
+    no: '否',
+    save: '保存',
+    saving: '保存中…',
+    roleChanged: '已改为「{{role}}」',
+    reasonPlaceholder: '改角色的理由（必填）',
+    peerLocked: '其他管理员的角色不能改 —— 管理员之间是平级的。',
+    lockedOwner: '涉及 owner 的角色只能在服务器上改（admin.js role）。',
+    lockedSelf: '不能降级自己 —— 那样会把自己关在管理界面外面。',
+    lockedPromote: '不能把别人提升为管理员。',
+    lockedPeer: '其他管理员的角色不能改 —— 管理员之间是平级的。',
+    lockedGeneric: '这一行的角色不能改。',
+    lastAdminNote:
+      '如果你是自己账号上的最后一个管理员，把自己降级会被拒绝：那样就没有人能再改角色了。真要那样做，用服务器上的 admin.js role 命令。',
+    forbidden: '你没有管理账号的权限。',
+    loadFailed: '加载失败，请稍后重试。',
+    errPeer: '不能修改其他管理员的角色。',
+    errLastAdmin: '不能降级最后一个管理员，否则没人能再改角色了。',
+    errReason: '必须填写改角色的理由。',
+    errFailed: '操作失败，请重试。',
+  },
+  /**
+   * 个人标记：收藏 / 备注 / 评分。
+   *
+   * ⚠️ 文案里必须说清**备注是私有的** —— 不说的话用户会以为那是公开评论，
+   *    于是要么不敢写，要么把它当公共内容写，两种都不对。
+   */
+  marks: {
+    favorite: '收藏',
+    favorited: '已收藏',
+    myRating: '我的评分',
+    rateN: '打 {{n}} 分',
+    clearRating: '取消评分',
+    noRating: '暂无评分',
+    ratingCount: '{{count}} 人评分',
+    ratingTitle: '平均 {{avg}} 分，共 {{count}} 人评分',
+    note: '我的备注（只有你自己看得到）',
+    notePlaceholder: '例如：这个工具在 1.16.1 上要注意什么、我为什么收藏它。',
+    noteHint: '{{used}} 字。这段文字**不会**出现在条目页上，也不会被别人看到。',
+    noteLabel: '我的备注',
+    saveNote: '保存备注',
+    noteSaved: '备注已保存',
+    saving: '保存中…',
+    saved: '已保存',
+    saveFailed: '保存失败，请重试。',
+    needLogin: '登录之后可以收藏、评分，并写下只有自己看得到的备注。',
+    favoritesTitle: '我的收藏',
+    favoritesSubtitle: '你收藏过的条目，以及你写下的备注和评分。',
+    noFavorites: '还没有收藏任何条目',
+    noFavoritesHint: '在条目页上点「收藏」，之后就能在这里回看 —— 顺便记一句为什么收它。',
+    gone: '这条内容当前不在站上',
+    loadFailed: '加载失败，请稍后重试。',
+  },
+  /**
+   * 日历（M4）。
+   *
+   * 三条约束贯穿整个版块的文案：
+   *
+   *   1. **时间必须和时区名一起出现**（Q2：存"当地时间 + 时区名"，显示时转本地）。
+   *      单独一个 `20:00` 是没有意义的信息 —— 那是哪个 20:00？
+   *      补上时区名之后，不在那个时区的用户也能自己换算。
+   *
+   *   2. **「已结束」是算出来的，不是状态**（见 shared/calendar.ts 的 isEventPast）。
+   *      所以它长在事件上，而不是一个可以被审批改变的状态值 ——
+   *      文案不能把它写得像是谁把它设成这样的。
+   *
+   *   3. **过去的事件仍然进审核队列**（Q4c）。见 pastBadge / pastExplain：
+   *      审核员必须被告知"这不是填错了"。
+   */
+  calendar: {
+    // ---- 枚举。界面上永远显示这些，不显示 RANKED_MILESTONE / QUARTERFINAL 这种原始值 ----
+    tag: {
+      TOURNAMENT: '赛事',
+      COMMUNITY: '社区活动',
+      RANKED_MILESTONE: '排位节点',
+    },
+    stage: {
+      QUALIFIER: '资格赛',
+      ROUND: '正赛轮次',
+      QUARTERFINAL: '四分之一决赛',
+      SEMIFINAL: '半决赛',
+      THIRD_PLACE: '季军赛',
+      FINAL: '决赛',
+    },
+
+    yes: '是',
+    no: '否',
+
+    /**
+     * ★ Q4c：过去的事件也进审核队列，所以审核员会**真的遇到**已经结束的条目。
+     *
+     * 这两句话要同时说清两件事：这是正常的（不是填错了），以及
+     * 「时间在过去」本身不构成收录或不收录的理由 —— 否则审核员会
+     * 默认驳回一切历史条目，而历史赛事条目恰恰是有价值的那一类。
+     */
+    pastBadge: '已结束',
+    pastExplain:
+      '这个事件的时间已经过去了。它仍然进入审核队列，因为「时间在过去」本身不是收录或不收录的理由 —— 历史赛事条目同样有价值。请就内容本身判断。',
+
+    /** 审核详情里的字段标签。 */
+    fields: {
+      title: '标题',
+      titleEn: '英文标题',
+      startsAt: '开始时间（当地时间）',
+      timezone: '时区',
+      endsAt: '结束时间（当地时间）',
+      endsTz: '结束时区',
+      allDay: '整天事件',
+      tags: '标签',
+      stage: '轮次',
+      location: '地点',
+      url: '相关链接',
+      lang: '语言',
+      description: '事件说明',
+    },
+
+    // -------------------------------------------------------------------------
+    // 列表页
+    // -------------------------------------------------------------------------
+    submitAction: '提交活动',
+    listSubtitle:
+      '赛事、社区活动和排位赛季节点。时间按主办方公布的那个时区保存 —— 所以每一条都会带出它的时区名。',
+    filterTagsLabel: '想看哪几类',
+    filterTagsHint: '再点一次可以关掉某一类。',
+    filterTagsLocked:
+      '至少要留一类。服务端表达不了「一类都不看」—— 关到一个不剩时它会把全部内容返回，那样界面就是在骗你。',
+    showPast: '显示已结束',
+    resultCount: '共 {{count}} 个活动',
+    empty: '当前筛选条件下没有活动',
+    emptyHint: '把「显示已结束」打开，或者重新选上刚才关掉的标签。',
+    loadFailed: '加载失败，请稍后重试。',
+    backToList: '返回日历',
+    until: '至 {{time}}',
+    allDayBadge: '整天',
+    yourTime: '你那边是 {{time}}（{{tz}}）',
+
+    // -------------------------------------------------------------------------
+    // ICS 订阅
+    //
+    // ⚠️ M4 的验收标准里有一条就是它：「订阅的 ICS 能在手机自带日历里看到」。
+    //    所以这里的每一句都在回答"我该在哪一步把这个链接粘进去"，
+    //    而不是"这个文件可以下载"。
+    // -------------------------------------------------------------------------
+    icsTitle: '订阅日历',
+    icsWhy:
+      '订阅之后日历会跟着自动更新。下载下来的 .ics 只是一份一次性快照 —— 存进手机那一刻是什么样，以后就一直是那样，新批准的赛事不会自己出现。',
+    icsUrlLabel: '订阅地址（复制它，粘到手机的日历里）',
+    icsCopy: '复制链接',
+    icsCopied: '已复制',
+    icsCopiedHint: '已经复制好了。接下来把它粘进日历客户端的「订阅」或「通过网址添加」里。',
+    icsCopyManual: '没能自动复制。链接已经选中了，按 Ctrl+C（手机上长按）把它复制走。',
+    icsWebcal: '直接交给系统日历',
+    icsWebcalHint: 'iOS / macOS 上有效，其它系统请用上面的复制方式。',
+    icsNoOrigin: '当前环境拿不到站点地址，所以生成不出能粘贴的订阅链接。请在正式站点上打开这一页。',
+    icsIosTitle: 'iPhone / iPad',
+    icsIos: '设置 → 日历 → 账户 → 添加账户 → 其他 → 添加已订阅的日历 → 把链接粘进「服务器」→ 存储',
+    icsAndroidTitle: 'Android',
+    icsAndroid:
+      '系统自带的日历没有订阅入口，要用网页版 Google 日历：其他日历 → 通过网址添加 → 粘贴链接',
+    icsDesktopTitle: '电脑',
+    icsDesktop:
+      'macOS 日历：文件 → 新建日历订阅。Outlook 或 Google 日历网页版：添加日历 → 通过网址订阅。',
+    icsRefresh: '日历客户端通常隔几小时到一天才拉一次，所以刚批准的活动不会马上出现在手机上。',
+    icsPublishedOnly: '只有已发布的活动会进订阅。待审和被驳回的不会 —— 审核通过之后它会自动出现。',
+
+    // -------------------------------------------------------------------------
+    // 详情页
+    // -------------------------------------------------------------------------
+    openLink: '打开相关链接',
+    infoTitle: '活动信息',
+    author: '提交者',
+    updatedAt: '最后更新',
+    infoId: '编号',
+    pastNotice: '这个活动已经结束了。下面是它当时的信息，保留下来是因为它仍然有参考价值。',
+    pendingNotice:
+      '这条有一版改动（r{{revision}}）正在等审核。审核通过之前，页面上仍然是现在这一版。',
+    notPublished: '这个活动还没上架',
+    notPublishedHint:
+      '可能是还在等审核、被驳回了，也可能这个地址根本不对（这两种情况对访客都显示成「不存在」）。如果是你提交的，可以从编辑页打开它。',
+    openEditor: '打开编辑页',
+    openItem: '查看活动页',
+
+    // -------------------------------------------------------------------------
+    // 提交 / 修改
+    // -------------------------------------------------------------------------
+    submitTitle: '提交活动',
+    submitSubtitle: '填主办方公布的那个时间，连同它的时区一起填 —— 别人才能正确换算到自己那边。',
+    submitFlowNote:
+      '提交后会进入审核队列。审核通过之前，这个活动不会出现在日历里，也不会出现在 ICS 订阅里。',
+    doneTitle: '已提交，等待审核',
+    doneSub: '审核通过之后，它会出现在日历列表和 ICS 订阅里。',
+    submitAnother: '再提交一个',
+    editTitle: '修改活动',
+    editSubtitle: '改完之后会重新进入审核队列 —— 审核通过之前，线上仍然是现在这一版。',
+    editAction: '提交修改',
+    editLiveUnchanged:
+      '提交这个修改不会立刻改变线上内容：它会进入待审队列，审核通过之后才会替换现在的版本。',
+    editDoneTitle: '修改已提交',
+    editDoneSub:
+      '这一版已经进入待审队列。审核通过之前线上仍然是旧版 —— 页面上不会立刻看到你的改动。',
+    editBusyNotice:
+      '现在有一份修改（r{{revision}}）正在等审核 —— 一条活动同时只允许一份待审修改，所以暂时不能提交新的改动。等那份出结果之后再改。',
+    editBusyWhat: '待审的那一版',
+    editNotFound: '找不到这个活动，或者它还不是你的（未上架的活动只有作者能打开）。',
+    reviewNote: '提交后进入待审队列，通过后自动上线。',
+
+    // ---- 表单字段的提示 ----
+    hintTitle: '照抄赛事公告上的名字，中文或原文都可以。',
+    titlePlaceholder: '例如：MCSR Ranked 第 5 赛季 季后赛',
+    hintTitleEn: '可选。不会自动翻译 —— 留空时英文界面会直接显示上面那个标题。',
+    titleEnPlaceholder: '例如：MCSR Ranked Season 5 Playoffs',
+    hintAllDay: '整天事件只需要选日期 —— 时间固定为 00:00，日期选择器里也填不了钟点。',
+    hintStartsAt: '填主办方公布的那个时间，「不是你所在时区的时间」。',
+    hintTimezone:
+      'IANA 时区名，例如 Asia/Shanghai。填错会让整场赛事偏移几个小时，而且看起来完全正常。',
+    hintEndsTz: '和开始用的时区不同才需要改。',
+    hintEndsAt: '很多赛事只公布开始时间，所以可以留空。留空时它在订阅里是一个时间点。',
+    hintEndsAtAllDay:
+      '结束日期指的是最后一天。只占一天的活动请留空 —— 填成和开始同一天会被判成时间反了。',
+    hintLocation: '线下赛的场馆，或者线上赛的平台。',
+    locationPlaceholder: '例如：线上 / 上海',
+    hintUrl: '赛事公告、报名页或者直播间的链接。',
+    hintTags: '至少选一个。一个标签都没有的活动，在按标签筛选的界面上等于不可见。',
+    hintStage: '可选。它只是一个标签，不做对阵层级 —— 横跨一周的连续赛事可以直接不填。',
+    stageNone: '不填',
+    descriptionPlaceholder: '支持 Markdown。写清楚这是什么比赛、怎么参加、有什么要注意的。',
+    hintDescription: '{{used}} / {{max}} 字。',
+    notePlaceholder: '例如：时间取自主办方公告；这是社区自己办的比赛。',
+    hintNote: '{{used}} / {{max}} 字。这段话只有审核员看得到，不会出现在活动页面上。',
+    tzOffsetHint: '这个时区现在是 {{offset}}。',
+
+    // ---- 表单校验 ----
+    //
+    // ⚠️ 这些话**不来自 schema**。schema 的消息是中文写死的，
+    //    直接显示它会在英文界面上冒出一句中文，而那只在出错时才看得到。
+    //    映射见 components/CalendarForm.tsx 的 issueText。
+    errTitleRequired: '标题不能为空。',
+    errTitleTooLong: '标题最多 {{max}} 字。',
+    errDescTooLong: '说明最多 {{max}} 字。',
+    errLocationTooLong: '地点最多 {{max}} 字。',
+    errUrlTooLong: '链接太长了。',
+    errNoteTooLong: '给审核员的话最多 {{max}} 字。',
+    errTagsMin: '至少选一个标签。',
+    errTzTooLong: '时区名太长了。',
+    errTzRequired: '请填写时区名（例如 Asia/Shanghai）。',
+    errStartRequired: '请填写开始时间。',
+    errInvalidTz: '这个时区名无效 —— 检查一下拼写（例如 Asia/Shanghai）。',
+    errEndNeedsBoth: '结束时间需要同时给出时间和时区。',
+    errWallClock: '时间格式应为 2026-08-30T20:00。',
+    errAllDayTime: '整天事件的时间必须是 00:00。',
+    errEndBeforeStart:
+      '结束时间必须晚于开始时间。判据是换算成 UTC 之后的时刻 —— 跨时区时钟点会看反。',
+    errAllDayEndOrder:
+      '整天事件的结束日期要晚于开始日期，而且它指的是最后一天。只占一天的话请把结束日期留空。',
+    errGeneric: '有字段没通过校验，检查一下上面标出来的地方。',
+    errAlreadyPending: '已经有一份修改在等审核了 —— 一条活动同时只允许一份待审修改。',
+  },
+  /**
+   * 视频墙（M4）。
+   *
+   * Q6：**贴了就可见，不审核** —— 这一点在文案里要看得出来。
+   * 用户不该担心"我贴的东西要不要等审核"，也不该在贴完之后去找"待审核"状态。
+   *
+   * ⚠️ Q21 的另一个要点：这是**内容型视频**（教程/集锦/比赛录像），
+   *    不是直播 VOD。文案不要出现"直播""回放"这类词 —— 那会把用户引导去贴
+   *    一场 Twitch 直播链接，而 v1 要的是 B站/YouTube 的固定视频。
+   */
+  videos: {
+    // ---- 页面骨架 ----
+    title: '视频墙',
+    subtitle: '社区贴的 B站 / YouTube 视频 —— 教程、集锦、比赛录像。不需要登录就能看。',
+    pasteAction: '贴个视频',
+    viewAll: '视频墙',
+    viewMine: '我贴的',
+
+    // ---- 筛选 ----
+    allPlatforms: '全部平台',
+    platformBilibili: 'B站',
+    platformYoutube: 'YouTube',
+    platformTwitch: 'Twitch',
+    authorFilter: '只看 {{name}}',
+    clearAuthor: '取消作者筛选',
+    clearFilters: '清除筛选',
+    resultCount: '共 {{count}} 条',
+    resultCountFiltered: '筛选出 {{count}} 条',
+
+    // ---- 列表状态 ----
+    noResults: '墙上还没有视频',
+    noResultsHint: '换个筛选条件，或者贴一个上去 —— 贴完立刻可见。',
+    loadFailed: '加载失败',
+    page: '第 {{page}} / {{total}} 页',
+    prevPage: '上一页',
+    nextPage: '下一页',
+
+    // ---- 嵌入 ----
+    play: '播放',
+    playHint: '点一下才加载第三方播放器',
+    embedUnavailable: '拿不到页面域名，这个平台没法嵌入播放。',
+    openOriginal: '去原站看',
+    startFrom: '从 {{time}} 开始',
+    startIgnoredShort: '该平台不支持跳转，会从 0 开始',
+
+    // ---- 表单 ----
+    formTitle: '贴一个视频',
+    url: '视频链接',
+    urlPlaceholder: '粘贴某一个视频的播放页链接',
+    hintUrl: 'B站 / YouTube / Twitch 的**单个视频**链接。频道、播放列表、合集首页都读不出视频 ID。',
+    recognized: '已识别 {{platform}} · {{id}}',
+    notRecognized: '还读不出视频 ID',
+    titleLabel: '标题',
+    titlePlaceholder: '这条视频讲什么',
+    hintTitle: '标题自己填 —— 我们不去抓平台上的元数据，所以链接不会自动带出标题。',
+    startOffset: '起始时间（可选）',
+    startOffsetPlaceholder: '90 / 1:30 / 1:02:33',
+    hintStartOffset: '从这个时间点开始播放。填 90、1:30、1:02:33 都可以。',
+    hintStartOffsetUnsupported: '该平台不支持跳转，这个值会被保存但播放时不会生效。',
+    errStartOffset: '时间格式不对：可以填 90、1:30 或 1:02:33，冒号后面的数字不能超过 59。',
+    errUrlRequired: '请粘贴视频链接。',
+    errTitleRequired: '标题不能为空。',
+    action: '贴到墙上',
+    submitting: '正在贴…',
+    noReview: '贴完立刻可见：视频不审核，没有待审这一档。',
+    doneTitle: '已经贴在墙上了',
+    doneNote: '没有审核这一步，它现在就在视频墙上。',
+    doneStartIgnored: '起始时间存下来了，但这个平台播放时不会跳转。',
+    submitAnother: '再贴一个',
+    viewWall: '去看视频墙',
+
+    // ---- 错误 ----
+    errExistsVisible: '这个视频已经在墙上了。',
+    errExistsHidden: '这个视频被隐藏过，墙上现在看不到它。',
+    errExistsMine: '这是你自己之前贴的那一条。',
+    mineNeedLogin: '看「我贴的」需要先登录。看视频墙不需要。',
+    gotoMine: '去我贴的看看',
+
+    // ---- 卡片与事后手段 ----
+    postedAt: '贴于 {{date}}',
+    mineBadge: '我贴的',
+    hiddenBadge: '已隐藏',
+    delete: '删除',
+    hide: '隐藏',
+    restore: '恢复',
+    busyDeleting: '正在删除…',
+    busyHiding: '正在隐藏…',
+    busyRestoring: '正在恢复…',
+    confirmDelete: '删掉之后这条记录就没了，不能撤销。确定吗？',
+    okDeleted: '已删除。',
+    okDeleteNoop: '它已经不在了 —— 你要的结果已经达成。',
+    okHidden: '已隐藏。墙上不再显示它，作者自己还看得到。',
+    okHideNoop: '它本来就是隐藏的。',
+    okRestored: '已恢复。',
+    okRestoreNoop: '它本来就是可见的。',
+    actionFailed: '操作失败',
+
+    // ---- 「我贴的」 ----
+    mineEmpty: '你还没贴过视频。',
+    mineEmptyHint: '贴一个上去 —— 贴完立刻可见。',
+    mineHiddenNote: '被隐藏的视频只有你自己在这里看得见，墙上没有它们。',
+  },
+  /**
+   * Ranked Seeds 检索页（M4）。
+   *
+   * ⚠️ 这个版块的文案里有两个数字必须一直是**真的**：
+   *   · 「上游只覆盖约 80% 的历史比赛」—— 所以"查不到"是常态，不是错误
+   *   · 「当前条件命中 N 条」—— 来自 availableCounts，**不要**用别的数去替代
+   *     （尤其不要用"结果条数"，因为我们一次只返回一条随机结果）
+   */
+  seedsPage: {
+    /*
+     * ---------------------------------------------------------------------------
+     * 为什么这一节里**没有**「数据可能有延迟」这类提示
+     * ---------------------------------------------------------------------------
+     * 上游文档的 v2.html 写着 `/seedinfo`「数据可能有数天的延迟」，但用户
+     * 2026-09-12 明确更正：两个端点实际都是实时的，是文档没跟上
+     * （见 docs/m4-decisions.md Q18 与 docs/ranked-seeds-api.md §3）。
+     *
+     * 假提示比没有提示更糟：用户会因此不去信任一个其实准确的数字，
+     * 而那句话还得有人一直维护。**不要再加回来。**
+     */
+    title: '排位种子检索',
+    subtitle:
+      '按结构、变种和完赛时间从上游的排位种子库里随机抽一条，或者按比赛 ID 查某一场的种子值。',
+
+    /**
+     * ⚠️ 「约 80%」这个数字必须一直是真的（上游自述）。它存在的意义是：
+     *    按比赛 ID 查不到时，用户要能立刻明白那是**常态**而不是我们坏了。
+     */
+    coverage: '上游只收录约 80% 的历史比赛，所以「查不到某一场」是常态，不是故障。',
+
+    // ---- 检索 ----
+    searchTitle: '按条件随机抽一条',
+    searchHint: '条件只用来挑种子，不会改变种子本身。想要完全随机，就一条条件都别选。',
+    randomAction: '随机一条',
+    searchAction: '按条件随机一条',
+    searching: '查询中…',
+    /*
+     * 这句是**行为说明**，不是装饰：界面在替用户选端点
+     * （无条件 → /random，有条件 → /search），用户至少该知道这件事发生过。
+     */
+    filterNote: '没有选任何条件时走上游的「随机一条」，选了条件之后自动改用检索接口。',
+
+    filterOverworld: '主世界结构',
+    filterNether: '下界堡垒遗迹',
+    filterAny: '不限',
+
+    variations: '结构变种',
+    variationsHint: '先选一组，再在里面勾具体词条。多选表示「同时满足」。',
+    variationsExpand: '展开',
+    variationsCollapse: '收起',
+    variationsClear: '清空变种',
+    variationsSelected: '已选 {{count}} 条',
+    /**
+     * ⚠️ 词条表的**来源**要对用户说实话。
+     *
+     * 上游没有「列出全部词条」的接口，所以这份表 = 上游文档里那棵树
+     * + 我们真的在结果里见过的词条。两句话都要说，否则用户会以为
+     * 这个列表是完整的（它不是，上游随时会加新的）。
+     */
+    variationsSource: '词条来自上游文档的分类树，并会自动补上我们在结果里实际见过的词条。',
+
+    completion: '完赛时间上限',
+    completionPlaceholder: '分:秒，例如 2:35',
+    completionHint: '只返回排位模式、且完赛时间不超过它的种子。留空表示不限。',
+
+    hits: '当前条件命中 {{count}} 条',
+    /**
+     * `availableCounts` 是 number | null。**取不到时不能显示 0** ——
+     * 0 的意思是「一条都没有」，而这时我们手里明明拿着一条种子。
+     */
+    hitsUnknown: '上游没有给出命中数',
+
+    // ---- 结果 ----
+    resultTitle: '结果',
+    resultEmpty: '还没有结果。点上面的按钮抽一条。',
+    /**
+     * ⚠️ 条件改过之后，卡片上那条种子**不再对应**当前的条件。
+     *
+     * 不说的话，用户会以为它满足现在的筛选 —— 界面上没有任何东西是错的，
+     * 错的是"这条结果属于哪一次查询"没有被记下来。他拿着一条不符合预期的
+     * 种子去开世界，然后几乎不可能查出真因。
+     */
+    resultStale: '上面这条是**上一次**的条件抽出来的。条件改过了，再点一次按钮才会按新条件重抽。',
+    matchIdLabel: '比赛 ID',
+    matchDateLabel: '比赛时间',
+    matchDateUnknown: '上游没有给出这场比赛的时间',
+    overworldSeed: '主世界',
+    netherSeed: '下界',
+    theEndSeed: '末地',
+    theEndMissing: '上游没有给出末地种子',
+    /**
+     * ⚠️ 复制按钮不是锦上添花：种子是 19 位数字（`7304888896886165976`），
+     *    手抄进 Minecraft 不现实，而抄错一位就会生成一个完全不同的世界。
+     */
+    copy: '复制',
+    copied: '已复制',
+    copyFailed: '复制失败，请手动选中数字再复制',
+    viewInfo: '看这条的结构与变种',
+    loading: '读取中…',
+
+    infoTitle: '结构与变种',
+    infoOverworld: '主世界结构',
+    infoNether: '下界堡垒遗迹',
+    infoEndTowers: '末地塔',
+    infoVariations: '变种词条',
+    infoNone: '无',
+    infoNoVariations: '这条没有变种词条',
+    endTowersHint: '末地塔的 Y 坐标（可能有多座）',
+    /**
+     * ⚠️ 变种词条按**原文**显示，不做任何大写转换。
+     *
+     * 它们是命名空间 id（`biome:structure:plains`），大写之后就和上游
+     * 对不上了 —— 而界面上看起来完全正常，只是搜不到东西。
+     * 见 packages/shared/src/seed.ts 里 SeedInfo.variations 的说明。
+     */
+    variationsRawNote: '下面的词条按上游原文显示，大小写是有意义的。',
+
+    // ---- 按比赛 ID 查 ----
+    lookupTitle: '按比赛 ID 查',
+    lookupHint: '查这场比赛实际生成的那三个种子值。同一个 ID 用同样的值，永远不会变。',
+    lookupAction: '查询',
+    lookupBusy: '查询中…',
+    matchIdPlaceholder: '例如 3650001',
+    matchIdRange: '种子数据的比赛 ID 从 {{min}} 起。',
+
+    /**
+     * ★ 404 是**常态**，不是错误（上游只覆盖约 80%）。
+     *
+     * 所以这一组文案的任务是：说清「不是你的错、也不是我们坏了」，
+     * 并且给出**下一步**（补录）—— 这正是 Q15 允许暴露写接口的理由。
+     */
+    notFoundTitle: '这条不在上游的种子库里',
+    notFoundBody: '上游只收录约 80% 的历史比赛，这一条正好在那 20% 里。',
+    notFoundInfoHint: '「结构与变种」的下界比种子值低（从 {{min}} 起），可以先试试那个。',
+    infoOnlyAction: '只查结构与变种',
+
+    // ---- 检索失败 ----
+    /*
+     * ⚠️ `seed_not_found` 和 `no_match` 共用同一个错误码，靠 `reason` 区分，
+     *    而这两种情况的**下一步完全不同**：
+     *      · seed_not_found（没有 reason）→ 这场比赛不在库里 → 去补录
+     *      · no_match                    → 条件太窄了        → 放宽条件
+     *    两句文案写反的话，用户会拿着一场比赛去补录一条只是条件太窄的查询。
+     */
+    errNoMatch: '没有一条种子同时满足这些条件',
+    errNoMatchHint: '放宽几个条件再试：去掉一两个变种，或者取消完赛时间上限。',
+    errUnavailable: '种子服务暂时不可用',
+    /**
+     * ⚠️ 502 说的是「我们的上游坏了」，不是「我们在维护」，所以**不承诺恢复时间** ——
+     *    编一个时间等于承诺一件我们做不到的事（服务端注释里也是这个理由）。
+     */
+    errUnavailableHint: '这是上游那边的问题，不是你的操作有误。过一会儿再试。',
+    errRate: '请求太频繁，请 {{seconds}} 秒后再试',
+    errGeneric: '查询失败了',
+    /**
+     * 这一条理论上**不可能**出现：它是「界面把筛选条件发到了 /random」的信号。
+     * 单独给它一句话，是因为它一旦出现就说明是我们接错了端点，
+     * 而兜底文案会把一个真 bug 说成「服务出错了」，让它多活很久。
+     */
+    errUseSearchEndpoint: '界面把筛选条件发到了错误的接口（这是我们的问题），请反馈。',
+
+    errMatchIdFormat: '比赛 ID 只能是数字',
+    errMatchIdTooSmall: '种子数据的比赛 ID 从 {{min}} 起，比它更早的比赛没有种子值。',
+
+    errBadOverworld: '主世界结构的取值不对',
+    errBadNether: '下界结构的取值不对',
+    errFilterTooLong: '变种条件太长了（超过 512 个字符）',
+    errFilterBadChars: '变种条件里有非法字符',
+    /**
+     * `end_spawn:*` 上游有 bug（Q17），所以它**不出现在词条里**。
+     * 这句话是给「有人手动构造了 URL」准备的 —— 它同时要说清后半句：
+     * 这个变种**存在**，只是不能拿来筛。
+     */
+    errEndSpawnUnsupported: 'end_spawn 这一组上游有 bug，不能用来筛选（它会照常出现在结果里）。',
+    errCompletionFormat: '格式要是「分:秒」，例如 2:35',
+    errCompletionSeconds: '秒只能是 00–59。超过 59 请进位到分钟（1:75 应写成 2:15）。',
+    errCompletionTooLong: '最长 24 小时。',
+    errBadCompletion: '完赛时间上限不是一个合法的毫秒值',
+
+    // ---- 补录（写接口，Q15）----
+    saveTitle: '补录一条',
+    saveIntro: '把一场比赛的种子值录进上游的数据库。这是补上那 20% 覆盖的唯一办法。',
+    /**
+     * ★ 这句话必须显眼，而且必须在**按钮上面**。
+     *
+     * 这是全站唯一一处「用户的点击会改到别人的生产数据」的地方。
+     * 用户有权在按下去之前知道这件事 —— 而不是事后从别处听说。
+     */
+    saveWarning:
+      '注意：这个按钮会**直接写进上游运营者的数据库**，不是写进我们的站。全站只有这一处会改到别人的生产数据，所以它需要登录、需要验证邮箱，并且有每小时 10 次的配额。',
+
+    saveNeedLogin: '补录要写进上游的数据库，所以需要先登录。',
+    saveNeedVerify: '补录需要先验证邮箱，否则谁都能往上游写记录。',
+    saveNeedCapability: '你的账号目前没有补录权限。',
+    saveNeedLoginAction: '去登录',
+    saveNeedVerifyAction: '去验证邮箱',
+
+    saveMatchId: '比赛 ID',
+    saveOverworldSeed: '主世界种子',
+    saveNetherSeed: '下界种子',
+    saveTheEndSeed: '末地种子',
+    saveTheEndHint: '可选。留空就等于不提供这个字段。',
+    saveMatchDate: '比赛时间',
+    saveMatchDateHint: '可选。ISO-8601 或毫秒时间戳都行（上游 schema 收字符串）。',
+    /**
+     * ⚠️ 种子输入框必须是**文本框**（inputMode="text"），不是数字框。
+     *
+     * `type="number"` 在大整数上会出问题，而且它的失败形式是**静默**的：
+     * `Number('7304888896886165976')` 不报错，只是给你一个末尾变成 000 的种子。
+     * 见 packages/shared/src/seed.ts 的文件头。
+     */
+    saveSeedHint: '64 位整数，可以是负数。粘贴时带空格没关系，我们会去掉。',
+
+    saveAction: '写入上游数据库',
+    saveBusy: '写入中…',
+    saveCancel: '取消',
+    saveDone: '已写入：比赛 {{matchId}}',
+    /**
+     * ⚠️ 配额记的是**成功写入**，不是尝试次数。
+     *
+     * 这条不寻常到值得写进界面：否则用户填错几次之后被锁一小时，
+     * 会以为是自己填错才被锁的 —— 而真相恰好相反。
+     */
+    saveQuotaNote:
+      '配额是每位用户每小时 10 次**成功写入**。填错字段不会消耗配额，所以校验没过的提交不会让你被限流。',
+
+    saveErrExists: '这条已经录过了',
+    saveErrExistsHint: '上游里已经有这个比赛 ID 了，不用再录一遍。直接去查它就行。',
+    saveErrDisabled: '我们这边暂时关掉了补录',
+    /**
+     * ⚠️ 503 是运维开关（`MCSR_SEED_WRITE_DISABLED`），**不是**用户的权限问题。
+     *    服务端特意不给 Retry-After —— 我们不知道什么时候会重开。
+     */
+    saveErrDisabledHint:
+      '这是运维开关，不是你的账号问题。我们也不知道什么时候会重开，所以不给恢复时间。',
+    saveErrBody: '请求体格式不对（这是我们的问题），请反馈。',
+    saveErrMatchId: '需要 {{min}} 及以上的比赛 ID',
+    saveErrOverworldSeed: '不是合法的种子：需要 64 位整数',
+    saveErrNetherSeed: '不是合法的种子：需要 64 位整数',
+    saveErrTheEndSeed: '不是合法的种子：需要 64 位整数，或者留空',
+    saveErrMatchDate: '时间格式不对：ISO-8601 或毫秒时间戳',
+    /**
+     * ⚠️ 兜底要说清「我们**没拿到**是哪个字段」，而不是假装知道。
+     *
+     * 服务端的 400 会带一个机器可读的 `reason`（见 routes/seeds.ts 的 invalidInput），
+     * 但前端目前拿不到它 —— 见 lib/api.ts 的 ApiError（构造器里没有 reason）。
+     * 在那条路打通之前，这句话是**如实**的描述，而不是一句含糊的通用错误。
+     */
+    saveErrUnknownField: '服务端说有一个字段不合法，但我们没拿到是哪一个。请检查上面填的几个值。',
+
+    // ---- 社区种子分享（Q7/Q8：先留空）----
+    /**
+     * ★ 这块要读起来像「还没做」，不是「坏了」。
+     *
+     * 三句话各干一件事：说明要做什么、说明为什么现在没有、明确说它不是故障。
+     * **不放任何按钮** —— 一个点不动的按钮比一块说明文字更让人困惑。
+     */
+    communityTitle: '社区种子分享 · 即将开放',
+    communityBody: 'RSG / SSG 这类由社区自己提交、固定模板的种子，按计划放在后面做。',
+    communityWhy:
+      '这一版先把「按条件检索上游已有的排位种子」做扎实 —— 它背后是约 300 万条真实数据。社区分享是另一套东西：要自己存内容、自己审、自己负责长期有效。',
+    communityNote: '这里不是坏了，是还没做。上线时这块会出现浏览与提交入口。',
+
+    // ---- 分组名与结构名 ----
+    /**
+     * ⚠️ 分组名是一张**映射表**，不是一份分组清单。
+     *
+     * 真清单来自 `groupVariations()` 对实际词条的分组（见 shared/seed.ts）——
+     * 上游加了新分组，它会自己冒出来，只是没有中文名，于是回退显示原始
+     * 分组名。**不要**在这里补一个「全部合法分组」的数组：
+     * 那样上游加分组时，它会静默地从界面上消失。
+     */
+    group: {
+      biome: '生物群系',
+      chest: '箱子战利品',
+      type: '结构形态',
+      bastion: '堡垒',
+      end_tower: '末地塔',
+    },
+    /**
+     * 结构名 —— 取值是**大写**的（自有库与上游 `seedinfo` 都是大写，
+     * 只有发往上游的筛选参数是小写，那个转换在服务端做）。
+     * 表里没有的取值回退显示原始英文名，不显示空白。
+     */
+    structure: {
+      VILLAGE: '村庄',
+      DESERT_TEMPLE: '沙漠神殿',
+      RUINED_PORTAL: '废弃传送门',
+      SHIPWRECK: '沉船',
+      BURIED_TREASURE: '埋藏的宝藏',
+      JUNGLE_TEMPLE: '丛林神庙',
+      BRIDGE: '桥',
+      HOUSING: '居住区',
+      STABLES: '疣猪兽棚',
+      TREASURE: '藏宝室',
+    },
   },
 };
 

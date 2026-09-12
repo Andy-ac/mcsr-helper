@@ -1,9 +1,11 @@
 import { DEFAULT_PAGE_SIZE, type ResourceQuery } from '@mcsr/shared/resources';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { ResourceCard } from '@/components/ResourceCard';
 import { fetchResources, fetchTags } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { useCan } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 /** 子 tab：全部 / 网站 / 工具。新增 kind 时在这里加一条即可。 */
@@ -23,6 +25,8 @@ const TABS = [
 export function ResourceList() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
+  // 只为了决定"提交"按钮显不显示 —— 浏览本身不需要登录
+  const auth = useAuth();
 
   const query: Partial<ResourceQuery> = {
     q: params.get('q') ?? undefined,
@@ -58,8 +62,22 @@ export function ResourceList() {
     return () => globalThis.clearTimeout(timer);
   }, [searchInput, query.q, setParams]);
 
+  /*
+   * 「显示已下架」—— 只有有下架权的人看得到这个开关。
+   *
+   * ⚠️ 它存在的理由是：下架之后条目就从列表里消失了，没有这个开关的话
+   *    编辑者就**再也找不到它**，也就无法恢复。那不是"下架"，是一条单向的路。
+   *    服务端会再判一次权限（客户端说了不算），这里只是"想不想看"。
+   */
+  const canModerate = useCan('resource.moderate');
+  const [showHidden, setShowHidden] = useState(false);
+  const includeHidden = canModerate && showHidden;
+
   const listQuery = JSON.stringify(query);
-  const list = useAsync((signal) => fetchResources(query, signal), [listQuery]);
+  const list = useAsync(
+    (signal) => fetchResources(query, signal, includeHidden),
+    [listQuery, includeHidden],
+  );
   const tags = useAsync((signal) => fetchTags(signal), []);
 
   const activeTabKey = query.kind ?? 'all';
@@ -88,7 +106,22 @@ export function ResourceList() {
   return (
     <>
       <header className="pagehead">
-        <h1 className="pagehead__title">{t('resources.title')}</h1>
+        <div className="pagehead__row">
+          <h1 className="pagehead__title">{t('resources.title')}</h1>
+          {/*
+            「提交」按钮长在资源库里，而不是侧边栏。
+            ⚠️ 它是**这个版块的动作**：用户是"在资源库里看到缺了什么"才想提交的，
+               所以入口应该在他看内容的地方，而不是在导航里多一个全局条目。
+               （导航是"去哪儿"，提交是"在这儿做一件事"。）
+            仅登录后可见：没登录的人点进去只会被弹回来，
+            而"看得见、点不动"比"看不见"更让人困惑。
+          */}
+          {auth.user ? (
+            <Link className="cta pagehead__action" to="/resources/submit">
+              + {t('resources.submitAction')}
+            </Link>
+          ) : null}
+        </div>
         <p className="pagehead__sub">{t('resources.subtitle')}</p>
       </header>
 
@@ -208,11 +241,30 @@ export function ResourceList() {
               ) : null}
             </div>
           ) : (
-            <ul className="reslist">
-              {list.data.items.map((item) => (
-                <ResourceCard key={item.id} item={item} />
-              ))}
-            </ul>
+            <>
+              {canModerate ? (
+                <label className="listfilter">
+                  <input
+                    type="checkbox"
+                    checked={showHidden}
+                    onChange={(e) => setShowHidden(e.target.checked)}
+                  />
+                  {t('moderate.showHidden')}
+                </label>
+              ) : null}
+
+              <ul className="reslist">
+                {list.data.items.map((item) => (
+                  <ResourceCard
+                    key={item.id}
+                    item={item}
+                    // 已下架的卡片降饱和 + 挂标记：编辑者一眼能看出
+                    // "这条现在不在站上"，而不是以为筛选坏了。
+                    hidden={item.status === 'hidden'}
+                  />
+                ))}
+              </ul>
+            </>
           )}
 
           {totalPages > 1 ? (

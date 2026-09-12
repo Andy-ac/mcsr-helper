@@ -7,6 +7,7 @@
  *   3. 路由层只处理 HTTP，不掺 SQL
  */
 import type { DatabaseSync } from 'node:sqlite';
+import type { RatingSummary } from '@mcsr/shared/resources';
 import {
   normalizeResourceInput,
   type Resource,
@@ -15,8 +16,8 @@ import {
   type ResourceListResponse,
   type ResourceQuery,
 } from '@mcsr/shared/resources';
-
 import { getDb } from './db';
+import { EMPTY_RATING, ratingOf, ratingsFor } from './marks';
 
 /** 数据库里的一行（snake_case，tags 是 JSON 文本，featured/official 是 0/1）。 */
 interface ResourceRow {
@@ -74,10 +75,16 @@ function toResource(row: ResourceRow): Resource {
   };
 }
 
-/** 列表项去掉 body —— 列表接口不下发正文，省带宽也省序列化时间。 */
-function toListItem(resource: Resource): ResourceListItem {
+/**
+ * 列表项去掉 body —— 列表接口不下发正文，省带宽也省序列化时间。
+ *
+ * ⚠️ `rating` 由调用方**必须传入**（它来自另一张表的聚合，不是这一行的字段）。
+ *    在函数里给它一个默认值的话，"忘了查评分"会变成"评分永远是空的" ——
+ *    静默失效，而不是编译报错。
+ */
+function toListItem(resource: Resource, rating: RatingSummary): ResourceListItem {
   const { body: _body, ...rest } = resource;
-  return rest;
+  return { ...rest, rating };
 }
 
 /**
@@ -94,12 +101,26 @@ function escapeLike(value: string): string {
 // 查询
 // ---------------------------------------------------------------------------
 
-export function listResources(query: ResourceQuery): ResourceListResponse {
+export function listResources(
+  query: ResourceQuery,
+  options: { includeHidden?: boolean } = {},
+): ResourceListResponse {
   const db: DatabaseSync = getDb();
 
-  // M1 阶段对外只暴露已发布内容。status 现在写死，
-  // M2 加审核流时这里会根据"是不是审核员"分叉。
-  const where: string[] = ["status = 'published'"];
+  /*
+   * 默认只暴露已发布内容。
+   *
+   * `includeHidden` 是给**有下架权的人**（editor / admin）用的：
+   * 下架之后那条内容就从列表里消失了 —— 没有这个开关的话，
+   * 编辑者**再也找不到它**，也就无法恢复。那不是"下架"，
+   * 那是"一条单向的路"。
+   *
+   * ⚠️ 这个开关由**路由层**按能力决定是否允许（见 routes/resources.ts），
+   *    不在这里判权限 —— 数据层只管按参数查，权限判在一处。
+   */
+  const where: string[] = [
+    options.includeHidden ? "status IN ('published', 'hidden')" : "status = 'published'",
+  ];
   const params: Array<string | number> = [];
 
   if (query.kind) {
@@ -143,12 +164,101 @@ export function listResources(query: ResourceQuery): ResourceListResponse {
     )
     .all(...params, query.pageSize, offset) as unknown as ResourceRow[];
 
+  /*
+   * 评分是一次 GROUP BY 拿回来的，不是每条内容查一次 ——
+   * 列表一页 24 条，那样就是 24 次查询，而它本来只需要一次。
+   */
+  const ratings = ratingsFor(rows.map((row) => row.id));
+
   return {
-    items: rows.map((row) => toListItem(toResource(row))),
+    items: rows.map((row) => toListItem(toResource(row), ratings.get(row.id) ?? EMPTY_RATING)),
     total,
     page: query.page,
     pageSize: query.pageSize,
   };
+}
+
+/**
+ * 某个条目当前的待审版本号；没有待审内容时为 null。
+ *
+ * 编辑页用它回答"现在有没有别人已经提了一份修改" —— 见 shared 里
+ * EditableResource 的注释。
+ */
+export function resourcePendingRevision(id: string): number | null {
+  const row = getDb().prepare('SELECT pending_revision FROM resources WHERE id = ?').get(id) as
+    | { pending_revision: number | null }
+    | undefined;
+  return row?.pending_revision ?? null;
+}
+
+/**
+ * 设置「精选」「官方」。
+ *
+ * ⚠️ 只改**传了的**字段（undefined = 不动它）。
+ *    把缺省当成 false 的话，一次"取消精选"的调用会把 official 也一起清掉 ——
+ *    而那种 bug 在界面上表现为"我只点了一个按钮，另一个标记也消失了"。
+ */
+export function setResourceFlags(
+  id: string,
+  flags: { featured?: boolean | undefined; official?: boolean | undefined },
+  now: number,
+): void {
+  const sets: string[] = [];
+  const params: Array<string | number> = [];
+  if (flags.featured !== undefined) {
+    sets.push('featured = ?');
+    params.push(flags.featured ? 1 : 0);
+  }
+  if (flags.official !== undefined) {
+    sets.push('official = ?');
+    params.push(flags.official ? 1 : 0);
+  }
+  if (sets.length === 0) return;
+
+  params.push(now, id);
+  getDb()
+    .prepare(`UPDATE resources SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`)
+    .run(...params);
+}
+
+/**
+ * 下架 / 恢复一条已上架的内容。
+ *
+ * 状态规则刻意做得很窄 —— 宁可拒绝也不猜：
+ *   · **下架**：只有当前是 published 的才能下架。对一条还没上架的内容
+ *     "下架"没有意义，而且会让状态变得含糊（它是"被撤下来的"还是
+ *     "从没上去过"？）—— 含糊的状态几个月后一定会有人搞错。
+ *   · **恢复**：没有待审版本就回到 published；有待审版本则回到 pending
+ *     （说明下架期间有人改过它，那改动还没被审过，不该跟着一起上线）。
+ *
+ * ⚠️ 这里**不看 current_revision**：导入的条目 status 就是 published
+ *    而根本没有版本号 —— 和 reviseResource 里踩过的那个坑是同一个。
+ */
+export function setResourceVisibility(
+  id: string,
+  published: boolean,
+  now: number,
+): { ok: true; status: string } | { ok: false; reason: 'not_found' | 'not_published' | 'already' } {
+  const db = getDb();
+  const row = db.prepare('SELECT status, pending_revision FROM resources WHERE id = ?').get(id) as
+    | { status: string; pending_revision: number | null }
+    | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  if (!published) {
+    if (row.status !== 'published') return { ok: false, reason: 'not_published' };
+    db.prepare('UPDATE resources SET status = ?, updated_at = ? WHERE id = ?').run(
+      'hidden',
+      now,
+      id,
+    );
+    return { ok: true, status: 'hidden' };
+  }
+
+  if (row.status === 'published') return { ok: false, reason: 'already' };
+  const next = row.pending_revision === null ? 'published' : 'pending';
+  db.prepare('UPDATE resources SET status = ?, updated_at = ? WHERE id = ?').run(next, now, id);
+  return { ok: true, status: next };
 }
 
 export function getResource(id: string): ResourceDetail | null {
@@ -156,7 +266,26 @@ export function getResource(id: string): ResourceDetail | null {
   const row = db
     .prepare(`SELECT ${SELECT_COLUMNS} FROM resources WHERE id = ? AND status = 'published'`)
     .get(id) as unknown as ResourceRow | undefined;
-  return row ? toResource(row) : null;
+  return row ? { ...toResource(row), rating: ratingOf(id) } : null;
+}
+
+/**
+ * 按 id 读内容，**不看状态**。
+ *
+ * ⚠️ 它和 getResource 是两件不同的事，不能互相替代：
+ *    getResource 是给**公开页面**用的，只认已发布的内容；
+ *    这个函数是给"编辑我自己那条还没上架/被驳回的条目"用的 ——
+ *    那种条目从来没有出现在公开页面上，但它必须能被它的作者打开。
+ *
+ * 因此**绝不能**把它接到任何公开路由上：那等于把所有人没通过的草稿
+ * （和它们被驳回的理由）都公开出去。调用方必须先判明"这是不是本人的条目"。
+ */
+export function getResourceAnyStatus(id: string): ResourceDetail | null {
+  const row = getDb()
+    .prepare(`SELECT ${SELECT_COLUMNS} FROM resources WHERE id = ?`)
+    .get(id) as unknown as ResourceRow | undefined;
+  // 未上架的内容也要带评分：编辑页会显示它，而"评分"和"上没上架"无关
+  return row ? { ...toResource(row), rating: ratingOf(id) } : null;
 }
 
 /** 侧边栏的标签云：返回出现次数最多的标签。 */
@@ -369,9 +498,21 @@ export function resourceOwner(id: string): string | null {
   return row?.author_id ?? null;
 }
 
-/** 按 URL 查已有条目 —— 用户提交时用它防止同一个站点被提交两次。 */ export function findResourceByUrl(
+/**
+ * 按 URL 查已有条目 —— 用户提交时用它防止同一个站点被提交两次。
+ *
+ * ⚠️ 它扫的是**所有状态**的行，包括被驳回、还没上架的。
+ *    这是有意的：如果只管已上架的，作者被驳回之后重新提交同一个 URL
+ *    就会长出第二条资源行（同一个站点两条记录，各有各的 id），
+ *    而那正是查重想避免的事。
+ *
+ *    代价是调用方必须自己看清 `status`：**"URL 已存在"和"这个站点已经在站上"
+ *    是两件不同的事**。一个被驳回的条目意味着"这个 URL 没人占着公开位置"，
+ *    那时的正确动作是让作者去改那一条，而不是告诉他"已经收录过了"。
+ */
+export function findResourceByUrl(
   url: string,
-): { id: string; title: string } | null {
+): { id: string; title: string; status: string } | null {
   // 归一化之后比较：末尾斜杠、www 前缀、大小写都不该让"同一个站点"变成两条。
   const normalize = (value: string): string => {
     try {
@@ -384,13 +525,16 @@ export function resourceOwner(id: string): string | null {
   };
 
   const target = normalize(url);
-  const rows = getDb().prepare('SELECT id, url, title FROM resources').all() as unknown as Array<{
+  const rows = getDb()
+    .prepare('SELECT id, url, title, status FROM resources')
+    .all() as unknown as Array<{
     id: string;
     url: string;
     title: string;
+    status: string;
   }>;
   const hit = rows.find((r) => normalize(r.url) === target);
-  return hit ? { id: hit.id, title: hit.title } : null;
+  return hit ? { id: hit.id, title: hit.title, status: hit.status } : null;
 }
 
 /**

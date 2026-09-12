@@ -1,5 +1,5 @@
 /**
- * 审核接口。
+ * 身份组与治理接口。
  *
  * ---------------------------------------------------------------------------
  * 为什么单独一个文件
@@ -15,54 +15,28 @@
  * 后者与 resourcesRoute 的 `/:id` 不冲突：路径段数不同，
  * 而且方法是 POST vs GET/PATCH。
  */
+
+import type { UserRole } from '@mcsr/shared/permissions';
 import {
   assignableRoles,
   capabilitiesByType,
+  checkRoleChange,
   RoleChangeInputSchema,
 } from '@mcsr/shared/permissions';
-import { RejectInputSchema } from '@mcsr/shared/resources';
 import { Hono } from 'hono';
 
 import { type AuthVariables, requireCapability } from '../auth/middleware';
 import { getDb } from '../db';
-import { resourceExists } from '../resources';
-import { approveRevision, listReviewQueue, rejectRevision } from '../revisions';
-import { countAdmins, findUserById, listUsers, setUserRole, writeAudit } from '../users';
+import {
+  countAdmins,
+  countOwners,
+  findUserById,
+  listUsers,
+  setUserRole,
+  writeAudit,
+} from '../users';
 
 export const adminRoute = new Hono<{ Variables: AuthVariables }>();
-
-// ---------------------------------------------------------------------------
-// 待审队列
-// ---------------------------------------------------------------------------
-
-adminRoute.get('/admin/queue', requireCapability('resource.review'), (c) => {
-  const limit = Math.min(Number(c.req.query('limit') ?? 50) || 50, 200);
-  const offset = Math.max(Number(c.req.query('offset') ?? 0) || 0, 0);
-  const { items, total } = listReviewQueue(limit, offset);
-
-  // ⚠️ 待审内容**绝不能**被缓存。它不是公开内容，而且审核员刷新之后
-  //    看到的必须是当前状态 —— 否则会出现"刚批准完，列表里还有"，
-  //    然后他再点一次，得到 409。
-  c.header('Cache-Control', 'no-store');
-
-  return c.json({
-    items: items.map((r) => ({
-      resourceId: r.resource_id,
-      revision: r.revision,
-      title: r.title,
-      kind: r.kind,
-      url: r.url,
-      isEdit: r.is_edit === 1,
-      authorName: r.author_name,
-      createdAt: r.created_at,
-    })),
-    total,
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 审核动作
-// ---------------------------------------------------------------------------
 
 /**
  * 批准。
@@ -72,34 +46,6 @@ adminRoute.get('/admin/queue', requireCapability('resource.review'), (c) => {
  * 不能（PATCH 只写 revisions），所以审核员看到的内容和他批准的内容是同一份。
  * 这挡住了"先提交无害版本过审、再改成广告"这个经典攻击 —— §3 的设计约束之二。
  */
-adminRoute.post('/resources/:id/approve', requireCapability('resource.review'), (c) => {
-  const user = c.get('user');
-  if (!user) return c.json({ error: 'unauthorized' }, 401);
-
-  const id = c.req.param('id');
-  // ⚠️ 用 resourceExists 而不是 getResource —— 后者会过滤掉非 published 的条目，
-  //    而这里要批准的恰恰是一个 pending 条目。
-  if (!resourceExists(id)) return c.json({ error: 'not_found' }, 404);
-
-  const now = Date.now();
-  const result = approveRevision({ resourceId: id, reviewerId: user.id, now });
-  if (!result) {
-    // 没有待审版本，或它已经被另一位审核员处理了
-    return c.json({ error: 'nothing_pending' }, 409);
-  }
-
-  writeAudit({
-    actorId: user.id,
-    action: 'resource.approve',
-    entityType: 'resource',
-    entityId: id,
-    reason: `revision ${String(result.revision)}`,
-    ip: c.req.header('x-real-ip') ?? null,
-    now,
-  });
-
-  return c.json({ ok: true, id, revision: result.revision, status: 'published' });
-});
 
 /**
  * 驳回。**必须给理由。**
@@ -107,51 +53,6 @@ adminRoute.post('/resources/:id/approve', requireCapability('resource.review'), 
  * 没有理由的驳回等于让作者瞎猜该改什么，而这个系统里作者看不到审核员的联系方式。
  * 理由会存进 revision 和 audit_log，展示给作者。
  */
-adminRoute.post('/resources/:id/reject', requireCapability('resource.review'), async (c) => {
-  const user = c.get('user');
-  if (!user) return c.json({ error: 'unauthorized' }, 401);
-
-  const id = c.req.param('id');
-  // 同上：要驳回的是 pending 条目，不能用会过滤状态的 getResource
-  if (!resourceExists(id)) return c.json({ error: 'not_found' }, 404);
-
-  const body = await c.req.json().catch(() => null);
-  const parsed = RejectInputSchema.safeParse(body ?? {});
-  if (!parsed.success) {
-    return c.json({ error: 'invalid_input', reason_required: true }, 400);
-  }
-
-  const now = Date.now();
-  const result = rejectRevision({
-    resourceId: id,
-    reviewerId: user.id,
-    reason: parsed.data.reason,
-    now,
-  });
-  if (!result) {
-    return c.json({ error: 'nothing_pending' }, 409);
-  }
-
-  writeAudit({
-    actorId: user.id,
-    action: 'resource.reject',
-    entityType: 'resource',
-    entityId: id,
-    reason: parsed.data.reason,
-    ip: c.req.header('x-real-ip') ?? null,
-    now,
-  });
-
-  return c.json({
-    ok: true,
-    id,
-    revision: result.revision,
-    status: result.resourceRejected ? 'rejected' : 'published',
-    // 告诉前端"这个条目原本已发布，所以线上版本保留下来了" ——
-    // 审核员据此知道自己的驳回没有把老条目从站上抹掉。
-    liveVersionKept: !result.resourceRejected,
-  });
-});
 
 // ---------------------------------------------------------------------------
 // 审计
@@ -233,7 +134,7 @@ adminRoute.get('/admin/users', requireCapability('user.moderate'), (c) => {
       status: u.status,
       emailVerified: u.email_verified_at !== null,
       createdAt: u.created_at,
-      /** 前端据此把"改我自己"的入口置灰 —— 见下面那条锁定保护 */
+      /** 前端据此标出"这是我"；改自己也允许，但会被最后管理员保护挡住 */
       isSelf: u.id === me?.id,
     })),
     total,
@@ -274,12 +175,49 @@ adminRoute.patch('/admin/users/:id/role', requireCapability('user.moderate'), as
     return c.json({ ok: true, id: targetId, role: nextRole, unchanged: true });
   }
 
-  // 锁定保护：降级的目标是管理员，而且他是最后一个
-  if (target.role === 'admin' && nextRole !== 'admin' && countAdmins() <= 1) {
-    return c.json(
-      { error: 'last_admin', message: '不能降级最后一个管理员，否则没人能再改角色了' },
-      409,
-    );
+  /*
+   * ★ 等级规则（谁能把谁改成什么）**不在这里判**，在
+   *    shared/permissions.ts 的 checkRoleChange 里 —— 界面用的是同一个函数。
+   *
+   * 这条规则很容易两边写岔：界面放行、服务端拒绝（用户白填一遍），
+   * 或者更糟 —— 界面禁用了、服务端其实没拦（那就是一条越权通道）。
+   * 所以规则只有一份，这里只负责把它翻译成 HTTP。
+   */
+  const judgement = checkRoleChange({
+    actorRole: actor.role as UserRole,
+    targetRole: target.role as UserRole,
+    targetIsSelf: target.id === actor.id,
+    nextRole,
+  });
+
+  if (!judgement.ok) {
+    const status = judgement.reason === 'forbidden' ? 403 : 403;
+    return c.json({ error: judgement.reason }, status);
+  }
+
+  /*
+   * 锁定保护：**别把最后一个"能改角色的人"降级**。
+   *
+   * ⚠️ 判据是"管理员 + 所有者"的总数，不只是管理员 —— owner 也有
+   *    user.moderate，所以有 owner 在的时候降掉最后一个管理员是安全的。
+   *    第一版只数管理员，会让 owner 遇到"想降掉唯一的管理员却被拒"
+   *    这种莫名其妙的阻挡。
+   *
+   * ⚠️ 加进 owner 之后，这个分支**在当前规则下够不到了**：
+   *    只有 owner 能降级管理员，所以降级发生时系统里必定至少有一个 owner，
+   *    而 owner 有 user.moderate —— "一个能管账号的人都不剩"永远不成立。
+   *    留着它是**保险**：哪天放宽"谁能降管理员"，它会重新变成必要的。
+   *    （对应的测试断言的是现实：owner 能降掉最后一个管理员，
+   *      而且降完之后系统仍有人能管账号。）
+   */
+  if (target.role === 'admin' && nextRole !== 'admin') {
+    const adminsAfter = countAdmins() - 1;
+    if (adminsAfter + countOwners() === 0) {
+      return c.json(
+        { error: 'last_admin', message: '不能降级最后一个能管理账号的人，否则没人能再改角色了' },
+        409,
+      );
+    }
   }
 
   setUserRole(targetId, nextRole, now);

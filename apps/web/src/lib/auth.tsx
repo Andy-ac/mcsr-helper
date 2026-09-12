@@ -142,6 +142,16 @@ export function apiErrorText(error: unknown, t: Translate): string {
         return t('auth.invalidToken');
       case 'email_not_verified':
         return t('auth.emailNotVerified');
+      case 'video_exists':
+        return t('auth.videoExists');
+      case 'seed_not_found':
+        return t('auth.seedNotFound');
+      case 'seed_exists':
+        return t('auth.seedExists');
+      case 'seed_service_unavailable':
+        return t('auth.seedServiceUnavailable');
+      case 'seed_write_disabled':
+        return t('auth.seedWriteDisabled');
       case 'unauthorized':
         return t('auth.loginAction');
       default:

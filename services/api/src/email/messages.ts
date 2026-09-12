@@ -126,6 +126,80 @@ export function buildVerifyMail(input: {
   return { to: input.to, subject: '确认你的 MCSR Helper 邮箱地址', text, html };
 }
 
+/**
+ * 审核结果通知。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么这封邮件值得发
+ * ---------------------------------------------------------------------------
+ * 提交之后，用户不会每天回站里看"我那条怎么样了"。没有邮件的话，
+ * 审核结果就只存在于一个他不会再打开的页面里 —— 而审核员为了写出那个结果
+ * 花掉的注意力，也就白费了。
+ *
+ * ⚠️ 驳回的那封必须**带上理由**，而且要有"去改一下"的入口。
+ *    只说"被驳回了"的邮件比不发更糟：用户知道自己失败了却不知道下一步，
+ *    唯一的反应是原样再交一次。
+ *
+ * ⚠️ 链接指向的是**我自己的提交列表**（/me/submissions），不是条目的公开页 ——
+ *    被驳回的条目在公开页上根本不存在（404）。
+ */
+export function buildReviewResultMail(input: {
+  to: string;
+  locale: Locale;
+  approved: boolean;
+  title: string;
+  /** 驳回理由。approved 为 false 时必须有值。 */
+  reason?: string | null;
+}): RenderedMail {
+  const url = `${publicOrigin()}/me/submissions`;
+
+  if (input.locale === 'en') {
+    const { text, html } = compose({
+      paragraphs: input.approved
+        ? [
+            'Hi,',
+            `Your submission "${input.title}" has been approved and is now live on MCSR Helper.`,
+            'Thanks for contributing.',
+          ]
+        : [
+            'Hi,',
+            `Your submission "${input.title}" was not accepted this time.`,
+            `Reviewer's note: ${input.reason ?? '(no reason given)'}`,
+            'You can edit it and submit it again — the note above is what to fix.',
+          ],
+      linkLabel: 'Your submissions:',
+      url,
+      footer: ['This is an automated message; replies are not monitored.'],
+    });
+    return {
+      to: input.to,
+      subject: input.approved ? `Approved: ${input.title}` : `Needs changes: ${input.title}`,
+      text,
+      html,
+    };
+  }
+
+  const { text, html } = compose({
+    paragraphs: input.approved
+      ? ['你好，', `你提交的「${input.title}」已经通过审核，正式上线了。`, '谢谢你的贡献。']
+      : [
+          '你好，',
+          `你提交的「${input.title}」这次没有通过审核。`,
+          `审核员的说明：${input.reason ?? '（没有填写理由）'}`,
+          '你可以按上面的说明修改之后重新提交 —— 修改会重新进入审核队列。',
+        ],
+    linkLabel: '你的提交记录：',
+    url,
+    footer: ['这是一封系统邮件，回复不会被查看。'],
+  });
+  return {
+    to: input.to,
+    subject: input.approved ? `已通过：${input.title}` : `需要修改：${input.title}`,
+    text,
+    html,
+  };
+}
+
 export function buildResetMail(input: { to: string; token: string; locale: Locale }): RenderedMail {
   const url = resetUrl(input.token);
 

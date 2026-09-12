@@ -24,6 +24,62 @@ const ResourceDetailPage = lazy(() =>
 );
 
 /**
+ * 提交页和审核页也懒加载。
+ *
+ * 理由和详情页一样，而且更强：它们都用到 Markdown 预览（同一套
+ * react-markdown 管线），但**大多数访客永远不会打开它们** ——
+ * 提交要登录且邮箱已验证，审核还是更高一层的权限。
+ * 让所有访客为首屏之后根本不会发生的渲染付这份下载成本没有意义。
+ */
+const SubmitResourcePage = lazy(() =>
+  import('@/routes/SubmitResource').then((m) => ({ default: m.SubmitResource })),
+);
+const ReviewQueuePage = lazy(() =>
+  import('@/routes/ReviewQueue').then((m) => ({ default: m.ReviewQueue })),
+);
+const ReviewDetailPageLazy = lazy(() =>
+  import('@/routes/ReviewDetail').then((m) => ({ default: m.ReviewDetailPage })),
+);
+const MySubmissionsPage = lazy(() =>
+  import('@/routes/MySubmissions').then((m) => ({ default: m.MySubmissions })),
+);
+const EditResourcePage = lazy(() =>
+  import('@/routes/EditResource').then((m) => ({ default: m.EditResource })),
+);
+const AdminUsersPage = lazy(() =>
+  import('@/routes/AdminUsers').then((m) => ({ default: m.AdminUsers })),
+);
+const FavoritesPage = lazy(() =>
+  import('@/routes/Favorites').then((m) => ({ default: m.Favorites })),
+);
+
+/**
+ * M4 的页面同样懒加载。
+ *
+ * 理由和其它次级页面一致：日历详情和编辑页都要 Markdown 预览（同一套
+ * react-markdown 管线），而提交/编辑还要登录且邮箱已验证。
+ * 让只来看首页和资源库的访客为它们付下载成本没有意义。
+ *
+ * ⚠️ 而**列表页也一起懒加载**（日历、视频墙、种子检索），这一条和资源库不同 ——
+ *    资源库的列表页是首屏，拆了反而多一次往返。这三个不是首屏：
+ *    侧边栏默认落在首页，大多数人不会一进来就点它们。
+ */
+const CalendarListPage = lazy(() =>
+  import('@/routes/CalendarList').then((m) => ({ default: m.CalendarList })),
+);
+const CalendarDetailPage = lazy(() =>
+  import('@/routes/CalendarDetail').then((m) => ({ default: m.CalendarDetailPage })),
+);
+const CalendarSubmitPage = lazy(() =>
+  import('@/routes/CalendarSubmit').then((m) => ({ default: m.CalendarSubmit })),
+);
+const CalendarEditPage = lazy(() =>
+  import('@/routes/CalendarEdit').then((m) => ({ default: m.CalendarEdit })),
+);
+const VideosPage = lazy(() => import('@/routes/Videos').then((m) => ({ default: m.Videos })));
+const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.Seeds })));
+
+/**
  * 认证相关的页面也懒得拆 —— 它们比详情页小得多，而且
  * 登录/注册是**直达链接**（邮件、书签、别人发的地址）。
  * 懒加载会让这些路径多一次"先加载再渲染"的往返，得不偿失。
@@ -35,11 +91,61 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<Home />} />
           <Route path="/resources" element={<ResourceList />} />
+          {/*
+            ⚠️ `/resources/submit` 必须排在 `/resources/:id` 前面。
+               react-router 是按"具体段优先"排序的，所以顺序在这里其实不影响结果 ——
+               但把它放在前面是有意的：下一个读这段代码的人不应该需要知道
+               "submit 恰好会被当成一个更具体的静态段"才能确认它没被 :id 吃掉。
+          */}
+          <Route
+            path="/resources/submit"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <SubmitResourcePage />
+              </Suspense>
+            }
+          />
           <Route
             path="/resources/:id"
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <ResourceDetailPage />
+              </Suspense>
+            }
+          />
+          {/*
+            ⚠️ 编辑页必须排在 `/resources/:id` **之后**才能被正确匹配吗？
+               不需要 —— react-router 按"具体段优先"排序，`/resources/:id/edit`
+               比 `/resources/:id` 多一段，永远不会被后者吃掉。
+               （这和 Hono 不一样：Hono 是按注册顺序匹配的，
+                 `routes/resources.ts` 里的 `/mine` 就必须写在 `/:id` 前面。）
+          */}
+          <Route
+            path="/resources/:id/edit"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <EditResourcePage />
+              </Suspense>
+            }
+          />
+          {/*
+            审核是**通用**的：路径里带类型，`/review/:type/:id`。
+            这里只有两条路由，M4 加日历/种子/视频时不需要再动这个文件 ——
+            类型的差异全部在 lib/reviewTypes.tsx 的注册表里。
+          */}
+          <Route
+            path="/review"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <ReviewQueuePage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/review/:type/:id"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <ReviewDetailPageLazy />
               </Suspense>
             }
           />
@@ -55,6 +161,109 @@ export default function App() {
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/reset-password" element={<PasswordReset />} />
           <Route path="/me" element={<Account />} />
+          {/*
+            「我的提交」是审核管线的闭环：驳回理由唯一的读者就是作者。
+            ⚠️ 它必须排在 `/me` 之后不影响匹配（`/me` 是精确路径），
+               但它**不复用** Account 页 —— 那个页面是账号设置，
+               混在一起会让"我提交的东西现在怎么样了"变成要找的东西。
+          */}
+          <Route
+            path="/me/submissions"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <MySubmissionsPage />
+              </Suspense>
+            }
+          />
+          {/*
+            账号管理。只有 admin 有 user.moderate —— 服务端会拦，
+            这里只是懒加载入口（手动敲地址进去会看到一句明确的"没有权限"）。
+          */}
+          <Route
+            path="/admin/users"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <AdminUsersPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/me/favorites"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <FavoritesPage />
+              </Suspense>
+            }
+          />
+
+          {/* ================================================================
+              M4：日历 / 视频 / Ranked Seeds
+              ================================================================
+              ⚠️ 路径的形状照抄资源库那一套（`/resources`、`/resources/submit`、
+                 `/resources/:id`、`/resources/:id/edit`），逐段对应：
+                   · 提交页挂在**各自的版块下**（`/calendar/submit`）而不是 `/submit` ——
+                     M4 有三个版块，一个全局的 `/submit` 立刻就需要"提交什么？"的二次选择。
+                     `lib/reviewTypes.tsx` 的 submitPath 和这里必须一致。
+                   · 日历详情页的公开接口对未发布的条目返回 404，编辑页走
+                     `/api/calendar/mine/:id`（含待审那一版）—— 和资源库同构。
+          */}
+          <Route
+            path="/calendar"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CalendarListPage />
+              </Suspense>
+            }
+          />
+          {/*
+            ⚠️ `/calendar/submit` 与 `/calendar/:id` 的先后顺序不影响匹配
+               （react-router 按"具体段优先"，静态段永远比参数段更具体）——
+               和资源库那边一样，把它写在前面只是为了让读代码的人不必知道这件事。
+          */}
+          <Route
+            path="/calendar/submit"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CalendarSubmitPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/calendar/:id/edit"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CalendarEditPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/calendar/:id"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CalendarDetailPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/videos"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <VideosPage />
+              </Suspense>
+            }
+          />
+          {/*
+            ⚠️ `/seeds` 下面 v1 只做 **Ranked Seeds 检索**；社区 UGC 分享
+               （RSG/SSG 那套）按 Q16 显示成"即将开放"，不是路由。
+          */}
+          <Route
+            path="/seeds"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <SeedsPage />
+              </Suspense>
+            }
+          />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

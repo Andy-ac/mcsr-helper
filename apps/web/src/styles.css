@@ -1736,6 +1736,35 @@ html:not(.vt) .route-fade {
   color: var(--fg-muted);
   font-size: 12.5px;
 }
+/*
+ * 提示条里的就地操作（目前是登录页那块"重发验证邮件"）。
+ *
+ * 做成链接样式而不是第二个 `.cta`：它不是这个页面的主操作 ——
+ * 主操作永远是"登录"。两个同样醒目的按钮会让人不知道该点哪个，
+ * 而这里恰恰是最需要用户看清"该点哪个"的时候（他刚被挡在门外）。
+ *
+ * 用 <button> 而不是 <a>：它不跳转，是在原地发一个请求。
+ * 做成链接会让"打开新标签页"这类浏览器行为落空。
+ */
+.notice__action {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--grass-bright);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.notice__action:hover {
+  color: var(--fg);
+}
+.notice__action:disabled {
+  color: var(--fg-faint);
+  cursor: default;
+  text-decoration: none;
+}
 /* 服务端返回的具体原因。字号更小、颜色更淡：
    上面那两句是给"不知道该做什么"的人看的，这一句是给排查问题的人看的。 */
 .notice__detail {
@@ -1883,4 +1912,2121 @@ html:not(.vt) .route-fade {
   .infotable dd {
     padding-top: 2px;
   }
+}
+
+/* ==================================================================
+   提交与审核（M2）
+   ================================================================== */
+
+/* 侧边栏里的两个入口只在有权限时出现（见 Layout.tsx）。
+   颜色刻意避开下面四个内容分区的色系 —— 它们是"动作"和"工作台"，
+   不是内容区，混进同一套颜色里会让人以为那是第四个分区。 */
+.sidebar__block--submit {
+  background: #4f7fb8;
+}
+.sidebar__block--review {
+  background: #b06a3c;
+}
+
+/* 页面标题行：左边标题，右边一个靠右的操作（目前只有"刷新"）。 */
+.pagehead__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* 次要说明文字。 */
+.muted {
+  color: var(--fg-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* 空状态的补充说明。 */
+.state__hint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 6px 0 0;
+}
+
+/* ---- 按钮：次级与危险 ----
+   主操作永远是 .cta（草绿）。次级和危险必须明显**弱于**它 ——
+   审核页面上"批准"和"驳回"并排放着，如果两者视觉权重一样，
+   审核员每天点几十次的那个动作就会有点错的风险。 */
+.ghostbtn {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.ghostbtn:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+.ghostbtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 驳回是**危险但可逆**的动作（不发删除，线上内容也不受影响），
+   所以红石色只用在描边上，不做整块填充 ——
+   整块红色会让人以为这一下会把条目删掉。 */
+.dangerbtn {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  background: rgba(232, 86, 74, 0.12);
+  color: var(--redstone);
+  border: 1px solid rgba(232, 86, 74, 0.45);
+  border-radius: var(--r-sm);
+  padding: 9px 18px;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.dangerbtn:hover:not(:disabled) {
+  background: rgba(232, 86, 74, 0.2);
+  border-color: var(--redstone);
+}
+.dangerbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 字段级错误。和服务端 issues 用的是同一份 schema，所以这里显示的就是
+   服务端会说的那句话 —— 不会出现"前端说可以、后端说不行"。 */
+.fielderr {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+  margin: 4px 0 0;
+}
+
+/* ---- 提交表单 ---- */
+
+/* 比认证表单宽：这里有正文，400px 写不下任何一段话。
+   但仍然限制宽度而不是铺满 —— 一行超过 90 个字符之后眼睛会开始丢行。 */
+.submitform {
+  max-width: 720px;
+}
+.formrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+/* 多行输入框：默认的输入框样式是给单行准备的（固定行高、不能拖）。 */
+.mcsr-field__input--tall {
+  resize: vertical;
+  min-height: 200px;
+  line-height: 1.7;
+}
+textarea.mcsr-field__input {
+  resize: vertical;
+  line-height: 1.7;
+}
+
+/* 正文的"编辑 / 预览"切换。 */
+.bodytabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bodytabs__switch {
+  display: flex;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 2px;
+}
+.bodytabs__switch button {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  background: transparent;
+  color: var(--fg-faint);
+  border: 0;
+  border-radius: var(--r-xs);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.bodytabs__switch button.is-active {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+.bodypreview {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  padding: 12px 16px;
+  min-height: 200px;
+}
+
+/* ---- 提交页的说明块 ---- */
+.submitnote {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--grass);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  margin: 0 0 20px;
+  line-height: 1.8;
+  max-width: 720px;
+}
+.submitgate {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 20px 0 0;
+}
+.submitdone {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+/* ---- 待审队列 ---- */
+
+.reviewtabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.reviewtabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  background: var(--surface);
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 5px 14px;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.reviewtabs button:hover {
+  color: var(--fg);
+}
+.reviewtabs button.is-active {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: var(--surface-3);
+}
+/* 数量直接写在标签上：审核员靠它决定"现在要不要点进去"。 */
+.reviewtabs__count {
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.reviewtabs button.is-active .reviewtabs__count {
+  color: var(--gold);
+}
+
+.reviewlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 整张卡片都是链接（和资源列表一致）：点击目标小是移动端最常见的问题。 */
+.reviewcard {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--sh-1);
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+.reviewcard:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.reviewcard__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.reviewcard__rev {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin-left: auto;
+}
+.reviewcard__title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg);
+}
+.reviewcard__sub {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 6px 0 0;
+  word-break: break-all;
+}
+.reviewcard__meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin-top: 10px;
+}
+
+/* 类型徽章。每一类一个色相，但都走同一套低饱和度的处理 ——
+   六个高饱和度的徽章排在一起会变成一堵墙。 */
+.badge--type {
+  color: var(--fg-muted);
+}
+.badge--type-resource {
+  color: var(--dirt);
+  border-color: rgba(134, 96, 67, 0.5);
+  background: rgba(134, 96, 67, 0.14);
+}
+/* 日历用钻石色（青）。它和资源库的土色在色相环上正好相对，
+   两个徽章并排时不会看混 —— 而这两个恰恰是最容易同时在队列里出现的类型。 */
+.badge--type-calendar {
+  color: var(--diamond);
+  border-color: rgba(74, 237, 217, 0.4);
+  background: rgba(74, 237, 217, 0.1);
+}
+/*
+ * 「已结束」（Q4c）。用**灰**而不是红：
+ * 红会读成"有问题、要驳回"，而它传达的恰恰相反 ——
+ * 时间在过去不是错误，也不是驳回的理由（见 calendar.pastExplain）。
+ */
+.badge--past {
+  color: var(--fg-faint);
+  border-color: var(--line-strong);
+  background: rgba(109, 116, 130, 0.12);
+}
+/* 「修改」和「新条目」必须一眼分开：审核它们是两件不同的事。 */
+.badge--new {
+  color: var(--grass-bright);
+  border-color: rgba(127, 178, 56, 0.45);
+  background: rgba(127, 178, 56, 0.12);
+}
+.badge--edit {
+  color: var(--gold);
+  border-color: rgba(255, 170, 0, 0.45);
+  background: rgba(255, 170, 0, 0.12);
+}
+
+/* ---- 审核详情 ---- */
+
+.reviewhead__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.reviewview {
+  margin-top: 24px;
+}
+/* 字段表：左列名、右列值。改动过的行左侧有一条金色竖线，
+   扫一眼就能定位到"这次到底改了什么"。 */
+.reviewview__grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  margin: 0 0 24px;
+}
+.reviewview__row {
+  display: contents;
+}
+.reviewview__grid dt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  background: var(--surface);
+  padding: 10px 14px;
+}
+.reviewview__grid dd {
+  margin: 0;
+  background: var(--surface);
+  padding: 10px 14px;
+  font-size: 13px;
+  word-break: break-word;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.reviewview__row.is-changed dt {
+  box-shadow: inset 2px 0 0 var(--gold);
+  color: var(--gold);
+}
+.reviewview__row.is-changed dd {
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+/* 旧值：划掉 + 变暗。它是"之前是什么"，不是可读的内容。 */
+.reviewview__before {
+  color: var(--fg-faint);
+  text-decoration: line-through;
+}
+.reviewview__after {
+  color: var(--fg);
+}
+.reviewview__subtitle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.reviewview__flag {
+  color: var(--gold);
+  border: 1px solid rgba(255, 170, 0, 0.45);
+  background: rgba(255, 170, 0, 0.12);
+  border-radius: var(--r-pill);
+  padding: 0 8px;
+}
+.reviewview__pane {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 16px 20px;
+}
+.reviewview__pane--old {
+  opacity: 0.72;
+  margin-top: 10px;
+}
+.reviewview__old summary {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+.reviewview__old summary:hover {
+  color: var(--fg-muted);
+}
+
+.reviewactions {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 720px;
+}
+
+/* 窄屏：字段表从"两列"退化成"上下两行"。
+   120px 的标签列在手机上会占掉三分之一宽度，值那一列就没法读了。 */
+@media (max-width: 640px) {
+  .reviewview__grid {
+    grid-template-columns: 1fr;
+  }
+  .reviewview__grid dt {
+    padding-bottom: 0;
+    background: var(--surface);
+  }
+  .formrow {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ==================================================================
+   我的提交（M2 的闭环）
+   ================================================================== */
+
+.minecard {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  box-shadow: var(--sh-1);
+}
+.minecard__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.minecard__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.minecard__date {
+  margin-left: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.minecard__meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin-top: 8px;
+}
+
+/* 驳回理由：整张卡片上最该被看到的东西，所以给红石色的左边线和底色。
+   不做成折叠的 —— 作者打开这一页就是为了看它。 */
+.minecard__reason {
+  margin-top: 12px;
+  border-left: 2px solid var(--redstone);
+  background: rgba(232, 86, 74, 0.08);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 10px 14px;
+}
+.minecard__reasonlabel {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+  margin-bottom: 4px;
+}
+.minecard__reasontext {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+/* 状态徽章。颜色对应"这件事现在怎么样"：
+   待审=金色（在等）、已发布=草绿（成了）、已驳回=红石（要改）、
+   草稿/下架=灰（中性，不需要动作）。 */
+.badge--status-draft {
+  color: var(--fg-faint);
+}
+.badge--status-pending {
+  color: var(--gold);
+  border-color: rgba(255, 170, 0, 0.45);
+  background: rgba(255, 170, 0, 0.12);
+}
+.badge--status-published {
+  color: var(--grass-bright);
+  border-color: rgba(127, 178, 56, 0.45);
+  background: rgba(127, 178, 56, 0.12);
+}
+.badge--status-rejected {
+  color: var(--redstone);
+  border-color: rgba(232, 86, 74, 0.45);
+  background: rgba(232, 86, 74, 0.12);
+}
+.badge--status-hidden {
+  color: var(--fg-faint);
+}
+
+/* ==================================================================
+   提交表单第二轮：图片上传、标签选择、给审核员的话
+   ================================================================== */
+
+/* 版块标题右边的动作按钮（资源库的「提交一条」）。
+   pagehead__row 是 flex + space-between，所以它会靠右。 */
+.pagehead__action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* ---- 标签选择 ---- */
+.tagpicker__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.tagpicker__input {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+/* 已选中的标签：草绿描边 + 一个 ×。
+   和"可选标签"用同一种形状、不同颜色 —— 用户一眼就能分出
+   "我选了哪些"和"还有哪些能选"。 */
+.tagchip--on {
+  color: var(--grass-bright);
+  border-color: rgba(127, 178, 56, 0.5);
+  background: rgba(127, 178, 56, 0.12);
+  cursor: pointer;
+}
+.tagchip--on:hover {
+  border-color: var(--redstone);
+  color: var(--redstone);
+}
+button.tagchip {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--fg-muted);
+  padding: 3px 10px;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+button.tagchip:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+button.tagchip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- 配图 ---- */
+.imagepicker {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.imagepicker__preview,
+.imagepicker__empty {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  object-fit: contain;
+}
+.imagepicker__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-lg);
+}
+.imagepicker__side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* label 当按钮用：<input type=file> 的默认样式几乎无法定制，
+   而 hidden + label 是唯一可靠的做法（还顺带保留了键盘可达性）。 */
+.imagepicker__upload {
+  align-self: flex-start;
+  cursor: pointer;
+}
+
+/* ---- 给审核员的话 ---- */
+/* 用左边一条金色竖线把它和正文区分开：
+   它和正文在同一个表单里，但**不会**上线 —— 视觉上必须能看出来。 */
+.notebox {
+  border-left: 2px solid var(--gold);
+  padding-left: 14px;
+}
+
+/* ---- 审核详情：提交者的留言 ---- */
+.reviewview__note {
+  border-left: 2px solid var(--gold);
+  background: rgba(255, 170, 0, 0.07);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+}
+/*
+ * ---- 审核详情：已结束的条目（Q4c）----
+ *
+ * ⚠️ 放在**内容之前**，这是它唯一有用的位置：审核员读完之后才看到
+ * "这已经结束了"的话，他的判断已经做完了（见 CalendarReviewView 的注释）。
+ *
+ * 颜色刻意和"提交者的留言"区分开：那个是金色（有人在对你说话），
+ * 这个是中性灰（一条事实）。两者常常同时出现，同一个颜色会被当成同一类东西。
+ */
+.reviewview__past {
+  border-left: 2px solid var(--line-strong);
+  background: rgba(109, 116, 130, 0.1);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+}
+.reviewview__pastlabel {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+.reviewview__pasttext {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+.reviewview__notelabel {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--gold);
+  margin-bottom: 4px;
+}
+.reviewview__notetext {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+/* ---- 我的提交：待审提示 ---- */
+.minecard__hint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 8px 0 0;
+}
+
+@media (max-width: 640px) {
+  .imagepicker {
+    flex-direction: column;
+  }
+  .pagehead__row {
+    flex-wrap: wrap;
+  }
+}
+
+/* ==================================================================
+   侧边栏子项（「我的提交」）与内容治理条
+   ================================================================== */
+
+/* 「我的」的子项：缩进一级 + 一个小圆点。
+   ⚠️ 不用方块图标：方块是"分区"的语言（见上面每个分区的颜色），
+      子项用同一个形状会让人以为它是一个独立分区。 */
+.sidebar__item--sub {
+  padding-left: 22px;
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.sidebar__item--sub:hover,
+.sidebar__item--sub.is-active {
+  color: var(--fg);
+}
+.sidebar__item--sub.is-active {
+  background: rgba(255, 255, 255, 0.06);
+}
+.sidebar__dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+/* 收起侧边栏时只剩图标列：小圆点比方块小，缩进会让它落不到中线上 —— 去掉缩进。 */
+.sidebar.is-collapsed .sidebar__item--sub {
+  padding-left: 10px;
+}
+
+/* ---- 内容治理条（详情页顶部，仅 editor / admin 可见）---- */
+.moderatebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0 4px;
+  padding: 10px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.moderatebar__label {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin-right: 4px;
+}
+/* 治理条里的「精选 / 官方」是开关，不是筛选 —— 用和已选标签一样的样式，
+   因为它们表达的是同一件事："这个状态是开着的"。 */
+.moderatebar .tagchip {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+
+/* ---- 列表页：已下架条目的标记 ---- */
+.badge--hidden {
+  color: var(--fg-faint);
+  border-color: var(--line-strong);
+  text-decoration: line-through;
+}
+/* 卡片整体降饱和：一眼就能看出"这条不在站上"。
+   不用 opacity 而是用 filter —— opacity 会把里面的按钮也变淡，
+   而编辑者恰恰需要点它。 */
+.rescard--hidden,
+.reviewcard--hidden {
+  filter: saturate(0.4);
+}
+
+/* 列表页的"显示已下架"开关（仅 editor / admin 可见）。 */
+.listfilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  cursor: pointer;
+  user-select: none;
+}
+.listfilter input {
+  accent-color: var(--grass);
+}
+
+
+/* 详情页的修改入口 + 给 editor 的一句提示。
+   提示文字是刻意留在按钮旁边的：edit 和"改完能自己批"这两件事
+   必须一起被看到，否则 editor 会以为改动提交完就卡住了。 */
+.detail__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.detail__actions-hint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+
+/* ==================================================================
+   账号管理（/admin/users）
+   ================================================================== */
+
+.admintable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admintable th {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  text-align: left;
+  font-weight: normal;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.admintable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+/* 正在改的那一行整行高亮 —— 理由输入框是这一行的一部分，
+   不应该看起来像"页面底部又冒出来一个表单"。 */
+.admintable tr.is-editing {
+  background: var(--surface-2);
+}
+.adminuser__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+.adminuser__email {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+  margin-top: 2px;
+}
+.adminrow__edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.adminrow__edit input {
+  min-width: 220px;
+  flex: 1 1 auto;
+}
+
+/* 侧边栏「管理」的方块色。和内容分区区分开：它是治理入口，不是内容区。 */
+.sidebar__block--admin {
+  background: #8c3f5d;
+}
+
+@media (max-width: 720px) {
+  .admintable thead {
+    display: none;
+  }
+  .admintable td {
+    display: block;
+    border-bottom: 0;
+  }
+  .admintable tr {
+    display: block;
+    border-bottom: 1px solid var(--line);
+    padding: 8px 0;
+  }
+}
+
+
+/* ==================================================================
+   身份说明（「我的」页面底部）
+   ================================================================== */
+
+.roleguide {
+  margin-top: 32px;
+}
+.roleguide__list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.roleguide__item {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 12px 16px;
+}
+.roleguide__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.roleguide__note {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg-muted);
+  margin: 8px 0 0;
+}
+.roleguide__caps {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+.roleguide__caps li {
+  font-size: 13px;
+  color: var(--fg);
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+/* 类型前缀（资源库 / 日历 / 账号…）用弱色小字，让动作本身更醒目 */
+.roleguide__type {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+  min-width: 52px;
+}
+
+/* 角色徽章：级别越高颜色越"重"。 */
+.badge--role {
+  color: var(--fg-muted);
+}
+.badge--role-user {
+  color: var(--fg-faint);
+}
+.badge--role-reviewer {
+  color: var(--diamond);
+  border-color: rgba(74, 237, 217, 0.4);
+  background: rgba(74, 237, 217, 0.1);
+}
+.badge--role-editor {
+  color: var(--grass-bright);
+  border-color: rgba(127, 178, 56, 0.45);
+  background: rgba(127, 178, 56, 0.12);
+}
+.badge--role-admin {
+  color: var(--gold);
+  border-color: rgba(255, 170, 0, 0.45);
+  background: rgba(255, 170, 0, 0.12);
+}
+.badge--role-owner {
+  color: var(--redstone);
+  border-color: rgba(232, 86, 74, 0.45);
+  background: rgba(232, 86, 74, 0.12);
+}
+
+
+/* ==================================================================
+   个人标记：收藏 / 评分 / 备注
+   ================================================================== */
+
+.marks {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 14px 16px;
+  margin: 20px 0 4px;
+}
+.marks__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.marks__row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.marks__label {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.marks__stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* fieldset 默认有边框和内边距 —— 这里只是借它的语义，样式上要清掉 */
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.marks__stars legend {
+  float: none;
+  padding: 0;
+}
+/* 星星是**按钮**，所以要有可点的大小和悬停反馈 ——
+   纯字符在 12px 下只有几像素宽，鼠标很难点准。 */
+.starbtn {
+  background: transparent;
+  border: 0;
+  padding: 2px 3px;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--fg-faint);
+  cursor: pointer;
+  border-radius: var(--r-xs);
+  transition: color var(--t-fast) var(--ease);
+}
+.starbtn:hover:not(:disabled) {
+  color: var(--gold);
+}
+.starbtn.is-on {
+  color: var(--gold);
+}
+.starbtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.marks__note {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.marks__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.marks__saved {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--grass-bright);
+}
+
+/* 平均分：列表卡片和详情页共用。 */
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+.rating__stars {
+  color: var(--gold);
+  letter-spacing: -1px;
+}
+.rating__value {
+  color: var(--fg);
+}
+.rating__count {
+  color: var(--fg-faint);
+}
+/* 没有评分时**不显示 0.0** —— 那是"很差"的意思，和"还没人评"完全不同。 */
+.rating--empty {
+  color: var(--fg-faint);
+}
+
+/* 收藏页里的备注块：和"被驳回的原因"用同一套形状，但颜色是中性的 ——
+   它不是坏事，只是自己写的话。 */
+.minecard__reason--mine {
+  border-left-color: var(--diamond);
+  background: rgba(74, 237, 217, 0.07);
+}
+.minecard__reason--mine .minecard__reasonlabel {
+  color: var(--diamond);
+}
+
+/* ==================================================================
+   M4 样式区 —— 三个版块的样式各自从下面自己的锚点往下追加。
+   ⚠️ 三个锚点是**互斥的写入点**：三块内容并列开发时，各自替换自己那一行，
+   不会互相覆盖。写完把锚点注释删掉。
+   ⚠️ 类名一律带版块前缀（calendar__ / video__ / seed__），
+   本仓的样式是全局的，没有 CSS Modules 兜着。
+   ================================================================== */
+
+/* ==================================================================
+   日历（M4）
+   ==================================================================
+
+   两条贯穿这一块的约束，都来自用户决定，不是审美选择：
+
+     · **时间必须和时区名一起出现**（Q2）。所以时间块的排版是竖向的三行
+       （日期 / 钟点 / 时区名），时区名从一个附属的小字升成和钟点同一块里
+       的一等公民 —— 排成一行附属文字的话，它会在窄屏上第一个被挤掉。
+
+     · **订阅入口是这个页面上最重要的控件**，而验收是在**手机上**做的。
+       所以它的按钮故意比别处大（44px 高，触摸目标的下限），
+       并且没有任何只在 hover 时才出现的操作。
+   ================================================================== */
+
+/* ---- 列表 ---- */
+
+/* 一列到底，不是网格。日历条目横向很扁（左边时间、右边标题），
+   两列会把每张卡片压到 300px 上下 —— 那时时区名一定会换行，
+   而它就是这一块最不能省的东西。 */
+.calendar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.calendar-list > li {
+  display: flex;
+}
+
+/* 和 .rescard 同一套形状语言（圆角、1px 细线、悬停抬起），
+   但用 flex 横排：时间在左、内容在右。 */
+.calendar-card {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--sh-1);
+  transition:
+    transform var(--t) var(--ease),
+    box-shadow var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease);
+}
+.calendar-card:hover {
+  text-decoration: none;
+  transform: translateY(-2px);
+  background: var(--surface-2);
+  border-color: rgba(74, 237, 217, 0.35);
+  box-shadow: var(--sh-3);
+}
+.calendar-card:focus-visible {
+  outline: 2px solid var(--diamond);
+  outline-offset: 2px;
+  border-color: rgba(74, 237, 217, 0.5);
+}
+/* 已结束的：**降饱和**，但不隐藏、也不标红。
+   红会读成"有问题"，而"时间在过去"不是错误（Q4c 的同一套判断）。
+   用 opacity 而不是灰色文字：灰色会让它在深色底上更难读，
+   而历史条目恰恰是需要被读的内容。 */
+.calendar-card--past {
+  opacity: 0.62;
+}
+.calendar-card--past:hover {
+  opacity: 1;
+}
+
+/* 时间块。宽度固定而不是自适应：
+   自适应的话，每张卡片的标题起点会随日期长短（08-30 / 12-06）横跳，
+   一列卡片看下来像没对齐。 */
+.calendar-card__when {
+  flex: 0 0 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 1px;
+}
+.calendar-card__date {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.5;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.calendar-card__span {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.5;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* ⚠️ 时区名用钻石青，不再是"最淡的那种灰"。
+   它是让上面那个钟点可解释的东西 —— 淡到看不见就等于没显示。 */
+.calendar-card__zone {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.5;
+  color: var(--diamond);
+  word-break: break-all;
+}
+
+.calendar-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.calendar-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.calendar-card__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.8;
+  color: var(--fg);
+}
+.calendar-card__alt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0;
+}
+.calendar-card__place {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0;
+}
+/* 「你那边是 …」。比正文淡一档 —— 它是换算结果，不是活动本身的信息。 */
+.calendar-card__mine {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0;
+}
+
+/* 窄屏（手机）上时间块改到标题上面一行。
+   横向挤不下的时候，先保住时区名、再牺牲并排 —— 反过来做的话
+   （先砍时区名）正好砍掉 Q2 要求必须显示的那个东西。 */
+@media (max-width: 560px) {
+  .calendar-card {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .calendar-card__when {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+  }
+}
+
+/* ---- 标签筛选 ---- */
+
+.calendar-filters {
+  margin-top: 18px;
+}
+.calendar-filters__hint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: -6px 0 16px;
+}
+
+/* ---- ICS 订阅 ---- */
+
+/* 一块独立的面板，不用普通的卡片样式：
+   它和下面的列表不是一类东西（一个是"一次性设置"，一个是"内容"），
+   长得一样的话用户会把它当成列表的第一项。 */
+.calendar-ics {
+  background: var(--surface);
+  border: 1px solid rgba(74, 237, 217, 0.28);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  margin-bottom: 22px;
+  box-shadow: var(--sh-1);
+}
+.calendar-ics__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+  margin: 0 0 10px;
+}
+.calendar-ics__why {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 16px;
+  max-width: 70ch;
+}
+.calendar-ics__label {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin-bottom: 6px;
+}
+.calendar-ics__row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}
+/* 地址框用等宽字体：这条 URL 是要被**逐字符**核对/复制的东西，
+   而像素字体在长串里很难数清字符。 */
+.calendar-ics__url {
+  flex: 1;
+  min-width: 220px;
+  background: var(--bg-deep);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 12px 13px;
+  outline: none;
+}
+.calendar-ics__url:focus {
+  border-color: var(--diamond);
+  box-shadow: 0 0 0 3px rgba(74, 237, 217, 0.18);
+}
+/* 复制按钮做得比别处的按钮大：这条验收是在手机上做的，
+   而 44px 以下的可点区域在触摸屏上会经常点不中。 */
+.calendar-ics__copy {
+  min-height: 44px;
+  padding: 0 20px;
+  white-space: nowrap;
+}
+.calendar-ics__result {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--grass-bright);
+  margin: 0 0 10px;
+}
+.calendar-ics__webcal {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+}
+.calendar-ics__hint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+/* 分平台的步骤。dl 的两列在窄屏上会退化成上下叠 —— 那时 dt 成了小标题，
+   仍然读得通，所以不需要额外的媒体查询。 */
+.calendar-ics__steps {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 14px;
+  margin: 16px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.calendar-ics__steps dt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.calendar-ics__steps dd {
+  margin: 0;
+  color: var(--fg-muted);
+}
+.calendar-ics__note {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 12px 0 0;
+  line-height: 1.8;
+}
+
+/* ---- 详情页的时间块 ---- */
+
+/* 时刻和它的时区名排在一起（Q2）：两块之间只用一点空隙分开，
+   **不换行** —— 换行之后"20:00"会单独出现在一行的末尾，
+   而那正是要防的"没有时区的钟点"。 */
+.calendar-time__value {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.calendar-time__zone {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+  margin-left: 10px;
+}
+.calendar-time__mine {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.calendar-info__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---- 编辑页：别人已经提交了一份改动 ---- */
+
+.calendar-pending {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--diamond);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.calendar-pending__label {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin-bottom: 6px;
+}
+.calendar-pending__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0 0 4px;
+}
+.calendar-pending__when {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+  margin: 0;
+}
+
+/* ---- 表单 ---- */
+
+/* 「整天」单独一块，排在时间输入框前面（勾上之后那两个框会换成日期选择器）。
+   加一点上边距，让它和上面的英文标题分开 —— 它是一个开关，
+   不属于上面那个字段。 */
+.calendar-form__allday {
+  margin-top: 6px;
+}
+.calendar-form__allday .listfilter {
+  color: var(--fg);
+}
+
+
+/* ==================================================================
+   视频墙（M4）
+   ------------------------------------------------------------------
+   ⚠️ 三个与别处不同的地方，都是刻意的：
+     1. 卡片是**纵向**的（别处是横向的图标 + 文字）。视频的嵌入框必须
+        占满卡片宽度，否则 16:9 的播放器会缩成一条缝。
+     2. 这里有一处**每个平台自己的强调色**。全站的颜色语言是 MC 的
+        （草绿 / 金 / 钻石青），但视频是被嵌入的第三方内容 ——
+        用户需要一眼分清"这是 B站 还是 YouTube"，而那个区分
+        只有平台自己的颜色能给出。它们只用在很小的面积上（一个角标、
+        门面的一条渐变），不参与整站的视觉语言。
+     3. 没有封面图。理由见 VideoEmbed.tsx：铁律是不抓任何元数据。
+   ================================================================== */
+
+.video-wall {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 18px;
+  /* 比资源库的卡片宽（360 → 400）：嵌入框一窄，播放器里的控件就挤成一团 */
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+.video-wall > li {
+  display: flex;
+}
+
+.video-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 15px;
+  box-shadow: var(--sh-1);
+  transition:
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease);
+}
+.video-card:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+/* 被隐藏的视频只会出现在「我贴的」里。降饱和 + 虚线边，一眼看出
+   "这条现在不在站上"—— 否则作者看到的是一个和别的卡片长得一样的条目，
+   而墙上其实一条都没有。 */
+.video-card--hidden {
+  opacity: 0.72;
+  border-style: dashed;
+}
+.video-card--hidden .video-card__title {
+  color: var(--fg-muted);
+}
+
+.video-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.video-card__title {
+  flex: 1 0 100%;
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.8;
+  color: var(--fg);
+  /* 标题可能很长，而且它是卡片上唯一区分两条视频的东西 —— 允许折两行，
+     但不要让它把嵌入框挤下去 */
+  overflow-wrap: anywhere;
+}
+
+.video-card__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+/* 作者名是一个按钮（点了按作者筛选），但要长得像一段文字 ——
+   做成明显的按钮会让整张卡片看起来有第二个主操作。 */
+.video-card__author {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--diamond);
+  cursor: pointer;
+  text-decoration: none;
+}
+.video-card__author:hover {
+  text-decoration: underline;
+}
+.video-card__date {
+  margin-left: auto;
+  color: var(--fg-faint);
+}
+
+.video-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.video-card__confirm {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+}
+.video-card__ok {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--grass-bright);
+}
+
+/* ---- 嵌入框 ---- */
+.video-embed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.video-embed__frame {
+  position: relative;
+  width: 100%;
+  /* 16:9。骨架块复用同一个盒子，所以数据到达时不会跳版 */
+  aspect-ratio: 16 / 9;
+  background: var(--bg-deep);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.video-embed__iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+/* 门面：可点的按钮，占满整个 16:9 盒子 */
+.video-embed__facade {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  cursor: pointer;
+  background:
+    radial-gradient(80% 90% at 50% 0%, rgba(255, 255, 255, 0.06), transparent 70%),
+    var(--bg-deep);
+}
+.video-embed__facade:disabled {
+  cursor: not-allowed;
+  color: var(--fg-faint);
+}
+/* 平台的强调色只出现在这条 3px 的上边线上 —— 面积小到不参与整站配色，
+   但足够让两个平台的卡片在一屏里能被区分开。 */
+.video-embed__facade--bilibili {
+  box-shadow: inset 0 3px 0 0 #fb7299;
+}
+.video-embed__facade--youtube {
+  box-shadow: inset 0 3px 0 0 #ff4d4d;
+}
+.video-embed__facade--twitch {
+  box-shadow: inset 0 3px 0 0 #9146ff;
+}
+.video-embed__facade:hover:not(:disabled) {
+  background:
+    radial-gradient(80% 90% at 50% 0%, rgba(255, 255, 255, 0.11), transparent 70%),
+    var(--bg-deep);
+}
+
+/* 播放三角 —— 用 CSS 画，不用 ▶。
+   ⚠️ U+25B6 不在自托管像素字体的子集里，用它会在门面正中掉回系统字体，
+      而那是整张卡片上最显眼的一个元素。 */
+.video-embed__playshape {
+  width: 0;
+  height: 0;
+  border-left: 18px solid var(--fg);
+  border-top: 11px solid transparent;
+  border-bottom: 11px solid transparent;
+  filter: drop-shadow(1px 2px 0 rgba(0, 0, 0, 0.5));
+  transition: transform var(--t) var(--ease);
+}
+.video-embed__facade:hover:not(:disabled) .video-embed__playshape {
+  transform: scale(1.12);
+}
+
+.video-embed__badge {
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+}
+.video-embed__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow-wrap: anywhere;
+}
+.video-embed__start {
+  color: var(--gold);
+}
+.video-embed__hint {
+  color: var(--fg-faint);
+  font-size: var(--fs-px-sm);
+}
+
+.video-embed__out {
+  align-self: flex-start;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.video-embed__out:hover {
+  color: var(--grass-bright);
+}
+
+/* ---- 提交面板 ---- */
+.video-form {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px;
+  margin-bottom: 22px;
+  box-shadow: var(--sh-2);
+}
+.video-form__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.video-form__title {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-lg);
+  color: var(--fg);
+}
+/* 解析结果：粘贴是否成功的直接证据。绿色=读到了，灰色=还没有。 */
+.video-form__recognized {
+  margin: 6px 0 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--grass-bright);
+  overflow-wrap: anywhere;
+}
+.video-form__recognized--no {
+  color: var(--fg-faint);
+}
+/* 平台不支持跳转时，把那一栏的提示改成金色警示色。
+   文案本身（"这个值会被保存但播放时不会生效"）由 VideoForm 给，
+   这里只负责让它看起来像一条警告而不是一条普通说明。 */
+.video-form__unsupported .mcsr-field__hint {
+  color: var(--gold);
+}
+
+/* ---- 「视频墙 / 我贴的」切换 ---- */
+.video-viewswitch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+}
+.video-viewswitch__item {
+  border: 0;
+  background: none;
+  padding: 5px 16px;
+  border-radius: var(--r-pill);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    background var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+.video-viewswitch__item:hover {
+  color: var(--fg);
+}
+.video-viewswitch__item.is-active {
+  background: var(--surface-3);
+  color: var(--grass-bright);
+}
+
+/* 操作结果提示条上的关闭按钮。
+   它长在 .notice 里面，所以自己得把那条细线的样式清掉 ——
+   notice 默认是给整段文字用的，里面出现一个按钮是它没预料到的用法。 */
+.video-flash__close {
+  float: right;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  margin-left: 10px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+.video-flash__close:hover {
+  color: var(--fg);
+}
+
+/* ---- 骨架 ---- */
+.video-skel__title {
+  height: 14px;
+  width: 70%;
+  margin-bottom: 12px;
+}
+/* 高度必须和真实嵌入框一致（16:9）：对不上的话，数据到达时整页会跳一下 ——
+   而那正是加载骨架想避免的事。 */
+.video-skel__box {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-bottom: 12px;
+}
+
+
+/* ==================================================================
+   Ranked Seeds 检索页（M4）
+   ==================================================================
+
+   这一页有两处排版不是在追求好看，而是在防两种具体的错误：
+
+     · **种子值必须是好挑选的连续文本**。它是 19 位数字，用户唯一的
+       用法就是"整段复制走"。所以那一行用等宽字体、不折行、
+       `user-select: all`（点一下选中整段）—— 复制按钮失败时，
+       手动选中仍然是可行的退路，而"选不全"正是那条退路最容易失败的地方。
+
+     · **变种词条按分组折叠**，而不是平铺。四十多个词条一起出现时，
+       用户的反应不是"慢慢找"，而是"这个功能太乱"。
+
+   类名一律 `seed__` 前缀：本仓的样式是全局的，没有 CSS Modules 兜着。
+   ================================================================== */
+
+.seed__block {
+  margin: 26px 0;
+}
+.seed__blocktitle {
+  margin: 0 0 6px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-lg);
+  color: var(--fg);
+}
+
+/* 社区种子分享那一块：**故意弱化**，让它一眼就看得出"现在还用不了"，
+   而不是靠一句小字说明。降透明度 + 虚线边框是这个仓库里
+   "存在但未启用"的既有写法（见 .resource-card--hidden）。 */
+.seed__block--soon {
+  padding: 16px 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  opacity: 0.72;
+}
+.seed__block--soon .seed__blocktitle {
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+
+/* ---- 筛选面板 ---- */
+
+.seed__filters {
+  padding: 16px 18px;
+  margin: 12px 0 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.seed__variations {
+  margin-top: 8px;
+}
+.seed__variationshead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.seed__count {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+}
+
+/* 分组头。整行可点，因为它同时是"展开"和"这个分组里选了几条"的显示位。 */
+.seed__group {
+  border-top: 1px solid var(--line);
+}
+.seed__group:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+.seed__grouphead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 2px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.seed__grouphead:hover {
+  color: var(--fg);
+}
+/* 展开标记固定宽度：不固定的话，"+"/"-" 宽度不同会让分组名左右抖动 */
+.seed__grouptoggle {
+  display: inline-block;
+  width: 12px;
+  color: var(--fg-faint);
+}
+
+.seed__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0 12px 20px;
+}
+
+/* 词条 chip。**按原文显示**（命名空间 id），所以用等宽字体：
+   比例字体下 `biome:structure:snowy_tundra` 里的下划线和冒号会糊在一起，
+   而用户要拿它和自己心里想的那一条逐字对比。 */
+.seed__chip {
+  padding: 4px 9px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.seed__chip:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+.seed__chip.is-on {
+  color: var(--grass-ink);
+  background: var(--grass);
+  border-color: transparent;
+}
+
+/* ---- 动作行 ---- */
+
+.seed__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+/* ---- 命中数 / 结果过期 ---- */
+
+.seed__hits {
+  margin: 10px 0 6px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+}
+/* ⚠️ 用金色而不是红色：这不是错误，是"这条结果不属于你现在的条件"。
+   红色会让人以为查询失败了，而它其实好好地摆在那里。 */
+.seed__stale {
+  margin: 0 0 10px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--gold);
+}
+
+/* ---- 结果卡片 ---- */
+
+.seed__card {
+  padding: 16px 18px;
+  margin: 12px 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.seed__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-bottom: 12px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.seed__metaitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.seed__matchid {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+
+.seed__values {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ⚠️ 三个值竖排、每个占一行，而不是横排成三列：
+   19 位数字横排时在窄屏上会折行，而**折行过的数字是不能复制的** ——
+   用户选中的是两行，粘出去中间多一个换行符，Minecraft 直接不认。
+   竖排是唯一能保证"值永远是一整段"的排法。 */
+.seed__value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-deep);
+  border-radius: var(--r-sm);
+}
+.seed__value--missing {
+  background: none;
+  border: 1px dashed var(--line);
+}
+.seed__valuelabel {
+  flex: 0 0 72px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+.seed__digits {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--fg);
+  /* 点一下选中整段 —— 复制按钮万一失败（不安全上下文 + execCommand 被禁），
+     这是用户唯一的退路，"选不全"会让那条退路也断掉。 */
+  user-select: all;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+.seed__missing {
+  color: var(--fg-faint);
+  font-size: var(--fs-px-sm);
+}
+/* 复制按钮跟着值走，不占满整行 —— 三个值各有一个，做大了会喧宾夺主。 */
+.seed__copy {
+  flex: 0 0 auto;
+}
+
+/* ---- 结构与变种 ---- */
+
+.seed__info {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.seed__infotitle {
+  margin: 0 0 10px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+.seed__infolist {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 14px;
+  font-size: 14px;
+}
+.seed__infolist dt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.seed__infolist dd {
+  margin: 0;
+  color: var(--fg);
+}
+.seed__towers {
+  font-family: var(--font-mono);
+  color: var(--gold);
+}
+
+.seed__variationlist {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.seed__tag {
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+}
+/* 提示文字要独占一行 —— 混在 chip 流里会被当成又一个词条 */
+.seed__variationlist .mcsr-field__hint {
+  flex: 1 0 100%;
+  margin: 6px 0 0;
+}
+
+/* ---- 按比赛 ID 查 ---- */
+
+.seed__lookuprow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+  max-width: 460px;
+}
+.seed__lookuprow .mcsr-field__input {
+  flex: 1 1 200px;
+}
+
+/* ⚠️ 404 那一块**不能**长成错误提示条的样式（红底）。
+   上游只覆盖约 80%，"这条不在库里"是常态 —— 做成红色会让用户以为
+   是自己操作错了或者站点坏了，而事实是它本来就查不到。
+   用中性的边框 + 一个明确的下一步（补录）来表达"这是一条信息"。 */
+.seed__notfound {
+  padding: 14px 16px;
+  margin: 10px 0;
+  background: rgba(74, 237, 217, 0.06);
+  border-left: 3px solid var(--diamond);
+  border-radius: var(--r-sm);
+}
+.seed__notfoundtitle {
+  margin: 0 0 6px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+}
+
+/* ---- 补录表单 ---- */
+
+.seed__saveform {
+  margin-top: 12px;
+}
+.seed__saveform .notice {
+  margin-bottom: 12px;
 }

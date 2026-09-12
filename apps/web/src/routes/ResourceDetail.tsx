@@ -1,18 +1,24 @@
 import type { ResourceDetail as Resource } from '@mcsr/shared/resources';
 import { useTranslation } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
 import { Link, useParams } from 'react-router';
-import rehypeSanitize from 'rehype-sanitize';
-import remarkGfm from 'remark-gfm';
+import { Markdown } from '@/components/Markdown';
+import { MarksPanel, RatingStars } from '@/components/MarksPanel';
+import { ModerationBar } from '@/components/ModerationBar';
 import { ResourceCard } from '@/components/ResourceCard';
 import { ResourceIcon } from '@/components/ResourceIcon';
 import { ApiError, fetchResource, fetchResources } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { useCan } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 export function ResourceDetailPage() {
   const { t } = useTranslation();
   const { id = '' } = useParams();
   const state = useAsync<Resource>((signal) => fetchResource(id, signal), [id]);
+  // 只为了决定"建议修改"按不按钮显示
+  const auth = useAuth();
+  // "这是不是内容编辑" —— editUnpublished 恰好只有 editor / admin 有
+  const isContentEditor = useCan('resource.editUnpublished');
 
   if (state.status === 'loading') {
     return <p className="state">{t('resources.loading')}</p>;
@@ -58,6 +64,8 @@ export function ResourceDetailPage() {
             {r.official ? (
               <span className="badge badge--official">{t('resources.official')}</span>
             ) : null}
+            {/* 平均分是公开信息，放在徽章那一排里 —— 它是"这条内容值不值得点"的一部分 */}
+            <RatingStars rating={r.rating} />
             <span className="badge badge--kind">
               {r.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}
             </span>
@@ -70,11 +78,41 @@ export function ResourceDetailPage() {
             {t('resources.visit')} ↗
           </a>
 
+          {/*
+            修改入口。**文案按能力区分**：
+
+              · 内容编辑 / 管理员 → 「修改」（这是他们的日常工作）
+              · 普通用户         → 「建议修改」
+
+            ⚠️ 两者点到的是**同一个页面、同一套流程**（都要过审核）——
+               区别只在用词。为什么不给 editor 一条"直接生效"的捷径：
+               审核的意义是"改动有第二个人看过"，而 editor 自己**本来就有审核权**
+               （他可以改完直接去队列里批掉自己的那一版，见下面的提示）。
+               与其造一条绕过审核的暗道，不如让两步都看得见。
+
+            已登录且邮箱已验证才显示：这是提交类动作的共同门槛，
+            和服务端 checkPermission 用的是同一份矩阵。
+          */}
+          {auth.user?.emailVerified ? (
+            <div className="detail__actions">
+              <Link className="ghostbtn" to={`/resources/${encodeURIComponent(r.id)}/edit`}>
+                {isContentEditor ? t('edit.modifyAction') : t('edit.suggestAction')}
+              </Link>
+              {isContentEditor ? (
+                <span className="detail__actions-hint">{t('edit.editorHint')}</span>
+              ) : null}
+            </div>
+          ) : null}
+
           <p className="detail__updated">
             {t('resources.lastUpdated', { date: new Date(r.updatedAt).toLocaleDateString() })}
           </p>
         </div>
       </header>
+
+      <MarksPanel resourceId={r.id} rating={r.rating} />
+
+      <ModerationBar resource={r} />
 
       {r.tags.length > 0 ? (
         <div className="detail__tags">
@@ -128,27 +166,14 @@ export function ResourceDetailPage() {
       {/*
         ⚠️ Markdown 必须经过 rehype-sanitize 再渲染。
 
-        body 是**用户/管理员提交的内容**，而 react-markdown 默认允许原始 HTML。
+        body 是**用户提交的内容**，而 react-markdown 默认允许原始 HTML。
         不过滤的话，一个 <img onerror=...> 就能在每个访问者浏览器里执行脚本。
-        M2 开放用户提交之后，这条防线会变成必需项 —— 现在就先装上，免得那时候忘记。
+
+        这段过滤现在收在 components/Markdown.tsx 里，是**唯一**的渲染入口 ——
+        详情页、提交预览、审核对比都走它。以前这里也有一份自己的配置，
+        于是"新页面忘了写 rehypePlugins"就成了一种不会报错的漏洞。
       */}
-      <div className="markdown">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
-          components={{
-            // 正文里的链接一律新窗口打开，并带上 noopener/noreferrer：
-            // 否则被链接的页面能通过 window.opener 操作我们的页面。
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer nofollow">
-                {children}
-              </a>
-            ),
-          }}
-        >
-          {r.body}
-        </ReactMarkdown>
-      </div>
+      <Markdown>{r.body}</Markdown>
 
       <RelatedResources currentId={r.id} tag={r.tags[0]} />
     </article>

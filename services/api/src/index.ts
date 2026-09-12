@@ -14,8 +14,15 @@ import { getDb } from './db';
 import { checkMailConfig, mailDriverName } from './email/transport';
 import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
+import { calendarRoute } from './routes/calendar';
 import { desktopRoute } from './routes/desktop';
+import { marksRoute } from './routes/marks';
+import { moderationRoute } from './routes/moderation';
 import { resourcesRoute } from './routes/resources';
+import { reviewRoute } from './routes/review';
+import { seedsRoute } from './routes/seeds';
+import { uploadsRoute } from './routes/uploads';
+import { videosRoute } from './routes/videos';
 import { deleteExpiredSessions } from './users';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10);
@@ -27,7 +34,18 @@ const SERVICE_VERSION = '0.3.0-m2';
 
 export const app = new Hono<{ Variables: AuthVariables }>();
 
-app.use('*', logger());
+/*
+ * ⚠️ 测试环境下**不打 HTTP 日志**。
+ *
+ * 它是测试输出里最大的一块（758 行 / 整套 133 KB），而没有任何测试读它。
+ * 代价不只是"吵"：Windows 匿名管道缓冲区只有几十 KB，子进程写满就阻塞
+ * 事件循环，于是它发给 `node --test` 运行器的 IPC 消息被拖到错位，
+ * 运行器报出 "Unable to deserialize cloned data" ——
+ * 一个看起来像并发问题、实际是输出堵管道的假故障。
+ */
+if (process.env.NODE_ENV !== 'test') {
+  app.use('*', logger());
+}
 
 // 基础安全响应头。这里刻意不覆盖任何策略：
 //   - 面向浏览器的 CSP / Referrer-Policy 统一由 Caddy 设置（见 deploy/Caddyfile），
@@ -107,12 +125,45 @@ app.use('/api/*', loadUser);
 
 app.route('/api/auth', authRoute);
 app.route('/api/resources', resourcesRoute);
+// 图片上传与读取。挂成独立的 /api/uploads，因为它的读写规则
+// （登录+验证才能写、公开才能读、永久缓存）和资源库完全不同。
+app.route('/api/uploads', uploadsRoute);
+// 内容治理（精选 / 官方 / 下架）。和审核分开：审核作用在**待审版本**上，
+// 治理直接作用在**线上那一行**上 —— 见 routes/moderation.ts 的文件头。
+app.route('/api', moderationRoute);
+// 个人标记（收藏 / 备注 / 评分）。挂在 /api 上是因为它的路径跨两类：
+// /resources/:id/marks（某条内容上的）和 /me/favorites（某个人的列表）。
+app.route('/api', marksRoute);
 // 审核类接口（需要 reviewer / admin 角色）集中在 routes/admin.ts。
 // 挂在 /api 上是因为它们的路径是 /admin/queue 与 /resources/:id/approve ——
 // 后者与上面那条不冲突：路径段数不同，而且方法是 POST vs GET/PATCH。
 app.route('/api', adminRoute);
 // 桌面客户端的分发信息（公开读）。见 routes/desktop.ts 的文件头。
 app.route('/api', desktopRoute);
+// 通用审核接口（跨内容类型）。加一类内容要改的是 review/registry.ts，
+// 不是这里 —— 见 routes/review.ts 的文件头。
+app.route('/api', reviewRoute);
+// 日历。挂在 /api 上，因为订阅链接是 **/api/calendar.ics**（带后缀才像文件，
+// 有的日历客户端会按扩展名决定怎么解析它），而事件接口是 /api/calendar。
+// 两者用同一个 route 文件，路径不共享前缀，所以挂在这里而不是 /api/calendar。
+app.route('/api', calendarRoute);
+// 视频墙。挂 /api 是因为路由自带 /videos 前缀（与 marks / calendar 一致）。
+// ⚠️ 视频**不进审核队列**（用户 Q6 确认）：本体托管在 B站/YouTube，我们只存 ID，
+// 标题是唯一自由文本；事后手段是作者可删、有 resource.moderate 的人可隐藏。
+app.route('/api', videosRoute);
+/*
+ * Ranked Seeds 的上游代理。
+ *
+ * ⚠️ 它存在的**唯一**理由是：上游是 HTTP（198.51.100.20:8001），而我们站点是 HTTPS ——
+ *    浏览器会直接拦掉混合内容，而报出来的错看起来像 CORS 配置问题，
+ *    很容易被误判成"上游挂了"。服务端到服务端不受这个限制。
+ *    实测上游也没有任何 CORS 头，所以跨域调用本来也不可能。
+ *
+ * ⚠️ 挂载点写全（/api/ranked-seeds），因为 route 文件里用的是相对路径
+ *    （/random、/search、/match/:matchId）—— 和上面 videosRoute 自带前缀的写法**相反**。
+ *    这两种写法不能混：混了的症状是整组路由一起 404，而不是某个端点 404。
+ */
+app.route('/api/ranked-seeds', seedsRoute);
 
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。

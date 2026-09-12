@@ -18,12 +18,31 @@
     "踩坑记录：`pnpm test` 长期是红的，但手动跑 `tsx --test src/resources.test.ts` 全绿 ——",
     "当时把这归因于 glob 写法，其实是这个。content:import 当年也是因此被迫绕开 tsx。"
   ],
+  "//test-concurrency": [
+    "`--test-concurrency=2` 是一个**资源上限**，不是某个 bug 的修法。",
+    "",
+    "⚠️ 这里一度写着它是为了修 'Unable to deserialize cloned data' 抖动 ——",
+    "**那个结论是错的**。当时只在 4 次样本上比较过，而那个抖动是输出相关的：",
+    "整套测试输出 133 KB（758 行 HTTP 日志 + 668 行邮件全文），",
+    "Windows 匿名管道缓冲区只有几十 KB，子进程写满就阻塞事件循环，",
+    "它发给 node --test 运行器的 IPC 消息因此错位，报出那句看不懂的错误。",
+    "把并发从 8 降到 2 **治不好**它（实测 6 次里照样抖 3 次）。",
+    "",
+    "真正的修法在另外两处（现已生效，实测 6/6 全绿）：",
+    "  · index.ts 在 NODE_ENV=test 时不挂 HTTP 日志中间件",
+    "  · email/transport.ts 的 console 驱动在测试下只打一行",
+    "降到 32.8 KB 之后，管道不再被写满。",
+    "",
+    "保留并发=2 是因为这台开发机内存本来就紧（8G，常驻只剩 1.6G），",
+    "并发低一点测试跑得更稳、也不影响速度（整套仍然几秒）。",
+    "要调高之前先确认峰值内存扛得住，而不是为了『更快』。"
+  ],
   "scripts": {
     "dev": "node --watch --import tsx src/index.ts",
     "build": "node build.mjs",
     "start": "node dist/server.js",
     "content:import": "node --import tsx src/import.ts --file ../../content/resources.json",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "test": "node --import tsx --test --test-concurrency=2 \"src/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

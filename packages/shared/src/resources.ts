@@ -30,7 +30,8 @@ const TITLE_MAX = 120;
 const SUMMARY_MAX = 300;
 const BODY_MAX = 40_000;
 const TAG_MAX_LEN = 32;
-const TAGS_MAX = 12;
+/** 标签数量上限。导出是给界面用的 —— 超过它就该在点之前拦住，而不是提交后才报错。 */
+export const TAGS_MAX = 12;
 
 /**
  * URL 校验。
@@ -135,13 +136,99 @@ export const ResourceSchema = z.object({
 
 export type Resource = z.infer<typeof ResourceSchema>;
 
+/**
+ * 评分聚合。
+ *
+ * ⚠️ **只有平均值和人数是公开的，谁给了几分不公开**。
+ *    逐个列出评分人就变成了评论系统 —— 那需要另一套东西
+ *    （回复、举报、审核），是另一件事。
+ *
+ * ⚠️ `average` 为 null 表示**还没有人评过分**，不是 0 分。
+ *    界面上这两种情况的显示完全不同（"暂无评分" vs "0.0"）。
+ */
+export const RatingSummarySchema = z.object({
+  /** 平均分，保留一位小数；没人评分时为 null */
+  average: z.number().nullable(),
+  count: z.number().int().nonnegative(),
+});
+export type RatingSummary = z.infer<typeof RatingSummarySchema>;
+
 /** 列表项：**不含 body**，避免列表接口把几十 KB 的正文全传下来。 */
-export const ResourceListItemSchema = ResourceSchema.omit({ body: true });
+export const ResourceListItemSchema = ResourceSchema.omit({ body: true }).extend({
+  rating: RatingSummarySchema,
+});
 export type ResourceListItem = z.infer<typeof ResourceListItemSchema>;
 
 /** 详情：完整对象。 */
-export const ResourceDetailSchema = ResourceSchema;
+export const ResourceDetailSchema = ResourceSchema.extend({
+  rating: RatingSummarySchema,
+});
 export type ResourceDetail = z.infer<typeof ResourceDetailSchema>;
+
+// ---------------------------------------------------------------------------
+// 个人标记：收藏 / 备注 / 评分
+// ---------------------------------------------------------------------------
+
+/** 个人备注的长度上限。它只给自己看，所以可以比公开内容宽松一点。 */
+export const PERSONAL_NOTE_MAX = 1000;
+
+export const RATING_MIN = 1;
+export const RATING_MAX = 5;
+
+/** 我对某条内容的标记。没标记过时三项都是"空"。 */
+export const ResourceMarksSchema = z.object({
+  favorite: z.boolean(),
+  /** 个人备注 —— **只有本人能读到** */
+  note: z.string().nullable(),
+  /** 1–5；null = 没评过 */
+  rating: z.number().int().min(RATING_MIN).max(RATING_MAX).nullable(),
+  updatedAt: z.number().int(),
+});
+export type ResourceMarks = z.infer<typeof ResourceMarksSchema>;
+
+/**
+ * 设置标记。
+ *
+ * ⚠️ 三个字段都是**可选**的，只改传了的那个 —— 和 setResourceFlags 同理：
+ *    把"没传"当成 false/null 的话，一次"取消收藏"会把备注和评分一起清掉，
+ *    而界面上只表现为"我点了一个按钮"。
+ */
+export const MarksInputSchema = z.object({
+  favorite: z.boolean().optional(),
+  note: z.string().trim().max(PERSONAL_NOTE_MAX).nullable().optional(),
+  rating: z.number().int().min(RATING_MIN).max(RATING_MAX).nullable().optional(),
+});
+export type MarksInput = z.infer<typeof MarksInputSchema>;
+
+/** 我的收藏列表里的一项：标记 + 内容摘要（够渲染一张卡片就行）。 */
+export const FavoriteItemSchema = z.object({
+  id: z.string(),
+  kind: z.enum(RESOURCE_KINDS),
+  title: z.string(),
+  url: z.string(),
+  imageUrl: z.string().nullable(),
+  summary: z.string().nullable(),
+  /** 线上是否可见 —— 被下架的条目仍留在收藏里，但不该点进去 */
+  published: z.boolean(),
+  marks: ResourceMarksSchema,
+});
+export type FavoriteItem = z.infer<typeof FavoriteItemSchema>;
+
+/**
+ * 「用来编辑的那一份」：详情 + 当前的待审状态。
+ *
+ * ⚠️ `pendingRevision` 只在编辑接口上返回，**不进公开的详情响应**。
+ *    它要回答的是编辑页最先需要知道的那个问题：
+ *    **"现在有没有别人已经提了一份修改在等审核？"**
+ *
+ *    没有它的话，第二个人会把整张表单填完、点提交，然后才拿到 409 ——
+ *    而那时他的工作已经白做了。同一条内容被两个人同时改，
+ *    唯一正确的做法是**在他动手之前**就告诉他。
+ */
+export type EditableResource = ResourceDetail & {
+  /** 待审的版本号；null = 现在没有人提改动，可以改 */
+  pendingRevision: number | null;
+};
 
 // ---------------------------------------------------------------------------
 // 查询参数
@@ -255,6 +342,20 @@ export type RevisionStatus = (typeof REVISION_STATUSES)[number];
  *    把它们排除在输入 schema 之外，而不是"收到了但忽略" ——
  *    后者会让攻击者以为字段生效了，也让读代码的人以为可以传。
  */
+
+/**
+ * 提交时附给审核员的一句话的上限。
+ *
+ * ⚠️ 它**不是正文**：不存在 resources 行上，永远不会出现在公开页面上。
+ *    放得宽一点没意义 —— 它不是用来写内容的，是用来解释"这次改了什么、
+ *    哪里我不确定、上次那处改了没有"。超过几百字的话，审核员也不会读。
+ *
+ * ⚠️ 必须声明在 ResourceSubmissionSchema **之前** —— schema 里要用到它。
+ *    （放到后面会得到一个"变量在声明前被使用"的编译错误，看起来像循环依赖，
+ *    其实只是顺序。）
+ */
+export const NOTE_MAX = 500;
+
 export const ResourceSubmissionSchema = z.object({
   kind: z.enum(RESOURCE_KINDS),
   title: z.string().trim().min(1).max(TITLE_MAX),
@@ -265,8 +366,54 @@ export const ResourceSubmissionSchema = z.object({
   body: z.string().max(BODY_MAX),
   lang: z.enum(LOCALES),
   tags: z.array(tag).max(TAGS_MAX).default([]),
+  /**
+   * 给审核员的一句话。可选，不进正文、不上线。
+   *
+   * 有用的典型场景：这是对已上架条目的修改（说明改了什么）、
+   * 上一轮被驳回后重新提交（说明那处怎么改的）、
+   * 或者来源存疑让审核员留个心。
+   */
+  note: z.string().trim().max(NOTE_MAX).nullable().optional(),
 });
 export type ResourceSubmission = z.infer<typeof ResourceSubmissionSchema>;
+
+// ---------------------------------------------------------------------------
+// 图片上传
+// ---------------------------------------------------------------------------
+
+/** 单张图片的大小上限。 */
+export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 允许的图片类型。
+ *
+ * ⚠️ 这个白名单里**没有 SVG**，而且不能加。
+ *    SVG 是 XML，可以内嵌 <script>；它一旦被当作图片直接提供出去，
+ *    就是一条在我们域名下执行的 XSS。栅格图（png/jpg/webp/gif）没有这个问题。
+ *    （服务端还会按**文件头**再验一次，不信客户端说的 content-type。）
+ */
+export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+export type ImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
+
+/** 上传成功的返回。`url` 是站内绝对路径，直接存进 imageUrl 就行。 */
+export const UploadResponseSchema = z.object({
+  url: z.string(),
+  mime: z.enum(IMAGE_MIME_TYPES),
+  size: z.number().int().positive(),
+});
+export type UploadResponse = z.infer<typeof UploadResponseSchema>;
+
+/**
+ * 下架 / 恢复。
+ *
+ * 用一个布尔 `published` 而不是 `hidden` —— 请求里说的是**想要的结果**
+ * （"让它在站上可见"），而不是"给我把那个标志位翻一下"。
+ * 后者在重试、并发、或者用户连点两次时会得到相反的结果。
+ */
+export const ResourceVisibilitySchema = z.object({
+  published: z.boolean(),
+});
+export type ResourceVisibility = z.infer<typeof ResourceVisibilitySchema>;
 
 /** 审核驳回时必须给理由 —— 没有理由的驳回等于让作者瞎猜。 */
 export const REJECT_REASON_MAX = 500;
@@ -320,3 +467,37 @@ export const ReviewQueueResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type ReviewQueueResponse = z.infer<typeof ReviewQueueResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// 我的提交
+// ---------------------------------------------------------------------------
+
+/**
+ * 「我的提交」里的一行。
+ *
+ * ⚠️ 它**不能**复用 ResourceListItem：那个类型只描述**已发布**的内容，
+ *    而这里最关键的信息恰恰是未发布的那些状态（待审 / 已驳回）。
+ *
+ * `lastRejectReason` 是整个管线的闭环：审核员被强制写下的那句"需要改什么"，
+ * 唯一的读者就是作者。没有这个字段，写理由就是白写。
+ */
+export const MySubmissionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(CONTENT_STATUSES),
+  /** 待审的版本号；没有待审内容时为 null */
+  pendingRevision: z.number().int().positive().nullable(),
+  /** 线上版本号；从未发布过时为 null */
+  currentRevision: z.number().int().positive().nullable(),
+  updatedAt: z.number().int().nonnegative(),
+  /** 最近一次被驳回的理由（没有驳回记录时为 null） */
+  lastRejectReason: z.string().nullable(),
+  /** 最近一次审核动作的时间（通过或驳回）；还没被审过时为 null */
+  reviewedAt: z.number().int().nullable(),
+});
+export type MySubmission = z.infer<typeof MySubmissionSchema>;
+
+export const MySubmissionsResponseSchema = z.object({
+  items: z.array(MySubmissionSchema),
+});
+export type MySubmissionsResponse = z.infer<typeof MySubmissionsResponseSchema>;

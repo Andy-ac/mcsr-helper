@@ -10,7 +10,17 @@ import { ResourceIcon } from '@/components/ResourceIcon';
  * 结果是那一份只有标题可点、而且没有徽章。共用一个组件之后，
  * "点卡片任何位置都能跳转"这条对两个地方同时成立。
  */
-export function ResourceCard({ item }: { item: ResourceListItem }) {
+/**
+ * `hidden` 只由资源列表页在「显示已下架」模式下传进来（仅 editor / admin 能看到）。
+ * 它**不改数据**，只是让卡片看起来"不在站上"：降饱和 + 一个划掉的标记。
+ */
+export function ResourceCard({
+  item,
+  hidden = false,
+}: {
+  item: ResourceListItem;
+  hidden?: boolean;
+}) {
   const { t } = useTranslation();
   const titleId = `restitle-${item.id}`;
 
@@ -29,7 +39,7 @@ export function ResourceCard({ item }: { item: ResourceListItem }) {
         链接里的可见文字仍然是完整的，浏览模式下没有任何损失。
       */}
       <Link
-        className="rescard"
+        className={`rescard${hidden ? ' rescard--hidden' : ''}`}
         to={`/resources/${encodeURIComponent(item.id)}`}
         aria-labelledby={titleId}
         viewTransition
@@ -63,6 +73,10 @@ export function ResourceCard({ item }: { item: ResourceListItem }) {
             ) : null}
             {item.official ? (
               <span className="badge badge--official">{t('resources.official')}</span>
+            ) : null}
+            {/* 已下架：只有列表页在「显示已下架」模式下才会传 hidden=true */}
+            {hidden ? (
+              <span className="badge badge--hidden">{t('moderate.hiddenBadge')}</span>
             ) : null}
             <span className="badge badge--kind">
               {item.kind === 'tool' ? t('resources.kindTool') : t('resources.kindWebsite')}

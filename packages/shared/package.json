@@ -10,7 +10,11 @@
     "./resources": "./src/resources.ts",
     "./auth": "./src/auth.ts",
     "./permissions": "./src/permissions.ts",
-    "./desktop": "./src/desktop.ts"
+    "./desktop": "./src/desktop.ts",
+    "./review": "./src/review.ts",
+    "./calendar": "./src/calendar.ts",
+    "./calendar-time": "./src/calendar-time.ts",
+    "./videos": "./src/videos.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

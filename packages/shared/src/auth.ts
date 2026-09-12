@@ -98,6 +98,17 @@ export const RegisterInputSchema = z.object({
 export type RegisterInput = z.infer<typeof RegisterInputSchema>;
 
 /**
+ * 「重发验证邮件」的入参。
+ *
+ * ⚠️ 它**只需要邮箱**，不要密码 —— 这个接口的调用者恰恰是
+ *    "登录被拒、进不来"的那些人，而"能收到这个邮箱的信"本身就是
+ *    他拥有这个邮箱的证明。
+ */
+export const VerifyResendInputSchema = z.object({
+  email: EmailSchema,
+});
+
+/**
  * 登录入参。
  *
  * ⚠️ 这里的 `email` **不做归一化**（不转小写、不 trim 之后才比）。

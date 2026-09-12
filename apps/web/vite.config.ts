@@ -19,12 +19,22 @@ export default defineConfig({
       //    "Could not load ../../packages/shared/src/index.ts/resources"，
       //    看起来像路径写错，实际是别名顺序问题。
       //    **子路径必须排在裸包名前面**，新增子路径导出时要记得在这里补一条。
+      //
+      // ⚠️ 同理，**长的子路径要排在短的子路径前面**：
+      //    `@mcsr/shared/calendar` 会把 `@mcsr/shared/calendar-time`
+      //    拼成 `.../calendar.ts-time`（os error 3）。
+      //    2026-09 M4 加日历时踩到了这一条 —— 注意它和上面那条**不是**同一件事，
+      //    一条是"裸包名吃掉子路径"，一条是"子路径吃掉更长的子路径"。
+      '@mcsr/shared/calendar-time': resolvePath('../../packages/shared/src/calendar-time.ts'),
+      '@mcsr/shared/calendar': resolvePath('../../packages/shared/src/calendar.ts'),
+      '@mcsr/shared/videos': resolvePath('../../packages/shared/src/videos.ts'),
       '@mcsr/shared/seed': resolvePath('../../packages/shared/src/seed.ts'),
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
       '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
       '@mcsr/shared/auth': resolvePath('../../packages/shared/src/auth.ts'),
       '@mcsr/shared/permissions': resolvePath('../../packages/shared/src/permissions.ts'),
       '@mcsr/shared/desktop': resolvePath('../../packages/shared/src/desktop.ts'),
+      '@mcsr/shared/review': resolvePath('../../packages/shared/src/review.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

@@ -400,6 +400,14 @@ export function setUserRole(userId: string, role: string, _now: number): void {
 }
 
 /** 管理员人数。"不能降级最后一个管理员"那条锁定保护要查它。 */
+/** 有多少个所有者。和 countAdmins 一起决定"还有没有人能改角色"。 */
+export function countOwners(): number {
+  const row = getDb().prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'owner'").get() as
+    | { n: number }
+    | undefined;
+  return Number(row?.n ?? 0);
+}
+
 export function countAdmins(): number {
   const row = getDb()
     .prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'")

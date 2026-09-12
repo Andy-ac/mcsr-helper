@@ -167,7 +167,38 @@ async function registerUser(email = uniqueEmail()) {
   return { res, email };
 }
 
+/**
+ * 把邮箱直接标记为已验证。
+ *
+ * ⚠️ 2026-09-12 起，"邮箱没验证就不能登录"是产品行为
+ *    （见 routes/auth.ts 里那段注释）。而**这个文件测的不是那条策略** ——
+ *    它测的是密码哈希、会话 cookie、限流这些与验证无关的东西。
+ *    所以用例在这里直接把前置条件摆好，而不是每个用例都先走一遍验证流程。
+ *
+ *    那条策略本身由 services/api/src/verify-required.test.ts 专门覆盖。
+ */
+function markVerified(email: string): void {
+  /*
+   * ⚠️ 用 lower(?)，不要直接用传进来的邮箱：库里存的是小写形态，
+   *    而有的用例刻意传大写来测"大小写不影响登录" ——
+   *    直接比较会让那条用例里 UPDATE 匹配不到任何行，
+   *    表现为"登录被拒"，看起来像大小写处理坏了。
+   */
+  getDb()
+    .prepare('UPDATE users SET email_verified_at = ? WHERE email = lower(?)')
+    .run(Date.now(), email);
+}
+
 async function loginUser(email: string) {
+  /*
+   * ⚠️ 先标记为已验证再登录。
+   *
+   * 2026-09-12 起"邮箱没验证就不能登录"是产品行为（见 routes/auth.ts 的注释），
+   * 而这个文件测的是密码哈希、会话 cookie、限流这些**与验证无关**的东西 ——
+   * 前置条件在这里摆好比每个用例都先走一遍验证流程清楚得多。
+   * 那条策略本身由 verify-required.test.ts 专门覆盖。
+   */
+  markVerified(email);
   return call('POST', '/api/auth/login', { json: { email, password: GOOD_PASSWORD } });
 }
 
@@ -457,8 +488,15 @@ describe('会话', () => {
 
     assert.equal(res.status, 200);
     assert.equal(userOf(res).email, email);
-    assert.equal(userOf(res).emailVerified, false);
-    assert.equal(userOf(res).canSubmit, false, '未验证邮箱不应能提交');
+    /*
+     * ⚠️ 这两条断言的期望值在 2026-09-12 变过。
+     *    以前能测出"登录了但邮箱未验证"这个中间状态（验证挡的是提交、不是登录）；
+     *    现在**未验证根本登不进来**（见 routes/auth.ts 的注释），
+     *    所以任何登录成功的人都必然是已验证的 —— 中间状态不复存在。
+     *    "未验证不能登录"本身由 verify-required.test.ts 覆盖。
+     */
+    assert.equal(userOf(res).emailVerified, true);
+    assert.equal(userOf(res).canSubmit, true);
   });
 
   it('数据库里存的是 token 的哈希，不是明文', async () => {
@@ -562,10 +600,13 @@ describe('邮箱验证', () => {
     const { email } = await registerUser();
     const oldToken = tokenFrom(latestMail(), 'verify-email');
 
-    const login = await loginUser(email);
-    const cookie = cookiePair(login.setCookie);
-
-    const send = await call('POST', '/api/auth/verify/send', { cookie });
+    /*
+     * ⚠️ 这里**不能**先登录：新策略下未验证的账号登不进来，
+     *    而这条用例要的恰恰是一个"未验证 + 要重发"的账号。
+     *    所以改用那个不需要登录的重发接口（/verify/resend）——
+     *    它存在的理由正是这一条（见 routes/auth.ts 里那段注释）。
+     */
+    const send = await call('POST', '/api/auth/verify/resend', { json: { email } });
     assert.equal(send.status, 200);
 
     const newToken = tokenFrom(latestMail(), 'verify-email');
@@ -721,6 +762,12 @@ describe('CSRF：跨站请求被拒绝', () => {
 
   it('带本站 Origin 的 POST 正常放行', async () => {
     const { email } = await registerUser();
+    /*
+     * ⚠️ 这条测的是 **CSRF / Origin**，所以需要一次能成功的登录。
+     *    2026-09-12 起未验证的账号登不进来，于是这里先摆好前置条件 ——
+     *    否则它会因为"邮箱没验证"而失败，而那个失败和 CSRF 毫无关系。
+     */
+    markVerified(email);
     const res = await call('POST', '/api/auth/login', {
       json: { email, password: GOOD_PASSWORD },
       /*

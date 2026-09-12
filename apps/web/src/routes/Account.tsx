@@ -1,8 +1,9 @@
-import { capabilitiesByType } from '@mcsr/shared/permissions';
+import { capabilitiesByType, ROLE_LABEL_KEYS } from '@mcsr/shared/permissions';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
 import { Notice } from '@/components/Form';
+import { RoleGuide } from '@/components/RoleGuide';
 import { logout, sendVerifyEmail } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { describeCapabilities } from '@/lib/capabilities';
@@ -48,13 +49,21 @@ export function Account() {
     );
   }
 
-  const roleLabel =
-    user.role === 'admin'
-      ? t('auth.roleAdmin')
-      : user.role === 'reviewer'
-        ? t('auth.roleReviewer')
-        : t('auth.roleUser');
+  // ⚠️ 走共享的映射表，不要写三元链 —— 见 ROLE_LABEL_KEYS 的注释
+  const roleLabel = t(ROLE_LABEL_KEYS[user.role]);
 
+  /**
+   * 重发验证邮件。
+   *
+   * ⚠️ 未验证的账号现在已经**登不进来**了（服务端 routes/auth.ts 的"偏离三"），
+   *    所以这个按钮和下面那个"邮箱未验证"的分支在正常流程里**都到不了** ——
+   *    需要它的人根本进不到这个页面，他们走的是登录页上那块面板
+   *    （Login.tsx，用的是不需要登录的 /verify/resend）。
+   *
+   *    这里刻意**不删**：它是"验证位可以被撤销"这件事唯一的界面入口。
+   *    真要做换邮箱流程（改了邮箱就得重新验证）时，这个按钮就是现成的，
+   *    而那时"未验证"状态会重新变得可达。删掉它等于把那条路的后半截藏起来。
+   */
   async function onResend() {
     setNotice(null);
     setBusy(true);
@@ -166,6 +175,13 @@ export function Account() {
             </div>
           ))}
         </div>
+
+        {/*
+          「这五种身份分别能做什么」—— 紧跟在"我这一级能做什么"下面。
+          ⚠️ 顺序是有意的：先给用户看他**自己**的权限（他最关心的），
+             再给全景图。反过来的话，一屏的表格会把他自己的那两行冲掉。
+        */}
+        <RoleGuide />
 
         <div className="authform__actions">
           {!user.emailVerified ? (

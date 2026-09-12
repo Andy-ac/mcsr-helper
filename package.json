@@ -12,6 +12,7 @@
     "dev:web": "concurrently -n web,api -c cyan,yellow \"pnpm -F @mcsr/web dev\" \"pnpm -F @mcsr/api dev\"",
     "dev:api": "pnpm -F @mcsr/api dev",
     "dev:desktop": "pnpm -F @mcsr/desktop dev",
+    "dev:free": "node scripts/free-dev-ports.mjs",
     "build": "pnpm -F @mcsr/web build && pnpm -F @mcsr/api build && pnpm -F @mcsr/desktop build",
     "build:installer": "pnpm -F @mcsr/desktop dist",
     "typecheck": "pnpm -r --if-present typecheck",
