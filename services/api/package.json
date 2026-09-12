@@ -4,12 +4,26 @@
   "private": true,
   "type": "module",
   "main": "dist/server.js",
+  "//scripts": [
+    "⚠️ 这里的脚本**故意不使用 `tsx` 这个命令**，一律走 `node --import tsx`。",
+    "",
+    "原因：tsx 的 CLI 在真正执行你的代码时会 spawn 一个子 node 进程",
+    "（`tsx --version` 不 spawn，所以它看起来一切正常 —— 这正是这个坑难查的地方）。",
+    "而 pnpm 启动脚本时已经用管道接管了脚本的 stdio，子进程的 spawn 于是在管道上失败：",
+    "症状是**零输出、退出码 -1（4294967295）**，没有任何错误信息。",
+    "",
+    "`node --import tsx` 是在**当前进程内**注册 loader，不 spawn 子进程，因此不受影响；",
+    "而且行为与 `tsx` 完全一致（同一个包，同一个 loader）。",
+    "",
+    "踩坑记录：`pnpm test` 长期是红的，但手动跑 `tsx --test src/resources.test.ts` 全绿 ——",
+    "当时把这归因于 glob 写法，其实是这个。content:import 当年也是因此被迫绕开 tsx。"
+  ],
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node --watch --import tsx src/index.ts",
     "build": "node build.mjs",
     "start": "node dist/server.js",
-    "content:import": "tsx src/import.ts --file ../../content/resources.json",
-    "test": "tsx --test src/**/*.test.ts",
+    "content:import": "node --import tsx src/import.ts --file ../../content/resources.json",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
