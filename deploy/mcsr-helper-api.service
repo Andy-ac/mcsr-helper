@@ -32,21 +32,26 @@ Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
 
 # ---- 邮件（M2）----
 #
-# ⚠️ 发信域名**不能**是 cloud-ip.cc —— 它在 Spamhaus DBL 上被列名为
-#    phishing (127.0.0.1.4) + botnet C&C (127.0.0.1.6)。详见 docs/v1-plan.md §9.2。
-#    测投递率必须换一个干净域名；换域名只需要改下面这几行，代码不用动。
+# 发信走 mail.mcsrhelper.com 子域，SPF/DKIM/DMARC 都配在它上面 ——
+# 这样邮件声誉和站点声誉解耦：万一发信域被判垃圾，站点不受影响。
+# DNS 记录由 Resend 指定，配置过程见 docs/v1-plan.md §9.2。
 #
-# 下面三行是**故意注释掉**的：没配置时驱动是 console，验证邮件只会打进日志，
-# 而进程启动时会打印一条 ⚠️ 警告。这样"忘了配"是一个可见的状态，
-# 而不是"用户说他没收到邮件"。
-#
-# Environment=MCSR_MAIL_DRIVER=resend
-# Environment=MCSR_MAIL_FROM=noreply@mail.<你的干净域名>
-# Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
-# Environment=RESEND_API_KEY=re_xxxxxxxx
-#
-# 邮件里的链接指向哪里。不设时用 shared/constants.ts 里的 productionOrigin。
+# ⚠️ 域名必须和 packages/shared/src/constants.ts 的 SITE.mailSubdomain 一致。
 Environment=MCSR_PUBLIC_ORIGIN=https://mcsrhelper.com
+Environment=MCSR_MAIL_DRIVER=resend
+Environment=MCSR_MAIL_FROM=noreply@mail.mcsrhelper.com
+Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
+
+# ⚠️⚠️ 密钥**不在这里**，它在服务器上的独立文件：
+#         /etc/mcsr-helper/mail.env     （chmod 600，root 所有）
+#
+# 为什么不写在本单元里：本单元在版本库里，而 deploy.sh 每次部署都会把它同步到
+# 服务器。把 RESEND_API_KEY 写进来 = 把发信权限提交到 git 历史里，
+# 而且**删掉也还在历史里**。密钥只应该存在于它被使用的那台机器上。
+#
+# 文件格式见 deploy/mail.env.example。首次部署时手工创建一次。
+# 前缀的 `-` 表示"文件不存在也照常启动" —— 本地和其它环境没有这个文件。
+EnvironmentFile=-/etc/mcsr-helper/mail.env
 
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always

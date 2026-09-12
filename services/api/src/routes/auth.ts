@@ -83,6 +83,17 @@ function rateLimited(c: AuthContext, retryAfterSec: number) {
   return c.json({ error: 'rate_limited', retryAfterSec }, 429);
 }
 
+/**
+ * 记一条"邮件已交给服务商"的日志。
+ *
+ * 见调用处的说明：没有这一行，"发出去了"和"被扔进垃圾箱了"在日志里长得一样。
+ * 收件地址也记下来 —— 排查"信发给了谁"时这是第一手证据，
+ * 而 journald 本身只有 root 能读，不构成额外的暴露面。
+ */
+function logSent(kind: string, to: string, result: { driver: string; id?: string }): void {
+  console.log(`[auth] ${kind}已交给 ${result.driver}  id=${result.id ?? '(无)'}  to=${to}`);
+}
+
 // ---------------------------------------------------------------------------
 // 注册
 // ---------------------------------------------------------------------------
@@ -167,6 +178,17 @@ authRoute.post('/register', async (c) => {
   const result = await sendMail(mail);
   if (!result.ok) {
     console.error(`[auth] 验证邮件发送失败 (driver=${result.driver}): ${result.error}`);
+  } else {
+    /*
+     * 记下发信服务商给的邮件 ID。
+     *
+     * ⚠️ 这行不是多余的：只在失败时记日志的话，"发送成功"和
+     * "被收件方丢进垃圾箱"在我们这边看起来**完全一样** —— 都是没有日志。
+     * 有了 ID 才能去服务商控制台查这封信最后到底是什么状态
+     * （delivered / bounced / complained）。排查"用户说没收到"时，
+     * 这是唯一的线索。
+     */
+    logSent('验证邮件', user.email, result);
   }
 
   return c.json(accepted, 200);
@@ -344,6 +366,7 @@ authRoute.post('/verify/send', requireAuth, async (c) => {
     console.error(`[auth] 重发验证邮件失败 (driver=${result.driver}): ${result.error}`);
     return c.json({ error: 'send_failed' }, 502);
   }
+  logSent('重发的验证邮件', user.email, result);
 
   return c.json({ ok: true });
 });
