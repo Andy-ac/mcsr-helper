@@ -646,6 +646,53 @@ describe('身份组管理', () => {
     const after = await call('GET', '/api/admin/queue', { cookie: target.cookie });
     assert.equal(after.status, 200, '提权之后应当立刻生效，不该等重新登录');
   });
+
+  /*
+   * ★ 注销账号的端点（2026-09-13，用户要求 ①）。
+   *
+   * ⚠️ 这一条的**期望值是"谁都进不去"**，而不是"owner 能进"：
+   *    用户的原话是「新增一个管理端点，但**暂不开放（哪怕对 owner 也不开放）**」。
+   *    ⇒ 所以它不是一条权限测试，而是一条**"这个开关确实是关着的"**测试。
+   *    要开放时，`canDeleteUser()` 的函数体会改，而**这条测试必须跟着改** ——
+   *    这正是它存在的意义：让"悄悄开掉一个删账号的入口"变成一次必须改测试的动作。
+   */
+  it('★ 注销账号端点：登录了也是 403，**连 owner 都不例外**（开关是关着的）', async () => {
+    const owner = await makeUser('owner');
+    const admin = await makeUser('admin');
+    const target = await makeUser('user');
+    const targetId = await idOf(target.email);
+
+    // 匿名：连登录都没有 ⇒ 401（不是 403 —— 两者含义不同）
+    assert.equal((await call('DELETE', `/api/admin/users/${targetId}`)).status, 401);
+
+    for (const [label, actor] of [
+      ['owner', owner],
+      ['admin', admin],
+    ] as const) {
+      const res = await call('DELETE', `/api/admin/users/${targetId}`, { cookie: actor.cookie });
+      assert.equal(res.status, 403, `${label} 也不该能注销账号：${JSON.stringify(res.body)}`);
+      /*
+       * ⚠️ 这个 `Res['body']` 是**窄类型**（只有这个文件用到的那几个键），
+       *    所以 `reason` 要断言一次才拿得到 —— 不是它真的不在响应里。
+       */
+      assert.equal(
+        (res.body as { reason?: string }).reason,
+        'account_deletion_disabled',
+        '拒绝的理由要能机器识别（以后开放时它就是那条判据的名字）',
+      );
+    }
+
+    /*
+     * ⚠️ 还要证明**它真的没删掉任何东西**。
+     *    只断言状态码的话，"403 但已经删了"会漏网 —— 而这条端点的破坏性
+     *    是整站最大的（它会连带删掉那个人的会话与内容）。
+     */
+    assert.equal(
+      getDb().prepare('SELECT COUNT(*) AS n FROM users WHERE id = ?').get(targetId) !== undefined,
+      true,
+      '被拒绝的请求不该删掉目标账号',
+    );
+  });
 });
 
 async function roleOf(email: string): Promise<string> {
