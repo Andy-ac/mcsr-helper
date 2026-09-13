@@ -21,6 +21,7 @@
  *    报告里列出了我逐条**故意改坏**验证过的断言。
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { zhCN } from '@mcsr/shared/i18n';
 import type { LiveChannel, UserLiveLink } from '@mcsr/shared/live';
 import type { Video } from '@mcsr/shared/videos';
@@ -1024,6 +1025,96 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     '认不出平台时，外链必须是用户原样那条（不能凭空拼一个）',
   );
   ok('★ 结局三：认不出平台 → 只说"只给原站入口"，且不与"平台不支持"混用');
+
+  /*
+   * ★★ F1（t40）：**认不出平台的行不能渲染徽章节点**（t38 的浏览器实测发现的）。
+   *
+   * 旧实现的形态是「**有 `<span>`、文字为空**」：`{link.platform}` 传 `null` 时 React
+   * 仍然画出那个 `<span className="badge badge--kind">`，于是那一行会出现一个
+   * **空的 18×4 可见方块**（`.badge` 有背景色和内边距）—— 看起来像"这里坏了一块"。
+   *
+   * ⚠️ 所以**不能**用“文字为空”当判据（旧实现正是这种形态、那样写会恒绿），
+   *    要断言的是**节点本身不存在**。做法：数产物里 `badge--kind` 的出现次数，
+   *    并与"这一组行里真正有平台的行数"对齐。
+   */
+  const badgeCount = (markup: string): number => countOf(markup, 'badge--kind');
+
+  const oneUnknown = render([
+    myLink({ id: 'u1', platform: null, handle: null, url: 'https://example.invalid/a' }),
+  ]);
+  const oneKnown = render([myLink({ id: 'k1', platform: 'twitch', handle: 'Someone' })]);
+  assert.equal(
+    badgeCount(oneUnknown),
+    0,
+    '★ 认不出平台的行**不该有徽章节点**（旧实现是"有节点、文字为空" ⇒ 一个空方块）',
+  );
+  assert.equal(
+    badgeCount(oneKnown),
+    1,
+    '★ 反面对照：正常行**必须**有徽章（否则"没有徽章"这条会因为组件整个坏掉而通过）',
+  );
+  ok('★ F1：认不出平台的行没有徽章节点，正常行仍有（两个方向都断）');
+
+  /*
+   * ★ 能红证明（F1）：把修复改回去 ⇒ 同一判据必须**数到那个空徽章**。
+   *
+   * ⚠️ 关键是**用同一个 fixture**（`oneUnknown` 的那一行数据）比两种渲染：
+   *   · 真实组件的产物 ⇒ **0**（认不出平台时不画节点）；
+   *   · 旧写法的形态（`<span class="badge badge--kind"></span>`，**有节点、文字为空**）⇒ 非 0。
+   * ⇒ 这两条一起才说明"没有徽章"那条断言**真的在区分新旧行为**，
+   *    而不是"只要不出现某个字符串就通过"。
+   */
+  const f1OldShape = '<li><span class="badge badge--kind"></span></li>';
+  assert.equal(badgeCount(oneUnknown), 0, '真实产物：没有徽章节点');
+  assert.notEqual(
+    badgeCount(f1OldShape),
+    0,
+    '★ 能红证明：旧写法（空徽章节点）会被同一判据数到 ⇒ 断言确实在区分新旧行为',
+  );
+  ok('★ F1 能红证明：旧写法的空徽章节点会被同一判据数到（断言有区分力）');
+
+  /*
+   * ★★ F2（t40）：**后台重拉期间列表不能消失**。
+   *
+   * ⚠️ 先把覆盖边界说清楚：F2 的本体是**时序行为** —— `useAsync` 每次重跑都会先把
+   *    状态置回 `loading`（`useAsync.ts:34`），而 `Live.tsx` 原来写的是
+   *    `mine.status === 'loading' ? null : <MyLiveList …/>` ⇒ 行内保存后整块列表
+   *    **消失 25–75ms**。**这个"消失多少毫秒"只能用真浏览器采样**（verifier 的 25ms
+   *    采样法），纯 node 渲染脚本**测不到**（没有动画帧、没有 effect）。
+   *
+   * ⇒ 所以这里守的是**根因那行代码的形状**：一旦有人把"用 loading 状态决定要不要画列表"
+   *    写回去，这条立刻红。它防的是**回归**，不是替浏览器测量。
+   *
+   * ⚠️ 为什么不写成"渲染一次看看有没有行"：`renderToStaticMarkup` 不跑 effect
+   *    （首页会停在首次加载的骨架），那种断言既测不到重拉、也测不到抖动。
+   */
+  const livePageSource = readFileSync(new URL('../src/routes/Live.tsx', import.meta.url), 'utf8');
+  /*
+   * ⚠️ 先**去掉注释**再测。否则这条守卫会被自己的说明文字绊倒：
+   *    上面那段注释里为了讲清根因，**逐字写了**旧写法 `mine.status === 'loading' ? null`
+   *    ⇒ 不剥注释的话，那条断言会在"代码已经修好"的情况下误报（我第一次就是这么红的）。
+   *    这也是一条通用教训：**扫描源码形状的守卫，必须先把自己那类文本排除掉**。
+   */
+  const withoutComments = livePageSource
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/.*$/gm, '');
+  /*
+   * ⚠️ 引号要**两种都收**（`'loading'` 与 `"loading"`）：我第一次写死单引号，
+   *    结果"能红证明"那条自己红了 —— 因为它喂的样例是双引号形态。
+   *    ⇒ 判据比被测样例窄，就会变成"探针坏了"而不是"断言有区分力"。
+   */
+  const weakCondition = /mine\.status === ['"]loading['"]\s*\?\s*null/;
+  assert.equal(
+    weakCondition.test(withoutComments),
+    false,
+    '★ F2 回归守卫：不许再用「loading 状态决定要不要画列表」——那正是列表会消失 25–75ms 的根因',
+  );
+  assert.notEqual(
+    weakCondition.test('{auth.user && mine.status === "loading" ? null : <MyLiveList …/>}'),
+    false,
+    '★ 能红证明：旧写法（同一判据）会被认出来 ⇒ 上面那条断言有区分力',
+  );
+  ok('★ F2 回归守卫：列表不再由 loading 状态决定画不画（能红证明：旧写法会被认出）');
 
   /*
    * ★★ 行内编辑（t37）：`updateMyLiveLink` 此前**零调用者** —— 贴错了只能删掉重贴。

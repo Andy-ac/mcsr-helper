@@ -239,7 +239,16 @@ function MyLiveRow({
                 留空白会让"我到底加过这一条吗"变成猜谜。
           */}
           <h3 className="mylive-row__title">{title}</h3>
-          <span className="badge badge--kind">{link.platform}</span>
+          {/*
+            ★★ F1（t38 实测）：**认不出平台的行不能渲染徽章节点**。
+            原来的写法是 `<span className="badge badge--kind">{link.platform}</span>` ——
+            `platform` 为 `null` 时 React 仍会画出那个 `<span>`，只是**文字为空**。
+            于是那一行会出现一个**空的 18×4 可见方块**（`.badge` 有背景色与内边距），
+            看起来像"我们这里坏了一块"，而用户完全不知道它代表什么。
+            ⚠️ 判据**不能**写成 `children` 为空就不画 —— 那对"文字为空但节点在"是无效的
+            （旧实现正是这种形态）。这里用**条件渲染**：拿不到平台就**没有这个节点**。
+          */}
+          {link.platform ? <span className="badge badge--kind">{link.platform}</span> : null}
         </div>
 
         {why ? <p className="mylive-row__why">{why}</p> : null}

@@ -1,5 +1,5 @@
 import type { UserLiveLink } from '@mcsr/shared/live';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { em } from '@/components/Emphasis';
 import { LiveCard } from '@/components/LiveCard';
@@ -191,6 +191,18 @@ function MyLiveSection() {
    */
   const [patches, setPatches] = useState<Record<string, { url: string; title: string | null }>>({});
 
+  /*
+   * ★ F2 的关键：**「是否已经成功取到过一次」** —— 用 ref 而不是 state。
+   *
+   * ⚠️ 用 ref 的理由：它只影响"首次要不要画骨架"，**不需要触发重渲染**；
+   *    写成 state 会多一次无意义的渲染，而这块正在治的正是"多余的一次渲染
+   *    会让列表闪一下"。
+   * ⚠️ 判据**不能**是 `items.length > 0`：用户"确实一条都没有"是**合法终态**，
+   *    与"还在加载"必须区分开 —— 否则空列表的用户会永远看到"加载中"。
+   */
+  const hasLoaded = useRef(false);
+  if (mine.status === 'ok') hasLoaded.current = true;
+
   const shown: UserLiveLink[] = items.map((it) => {
     const patch = patches[it.id];
     if (!patch) return it;
@@ -312,7 +324,30 @@ function MyLiveSection() {
         </div>
       ) : null}
 
-      {auth.user && mine.status === 'loading' ? null : (
+      {auth.loading ? <p className="state">{t('common.loading')}</p> : null}
+
+      {/*
+        ★★ F2（t38 实测）：**后台重拉期间列表不能消失**。
+
+        原来的写法是 `mine.status === 'loading' ? null : <MyLiveList …/>` ——
+        而 `useAsync` 每次重跑（`setReloadKey`）都会**先把状态置回 `loading`**
+        （`useAsync.ts:34`）⇒ 行内保存后的整块列表会**消失 25–75ms**（实测 6 轮里 5 轮
+        出现 1–3 个「0 行」样本）。那不是"更新中"的视觉暗示，而是**页面看起来塌了一块**。
+
+        ⚠️ 两头都要满足（t37 当初刻意选「渲染 null」正是为了避免其中一个）：
+        · **不能消失** ⇒ 有数据时即使正在重拉也要继续画；
+        · **不能闪回旧值** ⇒ 用 `patches` 里的新值渲染，而不是等重拉结果
+          （`save` 在同一个事件处理器里先写补丁再触发重拉，所以不存在"旧值一帧"）。
+
+        ⚠️ **只有首次取数**才不画列表（那时 `items` 是空数组，画了就会先闪一下
+           "还没有添加过"）；那次之后**永不再摘掉列表**。
+           `hasLoaded` 用 ref 而不是 `items.length > 0`：用户**确实一条都没有**是
+           合法终态，与"还在加载"必须能区分开。
+        ⚠️ `mine.status === 'error'` 时同样**保留列表**：那说明这次重拉失败了，
+           而**旧数据仍在手上** —— 把它换成一片空白或"加载失败"是把一次失败
+           放大成"列表没了"。取数失败由上面那块提示单独说明（两者不混用）。
+      */}
+      {hasLoaded.current ? (
         <MyLiveList
           items={shown}
           loggedIn={auth.user !== null}
@@ -322,6 +357,8 @@ function MyLiveSection() {
           deletingId={deletingId}
           savingId={savingId}
         />
+      ) : (
+        <p className="state">{t('common.loading')}</p>
       )}
     </section>
   );
