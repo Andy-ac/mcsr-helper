@@ -1,6 +1,6 @@
 import {
   type LiveChannel,
-  liveChannelUrl,
+  liveChannelHref,
   liveEmbedUnavailableReason,
   liveEmbedUrl,
 } from '@mcsr/shared/live';
@@ -46,7 +46,14 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
   const origin = globalThis.location?.hostname ?? '';
   const embedUrl = liveEmbedUrl(channel, origin);
   const reason = liveEmbedUnavailableReason(channel);
-  const channelUrl = liveChannelUrl(channel.platform, channel.handle);
+  /*
+   * ⚠️ 2026-09-13 改成 `liveChannelHref`：它**优先指向那一场直播的视频**，
+   *    只有在没有视频 ID 时才退回频道页。原来的 `liveChannelUrl` 无条件拼频道页 ——
+   *    于是给 YouTube 那行填了视频 ID 之后，播放器能播、而"去原频道看"是一条死链
+   *    （`youtube.com/channel/MCSR_Ranked`，`/channel/` 只认 UC… 的 ID）。
+   *    这是用户实测发现的，判据写在 `liveChannelHref` 的注释里。
+   */
+  const channelUrl = liveChannelHref(channel);
 
   return (
     <li className={`live-card${channel.status === 'hidden' ? ' live-card--hidden' : ''}`}>

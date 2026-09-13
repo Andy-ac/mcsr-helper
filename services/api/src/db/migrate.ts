@@ -31,6 +31,7 @@ import { m012ResourceVideoAndLive } from './migrations/012_resource_video_and_li
 import { m013SeriesAndMarksIndex } from './migrations/013_series_and_marks_index';
 import { m014UserLiveLinks } from './migrations/014_user_live_links';
 import { m015LiveTagsAndSchedule } from './migrations/015_live_tags_and_schedule';
+import { m016LiveDedupeKey } from './migrations/016_live_dedupe_key';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -100,6 +101,15 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    这与 011（加 level/scope 两列）同一个形状，所以同样**加进事务**即可。
    */
   { name: '015_live_tags_and_schedule', sql: m015LiveTagsAndSchedule },
+  /*
+   * 016：重建 `live_channels`，把去重键放宽成 `(platform, handle, live_video_id)`。
+   *
+   * ⚠️ **必须 `noTransaction`**：SQL 第一句是 `PRAGMA foreign_keys = OFF`，
+   *    而 PRAGMA **在事务里是静默无效的**（不报错，只是不生效）—— 那样重建到一半
+   *    失败会留下一个半成品表，而部署脚本报的是成功。理由与 012 完全相同。
+   * ⚠️ 它与 012 一样属于"不可回滚的一次动作"，代价可接受：这张表只有三行。
+   */
+  { name: '016_live_dedupe_key', sql: m016LiveDedupeKey, noTransaction: true },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

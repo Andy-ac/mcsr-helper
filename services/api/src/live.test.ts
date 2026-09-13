@@ -95,9 +95,16 @@ async function makeUser(role: 'user' | 'editor' = 'user') {
   return { email, cookie: (login.setCookie ?? '').split(';')[0] as string };
 }
 
+/**
+ * 公开名单的入参夹具（2026-09-13 起**只有一栏链接**：平台/标识/视频 ID 都由它解析）。
+ *
+ * ⚠️ 原来这里是 `{ platform, handle }` —— 那两个字段已经没有入参了。
+ *    `over` 里如果还传 `handle`/`platform`，它们会被 zod **静默丢掉**
+ *    （对象默认 strip 未知键），于是 `url` 缺失、报的是"expected string, received
+ *    undefined" —— 一句和真正原因（夹具没跟着改）毫不相干的话。
+ */
 const channel = (over: Record<string, unknown> = {}) => ({
-  platform: 'youtube',
-  handle: '@Someone',
+  url: 'https://www.youtube.com/@Someone',
   displayName: '某位选手',
   ...over,
 });
@@ -354,26 +361,28 @@ describe('★ 直播清单：权限、重复与开关', () => {
     assert.equal(dup.body.error, 'live_exists');
     assert.equal(dup.body.existingId, (first.body.channel as { id: string }).id);
 
-    // 同一个 handle 在**另一个平台**上是允许的
+    // 同一个标识在**另一个平台**上是允许的
     const other = await call('POST', '/api/live', {
-      json: channel({ platform: 'twitch' }),
+      json: channel({ url: 'https://www.twitch.tv/Someone' }),
       cookie: editor.cookie,
     });
-    assert.equal(other.status, 201, 'UNIQUE 是 (platform, handle)，不是 handle');
+    assert.equal(other.status, 201, 'UNIQUE 是 (platform, handle, live_video_id)，不是 handle');
   });
 
-  it('★ handle 收"标识或链接"：链接会被归一化成标识；认不出的位置、带空格的标识被拒', async () => {
+  it('★ 链接"标识或链接"都收？—— 现在只收链接，裸标识一律 400', async () => {
     const editor = await makeUser('editor');
 
     /*
-     * F29 定稿 = **(ii) 输入宽松、存储严格**：编辑最常见的动作是把整条
-     * 频道页链接粘进来，所以**允许**，服务端归一化后**只落库标识**。
+     * ⚠️ 这一条也**改过口径**（2026-09-13）：
+     *   · 最早：`handle` 只收**标识**，链接一律 400；
+     *   · 后来（F29=(ii)）：标识**或**链接都收，归一化后只落标识；
+     *   · 现在：入参只有 `url`，**必须是完整链接** —— 因为**平台不再由用户选**，
+     *     而裸标识判不出平台 ⇒ 拼不出地址、也嵌不出来。
      *
-     * ⚠️ 这一条**改过口径**：原来断言"链接一律 400"（那时 handle 只收标识）。
-     *    仍然被拒的是"既不是标识、也不是我们能认出来的频道链接"，以及带空格的标识。
+     * ⚠️ 不变的是**存储侧那条不变量**：库里落下去的仍然是**标识**，不是那条链接。
      */
     const pasted = await call('POST', '/api/live', {
-      json: channel({ handle: 'https://www.youtube.com/@Someone' }),
+      json: channel({ url: 'https://www.youtube.com/@Someone' }),
       cookie: editor.cookie,
     });
     assert.equal(pasted.status, 201, JSON.stringify(pasted.body));
@@ -383,9 +392,16 @@ describe('★ 直播清单：权限、重复与开关', () => {
       '落库的是**标识**，不是那条链接（库里永远只是标识：链接由我们按平台拼出来）',
     );
 
+    // 裸标识：以前能用（平台是自己选的），现在推不出平台 ⇒ 400
+    const bare = await call('POST', '/api/live', {
+      json: channel({ url: '@Someone' }),
+      cookie: editor.cookie,
+    });
+    assert.equal(bare.status, 400, '裸标识推不出平台 ⇒ 必须拒');
+
     for (const bad of ['https://example.com/someone', '@a b', 'javascript:alert(1)']) {
       const res = await call('POST', '/api/live', {
-        json: channel({ handle: bad }),
+        json: channel({ url: bad }),
         cookie: editor.cookie,
       });
       assert.equal(res.status, 400, `${bad} 应当被拒：${JSON.stringify(res.body)}`);
@@ -460,7 +476,12 @@ describe('★ 直播清单：权限、重复与开关', () => {
       ['丙', 5, '@c'],
     ] as const) {
       const r = await call('POST', '/api/live', {
-        json: channel({ displayName: name, handle, sortOrder: order }),
+        json: channel({
+          displayName: name,
+          // 夹具只给出**平台标识**，链接由它拼（入参现在只有 url 一栏）
+          url: `https://www.youtube.com/${handle}`,
+          sortOrder: order,
+        }),
         cookie: editor.cookie,
       });
       assert.equal(r.status, 201, `displayName=${name}: ${JSON.stringify(r.body)}`);

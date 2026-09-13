@@ -110,11 +110,25 @@ export function getLiveChannel(id: string) {
   return row ? toChannel(row) : null;
 }
 
-/** 同平台同频道是否已经有了（`UNIQUE(platform, handle)` 的友好版本）。 */
-export function findLiveChannelByHandle(platform: string, handle: string) {
+/**
+ * 同平台同频道（或同一场直播）是否已经有了 —— `UNIQUE(platform, handle, live_video_id)`
+ * 的友好版本。
+ *
+ * ⚠️ **2026-09-13 起去重键变成三列**（迁移 016），这个函数必须跟着变：
+ *    只按 `(platform, handle)` 查的话，两行"只粘了直播视频链接"的记录
+ *    （`handle` 都是空串、视频 ID 不同）会被判成重复 —— 而它们在库里是**合法的两行**。
+ *    表现是"加第二个 YouTube 主播时被说成『这条已经记过了』"。
+ * ⚠️ `live_video_id` 是**可空**列，而 SQL 的 `= NULL` 永远不成立 ⇒ 必须用
+ *    `IS`（SQLite 支持 `IS` 做空值安全比较），否则"只粘频道链接"的行永远查不到自己。
+ */
+export function findLiveChannelByHandle(
+  platform: string,
+  handle: string,
+  liveVideoId: string | null,
+) {
   const row = getDb()
-    .prepare('SELECT * FROM live_channels WHERE platform = ? AND handle = ?')
-    .get(platform, handle) as LiveRow | undefined;
+    .prepare('SELECT * FROM live_channels WHERE platform = ? AND handle = ? AND live_video_id IS ?')
+    .get(platform, handle, liveVideoId) as LiveRow | undefined;
   return row ? toChannel(row) : null;
 }
 
@@ -130,7 +144,7 @@ export function createLiveChannel(
    *    让它走异常路径就等于让常见情况走异常路径（和资源库 / 视频那边同一个决定）。
    *    catch 仍然保留作竞态兜底。
    */
-  const existing = findLiveChannelByHandle(input.platform, input.handle);
+  const existing = findLiveChannelByHandle(input.platform, input.handle, input.liveVideoId ?? null);
   if (existing) return { ok: false, existing };
 
   const id = newId();
@@ -157,7 +171,7 @@ export function createLiveChannel(
       );
   } catch (error) {
     // 竞态兜底：只有真的能查到同一个 (platform, handle) 才当成重复
-    const race = findLiveChannelByHandle(input.platform, input.handle);
+    const race = findLiveChannelByHandle(input.platform, input.handle, input.liveVideoId ?? null);
     if (race) return { ok: false, existing: race };
     throw error;
   }
@@ -185,7 +199,7 @@ export function updateLiveChannel(
    * 改 handle 之后可能撞上另一行 —— 先查出来并**指回那一行**，
    * 而不是让 UNIQUE 抛一个用户看不懂的错。
    */
-  const clash = findLiveChannelByHandle(input.platform, input.handle);
+  const clash = findLiveChannelByHandle(input.platform, input.handle, input.liveVideoId ?? null);
   if (clash && clash.id !== id) return { ok: false, reason: 'taken' };
 
   db.prepare(

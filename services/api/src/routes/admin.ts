@@ -19,6 +19,7 @@
 import type { UserRole } from '@mcsr/shared/permissions';
 import {
   assignableRoles,
+  canDeleteUser,
   capabilitiesByType,
   checkRoleChange,
   RoleChangeInputSchema,
@@ -240,4 +241,73 @@ adminRoute.patch('/admin/users/:id/role', requireCapability('user.moderate'), as
     /** 顺便告诉前端这个角色现在能做什么，免得界面再算一遍 */
     capabilities: capabilitiesByType(nextRole),
   });
+});
+
+/**
+ * 注销（真删）一个账号 —— **2026-09-13 新增，当前对所有人关闭**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 它现在**必然返回 403**，包括 owner。这是用户明确要求的。
+ * ---------------------------------------------------------------------------
+ * 原话：「新增一个管理端点，但暂不开放（哪怕对 owner 也不开放）」。
+ *
+ * ⇒ 于是这条路由存在的意义是**把管道铺好**：路由、参数、连带影响、审计、
+ *   以及"谁能用"的判据点都就位；等真要开放时，改动只有一处 ——
+ *   `shared/permissions.ts` 里 `canDeleteUser()` 的函数体。
+ *
+ * ---------------------------------------------------------------------------
+ * 先把它删掉会连带什么说清楚（开放那天必须照着这里做）
+ * ---------------------------------------------------------------------------
+ *   · `sessions.user_id` 带 **`ON DELETE CASCADE`** ⇒ 该账号的登录态**自动全灭**，
+ *     不需要额外清（但**不能**只删会话留着账号 —— 那是"停用"的语义，
+ *     而本仓的停用是 `users.status = 'suspended'`，别混）；
+ *   · `audit_log` **没有外键** ⇒ 它留下的审计行会指向一个不存在的操作者。
+ *     这是**保留**而不是清除：审计的意义就是"事后能追查"，抹掉它等于改写历史；
+ *   · 用户提交的内容（资源 / 赛事 / 视频）**不会**被连带删除（那些表没有级联），
+ *     它们的 `author_id` 会变成一个查不到的 id —— 读路径已经按"没有作者"处理
+ *     （`toCalendarEvent` 里 `author_id ? findUserById(...) : null`）。
+ *
+ * ⚠️ 判据只此一处：**不要**在这里写 `role === 'owner'` 或任何角色判断。
+ */
+adminRoute.delete('/admin/users/:id', async (c) => {
+  const actor = c.get('user');
+  if (!actor) return c.json({ error: 'unauthorized' }, 401);
+
+  /*
+   * ⚠️ 顺序是刻意的：**先判权限，再查目标存不存在**。
+   *    反过来的话，"这个 id 存在吗"会变成一条任何人（哪怕没权限）都能探测的信息 ——
+   *    而这正是 403 与 404 的区别所承载的东西（见资源库那边"未发布一律 404"的同一条理由）。
+   */
+  if (!canDeleteUser(actor.role as UserRole)) {
+    return c.json({ error: 'forbidden', reason: 'account_deletion_disabled' }, 403);
+  }
+
+  const targetId = c.req.param('id');
+  if (!findUserById(targetId)) return c.json({ error: 'not_found' }, 404);
+
+  /*
+   * ⚠️ 下面这段**当前不可达**（上面那一步恒 403）。留着它是为了：
+   *    ① 类型与形状完整 —— 开放的那天不需要重新设计返回体；
+   *    ② 让"开放"这件事的**全部内容**看得见：删一行 + 写一条审计。
+   *    真开放时**必须**同时改 `canDeleteUser`，否则这段就是死代码。
+   */
+  const now = Date.now();
+  const target = findUserById(targetId);
+  getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
+
+  writeAudit({
+    actorId: actor.id,
+    action: 'user.delete',
+    entityType: 'user',
+    entityId: targetId,
+    /*
+     * ⚠️ reason 里必须留下**被删的是谁**：user 行没了，`entityId` 只是个 uuid，
+     *    事后追查看不出这个位置原本是谁。邮箱是唯一能对上人的东西。
+     */
+    reason: `注销账号（不可恢复）：${target?.email ?? '(读不到邮箱)'}`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  return c.json({ ok: true, id: targetId, deleted: true });
 });

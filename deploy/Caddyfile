@@ -60,7 +60,18 @@
 		# 'self' 仍然阻止**其他站点**嵌套本站（点击劫持防护的核心目的），只是允许自己嵌自己。
 		#
 		# 新增视频平台时必须同步改这里的 frame-src（以及 packages/shared/src/constants.ts 的 VIDEO_PLATFORMS）。
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+		#
+		# ⚠️⚠️ 2026-09-13 补了 www.bilibili.com —— **这一条踩过一次，记在这里**。
+		#    B站 的**直播**嵌入走的是官方的「活动播放器」：
+		#        https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=<房间号>
+		#    它和我们一直用的 `player.bilibili.com`（视频嵌入）**不是同一个 host**。
+		#    于是：代码改对了、**地址也拼对了**，但 iframe 被这条 CSP **静默拦掉** ——
+		#    播放器那一块点开之后什么都不发生，而浏览器控制台之外没有任何提示。
+		#    ⇒ 症状是"我明明修好了嵌入，点开还是不能播"。
+		#    ★ 判据：**加了任何新的嵌入 host，都必须同时改这一行**，
+		#      并且**在真实浏览器里点一次**验证（只测那个站点自己的响应头是不够的 ——
+		#      它的响应头没有 frame 限制，不代表**我们这边**允许嵌它）。
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com https://www.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 
 		-Server
 	}

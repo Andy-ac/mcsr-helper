@@ -1789,40 +1789,49 @@ export const en: TranslationSchema = {
     close: 'Close',
 
     // ---- Fields ----
-    fieldPlatform: 'Platform',
-    fieldHandle: 'Channel handle',
+    /*
+     * ★ The first field, and the only address field (finalised with the user
+     *   2026-09-13). It replaces three fields: Platform (a select), Channel
+     *   handle, and Current live video id. Their words: "drop the channel handle
+     *   entirely" and "no need to pick the platform either, it can be derived
+     *   from the link". Platform, handle and video id are all parsed server-side.
+     */
+    fieldUrl: 'Live link',
     fieldName: 'Display name',
     /*
-     * Tags (2026-09-13). ⚠️ Separate from the channel handle (`fieldHandle`): the
-     * handle is what links are built from, tags are just human labels. Replacing
-     * the handle with tags would leave nothing to build "open the channel" from.
+     * Tags (2026-09-13). A **human label**, not load-bearing: the channel
+     * handle — which decides links and embeds — now comes from the live link,
+     * so it is no longer something anyone types.
      */
     fieldTags: 'Tags',
     fieldNote: 'One-line note',
-    fieldLiveVideoId: 'Current live video id',
     fieldEmbedChannel: 'Embed by channel',
     fieldSortOrder: 'Order',
+    /** Title of the collapsed advanced block (order + channel embed). */
+    advanced: 'Advanced',
 
     /*
-     * ⚠️ The handle hint has to say "not a link" explicitly. This is the field
-     *    people get wrong: what they have in hand *is* a link, and the server
-     *    schema rejects it ("we build the link from the platform").
+     * ⚠️ This hint has to carry "both kinds of link work, and we derive the
+     *    platform" — the user went three rounds on exactly this confusion. It
+     *    also has to say that only a link to **the stream currently on air**
+     *    produces a player (the video id changes per stream, so it needs
+     *    updating), and that a bare YouTube channel page has **no player**.
      */
-    hintHandle:
-      'The handle itself (e.g. @Someone, or the UC… string) — not a link. We build the link per platform.',
+    hintUrl:
+      'Paste either a **channel page** or a link to **the stream currently on air**. Only the latter gives you a player (and it changes every stream, so come back and update it).',
+    placeholderUrl: 'https://www.youtube.com/watch?v=…',
     hintName: 'The human-readable name; spaces are fine.',
     /* One comma-separated line, not a chip editor — that would need its own keyboard model. */
     hintTags: 'Optional, comma-separated, up to 12. e.g. speedrun, Ranked, highlights',
     hintNote: 'Optional. One line on what they stream — it is what visitors judge the link by.',
-    hintLiveVideoId:
-      'Optional. **Only a video id produces a player**; it changes with every stream, so it is "for the current one", not a property of the channel.',
     /*
-     * ⚠️ This hint carries three facts at once: YouTube only, `UC…` ids only, and
+     * ⚠️ Carries three facts at once: YouTube only, `UC…` ids only, and
      *    experimental. Drop any one and an editor turns on a switch that does
-     *    nothing.
+     *    nothing. ⚠️ Today's rows do not need it at all (a link to a specific
+     *    stream goes down the video-id path instead).
      */
     hintEmbedChannel:
-      'Experimental, off by default. It can only work for YouTube rows whose handle is a UC… channel id; when it does not work the player area is a black box that looks like our bug.',
+      'Experimental, off by default. It can only work for YouTube rows whose channel handle is a UC… channel id; when it does not work the player area is a black box that looks like our bug.',
     hintSortOrder: 'Lower numbers come first.',
 
     // ---- Row actions ----
@@ -1862,9 +1871,10 @@ export const en: TranslationSchema = {
      * these are **local** strings — the server's message is hard-coded Chinese
      * and showing it would put a Chinese sentence in the English UI.
      */
-    errHandleRequired: 'A channel handle is required.',
-    errHandleIsUrl: 'Put the handle here, not a link — we build the link per platform.',
-    errHandleSpace: 'The handle cannot contain spaces.',
+    errUrlRequired: 'A live link is required.',
+    errUrlNotLink:
+      'Paste the **full link** — a bare handle carries no platform, and we need the platform to build an address.',
+    errUrlSpace: 'A link cannot contain spaces.',
     errNameRequired: 'A name is required.',
     errSortOrder: 'Order must be a whole number from 0 to 9999 (lower comes first).',
     errGeneric: 'A field did not pass validation — check the ones marked above.',

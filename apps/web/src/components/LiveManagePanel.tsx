@@ -1,11 +1,12 @@
-import { LIVE_PLATFORMS } from '@mcsr/shared';
 import {
   LIVE_NAME_MAX,
   LIVE_NOTE_MAX,
+  LIVE_URL_MAX,
   type LiveChannel,
-  type LiveChannelInput,
+  type LiveChannelDraft,
   LiveChannelInputSchema,
   type LivePlatform,
+  liveChannelHref,
   liveEmbedUnavailableReason,
 } from '@mcsr/shared/live';
 import { useState } from 'react';
@@ -51,21 +52,27 @@ import { useAsync } from '@/lib/useAsync';
  */
 
 interface Draft {
-  platform: LivePlatform;
-  handle: string;
+  /**
+   * 直播链接（2026-09-13，用户定稿的表单第一栏）—— **频道页或某一场直播的视频页**。
+   *
+   * ⚠️ 平台、频道标识、视频 ID 都由服务端从这条链接解析（`LiveChannelInputSchema`），
+   *    所以这里**没有**那三栏。用户的原话：「频道标识可以直接舍弃掉」
+   *    「平台也不用选了，反正能从链接推出来」。
+   */
+  url: string;
   displayName: string;
   note: string;
   /**
    * 标签（2026-09-13）。**输入是逗号分隔的一行文本**，提交时才拆成数组。
    *
    * ⚠️ 不做 chip 编辑器：那要一整套键盘交互（退格删掉上一块、方向键、粘贴拆分），
-   *    而这一栏目前只用来**显示**（用户明确说暂时不做筛选）。一行文本够用，
+   *    而这一栏只用来**显示**（用户明确说暂时不做筛选）。一行文本够用，
    *    而且和 `note` 一样可以整段粘贴。
    */
   tags: string;
-  liveVideoId: string;
+  /** 高级区：YouTube 频道级嵌入的试验开关。 */
   embedChannel: boolean;
-  /** 文本，提交时转数字 —— 空的那一格表示"用默认排序"。 */
+  /** 高级区：文本，提交时转数字 —— 空的那一格表示"用默认排序"。 */
   sortOrder: string;
 }
 
@@ -88,26 +95,32 @@ function parseTags(raw: string): string[] {
 
 function emptyDraft(): Draft {
   return {
-    platform: LIVE_PLATFORMS[0],
-    handle: '',
+    url: '',
     displayName: '',
     note: '',
     tags: '',
-    liveVideoId: '',
     embedChannel: false,
     sortOrder: String(DEFAULT_SORT),
   };
 }
 
+/**
+ * 行 → 表单初值。
+ *
+ * ⚠️ 「直播链接」是**反推**出来的，库里没有存原始链接：`liveChannelHref` 给的是
+ *    "有视频就那一场、否则频道页"，而那正是用户当初粘的那种链接 ⇒ **能原样回填**。
+ *    这也是为什么保存一次不会改变行的含义（幂等）——
+ *    自检里有一条就是钉这个的。
+ * ⚠️ 别改成 `liveChannelUrl`：那会无条件拼频道页，于是"只粘了视频的行"一打开编辑
+ *    就被悄悄改写成频道页，再保存就把视频 ID 丢了。
+ */
 function draftFrom(channel: LiveChannel): Draft {
   return {
-    platform: channel.platform,
-    handle: channel.handle,
+    url: liveChannelHref(channel),
     displayName: channel.displayName,
     note: channel.note ?? '',
     // 用同一个分隔符回填（`,` + 空格），这样"打开→保存"不会改变内容
     tags: channel.tags.join(', '),
-    liveVideoId: channel.liveVideoId ?? '',
     embedChannel: channel.embedChannel,
     sortOrder: String(channel.sortOrder),
   };
@@ -401,13 +414,11 @@ function ChannelForm({
       return;
     }
 
-    const payload: LiveChannelInput = {
-      platform: draft.platform,
-      handle: draft.handle.trim(),
+    const payload: LiveChannelDraft = {
+      url: draft.url.trim(),
       displayName: draft.displayName.trim(),
       note: draft.note.trim() || null,
       tags: parseTags(draft.tags),
-      liveVideoId: draft.liveVideoId.trim() || null,
       embedChannel: draft.embedChannel,
       sortOrder: draft.sortOrder.trim() === '' ? DEFAULT_SORT : Number(draft.sortOrder),
     };
@@ -472,40 +483,31 @@ function ChannelForm({
       */}
       {errors._ ? <Notice kind="bad">{errors._}</Notice> : null}
 
-      <div className="formrow">
-        <Field id="live-platform" label={t('liveManage.fieldPlatform')}>
-          <select
-            id="live-platform"
-            className="mcsr-field__input"
-            value={draft.platform}
-            onChange={(e) => set('platform', e.target.value as LivePlatform)}
-          >
-            {LIVE_PLATFORMS.map((p) => (
-              <option key={p} value={p}>
-                {t(`videos.platform${platformKey(p)}`)}
-              </option>
-            ))}
-          </select>
-        </Field>
+      {/*
+        ★ 第一栏：直播链接（2026-09-13 用户定稿）。
+        平台、频道标识、视频 ID 三栏合成了这一栏 —— 它们都由服务端从链接解析，
+        用户不需要理解"标识"是什么（之前那三栏是这一轮里来回讨论最多的东西）。
 
-        <Field
-          id="live-handle"
-          label={t('liveManage.fieldHandle')}
-          /*
-           * ⚠️ 出错时把**提示换掉**，而不是在提示下面再叠一行红字 ——
-           *    同一件事说两遍（一遍灰色、一遍红色）会让人以为有两个问题。
-           */
-          hint={errors.handle ?? t('liveManage.hintHandle')}
-        >
-          <input
-            id="live-handle"
-            className="mcsr-field__input"
-            value={draft.handle}
-            maxLength={120}
-            onChange={(e) => set('handle', e.target.value)}
-          />
-        </Field>
-      </div>
+        ⚠️ 用 `type="url"` 而不是 text：手机上会给出带 `/` 的键盘，
+           而这一栏永远是一条完整链接（本地校验也要求 http(s)://）。
+      */}
+      <Field
+        id="live-url"
+        label={t('liveManage.fieldUrl')}
+        hint={errors.url ?? t('liveManage.hintUrl')}
+      >
+        <input
+          id="live-url"
+          className="mcsr-field__input"
+          type="url"
+          value={draft.url}
+          maxLength={LIVE_URL_MAX}
+          onChange={(e) => set('url', e.target.value)}
+          placeholder={t('liveManage.placeholderUrl')}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </Field>
 
       <Field
         id="live-name"
@@ -532,9 +534,7 @@ function ChannelForm({
       </Field>
 
       {/*
-        标签（2026-09-13）。放在「一句话说明」下面：两者都是给人看的文字，
-        放一起比插在标识与名字之间更顺 —— 上面那三栏（平台/标识/名字）都是
-        **必须填的**，从这一栏开始才是可选的。
+        标签（2026-09-13）。放在「一句话说明」下面：两者都是给人看的文字。
 
         ⚠️ 用 `<input>` 而不是 `<textarea>`：标签是短的，多行会让人以为可以写句子。
            逗号分隔的做法见 `parseTags` 的注释（中英文逗号都收）。
@@ -548,52 +548,47 @@ function ChannelForm({
         />
       </Field>
 
-      <Field
-        id="live-videoid"
-        label={t('liveManage.fieldLiveVideoId')}
-        hint={t('liveManage.hintLiveVideoId')}
-      >
-        <input
-          id="live-videoid"
-          className="mcsr-field__input"
-          value={draft.liveVideoId}
-          maxLength={64}
-          onChange={(e) => set('liveVideoId', e.target.value)}
-        />
-      </Field>
-
       {/*
-        ⚠️ 频道嵌入这个开关是**实验性**的。提示必须同时说清三件事：
-        只对 YouTube 有效、只认 `UC...` 标识、失败时是一个黑框。
-        少说一件，编辑就会开一个不生效的开关，然后以为界面坏了。
-      */}
-      <Field
-        id="live-embed"
-        label={t('liveManage.fieldEmbedChannel')}
-        hint={t('liveManage.hintEmbedChannel')}
-      >
-        {/* Field 的 <label htmlFor> 已经把这个 checkbox 和标签关联起来了，不用再包一层 */}
-        <input
-          id="live-embed"
-          type="checkbox"
-          checked={draft.embedChannel}
-          onChange={(e) => set('embedChannel', e.target.checked)}
-        />
-      </Field>
+        ★ 高级区（默认**折叠**）：这两栏是给"我们这边"用的，不是日常必填。
 
-      <Field
-        id="live-order"
-        label={t('liveManage.fieldSortOrder')}
-        hint={errors.sortOrder ?? t('liveManage.hintSortOrder')}
-      >
-        <input
+        · 排序 —— 只有想调顺序时才动，绝大多数行用默认值 100 就行；
+        · 用频道嵌入 —— **只对 YouTube 且标识是 UC… 的频道**生效，是实验开关
+          （失败时播放器的位置是一个黑框）。用户现在列的三个平台都用不上它。
+
+        ⚠️ 用原生 `<details>` 而不是自己写一个展开状态：它自带键盘与读屏支持，
+           而这一块不值得为它写一套交互。`<summary>` 是唯一的标题行。
+      */}
+      <details className="livemanage__advanced">
+        <summary>{t('liveManage.advanced')}</summary>
+
+        <Field
+          id="live-embed"
+          label={t('liveManage.fieldEmbedChannel')}
+          hint={t('liveManage.hintEmbedChannel')}
+        >
+          {/* Field 的 <label htmlFor> 已经把这个 checkbox 和标签关联起来了，不用再包一层 */}
+          <input
+            id="live-embed"
+            type="checkbox"
+            checked={draft.embedChannel}
+            onChange={(e) => set('embedChannel', e.target.checked)}
+          />
+        </Field>
+
+        <Field
           id="live-order"
-          className="mcsr-field__input"
-          inputMode="numeric"
-          value={draft.sortOrder}
-          onChange={(e) => set('sortOrder', e.target.value)}
-        />
-      </Field>
+          label={t('liveManage.fieldSortOrder')}
+          hint={errors.sortOrder ?? t('liveManage.hintSortOrder')}
+        >
+          <input
+            id="live-order"
+            className="mcsr-field__input"
+            inputMode="numeric"
+            value={draft.sortOrder}
+            onChange={(e) => set('sortOrder', e.target.value)}
+          />
+        </Field>
+      </details>
 
       <div className="authform__actions">
         <button type="button" className="cta" onClick={() => void submit()} disabled={busy}>
@@ -622,10 +617,18 @@ function ChannelForm({
 function localFieldErrors(draft: Draft, t: (k: string) => string): Record<string, string> {
   const errors: Record<string, string> = {};
 
-  const handle = draft.handle.trim();
-  if (!handle) errors.handle = t('liveManage.errHandleRequired');
-  else if (/^https?:\/\//i.test(handle)) errors.handle = t('liveManage.errHandleIsUrl');
-  else if (/\s/.test(handle)) errors.handle = t('liveManage.errHandleSpace');
+  /*
+   * ⚠️ 这一栏**不再叫 handle**（2026-09-13）：输入是**一条链接**，
+   *    平台/频道/视频 ID 全由服务端解析。所以本地能判的只有两件事：
+   *    "有没有填" 和 "认不认得出来"。归一化规则**仍然只有服务端那一份**
+   *    （`LiveChannelInputSchema` 的 superRefine），这里不复制它。
+   */
+  const url = draft.url.trim();
+  if (!url) errors.url = t('liveManage.errUrlRequired');
+  else if (!/^https?:\/\//i.test(url)) {
+    // 裸标识（`@Someone`）以前能用（平台是用户自己选的），现在平台从链接推 ⇒ 必须给完整链接
+    errors.url = t('liveManage.errUrlNotLink');
+  } else if (/\s/.test(url)) errors.url = t('liveManage.errUrlSpace');
 
   if (!draft.displayName.trim()) errors.displayName = t('liveManage.errNameRequired');
 

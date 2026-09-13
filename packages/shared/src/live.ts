@@ -70,7 +70,7 @@
  *    任何东西。所以它仍然是一个**每行可开的开关**（`embedChannel`，默认关）。
  */
 import { z } from 'zod';
-import { LIVE_PLATFORMS, type LivePlatform } from './constants';
+import type { LivePlatform } from './constants';
 
 /*
  * 重新导出 `LivePlatform` —— 服务端和前端都要用它，而从 `live.ts` 一处取到
@@ -147,36 +147,26 @@ const TWITCH_RESERVED_SEGMENTS = new Set([
   'p',
 ]);
 
-/**
- * 频道标识的形状。
+/*
+ * ⚠️⚠️ 这里原来有一个 `HandleSchema`（「频道标识的形状」），**2026-09-13 删掉了** ——
+ *    入参改成只有一栏 `url` 之后它就没人用了（biome 的 noUnusedVariables 直接报出来）。
  *
- * ⚠️ 刻意**宽松**：频道标识是平台自己的东西，YouTube 有 `UC...` 的老式 ID、
- *    `@handle` 的新式写法，Twitch 是用户名。写死一个正则会让"这个人加不进来"，
- *    而他要做的只是贴对一行字。
+ * 它留下的两条历史结论**仍然成立、仍然值得知道**，所以留在这里而不是跟着代码消失：
  *
- * ★ 2026-09-13 定稿（F29 = **(ii) 输入宽松、存储严格**）：这一栏**同时接受**
- *   「标识」和「频道页链接」两种输入 —— 编辑把 `https://www.youtube.com/@Someone`
- *   整条粘进来是**最常见**的动作，逼他手工截出后半段只会换来错值。
- *   服务端（和下面的 `.transform()`）用 `parseLiveLink()` 归一化后**只落库标识**。
+ * ① **`handle` 列里永远是标识**（链接由我们按平台拼出来）——
+ *    这条不变量**一个字都没变**，只是 `handle` 现在由 `parseLiveLink` 从
+ *    「直播链接」解析出来，而不是由用户填。删字段的时候别把它一起删掉：
+ *    Twitch 与 B站 的链接和嵌入全靠它（实测过：清空 handle 会让两个平台同时瞎掉）。
+ * ② 它当年刻意**宽松**（不写死正则）：频道标识是平台自己的东西 ——
+ *    YouTube 有 `UC…` 老式 ID 与 `@handle` 新式写法，Twitch 是用户名。
+ *    写死一个正则会让"这个人加不进来"，而他要做的只是贴对一行字。
+ *    ⇒ 同一句话现在适用于 `url` 那一栏：**认不认得出来交给 `parseLiveLink`**，
+ *      不要在这里另写一套形状判断。
  *
- *   ⇒ **不变量没变**：`handle` 列里**永远是标识**（链接由我们按平台拼出来）。
- *     这个 schema 守的是**存储**，不是输入。
- *   ⇒ 也**没有**"独立的 `url` 字段 + 恰有一个"那套（被否决的 (i) 方案）：
- *     两个字段表达一件事、还要跨字段规则与一套新错误码，收益为零。
- *
- * ⚠️ 括号里那两句话原来写的是"不允许 URL/链接" —— **已经过期**，别再照着推理。
+ * 另外：F29 当年定的是 "(ii) 输入宽松、存储严格"，并**明确否决**过"独立的 url 字段"，
+ * 理由是"两个字段表达一件事"。现在入参**只有** `url` 一个字段，
+ * 所以那次否决并不矛盾 —— 只是理由换了。详见 `LiveChannelInputSchema` 的注释。
  */
-const HandleSchema = z
-  .string()
-  .trim()
-  .min(1, { message: '需要频道标识' })
-  .max(LIVE_HANDLE_MAX)
-  .refine((v) => parseLiveLink(v) !== null, {
-    message:
-      '这里填频道标识（例如 @Someone、UC 开头那串），或者直接粘**频道页**的链接 —— ' +
-      '既不是标识、也不是我们能认出来的频道链接（比如指向别的网站的链接）不行',
-  })
-  .refine((v) => !/\s/.test(v), { message: '频道标识里不能有空格' });
 
 /**
  * 从用户粘贴的东西里解析出「平台 / 频道标识 / 视频 ID」。
@@ -307,30 +297,52 @@ function decodeSegment(segment: string): string {
 }
 
 /**
- * 编辑维护的公开名单的入参。
+ * 编辑维护的公开名单的入参 —— **2026-09-13 起只有一栏链接**。
  *
- * ★ 归一化在 `.transform()` 里做**唯一一次**，所以 `POST /api/live` 与
+ * ---------------------------------------------------------------------------
+ * ★ 表单从「平台 + 频道标识 + 直播视频 ID」三栏砍成**一栏**，为什么
+ * ---------------------------------------------------------------------------
+ * 用户原话（对话里来回三轮才定下来）：
+ *   「频道标识可以直接舍弃掉」「平台也不用选了，反正能从链接推出来」
+ *   「我只需要当前直播的视频 ID 就够了，链接跳转也用这个」
+ *
+ * 于是这一栏收**两种**链接，服务端解析出全部所需：
+ *   · **频道页**（`twitch.tv/mcsrranked`、`youtube.com/@Someone`、`live.bilibili.com/12345`）
+ *     ⇒ platform + handle。Twitch 与 B站 靠 handle 嵌入；YouTube 频道页**没有播放器**
+ *       （频道级嵌入只认 UC… 频道 ID，见 `liveEmbedDecision`）。
+ *   · **某一场直播的视频页**（`youtube.com/watch?v=…`）⇒ platform + liveVideoId，
+ *     handle 为**空串**。YouTube 靠它播放 —— 这也是用户唯一在用的那一种。
+ *
+ * ⚠️ `handle` **仍然存在、仍然承重**（Twitch/B站 的嵌入与链接都靠它），
+ *    只是**不再由用户填**：它是解析结果，不是输入概念。
+ *    ⇒ 别看到"表单里没有 handle"就以为可以把它从库里删掉：
+ *      删掉它，Twitch 与 B站 会同时失去链接和播放器（实测过，见 `pending.md`）。
+ *
+ * ⚠️ 归一化在 `.transform()` 里做**唯一一次**，所以 `POST /api/live` 与
  *   `PATCH /api/live/:id` 不可能各写一份、也不可能漂移；前端的表单校验
  *   （`LiveManagePanel` 跑同一个 schema）与它拿到的结果也逐字一致。
  */
 export const LiveChannelInputSchema = z
   .object({
-    platform: z.enum(LIVE_PLATFORMS),
-    handle: HandleSchema,
+    /** 直播链接：频道页，或某一场直播的视频页。**这是唯一的一栏地址。** */
+    url: z
+      .string()
+      .trim()
+      .min(1, { message: '需要一条链接' })
+      .max(LIVE_URL_MAX, { message: `链接太长了（最多 ${String(LIVE_URL_MAX)} 个字符）` }),
+
     displayName: z.string().trim().min(1, { message: '需要名字' }).max(LIVE_NAME_MAX),
     note: z.string().trim().max(LIVE_NOTE_MAX).nullish(),
 
     /**
      * 标签（2026-09-13，用户要求：「可输入多个标签，暂时不需要做标签筛选功能」）。
      *
-     * ⚠️ 它与 `handle` 是**两件不同的事**，别把一个当成另一个：
-     *    · `handle` 是**标识**，链接与嵌入都按它拼出来（`liveChannelUrl`）；
-     *    · `tags` 是**给人看的分类**（例如"速通"、"Ranked"），一次都不参与取数。
-     *    ⇒ 所以这里可以随便增删标签，而 handle 一动链接就变。
+     * ⚠️ 它与解析出来的 `handle` 是**两件不同的事**：handle 决定链接与嵌入，
+     *    tags 只是给人看的分类，一次都不参与取数。
      *
      * ⚠️ 去重与折叠：同一行里重复的标签没有意义（界面上会并排出现两个一样的），
-     *    所以 `.transform()` 里按"去空白 + 去重（大小写不敏感）"归一化一次。
-     *    保留大小写原样 —— 标签是人写的（"Ranked" vs "ranked" 只保留先出现的那个）。
+     *    所以按"去空白 + 去重（大小写不敏感）"归一化一次。保留大小写原样
+     *    —— 标签是人写的（"Ranked" vs "ranked" 只保留先出现的那个）。
      */
     tags: z
       .array(z.string().trim().min(1).max(LIVE_TAG_MAX))
@@ -348,66 +360,74 @@ export const LiveChannelInputSchema = z
         return out;
       }),
 
-    /**
-     * 可选：当前（或最近一场）直播的**视频 ID**。有它才嵌。
-     *
-     * ⚠️ 它会变。所以界面上必须说清"这是给现在这场用的"，而不是暗示它是频道的属性 ——
-     *    否则下个月它会变成一个指向旧直播的死链，而没人会想到需要更新它。
-     */
-    liveVideoId: z.string().trim().max(64).nullish(),
-
     /** 见文件头：YouTube 频道级嵌入的试验开关。默认关。 */
     embedChannel: z.boolean().default(false),
 
     sortOrder: z.number().int().min(0).max(9999).default(100),
   })
   /*
-   * 链接里的平台必须与选中的平台**一致**。
+   * 链接必须认识，而且必须能推出平台。
    *
-   * ⚠️ 不校验的话会出现"表里的 platform 与链接指向的平台不是一回事"：
-   *    界面上按 A 平台渲染、点进去是 B 平台，而两边都不报错。
+   * ⚠️ 只认得出平台还不够：**裸标识**（`@Someone`、`MCSR_Ranked`）能被
+   *    `parseLiveLink` 认出来，但那时 `platform` 是 `null` —— 而链接与嵌入
+   *    都按平台拼，`platform` 为空的行**既跳不了也嵌不了**。
+   *    以前平台是用户自己选的，所以裸标识还能用；现在平台从链接推，
+   *    裸标识就没法定位了 ⇒ 这里必须拒掉，并说清该填什么。
+   *
    * ⚠️ 错误码沿用既有的 `invalid_input`（不新增），形状是字段级 issue
-   *    （`field: 'handle'` + 中文 message），前端那套字段级渲染直接吃。
+   *    （`field: 'url'` + 中文 message），前端那套字段级渲染直接吃。
    */
   .superRefine((value, ctx) => {
-    const link = parseLiveLink(value.handle);
+    const link = parseLiveLink(value.url);
     if (!link) {
       ctx.addIssue({
         code: 'custom',
-        path: ['handle'],
-        message: '这一栏要填**频道标识**或**频道页链接**（认不出的位置、或指向别的网站的链接不行）',
-      });
-      return;
-    }
-    if (!link.handle) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['handle'],
+        path: ['url'],
         message:
-          '这条链接里只有"某一场直播"的视频 ID、没有频道 —— ' +
-          '频道页链接填这一栏，视频 ID 填「直播视频 ID」那一栏',
+          '认不出这条链接 —— 请粘**频道页**或**某一场直播的视频页**的完整链接（YouTube / Twitch / B站）',
       });
       return;
     }
-    if (link.platform !== null && link.platform !== value.platform) {
+    if (link.platform === null) {
       ctx.addIssue({
         code: 'custom',
-        path: ['handle'],
-        message: `这条链接指向 ${link.platform}，与上面选的平台（${value.platform}）不一致`,
+        path: ['url'],
+        message:
+          '这条链接里带不到平台信息（像是只填了一个标识）。' +
+          '平台由链接推出来，所以请粘**完整链接** —— 例如 https://www.twitch.tv/someone',
       });
     }
   })
   /*
-   * 归一化：**只落库标识**（输入宽松、存储严格）。
-   * ⚠️ 走到这里说明上面的 superRefine 已经通过，`parseLiveLink` 不可能为 null
-   *    （`?? value.handle` 是给"将来有人加了分支"兜底，而不是正常的路径）。
+   * 归一化：把链接解析成 `platform` / `handle` / `liveVideoId` 三个列。
+   *
+   * ⚠️ 走到这里说明上面的 superRefine 已经通过，`parseLiveLink` 不可能为 null，
+   *    且 `platform` 一定非空（两个分支都拦过了）。
+   * ⚠️ `handle` 允许是**空串**：粘的是"某一场直播的视频页"时链接里没有频道。
+   *    016 迁移把去重键放宽成三列，正是为了让这种行能共存多行。
    */
-  .transform((value) => ({
-    ...value,
-    handle: parseLiveLink(value.handle)?.handle ?? value.handle,
-  }));
+  .transform((value) => {
+    const link = parseLiveLink(value.url);
+    return {
+      ...value,
+      platform: (link?.platform ?? 'youtube') as LivePlatform,
+      handle: link?.handle ?? '',
+      liveVideoId: link?.liveVideoId ?? null,
+    };
+  });
 
 export type LiveChannelInput = z.infer<typeof LiveChannelInputSchema>;
+
+/**
+ * **归一化之前**的入参形状 —— 也就是表单和 HTTP 请求体实际长的样子。
+ *
+ * ⚠️ 为什么需要它单列一个类型：`LiveChannelInputSchema` 带 `.transform()`，
+ *    于是 `z.infer`（输出）里**多了** `platform` / `handle` / `liveVideoId` 三个
+ *    由链接解析出来的字段。表单**不能**提供那三个 —— 它们正是要算出来的东西。
+ *    用输出类型去标注表单的 payload，TypeScript 会要求表单填三个它根本没有的字段。
+ *    （资源库那边踩过同一个坑，注释里写着"`CalendarEventInput` 是**输出**"。）
+ */
+export type LiveChannelDraft = z.input<typeof LiveChannelInputSchema>;
 
 export interface LiveChannel {
   id: string;
@@ -512,6 +532,65 @@ export function liveChannelUrl(platform: LivePlatform, handle: string): string {
         ? `https://live.bilibili.com/${encodeURIComponent(h)}`
         : `https://live.bilibili.com/blanc/${encodeURIComponent(h)}`;
   }
+}
+
+/**
+ * 「去看这一场」的地址（2026-09-13）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 为什么需要它：卡片上那个按钮原来无条件指向**频道页**
+ * ---------------------------------------------------------------------------
+ * 用户实测发现的缺陷：他给 YouTube 那行填了正在直播的视频 ID（`zsb-ZDznGIA`），
+ * 播放器**能播**，但「去原频道看」指向 `youtube.com/channel/MCSR_Ranked` —— 一条**死链**
+ * （YouTube 的 `/channel/` 只认 `UC…` 开头的频道 ID）。
+ * ⇒ 判据改成：**有视频 ID 就指向那一场视频，否则才指向频道页。**
+ *   用户的原话就是这个意思：「链接跳转也用这个」。
+ *
+ * ⚠️ Twitch 与 B站 解析出的 `liveVideoId` 永远是 null（`parseLiveLink` 对它们
+ *    只产出 handle）⇒ 这两个平台走的始终是频道页那条路。
+ *    **但库里可能存着历史值**（线上那行 Twitch 就存着 `mcsrranked` —— 那是频道名，
+ *    被误填进了旧表单的"视频 ID"栏）⇒ 下面加了一道形状守卫：
+ *    Twitch 的录像地址要求**纯数字** ID，形状不对就退回频道页，
+ *    免得拼出一条 `twitch.tv/videos/mcsrranked` 这种死链。
+ */
+export function liveVideoUrl(platform: LivePlatform, videoId: string): string {
+  const v = encodeURIComponent(videoId.trim());
+  switch (platform) {
+    case 'youtube':
+      return `https://www.youtube.com/watch?v=${v}`;
+    case 'twitch':
+      // Twitch 的录像（VOD）地址要求纯数字 id；别的形状不是我们能指的地址
+      return `https://www.twitch.tv/videos/${v}`;
+    default:
+      return `https://www.bilibili.com/video/${v}`;
+  }
+}
+
+/**
+ * 卡片上「去原频道看」/「去看这一场」该指向哪。
+ *
+ * ⚠️ 与 `liveEmbedDecision` 的取值**方向一致**（都优先视频），但用途不同：
+ *    那个回答"嵌哪个播放器地址"，这个回答"点出去看哪里"。
+ *    两者用同一个优先级，界面上才不会出现"播的是这一场、点出去是频道页"的割裂。
+ */
+export function liveChannelHref(
+  channel: Pick<LiveChannel, 'platform' | 'handle' | 'liveVideoId'>,
+): string {
+  const videoId = channel.liveVideoId?.trim() ?? '';
+  /*
+   * ⚠️ **只有 YouTube 走视频那条路** —— 判据是"**嵌入**也会用这个视频"。
+   *
+   * 这是被渲染自检逼出来的：夹具里有一条 Twitch 行带着数字 `liveVideoId`
+   * （`twitch.tv/videos/1234567` 确实是个合法形状），如果这里照用，
+   * 卡片就变成"**播放器放的是频道，点出去是另一个录像**"—— 两者指向不同的东西。
+   * 而 `liveEmbedDecision` 对 Twitch/B站 **根本不读** `liveVideoId`
+   * （它们的嵌入对象是频道/房间，Twitch 的录像也没有"正在直播"那种地址）。
+   * ⇒ 链接与播放器的取值**必须同源**：嵌入用视频，链接才用视频；否则一律频道页。
+   *   （用户报的那个缺陷正是这条规则的反面：YouTube 有视频却去指死链频道页。）
+   */
+  const prefersVideo = channel.platform === 'youtube' && videoId !== '';
+  if (prefersVideo) return liveVideoUrl(channel.platform, videoId);
+  return liveChannelUrl(channel.platform, channel.handle);
 }
 
 /**

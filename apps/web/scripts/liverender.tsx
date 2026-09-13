@@ -239,12 +239,36 @@ console.log(`【${LANG}】直播卡：能嵌的那一行`);
   );
   ok('可嵌的行门面按钮**没有** disabled');
 
-  // 频道链接永远在（播放器可能失败，那时需要一条能走的路）
-  assert.ok(
-    withVideo.includes('https://www.youtube.com/@Someone'),
-    '频道链接必须永远在，即使上面已经有播放器',
+  /*
+   * ⚠️⚠️ **2026-09-13：这一条改过判据，原因值得留在这里。**
+   *
+   * 原文是「频道链接必须永远在」，断言卡片链接 == `youtube.com/@Someone`。
+   * 而用户实测发现：给 YouTube 那行填了正在直播的视频 ID 之后，播放器**能播**，
+   * 但这条链接指向 `youtube.com/channel/MCSR_Ranked` —— 一条**死链**。
+   * ⇒ 判据改成：**有视频 ID 就指向那一场，没有才指向频道页。**
+   *
+   * ★ 两半都要断言，缺一半就等于没有区分力：
+   *   · 只测"有视频 ⇒ 指向视频"：有人把频道页那条路删掉也照样绿；
+   *   · 只测"没视频 ⇒ 指向频道页"：用户报的那个缺陷（有视频却指死链）会漏过去。
+   */
+  assert.equal(
+    liveChannelHref(withVideo),
+    'https://www.youtube.com/watch?v=abcdefghijk',
+    '★ 有视频 ID 时，卡片链接要指向**那一场** —— 原来它无条件指向频道页，那正是用户报的死链',
   );
-  ok('频道链接与播放器同时存在');
+  ok('★ 有视频 ID → 卡片链接指向那一场视频（不是频道页）');
+
+  const noVideo = html(
+    <ul>
+      <LiveCard channel={channel({ liveVideoId: null })} />
+    </ul>,
+  );
+  assert.equal(
+    liveChannelHref(noVideo),
+    'https://www.youtube.com/@Someone',
+    '没有视频 ID 时就退回频道页 —— "链接永远在"这条原意保住了，只是判据收窄了',
+  );
+  ok('没有视频 ID → 退回频道页');
 }
 
 // ---------------------------------------------------------------------------

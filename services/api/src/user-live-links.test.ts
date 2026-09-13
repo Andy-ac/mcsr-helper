@@ -783,31 +783,63 @@ describe('★ PATCH：改链接会重解析，只改名字不动平台；空 pat
 // 公开名单那侧的入参形状（acceptance #5 的另一半）
 // ---------------------------------------------------------------------------
 
-describe('★ 公开名单：handle 一个字段收"标识或链接"，服务端归一化后只落标识', () => {
-  it('入参里**没有**独立的 url 字段（(i) 方案已否决）', () => {
+describe('★ 公开名单：只有一栏「直播链接」，平台/标识/视频 ID 全部由它解析出来', () => {
+  /*
+   * ⚠️⚠️ **这一组在 2026-09-13 被整组改写过，口径变了。**
+   *
+   * 原文断言的是 F29 的 **(ii) 方案**：「`handle` 一个字段收标识或链接，
+   * 服务端归一化后只落标识」**且明确断言"入参里没有独立的 url 字段"**。
+   *
+   * 而用户在这一轮把表单定稿成**只有一栏「直播链接」**：
+   *     「频道标识可以直接舍弃掉」「平台也不用选了，反正能从链接推出来」。
+   * ⇒ 于是 `url` **成了唯一**的地址入参，`platform` / `handle` / `liveVideoId`
+   *   三样**全部**是解析结果 —— 这正是当年被否决的那个形状，只是理由变了：
+   *   当年否决的是"url 与 handle 两个字段表达一件事"，现在只有**一个**字段。
+   *
+   * ⚠️ 改写时保留的是**问题**（链接能不能过、落库的是标识还是链接、错指在哪一栏），
+   *    不是结论 —— 结论变了，问题没变。
+   */
+  it('入参只有 url；platform / handle / liveVideoId 都是解析结果', () => {
     const parsed = LiveChannelInputSchema.safeParse({
-      platform: 'youtube',
-      handle: 'https://www.youtube.com/@Someone',
-      displayName: '某位选手',
       url: 'https://www.youtube.com/@Someone',
+      displayName: '某位选手',
     });
     assert.ok(parsed.success, '粘一条频道页链接必须能过');
-    assert.equal(
-      'url' in parsed.data,
-      false,
-      '入参形状里没有独立的 url 字段，也没有"恰有一个"规则（F29 的 (i) 已否决）',
-    );
-    assert.equal(parsed.data.handle, '@Someone', '归一化后**只留标识**');
+    assert.equal(parsed.data.platform, 'youtube', '平台从链接推出来');
+    assert.equal(parsed.data.handle, '@Someone', '归一化后**只留标识**（不是那条链接）');
+    assert.equal(parsed.data.liveVideoId, null, '频道页链接里没有视频 ID');
+
+    /*
+     * ⚠️ 客户端**自己传** platform/handle 是无效的：它们不在入参形状里，
+     *    zod 默认会把多余的键**丢掉**而不是报错。所以"传了也没用"这件事
+     *    必须靠**结果**断言（落库的是链接算出来的那个），而不是靠 400。
+     */
+    const spoofed = LiveChannelInputSchema.safeParse({
+      url: 'https://www.twitch.tv/Someone',
+      platform: 'youtube',
+      handle: 'NotThis',
+      displayName: 'x',
+    });
+    assert.ok(spoofed.success);
+    assert.equal(spoofed.data.platform, 'twitch', '平台以链接为准，客户端传的不算');
+    assert.equal(spoofed.data.handle, 'Someone', '标识也以链接为准');
+  });
+
+  it('★ 粘「正在直播的那一场」的链接 ⇒ 落库的是视频 ID（handle 为空串）', () => {
+    const parsed = LiveChannelInputSchema.safeParse({
+      url: 'https://www.youtube.com/watch?v=zsb-ZDznGIA',
+      displayName: '某位选手',
+    });
+    assert.ok(parsed.success);
+    assert.equal(parsed.data.platform, 'youtube');
+    assert.equal(parsed.data.liveVideoId, 'zsb-ZDznGIA', '这一条才是"能播"的那一条路');
+    assert.equal(parsed.data.handle, '', '链接里没有频道 ⇒ handle 是空串，不是缺失');
   });
 
   it('★ 编辑粘链接 → 201，而且落库的是**标识**（不是链接）', async () => {
     const editor = await makeUser('editor');
     const created = await call('POST', '/api/live', {
-      json: {
-        platform: 'youtube',
-        handle: 'https://www.youtube.com/@Someone',
-        displayName: '某位选手',
-      },
+      json: { url: 'https://www.youtube.com/@Someone', displayName: '某位选手' },
       cookie: editor.cookie,
     });
     assert.equal(created.status, 201, created.text);
@@ -820,35 +852,43 @@ describe('★ 公开名单：handle 一个字段收"标识或链接"，服务端
     assert.equal(row.handle, '@Someone', '库里必须只有标识');
   });
 
-  it('链接指向的平台与选的平台不一致 → 400 invalid_input（字段级 issue）', async () => {
+  it('认不出的位置 / 裸标识 / 带空格的输入 → 400，而且**错指在 url 那一栏**', async () => {
     const editor = await makeUser('editor');
-    const res = await call('POST', '/api/live', {
-      json: { platform: 'twitch', handle: 'https://www.youtube.com/@Someone', displayName: 'x' },
-      cookie: editor.cookie,
-    });
-    assert.equal(res.status, 400);
-    assert.equal(res.body.error, 'invalid_input');
-    assert.equal(
-      (res.body.issues as Array<{ field: string }>)[0]?.field,
-      'handle',
-      '错要指在 handle 这一栏上',
-    );
-  });
-
-  it('认不出的位置 / 只有视频 ID 的链接 / 带空格的标识 → 400', async () => {
-    const editor = await makeUser('editor');
-    for (const handle of [
+    for (const url of [
       'https://example.com/someone', // 我们不认识的网站
-      'https://www.youtube.com/watch?v=dQw4w9WgXcQ', // 只有"这一场"的视频 ID，没有频道
-      '@a b', // 标识里不能有空格
+      'Someone', // 裸标识：判不出平台 ⇒ 拼不出地址（这是"平台不再由用户选"的直接后果）
+      '@a b', // 空格
       'javascript:alert(1)',
     ]) {
       const res = await call('POST', '/api/live', {
-        json: { platform: 'youtube', handle, displayName: 'x' },
+        json: { url, displayName: 'x' },
         cookie: editor.cookie,
       });
-      assert.equal(res.status, 400, `${handle} 应当被拒：${res.text}`);
+      assert.equal(res.status, 400, `${url} 应当被拒：${res.text}`);
+      assert.equal(
+        (res.body.issues as Array<{ field: string }>)[0]?.field,
+        'url',
+        '错要指在 url 这一栏上（以前指 handle，现在没有那一栏了）',
+      );
     }
+  });
+
+  it('★ 016 之后：两行"只粘了直播视频链接"的频道可以共存（去重键含 live_video_id）', async () => {
+    const editor = await makeUser('editor');
+    /*
+     * ⚠️ 这两行的 `handle` 都是空串、只有视频 ID 不同。
+     *    旧的 `UNIQUE (platform, handle)` 之下，第二行会被判成重复 ——
+     *    报出来还是"这条已经记过了"，一句完全指错方向的话。
+     *    016 把去重键放宽成三列正是为了这件事。
+     */
+    for (const v of ['zsb-ZDznGIA', 'dQw4w9WgXcQ']) {
+      const res = await call('POST', '/api/live', {
+        json: { url: `https://www.youtube.com/watch?v=${v}`, displayName: `选手 ${v}` },
+        cookie: editor.cookie,
+      });
+      assert.equal(res.status, 201, `${v} 应当能加进来：${res.text}`);
+    }
+    assert.equal(itemsOf((await call('GET', '/api/live')).body).length, 2);
   });
 
   it('★ 私人链接不会混进公开名单（两组互不写入）', async () => {

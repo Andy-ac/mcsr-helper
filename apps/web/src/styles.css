@@ -119,6 +119,69 @@ html[data-theme='dark'] select {
   pointer-events: none;
 }
 
+/*
+ * 直播编辑表单的「高级」折叠区（2026-09-13）。
+ *
+ * ⚠️ 用原生 `<details>`：它自带键盘与读屏支持，而这一块（排序 + 频道嵌入）
+ *    不值得为它写一套展开状态。
+ * ⚠️ 折叠标题必须**看起来可点**：默认的三角足够小，加一点内边距与 hover 变色，
+ *    否则它会像一句普通说明文字，没人会去点它 ——
+ *    那就等于把两个开关藏起来且没有入口。
+ */
+.livemanage__advanced {
+  margin: 4px 0 12px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.livemanage__advanced > summary {
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--fg-muted);
+  /* 去掉 Safari 默认的三角后自己画一个，保证两个浏览器一致 */
+  list-style: none;
+}
+
+.livemanage__advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+/*
+ * ⚠️ 三角**用 CSS 画，不用字符** —— 和播放器那个三角同一个理由。
+ *    第一版写的是 `content: '▸'`（U+25B8），而它**不在自托管像素字体的子集里**：
+ *    `check-font-coverage` 当场把它拦下来了（构建会失败）。
+ *    三选一里选"换成子集里已有的字符"只是把问题挪到下一个字符上，而这一块
+ *    只是个装饰三角 ⇒ 用边框画，永远不会掉字体。
+ */
+.livemanage__advanced > summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  /* 指向右：左边框着色，上下透明 */
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.livemanage__advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.livemanage__advanced > summary:hover {
+  color: var(--fg);
+}
+
+/* 展开之后，里面两个字段与上面的字段保持同样的间距 */
+.livemanage__advanced > * + * {
+  margin-top: 12px;
+}
+
 .live-card__tags {
   list-style: none;
   display: flex;
