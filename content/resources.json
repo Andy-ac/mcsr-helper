@@ -393,7 +393,7 @@
       "tags": ["tutorial", "basics", "video"],
       "status": "published",
       "summary": "从零开始的入门教程 —— 第一次接触 MCSR 先看这个。",
-      "body": "中文入门教程。讲清楚一整局速通在做什么、每个阶段的目标是什么。\n\n看之前不需要任何速通基础。",
+      "body": "从零开始讲清楚一整局速通在做什么、每个阶段的目标是什么。\n\n中文讲解，看之前不需要任何速通基础。",
       "featured": false
     },
     {
@@ -417,7 +417,7 @@
       "tags": ["bastion", "route", "video"],
       "status": "published",
       "summary": "Doogile 猪堡的完整路线演示。",
-      "body": "Doogile 猪堡的整条路线走法。猪堡类型里它是最常见也最需要熟练的一类。",
+      "body": "Doogile 猪堡的整条路线走法演示。\n\n猪堡是速通里分歧最多的环节之一，先跟着完整路线走一遍，再抠细节。",
       "featured": false
     },
     {
@@ -430,6 +430,54 @@
       "status": "published",
       "summary": "Ranked 里 Triple 到 Gap 的完整路线。",
       "body": "Ranked 赛制下从 Triple 到 Gap 这一段的全路线演示。\n\nRanked 的种子是随机的，路线选择比 RSG 更吃临场判断。",
+      "featured": false
+    },
+    {
+      "kind": "video",
+      "title": "船测原理 2",
+      "titleEn": "Boat Measurement Principles 2 (video)",
+      "url": "https://www.bilibili.com/video/BV1r4WEe6EkB",
+      "lang": "zh-CN",
+      "tags": ["boat", "tutorial", "video"],
+      "status": "published",
+      "summary": "船测原理的第二讲 —— 讲清楚「为什么这样测才准」。",
+      "body": "船测原理的第二讲。\n\n想弄清楚为什么这样测才准，看这条；只想照着步骤做，看「船测教学」就够。",
+      "featured": false
+    },
+    {
+      "kind": "video",
+      "title": "高版本猪堡路线 1",
+      "titleEn": "Bastion Routes, Modern Versions 1 (video)",
+      "url": "https://www.bilibili.com/video/BV1Cp8FzaEPa",
+      "lang": "zh-CN",
+      "tags": ["bastion", "route", "video"],
+      "status": "published",
+      "summary": "高版本猪堡的路线演示（一）。",
+      "body": "高版本下的猪堡路线演示。\n\n和「Doogile 猪堡全路线」对照着看，能看清不同打法的取舍。",
+      "featured": false
+    },
+    {
+      "kind": "video",
+      "title": "高版本猪堡路线 2",
+      "titleEn": "Bastion Routes, Modern Versions 2 (video)",
+      "url": "https://www.bilibili.com/video/BV1yr1aBCEMj",
+      "lang": "zh-CN",
+      "tags": ["bastion", "route", "video"],
+      "status": "published",
+      "summary": "高版本猪堡的路线演示（二）。",
+      "body": "高版本猪堡路线的第二讲，与「高版本猪堡路线 1」配套。",
+      "featured": false
+    },
+    {
+      "kind": "video",
+      "title": "参考比赛录像",
+      "titleEn": "Reference Match Footage (video)",
+      "url": "https://www.bilibili.com/video/BV1ZG4y1A7mT",
+      "lang": "zh-CN",
+      "tags": ["match", "footage", "video"],
+      "status": "published",
+      "summary": "完整一局的比赛录像 —— 学路线选择时比看剪辑更有用。",
+      "body": "看完整一局怎么分配时间、什么时候决定放弃某条路线。\n\n剪辑只留下成功的结果，整局才看得到判断过程。",
       "featured": false
     }
   ]
