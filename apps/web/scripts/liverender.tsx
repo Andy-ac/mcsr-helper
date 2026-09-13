@@ -1048,9 +1048,7 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     try {
       assert.ok(
         // 一条**没有**「改」的行（用普通产物代替）—— 上面那条断言此刻应当失败
-        '<li class="mylive-row"><p>这一行没有按钮</p></li>'.includes(
-          i18n.t('myLive.editAction'),
-        ),
+        '<li class="mylive-row"><p>这一行没有按钮</p></li>'.includes(i18n.t('myLive.editAction')),
         '（探针内部：这一行没有「改」，上面那条应当失败）',
       );
       return false; // 没抛 ⇒ 说明那条断言没有区分力
