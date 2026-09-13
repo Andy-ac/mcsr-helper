@@ -490,7 +490,7 @@ export function approveRevision(input: {
  * ---------------------------------------------------------------------------
  * ⚠️⚠️ 这里踩过**两次**同一个坑，都是"用 current_revision 判断有没有上架过"
  * ---------------------------------------------------------------------------
- * 导入的条目（从 content/resources.json 进来的那 9 条）status 就是
+ * 导入的条目（从 content/resources.json 进来的那些）status 就是
  * 'published'，但 **current_revision 是 NULL** —— 它们不是走审核流程进来的，
  * 没有版本号。于是 `current_revision === null` 这个判断会把它们当成
  * "从没上架过"。
