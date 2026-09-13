@@ -265,6 +265,35 @@ export const en: TranslationSchema = {
     capActionRead: 'View',
     capActionManage: 'Maintain',
     capActionAuthor: 'Edit content directly',
+    /**
+     * ★ Full description per capability (used by the role guide), as opposed to
+     * the short `capAction*` labels above.
+     *
+     * Keyed by the **full capability name** (`resource.submit`) rather than the
+     * action name (`submit`): the same action reads differently per type —
+     * `calendar.submit` is "submit events", `seed.submit` is "share world seeds"
+     * — and sharing one key would make one of them wrong.
+     *
+     * ⚠️ These used to be hard-coded (Chinese-only) in `RoleGuide.tsx`'s
+     * `CAP_TEXT`, so the English UI showed Chinese. Moved here 2026-09-13.
+     * ⚠️ Three of them contain `**…**` emphasis (editAny / editUnpublished /
+     * moderate) — the component **must** run them through `em()`.
+     */
+    capDescResourceSubmit: 'Submit a new resource entry (websites or tools are welcome)',
+    capDescResourceEditOwn: 'Edit entries you submitted yourself',
+    capDescResourceEditAny:
+      'Edit any **published** entry (wiki-style — edits still go through review)',
+    capDescResourceEditUnpublished: "Edit someone else's **unpublished** draft",
+    capDescResourceFeature: 'Mark or unmark an entry as featured / official',
+    capDescResourceModerate: 'Take published content **down**, and restore it',
+    capDescResourceReview: 'Review resource submissions (approve / reject)',
+    capDescCalendarSubmit: 'Submit events and activities',
+    capDescCalendarReview: 'Review calendar content',
+    capDescVideoSubmit: 'Submit video links',
+    capDescSeedSubmit: 'Share world seeds',
+    capDescSeedReview: 'Review seed submissions',
+    capDescUserModerate: 'Manage accounts and roles',
+    capDescAuditRead: 'Read the audit log',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors

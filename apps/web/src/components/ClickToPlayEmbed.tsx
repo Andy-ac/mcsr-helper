@@ -125,7 +125,8 @@ export function ClickToPlayEmbed({
             /*
              * allow 是**按平台**给的，不是把三个平台的并集一股脑写上 ——
              * 权限给多了没人会发现，直到某天有人来查"为什么这个页面能拿麦克风"。
-             * 三条分别对应 EmbedTest.tsx 里已经验证过的写法。
+             * 三条分别对应**实测验证过**的写法（原验证页 `/embed-test` 已删，
+             * 结论留在这里，复现请看 git 历史）。
              */
             allow={
               platform === 'youtube'

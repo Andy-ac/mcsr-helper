@@ -281,6 +281,32 @@ export const zhCN = {
     capActionRead: '查看',
     capActionManage: '维护',
     capActionAuthor: '直接编辑内容',
+    /**
+     * ★ 每条能力的**完整说明**（角色说明页用），与上面 `capAction*` 的短标签不是一回事。
+     *
+     * 为什么要按**完整能力名**（`resource.submit`）而不是动作名（`submit`）：
+     * 同一个动作在不同类型下说的话不一样 —— `calendar.submit` 是"提交赛事与活动"、
+     * `seed.submit` 是"分享世界种子"，共用一个键就会有一个说错。
+     *
+     * ⚠️ 这批词条原本**硬编码在 `RoleGuide.tsx` 的 `CAP_TEXT` 里、只有中文**
+     *   （英文界面会夹中文）。2026-09-13 迁到这里，中英各一份。
+     * ⚠️ 其中三条自带 `**…**` 强调（editAny / editUnpublished / moderate），
+     *   组件侧**必须走 `em()`**，否则用户看到的是字面的星号。
+     */
+    capDescResourceSubmit: '提交新的资源条目（推荐网站或工具）',
+    capDescResourceEditOwn: '修改自己提交的条目',
+    capDescResourceEditAny: '修改任何**已上架**的条目（wiki 式，改动一样要过审核）',
+    capDescResourceEditUnpublished: '修改别人**还没上架**的草稿',
+    capDescResourceFeature: '设置或取消「精选」「官方」',
+    capDescResourceModerate: '把已上架的内容**下架**，以及恢复',
+    capDescResourceReview: '审核资源库的提交（批准 / 驳回）',
+    capDescCalendarSubmit: '提交赛事与活动',
+    capDescCalendarReview: '审核日历内容',
+    capDescVideoSubmit: '提交视频链接',
+    capDescSeedSubmit: '分享世界种子',
+    capDescSeedReview: '审核种子分享',
+    capDescUserModerate: '管理账号与角色',
+    capDescAuditRead: '查看审计日志',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误

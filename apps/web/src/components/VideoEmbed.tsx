@@ -22,7 +22,7 @@ export function VideoEmbed({ video }: { video: Video }) {
     >
       {/*
         原站链接是**兜底出口**，不是装饰：B站 的官方播放器在桌面 WebView 里
-        是三个平台里最不确定的一个（EmbedTest.tsx 已记录），而 CSP / Electron
+        是三个平台里最不确定的一个（**实测记录**在案，原验证页已删），而 CSP / Electron
         对 Twitch 还有一条已知陷阱。嵌入失败时用户需要一个能走的路。
       */}
       <a

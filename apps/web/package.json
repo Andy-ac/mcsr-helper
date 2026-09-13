@@ -19,11 +19,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/check-font-coverage.mjs",
-    "check:all": "pnpm -w check && tsx --tsconfig tsconfig.json scripts/gridrender.tsx && tsx --tsconfig tsconfig.json scripts/gridrender.tsx --en && tsx --tsconfig tsconfig.json scripts/liverender.tsx && tsx --tsconfig tsconfig.json scripts/liverender.tsx --en && tsx --tsconfig tsconfig.json scripts/authoringNotice.ts && tsx --tsconfig tsconfig.json scripts/authoringNotice.ts --en && node scripts/check-font-coverage.mjs",
+    "check:all": "pnpm -w check && tsx --tsconfig tsconfig.json scripts/gridrender.tsx && tsx --tsconfig tsconfig.json scripts/gridrender.tsx --en && tsx --tsconfig tsconfig.json scripts/liverender.tsx && tsx --tsconfig tsconfig.json scripts/liverender.tsx --en && tsx --tsconfig tsconfig.json scripts/authoringNotice.ts && tsx --tsconfig tsconfig.json scripts/authoringNotice.ts --en && tsx --tsconfig tsconfig.json scripts/roleguide.tsx && tsx --tsconfig tsconfig.json scripts/roleguide.tsx --en && node scripts/check-font-coverage.mjs",
     "check:font": "node scripts/check-font-coverage.mjs",
     "check:grid": "tsx --tsconfig tsconfig.json scripts/gridrender.tsx",
     "check:live": "tsx --tsconfig tsconfig.json scripts/liverender.tsx",
     "check:authoring": "tsx --tsconfig tsconfig.json scripts/authoringNotice.ts",
+    "check:roleguide": "tsx --tsconfig tsconfig.json scripts/roleguide.tsx",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

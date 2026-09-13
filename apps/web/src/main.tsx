@@ -34,36 +34,22 @@ if (!found) throw new Error('#root not found in index.html');
 const container: HTMLElement = found;
 
 /**
- * 极简路由：只有一条额外路径，不值得为此引入 react-router。
- *
- * `/embed-test` 是一次性自检页（apps/web/src/dev/）。它必须从**生产域名**加载才能真正
- * 验证嵌入 —— 浏览器是否发送 Referer 取决于页面的 origin 与策略。
- * Caddy 的 `try_files {path} /index.html` 会把该路径交给 SPA，所以这里按 pathname 分流。
- *
- * M1 开始做正式路由时，这个分支应当删掉。
+ * ⚠️ 这里原先有一条极简路由：`/embed-test` 会分流到一个一次性自检页
+ *    （`apps/web/src/dev/`），用来在生产域名下验证第三方嵌入是否收到 Referer。
+ *    **2026-09-13 已删除**（页面、样式、这条分支一起）—— 它挂在公网上，
+ *    而实测结论已经写进 `ClickToPlayEmbed.tsx` 与 `VideoEmbed.tsx` 的注释里。
+ *    需要复现时请看 git 历史（commit `235d060` 之前）。
  */
-const path = globalThis.location.pathname.replace(/\/+$/, '') || '/';
-
-if (path === '/embed-test') {
-  void import('@/dev/EmbedTest').then(({ EmbedTest }) => {
-    createRoot(container).render(
-      <StrictMode>
-        <EmbedTest />
-      </StrictMode>,
-    );
-  });
-} else {
-  createRoot(container).render(
-    <StrictMode>
-      {/*
-        AuthProvider 包在 App **外面**（而不是放进 Layout 里）：
-        登录状态是整站级别的，而 Layout 在路由切换时会重新渲染。
-        放进 Layout 的话，每次换页都会重新判断一次登录态 ——
-        接口慢的时候侧边栏会闪一下"未登录"。
-      */}
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </StrictMode>,
-  );
-}
+createRoot(container).render(
+  <StrictMode>
+    {/*
+      AuthProvider 包在 App **外面**（而不是放进 Layout 里）：
+      登录状态是整站级别的，而 Layout 在路由切换时会重新渲染。
+      放进 Layout 的话，每次换页都会重新判断一次登录态 ——
+      接口慢的时候侧边栏会闪一下"未登录"。
+    */}
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </StrictMode>,
+);

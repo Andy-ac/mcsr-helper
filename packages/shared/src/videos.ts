@@ -155,8 +155,8 @@ export function buildEmbedUrl(
        *    是 `/^\d{6,12}$/`，解析链接时也只取数字那段），所以前缀只能在这里加，
        *    而且加了之后不会出现 `vv` 的风险 —— 存进去的时候就没有 `v`。
        *
-       * 这条是 review 时和 `apps/web/src/dev/EmbedTest.tsx` 对出来的：那个自检页
-       * 早就写着这句话（它拼的是 `?video=v...`），而这里漏了。
+       * 这条是 review 时和当时的那个自检页（`/embed-test`，2026-09-13 已删）对出来的：
+       * 那个页面早就写着这句话（它拼的是 `?video=v...`），而这里漏了。
        * 自检页对了、生产代码错了，说明"探针页验证过"不等于"线上那条路验证过"。
        */
       const params = new URLSearchParams({ video: `v${videoId}`, parent: origin });

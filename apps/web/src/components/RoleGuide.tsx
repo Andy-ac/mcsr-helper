@@ -18,21 +18,36 @@ import { describeCapabilities } from '@/lib/capabilities';
  *   · **那句话怎么说** → CAP_TEXT 里手写；它过期了也只是措辞不够好，
  *     不会变成假信息（最坏情况是显示能力名本身）。
  */
-const CAP_TEXT: Record<string, string> = {
-  'resource.submit': '提交新的资源条目（推荐网站或工具）',
-  'resource.editOwn': '修改自己提交的条目',
-  'resource.editAny': '修改任何**已上架**的条目（wiki 式，改动一样要过审核）',
-  'resource.editUnpublished': '修改别人**还没上架**的草稿',
-  'resource.feature': '设置或取消「精选」「官方」',
-  'resource.moderate': '把已上架的内容**下架**，以及恢复',
-  'resource.review': '审核资源库的提交（批准 / 驳回）',
-  'calendar.submit': '提交赛事与活动（M4）',
-  'calendar.review': '审核日历内容（M4）',
-  'video.submit': '提交视频链接（M4）',
-  'seed.submit': '分享世界种子（M4）',
-  'seed.review': '审核种子分享（M4）',
-  'user.moderate': '管理账号与角色',
-  'audit.read': '查看审计日志',
+/**
+ * 能力 → **词条 key**（`auth.capDesc*`）。
+ *
+ * ⚠️ 2026-09-13：这张表**原先装的是写死的中文**（`CAP_TEXT`），所以英文界面下
+ *    角色说明会夹一整段中文。现在只存 key，文案在 `packages/shared/src/i18n/`
+ *    两本字典里（中英各一份）。
+ *
+ * ⚠️ 按**完整能力名**索引，不能按动作名：同一个动作在不同类型下说的话不一样
+ *   （`calendar.submit` 是"提交赛事与活动"、`seed.submit` 是"分享世界种子"）。
+ *
+ * ⚠️ 这张表的 key 是**动态引用**（`t(CAP_DESC[cap])`）——「按字面量 grep key」
+ *    那种守卫**看不到它**。所以：少一行 / 打错一个字母都不会报错，
+ *    只会安静地退化成下面那个兜底（`action.label`，短标签，已翻译）。
+ *    ⇒ 兜底是**故意的**（总比空白或裸 key 强），但改这张表时要自己看一眼。
+ */
+const CAP_DESC: Record<string, string> = {
+  'resource.submit': 'auth.capDescResourceSubmit',
+  'resource.editOwn': 'auth.capDescResourceEditOwn',
+  'resource.editAny': 'auth.capDescResourceEditAny',
+  'resource.editUnpublished': 'auth.capDescResourceEditUnpublished',
+  'resource.feature': 'auth.capDescResourceFeature',
+  'resource.moderate': 'auth.capDescResourceModerate',
+  'resource.review': 'auth.capDescResourceReview',
+  'calendar.submit': 'auth.capDescCalendarSubmit',
+  'calendar.review': 'auth.capDescCalendarReview',
+  'video.submit': 'auth.capDescVideoSubmit',
+  'seed.submit': 'auth.capDescSeedSubmit',
+  'seed.review': 'auth.capDescSeedReview',
+  'user.moderate': 'auth.capDescUserModerate',
+  'audit.read': 'auth.capDescAuditRead',
 };
 
 /** 等级规则 —— 这些**不是能力**，矩阵里没有，只能写下来。 */
@@ -82,18 +97,18 @@ export function RoleGuide() {
               <ul className="roleguide__caps">
                 {groups.flatMap((group) =>
                   group.actions.map((action) => (
-                    // 每条都是"类型 · 具体能做什么"，类型来自矩阵，措辞来自 CAP_TEXT
+                    // 每条都是"类型 · 具体能做什么"，类型来自矩阵，措辞来自 CAP_DESC→词条
                     <li key={action.capability}>
                       <span className="roleguide__type">{group.label}</span>
                       {/*
-                        ⚠️ 必须走 `em()`：这张表里有三条自己用了 `**…**`
+                        ⚠️ 必须走 `em()`：词条里有三条自己用了 `**…**`
                         （editAny / editUnpublished / moderate）。
-                        不走的话用户看到的是 `修改任何**已上架**的条目` ——
-                        而这一处特别容易漏，因为**这些话在组件里、不在词条里**，
-                        所以"扫 i18n 文件找 `**`"那种改法完全看不到它。
-                        2026-09-13 就是渲染检查才抓到的。
+                        不走的话用户看到的是 `修改任何**已上架**的条目`。
+                        ⚠️ 这几条**现在在词条里**（曾经在组件里），所以
+                        "扫 i18n 文件找 `**`"和"扫组件找 `**`"两条路都只能看到一半 ——
+                        真正兜住它的是**渲染检查**（扫 innerText 里的 `**`）。
                       */}
-                      {em(CAP_TEXT[action.capability] ?? action.label)}
+                      {em(t(CAP_DESC[action.capability] ?? '') || action.label)}
                     </li>
                   )),
                 )}
