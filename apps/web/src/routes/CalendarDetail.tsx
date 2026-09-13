@@ -260,6 +260,22 @@ export function CalendarDetailPage() {
       </dl>
 
       {/*
+        ★ 具体时间（015 / 2026-09-13）：**离散的多个时间段**。
+
+        ⚠️ 用 `whitespace: pre-line`（CSS 类 `.calendar-schedule`）渲染，**不走 Markdown**：
+           这一栏的内容是"一行一个时间段"，用户敲的换行就是它的结构；
+           过 Markdown 会把单换行折成一个空格，"三个周末"会挤成一行。
+        ⚠️ 位置在活动信息**下面**、说明**上面**：它比说明更"硬"（是时间事实），
+           但比左边那对起止时间更次要 —— 那对才是日历定位用的。
+      */}
+      {event.scheduleText ? (
+        <section className="calendar-schedule">
+          <h2 className="calendar-schedule__title">{t('calendar.fields.scheduleText')}</h2>
+          <p className="calendar-schedule__body">{event.scheduleText}</p>
+        </section>
+      ) : null}
+
+      {/*
         ⚠️ Markdown 走 components/Markdown.tsx，那是全站唯一的渲染入口 ——
         rehype-sanitize 必须生效，否则用户提交的 <img onerror=...>
         会在每个访客的浏览器里执行脚本。

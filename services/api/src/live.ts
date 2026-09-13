@@ -26,12 +26,39 @@ interface LiveRow {
   handle: string;
   display_name: string;
   note: string | null;
+  /** JSON 数组文本（例如 `["速通","Ranked"]`），NULL = 没填。 */
+  tags: string | null;
   live_video_id: string | null;
   embed_channel: number;
   sort_order: number;
   status: string;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * 标签列 → 数组。
+ *
+ * ⚠️ **读的时候必须容错**：这一列是 JSON 文本，而 SQLite 不校验它。手改过库、
+ *    或者将来有人用别的脚本写进一段坏 JSON，都会让 `JSON.parse` 抛异常 ——
+ *    那会让**整个直播列表**500，而不是只少几个标签。
+ *    ⇒ 解析失败就当成"没有标签"，并且**不静默吞掉**：留一条 warn，方便排查。
+ */
+function tagsFromColumn(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+  } catch {
+    console.warn(`[live] live_channels.tags 不是合法 JSON，按空标签处理：${raw.slice(0, 80)}`);
+    return [];
+  }
+}
+
+/** 数组 → 标签列。空数组存成 NULL（不是 `'[]'`）—— "没填"只有一种表示。 */
+function tagsToColumn(tags: readonly string[]): string | null {
+  return tags.length === 0 ? null : JSON.stringify(tags);
 }
 
 /**
@@ -49,6 +76,7 @@ function toChannel(row: LiveRow) {
     handle: row.handle,
     displayName: row.display_name,
     note: row.note,
+    tags: tagsFromColumn(row.tags),
     liveVideoId: row.live_video_id,
     // SQLite 没有 boolean：0/1 → false/true，只在这一处转
     embedChannel: row.embed_channel === 1,
@@ -110,9 +138,9 @@ export function createLiveChannel(
     getDb()
       .prepare(
         `INSERT INTO live_channels
-           (id, platform, handle, display_name, note, live_video_id, embed_channel,
+           (id, platform, handle, display_name, note, tags, live_video_id, embed_channel,
             sort_order, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?)`,
       )
       .run(
         id,
@@ -120,6 +148,7 @@ export function createLiveChannel(
         input.handle,
         input.displayName,
         input.note ?? null,
+        tagsToColumn(input.tags),
         input.liveVideoId ?? null,
         input.embedChannel ? 1 : 0,
         input.sortOrder,
@@ -161,7 +190,7 @@ export function updateLiveChannel(
 
   db.prepare(
     `UPDATE live_channels SET
-       platform = ?, handle = ?, display_name = ?, note = ?, live_video_id = ?,
+       platform = ?, handle = ?, display_name = ?, note = ?, tags = ?, live_video_id = ?,
        embed_channel = ?, sort_order = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -169,6 +198,7 @@ export function updateLiveChannel(
     input.handle,
     input.displayName,
     input.note ?? null,
+    tagsToColumn(input.tags),
     input.liveVideoId ?? null,
     input.embedChannel ? 1 : 0,
     input.sortOrder,

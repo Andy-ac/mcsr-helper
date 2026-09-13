@@ -30,6 +30,7 @@ import { m011EventDimensions } from './migrations/011_event_dimensions';
 import { m012ResourceVideoAndLive } from './migrations/012_resource_video_and_live';
 import { m013SeriesAndMarksIndex } from './migrations/013_series_and_marks_index';
 import { m014UserLiveLinks } from './migrations/014_user_live_links';
+import { m015LiveTagsAndSchedule } from './migrations/015_live_tags_and_schedule';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -91,6 +92,14 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    那句**已经过期**（013 已随 ③⑤ 发布，已发布的迁移不许改）。本轮是 014。
    */
   { name: '014_user_live_links', sql: m014UserLiveLinks },
+  /*
+   * 015：两处「允许填多个值」—— 直播频道的标签、活动可以填离散的多个时间段。
+   *
+   * ⚠️ 两条都是 `ALTER TABLE ... ADD COLUMN`（可空、无默认值），**不重建表**：
+   *    SQLite 的 ADD COLUMN 是 O(1) 的元数据操作，既有行拿到 NULL。
+   *    这与 011（加 level/scope 两列）同一个形状，所以同样**加进事务**即可。
+   */
+  { name: '015_live_tags_and_schedule', sql: m015LiveTagsAndSchedule },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

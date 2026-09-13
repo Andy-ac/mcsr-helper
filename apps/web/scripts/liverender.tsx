@@ -84,6 +84,14 @@ function channel(over: Partial<LiveChannel> = {}): LiveChannel {
     handle: '@Someone',
     displayName: 'Someone',
     note: '一句话说明',
+    /*
+     * ⚠️ `tags` 是 2026-09-13 加的字段，而**这个文件不在 tsconfig 的 include 里**
+     *    （见文件头对 JSX 运行时的说明）⇒ 类型检查管不到它。
+     *    漏了这一个字段的后果是运行时 `TypeError: Cannot read properties of undefined
+     *    (reading 'length')` —— 报在 LiveCard 里，看起来像组件坏了。
+     *    **加字段时记得回来补这里**（同 `services/api` 的测试夹具，那边 TS 会拦）。
+     */
+    tags: [],
     liveVideoId: null,
     embedChannel: false,
     sortOrder: 100,
@@ -353,17 +361,22 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
   ok('★★ 开了频道嵌入但标识是 @handle → 没有门面 + 明说"嵌不出来（只认 UC…）"');
 
   /*
-   * ★★ B站直播间：**确定不可嵌**（`live.bilibili.com` 回 `x-frame-options: SAMEORIGIN`，
-   *    大陆 + 香港两条网络各自测到 —— spec F32d / D4b.9）。
+   * ★★ B站直播间：**用官方活动播放器嵌**（2026-09-13 修复）。
    *
-   * ⚠️ 这一档此前**一条渲染断言都没有**：上面覆盖的是 Twitch 的 origin 两态、
-   *    "没记视频 ID"、"标识不是 UC… 频道 ID"，而"**平台自己禁止嵌入**"这一句
-   *    恰恰是本轮正在换文案的那一句（新词条 `live.noEmbedBilibili`）。
-   *    ⇒ 所以这里**按行为断言，不按字面断言**：
-   *      · 没有门面（不是留白，更不是"加载中"—— 那两种都在撒谎）
-   *      · 原站外链必须指向那个直播间（用户唯一能走的路）
-   *      · 那句解释必须**真的解析出来**：既不能空，也不能是原始 key 的形状
-   *        （`t()` 对未知键**原样返回**，所以"词条删了、这里没跟上"正好长这样）
+   * ⚠️⚠️ **这一节在 2026-09-13 换过结论，原因必须留在这里。**
+   *    原文是「B站直播间：确定不可嵌」，依据是房间页 `live.bilibili.com/<房间号>`
+   *    回 `x-frame-options: SAMEORIGIN`。**那个依据对"房间页"成立，但我们嵌错了页面：**
+   *      · `https://live.bilibili.com/31288037`  → `X-Frame-Options: SAMEORIGIN`（确实不能嵌）
+   *      · `https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=31288037`
+   *                                             → 200，**没有任何 frame 限制**（能嵌）
+   *    后者是 B站官方文档里**专门给"嵌到别人页面"**用的活动播放器，`cid` 就是房间号。
+   *    ⇒ 正确结论是"能嵌，走活动播放器"；之前那句"平台自己禁止"是**我们的地址选错了**。
+   *
+   * 下面是**两条**断言，合起来才能钉住这个结论：
+   *   ① 数字房间号 ⇒ **有门面**，且地址逐字符等于官方活动播放器那条；
+   *   ② 认不出房间号 ⇒ **没门面** + 原站外链 + 一句真的解析出来的解释。
+   *      只有 ① 的话，"把一个拼不出来的标识也硬拼成播放器"不会被发现；
+   *      只有 ② 的话，修复本身没有证据。
    */
   const biliLive = html(
     <ul>
@@ -372,13 +385,39 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
       />
     </ul>,
   );
-  assert.equal(hasFacade(biliLive), false, 'B站直播间确定不可嵌 ⇒ 不该出门面（黑框比外链糟得多）');
+  assert.ok(
+    hasFacade(biliLive),
+    '★ 数字房间号 ⇒ 应当画出播放器门面（2026-09-13 起 B站 走官方活动播放器）',
+  );
   assert.equal(
-    liveChannelHref(biliLive),
-    'https://live.bilibili.com/21452505',
+    embedSrc(biliLive),
+    'https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=21452505',
+    '★ 地址必须是官方活动播放器、`cid` 是房间号（逐字符相等：抓得到拼错、少一位、用错页面）',
+  );
+  ok('★ B站直播间（数字房间号）→ 有门面，地址是官方活动播放器（cid = 房间号）');
+
+  /*
+   * ② 反面：**认不出房间号**的那一行。
+   *
+   * ⚠️ 这种行**不是解析器产出的**（`parseLiveLink` 只接受纯数字的 B站 id，
+   *    见 `shared/live.ts`），它代表库里**手工改过 / 历史遗留**的那种行 ——
+   *    而读路径**不能假设写入路径是对的**。这一档在界面上必须仍然成立。
+   *
+   * ⚠️ 也**不能**硬拼一个看似合理的地址 —— 那会得到一个静默黑框，
+   *    比给外链糟得多（黑框看起来像我们坏了，而用户唯一能做的就是刷新）。
+   */
+  const biliOdd = html(
+    <ul>
+      <LiveCard channel={channel({ platform: 'bilibili', handle: 'abc', liveVideoId: null })} />
+    </ul>,
+  );
+  assert.equal(hasFacade(biliOdd), false, '认不出房间号 ⇒ 不该出门面（黑框比外链糟得多）');
+  assert.equal(
+    liveChannelHref(biliOdd),
+    'https://live.bilibili.com/blanc/abc',
     '不嵌时必须给一条能走的原站外链（逐字符相等：抓得到"少一位"这种截断）',
   );
-  const biliSaid = noEmbedText(biliLive);
+  const biliSaid = noEmbedText(biliOdd);
   assert.notEqual(biliSaid, '', '必须有一句解释 —— 空白会被当成我们坏了');
   assert.ok(
     !/live\.[a-zA-Z]+/.test(biliSaid),
@@ -421,7 +460,7 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
   const genericWording = i18n.t('live.noEmbedPlatform');
   assert.ok(
     biliSaid.includes(bilibiliWording),
-    `B站 那一行必须说 B站 专属那句（"不允许把直播间嵌进别的网站"），而不是通用句 —— 实际渲染「${biliSaid}」`,
+    `B站 认不出房间号那一行必须说 B站 专属那句，而不是通用句 —— 实际渲染「${biliSaid}」`,
   );
   assert.notEqual(
     bilibiliWording,
@@ -429,11 +468,17 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
     'B站 专属句与"通用"句（`live.noEmbedPlatform`）必须**是两句话**：' +
       '若两者相同，下面的区分度断言就自动成立、失去意义（等于没有区分度）',
   );
+  /*
+   * ⚠️ 关键词也换过一次（2026-09-13）：原判据是 `/不允许|不支持|不能|禁止|.../`，
+   *    因为那句话当时在说"B站禁止嵌入"。**那句现在是假话**（见本区块开头的实测），
+   *    文案改成了说**我们能识别的形状** ⇒ 判据跟着改成"明确点出房间号"。
+   *    ⚠️ 判据不能只是"有解释就行"：那分辨不出"说清了原因"与"一句转圈的空话"。
+   */
   assert.ok(
-    /不允许|不支持|不能|禁止|cannot|not allowed|does not allow/i.test(biliSaid),
-    `那句必须明说"这个平台自己禁止嵌入"（不能只说外链、也不能是转圈的空话）—— 实际渲染「${biliSaid}」`,
+    /直播间号|房间号|room number/i.test(biliSaid),
+    `那句必须点明"认不出直播间号"这个具体原因（不能只说外链、也不能是转圈的空话）—— 实际渲染「${biliSaid}」`,
   );
-  ok('★★ B站 那一行用的是**专属句**（与通用句不同），且明说了"不允许嵌"');
+  ok('★★ B站 认不出房间号那一行用的是**专属句**（与通用句不同），且点明了原因');
   /*
    * ★★ 跨档对照（**别把它当成重复**）：上面那句 B站 文案**不能**出现在
    *    "没记视频 ID"那一行里 —— 这正是这个区块本来要防的错
@@ -976,13 +1021,23 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
   );
   ok('★ 结局一：能嵌 → 有播放器 + 没有矛盾的解释文字');
 
-  // ---- 结局 B：B站 ⇒ **必须说清是平台不允许**（不是"我们没验证"）----
+  // ---- 结局 B：B站 **认不出房间号** ⇒ 必须给"这个平台不支持站内播放"那一档 ----
+  /*
+   * ⚠️ 夹具在 **2026-09-13 换过一次**：原来是 `handle: '12345'`（数字房间号）。
+   *    数字房间号现在**能嵌**了（改动见上面 LiveCard 那一节：改走官方活动播放器）
+   *    ⇒ 这一行的结局从"不可嵌"变成了"有播放器"，这两条断言当场红。
+   *    **结论没变的是这一档本身**：仍然需要一种"平台不支持站内播放"的行来验证
+   *    `myLive.notSupported` 真的会被渲染出来。能落到那一档的现在是**认不出房间号的
+   *    B站 链接**（例如 `blanc/xxxx`），所以夹具换成它。
+   *    ⚠️ 不换成"某个不存在的平台"：那会绕过 `platform` 的真实取值域，
+   *       而这一档要证明的正是"B站 这一支真的走到了这句文案"。
+   */
   const biliRow = render([
-    myLink({ platform: 'bilibili', handle: '12345', url: 'https://live.bilibili.com/12345' }),
+    myLink({ platform: 'bilibili', handle: 'abc', url: 'https://live.bilibili.com/blanc/abc' }),
   ]);
   assert.ok(
     !hasFacade(biliRow),
-    '★ B站直播间**确定不可嵌**（x-frame-options: SAMEORIGIN）⇒ 不许画一个注定黑掉的门面',
+    '★ 认不出房间号的 B站 链接 ⇒ 不许画一个注定黑掉的门面（黑框比外链糟得多）',
   );
   says(biliRow, 'myLive.notSupported', '★ B站那行必须给出"平台不支持站内播放"那句');
   /*
@@ -1333,7 +1388,7 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     '★ 能红证明：把说明包进条件里的写法，同一判据会命中（⇒ 上面那条有区分力）',
   );
 
-  /* ③ 两份词条 + 三件事。★ 关键词检查是"有没有说到"，不是"措辞对不对"。 */
+  /* ③ 先验**两份词条本身**能用（解析出来、非空、英文零汉字、中英不是同一句）；三件事的关键词判据紧接着在下面。 */
   assert.notEqual(
     i18n.t('myLive.privacy'),
     'myLive.privacy',
@@ -1353,11 +1408,35 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     '★ 英文版不能是中文的复制 —— 是复制的话，上面"零汉字"那条会因为样本本身是中文而失败，' +
       '这条是它的前置条件，写出来是为了让人看懂为什么它必须失败',
   );
-  // 三件事 × 两语言 = 6 条，"哪一件被漏说"要能从失败信息里直接看出来。
+
+  /*
+   * ③ 两份词条 + 三件事。★ 关键词检查是"有没有说到"，不是"措辞对不对"。
+   *
+   * ⚠️ **2026-09-13 这一组判据放宽过一次**，因为用户**自己改了中文文案**：
+   *    原文（我写的）是"这一份是你私人的：只有你自己的账号能看到，**其他人（包括
+   *    其他登录用户）都看不到**，也不会进**公开**的直播名单。"
+   *    用户改成了"这些是你自己关注的频道，**只有你自己能看到**，和上面的直播频道
+   *    是**分开的**"—— 更短，而去掉了"其他人"、"公开"这两个**字面**。
+   *
+   * ⚠️ 关键在于：**三件事仍然都在**，只是换了说法 ——
+   *    "只有你自己能看到" 已经把"别人看不到"说尽了（"只有"就是排他）；
+   *    "和上面的直播频道是分开的"就是"不进公开名单"。
+   *    ⇒ 判据跟着**语义**走（"只有你自己"、"分开/公开"），而不是死守旧措辞。
+   *      死守的后果是：用户改完文案，守卫红在一个他明明没改坏的地方 ——
+   *      那会让人开始不信任这套检查（§5.30 那条教训）。
+   * ⚠️ 但**不能**宽到"随便一句都过"：下面 6 条必须一条不少，
+   *    把"只有你自己"换成"你自己可以管理"就会当场红。
+   */
   for (const [label, re, text] of [
     ['中文·只有你自己', /只有你自己/, privacyZh],
-    ['中文·别人（含登录用户）也看不到', /其他人|别的用户|登录用户/, privacyZh],
-    ['中文·不进公开名单', /公开/, privacyZh],
+    /*
+     * ⚠️ 这一条**必须**涵盖"别人看不到"。两个可接受的写法：
+     *    · 直接点名（其他人 / 别的用户 / 登录用户）；
+     *    · 用"只有你自己能看到"这种排他说法（用户这一版就是它）。
+     *    再加一个 `看不到` 的兜底：写"别人看不到"也算说到。
+     */
+    ['中文·别人也看不到', /其他人|别的用户|登录用户|只有你自己能看到|看不到/, privacyZh],
+    ['中文·与公开名单分开', /分开|公开/, privacyZh],
     ['英文·private（只有你）', /private/i, privacyEn],
     ['英文·点名其他登录用户', /signed-in|logged in/i, privacyEn],
     ['英文·不进公开名单', /public/i, privacyEn],

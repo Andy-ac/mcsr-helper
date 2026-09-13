@@ -28,6 +28,8 @@ import { CALENDAR_TAGS, EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, LOCALES } from
 
 /** 描述长度上限。和 v1-plan 里其它正文的量级一致。 */
 export const EVENT_DESCRIPTION_MAX = 20000;
+/** 具体赛程（离散时间段）的字符上限。够写十几个时间段，又不至于变成第二篇说明。 */
+export const EVENT_SCHEDULE_MAX = 500;
 export const EVENT_TITLE_MAX = 200;
 export const EVENT_LOCATION_MAX = 200;
 
@@ -106,6 +108,14 @@ export const CalendarEventInputSchema = z
      */
     titleEn: z.string().trim().max(EVENT_TITLE_MAX).nullish(),
     descriptionMd: z.string().max(EVENT_DESCRIPTION_MAX).default(''),
+    /**
+     * 具体赛程 —— **离散的多个时间段**写在这里（一行一个），2026-09-13 新增。
+     *
+     * ⚠️ 它不是"事件的起止时间"：`startsAtLocal` / `endsAtLocal` 仍然决定这条事件
+     *    在日历网格上的位置、排序与 ICS。这一栏是**给人读的补充**，用于那种
+     *    "横跨三周、但只在三个周末各打两天"的赛事 —— 用一对起止时间表达不了。
+     */
+    scheduleText: z.string().trim().max(EVENT_SCHEDULE_MAX).nullish(),
 
     startsAtLocal: WallClockSchema,
     startsAtTz: TimeZoneSchema,
@@ -221,6 +231,8 @@ export interface CalendarEvent {
   title: string;
   titleEn: string | null;
   descriptionMd: string;
+  /** 具体赛程（离散时间段），2026-09-13 加。没填就是 null。 */
+  scheduleText: string | null;
   startsAtLocal: string;
   startsAtTz: string;
   startsAtUtc: number;

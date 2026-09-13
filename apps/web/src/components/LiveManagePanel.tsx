@@ -55,6 +55,14 @@ interface Draft {
   handle: string;
   displayName: string;
   note: string;
+  /**
+   * 标签（2026-09-13）。**输入是逗号分隔的一行文本**，提交时才拆成数组。
+   *
+   * ⚠️ 不做 chip 编辑器：那要一整套键盘交互（退格删掉上一块、方向键、粘贴拆分），
+   *    而这一栏目前只用来**显示**（用户明确说暂时不做筛选）。一行文本够用，
+   *    而且和 `note` 一样可以整段粘贴。
+   */
+  tags: string;
   liveVideoId: string;
   embedChannel: boolean;
   /** 文本，提交时转数字 —— 空的那一格表示"用默认排序"。 */
@@ -64,12 +72,27 @@ interface Draft {
 const DEFAULT_SORT = 100;
 const SORT_MAX = 9999;
 
+/**
+ * 逗号分隔（也接受中文逗号与顿号）→ 去空白、丢空项。
+ *
+ * ⚠️ 中英文逗号都要收：中文输入法下打出来的是 `，`，只认 `,` 的话整行会被当成
+ *    **一个**标签 —— 用户会看到卡片上挂着一长条"速通，Ranked，集锦"。
+ * ⚠️ 去重交给服务端的 schema（那是唯一的归一化点）；这里**不**再写一份。
+ */
+function parseTags(raw: string): string[] {
+  return raw
+    .split(/[,，、]/)
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+}
+
 function emptyDraft(): Draft {
   return {
     platform: LIVE_PLATFORMS[0],
     handle: '',
     displayName: '',
     note: '',
+    tags: '',
     liveVideoId: '',
     embedChannel: false,
     sortOrder: String(DEFAULT_SORT),
@@ -82,6 +105,8 @@ function draftFrom(channel: LiveChannel): Draft {
     handle: channel.handle,
     displayName: channel.displayName,
     note: channel.note ?? '',
+    // 用同一个分隔符回填（`,` + 空格），这样"打开→保存"不会改变内容
+    tags: channel.tags.join(', '),
     liveVideoId: channel.liveVideoId ?? '',
     embedChannel: channel.embedChannel,
     sortOrder: String(channel.sortOrder),
@@ -381,6 +406,7 @@ function ChannelForm({
       handle: draft.handle.trim(),
       displayName: draft.displayName.trim(),
       note: draft.note.trim() || null,
+      tags: parseTags(draft.tags),
       liveVideoId: draft.liveVideoId.trim() || null,
       embedChannel: draft.embedChannel,
       sortOrder: draft.sortOrder.trim() === '' ? DEFAULT_SORT : Number(draft.sortOrder),
@@ -502,6 +528,23 @@ function ChannelForm({
           value={draft.note}
           maxLength={LIVE_NOTE_MAX}
           onChange={(e) => set('note', e.target.value)}
+        />
+      </Field>
+
+      {/*
+        标签（2026-09-13）。放在「一句话说明」下面：两者都是给人看的文字，
+        放一起比插在标识与名字之间更顺 —— 上面那三栏（平台/标识/名字）都是
+        **必须填的**，从这一栏开始才是可选的。
+
+        ⚠️ 用 `<input>` 而不是 `<textarea>`：标签是短的，多行会让人以为可以写句子。
+           逗号分隔的做法见 `parseTags` 的注释（中英文逗号都收）。
+      */}
+      <Field id="live-tags" label={t('liveManage.fieldTags')} hint={t('liveManage.hintTags')}>
+        <input
+          id="live-tags"
+          className="mcsr-field__input"
+          value={draft.tags}
+          onChange={(e) => set('tags', e.target.value)}
         />
       </Field>
 

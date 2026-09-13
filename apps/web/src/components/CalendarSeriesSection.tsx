@@ -1,5 +1,6 @@
-import type { CalendarSeries } from '@mcsr/shared/calendar';
+import type { CalendarEvent, CalendarSeries } from '@mcsr/shared/calendar';
 import { useTranslation } from 'react-i18next';
+import { CalendarCard } from '@/components/CalendarCard';
 import { VIEWER_TZ } from '@/lib/calendarFormat';
 
 /**
@@ -66,6 +67,16 @@ export interface CalendarSeriesSectionProps {
   deleteErrorText?: string | null;
   onConfirmDelete?: () => void;
   onCancelDelete?: () => void;
+  /**
+   * ★ 展开某个系列时要显示的那一批卡片（2026-09-13，用户要求
+   *   「点击合集时应当在下方展开所有在其范围内的赛事信息卡片」）。
+   *
+   * ⚠️ 打成**一个可选对象**而不是三个 prop（`expandedEvents` / `expandedLoading` /
+   *    `now`）：它们只在"正在展开"这一种情况下同时有意义，拆成三个 prop 会出现
+   *    "传了 events 忘了传 loading"这种半截状态，而那种状态画出来像加载失败。
+   * ⚠️ 传 `null`（或不传）= 这一页不支持展开（**不是**"这个系列是空的"）。
+   */
+  expanded?: { events: CalendarEvent[]; loading: boolean; now: number } | null;
 }
 
 export function CalendarSeriesSection({
@@ -82,6 +93,7 @@ export function CalendarSeriesSection({
   deleteErrorText,
   onConfirmDelete,
   onCancelDelete,
+  expanded,
 }: CalendarSeriesSectionProps) {
   const { t } = useTranslation();
 
@@ -232,16 +244,15 @@ export function CalendarSeriesSection({
                     </button>
                   ) : null}
 
-                  {confirming ? (
-                    /*
-                     * ★ 二次确认。两句话**必须真的不同**（`calendarrender.tsx` 钉着这一条）：
-                     *   · 下面没有赛事 ⇒ 说清"不会影响任何内容"（让人敢按）；
-                     *   · 下面有 N 场   ⇒ 说清 N、版本历史、不可恢复（让人不敢乱按）。
-                     *
-                     * ⚠️ 这里的 `count` 是**真正会被删掉的行数**（容器现取的 impact），
-                     *    不是列表行上那个 `s.count`（那是"未结束"）。用错的话，
-                     *    历史系列会拿到"不会影响任何内容"，而它正要删掉十几场。
-                     */
+                  {confirming /*
+                   * ★ 二次确认。两句话**必须真的不同**（`calendarrender.tsx` 钉着这一条）：
+                   *   · 下面没有赛事 ⇒ 说清"不会影响任何内容"（让人敢按）；
+                   *   · 下面有 N 场   ⇒ 说清 N、版本历史、不可恢复（让人不敢乱按）。
+                   *
+                   * ⚠️ 这里的 `count` 是**真正会被删掉的行数**（容器现取的 impact），
+                   *    不是列表行上那个 `s.count`（那是"未结束"）。用错的话，
+                   *    历史系列会拿到"不会影响任何内容"，而它正要删掉十几场。
+                   */ ? (
                     <div className="series__confirm">
                       <span className="series__confirm-text">
                         {deleteConfirm.count > 0
@@ -264,6 +275,37 @@ export function CalendarSeriesSection({
                       >
                         {t('common.cancel')}
                       </button>
+                    </div>
+                  ) : null}
+
+                  {/*
+                    ★ 展开：这个系列下的**全部**赛事卡片（2026-09-13，用户要求
+                      「点击合集时应当在下方展开所有在其范围内的赛事信息卡片」）。
+
+                    ⚠️ 判据是**当前选中的那个系列**（`selectedId === s.id`），不是"被点过" ——
+                       于是"点第二个系列"天然收起了第一个，不需要额外记一个展开态。
+                    ⚠️ 数据是容器单独取的（`from: 0`，含已结束的）：见 `CalendarList`
+                       里 `seriesEvents` 的注释 —— 复用主列表那一份会让历届系列点开是空的。
+                    ⚠️ 卡片复用 `CalendarCard`（日历列表里那个）而不是另画一种：
+                       同一场赛事在列表页与展开区里长得不一样，是"两处真相"的经典开头。
+                  */}
+                  {expanded && selectedId === s.id ? (
+                    <div className="series__expanded">
+                      {expanded.loading ? (
+                        <p className="state">{t('common.loading')}</p>
+                      ) : expanded.events.length === 0 ? (
+                        /*
+                         * ⚠️ 这一句与上面两个空态**都不同**：这里是"系列存在，但它名下
+                         *    一场赛事都没有"。说成"还没有系列活动"会让人以为系列没了。
+                         */
+                        <p className="state state--empty">{t('calendar.seriesExpandedEmpty')}</p>
+                      ) : (
+                        <ul className="calendar-list">
+                          {expanded.events.map((event) => (
+                            <CalendarCard key={event.id} event={event} now={expanded.now} />
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   ) : null}
                 </li>

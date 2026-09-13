@@ -357,11 +357,14 @@ function liveEventPayload(row: {
   /** ③ 迁移 013 加的列。审核详情的"线上版本"读的就是这一行，漏掉它**不会报错**。 */
   series_id: string | null;
   lang: string;
+  /** 015 加的列（具体赛程）。⚠️ 同 `series_id` 的理由：这里漏掉它**不会报错**。 */
+  schedule_text: string | null;
 }): EventPayload {
   return {
     title: row.title,
     titleEn: row.title_en,
     descriptionMd: row.description_md,
+    scheduleText: row.schedule_text ?? null,
     startsAtLocal: row.starts_at_local,
     startsAtTz: row.starts_at_tz,
     endsAtLocal: row.ends_at_local,

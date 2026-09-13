@@ -44,10 +44,14 @@ export const zhCN = {
     register: '注册',
     logout: '退出登录',
     language: '语言',
+    /** 主题开关（2026-09-13）。 */
+    theme: '主题',
+    themeLight: '白天',
+    themeDark: '黑夜',
   },
   home: {
-    tagline: 'MCSR 社区的资源库与日历',
-    subtitle: '网站、工具、赛事、种子 —— 一个地方找齐。',
+    tagline: 'MC 速通助手',
+    subtitle: '网站、工具、赛事、视频、直播、种子 —— 一个地方找齐',
     comingSoon: '当前处于 M0 骨架阶段，功能正在建设中。',
   },
   status: {
@@ -66,7 +70,7 @@ export const zhCN = {
   resources: {
     submitAction: '提交一条',
     title: '资源库',
-    subtitle: '社区整理的网站、工具与参考资料 —— 不需要登录就能看。',
+    subtitle: '社区整理的网站、工具、教学视频等参考资料',
     searchPlaceholder: '搜索标题、简介或标签…',
     searchLabel: '搜索',
     tabAll: '全部',
@@ -795,6 +799,8 @@ export const zhCN = {
       endsAt: '结束时间（当地时间）',
       endsTz: '结束时区',
       allDay: '整天事件',
+      /** 015：离散的多个时间段（一行一个）。 */
+      scheduleText: '具体时间',
       tags: '标签',
       stage: '轮次',
       level: '专业程度',
@@ -809,9 +815,8 @@ export const zhCN = {
     // 列表页
     // -------------------------------------------------------------------------
     submitAction: '提交活动',
-    listSubtitle:
-      '赛事、社区活动和排位赛季节点。时间按主办方公布的那个时区保存 —— 所以每一条都会带出它的时区名。',
-    filterTagsLabel: '想看哪几类',
+    listSubtitle: '赛事、社区活动、排位赛季信息等',
+    filterTagsLabel: '类别',
     /*
      * ⚠️ 这里原来还有两条（`filterTagsHint` / `filterTagsLocked`），已删。
      *
@@ -896,6 +901,14 @@ export const zhCN = {
      */
     seriesNoMatch: '没有匹配的系列',
     seriesEmpty: '还没有系列活动',
+    /**
+     * 展开一个系列、但它名下**一场赛事都没有**。
+     *
+     * ⚠️ 与上面两句**都不同**，三句不能合并：
+     *    这句是"系列在，只是它下面没东西"；`seriesEmpty` 是"一个系列都没有"；
+     *    `seriesNoMatch` 是"搜了但没匹配上"。混用会让用户以为系列数据丢了。
+     */
+    seriesExpandedEmpty: '这个系列下面还没有赛事',
     /** ⚠️ `{{count}}` 是 i18next 的插值语法（单花括号会原样显示，见 marks.favoriteCount 的说明）。 */
     seriesCount: '{{count}} 场未结束',
     seriesNoneUpcoming: '暂无未结束的场次',
@@ -981,23 +994,31 @@ export const zhCN = {
     reviewNote: '提交后进入待审队列，通过后自动上线。',
 
     // ---- 表单字段的提示 ----
-    hintTitle: '照抄赛事公告上的名字，中文或原文都可以。',
+    hintTitle: '赛事/活动标题',
     titlePlaceholder: '例如：MCSR Ranked 第 5 赛季 季后赛',
-    hintTitleEn: '可选。不会自动翻译 —— 留空时英文界面会直接显示上面那个标题。',
+    hintTitleEn: '（可选）赛事/活动标题（英文）',
     titleEnPlaceholder: '例如：MCSR Ranked Season 5 Playoffs',
-    hintAllDay: '整天事件只需要选日期 —— 时间固定为 00:00，日期选择器里也填不了钟点。',
-    hintStartsAt: '填主办方公布的那个时间，「不是你所在时区的时间」。',
-    hintTimezone:
-      'IANA 时区名，例如 Asia/Shanghai。填错会让整场赛事偏移几个小时，而且看起来完全正常。',
-    hintEndsTz: '和开始用的时区不同才需要改。',
-    hintEndsAt: '很多赛事只公布开始时间，所以可以留空。留空时它在订阅里是一个时间点。',
-    hintEndsAtAllDay:
-      '结束日期指的是最后一天。只占一天的活动请留空 —— 填成和开始同一天会被判成时间反了。',
+    hintAllDay: '整天事件只需选日期',
+    /**
+     * ★ 具体时间（015）：**离散的多个时间段**（2026-09-13，用户要求
+     *   「活动的时间允许填入离散的时间」）。
+     *
+     * ⚠️ 这一栏**不参与**日历网格的定位 —— 上面那对起止时间才是。所以提示里
+     *    必须说清"它填的是具体赛程"，否则录入者会以为改了这里日历就会跟着变。
+     */
+    hintScheduleText:
+      '（可选）横跨多天的赛事在这里列出具体时间段，一行一个。它只用于展示 —— 上面那对起止时间才是日历上定位用的。',
+    placeholderScheduleText: '例如：\n09-12 ~ 09-14\n09-19 ~ 09-21\n09-26 ~ 09-28',
+    hintStartsAt: '注意具体时间和时区应对应',
+    hintTimezone: 'IANA 时区名，例如 Asia/Shanghai',
+    hintEndsTz: '默认和开始用的时区相同',
+    hintEndsAt: '（可选）留空时比赛/活动显示为一个时间点。',
+    hintEndsAtAllDay: '只占一天的比赛/活动请留空',
     hintLocation: '线下赛的场馆，或者线上赛的平台。',
     locationPlaceholder: '例如：线上 / 上海',
     hintUrl: '赛事公告、报名页或者直播间的链接。',
-    hintTags: '至少选一个。一个标签都没有的活动，在按标签筛选的界面上等于不可见。',
-    hintStage: '可选。它只是一个标签，不做对阵层级 —— 横跨一周的连续赛事可以直接不填。',
+    hintTags: '至少选一个',
+    hintStage: '（可选）',
     stageNone: '不填',
     /*
      * 011 新增的两维。
@@ -1007,34 +1028,34 @@ export const zhCN = {
      *    而这两维对排位节点这类事件是**根本不存在**的 —— 说"不填"会让
      *    录入者觉得自己漏了一项，然后随便选一个，把数据污染掉。
      */
-    hintLevel: '可选。这项赛事有多正式 —— 排位节点这类没有专业程度的活动可以直接留空。',
-    hintScope: '可选。谁能参加（不是"在哪打"，地点填"线上"时这一项照样有意义）。',
+    hintLevel: '（可选）',
+    hintScope: '（可选）指的是参加选手的地区范围',
     dimNone: '不适用 / 不限',
     descriptionPlaceholder: '支持 Markdown。写清楚这是什么比赛、怎么参加、有什么要注意的。',
-    hintDescription: '{{used}} / {{max}} 字。',
-    notePlaceholder: '例如：时间取自主办方公告；这是社区自己办的比赛。',
+    hintDescription: '{{used}} / {{max}} 字',
+    notePlaceholder: '',
     hintNote: '{{used}} / {{max}} 字。这段话只有审核员看得到，不会出现在活动页面上。',
-    tzOffsetHint: '这个时区现在是 {{offset}}。',
+    tzOffsetHint: '这个时区现在是 {{offset}}',
 
     // ---- 表单校验 ----
     //
     // ⚠️ 这些话**不来自 schema**。schema 的消息是中文写死的，
     //    直接显示它会在英文界面上冒出一句中文，而那只在出错时才看得到。
     //    映射见 components/CalendarForm.tsx 的 issueText。
-    errTitleRequired: '标题不能为空。',
-    errTitleTooLong: '标题最多 {{max}} 字。',
-    errDescTooLong: '说明最多 {{max}} 字。',
-    errLocationTooLong: '地点最多 {{max}} 字。',
-    errUrlTooLong: '链接太长了。',
-    errNoteTooLong: '给审核员的话最多 {{max}} 字。',
-    errTagsMin: '至少选一个标签。',
-    errTzTooLong: '时区名太长了。',
-    errTzRequired: '请填写时区名（例如 Asia/Shanghai）。',
+    errTitleRequired: '标题不能为空',
+    errTitleTooLong: '标题最多 {{max}} 字',
+    errDescTooLong: '说明最多 {{max}} 字',
+    errLocationTooLong: '地点最多 {{max}} 字',
+    errUrlTooLong: '链接太长了',
+    errNoteTooLong: '给审核员的话最多 {{max}} 字',
+    errTagsMin: '至少选一个标签',
+    errTzTooLong: '时区名太长了',
+    errTzRequired: '请填写时区名（例如 Asia/Shanghai）',
     errStartRequired: '请填写开始时间。',
-    errInvalidTz: '这个时区名无效 —— 检查一下拼写（例如 Asia/Shanghai）。',
-    errEndNeedsBoth: '结束时间需要同时给出时间和时区。',
-    errWallClock: '时间格式应为 2026-08-30T20:00。',
-    errAllDayTime: '整天事件的时间必须是 00:00。',
+    errInvalidTz: '这个时区名无效 —— 检查一下拼写（例如 Asia/Shanghai）',
+    errEndNeedsBoth: '结束时间需要同时给出时间和时区',
+    errWallClock: '时间格式应为 2026-08-30T20:00',
+    errAllDayTime: '整天事件的时间必须是 00:00',
     errEndBeforeStart:
       '结束时间必须晚于开始时间。判据是换算成 UTC 之后的时刻 —— 跨时区时钟点会看反。',
     errAllDayEndOrder:
@@ -1118,12 +1139,11 @@ export const zhCN = {
      * 所以凡是**指名道姓**提到这一块的地方都跟着改；
      * 而「墙」这个**比喻**（"墙上还没有视频"）可以留着，它描述的是版式不是名字。
      */
-    title: '娱乐视频',
-    subtitle:
-      '社区贴的 B站 / YouTube 视频 —— 教程、集锦、比赛录像，随时在变。不需要登录就能看。想看直播请去「直播」板块。',
+    title: '视频',
+    subtitle: '社区分享的 B站 / YouTube 视频 / Twitch 片段。直播内容详见「直播」板块。',
     pasteAction: '贴个视频',
-    viewAll: '娱乐视频',
-    viewMine: '我贴的',
+    viewAll: '推荐视频',
+    viewMine: '我的分享',
 
     // ---- 筛选 ----
     allPlatforms: '全部平台',
@@ -1545,7 +1565,7 @@ export const zhCN = {
   live: {
     // ---- 页面骨架 ----
     title: '直播',
-    subtitle: '一些值得关注的 MCSR 主播频道。',
+    subtitle: 'MCSR 相关的直播频道。',
     /**
      * ★ 这一句是整节里最要紧的。
      *
@@ -1554,12 +1574,11 @@ export const zhCN = {
      * 它在撒谎（某个频道明明没开播，我们却没有任何反应）。
      * 说清"记的是频道"，那句话就永远是真的。
      */
-    recordsChannels:
-      '这里记录的是**频道**，不是「现在谁在播」—— 我们不检测直播状态，所以没有「直播中」标记。',
+    recordsChannels: '这里记录的是 MCSR 相关的**直播频道**，暂时没有检测直播状态的功能。',
     relationToVideos:
-      '和「娱乐视频」的分工：那边是大家随手贴的录像（一直在变），这边是一份变动很慢的名单。',
+      '和「视频」板块的分工：「视频」板块是大家随手贴的录像，这边是一份基本固定的直播列表。',
 
-    gotoChannel: '去频道看',
+    gotoChannel: '去原频道看',
 
     /**
      * 三种"嵌不出来"的理由，**必须分开说**。
@@ -1574,13 +1593,22 @@ export const zhCN = {
      *    `'no_origin'`：`liveEmbedDecision()` 拿不到 `origin` 时，Twitch 拼不出 `parent`，
      *    于是"这里嵌不出来"成立，但"平台不允许"不成立。
      *
-     * ★ 所以 B站 那一档**另给一句**（`noEmbedBilibili`）：它是**确定态** ——
-     *    `x-frame-options: SAMEORIGIN` 明令禁止嵌入。**两档不能合成一句**：
-     *    合成会重新制造这次要消灭的那种假话。键名不改，只改值，是为了让
-     *    `LiveCard` 的穷尽映射与 `liverender` 的断言在同一次改动里保持可用。
+     * ★ 所以 B站 那一档**另给一句**（`noEmbedBilibili`）。键名不改，只改值。
+     *
+     * ⚠️⚠️ **2026-09-13 这一档的含义变了，值也跟着改了。**
+     *    原文是「B 站不允许把直播间嵌进别的网站（它自己禁止了）」——**那句现在是假话**。
+     *    实测：房间页 `live.bilibili.com/<房间号>` 确实回 `x-frame-options: SAMEORIGIN`，
+     *    但 B站**官方另有一个专门给"嵌到别人页面"用的活动播放器**
+     *    （`www.bilibili.com/blackboard/live/live-activity-player.html?cid=<房间号>`，
+     *    文档见 `live.bilibili.com/p/html/bilibili-live-player/docs/player-activity.html`），
+     *    它**没有任何 frame 限制**。⇒ "B站不能嵌"是**我们之前拿错了地址**，不是平台禁止。
+     *
+     * ⇒ 现在 `liveEmbedDecision()` 对 B站：**房间号是纯数字就嵌**（走活动播放器）；
+     *    认不出房间号（例如链接形如 `live.bilibili.com/blanc/xxxx`）才落到这一档。
+     *    所以这句话改成说**我们能识别的形状**，而不是替 B站 宣布一条它并没有的规则。
      */
     noEmbedPlatform: '这个平台在这里不能嵌入播放，点这里去原站看。',
-    noEmbedBilibili: 'B 站不允许把直播间嵌进别的网站（它自己禁止了），点这里去直播间看。',
+    noEmbedBilibili: '这个 B 站链接里没有能识别的直播间号，所以只能去原站看。',
     noEmbedNoId: '这一行还没有记录直播视频 ID，所以没有播放器。',
     noEmbedNotChannelId:
       '这一行开了频道嵌入，但标识不是 UC 开头的频道 ID，所以嵌不出来（频道嵌入只认那种 ID）。',
@@ -1599,7 +1627,7 @@ export const zhCN = {
    * （那批 `liveSubmit.*` 共 15 条已随 ④=B 整组作废，**不要复活**）。
    */
   myLive: {
-    title: '我的链接',
+    title: '我关注的直播频道',
     /**
      * ★ 隐私说明 —— **常驻**在标题下面，登录与未登录都显示（用户 2026-09-13：
      *    「明确说明是给自己看的，不会公开让别人看到」）。
@@ -1617,9 +1645,8 @@ export const zhCN = {
      *    ③ **不进公开的直播名单** —— `live_channels` 是编辑维护的另一份东西，
      *       用户很容易以为"我贴的链接会被收进那个名单"。
      */
-    privacy:
-      '这一份是你私人的：只有你自己的账号能看到，其他人（包括其他登录用户）都看不到，也不会进公开的直播名单。',
-    addHint: '粘频道页面的链接就行。',
+    privacy: '这些是你自己关注的频道，只有你自己能看到，和上面的直播频道是分开的',
+    addHint: '粘频道页面的链接就行',
     addAction: '添加',
     saveAction: '保存',
     deleteAction: '删除',
@@ -1632,16 +1659,16 @@ export const zhCN = {
      */
     editAction: '改',
     deleteConfirm: '删掉这一条？',
-    empty: '还没有添加过。这里加的链接只有你自己能看到。',
-    needLogin: '登录之后可以在这里保存自己的直播间链接 —— 这份只有你自己看得到。',
+    empty: '还没有添加过，这里加的链接只有你自己能看到',
+    needLogin: '登录之后可以在这里保存自己的直播间链接 —— 这些频道只有你自己看得到',
     gotoLogin: '去登录',
     /**
      * 三种链接结局，**必须分开说**。
      * 说错任何一种，用户都会去点一个不该点的东西（或以为页面坏了）。
      */
-    embedOk: '这一条可以直接在这里看。',
-    linkOnly: '这个链接我们认不出是哪个平台，所以只能给你原站入口。',
-    notSupported: '这个平台不支持站内播放，点这里去原站看。',
+    embedOk: '这一条可以直接在这里看',
+    linkOnly: '这个链接我们认不出是哪个平台，所以只能给你原站入口',
+    notSupported: '这个平台不支持站内播放，点这里去原站看',
   },
   /**
    * 直播清单的**编辑**界面（只有 editor 及以上看得到）。
@@ -1652,7 +1679,7 @@ export const zhCN = {
    */
   liveManage: {
     title: '维护直播名单',
-    subtitle: '这一份名单只有内容编辑看得到这个界面。访客看到的是它的公开版本（不含已隐藏的行）。',
+    subtitle: '这一份名单只有内容编辑看得到这个界面。访客看到的是它的公开版本（不含已隐藏的行）',
     addTitle: '加一个频道',
     editTitle: '修改这一条',
     addAction: '添加',
@@ -1665,6 +1692,14 @@ export const zhCN = {
     fieldPlatform: '平台',
     fieldHandle: '频道标识',
     fieldName: '显示名',
+    /**
+     * 标签（2026-09-13，用户要求：「可输入多个标签，暂时不需要做标签筛选功能」）。
+     *
+     * ⚠️ 它与**频道标识**（`fieldHandle`）是两件事，两栏都要留：
+     *    标识是拼链接的原料（`liveChannelUrl`），标签只是给人看的分类。
+     *    把标识换成标签会让"去原频道看"没有地址可拼。
+     */
+    fieldTags: '标签',
     fieldNote: '一句话说明',
     fieldLiveVideoId: '当前直播的视频 ID',
     fieldEmbedChannel: '用频道嵌入',
@@ -1678,6 +1713,8 @@ export const zhCN = {
     hintHandle:
       '填频道标识本身（例如 @Someone 或 UC 开头的那串），不要填链接 —— 链接我们按平台拼。',
     hintName: '给人看的名字，可以带空格。',
+    /** 标签的输入方式是**逗号分隔的一行**（不做 chip 编辑器：那要多一套键盘交互）。 */
+    hintTags: '可选，逗号分隔，最多 12 个。例如：速通, Ranked, 集锦',
     hintNote: '可选。一句话说清这个人播什么 —— 访客就是靠它决定要不要点。',
     hintLiveVideoId:
       '可选。**只有填了它才会有播放器**；它会随每场直播变化，所以是"给现在这场用的"，不是频道的属性。',

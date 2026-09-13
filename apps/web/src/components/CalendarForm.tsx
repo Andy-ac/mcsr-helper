@@ -62,6 +62,8 @@ export interface CalendarDraft {
   endsAtLocal: string;
   endsAtTz: string;
   allDay: boolean;
+  /** 具体时间：**离散的多个时间段**，一行一个（015 / 2026-09-13）。 */
+  scheduleText: string;
   url: string;
   location: string;
   tags: string[];
@@ -114,6 +116,7 @@ export function emptyCalendarDraft(): CalendarDraft {
     endsAtLocal: '',
     endsAtTz: '',
     allDay: false,
+    scheduleText: '',
     url: '',
     location: '',
     tags: [],
@@ -134,6 +137,7 @@ export function draftFromEvent(event: CalendarEvent): CalendarDraft {
     title: event.title,
     titleEn: event.titleEn ?? '',
     descriptionMd: event.descriptionMd,
+    scheduleText: event.scheduleText ?? '',
     startsAtLocal: event.startsAtLocal,
     startsAtTz: event.startsAtTz,
     endsAtLocal: event.endsAtLocal ?? '',
@@ -800,6 +804,34 @@ export function CalendarForm({
         </Field>
       </div>
 
+      {/*
+        ★ 具体时间：**离散的多个时间段**（015 / 2026-09-13，用户要求
+          「活动的时间允许填入离散的时间」）。
+
+        ⚠️ 用 `<textarea>` 而不是 `<input>`：内容天然是多行的（一行一个时间段），
+           而 `<input>` 里换行会被浏览器吃掉 —— 用户敲的回车会静默消失。
+        ⚠️ 它放在**起止时间下面**、而不是并进上面那个 `formrow`：它是上面那对时间的
+           补充说明，不是一个平级的第四个时间字段。放进 formrow 会变成四列，
+           在窄屏上挤成一团，也让人以为"要填四个时间"。
+        ⚠️ 这一栏**不参与**日历网格定位（见 i18n 的 hintScheduleText）——
+           所以它没有 `required`，也没有进 `localErrors` 的顺序里。
+      */}
+      <Field
+        id="cal-schedule"
+        label={t('calendar.fields.scheduleText')}
+        hint={t('calendar.hintScheduleText')}
+      >
+        <textarea
+          id="cal-schedule"
+          className="mcsr-field__input"
+          rows={3}
+          value={draft.scheduleText}
+          onChange={(e) => set('scheduleText', e.target.value)}
+          placeholder={t('calendar.placeholderScheduleText')}
+        />
+        {fieldError('scheduleText')}
+      </Field>
+
       <div className="formrow">
         <Field
           id="cal-location"
@@ -1109,6 +1141,8 @@ export function calendarEventInputOf(draft: CalendarDraft) {
     title: draft.title.trim(),
     titleEn: draft.titleEn.trim() || null,
     descriptionMd: draft.descriptionMd,
+    // 空串 → null：服务端 schema 是 `.nullish()`，而空串会被判成"填了一个空值"
+    scheduleText: draft.scheduleText.trim() === '' ? null : draft.scheduleText,
     startsAtLocal: draft.startsAtLocal,
     startsAtTz: draft.startsAtTz.trim(),
     // ⚠️ 结束时间这一对**原样透传**，不做"缺一个就一起丢掉"的补救。

@@ -82,6 +82,14 @@ export type { LivePlatform };
 export const LIVE_NAME_MAX = 80;
 export const LIVE_HANDLE_MAX = 120;
 export const LIVE_NOTE_MAX = 200;
+/**
+ * 一个标签最长 24 字，一行最多 12 个（2026-09-13）。
+ *
+ * ⚠️ 上限是**为了挡住"标签当备注写"**：标签的用处是扫一眼就分类，写成一句话
+ *    在卡片上会换行、把别的行挤下去。要写句子请用 `note`（那一栏有 200 字）。
+ */
+export const LIVE_TAG_MAX = 24;
+export const LIVE_TAGS_MAX = 12;
 
 /**
  * 用户**原样粘贴**的那条链接的长度上限（私人列表的 `url`）。
@@ -97,6 +105,15 @@ const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 /** `UC…` 形式的 YouTube 频道 ID。频道级嵌入只认这一种。 */
 const YOUTUBE_CHANNEL_ID = /^UC[A-Za-z0-9_-]{22}$/;
+
+/**
+ * B站直播间号（2026-09-13）。
+ *
+ * ⚠️ **必须是纯数字**：官方活动播放器的 `cid` 参数就是房间号。B站还有"短号"
+ *    （如 `live.bilibili.com/1234` 之外的 `blanc/xxxx`），但那是另一个入口，
+ *    这里只认数字 —— 认不出就退回 `no_id`，由界面给外链，而不是拼一个黑框。
+ */
+const BILIBILI_ROOM_ID = /^\d{1,12}$/;
 
 /** B站 的直播间号 / 空间号：老式的纯数字。 */
 const BILIBILI_NUMERIC_ID = /^\d+$/;
@@ -304,6 +321,34 @@ export const LiveChannelInputSchema = z
     note: z.string().trim().max(LIVE_NOTE_MAX).nullish(),
 
     /**
+     * 标签（2026-09-13，用户要求：「可输入多个标签，暂时不需要做标签筛选功能」）。
+     *
+     * ⚠️ 它与 `handle` 是**两件不同的事**，别把一个当成另一个：
+     *    · `handle` 是**标识**，链接与嵌入都按它拼出来（`liveChannelUrl`）；
+     *    · `tags` 是**给人看的分类**（例如"速通"、"Ranked"），一次都不参与取数。
+     *    ⇒ 所以这里可以随便增删标签，而 handle 一动链接就变。
+     *
+     * ⚠️ 去重与折叠：同一行里重复的标签没有意义（界面上会并排出现两个一样的），
+     *    所以 `.transform()` 里按"去空白 + 去重（大小写不敏感）"归一化一次。
+     *    保留大小写原样 —— 标签是人写的（"Ranked" vs "ranked" 只保留先出现的那个）。
+     */
+    tags: z
+      .array(z.string().trim().min(1).max(LIVE_TAG_MAX))
+      .max(LIVE_TAGS_MAX)
+      .default([])
+      .transform((list) => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const raw of list) {
+          const key = raw.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(raw);
+        }
+        return out;
+      }),
+
+    /**
      * 可选：当前（或最近一场）直播的**视频 ID**。有它才嵌。
      *
      * ⚠️ 它会变。所以界面上必须说清"这是给现在这场用的"，而不是暗示它是频道的属性 ——
@@ -370,6 +415,8 @@ export interface LiveChannel {
   handle: string;
   displayName: string;
   note: string | null;
+  /** 标签（给人看的分类）。**永远不是 null** —— 没填就是空数组，界面少写一个分支。 */
+  tags: string[];
   liveVideoId: string | null;
   embedChannel: boolean;
   sortOrder: number;
@@ -532,10 +579,42 @@ export function liveEmbedDecision(channel: LiveEmbedChannel, origin: string): Li
   }
 
   /*
-   * B站直播间：**确定不可嵌**（`x-frame-options: SAMEORIGIN`，大陆 + 香港各自测到）。
-   * ⚠️ 这里返回 null 而不是拼一个看起来对的地址 —— 黑框比外链糟得多。
+   * B站直播间：**用官方的「活动播放器」嵌**（2026-09-13 修复）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️ 这里原来写的是「确定不可嵌」并直接返回 `bilibili_blocked`，理由是
+   *    `x-frame-options: SAMEORIGIN`。**那个理由对"房间页"是对的，但用错了地方。**
+   * ---------------------------------------------------------------------------
+   * 实测（2026-09-13，带浏览器 UA 打响应头）：
+   *   `https://live.bilibili.com/31288037`                          → `X-Frame-Options: SAMEORIGIN`  ⇒ 不能嵌
+   *   `https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=31288037`
+   *                                                                → **200，没有任何 frame 限制** ⇒ 能嵌
+   *
+   * 后者是 B站**官方文档里给"嵌到别人页面里"用的那个播放器**
+   * （`live.bilibili.com/p/html/bilibili-live-player/docs/player-activity.html`），
+   * `cid` 就是房间号，文档还专门给了 iframe 的 16:9 用法。
+   * ⇒ 所以 B站**不是不能嵌**，是我们之前拿房间页当嵌入地址了。
+   *
+   * ⚠️ 判据是**房间号**，不是标识：`cid` 要的是纯数字。所以只有 `handle` 是一串
+   *    数字时才拼地址；其他形状（例如用户贴的是 `live.bilibili.com/123` 之外的链接、
+   *    或标识被归一化成了别的东西）一律退回 `no_id` —— **绝不拼一个看起来对的地址**，
+   *    那会得到一个黑框，比给外链糟得多。
    */
-  if (channel.platform === 'bilibili') return { embed: false, reason: 'bilibili_blocked' };
+  if (channel.platform === 'bilibili') {
+    const room = channel.handle.trim();
+    /*
+     * ⚠️ 认不出房间号时退回 `bilibili_blocked` —— **不是**说"B站禁止嵌入"（那是旧的、
+     *    已经被证伪的说法），而是"这一条我们拼不出播放地址"。界面文案
+     *    （`live.noEmbedBilibili`）在 2026-09-13 同步改成了这个意思。
+     *    枚举值名字保持不变：改名字会牵动 `LiveEmbedReason` 的使用方与兼容层，
+     *    而这里要的是**文案不再说谎**，不是一次重命名。
+     */
+    if (!BILIBILI_ROOM_ID.test(room)) return { embed: false, reason: 'bilibili_blocked' };
+    return {
+      embed: true,
+      url: `https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=${encodeURIComponent(room)}`,
+    };
+  }
 
   if (channel.platform === 'youtube') {
     // ① 优先用具体的视频 ID —— 那是确定能播的那一种

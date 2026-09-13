@@ -63,6 +63,21 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
       {channel.note ? <p className="live-card__note">{channel.note}</p> : null}
 
       {/*
+        标签（2026-09-13）。⚠️ 空数组时**一个节点都不渲染**（不是渲染一个空容器）：
+        空容器会吃掉 `--gap` 那点间距，表现是"这一行比别的高一点"，
+        而那种一像素级的不齐最难被认出是 bug。
+      */}
+      {channel.tags.length > 0 ? (
+        <ul className="live-card__tags">
+          {channel.tags.map((tag) => (
+            <li key={tag} className="tagchip tagchip--static">
+              {tag}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {/*
         ⚠️ 只在**真的有地址**时才渲染播放器。
         返回 null 的那三种情况走下面那行解释 —— 留一个空框会看起来像我们坏了。
 

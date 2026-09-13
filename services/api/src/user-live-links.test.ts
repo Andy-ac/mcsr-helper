@@ -286,6 +286,14 @@ describe('★ 014：user_live_links 建出来了，而 live_channels 一动没�
       .all()
       .map((c) => c.name)
       .sort();
+    /*
+     * ⚠️ **2026-09-13：这一行加过一项 `'tags'`，而它不影响这条测试要问的问题。**
+     *    015 给 `live_channels` 加了一列标签（用户要求「可输入多个标签」）——
+     *    那是**另一个迁移、一次 ADD COLUMN**，不是重建，也不属于 014 的验收范围。
+     *    ⇒ 判据仍然是"**014 之后这张表的列集合是确定的**"：多出 `pending` 之类的
+     *      （重建才会干的事）照样会被这条抓住。下面 ③ 那句状态 CHECK 才是
+     *      "没给它加 pending" 的真正守卫。
+     */
     assert.deepEqual(cols, [
       'created_at',
       'display_name',
@@ -297,6 +305,7 @@ describe('★ 014：user_live_links 建出来了，而 live_channels 一动没�
       'platform',
       'sort_order',
       'status',
+      'tags',
       'updated_at',
     ]);
 

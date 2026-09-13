@@ -34,6 +34,8 @@ interface EventRow {
   title: string;
   title_en: string | null;
   description_md: string;
+  /** 015 才加的列；`SELECT *` 对旧行拿到 NULL，所以读的时候 `?? null`。 */
+  schedule_text: string | null;
   starts_at_local: string;
   starts_at_tz: string;
   starts_at_utc: number;
@@ -105,6 +107,7 @@ function toColumns(
     title: input.title,
     title_en: input.titleEn ?? null,
     description_md: input.descriptionMd,
+    schedule_text: input.scheduleText ?? null,
     starts_at_local: input.startsAtLocal,
     starts_at_tz: input.startsAtTz,
     starts_at_utc: startsAtUtc,
@@ -135,6 +138,12 @@ export interface EventPayload {
   title: string;
   titleEn: string | null;
   descriptionMd: string;
+  /**
+   * 具体赛程（**离散的多个时间段**就写在这里，一行一个）。
+   *
+   * ⚠️ **旧快照里没有这个键**，所以读的地方必须 `?? null`（同下面 seriesId 的理由）。
+   */
+  scheduleText: string | null;
   startsAtLocal: string;
   startsAtTz: string;
   endsAtLocal: string | null;
@@ -162,6 +171,7 @@ function toPayload(input: CalendarEventInput): EventPayload {
     title: input.title,
     titleEn: input.titleEn ?? null,
     descriptionMd: input.descriptionMd,
+    scheduleText: input.scheduleText ?? null,
     startsAtLocal: input.startsAtLocal,
     startsAtTz: input.startsAtTz,
     endsAtLocal: input.endsAtLocal ?? null,
@@ -189,6 +199,8 @@ function payloadToColumns(p: EventPayload) {
     title: p.title,
     title_en: p.titleEn,
     description_md: p.descriptionMd,
+    // ⚠️ `?? null` 是**必需的**，不是防御性写法：015 之前的快照没有这个键（见 EventPayload）
+    schedule_text: p.scheduleText ?? null,
     starts_at_local: p.startsAtLocal,
     starts_at_tz: p.startsAtTz,
     starts_at_utc: startsAtUtc,
@@ -223,6 +235,7 @@ export function toCalendarEvent(row: EventRow): CalendarEvent {
     title: row.title,
     titleEn: row.title_en,
     descriptionMd: row.description_md,
+    scheduleText: row.schedule_text ?? null,
     startsAtLocal: row.starts_at_local,
     startsAtTz: row.starts_at_tz,
     startsAtUtc: Number(row.starts_at_utc),
@@ -284,16 +297,17 @@ export function submitEvent(input: {
   try {
     db.prepare(
       `INSERT INTO calendar_events
-         (id, title, title_en, description_md, starts_at_local, starts_at_tz, starts_at_utc,
+         (id, title, title_en, description_md, schedule_text, starts_at_local, starts_at_tz, starts_at_utc,
           ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage,
           level, scope, series_id, lang,
           author_id, current_revision, pending_revision, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
     ).run(
       input.id,
       cols.title,
       cols.title_en,
       cols.description_md,
+      cols.schedule_text,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -629,7 +643,7 @@ export function approveEvent(input: {
   try {
     db.prepare(
       `UPDATE calendar_events SET
-         title = ?, title_en = ?, description_md = ?,
+         title = ?, title_en = ?, description_md = ?, schedule_text = ?,
          starts_at_local = ?, starts_at_tz = ?, starts_at_utc = ?,
          ends_at_local = ?, ends_at_tz = ?, ends_at_utc = ?,
          all_day = ?, url = ?, location = ?, tags = ?, stage = ?,
@@ -640,6 +654,7 @@ export function approveEvent(input: {
       cols.title,
       cols.title_en,
       cols.description_md,
+      cols.schedule_text,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -1135,16 +1150,17 @@ export function submitEventDirect(input: {
   try {
     db.prepare(
       `INSERT INTO calendar_events
-         (id, title, title_en, description_md, starts_at_local, starts_at_tz, starts_at_utc,
+         (id, title, title_en, description_md, schedule_text, starts_at_local, starts_at_tz, starts_at_utc,
           ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage,
           level, scope, series_id, lang,
           author_id, current_revision, pending_revision, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'published', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'published', ?, ?)`,
     ).run(
       input.id,
       cols.title,
       cols.title_en,
       cols.description_md,
+      cols.schedule_text,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -1227,7 +1243,7 @@ export function applyEventDirectRevision(input: {
 
     db.prepare(
       `UPDATE calendar_events SET
-         title = ?, title_en = ?, description_md = ?,
+         title = ?, title_en = ?, description_md = ?, schedule_text = ?,
          starts_at_local = ?, starts_at_tz = ?, starts_at_utc = ?,
          ends_at_local = ?, ends_at_tz = ?, ends_at_utc = ?,
          all_day = ?, url = ?, location = ?, tags = ?, stage = ?,
@@ -1239,6 +1255,7 @@ export function applyEventDirectRevision(input: {
       cols.title,
       cols.title_en,
       cols.description_md,
+      cols.schedule_text,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,

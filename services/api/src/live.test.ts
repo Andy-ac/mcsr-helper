@@ -548,19 +548,47 @@ describe('★ 直播嵌入：两态（能嵌 / 确定不可嵌）', () => {
     }
   });
 
-  it('★ B站直播间：确定不可嵌（平台自己禁止被嵌进别的网站）', () => {
+  it('★ B站直播间：用官方活动播放器嵌（2026-09-13 修复）', () => {
+    /*
+     * ⚠️⚠️ **这条断言换过一次结论，理由必须留在这里。**
+     *
+     * 原文是「B站直播间：确定不可嵌（平台自己禁止被嵌进别的网站）」，依据是
+     * 房间页 `live.bilibili.com/<房间号>` 回 `x-frame-options: SAMEORIGIN`。
+     * **那个依据对"房间页"成立，但我们嵌错了页面。**
+     *
+     * 实测（2026-09-13，带浏览器 UA 打响应头）：
+     *   `https://live.bilibili.com/31288037`  → `X-Frame-Options: SAMEORIGIN`（不能嵌）
+     *   `https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=31288037`
+     *                                        → 200，**没有任何 frame 限制**（能嵌）
+     * 后者是 B站官方文档里**专门给"嵌到别人页面"**用的活动播放器，`cid` 就是房间号。
+     * ⇒ 所以正确结论是"**能嵌，用活动播放器**"，而不是"平台禁止"。
+     *
+     * ⚠️ 但**只在标识是纯数字房间号时**才嵌：`cid` 要的是房间号。认不出就退回
+     *    `bilibili_blocked`（这一档的**含义**也随之变成了"我们拼不出播放地址"，
+     *    而不是"平台禁止"—— 文案 `live.noEmbedBilibili` 同一轮改掉了）。
+     *    拼一个看起来对的地址会得到一个静默黑框，那比外链糟得多。
+     */
     const bili = {
       platform: 'bilibili',
-      handle: '12345',
-      liveVideoId: 'abc',
-      embedChannel: true,
+      handle: '31288037',
+      liveVideoId: null,
+      embedChannel: false,
     } as const;
     assert.equal(
       liveEmbedUrl(bili, ORIGIN),
-      null,
-      'B站直播间带 x-frame-options: SAMEORIGIN ⇒ 宁可不嵌，也不要一个静默黑框',
+      'https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=31288037',
+      '★ 数字房间号 ⇒ 用官方活动播放器',
     );
-    assert.deepEqual(liveEmbedDecision(bili, ORIGIN), {
+
+    // 反面：认不出房间号就不嵌（`blanc/xxxx` 那种链接会被解析成非数字标识）
+    const weird = {
+      platform: 'bilibili',
+      handle: 'blanc',
+      liveVideoId: null,
+      embedChannel: false,
+    } as const;
+    assert.equal(liveEmbedUrl(weird, ORIGIN), null, '认不出房间号 ⇒ 宁可不嵌，也不要一个静默黑框');
+    assert.deepEqual(liveEmbedDecision(weird, ORIGIN), {
       embed: false,
       reason: 'bilibili_blocked',
     });
@@ -673,16 +701,23 @@ describe('★ 直播嵌入：两态（能嵌 / 确定不可嵌）', () => {
 describe('★ liveEmbedUnavailableReason：兼容层还剩一条有损映射（legacy 值必须活着）', () => {
   it('★ B站 → 直接传 `bilibili_blocked`（t24：不再归并成通用的 `platform`）', () => {
     /*
-     * ⚠️ 这条**换过期望值**，原因值得留在这里：
-     *   原来是 `'platform'` —— 也就是把 B站（确定态：平台自己禁止被嵌）**归并**进
-     *   "这个平台在这里不能嵌入播放"那句通用话。界面因此**没说清是哪种**，
-     *   而 `live.noEmbedBilibili`（"B 站不允许把直播间嵌进别的网站"）**一个引用都没有**。
-     *  ⇒ t24 把这一格改成 1:1 直传，`LiveCard` 的穷尽映射才会指到那句专属文案。
+     * ⚠️ 这条**换过两次期望值/夹具**，两次的原因都值得留在这里：
+     *
+     * ① t24：原来是 `'platform'` —— 也就是把 B站（当时认为是"确定态：平台自己禁止被嵌"）
+     *    **归并**进"这个平台在这里不能嵌入播放"那句通用话。界面因此**没说清是哪种**，
+     *    而 `live.noEmbedBilibili`（专属文案）**一个引用都没有**。
+     *    ⇒ 改成 1:1 直传，`LiveCard` 的穷尽映射才会指到那句专属文案。
+     *
+     * ② **2026-09-13**：夹具原来是 `handle: '12345'`（数字房间号）。而这一轮实测确认
+     *    B站**能嵌**（官方活动播放器），于是数字房间号这一档变成了 `{ embed: true }` ——
+     *    兼容层返回 undefined，这条断言当场红。**那不是缺陷，是结论变了。**
+     *    ⇒ 夹具改成 `'blanc'`（非数字标识）：它才是今天**真正会落到 `bilibili_blocked`**
+     *      的那一档。这条测试想问的问题没变 —— "legacy 值必须 1:1 直传、不被归并"。
      */
     assert.equal(
       liveEmbedUnavailableReason({
         platform: 'bilibili',
-        handle: '12345',
+        handle: 'blanc',
         liveVideoId: null,
         embedChannel: false,
       }),

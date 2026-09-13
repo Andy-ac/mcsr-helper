@@ -34,6 +34,19 @@ import { useCanHardDelete } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 /**
+ * 展开一个系列时，一次取多少场（2026-09-13）。
+ *
+ * ⚠️ 取 100 而不是复用主列表那一页的 `CALENDAR_PAGE_SIZE`：展开是"把这个系列看全"，
+ *    分页在展开块里没有入口（用户没要求），所以这里取一个够大的值。
+ *    服务端上限是 200（`pageSize` 会被 clamp），最长的真实系列（Playoffs 11 届）
+ *    离 100 还很远。
+ * ⚠️ `to` 用 2100 年那个时间戳：与接口的三态约定一致（`from: 0` + `to` 一个远未来
+ *    = "把这个范围内的全部给我"）。不传 `to` 的话服务端只看未来，历史赛事就没了。
+ */
+const SERIES_EXPAND_PAGE_SIZE = 100;
+const SERIES_EXPAND_TO = 4102444800000;
+
+/**
  * 日历 —— `/calendar`。**两个视图**：月历表（默认）和列表。
  *
  * ---------------------------------------------------------------------------
@@ -362,6 +375,36 @@ export function CalendarList() {
    *    这个 hook 的设计就是"依赖变了才重跑"（见它的文件头）。
    */
   const series = useAsync((signal) => fetchCalendarSeries(signal), [seriesReloadKey]);
+
+  /**
+   * ★ 点开一个系列时要**在它下面展开**的那一批赛事（2026-09-13，用户要求
+   *   「点击合集时应当在下方展开所有在其范围内的赛事信息卡片」）。
+   *
+   * ⚠️ 它**必须单独取一次**，不能复用主列表那一份：
+   *    主列表按 `?from=` 只拿"未来的"（默认口径），而展开要的是**这个系列的全部场次**。
+   *    复用的话，一个历届系列点开会是空的 —— 因为它的场次全都已经过去了，
+   *    而那恰恰是最需要展开的那一类（我导入的 15 场历史赛事全是这种）。
+   * ⚠️ `from: 0` 是"连已结束的也一起给我"（见 `fetchCalendarEvents` 的三态说明），
+   *    不是"从 1970 年开始" —— 用 `undefined` 的话服务端会按"现在"过滤。
+   * ⚠️ 没选中系列时**不发请求**（给一个空的已决结果），否则这一页打开就多一次无用请求。
+   */
+  const seriesEvents = useAsync(
+    (signal) => {
+      if (seriesId === null) {
+        return Promise.resolve<CalendarListResponse>({
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 0,
+        });
+      }
+      return fetchCalendarEvents(
+        { from: 0, to: SERIES_EXPAND_TO, seriesId, pageSize: SERIES_EXPAND_PAGE_SIZE },
+        signal,
+      );
+    },
+    [seriesId],
+  );
 
   const dirty =
     tags.length !== CALENDAR_TAGS.length ||
@@ -866,24 +909,34 @@ export function CalendarList() {
 
       {/*
         ========================================================================
-        页面底部区域（需求③）：先「订阅日历」，再「系列活动」。
+        页面底部区域：先「系列活动」，**最下面**才是「订阅日历」。
         ========================================================================
 
-        ⚠️ **顺序是 spec D3.1b 定的**：«内容（网格/列表 + 分页）→ 订阅块 → 系列栏目»。
-           也就是说"下移到页面底部"应当理解为**底部区域**，而不是"必须是最后一个元素"。
-           两种顺序都满足需求，改起来只是一次 JSX 调序 —— 写在这里是为了让下一个人
-           知道这是**定过的口径**，不是随手排的。
+        ⚠️ **2026-09-13 调过一次序**（用户要求：「订阅日历放在页面最下面并留出一部分空档」）。
+           原来按 spec D3.1b 是 «内容 → 订阅块 → 系列栏目»；现在两者的相对位置**反过来了**：
+           订阅块是最后一个元素，下面那段空档由 `.calendar__footgap` 给（见它的注释）。
 
         ⚠️ **两个视图共用这一处**（不在 `view === 'month'` 的两个分支里各放一次）：
            放两份的话，"切一下视图订阅入口就换了位置"是最容易被当成 bug 的一类不一致。
       */}
-      <CalendarIcsSubscribe />
-
       <CalendarSeriesSection
         items={series.status === 'ok' ? series.data.items : []}
         query={seriesQuery}
         onQueryChange={setSeriesQuery}
         selectedId={seriesId}
+        /*
+         * ⚠️ 展开用的那一份数据**与主列表那一份是分开取的**（见上面 `seriesEvents` 的注释）：
+         *    主列表按 `?from=` 只拿"未来的"，而展开要的是**这个系列的全部场次**。
+         */
+        expanded={
+          seriesId === null
+            ? null
+            : {
+                events: seriesEvents.status === 'ok' ? seriesEvents.data.items : [],
+                loading: seriesEvents.status === 'loading',
+                now,
+              }
+        }
         onSelect={(id) =>
           write((p) => {
             p.set('seriesId', id);
@@ -909,6 +962,17 @@ export function CalendarList() {
           setSeriesDeleteError(null);
         }}
       />
+
+      {/*
+        订阅日历 —— **页面最下面**（2026-09-13，用户要求「放在页面最下面并留出一部分空档」）。
+
+        ⚠️ 那个空档用一个**显式的空元素**加 `margin`，而不是给 ICS 块加 `margin-top`：
+           ICS 块自己有自己的间距语义（`CalendarIcsSubscribe` 内部），
+           从外面塞一个 top margin 会在将来它内部调整时变成双重间距。
+           这里要的是"页面到此为止，下面留白"，所以留白属于**页面**，不属于那个块。
+      */}
+      <div className="calendar__footgap" aria-hidden="true" />
+      <CalendarIcsSubscribe />
     </>
   );
 }

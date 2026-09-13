@@ -45,6 +45,10 @@ export const en: TranslationSchema = {
     register: 'Sign up',
     logout: 'Log out',
     language: 'Language',
+    /* Theme switch (2026-09-13). */
+    theme: 'Theme',
+    themeLight: 'Light',
+    themeDark: 'Dark',
   },
   home: {
     tagline: 'Resource hub and calendar for the MCSR community',
@@ -795,6 +799,8 @@ export const en: TranslationSchema = {
       endsAt: 'Ends (local time)',
       endsTz: 'End time zone',
       allDay: 'All day',
+      /** 015: the discrete time slots (one per line). */
+      scheduleText: 'Specific times',
       tags: 'Tags',
       stage: 'Stage',
       level: 'Level',
@@ -897,6 +903,13 @@ export const en: TranslationSchema = {
      */
     seriesNoMatch: 'No matching series',
     seriesEmpty: 'No event series yet',
+    /*
+     * A series is expanded but has no events under it.
+     * ⚠️ A third message, not a reuse of either above: this one means "the series
+     * exists, it just has nothing in it", `seriesEmpty` means "there are no series
+     * at all", and `seriesNoMatch` means "searched, nothing matched".
+     */
+    seriesExpandedEmpty: 'No events in this series yet',
     /**
      * ⚠️ `{{count}}` is i18next's interpolation syntax (single braces render literally).
      *
@@ -1003,6 +1016,16 @@ export const en: TranslationSchema = {
     titleEnPlaceholder: 'e.g. MCSR Ranked Season 5 Playoffs',
     hintAllDay:
       'An all-day event only needs a date — the time is fixed at 00:00, and a date picker cannot enter a clock time at all.',
+    /*
+     * ★ Specific times (015): the **discrete slots**, one per line.
+     *
+     * ⚠️ This field does NOT position the event on the calendar grid — the
+     *    start/end pair above does. The hint has to say so, or whoever edits it
+     *    will expect the grid to move.
+     */
+    hintScheduleText:
+      '(Optional) For events spread over several days, list the individual time slots here, one per line. It is display-only — the start/end pair above is what places the event on the calendar.',
+    placeholderScheduleText: 'e.g.\n09-12 ~ 09-14\n09-19 ~ 09-21\n09-26 ~ 09-28',
     hintStartsAt: 'The time the organiser published — not the time in your own zone.',
     hintTimezone:
       'IANA zone name, e.g. Asia/Shanghai. Getting it wrong shifts the whole event by hours, and it will look completely normal.',
@@ -1657,16 +1680,29 @@ export const en: TranslationSchema = {
      *    `liveEmbedDecision()` cannot build Twitch's `parent`, so "cannot embed
      *    here" holds while "the platform forbids it" does not.
      *
-     * ★ Bilibili therefore gets its **own** string (`noEmbedBilibili`) — a
-     *   *settled* state: `x-frame-options: SAMEORIGIN` forbids embedding. The
-     *   two must not be merged, or we recreate the very lie this change removes.
-     *   The key name stays and only the value changes so that `LiveCard`'s
-     *   exhaustive map and the `liverender` assertion keep working within one
-     *   change.
+     * ★ Bilibili therefore gets its **own** string (`noEmbedBilibili`). The key
+     *   name stays and only the value changes so that `LiveCard`'s exhaustive map
+     *   and the `liverender` assertion keep working.
+     *
+     * ⚠️⚠️ **On 2026-09-13 this string's meaning changed and so did its value.**
+     *    It used to read "Bilibili does not allow its live rooms to be embedded" —
+     *    **that is now false.** Measured: the room page `live.bilibili.com/<room>`
+     *    really does send `x-frame-options: SAMEORIGIN`, but Bilibili also ships an
+     *    official *activity player* meant for embedding on other sites
+     *    (`www.bilibili.com/blackboard/live/live-activity-player.html?cid=<room>`,
+     *    documented at `live.bilibili.com/p/html/bilibili-live-player/docs/player-activity.html`),
+     *    and it sends no frame restriction at all. So "Bilibili cannot be embedded"
+     *    was **us using the wrong URL**, not a platform rule.
+     *
+     * ⇒ `liveEmbedDecision()` now embeds Bilibili whenever the handle is a plain
+     *   room number, and only falls back here when we cannot read a room number
+     *   (e.g. a `live.bilibili.com/blanc/xxxx` link). The wording therefore
+     *   describes the shape *we* can handle rather than inventing a rule for
+     *   Bilibili.
      */
     noEmbedPlatform: 'This platform cannot be embedded here. Open the original site instead.',
     noEmbedBilibili:
-      'Bilibili does not allow its live rooms to be embedded on other sites (it blocks them itself). Open the live room instead.',
+      'This Bilibili link has no room number we can read, so it can only open on the original site.',
     noEmbedNoId: 'This row has no live video id recorded, so there is no player.',
     noEmbedNotChannelId:
       'Channel embedding is on for this row, but the handle is not a UC… channel id, so it cannot embed (that mode only accepts those).',
@@ -1756,6 +1792,12 @@ export const en: TranslationSchema = {
     fieldPlatform: 'Platform',
     fieldHandle: 'Channel handle',
     fieldName: 'Display name',
+    /*
+     * Tags (2026-09-13). ⚠️ Separate from the channel handle (`fieldHandle`): the
+     * handle is what links are built from, tags are just human labels. Replacing
+     * the handle with tags would leave nothing to build "open the channel" from.
+     */
+    fieldTags: 'Tags',
     fieldNote: 'One-line note',
     fieldLiveVideoId: 'Current live video id',
     fieldEmbedChannel: 'Embed by channel',
@@ -1769,6 +1811,8 @@ export const en: TranslationSchema = {
     hintHandle:
       'The handle itself (e.g. @Someone, or the UC… string) — not a link. We build the link per platform.',
     hintName: 'The human-readable name; spaces are fine.',
+    /* One comma-separated line, not a chip editor — that would need its own keyboard model. */
+    hintTags: 'Optional, comma-separated, up to 12. e.g. speedrun, Ranked, highlights',
     hintNote: 'Optional. One line on what they stream — it is what visitors judge the link by.',
     hintLiveVideoId:
       'Optional. **Only a video id produces a player**; it changes with every stream, so it is "for the current one", not a property of the channel.',

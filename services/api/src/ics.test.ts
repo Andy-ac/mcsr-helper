@@ -36,6 +36,8 @@ function makeEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     title: '测试赛事',
     titleEn: null,
     descriptionMd: '说明',
+    // 015 加的字段：ICS 不用它，但这个形状必须完整（少了就过不了类型检查）
+    scheduleText: null,
     startsAtLocal: '2026-09-05T16:00',
     startsAtTz: 'Asia/Shanghai',
     startsAtUtc: Date.UTC(2026, 8, 5, 8, 0, 0),

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from '@/App';
 import '@/i18n';
 import { AuthProvider } from '@/lib/auth';
+import { applyTheme, readStoredTheme } from '@/lib/theme';
 // 像素字体通过 styles.css 里的 @font-face 以相对路径引入 ——
 // 走构建资源管线，产出带 hash 的文件并落到 /assets/ 下，
 // 从而享受 Caddy 给 /assets/* 配的 immutable 长缓存。
@@ -26,6 +27,16 @@ import '@/styles.css';
 if ('startViewTransition' in document) {
   document.documentElement.classList.add('vt');
 }
+
+/**
+ * 主题必须在**首屏渲染之前**定下来（2026-09-13）。
+ *
+ * ⚠️ 放在这里而不是组件里：用户选了白天之后刷新，如果等 React 挂载再切，
+ *    会先闪一下黑夜 —— 那种一闪很难截图证明，但用的人每次都看得到。
+ * ⚠️ 这一步同步读 localStorage，`readStoredTheme` 内部已经把异常吞掉了
+ *    （隐私模式下存储会抛，而"存不了偏好"不该让整站白屏）。
+ */
+applyTheme(readStoredTheme());
 
 const found = document.getElementById('root');
 if (!found) throw new Error('#root not found in index.html');

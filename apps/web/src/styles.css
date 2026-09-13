@@ -54,6 +54,83 @@
 }
 
 /* ==================================================================
+   白天主题（2026-09-13）
+   ==================================================================
+   ⚠️ `:root` 那一套**本来就是黑夜**（`--bg: #131519` 等），所以这里不是"加深色模式"，
+      而是加**白天**这一档：`:root` 保持原样不动（既有外观一个字都不变），
+      只有 `<html data-theme="light">` 时才覆盖。
+
+   ⚠️ 选择器用 `html[data-theme='light']` 而不是 `:root[data-theme='light']`：
+      两者特异性其实相同（都是 0,1,1），但 `html[...]` 与 `main.tsx` 里写属性的那句
+      `document.documentElement.dataset.theme` 读起来是同一件事，少一次心里换算。
+
+   ⚠️ 强调色（--grass / --gold / --redstone）**不整体换**：它们是游戏调色板、
+      也是全站"这个东西是什么"的信号。只调在白底上**看不清**的那两个
+      （--diamond 是浅青、--grass-bright 是亮草绿）—— 换掉全部会让白天和黑夜
+      变成两个不同的产品。
+   ================================================================== */
+html[data-theme='light'] {
+  --bg: #f7f8fa;
+  --bg-deep: #eceef2;
+  --surface: #ffffff;
+  --surface-2: #f1f3f7;
+  --surface-3: #e6e9ef;
+
+  --line: rgba(16, 24, 40, 0.1);
+  --line-strong: rgba(16, 24, 40, 0.2);
+
+  --fg: #1b1f27;
+  --fg-muted: #565e6b;
+  --fg-faint: #868e9c;
+
+  --diamond: #0f8f80;
+  --grass-bright: #5f9427;
+
+  --sh-1: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --sh-2: 0 1px 2px rgba(16, 24, 40, 0.08), 0 6px 18px -8px rgba(16, 24, 40, 0.18);
+  --sh-3: 0 2px 4px rgba(16, 24, 40, 0.1), 0 16px 40px -16px rgba(16, 24, 40, 0.22);
+}
+
+/* ------------------------------------------------------------------
+   黑夜下**所有输入框底色为黑**（2026-09-13，用户要求）
+
+   ⚠️ 用户原话是"所有搜索框"，这里刻意做成**所有文本类输入框**：
+      · 站里有两种搜索框（资源库、系列活动），但它们的底色来自各自容器的样式，
+        逐个点名要改三处，而将来新增一个搜索框又会漏掉 —— 那正是"改了没反应"的形状；
+      · 而"搜索框黑、旁边的表单框不黑"在同一个页面上看起来像两个控件不一致。
+      ⇒ 判据按**控件种类**写（排除勾选/单选/滑块/取色/文件这些不是"输入文字"的），
+        不按"它是不是搜索"写。这样新增任何输入框都自动一致。
+
+   ⚠️ 用 `background-color` 而不是 `background`：后者会把 `background-image`
+      （如果有）一起清掉，而这里只想改底色。
+   ------------------------------------------------------------------ */
+html[data-theme='dark']
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not(
+    [type='file']
+  ):not([type='submit']):not([type='button']),
+html[data-theme='dark'] textarea,
+html[data-theme='dark'] select {
+  background-color: #000;
+}
+
+/* 活体搜索框的标签（`.tagchip` 是交互式的，这里是纯展示，所以不吃 hover/pointer） */
+.tagchip--static {
+  cursor: default;
+  pointer-events: none;
+}
+
+.live-card__tags {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* ⚠️ `margin: 0 0 8px` 而不是只写 top：这一块下面还会接播放器或外链，
+     不留底边距的话标签会贴住它。 */
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+/* ==================================================================
    设计变量
    ================================================================== */
 
@@ -3524,6 +3601,79 @@ textarea.mcsr-field__input {
   align-items: stretch;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/*
+ * ★ 展开出来的赛事卡片（2026-09-13，用户要求「点击合集时在下方展开所有赛事卡片」）。
+ *
+ * ⚠️ 它是 `.series__row` 里 `flex-basis: 100%` 的一格 ⇒ 自己占一整行、落在系列行下面。
+ *    左边那条竖线与 `.series__row` 的选中态同色，让"这些卡片属于上面那个系列"
+ *    在视觉上成立 —— 否则它看起来像页面底下凭空出现了一堆卡片。
+ * ⚠️ `max-width` 与卡片自身一致，避免在超宽屏上被拉成很宽的一条。
+ */
+.series__expanded {
+  flex: 1 1 100%;
+  margin: 4px 0 12px;
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+  max-width: 100%;
+}
+
+/* 展开区里的卡片列表：去掉 `.calendar-list` 自带的顶部间距，避免与竖线之间空一大块 */
+.series__expanded .calendar-list {
+  margin-top: 0;
+}
+
+/*
+ * 详情页的「具体时间」（015 / 2026-09-13）。
+ *
+ * ⚠️ `white-space: pre-line` 是这一块的**全部要点**：内容是"一行一个时间段"，
+ *    用户敲的换行就是它的结构。用默认的 `normal` 会把单换行折成一个空格，
+ *    于是"三个周末"显示成挤在一起的一长串。
+ * ⚠️ 但同时要 `overflow-wrap: anywhere`：时间段可能写成很长的一串（带日期与时间），
+ *    窄屏上不换行会把整页撑出横向滚动条。
+ */
+.calendar-schedule {
+  margin: 20px 0;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.calendar-schedule__title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+.calendar-schedule__body {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 2;
+  color: var(--fg);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 页面最下面的空档（2026-09-13，用户要求「订阅日历放在页面最下面并留出一部分空档」）。
+ *
+ * ⚠️ 用**一个显式的空元素**承载留白，而不是给 `.calendar-ics` 加 `margin-top`：
+ *    那个块自己有自己的间距语义，从外面塞 top margin 会在它内部调整时变成双重间距。
+ *    这里的语义是"页面到此为止"，留白属于**页面**，不属于那个块。
+ * ⚠️ `aria-hidden` 在 JSX 上（空 div 本来也不进无障碍树，写出来是为了表明这是装饰）。
+ */
+.calendar__footgap {
+  height: 64px;
+}
+
+/* 窄屏上收一点，否则底部会显得是"页面坏了、多出一屏空白" */
+@media (max-width: 640px) {
+  .calendar__footgap {
+    height: 32px;
+  }
 }
 .series__row .series__item {
   /* 占满剩余宽度；`min-width: 0` 让内部的长系列名照旧能省略，而不是把行撑破 */

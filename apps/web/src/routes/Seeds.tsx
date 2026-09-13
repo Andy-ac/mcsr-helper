@@ -10,7 +10,6 @@ import {
   SeedFiltersPanel,
 } from '@/components/SeedFilters';
 import { SeedInfoPanel, SeedResultCard } from '@/components/SeedResultCard';
-import { SeedSaveForm } from '@/components/SeedSaveForm';
 import { fetchRandomSeed, fetchSeedByMatchId, fetchSeedInfo, searchSeed } from '@/lib/api';
 import { useApiErrorText } from '@/lib/auth';
 import {
@@ -115,10 +114,6 @@ export function Seeds() {
    * 会随着使用自己出现，而不是永远困在那张起点表里。
    */
   const [observedVariations, setObservedVariations] = useState<readonly string[]>([]);
-
-  // ---- 补录 ----
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [savePrefill, setSavePrefill] = useState<string | undefined>(undefined);
 
   /** 把一条 SeedInfo 里的词条并进"见过的"那张表。 */
   function harvest(info: SeedInfo) {
@@ -289,11 +284,6 @@ export function Seeds() {
   const searchFieldErrors = searchFailure?.fieldErrors ?? {};
   const lookupFieldErrors = lookupFailure?.fieldErrors ?? {};
 
-  function openSaveForm(matchId?: number) {
-    setSavePrefill(matchId === undefined ? undefined : String(matchId));
-    setSaveOpen(true);
-  }
-
   return (
     <>
       <header className="pagehead">
@@ -440,18 +430,13 @@ export function Seeds() {
             </p>
             <div className="seed__actions">
               {lookupId !== null ? (
-                <>
-                  <button
-                    type="button"
-                    className="ghostbtn"
-                    onClick={() => void loadInfo(lookupId, 'lookup')}
-                  >
-                    {t('seedsPage.infoOnlyAction')}
-                  </button>
-                  <button type="button" className="cta" onClick={() => openSaveForm(lookupId)}>
-                    {t('seedsPage.saveTitle')}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  className="ghostbtn"
+                  onClick={() => void loadInfo(lookupId, 'lookup')}
+                >
+                  {t('seedsPage.infoOnlyAction')}
+                </button>
               ) : null}
             </div>
             {/*
@@ -478,43 +463,19 @@ export function Seeds() {
         ) : null}
       </section>
 
-      {/* ==================================================================
-          补录（Q15）
-          ================================================================== */}
-      <section className="seed__block">
-        <h2 className="seed__blocktitle">{t('seedsPage.saveTitle')}</h2>
+      {/*
+        ==================================================================
+        补录（Q15）—— **2026-09-13 已按用户要求整块移除**
+        ==================================================================
+        「种子分享区域去掉『补录一条』部分」。
 
-        {/*
-          表单默认**收起**。
-          它不是这一页的主线（主线是查），而且它写的是别人的生产数据 ——
-          摊在页面上会让人以为它是常规操作。展开动作由"查不到 → 补录"
-          那个按钮触发，那时它带着刚查过的 matchId 一起出现。
-        */}
-        {saveOpen ? (
-          <SeedSaveForm
-            /*
-              ⚠️ `key` 是必需的，不是装饰：SeedSaveForm 用 useState 初始化
-                 预填的 matchId，而 useState 的初值**只在挂载时读一次**。
-                 不换 key 的话，从"查不到 A → 补录"再走到"查不到 B → 补录"，
-                 输入框里会一直留着 A 的 ID —— 而用户以为自己在补录 B。
-            */
-            key={savePrefill ?? 'blank'}
-            initialMatchId={savePrefill}
-            onCancel={() => setSaveOpen(false)}
-            /*
-              写成功之后**不**自动去查一次：那会立刻消耗一次上游配额，
-              而用户可能只是想把几条补完再一起看。他自己点一下"查询"就行。
-            */
-          />
-        ) : (
-          <p className="seed__actions">
-            <button type="button" className="ghostbtn" onClick={() => openSaveForm()}>
-              {t('seedsPage.saveTitle')}
-            </button>
-            <span className="mcsr-field__hint">{t('seedsPage.saveIntro')}</span>
-          </p>
-        )}
-      </section>
+        ⚠️ 移除的是**界面入口**，不是服务端的写接口：`POST /api/seeds/save`
+           （Q15 决定暴露的那个）**还在**，守卫也没动。所以这是"这一页不再提供它"，
+           而不是"补录被取消了" —— 想恢复只需把这一节加回来。
+        ⚠️ 连带移除的还有两处入口：查不到时结果区那个「补录一条」按钮，
+           以及展开/收起用的 `saveOpen` / `savePrefill` 两个 state。
+           只删这一节而不删那些按钮的话，点下去会展开一个**不存在的表单**。
+      */}
 
       {/* ==================================================================
           社区种子分享 · 即将开放（Q7 / Q8 / Q16）

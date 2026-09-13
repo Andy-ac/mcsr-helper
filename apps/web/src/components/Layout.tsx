@@ -5,6 +5,7 @@ import { UpdateBanner } from '@/components/UpdateBanner';
 import { setLocale } from '@/i18n';
 import { useAuth } from '@/lib/auth';
 import { canReviewAny, useCan } from '@/lib/capabilities';
+import { applyTheme, normalizeTheme, storeTheme, type Theme } from '@/lib/theme';
 
 /*
  * 「提交」和「审核」**不放在 SECTIONS 里**。
@@ -67,6 +68,24 @@ export function Layout() {
       return false; // 隐私模式下 localStorage 可能直接抛错
     }
   });
+
+  /*
+   * 主题（2026-09-13）。
+   *
+   * ⚠️ 初值从**已经写上去的 `data-theme`** 读，而不是再读一次 localStorage：
+   *    `main.tsx` 在首屏之前就设好了这个属性，两边各读一次 localStorage 的话，
+   *    将来只要有一边的默认值改了，就会出现"按钮显示黑夜、页面是白天"。
+   *    **属性是唯一的事实**，这里只是把它的当前值搬进 React。
+   */
+  const [theme, setTheme] = useState<Theme>(() =>
+    normalizeTheme(globalThis.document?.documentElement.dataset.theme),
+  );
+
+  function changeTheme(next: Theme) {
+    applyTheme(next);
+    storeTheme(next);
+    setTheme(next);
+  }
 
   function toggle() {
     setCollapsed((prev) => {
@@ -263,6 +282,34 @@ export function Layout() {
               title="English"
             >
               EN
+            </button>
+          </div>
+
+          {/*
+            主题开关（2026-09-13）。放在语言开关**下面**、侧边栏最底部 ——
+            用户原话是"左下角"。
+
+            ⚠️ 用和语言开关**同一套** `.sidebar__lang` 样式：它们在同一块、同一层级，
+               是同一类东西（个人偏好）。新写一套样式只会让这两行看起来不像一对。
+            ⚠️ 切换是**立即生效 + 落 localStorage**（见 `lib/theme.ts`）：
+               没有"保存"按钮 —— 主题是所见即所得的东西，多一步确认只会让人以为没生效。
+          */}
+          <div className="sidebar__lang">
+            <button
+              type="button"
+              className={theme === 'light' ? 'is-active' : ''}
+              onClick={() => changeTheme('light')}
+              title={t('nav.themeLight')}
+            >
+              {t('nav.themeLight')}
+            </button>
+            <button
+              type="button"
+              className={theme === 'dark' ? 'is-active' : ''}
+              onClick={() => changeTheme('dark')}
+              title={t('nav.themeDark')}
+            >
+              {t('nav.themeDark')}
             </button>
           </div>
 
