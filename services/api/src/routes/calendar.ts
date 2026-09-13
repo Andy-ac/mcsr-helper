@@ -24,13 +24,15 @@ import {
   CalendarSeriesInputSchema,
   normalizeSeriesName,
 } from '@mcsr/shared/calendar';
-import { checkPermission } from '@mcsr/shared/permissions';
+import { canHardDelete, checkPermission } from '@mcsr/shared/permissions';
 import { Hono } from 'hono';
 import { type AuthVariables, requireAuth, requireCapability } from '../auth/middleware';
 import { newId } from '../auth/tokens';
 import {
   approveEvent,
+  countSeriesEvents,
   createSeries,
+  deleteSeriesCascade,
   getEventRow,
   getPendingRevision,
   listEvents,
@@ -272,6 +274,82 @@ calendarRoute.patch('/calendar/series/:id', requireCapability('content.author'),
   });
 
   return c.json({ ok: true, id, name: normalizeSeriesName(parsed.data.name) ?? parsed.data.name });
+});
+
+/**
+ * 删除系列，**连带它下面的所有赛事**（2026-09-13，用户裁决）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么权限是「只给 owner」，而不是与新建/改名同档的 `content.author`
+ * ---------------------------------------------------------------------------
+ * 新建和改名都是**可逆**的（名字还能改回来）。这一个不是：它在一个动作里
+ * 硬删掉该系列下的**每一场赛事，连同它们的版本历史**，而这些赛事没有"先下架"
+ * 那一步 —— 本仓给删除定的两档规则（owner 一键真删 / editor 先隐藏再删）
+ * 在这里**只剩得下一档**。⇒ 判据直接用谓词 `canHardDelete(role)`，与
+ * `routes/authoring.ts` 的三处删除同一个来源。
+ *
+ * ⚠️ **不要**在这里写 `role === 'owner'`：`permissions.ts` 写明 `canHardDelete`
+ *    是"谁能真删"的**唯一**定义点，前端隐藏按钮、服务端拦截面都必须调它。
+ *
+ * ⚠️ 响应里必须带 `deletedEvents`：界面靠它把"删了多少场"说清楚，审计也靠它留痕。
+ *    只回 `{ ok: true }` 的话，用户点完之后无从知道代价。
+ */
+calendarRoute.delete('/calendar/series/:id', requireAuth, (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  /*
+   * ⚠️ 只判 owner —— **不**像 `authoring.ts` 那样再给 `content.author` 留一条后路：
+   *    那边放行 editor 是因为"先隐藏"那一步由他们完成，而系列**没有隐藏态**。
+   */
+  if (!canHardDelete(user.role as UserRole)) return c.json({ error: 'forbidden' }, 403);
+
+  const id = c.req.param('id');
+  const result = deleteSeriesCascade(id);
+  if (!result.ok) return c.json({ error: 'not_found' }, 404);
+
+  const now = Date.now();
+  writeAudit({
+    actorId: user.id,
+    action: 'series.delete',
+    entityType: 'calendar_series',
+    entityId: id,
+    /*
+     * ⚠️ 连带数量必须写进 reason：事后追查时，"这次真删带走了几场赛事和它们的
+     *    版本历史"**只有审计里看得到** —— 系列行本身已经不存在了。
+     */
+    reason: `删除系列（不可恢复）：连带 ${result.deletedEvents} 场赛事及其版本历史`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  return c.json({ ok: true, id, deletedEvents: result.deletedEvents });
+});
+
+/**
+ * 删除这个系列**会连带删掉多少场赛事** —— 只给二次确认用。
+ *
+ * ⚠️ 为什么需要它（而不是拿列表里那个 `count`）：列表的 `count` 是
+ *    「未结束且已发布」的场次，而删除带走的是**所有**赛场（含已过去的、含未发布的）。
+ *    历史系列在列表里正好显示 `count = 0` ⇒ 确认框会说"不会影响任何内容"，
+ *    而它正要删掉十几场。数字必须来自**与删除同一个 WHERE**（见 `countSeriesEvents`）。
+ *
+ * ⚠️ 权限与删除**完全相同**（owner 专属），而且必须如此：这个端点的唯一用途是给
+ *    删除做确认，放开给所有人等于向匿名访客汇报"这个系列里有几条还没发布的投稿"。
+ *    （`GET /calendar/series` 是公开的，所以**不能**把未发布计数顺手塞进那个响应里。）
+ */
+calendarRoute.get('/calendar/series/:id/impact', requireAuth, (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+  if (!canHardDelete(user.role as UserRole)) return c.json({ error: 'forbidden' }, 403);
+
+  const id = c.req.param('id');
+  const events = countSeriesEvents(id);
+  // `null` = 系列不存在；**不是**"存在但一场都没有"（那是 0）—— 两者混起来会
+  // 让"删一个不存在的 id"看起来像一次成功的空操作。
+  if (events === null) return c.json({ error: 'not_found' }, 404);
+
+  return c.json({ ok: true, id, events });
 });
 
 calendarRoute.get('/calendar/:id', (c) => {

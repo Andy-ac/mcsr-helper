@@ -922,6 +922,33 @@ export const en: TranslationSchema = {
     /** Hitting `COLLATE NOCASE UNIQUE` on `POST /api/calendar/series` (`reason: 'series_name_taken'`). */
     seriesNameTaken: 'That series name is already taken.',
 
+    // ---- Deleting a series (2026-09-13: the user chose cascade) ----
+    /*
+     * The row-level delete affordance. ⚠️ Owner only (the shared `canHardDelete`
+     * predicate) — this removes every event in the series along with its revision
+     * history, and events have no "hide first" step, so only one tier of the
+     * repo's two-tier delete rule survives here.
+     */
+    seriesDelete: 'Delete',
+    /*
+     * ★ The two confirmations must stay separate, and both must **name the cost**.
+     *
+     * ⚠️ Not one generic "Are you sure?": the real risk is not a misclick, it is
+     *    not knowing what gets taken along. So: no events ⇒ say plainly that
+     *    nothing else is lost (so people dare press it); events ⇒ say **how many**,
+     *    that the revision history goes too, and that it cannot be undone.
+     *
+     * ⚠️ `{{count}}` is i18next interpolation (single braces render literally).
+     *    ⚠️ No Markdown `**` here — this string goes straight into a text node,
+     *    so asterisks would show up verbatim.
+     */
+    seriesDeleteNone:
+      'This series has no events yet, so deleting it removes nothing else. Delete it?',
+    seriesDeleteSome:
+      'This series still has {{count}} events. They will be deleted along with it, together with their revision history, and this cannot be undone. Delete anyway?',
+    seriesDeleteBusy: 'Deleting…',
+    seriesDeleteFailed: 'Could not delete',
+
     // -------------------------------------------------------------------------
     // Detail page
     // -------------------------------------------------------------------------
@@ -1661,6 +1688,23 @@ export const en: TranslationSchema = {
    */
   myLive: {
     title: 'My links',
+    /*
+     * ★ Privacy line — always shown, signed in or not. Mirrors the Chinese one
+     *   three claims at a time, and all three are load-bearing:
+     *   ① it is yours alone; ② **other signed-in users cannot see it either**
+     *   (saying "visitors cannot" is not enough — "can someone else see this
+     *   once they log in" is exactly the worry being answered); ③ it never
+     *   enters the public channel list (that is a separate, editor-maintained
+     *   thing users reasonably assume their paste might join).
+     *
+     * ⚠️ This is a statement about **existing** behaviour, not a plan. The
+     *    evidence is in `services/api/src/live.ts` and `routes/live.ts`: every
+     *    query is scoped by `user_id`, all four endpoints require auth, there is
+     *    no `GET /live/mine/:id` at all, cross-user access 404s, and the
+     *    responses are `no-store`.
+     */
+    privacy:
+      'This list is private to your account. Nobody else can see it — not even other signed-in users — and it never appears in the public channel list.',
     addHint: 'Just paste the link to the channel page.',
     addAction: 'Add',
     saveAction: 'Save',
@@ -1674,8 +1718,9 @@ export const en: TranslationSchema = {
      */
     editAction: 'Edit',
     deleteConfirm: 'Delete this one?',
-    empty: 'Nothing added yet.',
-    needLogin: 'Sign in to save your own live channel links here.',
+    empty: 'Nothing added yet. Links you add here are visible only to you.',
+    needLogin:
+      'Sign in to save your own live channel links here — this list is for your eyes only.',
     gotoLogin: 'Sign in',
     /*
      * Three possible outcomes for a link, and they must stay separate.

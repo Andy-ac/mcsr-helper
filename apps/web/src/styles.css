@@ -3508,6 +3508,61 @@ textarea.mcsr-field__input {
   color: var(--diamond);
 }
 
+/*
+ * ---- 删除系列（2026-09-13）----
+ *
+ * ⚠️ 删除入口是整行那个 `<button>` 的**兄弟**，不是它的子节点：
+ *    `<button>` 里再放 `<button>` 是非法 HTML，浏览器会把里面那个挪到行外，
+ *    更要命的是 **React 只在开发构建里报 `validateDOMNesting` 警告** —— 生产构建
+ *    里一声不响，表现只是"删除按钮跑到行外面、样式莫名奇妙"。
+ *
+ * ⚠️ 于是 `<li>` 自己必须变成一条 flex 行：原来它没有样式、靠 `.series__item`
+ *    的 `width: 100%` 撑满；多了一个兄弟之后，那条 100% 会把删除按钮挤到下一行。
+ */
+.series__row {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.series__row .series__item {
+  /* 占满剩余宽度；`min-width: 0` 让内部的长系列名照旧能省略，而不是把行撑破 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.series__delete {
+  flex: 0 0 auto;
+  align-self: center;
+}
+/*
+ * 确认块占满**自己的一行**（`flex-basis: 100%` 让它换行），于是
+ * "这一行会被删掉"的说明与它上方的系列名是同一个视觉单元 —— 而不是飘在行右边
+ * 让人猜它在说哪一条。
+ */
+.series__confirm {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--redstone);
+  border-radius: var(--r-md);
+}
+.series__confirm-text {
+  /*
+   * 那句话是这一块**唯一**要读的东西，所以给它剩余宽度 + 一个上限：
+   * 不限宽的话，超宽屏上它会变成一条横穿整页的长句。
+   */
+  flex: 1 1 260px;
+  max-width: 72ch;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.8;
+  color: var(--fg);
+}
+
 /* ==================================================================
    危险区：真删（需求②，只有 owner 看得到这一块）
    ==================================================================
@@ -4936,6 +4991,28 @@ html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
   margin: 0 0 12px;
   font-size: 17px;
   color: var(--fg);
+}
+
+/*
+ * 私人链接那一块的隐私说明（2026-09-13）。
+ *
+ * ⚠️ 它是**说明**，不是**警告** —— 所以既不要用报错的红色，也不要用"提示"那个
+ *    常见的黄色底：用户不是在犯错，他只是需要确认"这东西别人看不到"。
+ *    左边那条竖线和上面的 `.mylive-row` 同一个颜色方向（"这是我私人的东西"），
+ *    让"私密"这件事在视觉上先成立，再靠文字说清楚。
+ *
+ * ⚠️ 标题下 12px、与列表间距交给下面的 `margin-bottom` —— 别用 `:first-child`
+ *    之类的选择器去猜位置：后面只要在标题和这句话之间插一个节点，那种写法就静默失效。
+ */
+.mylive__privacy {
+  margin: 0 0 16px;
+  padding: 8px 0 8px 12px;
+  border-left: 3px solid var(--line);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.9;
+  color: var(--fg-muted);
+  max-width: 68ch;
 }
 
 .mylive-list {

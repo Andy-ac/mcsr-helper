@@ -21,9 +21,16 @@ import {
 import { CalendarIcsSubscribe } from '@/components/CalendarIcsSubscribe';
 import { CalendarMonthNav } from '@/components/CalendarMonthNav';
 import { CalendarSeriesSection } from '@/components/CalendarSeriesSection';
-import { type CalendarListResponse, fetchCalendarEvents, fetchCalendarSeries } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
+import {
+  type CalendarListResponse,
+  deleteCalendarSeries,
+  fetchCalendarEvents,
+  fetchCalendarSeries,
+  fetchCalendarSeriesImpact,
+} from '@/lib/api';
+import { useApiErrorText, useAuth } from '@/lib/auth';
 import { CALENDAR_PAGE_SIZE } from '@/lib/calendarFormat';
+import { useCanHardDelete } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -285,12 +292,76 @@ export function CalendarList() {
   const [seriesQuery, setSeriesQuery] = useState('');
 
   /*
+   * 删除系列（2026-09-13，owner 专属）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️ 那个数字（"会连带删掉 N 场"）为什么是**点下去才取**
+   * ---------------------------------------------------------------------------
+   * 列表行上的 `series.count` 是「未结束且已发布」的场次，而删除带走的是**所有**赛场
+   * （含已过去的、含未发布的）。两者在一个「历届季后赛」系列上恰好相反：
+   * 列表显示 0 场未结束 ⇒ 确认框会说"不会影响任何内容"，而它正要删掉十几场。
+   * ⇒ 所以按下去时现取一次 `impact`（与删除**同一个 WHERE**），拿到真实行数再问。
+   *
+   * ⚠️ 取不到就不给确认按钮：宁可让人再点一次，也不能让人在**错误的数量**下确认
+   *    一个不可逆的动作。错误因此显示在列表上方（见 `deleteErrorText` 的注释）。
+   */
+  const errorText = useApiErrorText();
+  const canHardDeleteNow = useCanHardDelete();
+  const [seriesReloadKey, setSeriesReloadKey] = useState(0);
+  const [seriesDeleteConfirm, setSeriesDeleteConfirm] = useState<{
+    id: string;
+    count: number;
+  } | null>(null);
+  const [seriesDeleteBusy, setSeriesDeleteBusy] = useState(false);
+  const [seriesDeleteError, setSeriesDeleteError] = useState<string | null>(null);
+
+  async function askDeleteSeries(id: string): Promise<void> {
+    setSeriesDeleteError(null);
+    try {
+      const impact = await fetchCalendarSeriesImpact(id);
+      setSeriesDeleteConfirm({ id, count: impact.events });
+    } catch (error) {
+      setSeriesDeleteConfirm(null);
+      setSeriesDeleteError(errorText(error));
+    }
+  }
+
+  async function confirmDeleteSeries(): Promise<void> {
+    if (!seriesDeleteConfirm || seriesDeleteBusy) return;
+    const target = seriesDeleteConfirm.id;
+    setSeriesDeleteBusy(true);
+    setSeriesDeleteError(null);
+    try {
+      await deleteCalendarSeries(target);
+      setSeriesDeleteConfirm(null);
+      setSeriesReloadKey((k) => k + 1);
+      /*
+       * ⚠️ 删掉的正好是**当前正在筛的那个系列**时，必须把 `?seriesId=` 一起清掉：
+       *    留着它只会让内容区显示"这个系列下没有活动"，而那个系列**已经不存在了** ——
+       *    看起来像我们把它筛没了，而不是它被删掉了。
+       */
+      if (seriesId === target) {
+        write((p) => {
+          p.delete('seriesId');
+          p.delete('page');
+        });
+      }
+    } catch (error) {
+      setSeriesDeleteError(errorText(error));
+    } finally {
+      setSeriesDeleteBusy(false);
+    }
+  }
+
+  /*
    * 系列列表：**一次取回、之后全在客户端筛**（spec D3.9）。
    *
    * ⚠️ 不传 `seriesQuery` 进依赖数组：它只影响展示层过滤，进依赖会让每敲一个字
    *    都重新请求一次 —— 而服务端根本不收这个参数，那几次请求的返回值**一模一样**。
+   * ⚠️ `seriesReloadKey` 是删掉一个系列之后的**重取开关**：`useAsync` 没有 refetch，
+   *    这个 hook 的设计就是"依赖变了才重跑"（见它的文件头）。
    */
-  const series = useAsync((signal) => fetchCalendarSeries(signal), []);
+  const series = useAsync((signal) => fetchCalendarSeries(signal), [seriesReloadKey]);
 
   const dirty =
     tags.length !== CALENDAR_TAGS.length ||
@@ -822,6 +893,21 @@ export function CalendarList() {
         }
         status={series.status}
         errorText={series.status === 'error' ? series.error : null}
+        /*
+         * ⚠️ `onAskDelete` **只有 owner 才传**（共享谓词 `canHardDelete`，经
+         *    `useCanHardDelete()`）。不传 ⇒ 组件不渲染删除入口。
+         *    前端隐藏按钮只是"别让人看见一个按了会 403 的按钮"，**拦截在服务端**
+         *    （`DELETE /api/calendar/series/:id` 会 403）—— 两边都调同一处谓词。
+         */
+        onAskDelete={canHardDeleteNow ? (id) => void askDeleteSeries(id) : undefined}
+        deleteConfirm={seriesDeleteConfirm}
+        deleteBusy={seriesDeleteBusy}
+        deleteErrorText={seriesDeleteError}
+        onConfirmDelete={() => void confirmDeleteSeries()}
+        onCancelDelete={() => {
+          setSeriesDeleteConfirm(null);
+          setSeriesDeleteError(null);
+        }}
       />
     </>
   );

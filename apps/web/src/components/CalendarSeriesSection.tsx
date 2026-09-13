@@ -36,6 +36,36 @@ export interface CalendarSeriesSectionProps {
   onSelect: (seriesId: string) => void;
   status: 'loading' | 'ok' | 'error';
   errorText?: string | null;
+  /**
+   * 点「删除」——**不传 = 这个观看者看不到删除入口**。
+   *
+   * ⚠️ 判据（owner 专属，共享谓词 `canHardDelete`）由**容器**算好再决定传不传，
+   *    组件里**不判断角色**：在组件里再判一次就是第二份会漂移的权限真相
+   *    （与 `VideoCard` 的 `canEdit`、`MyLiveList` 的 `loggedIn` 同一个做法）。
+   */
+  onAskDelete?: (seriesId: string) => void;
+  /**
+   * 正在确认删除的那一行：**带 id 也带数量**。
+   *
+   * ⚠️ 数量必须由容器**现取**（`fetchCalendarSeriesImpact`）后传进来，不能拿
+   *    `series.count` 顶替 —— 那是"未结束且已发布"的场次，而删除带走的是所有赛场，
+   *    两者在最需要正确的那种系列（历届赛事，count 恒为 0）上恰好相反。
+   *    ⚠️ 刻意**不在这里取数**：这个组件是纯展示的，自取数会让它在纯 node SSR 下
+   *       永远停在"加载中"，确认框那句话就一条也断言不到（见组件头注释）。
+   */
+  deleteConfirm?: { id: string; count: number } | null;
+  /** 删除请求进行中（容器持有异步状态）。 */
+  deleteBusy?: boolean;
+  /**
+   * 删除相关的错误（取 impact 失败、或删除本身失败）。
+   *
+   * ⚠️ 与上面那个 `errorText` **是两件事**，刻意分开：那个是"系列列表没拿到"，
+   *    这个是"你要删的那一条没成"。混在一起会让用户以为整块数据坏了
+   *    （`Live.tsx` 里对同一个区分写过注释：取数失败与提交失败不并进同一个 error）。
+   */
+  deleteErrorText?: string | null;
+  onConfirmDelete?: () => void;
+  onCancelDelete?: () => void;
 }
 
 export function CalendarSeriesSection({
@@ -46,6 +76,12 @@ export function CalendarSeriesSection({
   onSelect,
   status,
   errorText,
+  onAskDelete,
+  deleteConfirm,
+  deleteBusy,
+  deleteErrorText,
+  onConfirmDelete,
+  onCancelDelete,
 }: CalendarSeriesSectionProps) {
   const { t } = useTranslation();
 
@@ -87,6 +123,21 @@ export function CalendarSeriesSection({
       </div>
 
       {status === 'loading' ? <p className="state">{t('common.loading')}</p> : null}
+
+      {/*
+        删除相关的错误放在**列表上方**，而不是整块的最下面：用户刚点的是列表里的某一行，
+        系列一多，页面底部的提示就滚出视野了 —— 那时用户只会觉得"点了没反应"。
+        ⚠️ 分隔符仍沿用上面那段注释里的做法（`aria-hidden` 的 `·`），不把 errorText 拼进句子。
+      */}
+      {deleteErrorText ? (
+        <div className="state state--error">
+          <p>
+            {t('calendar.seriesDeleteFailed')}
+            <span aria-hidden="true"> · </span>
+            {deleteErrorText}
+          </p>
+        </div>
+      ) : null}
 
       {status === 'error' ? (
         <div className="state state--error">
@@ -142,8 +193,16 @@ export function CalendarSeriesSection({
                *    "判断说有、渲染出来是空"这种只在个别机器上出现的空白格子。
                */
               const next = nextLabel(s.nextStartsAtUtc);
+              const confirming = deleteConfirm?.id === s.id;
               return (
-                <li key={s.id}>
+                /*
+                 * ⚠️ 删除入口是选择按钮的**兄弟**，不是它的子节点。
+                 *    整行本身就是一个 `<button>`（点哪都能选中系列），而
+                 *    `<button>` 里再放 `<button>` 是**非法 HTML** —— 浏览器会
+                 *    把里面那个挪出去，于是"删除"跑到行外面、样式全乱，
+                 *    而且 **React 会报 validateDOMNesting 警告**（生产构建里看不见）。
+                 */
+                <li key={s.id} className="series__row">
                   <button
                     type="button"
                     className={`series__item${selectedId === s.id ? ' series__item--on' : ''}`}
@@ -162,6 +221,51 @@ export function CalendarSeriesSection({
                     */}
                     {next ? <span className="series__next">{next}</span> : null}
                   </button>
+
+                  {onAskDelete && !confirming ? (
+                    <button
+                      type="button"
+                      className="ghostbtn series__delete"
+                      onClick={() => onAskDelete(s.id)}
+                    >
+                      {t('calendar.seriesDelete')}
+                    </button>
+                  ) : null}
+
+                  {confirming ? (
+                    /*
+                     * ★ 二次确认。两句话**必须真的不同**（`calendarrender.tsx` 钉着这一条）：
+                     *   · 下面没有赛事 ⇒ 说清"不会影响任何内容"（让人敢按）；
+                     *   · 下面有 N 场   ⇒ 说清 N、版本历史、不可恢复（让人不敢乱按）。
+                     *
+                     * ⚠️ 这里的 `count` 是**真正会被删掉的行数**（容器现取的 impact），
+                     *    不是列表行上那个 `s.count`（那是"未结束"）。用错的话，
+                     *    历史系列会拿到"不会影响任何内容"，而它正要删掉十几场。
+                     */
+                    <div className="series__confirm">
+                      <span className="series__confirm-text">
+                        {deleteConfirm.count > 0
+                          ? t('calendar.seriesDeleteSome', { count: deleteConfirm.count })
+                          : t('calendar.seriesDeleteNone')}
+                      </span>
+                      <button
+                        type="button"
+                        className="dangerbtn"
+                        onClick={() => onConfirmDelete?.()}
+                        disabled={deleteBusy === true}
+                      >
+                        {deleteBusy ? t('calendar.seriesDeleteBusy') : t('common.confirm')}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghostbtn"
+                        onClick={() => onCancelDelete?.()}
+                        disabled={deleteBusy === true}
+                      >
+                        {t('common.cancel')}
+                      </button>
+                    </div>
+                  ) : null}
                 </li>
               );
             })}

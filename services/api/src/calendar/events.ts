@@ -1332,3 +1332,100 @@ export function deleteEventDirect(
   }
   return { ok: true };
 }
+
+/**
+ * 删掉一个系列，**连同它下面的所有赛事**（2026-09-13，用户裁决：连事件一起删）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么它必须是一个事务，而不是"循环调用 `deleteEventDirect`"
+ * ---------------------------------------------------------------------------
+ * `deleteEventDirect` 自己开事务。在它外面再包一层、或在循环里逐条调用，
+ * 会得到**部分成功**：删掉第 3 场时抛错 ⇒ 前 2 场的版本历史已经没了、系列还在，
+ * 而调用方只看到一句失败。**系列与它的赛事要么一起消失，要么一起留着。**
+ * 所以这里把两步都写进同一个 `BEGIN IMMEDIATE`，并且**把修订行的清理内联进来**
+ * 而不是复用那个函数 —— 复用就得给它加"别自己开事务"的参数，那是把复杂度
+ * 挪进一个已经被三个调用方依赖的函数里。
+ *
+ * ⚠️ **修订行必须跟着删**（与 `deleteEventDirect` 同一条理由，那次是踩过的坑）：
+ *    `content_revisions` 按 `type` + `entity_id` 多态引用、**没有外键**，
+ *    漏删就留下永远查不到的孤儿行 —— 里面还可能有 `status = 'pending'` 的快照，
+ *    表现是"审核队列里有一条已经不存在的事件"，点进去 404。
+ *
+ * ⚠️ **系列本身没有修订行**：`calendar_series` 不参与版本流程（改名走
+ *    `series.rename` 审计，不是新版本），所以这里没有对应的第二次 DELETE。
+ *    将来若给系列加了版本，这里**必须**补上，否则就是上面那个孤儿坑的翻版。
+ *
+ * ⚠️ 与 `deleteEventDirect` 一样，**不在这里判权限** —— 数据层只负责"删干净"，
+ *    "谁能删"由路由层的谓词决定（`permissions.ts` 写明 `canHardDelete` 是唯一判据）。
+ */
+export function deleteSeriesCascade(
+  id: string,
+): { ok: true; deletedEvents: number } | { ok: false; reason: 'not_found' } {
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM calendar_series WHERE id = ?').get(id) as
+    | { id: string }
+    | undefined;
+  if (!exists) return { ok: false, reason: 'not_found' };
+
+  /*
+   * ⚠️ 取 id 列表要在事务**里面**之前先取，但**不能**只按 `status='published'` 过滤：
+   *    未发布的草稿同样挂着 `series_id`，漏掉它们会让 `DELETE FROM calendar_series`
+   *    撞上外键（`on_delete: NO ACTION`）而整笔回滚 —— 表现是"删不掉，且不知道为什么"。
+   */
+  const eventIds = (
+    db.prepare('SELECT id FROM calendar_events WHERE series_id = ?').all(id) as unknown as Array<{
+      id: string;
+    }>
+  ).map((r) => r.id);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const dropRevisions = db.prepare(
+      'DELETE FROM content_revisions WHERE type = ? AND entity_id = ?',
+    );
+    const dropEvent = db.prepare('DELETE FROM calendar_events WHERE id = ?');
+    for (const eventId of eventIds) {
+      dropRevisions.run(CALENDAR_TYPE, eventId);
+      dropEvent.run(eventId);
+    }
+    db.prepare('DELETE FROM calendar_series WHERE id = ?').run(id);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return { ok: true, deletedEvents: eventIds.length };
+}
+
+/**
+ * 删掉这个系列**会连带删掉多少场赛事**（给二次确认用的只读计数）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么不复用列表里的 `count`
+ * ---------------------------------------------------------------------------
+ * `listSeries` 那个数字是「**未结束且已发布**」的场次（见它的 SQL：
+ * `e.status = 'published'` + `COALESCE(ends_at_utc, starts_at_utc) >= now`），
+ * 而 `deleteSeriesCascade` 删的是**所有**赛事 —— 含已经过去的、含还没发布的。
+ *
+ * ⇒ 两者在**最需要正确的那种系列上恰好相反**：一个「历届季后赛」系列在列表里
+ *    `count` 是 **0**（所有场次都已结束），确认框于是会说"不会影响任何内容"，
+ *    而它正要删掉 15 场。**那是在用户按下最后一个按钮之前对他说谎。**
+ *
+ * ⇒ 所以这里数的是**真正会被删的那些行**：`WHERE series_id = ?`，不带 status/
+ *    时间条件。改这个函数之前先读 `deleteSeriesCascade` 的 WHERE —— 两个查询
+ *    必须始终覆盖**同一批行**，否则确认框里的数字又会变成一句假话。
+ *
+ * ⚠️ 返回 `null` 表示**系列不存在**（路由据此回 404），与"存在但有 0 场"（回 0）
+ *    是两件不同的事 —— 混成一个 0 会让"删一个不存在的 id"看起来像成功。
+ */
+export function countSeriesEvents(id: string): number | null {
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM calendar_series WHERE id = ?').get(id) as
+    | { id: string }
+    | undefined;
+  if (!exists) return null;
+  const row = db.prepare('SELECT COUNT(*) AS n FROM calendar_events WHERE series_id = ?').get(id) as
+    | { n: number }
+    | undefined;
+  return row?.n ?? 0;
+}

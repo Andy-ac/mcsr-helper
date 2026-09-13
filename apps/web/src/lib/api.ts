@@ -855,6 +855,49 @@ export function renameCalendarSeries(
 }
 
 /**
+ * 删除一个系列，**连带它下面的所有赛事**（2026-09-13，用户裁决）。
+ *
+ * ⚠️ 权限是 **owner 专属**（共享谓词 `canHardDelete`），与"谁能建/改系列"
+ *    （`content.author`）**不是同一档**。理由见服务端那条端点的注释：
+ *    新建和改名可逆，这一条不是 —— 它一次性硬删掉系列下每一场赛事**和它们的版本
+ *    历史**，而赛事没有"先下架"那一步。所以调用方必须用 `useCanHardDelete()`
+ *    决定**入口显不显示**；这里不做判断（服务端会 403）。
+ *
+ * ⚠️ 服务端回的 `deletedEvents` **不是可选信息**：界面要拿它把"连带删了几场"说清楚。
+ *    只回 `{ ok: true }` 的话，用户点完之后无从知道代价。类型里带着它，
+ *    是为了让"忘了用这个数"在编译期就看得见。
+ */
+export function deleteCalendarSeries(
+  id: string,
+): Promise<{ ok: true; id: string; deletedEvents: number }> {
+  return sendJson('DELETE', `/api/calendar/series/${encodeURIComponent(id)}`);
+}
+
+/**
+ * 删掉这个系列会连带删掉**多少场赛事** —— 二次确认里那个数字的来源。
+ *
+ * ⚠️ **不要**改用列表行上的 `count`：那是"未结束且已发布"的场次，而删除带走的是
+ *    **所有**赛场（含已过去的、含未发布的）。一个「历届季后赛」系列在列表里
+ *    `count` 正好是 0 ⇒ 确认框会说"不会影响任何内容"，而它正要删掉十几场。
+ *
+ * ⚠️ 服务端把它设成 owner 专属（与删除同权限）：它唯一用途是给删除做确认，
+ *    放开就等于向任何人汇报"这个系列里有几条未发布的投稿"。
+ *
+ * ⚠️ 点击删除时**现取**，不缓存：列表可能已经旧了，而这个数字是给"按下去
+ *    就不可逆"做决策用的。取不到就**不要**给出删除按钮 —— 宁可让人多试一次，
+ *    也不能让人在错误的数量下确认。
+ */
+export function fetchCalendarSeriesImpact(
+  id: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true; id: string; events: number }> {
+  return request<{ ok: true; id: string; events: number }>(
+    `/api/calendar/series/${encodeURIComponent(id)}/impact`,
+    signal,
+  );
+}
+
+/**
  * ICS 订阅地址（**绝对 URL**）。
  *
  * ⚠️ 它必须是**绝对**地址而不是 `/api/calendar.ics`：

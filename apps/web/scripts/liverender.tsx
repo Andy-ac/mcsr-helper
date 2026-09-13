@@ -22,7 +22,7 @@
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { zhCN } from '@mcsr/shared/i18n';
+import { en as enDict, zhCN } from '@mcsr/shared/i18n';
 import type { LiveChannel, UserLiveLink } from '@mcsr/shared/live';
 import type { Video } from '@mcsr/shared/videos';
 import i18n from 'i18next';
@@ -1267,6 +1267,109 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     '★ 能红证明：空壳写法（`<p />`，不渲染文案）会被同一判据拒绝',
   );
   ok(`★ F3 正面对照：那一块真的渲染文案「${i18n.t('common.loading')}」，且空壳写法会被拒`);
+
+  /*
+   * ★★ 私人链接的隐私说明（2026-09-13）。
+   *
+   * 用户的原始要求：「将直播→我的链接相关信息改成**明确说明是给自己看的、不会公开让别人看到**」。
+   *
+   * ⚠️ 为什么这里只能是**源码级**断言：这段话在 `Live.tsx` 里，而那是个要取数的路由
+   *    （`useAsync` + `auth`），node 渲染脚本画不出整页 ⇒ 本脚本对 `Live.tsx` 的断言
+   *    一律是源码形状级的（F2/F3 也是同一做法）。**它守的是回归，不是替浏览器测量。**
+   *
+   * ⚠️ 而且这句话是**关于既有行为的陈述**，不是承诺：`user_live_links` 的每个查询都按
+   *    `user_id` 收口、四个端点全要登录、`GET /live/mine/:id` 不存在、跨用户 404、
+   *    响应 `no-store`。**改文案之前先去核对那五条**，否则会把一句真话改成谎话。
+   *
+   * 三条判据各自回答一个**不同**的问题（写在注释里，是因为"绿了"本身不说明测了什么）：
+   *   ① 它存在、且渲染的是**词条**（写死字符串 / 空壳都拒）；
+   *   ② 它是**无条件**渲染的 —— 标题与它之间不许有条件运算；
+   *   ③ 中英**两份词条都真的解析**，英文零汉字，且两边都把**三件事**说到。
+   */
+  const privacyTag =
+    /<p\s+className="mylive__privacy"\s*>\s*\{\s*t\(\s*['"]myLive\.privacy['"]\s*\)\s*\}\s*<\/p>/;
+  assert.ok(
+    privacyTag.test(withoutComments),
+    "★ 隐私说明必须真的渲染 `t('myLive.privacy')` —— 空壳或写死的文案都不算",
+  );
+  assert.equal(
+    privacyTag.test('<p className="mylive__privacy" />'),
+    false,
+    '★ 能红证明：只留一个空 `<p className="mylive__privacy" />` 会被同一判据拒绝',
+  );
+  assert.equal(
+    privacyTag.test('<p className="mylive__privacy">只有你自己能看到。</p>'),
+    false,
+    '★ 能红证明：把中文写死在 JSX 里（不过词条）也会被拒 —— 那样英文界面就永远没有这句',
+  );
+
+  /*
+   * ② 无条件渲染。
+   * ⚠️ 判据**不能**写成"这一段里没有 `{`"：JSX 注释剥掉之后会留下一个空的 `{}`，
+   *    于是那条断言会被**自己写的注释**绊倒（本仓在别处踩过同一个坑，见 §5.44 一族）。
+   *    ⇒ 改问真正要问的问题：**这一段里有没有"条件"**（三目 / 与运算 / 读登录态）。
+   */
+  const h2End = withoutComments.indexOf('</h2>');
+  const privacyAt = withoutComments.indexOf('mylive__privacy');
+  assert.ok(
+    h2End !== -1 && privacyAt > h2End,
+    '★ 隐私说明要排在 `.mylive` 的标题**之后**（否则它看起来属于公开名单那一块）',
+  );
+  const privacyGap = withoutComments.slice(h2End, privacyAt);
+  assert.equal(
+    /[?]|&&|\bauth\./.test(privacyGap),
+    false,
+    '★ 隐私说明必须**无条件**渲染：它与标题之间不许出现三目 / 与运算 / 读登录态 —— ' +
+      '一旦被包进 `{auth.user ? … : null}` 之类，"还没敢写链接的人反而看不到这句话"',
+  );
+  const conditionalGap = (() => {
+    const variant =
+      '</h2>\n      {auth.user ? <p className="mylive__privacy">{t(\'myLive.privacy\')}</p> : null}';
+    return variant.slice(variant.indexOf('</h2>') + 5, variant.indexOf('mylive__privacy'));
+  })();
+  assert.equal(
+    /[?]|&&|\bauth\./.test(conditionalGap),
+    true,
+    '★ 能红证明：把说明包进条件里的写法，同一判据会命中（⇒ 上面那条有区分力）',
+  );
+
+  /* ③ 两份词条 + 三件事。★ 关键词检查是"有没有说到"，不是"措辞对不对"。 */
+  assert.notEqual(
+    i18n.t('myLive.privacy'),
+    'myLive.privacy',
+    '★ 当前语言下必须解析出真实文案（否则界面显示原始 key）',
+  );
+  const privacyZh: string = zhCN.myLive.privacy;
+  const privacyEn: string = enDict.myLive.privacy;
+  assert.ok(privacyZh.length > 0 && privacyEn.length > 0, '中英两份词条都必须非空');
+  assert.equal(
+    /[\u4e00-\u9fff]/.test(privacyEn),
+    false,
+    '★ 英文版里零汉字（本仓 lookup 的既有判据）',
+  );
+  assert.notEqual(
+    privacyEn,
+    privacyZh,
+    '★ 英文版不能是中文的复制 —— 是复制的话，上面"零汉字"那条会因为样本本身是中文而失败，' +
+      '这条是它的前置条件，写出来是为了让人看懂为什么它必须失败',
+  );
+  // 三件事 × 两语言 = 6 条，"哪一件被漏说"要能从失败信息里直接看出来。
+  for (const [label, re, text] of [
+    ['中文·只有你自己', /只有你自己/, privacyZh],
+    ['中文·别人（含登录用户）也看不到', /其他人|别的用户|登录用户/, privacyZh],
+    ['中文·不进公开名单', /公开/, privacyZh],
+    ['英文·private（只有你）', /private/i, privacyEn],
+    ['英文·点名其他登录用户', /signed-in|logged in/i, privacyEn],
+    ['英文·不进公开名单', /public/i, privacyEn],
+  ] as const) {
+    assert.ok(re.test(text), `★ 隐私说明漏了「${label}」这一件：${re}`);
+  }
+  assert.equal(
+    /private/i.test('Nothing added yet.'),
+    false,
+    '★ 能红证明：关键词判据对不含该词的句子给 false（⇒ 上面六条不是恒真）',
+  );
+  ok('★ 隐私说明：无条件渲染 + 中英词条齐备 + 三件事都说到（英文零汉字）');
 
   /*
    * ★★ 行内编辑（t37）：`updateMyLiveLink` 此前**零调用者** —— 贴错了只能删掉重贴。

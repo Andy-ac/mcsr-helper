@@ -359,6 +359,23 @@ function MyLiveSection() {
     <section className="mylive" aria-label={t('myLive.title')}>
       <h2 className="mylive__title">{t('myLive.title')}</h2>
 
+      {/*
+        ★ 隐私说明（2026-09-13，用户原话：「明确说明是给自己看的，不会公开让别人看到」）。
+
+        ⚠️ 位置是刻意的：**在标题下面、且在登录判断之外** —— 无论写没写链接、
+           登录没登录，这句话都在。放到列表里或表单旁边都不行：
+           · 放进列表 ⇒ 一条都没添加时（最需要知道这件事的那一刻）它反而不在；
+           · 放进表单 ⇒ 只有已登录的人看得到，而"别人能不能看到"正是**还没敢写**的人在问。
+
+        ⚠️ 它与公开名单（`live_channels`）**不是一回事**，文案里已写明"不进公开的直播名单"。
+           这份是 `user_live_links`，每个查询都按 `user_id` 收口（见 zh-CN 词条上的注释）。
+
+        ⚠️ `check:live` 里有一条**源码级**断言盯着这个 `<p>` 真的渲染 `t('myLive.privacy')`
+           （`Live.tsx` 是路由、要取数，node 渲染脚本画不出整页，所以这里只能用源码形状守）。
+           动这行之前先看那条断言。
+      */}
+      <p className="mylive__privacy">{t('myLive.privacy')}</p>
+
       {auth.loading ? <p className="state">{t('common.loading')}</p> : null}
 
       {!auth.loading && auth.user ? (
