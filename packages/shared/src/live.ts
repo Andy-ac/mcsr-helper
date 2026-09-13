@@ -556,8 +556,25 @@ export function liveEmbedDecision(channel: LiveEmbedChannel, origin: string): Li
   }
 
   /*
-   * 平台不在 `LIVE_PLATFORMS` 里（类型上不可能，运行时可能 —— 库里的值不受类型约束）。
-   * 归到"平台自己禁止嵌入"这一档：它比"没记视频 ID"更接近实情。
+   * 兜底：正常路径到不了这里。
+   *   · 类型上**不可能** —— `platform` 是 `LivePlatform`（非空、闭集），上面三个分支
+   *     已穷尽它；
+   *   · 但**运行时可能** —— 库里的值不受类型约束（历史行、外部写入）。
+   * 能走到这里的现实取值是「库里的陌生平台字符串」（例如某平台下线了）。
+   *
+   * ⚠️⚠️ **`null` 不在这一档的适用范围里，别把认不出平台的行送进来**：
+   *   `null` 是**合法业务状态**（`UserLiveLink.platform` 就是 `LivePlatform | null` ——
+   *   "认不出平台的链接也收"是私人列表的明确设计；见 `parseLiveLink` 的 `platform: null` 那一段）。
+   *   而 `null` 到了这里只能说成 `'bilibili_blocked'`，界面就会打印
+   *   「这个平台不支持站内播放」—— 那是**另一句假话**：我们根本不知道是哪个平台。
+   *   ⇒ **调用方必须先自己拦掉 `platform === null`**（`MyLiveList` 就是这么做的），
+   *     走那句"只给原站入口"的文案。
+   *
+   * ⚠️ 归到 `'bilibili_blocked'` 是**当前的务实妥协**，不是精确语义：陌生平台既不是
+   *   "B站禁止"也不是"没记视频 ID"。它比 `no_id` 贴近实情（我们确实认为该平台不能嵌），
+   *   但**它借用了 B站 的专属原因码** ⇒ 若将来要让界面说"这个平台不行"的**通用**话，
+   *   正确改法是给 `LiveEmbedReason` 增加一档（或复用通用文案对应的那一档），
+   *   而**不是**继续让陌生平台冒充 B站。
    */
   return { embed: false, reason: 'bilibili_blocked' };
 }

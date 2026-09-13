@@ -164,11 +164,19 @@ function MyLiveRow({
   /*
    * ⚠️ 这一行**认不出平台**（用户贴的链接我们解析不出来）⇒ 只给原站入口。
    *
-   *    ★ 这一句必须放在 `liveEmbedDecision` **之前**，两个理由：
+   *    ★ 这一句必须放在 `liveEmbedDecision` **之前**，三个理由：
    *    ① 它的入参 `platform` 是**非空**的（`LiveEmbedChannel` 只收真平台）——
    *       传 `null` 类型就不对，"认不出平台"本来也不是"某个平台不可嵌"；
    *    ② 它同时把 `link.platform` 收窄成非空，后面就不用写 `!` 断言
-   *       （断言会把这个组件最该被检查的地方静默关掉）。
+   *       （断言会把这个组件最该被检查的地方静默关掉）；
+   *    ③ ★★ **实测后果**（我探过）：`liveEmbedDecision` 的尾部对"没被任何分支处理的
+   *       platform"有一个兜底 `return { embed: false, reason: 'bilibili_blocked' }`
+   *       （`shared/live.ts:558-562`，注释说"归到平台自己禁止嵌入这一档，它比
+   *       '没记视频 ID' 更接近实情"）。**那个理由对"库里存了个陌生平台"成立，
+   *       对 `null` 不成立** —— 认不出平台时我们并不知道任何平台，说"这个平台不支持
+   *       站内播放"就是**另一句假话**。所以这一档必须在这里拦下、用 `myLive.linkOnly`。
+   *       ⚠️ 顺序颠倒（先算判定再判 null）就会让这一行说成"平台不支持" ——
+   *       而**门禁全绿**（断言只看有没有一句解释）。
    */
   if (link.platform === null) {
     return <Row why={t('myLive.linkOnly')} />;
