@@ -44,9 +44,36 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<UserSelf | null>(null);
-  const [loading, setLoading] = useState(true);
+/**
+ * 登录态的 Provider。
+ *
+ * ⚠️ `initialUser` 是给**渲染自检脚本**留的注入点（`apps/web/scripts/*`），生产调用方
+ *    一个参数都不传、行为与加它之前**完全一致**（默认 `null` + `loading` 走原来的流程）。
+ *
+ * 为什么需要它：`useAuth` 在 Provider 外**直接 throw**，而 `useAsync` 那类取数在
+ * `renderToStaticMarkup` 下 `useEffect` 根本不跑 ⇒ 任何读登录态的组件（`CalendarForm`
+ * 要判 `content.author` 才决定显不显示「新建系列」）在纯 node SSR 里**渲染不出来**。
+ * 没有这个注入点，需求③ 的系列字段就永远落在"有界面、有词条、门禁全绿，但没有任何
+ * 断言真的看过它"那一类里 —— 而这正是本仓反复在治的形状。
+ *
+ * ⚠️ 刻意**不导出 `AuthContext` 本身**：那样脚本能直接造一个不受约束的 context，
+ *    而 Provider 的 `initialUser` 只允许"注入一个用户"，`loading`/`refresh`/`setUser`
+ *    仍由真实实现提供 —— 少一个能绕开真实形状的口子。
+ */
+export function AuthProvider({
+  children,
+  initialUser = null,
+}: {
+  children: ReactNode;
+  /** 只给自检脚本用：直接给一个已登录用户，跳过 `fetchMe`。 */
+  initialUser?: UserSelf | null;
+}) {
+  const [user, setUser] = useState<UserSelf | null>(initialUser);
+  /*
+   * ⚠️ 注入了用户时 `loading` 直接是 `false`：否则组件会先渲染"加载中"那一屏，
+   *    而 SSR 只拍一次快照 ⇒ 断言永远看不到真正的内容（那就又变成假绿了）。
+   */
+  const [loading, setLoading] = useState(initialUser === null);
 
   const refresh = useCallback(async () => {
     try {

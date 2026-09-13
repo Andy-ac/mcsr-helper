@@ -90,6 +90,12 @@ export function Videos() {
    *    那条防的是**每个访客**都被 me 接口的返回触发重拉。
    */
   const canModerate = useCan('resource.moderate');
+  /**
+   * 需求②（t14）：谁能在视频墙上看到「编辑」链接。
+   * ⚠️ 与 `canModerate` 是**两个不同的能力**（下架 vs 直接改内容），
+   *    刻意不复用 —— 把两者混成一个名字会让"能下架的人"顺带能改内容。
+   */
+  const canAuthor = useCan('content.author');
 
   const state = useAsync<WallData>(
     async (signal) => {
@@ -366,6 +372,12 @@ export function Videos() {
                       }}
                       // 在「我贴的」里按作者筛选没有意义（全都是我）
                       onFilterAuthor={mineView ? undefined : (id) => setParam('authorId', id)}
+                      /*
+                       * 需求②（t14）：「编辑」链接只对有 `content.author` 的人出现。
+                       * ⚠️ 判据在**页面**这一层算（`useCan`），组件只管显不显示 ——
+                       *    能力矩阵是唯一一份"谁是编辑"的定义。
+                       */
+                      canAuthor={canAuthor}
                     />
                   ))}
                 </ul>

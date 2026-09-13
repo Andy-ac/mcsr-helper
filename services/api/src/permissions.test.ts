@@ -21,6 +21,7 @@ import {
   assignableRoles,
   CAPABILITIES,
   can,
+  canHardDelete,
   capabilitiesByType,
   checkPermission,
   roleHas,
@@ -55,8 +56,36 @@ describe('权限矩阵的完整性', () => {
   });
 
   it('admin 拥有全部能力（它是矩阵里权限的顶点）', () => {
+    /*
+     * ⚠️ 这条断言在 rework-2 ② 期间**一度被放宽过**（当时"硬删"是一个只给 owner 的能力
+     *    `content.hardDelete`，admin 因此少了那一条）。后来那个方案被撤回了：
+     *    硬删改成谓词 `canHardDelete(role)`（见 permissions.ts 里它的注释），
+     *    于是矩阵又回到"admin 是顶点"—— 这条断言也就**恢复原样**。
+     *
+     * ⚠️ 保留它是有意义的：谓词不进矩阵，所以"admin 拥有全部能力"这条性质
+     *    仍然是矩阵自身的不变量，值得继续守着。
+     */
     const missing = CAPABILITIES.filter((cap) => !can(verified('admin'), cap));
     assert.deepEqual(missing, [], `admin 缺少这些能力：${missing.join(', ')}`);
+  });
+
+  it('★ 硬删是 owner 专属的**谓词**，不是能力矩阵里的一行', () => {
+    /*
+     * ⚠️ 这条守的是"谁能真删只有一处定义"。判据是 `canHardDelete`，
+     *    而它**刻意不在** `CAPABILITIES` 里 —— 写进矩阵的话，
+     *    有人把同一个能力也加进 `admin` 那一行（一次意图完全合理的编辑）就会
+     *    **静默放宽**规则，而"某角色有没有某能力"那类断言照样全绿。
+     */
+    assert.equal(canHardDelete('owner'), true, '只有 owner 能真删');
+    for (const role of ['user', 'reviewer', 'editor', 'admin'] as const) {
+      assert.equal(canHardDelete(role), false, `${role} 不该能真删`);
+    }
+    // 反面控制：那个能力名**不该**存在于矩阵里（否则就有了第二处真相）
+    assert.equal(
+      (CAPABILITIES as readonly string[]).includes('content.hardDelete'),
+      false,
+      '硬删不该以能力的形式回到 CAPABILITIES —— 它现在是谓词',
+    );
   });
 
   it('reviewer 是 user 的超集 —— 审核员当然也能提交', () => {

@@ -92,6 +92,21 @@ export function describeSubmissionError(
       return { message: t('submit.errAlreadyPending') };
 
     /*
+     * ★ 需求② 的直编专属：**已上架的内容要先下架再删除**（`invalid_state` 之下）。
+     *
+     * ⚠️ 它带 `reason` 而不是一个新的错误码（spec §7.4：本轮不新增错误码）——
+     *    所以判据是 `code === 'invalid_state' && reason === 'must_hide_first'`，
+     *    单独一个 `invalid_state` 仍然走它自己的通用文案。
+     * ⚠️ 文案要说清**下一步**（先下架），而不只是"操作无效"：
+     *    用户此时唯一的出路就是去下架，而那是另一个按钮。
+     */
+    case 'invalid_state':
+      if (error.reason === 'must_hide_first') {
+        return { message: t('authoring.mustHideFirst') };
+      }
+      return { message: fallback(error) };
+
+    /*
      * ★ 视频墙的"这个视频已经有人贴过了"。
      *
      * ⚠️ 它和上面的 url_exists 是同一个**形状**，但三种情况的分界点不同：

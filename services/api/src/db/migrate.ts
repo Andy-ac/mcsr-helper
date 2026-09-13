@@ -28,6 +28,8 @@ import { m009ResourceMarks } from './migrations/009_resource_marks';
 import { m010CalendarVideo } from './migrations/010_calendar_video';
 import { m011EventDimensions } from './migrations/011_event_dimensions';
 import { m012ResourceVideoAndLive } from './migrations/012_resource_video_and_live';
+import { m013SeriesAndMarksIndex } from './migrations/013_series_and_marks_index';
+import { m014UserLiveLinks } from './migrations/014_user_live_links';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -71,6 +73,24 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    并且 `VACUUM INTO` 备份 + 回读校验（见 .cache/rehearse-migration.mjs）。
    */
   { name: '012_resource_video_and_live', sql: m012ResourceVideoAndLive, noTransaction: true },
+  /*
+   * 013：系列活动（③）+ 收藏数索引（⑤）。
+   *
+   * ⚠️ 这条**故意不加 noTransaction**：`CREATE INDEX` / `CREATE TABLE` /
+   *    `ADD COLUMN ... REFERENCES` 三件事在 SQLite 里都**不重建表**，
+   *    也就不需要 `PRAGMA foreign_keys = OFF`（那个 PRAGMA 在事务里无效）。
+   *    留在事务里才能失败即回滚 —— 上面的 011 注释专门警告过"别条件反射加 noTransaction"。
+   */
+  { name: '013_series_and_marks_index', sql: m013SeriesAndMarksIndex },
+  /*
+   * 014：④ 私人直播链接（`user_live_links`）—— 只给自己看的那一份。
+   *
+   * ⚠️ 和 013 同一个性质：纯 `CREATE TABLE` / `CREATE INDEX`，**不重建任何表**，
+   *    所以同样**不加** noTransaction（留在事务里才能失败即回滚）。
+   * ⚠️ 表名/编号：spec 的 §5.3b/D4b.2 里还写着"迁移 013 里加一条 CREATE TABLE" ——
+   *    那句**已经过期**（013 已随 ③⑤ 发布，已发布的迁移不许改）。本轮是 014。
+   */
+  { name: '014_user_live_links', sql: m014UserLiveLinks },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

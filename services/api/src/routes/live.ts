@@ -1,7 +1,7 @@
 /**
- * 直播频道清单的端点。
+ * 直播板块的端点 —— **两组**，权限形状完全相反，别混。
  *
- * 端点清单：
+ * ① 编辑维护的**公开名单**（`live_channels`）：
  *   GET    /api/live                 公开列表（**无需登录**）
  *   GET    /api/live/manage          编辑视图：含被隐藏的（需 live.manage）
  *   POST   /api/live                 新增一条（需 live.manage）
@@ -9,8 +9,17 @@
  *   PATCH  /api/live/:id/visibility  隐藏 / 显示（需 live.manage）
  *   DELETE /api/live/:id             真删（需 live.manage）
  *
+ * ② 每个登录用户**自己的**链接（`user_live_links`，④）：
+ *   GET    /api/live/mine        我的链接（**登录即可**，`no-store`）
+ *   POST   /api/live/mine        贴一条链接（**登录即可**）
+ *   PATCH  /api/live/mine/:id    改我的一条（`url` / `title`）
+ *   DELETE /api/live/mine/:id    删我的一条
+ *
+ * ⚠️ 两组**互不写入**：私人链接永远不会出现在公开名单里，公开名单也永远不会
+ *    因为某个用户贴了什么而变化（两次列表查询、两条渲染路径、两套缓存规则）。
+ *
  * ---------------------------------------------------------------------------
- * 为什么只有 `live.manage` 一个能力，没有 `live.submit`
+ * 公开名单：为什么只有 `live.manage` 一个能力，没有 `live.submit`
  * ---------------------------------------------------------------------------
  * 这份清单不是 UGC。用户的原话是"记录一些重要的 MCSR streamer"——
  * 一份由少数人维护、变动很慢的名单（"比较固定"）。
@@ -19,24 +28,51 @@
  * "那要不要审核"这个问题，而答案是"没有人会去审一份编辑自己写的名单"。
  *
  * ---------------------------------------------------------------------------
- * 排序与缓存
+ * ④ 私人链接：为什么是 `requireAuth` 就够了，而且**没有**新能力
+ * ---------------------------------------------------------------------------
+ * 它是"用户自己的、私人的、低风险的"数据，与收藏 / 备注 / 评分**同一档**
+ * （理由和 `routes/marks.ts` 的文件头逐字相同）：
+ *   · **不要求邮箱验证** —— 邮箱验证那道闸门是为"发布**公开**内容"设的，
+ *     它要保证每条公开内容背后有一个可达的人；而这里的内容**只有自己看得到**，
+ *     拿同一道闸门去挡它，只会让新用户的第一件事变成"去邮箱点个链接"，收益为零；
+ *   · **不新增能力**（尤其没有 `live.submit`）—— 上面那段关于公开名单的决定
+ *     **一个字不改**（D4b.1）；
+ *   · **不进公开缓存**：`GET /api/live/mine` 必须 `no-store`，它因人而异 ——
+ *     缓存住的话下一个人会看到别人的私人链接（同 `/api/videos/mine`、
+ *     `/api/resources/mine` 的纪律）。
+ *
+ * ⚠️ **界面隐藏不是安全边界**：前端的「我的链接」块对未登录用户不渲染，
+ *    但服务端这四个端点一律返回 401。两边都要有。
+ *
+ * ---------------------------------------------------------------------------
+ * 排序与缓存（公开那一侧）
  * ---------------------------------------------------------------------------
  * · 排序在**数据层**（`ORDER BY sort_order, display_name`），因为它有两个键，
  *   而"第二键钉死顺序"这件事的理由写在 live.ts 里（不钉的话刷新一次会换位）。
  * · 公开列表给 60 秒公开缓存（和视频墙、资源库一致）：它变得很慢，
  *   而"某人刚被加进去但没立刻出现"是可以接受的。
- * · `/manage` 必须 no-store —— 它因人而异（含隐藏行）。
+ * · `/manage` 与 `/mine` 必须 no-store —— 它们因人而异（含隐藏行 / 含私人的行）。
  */
-import { LIVE_NAME_MAX, LIVE_NOTE_MAX, LiveChannelInputSchema } from '@mcsr/shared/live';
+import {
+  LIVE_NAME_MAX,
+  LIVE_NOTE_MAX,
+  LiveChannelInputSchema,
+  UserLiveLinkInputSchema,
+  UserLiveLinkPatchSchema,
+} from '@mcsr/shared/live';
 import { Hono } from 'hono';
-import { type AuthVariables, requireCapability } from '../auth/middleware';
+import { type AuthVariables, requireAuth, requireCapability } from '../auth/middleware';
 import {
   createLiveChannel,
+  createUserLiveLink,
   deleteLiveChannel,
+  deleteUserLiveLink,
   getLiveChannel,
   listLiveChannels,
+  listUserLiveLinks,
   setLiveChannelStatus,
   updateLiveChannel,
+  updateUserLiveLink,
 } from '../live';
 import { writeAudit } from '../users';
 
@@ -93,6 +129,89 @@ liveRoute.get('/live', (c) => {
 liveRoute.get('/live/manage', requireCapability('live.manage'), (c) => {
   c.header('Cache-Control', 'no-store');
   return c.json({ items: listLiveChannels(true) });
+});
+
+// ---------------------------------------------------------------------------
+// ④ 我的链接（登录即可；只看得见 / 改得动自己的行）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这一组**必须注册在下面 `live.manage` 那几条之前**，而且不是"为了好看"：
+ *    `PATCH /live/mine/:id` 与 `PATCH /live/:id/visibility` 在
+ *    `PATCH /api/live/mine/visibility` 这一个路径上**同时匹配**
+ *    （前者 id = 'visibility'，后者 id = 'mine'）。Hono 按注册顺序取第一个，
+ *    所以顺序在这里是**行为**，不是风格。
+ */
+
+/** 我的链接。**因人而异 ⇒ no-store**（见文件头）。 */
+liveRoute.get('/live/mine', requireAuth, (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  c.header('Cache-Control', 'no-store');
+  return c.json({ items: listUserLiveLinks(user.id) });
+});
+
+/**
+ * 贴一条链接。
+ *
+ * ⚠️ 入参**只有 `{ url, title? }`**（`.strict()`）：平台与标识**全部由服务端推导**
+ *    （`parseLiveLink`），客户端不许指定 —— 否则表里的 `platform` 会与链接实际
+ *    指向的平台不一致，而两边都不报错。
+ * ⚠️ **认不出的链接也收**（201）：那是用户自己贴的链接，我们没有理由拒收，
+ *    界面只给外链（D4b.4）。所以这个端点**没有** 400 "链接不合法"这一档 ——
+ *    只有"没给链接 / 太长 / 多了字段"这类形状问题才是 400。
+ * ⚠️ **没有 409**：个人化模型下"同一个人加两条同一个频道"是允许的
+ *    （D4b.2），`live_exists` 那套只属于公开名单。
+ */
+liveRoute.post('/live/mine', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = UserLiveLinkInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const link = createUserLiveLink(user.id, parsed.data, Date.now());
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, link }, 201);
+});
+
+/**
+ * 改我的一条（`url` / `title`）。
+ *
+ * ⚠️ 别人的行 / 不存在的行 → **404**，不是 403：私人数据连"存在性"都不该泄漏
+ *    （数据层里那条 SQL 带着 `user_id = ?`，所以在它看来别人的行**确实不存在**）。
+ */
+liveRoute.patch('/live/mine/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  const parsed = UserLiveLinkPatchSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const result = updateUserLiveLink(id, user.id, parsed.data, Date.now());
+  if (!result.ok) return c.json({ error: 'not_found' }, 404);
+
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, link: result.link });
+});
+
+/** 删我的一条。删不到（不存在 / 不是自己的）⇒ 404。 */
+liveRoute.delete('/live/mine/:id', requireAuth, (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  if (!deleteUserLiveLink(id, user.id)) return c.json({ error: 'not_found' }, 404);
+
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, id });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { Notice } from '@/components/Form';
 import { emptyDraft, ResourceForm } from '@/components/ResourceForm';
-import { type SubmissionResult, submitResource } from '@/lib/api';
+import { createResourceDirect, type SubmissionResult, submitResource } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
+import { useCan } from '@/lib/capabilities';
 import { describeSubmissionError, type SubmissionErrorInfo } from '@/lib/submissionErrors';
 
 /**
@@ -28,13 +29,25 @@ export function SubmitResource() {
   const { t } = useTranslation();
   const auth = useAuth();
   const errorText = useApiErrorText();
+  const navigate = useNavigate();
+  /*
+   * 需求②：只有 `content.author`（editor / admin / owner）才给「直接发布」。
+   * ⚠️ 能力名从矩阵读，页面里不写"谁是编辑"——理由见 permissions.ts 的头注释。
+   */
+  const canAuthor = useCan('content.author');
 
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<SubmissionErrorInfo | null>(null);
   const [done, setDone] = useState<SubmissionResult | null>(null);
+  /**
+   * 直编的结果提示（需求②）。与 `failure` **分开存**：两者可能同时存在
+   * （一次直编失败不影响上一次提审失败的提示），合成一个会被静默覆盖。
+   */
+  const [directNotice, setDirectNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   async function onSubmit(input: Parameters<typeof submitResource>[0]) {
     setFailure(null);
+    setDirectNotice(null);
     setBusy(true);
     try {
       setDone(await submitResource(input));
@@ -47,6 +60,36 @@ export function SubmitResource() {
        *    （这里曾经判断过一个 `duplicate_url`，而服务端返回的是
        *      `url_exists`，结果所有情况都掉进兜底文案。见 submissionErrors.ts。）
        */
+      setFailure(describeSubmissionError(err, t, errorText));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 「直接发布」（需求②）—— 新条目**直接上架**，不进审核队列。
+   *
+   * ⚠️ 成功后**不留在这个页面**：这里与提审不同 —— 提审完要去「我的提交」看进度，
+   *    而直编已经生效了，用户下一步是去看那一条。留在原表单上会让人以为没提交成功。
+   */
+  async function onSubmitDirect(input: Parameters<typeof createResourceDirect>[0]) {
+    setFailure(null);
+    setDirectNotice(null);
+    setBusy(true);
+    try {
+      const result = await createResourceDirect(input);
+      setDirectNotice({ ok: true, text: t('authoring.published') });
+      /*
+       * 直编新建一律已上架（spec D2.8），所以下一步是去看那一条。
+       * ⚠️ 用 `useNavigate` 而不是 `location.assign`：后者会**整页重载**，
+       *    而这个应用是 SPA（整页重载会丢掉一次会话内的所有状态，也绕过了
+       *    路由的视图过渡）。延迟 800ms 是为了让上面那句"已直接发布"能被读到 ——
+       *    立刻跳走的话用户只看到页面闪了一下。
+       */
+      globalThis.setTimeout(() => {
+        navigate(`/resources/${encodeURIComponent(result.id)}`);
+      }, 800);
+    } catch (err) {
       setFailure(describeSubmissionError(err, t, errorText));
     } finally {
       setBusy(false);
@@ -122,6 +165,10 @@ export function SubmitResource() {
         ⚠️ 只给一句"出错了"是不够的：用户唯一的反应是再点一次提交，
            然后再失败一次（这正是"经常出现红框"那次 bug 的样子）。
       */}
+      {directNotice ? (
+        <Notice kind={directNotice.ok ? 'ok' : 'bad'}>{directNotice.text}</Notice>
+      ) : null}
+
       {failure ? (
         <Notice kind="bad">
           {failure.message}
@@ -141,6 +188,22 @@ export function SubmitResource() {
         busy={busy}
         serverError={null}
         onSubmit={onSubmit}
+        /*
+         * 「直接发布」（需求②）：只有 `content.author`（editor / admin / owner）看得到。
+         * ⚠️ 它在这个页面上的意义是**跳过整条审核队列** —— 所以按钮文案里带着
+         *    "（不审核）"，而且 `title` 用的是 `authoring.directHint`（把后果说全）。
+         *    普通用户拿到的 `secondaryAction` 是 `undefined` ⇒ 按钮**根本不存在**，
+         *    不是一个灰掉的按钮。
+         */
+        secondaryAction={
+          canAuthor
+            ? {
+                label: t('authoring.directPublish'),
+                busyLabel: t('submit.submitting'),
+                onSubmit: (s) => void onSubmitDirect(s),
+              }
+            : undefined
+        }
       />
     </>
   );

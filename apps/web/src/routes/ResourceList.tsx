@@ -8,11 +8,23 @@ import { useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
-/** 子 tab：全部 / 网站 / 工具。新增 kind 时在这里加一条即可。 */
+/**
+ * 子 tab：全部 / 网站 / 工具 / 视频（需求① 新增最后一条）。
+ *
+ * ⚠️ 顺序**跟 `RESOURCE_KINDS` 走**（`website, tool, video`），不是随手排的：
+ *    两者一致时"tab 栏"与"类型枚举"读起来是同一件事，将来加第四个 kind
+ *    对着 `RESOURCE_KINDS` 就知道该插在哪里。
+ *
+ * ⚠️ 这里的标签是**短标签**（`resources.tabVideo` = 「视频」），而卡片上的
+ *    类型徽章是**类型名**（`resources.kindVideo` = 「视频资料」）。两者**刻意不同**，
+ *    不是漏改了一处 —— `resourceKindLabel` 仍是"kind → 人话"唯一的映射处
+ *    （见 lib/resourceKind.ts 的文件头）。
+ */
 const TABS = [
   { key: 'all', labelKey: 'resources.tabAll', kind: undefined },
   { key: 'website', labelKey: 'resources.tabWebsite', kind: 'website' as const },
   { key: 'tool', labelKey: 'resources.tabTool', kind: 'tool' as const },
+  { key: 'video', labelKey: 'resources.tabVideo', kind: 'video' as const },
 ] as const;
 
 /**

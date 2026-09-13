@@ -153,15 +153,44 @@ export const RatingSummarySchema = z.object({
 });
 export type RatingSummary = z.infer<typeof RatingSummarySchema>;
 
+/**
+ * 收藏数（⑤）—— **有多少个用户把它加进了收藏**（`resource_marks` 里
+ * `favorite = 1` 的行数）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么它是一个裸整数，而不是一个像 `RatingSummary` 那样的对象
+ * ---------------------------------------------------------------------------
+ * `rating` 是对象，因为它要表达**两件事**（平均分 + 人数），而且它有一个
+ * **有语义的"空"**：`average: null` = "还没有人评过分"（与"平均 0 分"完全不同）。
+ *
+ * 收藏数只有一个数字、也只有一个"空"（0 = 还没有人收藏，而 0 分和"没人评"
+ * 不会混淆）。包成 `{ count }` 只会让每个读者多一层解构，
+ * 并且诱使别人往里加第二个字段 —— 那正是 `rating` 的形状，不是这个的形状。
+ *
+ * ⚠️ 它是**公开聚合**，与评分同一条隐私规则：**只给总数，不给"谁收藏了"**。
+ *    逐个列出收藏人就变成评论/社交功能了，那需要另一套东西（回复、举报、审核）。
+ *
+ * ⚠️ **必填、不可空**：服务端算不出来时应该失败，而不是给一个 `null` 让前端判空。
+ *    这一点与 `rating` 刻意不同，理由见上。
+ *
+ * ⚠️ 已知且接受的**陈旧窗口**：列表与详情都带 60 秒公共缓存，所以别人的收藏
+ *    在你这里最多晚 60 秒才反映出来。评分**今天就是这个行为**（它和收藏数
+ *    在同一份响应里），所以这不是新引入的不一致。自己点收藏时界面本地 ±1
+ *    做即时反馈，而权威值仍然在服务端。
+ */
+export const FavoriteCountSchema = z.number().int().nonnegative();
+
 /** 列表项：**不含 body**，避免列表接口把几十 KB 的正文全传下来。 */
 export const ResourceListItemSchema = ResourceSchema.omit({ body: true }).extend({
   rating: RatingSummarySchema,
+  favoriteCount: FavoriteCountSchema,
 });
 export type ResourceListItem = z.infer<typeof ResourceListItemSchema>;
 
 /** 详情：完整对象。 */
 export const ResourceDetailSchema = ResourceSchema.extend({
   rating: RatingSummarySchema,
+  favoriteCount: FavoriteCountSchema,
 });
 export type ResourceDetail = z.infer<typeof ResourceDetailSchema>;
 

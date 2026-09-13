@@ -28,9 +28,13 @@ const { app } = await import('./index');
 const { closeDb, getDb } = await import('./db');
 const { resetAll } = await import('./auth/ratelimit');
 const { SITE } = await import('@mcsr/shared');
-const { liveEmbedUrl, liveEmbedUnavailableReason, liveChannelUrl } = await import(
-  '@mcsr/shared/live'
-);
+const {
+  liveEmbedUrl,
+  liveEmbedDecision,
+  liveEmbedUnavailableReason,
+  liveChannelUrl,
+  parseLiveLink,
+} = await import('@mcsr/shared/live');
 
 const PASSWORD = 'a good long passphrase';
 
@@ -358,9 +362,28 @@ describe('★ 直播清单：权限、重复与开关', () => {
     assert.equal(other.status, 201, 'UNIQUE 是 (platform, handle)，不是 handle');
   });
 
-  it('handle 不许是链接、不许有空格', async () => {
+  it('★ handle 收"标识或链接"：链接会被归一化成标识；认不出的位置、带空格的标识被拒', async () => {
     const editor = await makeUser('editor');
-    for (const bad of ['https://youtube.com/@x', '@a b']) {
+
+    /*
+     * F29 定稿 = **(ii) 输入宽松、存储严格**：编辑最常见的动作是把整条
+     * 频道页链接粘进来，所以**允许**，服务端归一化后**只落库标识**。
+     *
+     * ⚠️ 这一条**改过口径**：原来断言"链接一律 400"（那时 handle 只收标识）。
+     *    仍然被拒的是"既不是标识、也不是我们能认出来的频道链接"，以及带空格的标识。
+     */
+    const pasted = await call('POST', '/api/live', {
+      json: channel({ handle: 'https://www.youtube.com/@Someone' }),
+      cookie: editor.cookie,
+    });
+    assert.equal(pasted.status, 201, JSON.stringify(pasted.body));
+    assert.equal(
+      (pasted.body.channel as { handle: string }).handle,
+      '@Someone',
+      '落库的是**标识**，不是那条链接（库里永远只是标识：链接由我们按平台拼出来）',
+    );
+
+    for (const bad of ['https://example.com/someone', '@a b', 'javascript:alert(1)']) {
       const res = await call('POST', '/api/live', {
         json: channel({ handle: bad }),
         cookie: editor.cookie,
@@ -423,16 +446,24 @@ describe('★ 直播清单：权限、重复与开关', () => {
 
   it('排序：先按 sortOrder，同序按名字**确定**（不随刷新换位）', async () => {
     const editor = await makeUser('editor');
-    for (const [name, order] of [
-      ['乙', 10],
-      ['甲', 10],
-      ['丙', 5],
+    /*
+     * ⚠️ 这个 fixture 的 `handle` 是 **ASCII** 的（`@c` / `@b` / `@a`）。
+     *    它原来写成 `@${name}`（`@乙` 这种），而那是**中文标识** ——
+     *    F29 定稿之后 `handle` 只认"平台标识（ASCII 字母数字 + `_ . -`）或链接"，
+     *    中文串既不是标识也不是链接 ⇒ 400。平台标识本来就是 ASCII 的
+     *    （YouTube/Twitch 的用户名、B站 的房间号），所以这里是 fixture 假数据
+     *    不真实，不是组件的错 —— 和 liverender 里 `twitch.tv/%40Someone` 那次同一个道理。
+     */
+    for (const [name, order, handle] of [
+      ['乙', 10, '@b'],
+      ['甲', 10, '@a'],
+      ['丙', 5, '@c'],
     ] as const) {
       const r = await call('POST', '/api/live', {
-        json: channel({ displayName: name, handle: `@${name}`, sortOrder: order }),
+        json: channel({ displayName: name, handle, sortOrder: order }),
         cookie: editor.cookie,
       });
-      assert.equal(r.status, 201);
+      assert.equal(r.status, 201, `displayName=${name}: ${JSON.stringify(r.body)}`);
     }
 
     const names = (
@@ -467,38 +498,78 @@ describe('★ 直播清单：权限、重复与开关', () => {
 });
 
 /**
- * `liveEmbedUrl` 的三个分支。
+ * `liveEmbedDecision` 的**两态**（能嵌 / 确定不可嵌）+ `liveEmbedUrl` 那一层薄封装。
  *
- * ⚠️ 这三条都是"错了不会报错"的：返回一个播放器不认的 URL 时，
+ * ⚠️ 每一条都是"错了不会报错"的：返回一个播放器不认的 URL 时，
  *    页面里就是一个**黑框**，看起来像网络问题。所以它们必须被显式测到。
+ *
+ * ⚠️ 这整块**改过口径**（D4b.9 / F32d 实测）：原来写的是"Twitch / B站 只记录不嵌，
+ *    Twitch 还没测过"。实测结果是：**Twitch 能嵌**（`player.twitch.tv` 回
+ *    `frame-ancestors`，但**必须带对 `parent`**），**B站直播间才是确定不可嵌的**
+ *    （`x-frame-options: SAMEORIGIN`，大陆 + 香港两条网络各自测到）。
  */
-describe('★ 直播嵌入：什么该嵌、什么坚决不嵌', () => {
-  it('★ Twitch / B站 只记录不嵌（用户明说 Twitch 还没测）', () => {
-    for (const platform of ['twitch', 'bilibili'] as const) {
-      assert.equal(
-        liveEmbedUrl(
-          { platform, handle: 'someone', liveVideoId: 'abc', embedChannel: true },
-          'mcsrhelper.com',
-        ),
-        null,
-        `${platform} 现在不嵌 —— 嵌了会是一个黑框，而黑框看起来像我们的 bug`,
-      );
-      assert.equal(
-        liveEmbedUnavailableReason({
-          platform,
-          handle: 'x',
-          liveVideoId: null,
-          embedChannel: true,
-        }),
-        'platform',
+describe('★ 直播嵌入：两态（能嵌 / 确定不可嵌）', () => {
+  const ORIGIN = 'mcsrhelper.com';
+  const twitch = {
+    platform: 'twitch',
+    handle: 'Someone',
+    liveVideoId: null,
+    embedChannel: false,
+  } as const;
+
+  it('★ Twitch：能嵌，而且 `parent` 就是传进来的 origin', () => {
+    assert.equal(
+      liveEmbedUrl(twitch, ORIGIN),
+      `https://player.twitch.tv/?channel=Someone&parent=${ORIGIN}`,
+      'Twitch 的 parent 必须等于嵌入页面的 host',
+    );
+    assert.equal(liveEmbedDecision(twitch, ORIGIN).embed, true, '两态里的第一态：能嵌');
+  });
+
+  it('★★ 换个 origin 就换 parent；带协议/端口的只取域名', () => {
+    const a = liveEmbedUrl(twitch, ORIGIN);
+    const b = liveEmbedUrl(twitch, 'localhost');
+    assert.notEqual(a, b, 'parent 必须跟着 origin 走（传错 = 静默拒播，只能靠测试兜）');
+    assert.ok(b?.includes('parent=localhost'), `实际 ${String(b)}`);
+    assert.ok(
+      liveEmbedUrl(twitch, 'https://mcsrhelper.com:443/live')?.includes(`parent=${ORIGIN}`),
+      'parent 要的是域名本身（不带协议、端口、路径）',
+    );
+  });
+
+  it('★★ 缺 origin ⇒ 宁可不嵌（不发一个注定被拒的请求）', () => {
+    for (const empty of ['', '   ']) {
+      assert.equal(liveEmbedUrl(twitch, empty), null, '缺 origin 时不嵌');
+      assert.deepEqual(
+        liveEmbedDecision(twitch, empty),
+        { embed: false, reason: 'no_origin' },
+        '"为什么没有播放器"必须能说出来（无声的空白框是最坏的结果）',
       );
     }
+  });
+
+  it('★ B站直播间：确定不可嵌（平台自己禁止被嵌进别的网站）', () => {
+    const bili = {
+      platform: 'bilibili',
+      handle: '12345',
+      liveVideoId: 'abc',
+      embedChannel: true,
+    } as const;
+    assert.equal(
+      liveEmbedUrl(bili, ORIGIN),
+      null,
+      'B站直播间带 x-frame-options: SAMEORIGIN ⇒ 宁可不嵌，也不要一个静默黑框',
+    );
+    assert.deepEqual(liveEmbedDecision(bili, ORIGIN), {
+      embed: false,
+      reason: 'bilibili_blocked',
+    });
   });
 
   it('YouTube：有视频 ID 就嵌那一个（确定能播的那条路）', () => {
     const url = liveEmbedUrl(
       { platform: 'youtube', handle: '@someone', liveVideoId: 'dQw4w9WgXcQ', embedChannel: false },
-      'mcsrhelper.com',
+      ORIGIN,
     );
     assert.equal(url, 'https://www.youtube.com/embed/dQw4w9WgXcQ');
   });
@@ -581,5 +652,163 @@ describe('★ 直播嵌入：什么该嵌、什么坚决不嵌', () => {
     );
     assert.equal(liveChannelUrl('twitch', 'Someone'), 'https://www.twitch.tv/Someone');
     assert.equal(liveChannelUrl('bilibili', '12345'), 'https://live.bilibili.com/12345');
+  });
+});
+
+/**
+ * ⚠️ 兼容层**仅剩的那一条有损映射**在这里钉住（`no_origin` → `'platform'`）。
+ *
+ * `liveEmbedUnavailableReason()` 只拿得到 channel、拿不到 `origin`，所以它回答不了
+ * Twitch 那一行。它现在还活着**只有一个理由**：`apps/web` 的 `LiveCard.tsx` 用它，
+ * 而那里是穷尽映射（联合类型一加取值就编译不过，见 shared/live.ts 的注释）。
+ * ⚠️ 行号别抄（漂过多次），按内容找：`LiveCard.tsx` 里 `function noEmbedKey`，
+ *    `liverender.tsx` 里读 `live.noEmbedBilibili` 的那两条断言。
+ *
+ * ★ t24 已经落过一刀：`'bilibili_blocked'` 改成 **1:1 直传**，不再归并成 `'platform'`。
+ *   剩下的 `'no_origin' → 'platform'` **不是缺陷、是必须保留的**（删了它，
+ *   `live.noEmbedPlatform` 就没有存在理由，而那一档会无处可去）。
+ *   ⇒ 迁到 `liveEmbedDecision()` 是**另一条任务**（`apps/web` 的范围），
+ *     迁移时改动会在下面这两条断言上显形，而不是悄悄改变界面文案。
+ */
+describe('★ liveEmbedUnavailableReason：兼容层还剩一条有损映射（legacy 值必须活着）', () => {
+  it('★ B站 → 直接传 `bilibili_blocked`（t24：不再归并成通用的 `platform`）', () => {
+    /*
+     * ⚠️ 这条**换过期望值**，原因值得留在这里：
+     *   原来是 `'platform'` —— 也就是把 B站（确定态：平台自己禁止被嵌）**归并**进
+     *   "这个平台在这里不能嵌入播放"那句通用话。界面因此**没说清是哪种**，
+     *   而 `live.noEmbedBilibili`（"B 站不允许把直播间嵌进别的网站"）**一个引用都没有**。
+     *  ⇒ t24 把这一格改成 1:1 直传，`LiveCard` 的穷尽映射才会指到那句专属文案。
+     */
+    assert.equal(
+      liveEmbedUnavailableReason({
+        platform: 'bilibili',
+        handle: '12345',
+        liveVideoId: null,
+        embedChannel: false,
+      }),
+      'bilibili_blocked',
+    );
+  });
+
+  it('★ Twitch（这一层拿不到 origin）→ 仍然是旧值 platform，而不是 null', () => {
+    /*
+     * ⚠️ 这里**不能**返回 null：null 在旧约定里等于"能嵌"，会让 `LiveCard` 落到
+     *    `KEYS['no_id']`，于是渲染脚本里那一行被说成"还没有记录直播视频 ID"——
+     *    那是**更错**的一句话，并且会让 `liverender.tsx` 里那条断言红掉。
+     *    真值（Twitch 缺 `origin` 就静默不播）在 `liveEmbedDecision()` 里，reason = `'no_origin'`。
+     *
+     * ★ 这一格**故意保持归到 `'platform'`**（t24 只把 B站 那一格直传）：
+     *   它正是 `live.noEmbedPlatform`（通用句）**不能删**的理由 —— 删了它，
+     *   这一档就没有句子可指、只能指向 B站 那句 = 制造一句新的假话。
+     */
+    assert.equal(
+      liveEmbedUnavailableReason({
+        platform: 'twitch',
+        handle: 'Someone',
+        liveVideoId: null,
+        embedChannel: false,
+      }),
+      'platform',
+    );
+    // 而**真值**必须能从新接口拿到（t22 靠它渲染"确定不可嵌 → 明确外链"）
+    assert.deepEqual(
+      liveEmbedDecision(
+        { platform: 'twitch', handle: 'Someone', liveVideoId: null, embedChannel: false },
+        '',
+      ),
+      { embed: false, reason: 'no_origin' },
+    );
+  });
+});
+
+/**
+ * `parseLiveLink` —— 唯一允许的"解析"，**纯字符串、不发任何网络请求**。
+ *
+ * ⚠️ 为什么不能复用 `parseVideoUrl`：它的 twitch 分支只认 `/videos/<数字>`
+ *    （录像页），而这里要的是**频道**页 `twitch.tv/<用户名>` ——
+ *    复用它会把合法的 Twitch 直播链接判成"认不出来"。
+ */
+describe('★ parseLiveLink：认得出 / 判不出平台 / 完全认不出', () => {
+  it('六种链接各自归一化成 (平台, 标识)', () => {
+    assert.deepEqual(parseLiveLink('https://www.twitch.tv/Someone'), {
+      platform: 'twitch',
+      handle: 'Someone',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('twitch.tv/Someone'), {
+      platform: 'twitch',
+      handle: 'Someone',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('https://www.youtube.com/@Someone'), {
+      platform: 'youtube',
+      handle: '@Someone',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv'), {
+      platform: 'youtube',
+      handle: 'UCabcdefghijklmnopqrstuv',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('https://live.bilibili.com/12345'), {
+      platform: 'bilibili',
+      handle: '12345',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('https://space.bilibili.com/12345'), {
+      platform: 'bilibili',
+      handle: '12345',
+      liveVideoId: null,
+    });
+  });
+
+  it('★ 指向"某一场"的视频链接：有 liveVideoId、**没有**频道标识', () => {
+    assert.deepEqual(parseLiveLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), {
+      platform: 'youtube',
+      handle: '',
+      liveVideoId: 'dQw4w9WgXcQ',
+    });
+  });
+
+  it('★ 裸标识：是标识、但**判不出平台**（platform 为 null，与"完全认不出"不是一回事）', () => {
+    assert.deepEqual(parseLiveLink('@Someone'), {
+      platform: null,
+      handle: '@Someone',
+      liveVideoId: null,
+    });
+    assert.deepEqual(parseLiveLink('  Someone  '), {
+      platform: null,
+      handle: 'Someone',
+      liveVideoId: null,
+    });
+  });
+
+  it('★ 完全认不出 → null（私人列表允许保存，公开名单给 400）', () => {
+    for (const bad of [
+      '',
+      '   ',
+      'javascript:alert(1)',
+      'ftp://files.example.com/x',
+      'https://example.com/some/stream',
+      '不是链接也不是标识',
+      'twitch.tv/videos/1234567890',
+      'https://www.youtube.com/watch?v=short',
+      'https://www.youtube.com/user/someone',
+    ]) {
+      assert.equal(parseLiveLink(bad), null, `${bad} 应当判为"完全认不出"`);
+    }
+  });
+
+  it('保留段不会被当成频道名（`twitch.tv/videos` 不是一个人）', () => {
+    assert.equal(parseLiveLink('https://twitch.tv/videos'), null);
+    assert.equal(parseLiveLink('https://twitch.tv/directory'), null);
+  });
+
+  it('%40 形式的 @ 也能解出来（链接被二次转义过）', () => {
+    assert.deepEqual(parseLiveLink('https://www.youtube.com/%40Someone'), {
+      platform: 'youtube',
+      handle: '@Someone',
+      liveVideoId: null,
+    });
   });
 });

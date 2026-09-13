@@ -1,12 +1,13 @@
 import type { CalendarEventInput } from '@mcsr/shared/calendar';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useSearchParams } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { CalendarForm, emptyCalendarDraft } from '@/components/CalendarForm';
 import { Notice } from '@/components/Form';
-import { submitCalendarEvent } from '@/lib/api';
+import { createCalendarEventDirect, submitCalendarEvent } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
+import { directWriteNotice } from '@/lib/directWriteNotice';
 
 /**
  * 把 `?date=2026-11-14` 变成一个"预填了日期的草稿"。
@@ -67,6 +68,11 @@ export function CalendarSubmit() {
   // 留着的理由是它是**服务端那道闸门的镜像**：能力收紧的那天，
   // 界面会自动跟着收紧，而不是让用户填完一整张表再拿到 403。
   const canSubmit = useCan('calendar.submit');
+  /**
+   * 需求②（t14）：有 `content.author` 的人才给「直接发布」。
+   * ⚠️ 能力名从矩阵读 —— 页面里**不写"谁是编辑"**（见 permissions.ts 的头注释）。
+   */
+  const canAuthor = useCan('content.author');
 
   /*
    * ⚠️ 只在**第一次渲染时**算一次，之后 `?date=` 不再影响表单。
@@ -80,6 +86,9 @@ export function CalendarSubmit() {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [done, setDone] = useState<{ revision: number } | null>(null);
+  /** 直编（需求②）的结果提示 —— 与 `failure` **分开存**，两者可能同时存在。 */
+  const [directNotice, setDirectNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const navigate = useNavigate();
 
   async function onSubmit(input: CalendarEventInput) {
     setFailure(null);
@@ -94,6 +103,31 @@ export function CalendarSubmit() {
        * lib/auth.tsx 的 apiErrorText 里按 `code` 分派（那是错误码契约测试守着的），
        * 这里再判一次就等于有了第二份规则，而两份规则分叉时不会有任何报错。
        */
+      setFailure(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 「直接发布」（需求②）—— 新活动**直接上架**，不进审核队列。
+   *
+   * ⚠️ 成功后**不留在这个页面**：与提审不同 —— 提审完要去「我的提交」看进度，
+   *    而直编已经生效了，用户下一步是去看那条活动。留在原表单上会让人以为没提交成功。
+   * ⚠️ `liveRevisionUnchanged` 的文案判据走 `directWriteNotice`（与资料那边同一处）：
+   *    新建的直编一律 `false`，所以这里只会说"已发布"，但**不让页面自己判**
+   *    ——否则这一处又会变成第二份判据。
+   */
+  async function onSubmitDirect(input: CalendarEventInput) {
+    setFailure(null);
+    setBusy(true);
+    try {
+      const result = await createCalendarEventDirect(input);
+      setDirectNotice({ ok: true, text: directWriteNotice(result, t) });
+      globalThis.setTimeout(() => {
+        navigate(`/calendar/${encodeURIComponent(result.id)}`);
+      }, 800);
+    } catch (error) {
       setFailure(errorText(error));
     } finally {
       setBusy(false);
@@ -192,6 +226,10 @@ export function CalendarSubmit() {
       */}
       <p className="submitnote">{t('calendar.submitFlowNote')}</p>
 
+      {directNotice ? (
+        <Notice kind={directNotice.ok ? 'ok' : 'bad'}>{directNotice.text}</Notice>
+      ) : null}
+
       {failure ? <Notice kind="bad">{failure}</Notice> : null}
 
       <CalendarForm
@@ -200,6 +238,20 @@ export function CalendarSubmit() {
         busyLabel={t('submit.submitting')}
         busy={busy}
         onSubmit={onSubmit}
+        /*
+         * 「直接发布」**只对 `content.author` 传下去**（需求②）。
+         * ⚠️ 普通用户拿到的是 `undefined` ⇒ 那个按钮**根本不存在**，不是一个灰掉的按钮
+         *    （本仓一贯的立场：看不见比看得见点不动好）。
+         */
+        secondaryAction={
+          canAuthor
+            ? {
+                label: t('authoring.directPublish'),
+                busyLabel: t('submit.submitting'),
+                onSubmit: (input) => void onSubmitDirect(input),
+              }
+            : undefined
+        }
       />
     </>
   );

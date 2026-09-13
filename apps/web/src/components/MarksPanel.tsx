@@ -31,9 +31,18 @@ export function MarksPanel({
   resourceId,
   /** 公开的平均分，由详情接口带下来 */
   rating,
+  /**
+   * 公开的收藏数（需求⑤），同样由详情接口带下来。
+   *
+   * ⚠️ `?? 0` 是刻意的兜底：服务端字段就位之前这里是 `undefined`，而详情页
+   *    **总是**要显示这一格 ⇒ 不兜底就会渲染出 "undefined"。它不改变契约
+   *    （类型仍是必填 number），只是让字段缺席时退化成一个**诚实**的 0。
+   */
+  favoriteCount,
 }: {
   resourceId: string;
   rating: { average: number | null; count: number };
+  favoriteCount: number;
 }) {
   const { t } = useTranslation();
   const auth = useAuth();
@@ -44,10 +53,22 @@ export function MarksPanel({
   const [error, setError] = useState<string | null>(null);
   /** 评分聚合的本地覆盖：自己刚打完分就立刻反映在显示的平均分上 */
   const [liveRating, setLiveRating] = useState(rating);
+  /**
+   * 收藏数的本地覆盖（需求⑤，spec D5.7）。
+   *
+   * ⚠️ 判据与 `liveRating` **不同**，别照抄：评分要重算"分子分母"，
+   *    而收藏数只在**我这一票翻转**时 ±1 —— 所以它读的是上一次的我
+   *    （`marks?.favorite`）与这次的差，不是从头重算。
+   */
+  const [liveFavoriteCount, setLiveFavoriteCount] = useState(favoriteCount ?? 0);
 
   useEffect(() => {
     setLiveRating(rating);
   }, [rating]);
+
+  useEffect(() => {
+    setLiveFavoriteCount(favoriteCount ?? 0);
+  }, [favoriteCount]);
 
   useEffect(() => {
     if (!auth.user) {
@@ -86,6 +107,19 @@ export function MarksPanel({
       if (input.rating !== undefined) {
         setLiveRating((prev) => recompute(prev, input.rating ?? null, marks?.rating ?? null));
       }
+      /*
+       * 收藏数同理（需求⑤）：**只在我这一票翻转时** ±1。
+       * ⚠️ 比较的是"上一次的我"（`marks?.favorite`）与这次想设的值，
+       *    而不是无条件 +1 —— 否则连点两次收藏会把它加成 +2。
+       * ⚠️ `input.favorite === undefined`（比如只改备注）时**什么都不做**：
+       *    那种请求不改变收藏人数，动了就是撒谎。
+       */
+      if (input.favorite !== undefined) {
+        const wasFavorite = marks?.favorite ?? false;
+        if (input.favorite !== wasFavorite) {
+          setLiveFavoriteCount((prev) => Math.max(0, prev + (input.favorite ? 1 : -1)));
+        }
+      }
     } catch {
       setError(t('marks.saveFailed'));
     } finally {
@@ -98,6 +132,8 @@ export function MarksPanel({
       <section className="marks">
         <div className="marks__head">
           <RatingStars rating={liveRating} />
+          {/* 收藏数是**公开聚合**（spec D5.6）：未登录也显示 */}
+          <FavoriteCount count={liveFavoriteCount} />
         </div>
         <p className="muted">{t('marks.needLogin')}</p>
         <Link className="cta" to={`/login?next=${encodeURIComponent(`/resources/${resourceId}`)}`}>
@@ -115,6 +151,7 @@ export function MarksPanel({
     <section className="marks">
       <div className="marks__head">
         <RatingStars rating={liveRating} />
+        <FavoriteCount count={liveFavoriteCount} />
       </div>
 
       <div className="marks__row">
@@ -220,6 +257,45 @@ export function RatingStars({ rating }: { rating: { average: number | null; coun
       </span>
       <span className="rating__value">{rating.average.toFixed(1)}</span>
       <span className="rating__count">{t('marks.ratingCount', { count: rating.count })}</span>
+    </span>
+  );
+}
+
+/**
+ * 收藏数（需求⑤）。
+ *
+ * ⚠️ 它是**独立的一个小展示**，不复用 `RatingStars`、也不套 `RatingSummary` 的形状。
+ *    理由（spec D5.2 点名）：收藏数是**一个和**，不是"平均分 + 人数"；
+ *    套进那个形状之后，界面只能靠"`count > 0` 但 `average === null`"来反推
+ *    "这不是评分" —— 那就是在界面里**再写一份规则**，而它必然与真实语义漂移。
+ *
+ * ⚠️ 与卡片上那处**口径不同**，不要合并：卡片上 `0` 时**整块不渲染**（避免每张卡
+ *    挂一个 0），而详情页**总是**要显示 —— 0 的时候要说清楚是"还没有人收藏"，
+ *    而不是留白（留白与"这项数据没取到"看起来一样，spec D5.5）。
+ *
+ * ⚠️ 没有服务端数据时**整块不渲染**（`count === null` 为 `undefined` 的兜底），
+ *    而不是显示一个 0：那会是一句我们并不知道真假的话。
+ */
+export function FavoriteCount({ count }: { count: number | null | undefined }) {
+  const { t } = useTranslation();
+
+  // 拿不到值就什么都不说 —— "0" 是一个断言，"没有数据"不是
+  if (count === null || count === undefined) return null;
+
+  /*
+   * ⚠️ 0 与 >0 是**两句不同的话**（"还没有人收藏" vs "收藏 3"），
+   *    所以走两个分支而不是硬套一个模板。
+   * ⚠️ 星星做了 aria-hidden：句子本身已经说清数量，读屏再念一个"★"是噪音。
+   */
+  if (count <= 0) {
+    return (
+      <span className="marks__favcount marks__favcount--empty">{t('marks.noFavoriteYet')}</span>
+    );
+  }
+
+  return (
+    <span className="marks__favcount" title={t('marks.favoriteCount', { count })}>
+      <span aria-hidden="true">★</span> {t('marks.favoriteCount', { count })}
     </span>
   );
 }

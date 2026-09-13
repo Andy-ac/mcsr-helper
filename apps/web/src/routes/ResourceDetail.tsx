@@ -110,7 +110,7 @@ export function ResourceDetailPage() {
         </div>
       </header>
 
-      <MarksPanel resourceId={r.id} rating={r.rating} />
+      <MarksPanel resourceId={r.id} rating={r.rating} favoriteCount={r.favoriteCount} />
 
       <ModerationBar resource={r} />
 

@@ -354,6 +354,8 @@ function liveEventPayload(row: {
   stage: string | null;
   level: string | null;
   scope: string | null;
+  /** ③ 迁移 013 加的列。审核详情的"线上版本"读的就是这一行，漏掉它**不会报错**。 */
+  series_id: string | null;
   lang: string;
 }): EventPayload {
   return {
@@ -371,6 +373,15 @@ function liveEventPayload(row: {
     stage: row.stage,
     level: row.level,
     scope: row.scope,
+    /*
+     * ③ 系列。
+     *
+     * ⚠️⚠️ 这一份**手写的列→payload 映射**正是最容易漏的地方：漏掉它，
+     *    审核详情页的"线上版本"就没有系列（而不会有任何报错）——
+     *    审核员看到的线上侧与待审侧长得不一样，却说不清差在哪。
+     *    spec §4.6 点名过这一处。
+     */
+    seriesId: row.series_id ?? null,
     lang: row.lang,
   };
 }

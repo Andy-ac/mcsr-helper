@@ -1,11 +1,22 @@
 /**
- * 直播频道清单的数据层。
+ * 直播板块的数据层 —— **两份东西**，别混：
+ *
+ *   1. `live_channels` —— 编辑维护的**公开名单**（下面那群 `LiveChannel*` 函数）；
+ *   2. `user_live_links` —— 每个登录用户自己的**私人链接**（④，见文件末尾）。
+ *      它只给自己看、不进公开名单、不参与审核，两张表**互不写入**。
  *
  * 表结构和字段语义见 `packages/shared/src/live.ts` 的文件头。
- * 这里只管存取，不管"能不能嵌" —— 那是 `liveEmbedUrl()` 的事，
- * 而且**必须只有一份**（前端也要用它决定渲染什么）。
+ * 这里只管存取，不管"能不能嵌" —— 那是 `liveEmbedDecision()` 的事
+ * （现在只有 `liveEmbedUrl()` 那一层薄封装，**不要再复制一份判定**）。
  */
-import type { LiveChannelInput, LivePlatform } from '@mcsr/shared/live';
+import {
+  type LiveChannelInput,
+  type LivePlatform,
+  parseLiveLink,
+  type UserLiveLink,
+  type UserLiveLinkInput,
+  type UserLiveLinkPatch,
+} from '@mcsr/shared/live';
 import { newId } from './auth/tokens';
 import { getDb } from './db';
 
@@ -201,4 +212,174 @@ export function setLiveChannelStatus(
 
 export function deleteLiveChannel(id: string): boolean {
   return getDb().prepare('DELETE FROM live_channels WHERE id = ?').run(id).changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// ④ 私人链接（`user_live_links`）—— 每个函数**都带 userId**
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这一组的**每一条语句**都必须把 `user_id = ?` 写进 WHERE。
+ *    把"这是谁的行"交给路由去判断（先查出来再看 user_id）迟早会漏一处，
+ *    而漏一处就是"能看/能改别人的私人数据"。写在 SQL 里则漏不掉 ——
+ *    别人的行在这里**根本不存在**（这也是路由上"一律 404、绝不 403"的根据：
+ *    我们确实查不到它，而不是"查到了但不许"）。
+ *
+ * ⚠️ 这一组**不写审计**：私人、自有的数据，与收藏/备注/评分同一档
+ *    （`routes/marks.ts` 一个字都没提审计）。审计是给"谁动了**别人能看到的东西**"
+ *    准备的 —— 而这里连本人都只有自己能看。将来若出现滥用，手段是限流，不是审计。
+ */
+
+interface UserLiveLinkRow {
+  id: string;
+  user_id: string;
+  url: string;
+  platform: string | null;
+  handle: string | null;
+  live_video_id: string | null;
+  title: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * 行 → 对外形状。
+ *
+ * ⚠️ 同 `toChannel`：逐字段展开成普通对象字面量，不用 `{ ...row }` ——
+ *    node:sqlite 的行对象原型不是 `Object.prototype`，测试里的 `deepStrictEqual`
+ *    会比较原型（两边打印出来一样却判不相等）。
+ */
+function toUserLiveLink(row: UserLiveLinkRow): UserLiveLink {
+  return {
+    id: row.id,
+    url: row.url,
+    platform: row.platform === null ? null : (row.platform as LivePlatform),
+    handle: row.handle,
+    liveVideoId: row.live_video_id,
+    title: row.title,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+/**
+ * 用户输入的一条链接 → 要落库的三列（平台 / 标识 / 视频 ID）。
+ *
+ * ⚠️ 归一化只在这一处发生（POST 与 PATCH 共用它），所以"库里到底存了什么"
+ *    不可能因为走哪条路而不同。
+ * ⚠️ **解析失败不是错误**：认不出的链接照样存（platform / handle 为 NULL，
+ *    界面只给外链）—— 那是用户自己贴的链接，我们没有理由拒收（D4b.4）。
+ * ⚠️ `handle` 是空串时存 NULL：`watch?v=…` 这种"某一场直播"的链接里
+ *    本来就没有频道标识，存空串会让"有没有标识"变成一个假的真值。
+ */
+function deriveLinkFields(rawUrl: string): {
+  platform: LivePlatform | null;
+  handle: string | null;
+  liveVideoId: string | null;
+} {
+  const parsed = parseLiveLink(rawUrl);
+  if (!parsed) return { platform: null, handle: null, liveVideoId: null };
+  return {
+    platform: parsed.platform,
+    handle: parsed.handle === '' ? null : parsed.handle,
+    liveVideoId: parsed.liveVideoId,
+  };
+}
+
+/**
+ * 我的链接，新的在前。
+ *
+ * ⚠️ 第二键是 `id`：同一毫秒建的几行也要有**确定**的顺序 ——
+ *    只按 `created_at DESC` 排的话，并列行的顺序由 SQLite 自己决定，
+ *    表现是"刷新一次，两行换了位置"（和 `listLiveChannels` 同一个理由）。
+ */
+export function listUserLiveLinks(userId: string): UserLiveLink[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM user_live_links WHERE user_id = ? ORDER BY created_at DESC, id DESC')
+    .all(userId) as unknown as UserLiveLinkRow[];
+  return rows.map(toUserLiveLink);
+}
+
+/** 我的一条。**别人的行在这里就是 null**（路由据此回 404）。 */
+export function getUserLiveLink(id: string, userId: string): UserLiveLink | null {
+  const row = getDb()
+    .prepare('SELECT * FROM user_live_links WHERE id = ? AND user_id = ?')
+    .get(id, userId) as UserLiveLinkRow | undefined;
+  return row ? toUserLiveLink(row) : null;
+}
+
+export function createUserLiveLink(
+  userId: string,
+  input: UserLiveLinkInput,
+  now: number,
+): UserLiveLink {
+  const id = newId();
+  const derived = deriveLinkFields(input.url);
+
+  getDb()
+    .prepare(
+      `INSERT INTO user_live_links
+         (id, user_id, url, platform, handle, live_video_id, title, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      id,
+      userId,
+      input.url,
+      derived.platform,
+      derived.handle,
+      derived.liveVideoId,
+      input.title ?? null,
+      now,
+      now,
+    );
+
+  const created = getUserLiveLink(id, userId);
+  if (!created) throw new Error(`私人直播链接 ${id} 插入成功却读不回来`);
+  return created;
+}
+
+/**
+ * 改我的一条（`url` / `title`，只改传了的那些）。
+ *
+ * ⚠️ 改了 `url` 就**必须重解析**：平台/标识是 url 的函数，不重算的话
+ *    "改完链接、平台还是旧的"—— 而界面上那两样都会显示，且两边都不报错。
+ * ⚠️ 传 `title: null` 是**清空**（与"没传"不同），两个状态都要能表达。
+ * ⚠️ 不存在/不是自己的 → `not_found`（路由回 404），**没有**"别人的行"这条分支。
+ */
+export function updateUserLiveLink(
+  id: string,
+  userId: string,
+  patch: UserLiveLinkPatch,
+  now: number,
+): { ok: true; link: UserLiveLink } | { ok: false; reason: 'not_found' } {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT * FROM user_live_links WHERE id = ? AND user_id = ?')
+    .get(id, userId) as UserLiveLinkRow | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  const url = patch.url ?? row.url;
+  const title = patch.title === undefined ? row.title : patch.title;
+  const derived =
+    patch.url === undefined
+      ? { platform: row.platform, handle: row.handle, liveVideoId: row.live_video_id }
+      : deriveLinkFields(url);
+
+  db.prepare(
+    `UPDATE user_live_links SET
+       url = ?, platform = ?, handle = ?, live_video_id = ?, title = ?, updated_at = ?
+     WHERE id = ? AND user_id = ?`,
+  ).run(url, derived.platform, derived.handle, derived.liveVideoId, title, now, id, userId);
+
+  const updated = getUserLiveLink(id, userId);
+  if (!updated) throw new Error(`私人直播链接 ${id} 更新之后读不回来`);
+  return { ok: true, link: updated };
+}
+
+/** 删我的一条。删不到（不存在 / 不是自己的）返回 false ⇒ 路由回 404。 */
+export function deleteUserLiveLink(id: string, userId: string): boolean {
+  return (
+    getDb().prepare('DELETE FROM user_live_links WHERE id = ? AND user_id = ?').run(id, userId)
+      .changes > 0
+  );
 }

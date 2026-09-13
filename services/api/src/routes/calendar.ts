@@ -19,18 +19,25 @@
  */
 
 import { EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, SITE, type UserRole } from '@mcsr/shared';
-import { CalendarEventInputSchema } from '@mcsr/shared/calendar';
+import {
+  CalendarEventInputSchema,
+  CalendarSeriesInputSchema,
+  normalizeSeriesName,
+} from '@mcsr/shared/calendar';
 import { checkPermission } from '@mcsr/shared/permissions';
 import { Hono } from 'hono';
 import { type AuthVariables, requireAuth, requireCapability } from '../auth/middleware';
 import { newId } from '../auth/tokens';
 import {
   approveEvent,
+  createSeries,
   getEventRow,
   getPendingRevision,
   listEvents,
   listPublishedForIcs,
+  listSeries,
   rejectEvent,
+  renameSeries,
   reviseEvent,
   submitEvent,
   toCalendarEvent,
@@ -145,6 +152,14 @@ calendarRoute.get('/calendar', (c) => {
     level: oneOf(c.req.query('level'), EVENT_LEVELS),
     scope: oneOf(c.req.query('scope'), EVENT_SCOPES),
     stage: oneOf(c.req.query('stage'), EVENT_STAGES),
+    /*
+     * ③ 按系列筛（`?seriesId=`）。
+     *
+     * ⚠️ 这里**不做枚举校验**（不像上面三个维度）：它们校验的是"值在封闭集合里"，
+     *    而 seriesId 是一个 id —— 传一个不存在的 id 只会匹配不到任何事件，
+     *    那是**诚实**的结果；把它当成"不限"反而会给出"看起来筛了其实没筛"的一屏。
+     */
+    seriesId: c.req.query('seriesId') || null,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
@@ -155,6 +170,108 @@ calendarRoute.get('/calendar', (c) => {
     page,
     pageSize,
   });
+});
+
+// ---------------------------------------------------------------------------
+// 系列活动（③）
+//
+// ⚠️⚠️ **这一块必须留在 `/calendar/:id` 之前**：`/calendar/series` 是一个**字面量段**，
+//    而 `/calendar/:id` 会把 `series` 当成事件 id 吃掉 —— 那时
+//    `GET /api/calendar/series` 回的是 404 `not_found`，**看起来像"这个功能没做"**。
+//    Hono 按注册顺序匹配，不是按"更具体的优先"。
+//    （同一个坑在本仓写过注释：`routes/resources.ts:60`、`routes/videos.ts:134-148`。）
+// ---------------------------------------------------------------------------
+
+/**
+ * 系列列表 —— 日历页底部那个「系列活动」栏目的数据源。
+ *
+ * ⚠️ **不挂 `requireAuth`**：系列对匿名访客开放（§9-5 的裁决，用户原话
+ *    「系列赛事对于未登录的用户也可放开查看」）。**列表与搜索都放开**，不要只放开一个。
+ *
+ * ⚠️ 搜索**不在服务端**：系列是人眼能扫完的量级，`q` 由前端在这一份响应里过滤
+ *    （spec §4.5 / D3.9-(b)）。服务端再写一份匹配规则就是第二份会漂移的真相。
+ *
+ * ⚠️ `total` 是**系列数**，不是事件数 —— 同一屏里还会出现"场次数"，
+ *    两个数字混起来只会表现成"数字看起来很大"，不会报错。
+ */
+calendarRoute.get('/calendar/series', (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 200) || 200, 1), 200);
+  const items = listSeries(Date.now(), limit);
+  return c.json({ items, total: items.length });
+});
+
+/**
+ * 新建系列。**只有 editor 及以上**（`content.author`，§9-4 的裁决）。
+ *
+ * ⚠️ 为什么不新开一个能力（比如 `series.manage`）：`content.author` 就是
+ *    "直接写内容"那条策略（② 的直编），"建系列"正是它的一种。单独开一个名字
+ *    只会让矩阵多一条**永远同进同退**的行（见 spec §3.1 对这类拆分的批评）。
+ */
+calendarRoute.post('/calendar/series', requireCapability('content.author'), async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = CalendarSeriesInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const now = Date.now();
+  const result = createSeries(parsed.data, user.id, now);
+  if (!result.ok) {
+    /*
+     * 重名沿用既有错误码 + 机器可读的 reason（`invalid_state` + `series_name_taken`）：
+     * **不新增错误码**，所以 `error-codes.test.ts` 的 KNOWN_CODES 不用改（spec §7.4）。
+     */
+    return c.json({ error: 'invalid_state', reason: 'series_name_taken' }, 409);
+  }
+
+  writeAudit({
+    actorId: user.id,
+    action: 'series.create',
+    entityType: 'calendar_series',
+    entityId: result.series.id,
+    reason: result.series.name,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  return c.json({ ok: true, series: result.series }, 201);
+});
+
+/** 改系列名。权限与新建相同（§9-4：改名只推荐给 editor 及以上）。 */
+calendarRoute.patch('/calendar/series/:id', requireCapability('content.author'), async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = CalendarSeriesInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const id = c.req.param('id');
+  const result = renameSeries(id, parsed.data);
+  if (!result.ok) {
+    if (result.reason === 'name_taken') {
+      return c.json({ error: 'invalid_state', reason: 'series_name_taken' }, 409);
+    }
+    return c.json({ error: 'not_found' }, 404);
+  }
+
+  writeAudit({
+    actorId: user.id,
+    action: 'series.rename',
+    entityType: 'calendar_series',
+    entityId: id,
+    // 审计要回答"把什么改成了什么"，所以两个名字都记 —— 只记新的那个等于没记
+    reason: `${result.previousName} → ${normalizeSeriesName(parsed.data.name) ?? parsed.data.name}`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now: Date.now(),
+  });
+
+  return c.json({ ok: true, id, name: normalizeSeriesName(parsed.data.name) ?? parsed.data.name });
 });
 
 calendarRoute.get('/calendar/:id', (c) => {
@@ -220,7 +337,14 @@ calendarRoute.post('/calendar', requireAuth, requireCapability('calendar.submit'
     now,
   });
 
-  return c.json({ id, revision: 1, status: 'pending' }, 201);
+  /*
+   * ⚠️ `liveRevisionUnchanged: true`（spec §3.2b 的硬性契约）：提审**新建**时
+   *    "线上没有这一条"，所以"线上那一版一个字都没变"成立。
+   *    ⚠️ 这条以前**没有返回**，而漏写不会有任何编译错误（响应是内联字面量、
+   *    前端的类型是自己手写的），表现是日历编辑页永远说不了"线上仍是旧版"。
+   *    有一条测试守着这个字段的**存在性**（不是只比真值 —— `undefined` 会冒充 false）。
+   */
+  return c.json({ id, revision: 1, status: 'pending', liveRevisionUnchanged: true }, 201);
 });
 
 calendarRoute.patch('/calendar/:id', requireAuth, async (c) => {
@@ -270,7 +394,13 @@ calendarRoute.patch('/calendar/:id', requireAuth, async (c) => {
     now,
   });
 
-  return c.json({ id: row.id, revision: result.revision, status: 'pending' });
+  // ⚠️ 提审修改：线上仍是旧版 ⇒ true（§3.2b；日历的 PATCH 以前也不返回它）
+  return c.json({
+    id: row.id,
+    revision: result.revision,
+    status: 'pending',
+    liveRevisionUnchanged: true,
+  });
 });
 
 // ---------------------------------------------------------------------------

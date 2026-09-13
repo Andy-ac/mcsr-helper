@@ -11,27 +11,63 @@
  *   · **不是**一场具体的直播。直播每开一次就换一个视频 ID，
  *     记"某一场"意味着每周都要有人来更新，而那是这类页面烂掉的典型方式。
  *
+ * ⚠️ 只有 `liveVideoId` 那一个字段是"给现在这场用的"，它**会变** ——
+ *    界面上必须说清这一点（见 `LiveChannelInputSchema.liveVideoId` 的注释）。
+ *
  * ---------------------------------------------------------------------------
- * ⚠️ 三个平台的嵌入能力不一样，而且**故意不一样**
+ * ⚠️ 三个平台的嵌入能力**实测过**，而且结论不一样（D4b.9 / F32d）
  * ---------------------------------------------------------------------------
- * | 平台 | 现在怎么处理 | 为什么 |
+ * | 平台 | 现在怎么处理 | 依据（2026-09-13，大陆 + 香港两条网络各自测） |
  * |---|---|---|
- * | YouTube | 有 `liveVideoId` 就嵌；开了 `embedChannel` 就按频道嵌 | 视频 ID 嵌入是现成能力；频道嵌入见下 |
- * | Twitch | **只记录、不嵌** | 用户明说"还没测试"。嵌了会是一个黑框，而黑框看起来像我们的 bug |
- * | B站  | **只记录、不嵌** | 直播嵌入没有官方支持的证据（和 B站 视频嵌入不是一回事） |
+ * | YouTube | 有 `liveVideoId` 就嵌；开了 `embedChannel` 就按频道嵌 | 两条路都不带 `frame-ancestors` |
+ * | Twitch  | **嵌**（`player.twitch.tv/?channel=…&parent=…`） | 实测回 `frame-ancestors https://mcsrhelper.com` ⇒ 可嵌，**但必须带对 `parent`** |
+ * | B站直播间 | **只记录、不嵌** | 实测 `x-frame-options: SAMEORIGIN`（平台自己禁止被嵌） |
  *
- * ⚠️ **没有默认采用频道级嵌入** (`/embed/live_stream?channel=<频道ID>`)。
- *    它能让"记录频道"做到零维护 —— 点一次频道，永远显示当前直播 ——
- *    但三条理由压住了它：
+ * ⚠️ 这个文件头**曾经写着**"Twitch 还没测试，所以只记录不嵌" —— 那句话**已经过期**，
+ *    而且它的两个方向都有害：既让 Twitch 永远没有播放器（用户明确要求要嵌），
+ *    又把"**本机连不上**"说成"**还没验证**"（换一条网络就测到了）。
+ *    ⇒ 所以**没有"未验证"这一档**（词条 `live.noEmbedUntested` 不存在）。
  *
- *      1. 证据互相矛盾：2026 年还有人在推荐它，同时有"频道直播嵌入代码失效了"
- *         和"永久直播 URL 是否还工作"两类报告；
- *      2. 它的失败样子是**一个纯黑框**，正是"看起来像网络问题"的那一类；
- *      3. **没有正在直播的频道时它本来就不显示任何东西** ——
- *         所以在没有真人开播的情况下**无法验证**它到底是好是坏。
+ * ⚠️ **两个词条都在，各说一件事 —— 不要写成"后者取代前者"**（2026-09-13 captain 裁定）：
+ *    · `live.noEmbedBilibili` = **B站 那一档**（确定态：平台自己禁止被嵌）；
+ *    · `live.noEmbedPlatform` = **通用那一档**（`'no_origin'`：拿不到 `origin` 时
+ *      Twitch 拼不出 `parent`）—— 它的**值**已经从"还没验证过"（假话）改成
+ *      "这个平台在这里不能嵌入播放"（真话），但**键本身不是多余的**。
+ *    ⇒ 删掉后者会让 `'no_origin'` **没有句子可指**，只能指向 B站 那句
+ *      = **制造一句新的假话**。详见 `liveEmbedUnavailableReason` 的映射说明。
  *
- *    所以它做成了一个**每行可开的开关**：等确认某个 streamer 正在开播时
- *    点一下就能试，试成了再推广，试不成也不影响别的行。
+ * ---------------------------------------------------------------------------
+ * ★ 两态：**能嵌** / **确定不可嵌**（没有第三态）
+ * ---------------------------------------------------------------------------
+ * `liveEmbedDecision()` 是**唯一**的判定入口（`liveEmbedUrl` 是它的薄封装）。
+ * 它只回答两件事之一：`{ embed: true, url }` 或 `{ embed: false, reason }`。
+ * `reason` 说明**为什么确定嵌不出来** —— 每一档在界面上都有各自的说法，
+ * 因为它们对用户意味着不同的下一步（D4b.9 决定 2）：
+ *
+ *   · `'bilibili_blocked'` —— B站直播间：平台自己禁止被 iframe。
+ *     界面上必须**明说**「B 站不允许把直播间嵌进别的网站」+ 外链，
+ *     绝不静默黑框、也不写"加载中"（那是在撒谎）。
+ *   · `'no_id'`            —— 没有可嵌的东西（没记视频 ID、没开频道嵌入）。
+ *   · `'not_channel_id'`   —— 开了频道嵌入，但标识不是 `UC…` 频道 ID：
+ *     那个开关**永远不生效**，而用户以为自己开了（最难排查的一类）。
+ *   · `'no_origin'`        —— 拿不到嵌入页面的域名（见下：Twitch 依赖它）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ `origin` 是**必填且承重**的参数（D4b.9 决定 1）
+ * ---------------------------------------------------------------------------
+ * Twitch 的 `frame-ancestors` 是**按传入的 `parent` 动态生成**的：
+ *   · 生产**必须**传 `mcsrhelper.com`、本地 dev **必须**传 `localhost`；
+ *   · **传错就拒播，而且是静默的**（播放器区域什么都不显示）——
+ *     正是本仓最怕的那类失败（看起来像网络问题）；
+ *   · ⇒ 调用方**必须**把页面自己的 host 传进来（浏览器里就是
+ *     `globalThis.location.hostname`），且它必须与页面 host 同源；
+ *   · ⇒ 缺 `origin` 时**宁可不嵌**（返回 null，界面走外链文案），
+ *     也不要发一个注定被拒的请求。这一条在 `'no_origin'` 那一档里变成了**类型**，
+ *     而不是一句口头约定。
+ *
+ * ⚠️ **没有默认采用 YouTube 频道级嵌入**（`/embed/live_stream?channel=<频道ID>`）作为
+ *    "零维护"的默认方案：它的失败样子是一个纯黑框，而且频道没在播时它本来就不显示
+ *    任何东西。所以它仍然是一个**每行可开的开关**（`embedChannel`，默认关）。
  */
 import { z } from 'zod';
 import { LIVE_PLATFORMS, type LivePlatform } from './constants';
@@ -48,43 +84,283 @@ export const LIVE_HANDLE_MAX = 120;
 export const LIVE_NOTE_MAX = 200;
 
 /**
+ * 用户**原样粘贴**的那条链接的长度上限（私人列表的 `url`）。
+ *
+ * ⚠️ 给的是一个"粘贴错误"的兜底，不是平台的限制：真实链接都在 200 字符以内，
+ *    而几百字符的输入基本是"复制的时候多选了一大段"。上限放在这里是为了让
+ *    400 出现得**早**（而不是存进库里，等界面渲染时才发现那条链接没法用）。
+ */
+export const LIVE_URL_MAX = 500;
+
+/** 11 位 YouTube 视频 ID 的形状（和 `VIDEO_ID_PATTERNS.youtube` 同一条规则）。 */
+const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+
+/** `UC…` 形式的 YouTube 频道 ID。频道级嵌入只认这一种。 */
+const YOUTUBE_CHANNEL_ID = /^UC[A-Za-z0-9_-]{22}$/;
+
+/** B站 的直播间号 / 空间号：老式的纯数字。 */
+const BILIBILI_NUMERIC_ID = /^\d+$/;
+
+/**
+ * 合法的**裸标识**（没有平台前缀那一段的那一类输入）。
+ *
+ * ⚠️ 它是**白名单**，不是"只要不含空白就算"：标识是平台自己的东西，但三个平台
+ *    的标识都是 **ASCII 的字母、数字加 `_` / `.` / `-`**（`@handle` 那个 `@`
+ *    只允许出现在开头）。所以"一句没有空格的中文"**不是**标识 ——
+ *    那是乱码（F29 定稿里 `refine` 要挡的正是它），而放它进来会让
+ *    `handle` 里出现一串谁也用不了的东西，界面上却显示得像加成功了。
+ */
+const BARE_HANDLE = /^@?[A-Za-z0-9._-]+$/;
+
+/**
+ * `twitch.tv/<这一段>` 里**不是频道名**的那几个保留段。
+ *
+ * ⚠️ 没有它的话 `twitch.tv/videos` 会被当成一个叫 "videos" 的频道 ——
+ *    名字看起来合理、链接拼出来也能打开，所以这个错误不会被任何人发现。
+ */
+const TWITCH_RESERVED_SEGMENTS = new Set([
+  'videos',
+  'directory',
+  'downloads',
+  'settings',
+  'subscriptions',
+  'inventory',
+  'wallet',
+  'drops',
+  'p',
+]);
+
+/**
  * 频道标识的形状。
  *
  * ⚠️ 刻意**宽松**：频道标识是平台自己的东西，YouTube 有 `UC...` 的老式 ID、
  *    `@handle` 的新式写法，Twitch 是用户名。写死一个正则会让"这个人加不进来"，
- *    而他要做的只是贴对一行字。这里只挡住明显不是标识的东西
- *    （空白、URL、超长），并且**不允许 URL** —— 那是"把两种东西混成一个字段"
- *    的经典错误（链接和标识的拼接方式不同，混在一起之后没法拼对）。
+ *    而他要做的只是贴对一行字。
+ *
+ * ★ 2026-09-13 定稿（F29 = **(ii) 输入宽松、存储严格**）：这一栏**同时接受**
+ *   「标识」和「频道页链接」两种输入 —— 编辑把 `https://www.youtube.com/@Someone`
+ *   整条粘进来是**最常见**的动作，逼他手工截出后半段只会换来错值。
+ *   服务端（和下面的 `.transform()`）用 `parseLiveLink()` 归一化后**只落库标识**。
+ *
+ *   ⇒ **不变量没变**：`handle` 列里**永远是标识**（链接由我们按平台拼出来）。
+ *     这个 schema 守的是**存储**，不是输入。
+ *   ⇒ 也**没有**"独立的 `url` 字段 + 恰有一个"那套（被否决的 (i) 方案）：
+ *     两个字段表达一件事、还要跨字段规则与一套新错误码，收益为零。
+ *
+ * ⚠️ 括号里那两句话原来写的是"不允许 URL/链接" —— **已经过期**，别再照着推理。
  */
 const HandleSchema = z
   .string()
   .trim()
   .min(1, { message: '需要频道标识' })
   .max(LIVE_HANDLE_MAX)
-  .refine((v) => !/^https?:\/\//i.test(v), {
-    message: '这里填频道标识（例如 @Someone），不是链接 —— 链接由我们按平台拼出来',
+  .refine((v) => parseLiveLink(v) !== null, {
+    message:
+      '这里填频道标识（例如 @Someone、UC 开头那串），或者直接粘**频道页**的链接 —— ' +
+      '既不是标识、也不是我们能认出来的频道链接（比如指向别的网站的链接）不行',
   })
   .refine((v) => !/\s/.test(v), { message: '频道标识里不能有空格' });
 
-export const LiveChannelInputSchema = z.object({
-  platform: z.enum(LIVE_PLATFORMS),
-  handle: HandleSchema,
-  displayName: z.string().trim().min(1, { message: '需要名字' }).max(LIVE_NAME_MAX),
-  note: z.string().trim().max(LIVE_NOTE_MAX).nullish(),
+/**
+ * 从用户粘贴的东西里解析出「平台 / 频道标识 / 视频 ID」。
+ *
+ * ★ 这是**唯一**允许的"解析"，而且**纯字符串处理、绝不产生任何网络请求**
+ *   （和 `parseVideoUrl` 同一条铁律）。
+ *
+ * ⛔ **不要改成复用 `parseVideoUrl`**（`constants.ts:284-289`）：它的 twitch 分支
+ *    只认 `/videos/<数字>`（那是**录像页**），而这里要的是**频道**页
+ *    `twitch.tv/<用户名>` —— 复用它会把合法的 Twitch 直播链接判成"认不出来"。
+ *
+ * ---------------------------------------------------------------------------
+ * 返回值（三种，别混）
+ * ---------------------------------------------------------------------------
+ *   · `null`                        —— **完全认不出**（既不是能识别的链接、也不是合法的裸标识）。
+ *     · 私人列表**允许保存**这样的输入（存原样 `url`、platform/handle 留 NULL，界面只给外链，
+ *       不报错）—— 用户贴一条我们不认识的链接**不是错误**；
+ *     · 公开名单（编辑维护的名单）则给 **400 `invalid_input`**（沿用既有错误码，不新增）。
+ *   · `{ platform: null, handle: '…' }` —— **是裸标识，但判不出平台**（如 `@Someone`）。
+ *     它**只**会出现在私人列表那一侧（存裸串、不给播放器）；公开名单那侧不会落到这一档 ——
+ *     编辑必须显式选 `platform`，而链接里的平台要与它校验一致。
+ *     ⚠️ 所以 `platform: null` 与整个返回值 `null` **不是一回事**。
+ *   · `{ platform, handle, liveVideoId }` —— 认出来了。`handle` **一律是归一化后的标识**
+ *     （绝不落链接）；`liveVideoId` 只在"这条链接指向某一场视频"时才有值
+ *     （例如 YouTube 正在直播的 `watch?v=…` ⇒ 有 ID ⇒ 可嵌），
+ *     而那时**没有**频道标识（链接里根本没有它）⇒ `handle` 是空串。
+ *
+ * ★ 为什么要放在 shared：前端要**逐字反馈**（贴错了当场说）、服务端要**权威重解析**
+ *   （前端不是安全边界）—— 两处各写一份必然漂移（同 `VideoForm.tsx` 用
+ *   `parseVideoLink` 的模式）。
+ */
+export function parseLiveLink(
+  raw: string,
+): { platform: LivePlatform | null; handle: string; liveVideoId: string | null } | null {
+  const input = raw.trim();
+  if (!input) return null;
 
-  /**
-   * 可选：当前（或最近一场）直播的**视频 ID**。有它才嵌。
-   *
-   * ⚠️ 它会变。所以界面上必须说清"这是给现在这场用的"，而不是暗示它是频道的属性 ——
-   *    否则下个月它会变成一个指向旧直播的死链，而没人会想到需要更新它。
+  /*
+   * ① 带协议的输入。**只认 http(s)** —— `javascript:` / `data:` / `ftp:` 之类
+   *    既不是标识也不是我们认识的链接，一律按"认不出"处理（返回 null）。
+   *    这里挡的是**存进库里的字符串**：它将来会被放进 `href`，而白名单比黑名单可靠。
    */
-  liveVideoId: z.string().trim().max(64).nullish(),
+  if (/^[a-z][a-z0-9+.-]*:/i.test(input)) {
+    if (!/^https?:\/\//i.test(input)) return null;
+    try {
+      return fromLiveUrl(new URL(input));
+    } catch {
+      return null;
+    }
+  }
 
-  /** 见文件头：YouTube 频道级嵌入的试验开关。默认关。 */
-  embedChannel: z.boolean().default(false),
+  /*
+   * ② 没写协议但明显是链接（`twitch.tv/Someone`、`youtube.com/@x`、`www.…`）。
+   *    很多人从地址栏复制时会把 `https://` 去掉，而那也是"一条频道页链接"。
+   */
+  if (/^www\./i.test(input) || input.includes('/')) {
+    try {
+      return fromLiveUrl(new URL(`https://${input}`));
+    } catch {
+      return null;
+    }
+  }
 
-  sortOrder: z.number().int().min(0).max(9999).default(100),
-});
+  /*
+   * ③ 剩下的是裸标识：判不出平台，但仍然是一个合法的标识（`platform: null`）。
+   *    ⚠️ 带点号也算标识（`@mk.hd` 是真实的 YouTube handle），所以这里
+   *       **不能**看到 `.` 就当域名 —— 那会把合法的标识判成"坏链接"。
+   *    ⚠️ 反过来，`BARE_HANDLE` 是白名单：一句中文（例如"不是链接也不是标识"）
+   *       没有空格，但它**不是标识** ⇒ 返回 null（认不出）。这一条很重要 ——
+   *       否则"乱码"会被当成一个合法的裸标识存进库里。
+   */
+  return BARE_HANDLE.test(input) ? { platform: null, handle: input, liveVideoId: null } : null;
+}
+
+/** 一个 URL → 归一化结果。认不出的主机 / 形状不认识的路径都返回 null。 */
+function fromLiveUrl(
+  url: URL,
+): { platform: LivePlatform; handle: string; liveVideoId: string | null } | null {
+  const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+  const segments = url.pathname.split('/').filter(Boolean).map(decodeSegment);
+  const first = segments[0] ?? '';
+
+  if (host === 'twitch.tv' || host === 'm.twitch.tv') {
+    // 频道页只有一段（`/Someone`）；`/videos/123` 是录像、`/directory` 是目录
+    if (segments.length !== 1) return null;
+    if (!first || TWITCH_RESERVED_SEGMENTS.has(first.toLowerCase())) return null;
+    return { platform: 'twitch', handle: first, liveVideoId: null };
+  }
+
+  if (host === 'youtube.com' || host === 'm.youtube.com') {
+    // `youtube.com/@handle`
+    if (segments.length === 1 && first.startsWith('@') && first.length > 1) {
+      return { platform: 'youtube', handle: first, liveVideoId: null };
+    }
+    // `youtube.com/channel/UC…`（老的频道 ID）
+    if (first === 'channel' && YOUTUBE_CHANNEL_ID.test(segments[1] ?? '')) {
+      return { platform: 'youtube', handle: segments[1] ?? '', liveVideoId: null };
+    }
+    /*
+     * `youtube.com/watch?v=…` —— **正在直播的那一场**。
+     * ⚠️ 这条链接里**没有频道标识**（视频 ID 换一场就变），所以 `handle` 是空串：
+     *    存进去的是一个"可嵌的视频"，而不是一个频道。
+     */
+    if (first === 'watch') {
+      const v = url.searchParams.get('v') ?? '';
+      return YOUTUBE_VIDEO_ID.test(v) ? { platform: 'youtube', handle: '', liveVideoId: v } : null;
+    }
+    return null;
+  }
+
+  // B站：直播间号（`live.bilibili.com/12345`）与空间号（`space.bilibili.com/12345`）
+  if ((host === 'live.bilibili.com' || host === 'space.bilibili.com') && segments.length === 1) {
+    return BILIBILI_NUMERIC_ID.test(first)
+      ? { platform: 'bilibili', handle: first, liveVideoId: null }
+      : null;
+  }
+
+  return null;
+}
+
+/** 路径段里可能有 `%40` 这种转义（`@` 很常见），解不开就按原样用。 */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/**
+ * 编辑维护的公开名单的入参。
+ *
+ * ★ 归一化在 `.transform()` 里做**唯一一次**，所以 `POST /api/live` 与
+ *   `PATCH /api/live/:id` 不可能各写一份、也不可能漂移；前端的表单校验
+ *   （`LiveManagePanel` 跑同一个 schema）与它拿到的结果也逐字一致。
+ */
+export const LiveChannelInputSchema = z
+  .object({
+    platform: z.enum(LIVE_PLATFORMS),
+    handle: HandleSchema,
+    displayName: z.string().trim().min(1, { message: '需要名字' }).max(LIVE_NAME_MAX),
+    note: z.string().trim().max(LIVE_NOTE_MAX).nullish(),
+
+    /**
+     * 可选：当前（或最近一场）直播的**视频 ID**。有它才嵌。
+     *
+     * ⚠️ 它会变。所以界面上必须说清"这是给现在这场用的"，而不是暗示它是频道的属性 ——
+     *    否则下个月它会变成一个指向旧直播的死链，而没人会想到需要更新它。
+     */
+    liveVideoId: z.string().trim().max(64).nullish(),
+
+    /** 见文件头：YouTube 频道级嵌入的试验开关。默认关。 */
+    embedChannel: z.boolean().default(false),
+
+    sortOrder: z.number().int().min(0).max(9999).default(100),
+  })
+  /*
+   * 链接里的平台必须与选中的平台**一致**。
+   *
+   * ⚠️ 不校验的话会出现"表里的 platform 与链接指向的平台不是一回事"：
+   *    界面上按 A 平台渲染、点进去是 B 平台，而两边都不报错。
+   * ⚠️ 错误码沿用既有的 `invalid_input`（不新增），形状是字段级 issue
+   *    （`field: 'handle'` + 中文 message），前端那套字段级渲染直接吃。
+   */
+  .superRefine((value, ctx) => {
+    const link = parseLiveLink(value.handle);
+    if (!link) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['handle'],
+        message: '这一栏要填**频道标识**或**频道页链接**（认不出的位置、或指向别的网站的链接不行）',
+      });
+      return;
+    }
+    if (!link.handle) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['handle'],
+        message:
+          '这条链接里只有"某一场直播"的视频 ID、没有频道 —— ' +
+          '频道页链接填这一栏，视频 ID 填「直播视频 ID」那一栏',
+      });
+      return;
+    }
+    if (link.platform !== null && link.platform !== value.platform) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['handle'],
+        message: `这条链接指向 ${link.platform}，与上面选的平台（${value.platform}）不一致`,
+      });
+    }
+  })
+  /*
+   * 归一化：**只落库标识**（输入宽松、存储严格）。
+   * ⚠️ 走到这里说明上面的 superRefine 已经通过，`parseLiveLink` 不可能为 null
+   *    （`?? value.handle` 是给"将来有人加了分支"兜底，而不是正常的路径）。
+   */
+  .transform((value) => ({
+    ...value,
+    handle: parseLiveLink(value.handle)?.handle ?? value.handle,
+  }));
 
 export type LiveChannelInput = z.infer<typeof LiveChannelInputSchema>;
 
@@ -101,6 +377,76 @@ export interface LiveChannel {
   createdAt: number;
   updatedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// ④ 私人列表（「我的链接」）—— 只给自己看，不进公开名单
+// ---------------------------------------------------------------------------
+
+/**
+ * 用户自己贴的一条链接（`user_live_links` 的一行）。
+ *
+ * ⚠️ 与公开名单（`LiveChannel`）是**两张独立的表**：不共享行、不共享
+ *    "平台 + 标识只能一条"的约束、也不互相写入。同一个人加两条同一个频道
+ *    是**允许**的（个人化模型下"判重"不再是问题），所以没有 `UNIQUE(platform, handle)`。
+ */
+export interface UserLiveLink {
+  id: string;
+  /** **用户原样粘贴的那条链接** —— 它是用户提供的数据，必须留下。 */
+  url: string;
+  /** 由 `parseLiveLink` 解析出来；**认不出就是 null**（那一行只给外链）。 */
+  platform: LivePlatform | null;
+  /** 归一化后的频道标识 —— **绝不会是链接**；认不出或只有视频 ID 时为 null。 */
+  handle: string | null;
+  /** 「现在这一场」的视频 ID（链接指向某一场视频时才有）。 */
+  liveVideoId: string | null;
+  /** 用户自己给这一行起的名字（可空）。 */
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * 私人列表的入参：**只收 `url` + 可选 `title`**。
+ *
+ * ⚠️ 平台与标识**全部由服务端推导**（`parseLiveLink`），客户端不许指定 ——
+ *    否则表里的 `platform` 会与链接实际指向的平台不一致，而两边都不报错。
+ * ⚠️ `.strict()`：多余的字段直接 400（不是被悄悄忽略）。
+ */
+export const UserLiveLinkInputSchema = z
+  .object({
+    url: z
+      .string()
+      .trim()
+      .min(1, { message: '需要一条链接' })
+      .max(LIVE_URL_MAX, { message: `链接太长了（最多 ${String(LIVE_URL_MAX)} 个字符）` }),
+    title: z.string().trim().max(LIVE_NAME_MAX).nullish(),
+  })
+  .strict();
+
+export type UserLiveLinkInput = z.infer<typeof UserLiveLinkInputSchema>;
+
+/**
+ * 改自己那一行：**改 `url` 或 `title`**，两个都可选，但至少要给一个。
+ *
+ * ⚠️ `title: null` 是**清空**（与"没传这个字段"不同）—— 两个状态都要能表达，
+ *    否则用户没法把之前起的名字去掉。
+ */
+export const UserLiveLinkPatchSchema = z
+  .object({
+    url: z
+      .string()
+      .trim()
+      .min(1, { message: '需要一条链接' })
+      .max(LIVE_URL_MAX, { message: `链接太长了（最多 ${String(LIVE_URL_MAX)} 个字符）` })
+      .optional(),
+    title: z.string().trim().max(LIVE_NAME_MAX).nullish(),
+  })
+  .strict()
+  .refine((value) => value.url !== undefined || value.title !== undefined, {
+    message: '至少要改一个字段（url 或 title）',
+  });
+
+export type UserLiveLinkPatch = z.infer<typeof UserLiveLinkPatchSchema>;
 
 /** 频道主页链接 —— 总是能拼出来，所以永远不会是一个死链。 */
 export function liveChannelUrl(platform: LivePlatform, handle: string): string {
@@ -122,64 +468,202 @@ export function liveChannelUrl(platform: LivePlatform, handle: string): string {
 }
 
 /**
- * 这一行**能不能嵌**，以及嵌什么。
+ * 私人列表那一行的「去原站看」链接。
  *
- * 返回 `null` = 不嵌（界面上就只显示"去频道看"的外链）。
- *
- * ⚠️ 三种返回 null 的情况，理由各不相同，而且都不会报错 —— 所以它们必须
- *    在这里被区分清楚，否则界面上会出现一个**空白的播放器框**：
- *
- *      1. **平台不支持**（Twitch / B站）：用户明确说 Twitch 没测过，
- *         而 B站 直播嵌入没有官方支持的证据。宁可不嵌，也不要一个黑框。
- *      2. **没给视频 ID，也没开频道嵌入**：最常见的情况。
- *      3. **开了频道嵌入但标识不是 `UC...` 形式的频道 ID**：
- *         `live_stream?channel=` 只认频道 ID，给它一个 `@handle`
- *         会得到一个**黑框**（而不是报错）。所以这里提前挡掉。
- *
- * ⚠️ `origin` 现在**用不到**（唯一会嵌的 YouTube 不需要 `parent`），
- *    但它是这个函数的公开契约的一部分：Twitch 的 `parent` 需要它，
- *    而把它去掉、等支持 Twitch 时再加回来，会让每一个调用点都动一次。
- *    所以留着，并在这里说明它为什么现在没人用 —— 而不是让下一个人
- *    看到一个"没人用的参数"然后删掉它。
- */ export function liveEmbedUrl(
-  channel: Pick<LiveChannel, 'platform' | 'handle' | 'liveVideoId' | 'embedChannel'>,
-  /*
-   * ⚠️ 抑制注释必须写在**报错的那一行**上（也就是这个参数），
-   *    写在函数声明上面是无效的 —— biome 会照报，而你会以为注释没生效。
-   *    这是它和 eslint 的一个用法差别：`// biome-ignore` 作用于**下一行**。
-   */
-  // biome-ignore lint/correctness/noUnusedFunctionParameters: origin 是给 Twitch 的 parent 留的位置，现在只有 YouTube 会嵌，所以暂时用不到（见上面的说明）
-  origin: string,
-): string | null {
-  // ① 平台：只有 YouTube 现在会真的嵌（见文件头那张表）
-  if (channel.platform !== 'youtube') return null;
+ * ⚠️ 判据只有一条，而且**必须**是这样：认得出平台**且**有标识 ⇒ 按平台拼
+ *    （那样永远是活的频道页）；否则 ⇒ 用**用户原样粘贴的那条**。
+ *    反过来写（一律拼平台链接）会在"解析不出来"那行上拼出一个死链，
+ *    而那正是私人列表允许保存的东西（D4b.4）。
+ */
+export function userLiveLinkUrl(link: Pick<UserLiveLink, 'url' | 'platform' | 'handle'>): string {
+  return link.platform && link.handle ? liveChannelUrl(link.platform, link.handle) : link.url;
+}
 
-  // ② 优先用具体的视频 ID —— 那是确定能播的那一种
-  const videoId = channel.liveVideoId?.trim();
-  if (videoId) {
-    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
-    return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
+// ---------------------------------------------------------------------------
+// 嵌入判定（两态，见文件头）
+// ---------------------------------------------------------------------------
+
+/**
+ * `liveEmbedDecision` 的输入形状。
+ *
+ * ⚠️ 比 `LiveChannel` 窄，是因为**私人列表那一行也要能判定**，而它没有
+ *    `displayName` / `status` 这些公开名单才有的字段。
+ * ⚠️ `embedChannel` 可选：它只对 YouTube 的频道级嵌入有意义，
+ *    私人列表那侧没有这个开关（默认就是关）。
+ */
+export type LiveEmbedChannel = Pick<LiveChannel, 'platform' | 'handle' | 'liveVideoId'> & {
+  embedChannel?: boolean;
+};
+
+/** 确定嵌不出来的原因（**没有"未验证"这一档**，见文件头）。 */
+export type LiveEmbedReason = 'bilibili_blocked' | 'no_id' | 'not_channel_id' | 'no_origin';
+
+/** 两态判定：能嵌（给地址）/ 确定不可嵌（给原因）。 */
+export type LiveEmbedDecision =
+  | { embed: true; url: string }
+  | { embed: false; reason: LiveEmbedReason };
+
+/**
+ * 这一行**能不能嵌**。
+ *
+ * ⚠️ 它**只返回两态**，而且"不能嵌"必须带一个原因 —— 因为界面上必须说清为什么。
+ *    一个空白的播放器框是**最坏**的结果：它看起来像网络问题，用户唯一能做的就是刷新。
+ *
+ * @param origin 嵌入页面自己的 host（浏览器里就是 `location.hostname`）。
+ *   **必填、且承重**：Twitch 的 `parent` 就是它，传错会**静默拒播**（见文件头）。
+ *   缺它就宁可不嵌。
+ */
+export function liveEmbedDecision(channel: LiveEmbedChannel, origin: string): LiveEmbedDecision {
+  // Twitch：**要嵌**，但 `parent` 必须等于嵌入页面的 host
+  if (channel.platform === 'twitch') {
+    const host = originHost(origin);
+    if (!host) return { embed: false, reason: 'no_origin' };
+    const name = channel.handle.trim();
+    /*
+     * 标识是空的时候不能嵌：`channel=` 空着会得到一个什么都不显示的播放器。
+     * ⚠️ 这一档走不到（我们自己的写入路径不会产出"twitch + 空标识"），
+     *    但**读路径不能假设写入路径是对的**（库里可能有历史行）。
+     */
+    if (!name || /\s/.test(name)) return { embed: false, reason: 'no_id' };
+    return {
+      embed: true,
+      url: `https://player.twitch.tv/?channel=${encodeURIComponent(name)}&parent=${encodeURIComponent(host)}`,
+    };
   }
 
-  // ③ 频道级嵌入：只认老的频道 ID（UC 开头、24 位），其余一律不嵌
-  if (!channel.embedChannel) return null;
-  if (!/^UC[A-Za-z0-9_-]{22}$/.test(channel.handle.trim())) return null;
-  return `https://www.youtube.com/embed/live_stream?channel=${encodeURIComponent(channel.handle.trim())}`;
+  /*
+   * B站直播间：**确定不可嵌**（`x-frame-options: SAMEORIGIN`，大陆 + 香港各自测到）。
+   * ⚠️ 这里返回 null 而不是拼一个看起来对的地址 —— 黑框比外链糟得多。
+   */
+  if (channel.platform === 'bilibili') return { embed: false, reason: 'bilibili_blocked' };
+
+  if (channel.platform === 'youtube') {
+    // ① 优先用具体的视频 ID —— 那是确定能播的那一种
+    const videoId = channel.liveVideoId?.trim();
+    if (videoId) {
+      if (!YOUTUBE_VIDEO_ID.test(videoId)) return { embed: false, reason: 'no_id' };
+      return { embed: true, url: `https://www.youtube.com/embed/${encodeURIComponent(videoId)}` };
+    }
+
+    // ② 频道级嵌入：只认老的频道 ID（UC 开头、24 位），其余一律不嵌
+    if (!channel.embedChannel) return { embed: false, reason: 'no_id' };
+    const handle = channel.handle.trim();
+    if (!YOUTUBE_CHANNEL_ID.test(handle)) return { embed: false, reason: 'not_channel_id' };
+    return {
+      embed: true,
+      url: `https://www.youtube.com/embed/live_stream?channel=${encodeURIComponent(handle)}`,
+    };
+  }
+
+  /*
+   * 平台不在 `LIVE_PLATFORMS` 里（类型上不可能，运行时可能 —— 库里的值不受类型约束）。
+   * 归到"平台自己禁止嵌入"这一档：它比"没记视频 ID"更接近实情。
+   */
+  return { embed: false, reason: 'bilibili_blocked' };
 }
 
 /**
- * 界面上要不要提示"这行的频道嵌入开关其实不生效"。
+ * 这一行**能不能嵌**，以及嵌什么。`liveEmbedDecision` 的薄封装。
  *
- * ⚠️ 存在的理由：`embedChannel` 打开了但标识不是频道 ID 时，
- *    `liveEmbedUrl` 会返回 null（宁可不嵌），而**用户以为自己开了**。
- *    没有这条提示，那是一个"设置了但没反应"的开关 —— 最难排查的一类。
+ * 返回 `null` = 不嵌（界面上就只显示"去频道看"的外链 + 一句为什么）。
+ * ⚠️ 新代码请直接用 `liveEmbedDecision()` —— 它把"为什么"也一起给你，
+ *    而这里丢掉的那个 `reason` 正是界面上最容易漏掉的一半。
  */
-export function liveEmbedUnavailableReason(
-  channel: Pick<LiveChannel, 'platform' | 'handle' | 'liveVideoId' | 'embedChannel'>,
-): 'platform' | 'no_id' | 'not_channel_id' | null {
-  if (channel.platform !== 'youtube') return 'platform';
-  if (channel.liveVideoId?.trim()) return null;
-  if (!channel.embedChannel) return 'no_id';
-  if (!/^UC[A-Za-z0-9_-]{22}$/.test(channel.handle.trim())) return 'not_channel_id';
-  return null;
+export function liveEmbedUrl(channel: LiveEmbedChannel, origin: string): string | null {
+  const decision = liveEmbedDecision(channel, origin);
+  return decision.embed ? decision.url : null;
+}
+
+/**
+ * 兼容层的返回类型 —— **legacy 取值集合**（含 `'platform'`）。
+ *
+ * @deprecated `'platform'` 是 **legacy 值**：它正在被 `'bilibili_blocked'` 取代
+ *   （新代码请用 `liveEmbedDecision()` 的 `reason`）。它**必须活到 t24 落地为止** ——
+ *   `apps/web` 有三处引用还指着它：`LiveCard.tsx:121` 的穷尽 `Record` 映射
+ *   （联合类型一加取值就 `TS7053` 编译不过）与 `liverender.tsx:218/235` 的断言。
+ *   ⇒ **t24 改完词条、t22 把 `LiveCard` 迁到 `liveEmbedDecision()` 之后**，
+ *     本类型与 `liveEmbedUnavailableReason()` 一起删除。
+ */
+export type LegacyLiveEmbedReason =
+  | 'platform'
+  | 'bilibili_blocked'
+  | 'no_id'
+  | 'not_channel_id'
+  | null;
+
+/**
+ * 界面上要不要提示"这行的频道嵌入开关其实不生效"，以及**为什么没有播放器**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 兼容层：新代码用 `liveEmbedDecision()`，别再用这个
+ * ---------------------------------------------------------------------------
+ * 它只拿得到 channel、**拿不到 `origin`**，所以它回答不了 Twitch 那一行
+ * （Twitch 能不能嵌取决于 `origin`）。保留它只有一个理由：`apps/web` 的
+ * `LiveCard.tsx` 还在用它，而那里是一个**穷尽的** `Record<旧值, 词条>` 映射 ——
+ * 直接给这个函数加一个新取值会让 apps/web **编译不过**（`strict: true`），
+ * 而"少一个取值"会让 `check:live` 的那两条断言读到另一句话（`check:live`
+ * **不在 `pnpm check` 里**，所以那种错只在单独跑它时才看得见）。
+ *
+ * 映射（**只剩一处有损**，写在这里）：
+ *   · `'bilibili_blocked'` → `'bilibili_blocked'` —— ★ **1:1 直传，不再有损**（t24）：
+ *        这一档现在会一路指到 `live.noEmbedBilibili`，界面说的是
+ *        "B 站不允许把直播间嵌进别的网站（它自己禁止了）"，**说清了是哪种**。
+ *   · `'no_origin'` → `'platform'`
+ *     —— **唯一剩下的有损映射**（且是**正确**的）：旧联合类型里没有 `'no_origin'`，
+ *        而归到"平台那一档"是**最小惊讶**：这一层拿不到 `origin`，能走到它只有
+ *        SSR / 渲染脚本（浏览器里 `location.hostname` 一定有值，Twitch 那时是
+ *        **能嵌**的、根本不进这一档）。
+ *        ⚠️ 归成 `null` 会让 Twitch 那一行在渲染脚本里被说成"没有记录视频 ID"
+ *        （`live.noEmbedNoId`）—— 那是**更错**的一句话，而且会让
+ *        liverender 里那条断言红掉。
+ *        ★ **这一格归到 `'platform'` 正是 `live.noEmbedPlatform` 不能删的理由**
+ *        （删了它，这一格无处可去）。
+ *
+ * ⇒ 迁移到 `liveEmbedDecision()` 之后，这个函数连同上面**那一处**有损映射一起删掉
+ *   （**归后续单独任务**：它需要 `apps/web` 的范围）。
+ */
+export function liveEmbedUnavailableReason(channel: LiveEmbedChannel): LegacyLiveEmbedReason {
+  const decision = liveEmbedDecision(channel, '');
+  if (decision.embed) return null;
+  switch (decision.reason) {
+    case 'not_channel_id':
+      return 'not_channel_id';
+    case 'no_id':
+      return 'no_id';
+    case 'bilibili_blocked':
+      /*
+       * ★ 1:1 直传（t24）。以前这里归并成 `'platform'` —— 那正是本轮的缺陷：
+       *   B站 是**确定态**（`x-frame-options: SAMEORIGIN` 明令禁止），却被说成
+       *   笼统的"这个平台在这里不能嵌入播放"，界面**没说清是哪种**。
+       *   直传之后 `LiveCard` 的穷尽映射才会指到 `live.noEmbedBilibili`
+       *   （那句说的是"B 站不允许把直播间嵌进别的网站"）。
+       */
+      return 'bilibili_blocked';
+    case 'no_origin':
+      /*
+       * ⚠️ 这一格**保持归到 `'platform'`**，它是通用句存在的理由：
+       *   拿不到 `origin` 时 Twitch 拼不出 `parent`，所以"这里嵌不出来"成立，
+       *   但"平台不允许"**不**成立。⇒ 别把它也直传，也别让 `'platform'` 消失。
+       */
+      return 'platform';
+  }
+}
+
+/**
+ * `origin` → Twitch 的 `parent` 要的那个 host。
+ *
+ * ⚠️ 只取 **hostname**（不含端口、路径、协议）：`parent` 要的是域名本身
+ *    （`mcsrhelper.com` / `localhost`），把 `https://` 或端口塞进去会被拒。
+ * ⚠️ 拿不到一个像域名的东西时返回空串 ⇒ 调用方**宁可不嵌**。
+ */
+function originHost(origin: string): string {
+  const raw = origin.trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    const host = url.hostname.toLowerCase();
+    return /^[a-z0-9.-]+$/.test(host) ? host : '';
+  } catch {
+    return '';
+  }
 }

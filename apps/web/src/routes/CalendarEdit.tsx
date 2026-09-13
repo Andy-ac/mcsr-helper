@@ -5,10 +5,18 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { type CalendarDraft, CalendarForm, draftFromEvent } from '@/components/CalendarForm';
 import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
-import { ApiError, fetchCalendarEvent, fetchCalendarForEdit, updateCalendarEvent } from '@/lib/api';
+import {
+  ApiError,
+  deleteCalendarEventDirect,
+  fetchCalendarEvent,
+  fetchCalendarForEdit,
+  saveCalendarEventDirect,
+  updateCalendarEvent,
+} from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { eventWhen } from '@/lib/calendarFormat';
 import { useCan } from '@/lib/capabilities';
+import { directWriteNotice } from '@/lib/directWriteNotice';
 
 /**
  * 修改一个已有的日历活动 —— `/calendar/:id/edit`。
@@ -32,6 +40,13 @@ export function CalendarEdit() {
   const errorText = useApiErrorText();
   // 有审核权的人能从"有人在改"的提示里直接跳到那一份待审内容
   const canReview = useCan('calendar.review');
+  /**
+   * 需求②（t14）：有 `content.author` 的人才给「直接保存」与删除区。
+   * ⚠️ 能力名从矩阵读 —— 页面里**不写"谁是编辑"**（见 permissions.ts 的头注释）。
+   * ⚠️ 赛事是**一档**：不需要 `useCanHardDelete()` 来区分"能不能一键"——
+   *    它没有下架入口，所以 editor+ 与 owner 走的是**同一条**直删路径。
+   */
+  const canAuthor = useCan('content.author');
 
   const [draft, setDraft] = useState<CalendarDraft | null>(null);
   /** 现在这一条有没有别人提的、还在等审核的改动 */
@@ -42,7 +57,19 @@ export function CalendarEdit() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  /** 提交成功后的结果。`liveRevisionUnchanged` 决定要不要说"线上还是旧版" */
+  /** 直编（需求②）的结果提示 —— 与 `failure` **分开存**，两者可能同时存在。 */
+  const [directNotice, setDirectNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  /** 删除区的行内两步确认（与 `EditResource` 同一条约定：不用 `window.confirm`）。 */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  /**
+   * 提交成功后的结果。
+   *
+   * ⚠️ 这里原来写着"`liveRevisionUnchanged` 决定要不要说'线上还是旧版'" —— 那是**过期的**
+   * （该字段从没存在这个 state 里，而页面也不读它）。**别照抄到别处**：
+   *    这条路的提审结果该怎么说，判据在 `lib/directWriteNotice.ts`（直编）与
+   *    `submit.errAlreadyPending` 那一族（提审）；本页只记版本号。
+   */
   const [done, setDone] = useState<{ revision: number } | null>(null);
 
   useEffect(() => {
@@ -115,6 +142,55 @@ export function CalendarEdit() {
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * 「直接保存」（需求②，t14）—— 写线上行、不进审核队列。
+   *
+   * ⚠️ 文案走 `directWriteNotice`（与资料那边**同一处**判据），**不在页面里**再判一次
+   *    `liveRevisionUnchanged`：那个字段对"已发布"与"草稿/待审"两种条目结果不同，
+   *    前端自己推就会对其中一类撒谎。
+   */
+  async function onSubmitDirect(input: CalendarEventInput) {
+    setFailure(null);
+    setDirectNotice(null);
+    setBusy(true);
+    try {
+      const result = await saveCalendarEventDirect(id, input);
+      setDirectNotice({ ok: true, text: directWriteNotice(result, t) });
+    } catch (error) {
+      setFailure(
+        error instanceof ApiError && error.code === 'already_pending'
+          ? t('calendar.errAlreadyPending')
+          : errorText(error),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * 删除这一场活动（需求②，t14）—— **一档直删**。
+   *
+   * ⚠️ 赛事与资料/视频**不同**：它没有下架入口、也没有收藏/备注这类连带数据，
+   *    所以这里**没有**"先下架再删除"那一步，界面上也**不会**出现那句话
+   *    （服务端 `DELETE /api/authoring/calendar/:id` 写死 `force: true`）。
+   *    ⚠️ 不要照抄 `EditResource` 的两档写法 —— 那会给出一个走进死路的提示。
+   * ⚠️ 仍然**一次确认**：这是不可逆的（用户对"真正删除"的要求就是"加一次确认"）。
+   */
+  async function remove() {
+    setConfirmingDelete(false);
+    setDeleting(true);
+    setFailure(null);
+    setDirectNotice(null);
+    try {
+      await deleteCalendarEventDirect(id);
+      navigate('/calendar', { replace: true });
+    } catch (error) {
+      setFailure(errorText(error));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -224,7 +300,16 @@ export function CalendarEdit() {
         不说的话，用户会以为自己的修改已经生效了 —— 然后发现页面上没变，
         于是再改一遍，然后拿到 409。
       */}
-      <p className="submitnote">{em(t('calendar.editLiveUnchanged'))}</p>
+      {/*
+        ⚠️ 这句"改完之后线上还是旧版"**只对提审那条路成立**。editor 点的是「直接保存」时
+           它直接生效，再挂这句话就是对用户撒谎 —— 所以有 `content.author` 时**换一句**、
+           不再显示这句（`authoring.directHint` 已经把"直接生效"说清了，见按钮的 title）。
+      */}
+      {!canAuthor ? <p className="submitnote">{em(t('calendar.editLiveUnchanged'))}</p> : null}
+
+      {directNotice ? (
+        <Notice kind={directNotice.ok ? 'ok' : 'bad'}>{directNotice.text}</Notice>
+      ) : null}
 
       {failure ? <Notice kind="bad">{failure}</Notice> : null}
 
@@ -234,7 +319,71 @@ export function CalendarEdit() {
         busyLabel={t('submit.submitting')}
         busy={busy}
         onSubmit={onSubmit}
+        /*
+         * 「直接保存」**只对 `content.author` 传下去**（需求②）。
+         * ⚠️ 普通用户拿到 `undefined` ⇒ 按钮**根本不存在**，不是灰按钮。
+         */
+        secondaryAction={
+          canAuthor
+            ? {
+                label: t('authoring.directSave'),
+                busyLabel: t('submit.submitting'),
+                onSubmit: (input) => void onSubmitDirect(input),
+              }
+            : undefined
+        }
       />
+
+      {/*
+        ======================================================================
+        删除区 —— **赛事是一档直删**（t14 的裁定）
+        ======================================================================
+
+        ⚠️ 与 `EditResource` **刻意不同**，别照抄那边：
+          · 赛事**没有下架入口**（全仓没有任何把 `calendar_events.status` 写成 `'hidden'` 的地方，
+            见 `ModerationBar` 只服务资源库），所以"先下架，再删除"这一步**不存在** ——
+            写出来会是一句把人引向死路的提示；
+          · 赛事也**没有**收藏/备注这类连带数据（那才是"资料/视频要两档"的原因）。
+        ⇒ 所以这里**只有一次调用 + 一次确认**；editor+ 与 owner 走同一条路径
+          （服务端 `DELETE /api/authoring/calendar/:id` 的 `force` 写死为 `true`）。
+        ⚠️ 确认文案仍用 `authoring.deleteImpact`：不可逆的动作要说清代价。
+      */}
+      {canAuthor ? (
+        <section className="dangerzone">
+          <h2 className="dangerzone__title">{t('authoring.deleteTitle')}</h2>
+          <p className="dangerzone__impact">{em(t('authoring.deleteImpact'))}</p>
+
+          {confirmingDelete ? (
+            <div className="dangerzone__confirm">
+              <button
+                type="button"
+                className="dangerbtn"
+                disabled={deleting}
+                onClick={() => void remove()}
+              >
+                {t('authoring.deleteConfirmYes')}
+              </button>
+              <button
+                type="button"
+                className="ghostbtn"
+                disabled={deleting}
+                onClick={() => setConfirmingDelete(false)}
+              >
+                {t('authoring.deleteConfirmNo')}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="dangerbtn"
+              disabled={busy || deleting}
+              onClick={() => setConfirmingDelete(true)}
+            >
+              {t('authoring.deleteAction')}
+            </button>
+          )}
+        </section>
+      ) : null}
 
       <p className="submitgate">
         <button type="button" className="authform__link" onClick={() => void navigate(-1)}>

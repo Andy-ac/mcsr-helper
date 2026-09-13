@@ -112,13 +112,27 @@ function platformKey(platform: LiveChannel['platform']): string {
 /**
  * "为什么没有播放器" → 词条 key。
  *
- * ⚠️ 刻意写成穷尽的映射，而不是一串三元式：三种理由各自对应的文案是
+ * ⚠️ 刻意写成穷尽的映射，而不是一串三元式：每种理由各自对应的文案是
  * **产品决定**，不是兜底。少写一种时 `Record` 会编译不过，
  * 而那正是我们要的 —— 有一次兜底，就会有一种情况被默默说成另一种。
+ *
+ * ★ 四种（t24 从三种变四种）：`bilibili_blocked` 是**加进来的**那一种，
+ *   在它之前 B站 被归并进通用的 `platform`。
  */
 function noEmbedKey(reason: ReturnType<typeof liveEmbedUnavailableReason>): string {
-  const KEYS: Record<'platform' | 'no_id' | 'not_channel_id', string> = {
+  const KEYS: Record<'platform' | 'bilibili_blocked' | 'no_id' | 'not_channel_id', string> = {
+    /*
+     * ⚠️ `platform` 是**通用**那句（"这个平台在这里不能嵌入播放"），它服务
+     * `'no_origin'` 那一档；**B站 有自己的一句**，别说反了。
+     */
     platform: 'live.noEmbedPlatform',
+    /*
+     * ★ B站 确定态（`x-frame-options: SAMEORIGIN`，平台自己禁止被嵌）。
+     * 这一格是 t24 加的：`live.noEmbedBilibili` 在此之前**没有任何代码引用**，
+     * 而这一档以前被归并进 `platform` ⇒ 界面只说"这个平台不能嵌入"，
+     * **没说清是哪种**。加了这一格才有专属那句。
+     */
+    bilibili_blocked: 'live.noEmbedBilibili',
     no_id: 'live.noEmbedNoId',
     not_channel_id: 'live.noEmbedNotChannelId',
   };

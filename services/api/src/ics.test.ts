@@ -49,6 +49,10 @@ function makeEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     stage: null,
     level: null,
     scope: null,
+    // ③ 的系列：`seriesId` 是事件上的列，`seriesName` 由 JOIN 得到 —— 两者都是
+    // **必填（可空值）**，所以 fixture 必须显式给出来，不能靠"字段不在就是缺省"。
+    seriesId: null,
+    seriesName: null,
     lang: 'zh-CN',
     authorId: 'u1',
     authorName: '甲',

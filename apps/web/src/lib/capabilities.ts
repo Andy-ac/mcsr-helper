@@ -8,7 +8,7 @@
  * 而且这种遗漏不会有任何东西提醒你。
  */
 import type { Actor, Capability } from '@mcsr/shared/permissions';
-import { can, canSelfReview } from '@mcsr/shared/permissions';
+import { can, canHardDelete, canSelfReview } from '@mcsr/shared/permissions';
 import { REVIEWABLE_TYPES, type ReviewableType } from '@mcsr/shared/review';
 import { useAuth } from '@/lib/auth';
 
@@ -56,6 +56,24 @@ export function useCanSelfReview(): boolean {
   return auth.user ? canSelfReview(auth.user.role) : false;
 }
 
+/**
+ * 当前用户能不能**跳过"先下架"、直接真删**一条内容（需求②）。
+ *
+ * ⚠️ 这是一条**谓词**而不是能力 —— shared/permissions.ts 里 `canHardDelete` 的
+ *    长注释解释了为什么：能力**可以被后来的人一行编辑授予出去**（把
+ *    `content.hardDelete` 加进 `admin` 那一行看起来完全合理，而"只有 owner"
+ *    就此静默失效、测试依然全绿）；谓词的答案写死在函数体里，放宽它必须改函数，
+ *    `git diff` 里一眼可见。
+ *
+ * ⚠️ 判据仍然**只有一处**（shared 的 `canHardDelete`），这里只是把它接到
+ *    当前登录态上 —— 与 `useCanSelfReview` 完全同一个形状，页面里不写
+ *    `role === 'owner'`。前端仍然只决定"按钮显不显示"，拦截在服务端。
+ */
+export function useCanHardDelete(): boolean {
+  const auth = useAuth();
+  return auth.user ? canHardDelete(auth.user.role) : false;
+}
+
 export function useCan(capability: Capability): boolean {
   const auth = useAuth();
   const actor: Actor | null = auth.user
@@ -75,6 +93,14 @@ const TYPE_KEYS: Record<string, string> = {
   seed: 'auth.capTypeSeed',
   user: 'auth.capTypeUser',
   audit: 'auth.capTypeAudit',
+  /*
+   * `content.*`（需求②）—— 跨类型的一个"类型"：`content.author` 管的是
+   * "直接写线上行"这个动作，而不是某一种内容，所以它的类型名是 content 而不是
+   * resource/calendar/video 里的任何一个。
+   * ⚠️ 不加这一行不会报错，只会让「我的」页面把**类型**显示成英文 `content`
+   *    （而旁边的项都是中文）—— 看起来像界面没做完。
+   */
+  content: 'auth.capTypeContent',
 };
 
 /**
@@ -120,6 +146,16 @@ const ACTION_KEYS: Record<string, string> = {
    * 而这份名单没有人会去审（它本来就是编辑自己写的）。
    */
   manage: 'auth.capActionManage',
+  /*
+   * `content.author`（需求②）—— "绕过审核直接写线上内容"。
+   *
+   * ⚠️ 这里**刻意没有** `hardDelete` 这一行：它**不是能力**，而是
+   *    `permissions.ts` 里的谓词 `canHardDelete(role)`（理由：能力可以被一行编辑
+   *    授予出去，而"只有 owner 能真删"必须不可授予 —— 否则那条承诺会静默失效、
+   *    测试还全绿）。所以账号页的能力清单里本来就不会出现它，
+   *    加一行映射只会变成一条**永远引用不到的词条**。
+   */
+  author: 'auth.capActionAuthor',
 };
 
 export function describeCapabilities(

@@ -288,6 +288,7 @@ export function ResourceForm({
   busy,
   serverError,
   onSubmit,
+  secondaryAction,
 }: {
   initial: ResourceDraft;
   actionLabel: string;
@@ -296,6 +297,15 @@ export function ResourceForm({
   /** 来自服务端的错误（网络、409、403…）：页面负责渲染成提示条 */
   serverError: string | null;
   onSubmit: (submission: ResourceSubmission) => void;
+  /**
+   * 「直接保存」/「直接发布」（需求②）—— **只有有 `content.author` 的页面会传**。
+   *
+   * ⚠️ 做成一个可选 action 而不是两个平级 prop：调用方要么整块给、要么整块不给，
+   *    不会出现"传了 label 忘了传 onSubmit"这种半截状态。
+   * ⚠️ 它的存在与否**由页面按能力决定**，表单自己不判断角色 —— 表单里写一份
+   *    "谁是编辑"就是第二份规则（见 `permissions.ts` 的头注释）。
+   */
+  secondaryAction?: { label: string; busyLabel: string; onSubmit: (s: ResourceSubmission) => void };
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<ResourceDraft>(initial);
@@ -314,7 +324,27 @@ export function ResourceForm({
 
   function submit(event: FormEvent) {
     event.preventDefault();
+    const data = buildSubmission();
+    if (data) onSubmit(data);
+  }
 
+  /**
+   * 「直接保存」（需求②）—— 同一个表单、**同一份校验**，只是提交到另一条路。
+   *
+   * ⚠️ 它复用 `buildSubmission()` 而不是自己再校验一遍：两条路各自校验的话，
+   *    迟早出现"提审能过、直编报错"（或反过来）的分叉，而用户看到的是
+   *    "同一个表单，换个按钮就说我填错了"。
+   */
+  function submitDirect() {
+    const data = buildSubmission();
+    if (data && secondaryAction) secondaryAction.onSubmit(data);
+  }
+
+  /**
+   * 校验并整理出提交体。**两条提交路径共用这一处**（见 `submitDirect`）。
+   * 返回 `null` = 校验没过（错误已经写进 `errors`，调用方什么都不用做）。
+   */
+  function buildSubmission(): ResourceSubmission | null {
     /*
      * ⚠️ 用**共享 schema** 校验，而不是在界面里手写一遍规则。
      *
@@ -344,11 +374,11 @@ export function ResourceForm({
         if (field && !next[field]) next[field] = issue.message;
       }
       setErrors(next);
-      return;
+      return null;
     }
 
     setErrors({});
-    onSubmit(parsed.data);
+    return parsed.data;
   }
 
   const fieldError = (key: string) =>
@@ -548,6 +578,25 @@ export function ResourceForm({
         <button type="submit" className="cta" disabled={busy}>
           {busy ? busyLabel : actionLabel}
         </button>
+        {/*
+          「直接保存」（需求②，只有 editor 及以上看得到 —— 页面决定传不传它）。
+          ⚠️ `type="button"`：它不是表单的默认提交键，点它走的是另一条路
+             （写线上行，不进审核队列）。写成 submit 会让回车键也触发它 ——
+             而回车是用户"填完了"的肌肉记忆，那时他想要的是提审。
+          ⚠️ 文案与次要按钮样式（ghostbtn）都刻意与主按钮**不同**：一个会立刻生效、
+             一个不会，看错按钮的代价是"以为提交了其实没提"或反过来。
+        */}
+        {secondaryAction ? (
+          <button
+            type="button"
+            className="ghostbtn"
+            disabled={busy}
+            onClick={submitDirect}
+            title={t('authoring.directHint')}
+          >
+            {busy ? secondaryAction.busyLabel : secondaryAction.label}
+          </button>
+        ) : null}
         <span className="submitform__note">{t('submit.reviewNote')}</span>
       </div>
     </form>

@@ -4,21 +4,27 @@ import {
   type CalendarEvent,
   type CalendarEventInput,
   CalendarEventInputSchema,
+  type CalendarSeries,
   EVENT_DESCRIPTION_MAX,
   EVENT_LOCATION_MAX,
   EVENT_TITLE_MAX,
+  // t17 验收第 6 条：系列名写入前必须过它（折叠空白；`NOCASE` 只折大小写）
+  normalizeSeriesName,
 } from '@mcsr/shared/calendar';
 import { isValidTimeZone, wallClockToUtc } from '@mcsr/shared/calendar-time';
-import { type FormEvent, useRef, useState } from 'react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Field } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
+import { ApiError, createCalendarSeries, fetchCalendarSeries } from '@/lib/api';
+import { useApiErrorText } from '@/lib/auth';
 import {
   CALENDAR_NOTE_MAX,
   CALENDAR_TZ_SUGGESTIONS,
   VIEWER_TZ,
   zoneOffsetLabel,
 } from '@/lib/calendarFormat';
+import { useCan } from '@/lib/capabilities';
 
 /**
  * 日历事件的提交表单。**新建和编辑共用一份**。
@@ -71,6 +77,23 @@ export interface CalendarDraft {
   level: string;
   scope: string;
   lang: string;
+  /**
+   * 系列活动（③）。`''` = **不归到任何系列**（绝大多数赛事如此，这不是"还没填"）。
+   *
+   * ⚠️ 与 `stage` / `level` / `scope` 同一个约定：`<select>` 的"没选"就是空串，
+   *    真正转成 `null` 只发生在 `buildEvent()` 一处。
+   */
+  seriesId: string;
+  /**
+   * 当前系列的**显示名**。它只服务界面（下拉框里那一项要显示名字），
+   * **不参与提交** —— 名字由服务端从 `calendar_series` JOIN 出来
+   * （见 `shared/calendar.ts` 的 `seriesName` 说明）。
+   *
+   * ⚠️ 留着它的理由是一个**会说谎的界面**：系列列表还没到（或请求失败）时，
+   *    `<select value="s9">` 在没有任何 option 命中时显示的是**第一个** option，
+   *    而草稿里仍然是 `s9` —— 用户看到"不填"，保存后却还挂着原来那个系列。
+   */
+  seriesName: string;
   noteToReviewer: string;
 }
 
@@ -98,6 +121,9 @@ export function emptyCalendarDraft(): CalendarDraft {
     level: '',
     scope: '',
     lang: LOCALES[0],
+    // 新建时**默认不属于任何系列** —— 系列要人去选，默认挂上一个就是在替用户猜
+    seriesId: '',
+    seriesName: '',
     noteToReviewer: '',
   };
 }
@@ -120,6 +146,9 @@ export function draftFromEvent(event: CalendarEvent): CalendarDraft {
     level: event.level ?? '',
     scope: event.scope ?? '',
     lang: event.lang,
+    // ③：编辑时**必须把系列带进来**，否则"改一个无关字段"会静默把系列丢掉
+    seriesId: event.seriesId ?? '',
+    seriesName: event.seriesName ?? '',
     // ⚠️ 「给审核员的话」**不在事件的字段里**（它不属于内容，服务端也不存它）。
     //     所以编辑时它总是从空白开始 —— 复现上一轮那句话反而会让人以为
     //     那是内容的一部分。
@@ -279,17 +308,63 @@ export function CalendarForm({
   busyLabel,
   busy,
   onSubmit,
+  secondaryAction,
 }: {
   initial: CalendarDraft;
   actionLabel: string;
   busyLabel: string;
   busy: boolean;
   onSubmit: (input: CalendarEventInput) => void;
+  /**
+   * 「直接保存 / 直接发布」（需求②）—— **只有有 `content.author` 的页面会传**。
+   *
+   * ⚠️ 与 `ResourceForm` 的 `secondaryAction` **同形**：调用方要么整块给、要么整块不给，
+   *    不会出现"传了 label 忘了传 onSubmit"这种半截状态。
+   * ⚠️ 它**不判断能力**：表单里写一份"谁是编辑"就是第二份规则
+   *    （见 `permissions.ts` 的头注释）。传不传由页面按 `useCan('content.author')` 决定。
+   */
+  secondaryAction?: {
+    label: string;
+    busyLabel: string;
+    onSubmit: (input: CalendarEventInput) => void;
+  };
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<CalendarDraft>(initial);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState(false);
+
+  /*
+   * ---------------------------------------------------------------------------
+   * 系列活动（③）：一份列表 + 一个"新建"入口
+   * ---------------------------------------------------------------------------
+   * · **从已有系列里选**对所有人开放（系列是公开数据，见 spec §9-5）；
+   *   只有**新建**限 `content.author`（D3.5）。
+   * · ⚠️ 能力判断走 `useCan` —— 它是权限矩阵的**同一份来源**，页面/组件里不写
+   *   "谁是编辑"（见 permissions.ts 的头注释）。
+   *   ⚠️ 刻意**不**用"调用方传没传 `secondaryAction`"来判断：今天两者恰好同一档，
+   *      但把它们绑在一起是一条隐藏耦合 —— 哪天直编按钮按类型开关，
+   *      系列入口会跟着一起消失，而且**不会有任何报错**。
+   * · ⚠️ **列表拿不到不算错误**：它只是一个可选的辅助列表，表单不该因此变红。
+   *      那时仍然可用的是"当前这一条已经挂着的那个系列"（见下面的 seriesOptions）。
+   */
+  const canAuthor = useCan('content.author');
+  const errorText = useApiErrorText();
+  const [seriesList, setSeriesList] = useState<CalendarSeries[]>([]);
+  const [seriesCreating, setSeriesCreating] = useState(false);
+  const [seriesName, setSeriesName] = useState('');
+  const [seriesBusy, setSeriesBusy] = useState(false);
+  const [seriesError, setSeriesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchCalendarSeries(controller.signal)
+      .then((res) => setSeriesList(res.items))
+      .catch(() => {
+        // 静默：见上面那一条。排序也**不在这里做** —— 服务端已经排好（api.ts 的注释）。
+      });
+    return () => controller.abort();
+  }, []);
 
   /*
    * 「整天」来回切换时要还原用户原来填的钟点。
@@ -367,34 +442,77 @@ export function CalendarForm({
 
   function submit(event: FormEvent) {
     event.preventDefault();
+    const data = buildEvent();
+    if (data) onSubmit(data);
+  }
 
+  /**
+   * 「直接保存 / 直接发布」（需求②，t14）—— 同一个表单、**同一份校验**，
+   * 只是提交到另一条路（写线上行，不进审核队列）。
+   *
+   * ⚠️ 它复用 `buildEvent()` 而不是自己再校验一遍：两条路各自校验的话，
+   *    迟早出现"提审能过、直编报错"（或反过来）的分叉，而用户看到的是
+   *    "同一个表单，换个按钮就说我填错了"。
+   */
+  function submitDirect() {
+    const data = buildEvent();
+    if (data && secondaryAction) secondaryAction.onSubmit(data);
+  }
+
+  /**
+   * 新建一个系列（③ 的写路径）。
+   *
+   * ⚠️ **不在前端查重**（spec D3.5 + `api.ts` 的注释）：判重是 `calendar_series.name`
+   *    的 `COLLATE NOCASE UNIQUE`，前端自己比一遍必然与服务端的折叠规则漂移，
+   *    而"看起来没重名、提交却被拒"是最难解释的一种失败。
+   *    ⇒ 这里**只接住** 409 `invalid_state` + `reason: 'series_name_taken'` 并说人话。
+   */
+  async function createSeries() {
+    /*
+     * ⚠️ 归一化必须用 **shared 的 `normalizeSeriesName`**，不能只 `.trim()`（t17 验收第 6 条）：
+     *    判重是数据库的 `COLLATE NOCASE UNIQUE` —— 它只折叠**大小写**、**不折叠空白**。
+     *    所以 `MCSR  Ranked`（两个空格）与 `MCSR Ranked` 在库里是**两个系列**，
+     *    而服务端写入前会用 `normalizeSeriesName` 折叠空白 ⇒ 若前端不折：
+     *      · 我在本地列表里加的、和草稿里显示的名字，会与服务端实际存下的**不是同一个**；
+     *      · 用户看到的"我建的系列名"与他下次在栏目里看到的不一致（而两边都不报错）。
+     *    ⇒ 前端和写库**同一个判据**（这也是 shared 把它放在共享层的原因，见其注释）。
+     *    ⚠️ 仍然**不在前端查重**（spec D3.5）：判重是服务端的事，见下面 catch 里那条注释。
+     */
+    const name = normalizeSeriesName(seriesName) ?? '';
+    if (name === '' || seriesBusy) return;
+    setSeriesBusy(true);
+    setSeriesError(null);
+    try {
+      const { series } = await createCalendarSeries({ name });
+      // 建完**直接选中它**：用户点"新建系列"就是想用它，再让他回列表里找一遍是白费一道工
+      setSeriesList((prev) => [...prev, series]);
+      setDraft((prev) => ({ ...prev, seriesId: series.id, seriesName: series.name }));
+      setSeriesCreating(false);
+      setSeriesName('');
+    } catch (error) {
+      setSeriesError(
+        error instanceof ApiError &&
+          error.code === 'invalid_state' &&
+          error.reason === 'series_name_taken'
+          ? t('calendar.seriesNameTaken')
+          : errorText(error),
+      );
+    } finally {
+      setSeriesBusy(false);
+    }
+  }
+
+  /**
+   * 校验并整理出提交体。**两条提交路径共用这一处**（见 `submitDirect`）。
+   * 返回 `null` = 校验没过（错误已写进 `errors`，调用方什么都不用做）。
+   */
+  function buildEvent(): CalendarEventInput | null {
     /*
      * ⚠️ 用**共享 schema** 校验，而不是在界面里手写一遍规则。
      *    手写一份的后果是两边慢慢分叉：界面放行服务端会拒的内容，
      *    或者界面拦下服务端允许的内容 —— 而两种都不会有报错。
      */
-    const candidate = {
-      title: draft.title.trim(),
-      titleEn: draft.titleEn.trim() || null,
-      descriptionMd: draft.descriptionMd,
-      startsAtLocal: draft.startsAtLocal,
-      startsAtTz: draft.startsAtTz.trim(),
-      // ⚠️ 结束时间这一对**原样透传**，不做"缺一个就一起丢掉"的补救。
-      //    丢掉的话，用户填了结束时区忘了时间会看到一条"什么都没说"的失败，
-      //    而 schema 里本来就有一条专门解释这件事的规则。
-      endsAtLocal: draft.endsAtLocal || null,
-      endsAtTz: draft.endsAtTz.trim() || null,
-      allDay: draft.allDay,
-      url: draft.url.trim() || null,
-      location: draft.location.trim() || null,
-      tags: draft.tags,
-      stage: draft.stage || null,
-      // 空串 → null，只在这一处做转换（草稿里三个维度都是空串表示"没填"）
-      level: draft.level || null,
-      scope: draft.scope || null,
-      lang: draft.lang,
-      noteToReviewer: draft.noteToReviewer.trim() || null,
-    };
+    const candidate = calendarEventInputOf(draft);
 
     const parsed = CalendarEventInputSchema.safeParse(candidate);
     if (!parsed.success) {
@@ -405,11 +523,11 @@ export function CalendarForm({
         if (!next[field]) next[field] = text;
       }
       setErrors(next);
-      return;
+      return null;
     }
 
     setErrors({});
-    onSubmit(parsed.data);
+    return parsed.data;
   }
 
   // ---- 实时校验（不等提交） ----
@@ -454,6 +572,21 @@ export function CalendarForm({
 
   const startValue = draft.allDay ? dateOf(draft.startsAtLocal) : draft.startsAtLocal;
   const endValue = draft.allDay ? dateOf(draft.endsAtLocal) : draft.endsAtLocal;
+
+  /*
+   * 下拉框的选项 = 服务端给的列表 +（必要时）**当前这一条已经挂着的那个系列**。
+   *
+   * ⚠️ 少了后半段就会**静默说谎**：`<select value="s9">` 在没有任何 option 命中时
+   *    显示的是**第一个** option（这里是"不填"），而草稿里仍然是 `s9`。
+   *    列表请求还没回来、请求失败、或刚刚新建完，都会走到这一档。
+   */
+  const seriesOptions: { id: string; name: string }[] = seriesList.map((s) => ({
+    id: s.id,
+    name: s.name,
+  }));
+  if (draft.seriesId !== '' && !seriesOptions.some((s) => s.id === draft.seriesId)) {
+    seriesOptions.push({ id: draft.seriesId, name: draft.seriesName || draft.seriesId });
+  }
 
   return (
     <form className="authform submitform" onSubmit={submit} noValidate>
@@ -720,6 +853,96 @@ export function CalendarForm({
         <p className="mcsr-field__hint">{t('calendar.hintTags')}</p>
       </div>
 
+      {/*
+        ----------------------------------------------------------------------
+        系列活动（需求③）
+        ----------------------------------------------------------------------
+        · 系列的**名字是用户内容**，不翻译 —— 选项直接显示 `name`。
+        · ⚠️ 那个"什么都不选"的空选项**借用** `calendar.stageNone`（它的值就是
+          「不填」）：本轮**不新增词条**（`packages/shared` 不在本任务范围内）。
+          下一轮补上 `calendar.seriesNone` 时只换**这一处** —— `t()` 调用全仓共两处
+          （stage 自己那个下拉框 + 这一处）。⚠️ 本注释自己也写着这个词条名，
+          所以 grep `calendar.stageNone` 会得到**三**处命中，别把注释当成第三处引用。
+        · ⚠️ 错误只落在这个字段下面：重名是**这一格**的问题。挂成整张表单的红条会让
+          用户去别处找一个不在那里的错。
+      */}
+      <Field id="cal-series" label={t('calendar.seriesField')} hint={t('calendar.seriesFieldHint')}>
+        <select
+          id="cal-series"
+          className="mcsr-field__input"
+          value={draft.seriesId}
+          onChange={(e) => {
+            const id = e.target.value;
+            const picked = seriesOptions.find((s) => s.id === id);
+            setDraft((prev) => ({ ...prev, seriesId: id, seriesName: picked?.name ?? '' }));
+          }}
+        >
+          <option value="">{t('calendar.stageNone')}</option>
+          {seriesOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+
+        {/*
+          「新建系列」只对 `content.author` 出现（D3.5）。⚠️ 不是灰按钮 ——
+          看不见比看得见点不动好（本仓一贯的立场）。
+        */}
+        {canAuthor ? (
+          seriesCreating ? (
+            <div className="seriescreate">
+              <input
+                className="mcsr-field__input"
+                value={seriesName}
+                onChange={(e) => {
+                  setSeriesName(e.target.value);
+                  setSeriesError(null);
+                }}
+                aria-label={t('calendar.seriesField')}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                className="ghostbtn"
+                disabled={seriesBusy || seriesName.trim() === ''}
+                onClick={() => void createSeries()}
+              >
+                {t('common.confirm')}
+              </button>
+              <button
+                type="button"
+                className="ghostbtn"
+                onClick={() => {
+                  setSeriesCreating(false);
+                  setSeriesName('');
+                  setSeriesError(null);
+                }}
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          ) : (
+            <button type="button" className="ghostbtn" onClick={() => setSeriesCreating(true)}>
+              {t('calendar.seriesCreate')}
+            </button>
+          )
+        ) : null}
+
+        {/*
+          ⚠️ 派生出来的 `seriesError` 走一个**纯展示组件**，而不是把上面那行 `<p>` 写在这里。
+             理由（t17 验收 [9]「重名提示出现」）：这句话唯一的生产路径是**收到 409 之后**
+             `setSeriesError`（见 `createSeries` 的 catch），而纯 node SSR **不跑 effect、
+             也不能触发一次真实提交** ⇒ 留在抽屉里就永远断言不到，于是它会落回本仓反复在治
+             的那一类："有界面、有词条、门禁全绿，但没有任何断言真的看过它"。
+             ⇒ 抽成 `SeriesErrorNote` 后，自检脚本能直接把它渲染出来、断言**重名那句真的出现**。
+             ⚠️ 刻意**不**改 `CalendarForm` 的 props 形状：为了测试给生产组件开一个
+             `initialSeriesError` 之类的口子，是把"测试需要"写进生产接口 —— 那个口子既不
+             对应任何真实状态，也会长期留在签名里。这里抽出去的是**展示**，不是**状态**。
+        */}
+        <SeriesErrorNote text={seriesError} />
+      </Field>
+
       <div className="mcsr-field">
         <div className="bodytabs">
           <span className="mcsr-field__label">{t('calendar.fields.description')}</span>
@@ -804,8 +1027,106 @@ export function CalendarForm({
         <button type="submit" className="cta" disabled={busy}>
           {busy ? busyLabel : actionLabel}
         </button>
+        {/*
+          「直接保存 / 直接发布」（需求②）—— 只有 editor 及以上看得到（页面决定传不传）。
+          ⚠️ `type="button"`：它不是表单的默认提交键，点它走的是**另一条路**
+             （写线上行、不进审核队列）。写成 submit 会让回车键也触发它 ——
+             而回车是用户"填完了"的肌肉记忆，那时他想要的是提审。
+          ⚠️ 主次按钮的样式刻意不同（`cta` vs `ghostbtn`）并且文案里都带"（不审核）"：
+             看错按钮的代价是"以为提审了其实直接上线了"，或反过来。
+        */}
+        {secondaryAction ? (
+          <button
+            type="button"
+            className="ghostbtn"
+            disabled={busy}
+            onClick={submitDirect}
+            title={t('authoring.directHint')}
+          >
+            {busy ? secondaryAction.busyLabel : secondaryAction.label}
+          </button>
+        ) : null}
         <span className="submitform__note">{t('calendar.reviewNote')}</span>
       </div>
     </form>
   );
+}
+
+/**
+ * 建系列失败时的一句话（需求③ / t17 验收 [9]「重名提示出现」）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么单独抽成组件，而不是留在表单里的一个 `{seriesError ? <p/> : null}`
+ * ---------------------------------------------------------------------------
+ * 那句话**只有一条生产路径**：`createSeries()` 收到服务端的 409
+ * `invalid_state` + `reason: 'series_name_taken'` 之后 `setSeriesError`。而纯 node SSR
+ * **不跑 effect、也发不出请求** ⇒ 只要它还嵌在抽屉里，自检脚本就永远看不到它，
+ * 于是它虽然"有界面、有词条、门禁全绿"，却**没有任何断言真的看过它** ——
+ * 本仓反复在治的正是这个形状（"门禁绿"不等于"有人验过"）。
+ *
+ * ⚠️ 抽出来的是**展示**，不是**状态**：`seriesError` 仍由表单自己派生。
+ *    刻意**没有**给 `CalendarForm` 加 `initialSeriesError` 之类的 prop ——
+ *    那种口子只服务于测试、不对应任何真实状态，而且会永久留在生产签名里。
+ *
+ * ⚠️ 文案由**调用方**（`createSeries` 的 catch）翻好再传进来，而不是在这里按
+ *    `reason` 再判一次：`reason` → 人话的映射只应有一份，写第二份迟早与第一份分叉。
+ *    这里同时兜住 `errorText(error)` 的其它失败 —— 空串也**不渲染**，避免出现一个没字的红框。
+ */
+export function SeriesErrorNote({ text }: { text: string | null }) {
+  if (!text) return null;
+  return <p className="fielderr">{text}</p>;
+}
+
+/**
+ * 草稿 → 提交体。**纯函数、没有校验**（校验在 `buildEvent` 里走共享 schema）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么单独抽出来，而且必须由**生产路径**调用（不是只在测试里用一份）
+ * ---------------------------------------------------------------------------
+ * 需求③ 的"把事件归到系列"这一跳（`seriesId`）在界面上的验证点是"选一个已有系列 →
+ * 提交体里带上它"。若把映射留在 `buildEvent` 里（它读整个草稿 + 会 `setErrors`），
+ * 自检脚本就无法驱动它 —— 于是这一跳只能靠人眼看，而"人眼看"在输出上与"验过了"
+ * **无法区分**（本仓反复吃亏的形状）。
+ *
+ * ⚠️ 关键：抽出来之后 `buildEvent` **必须真的调它**。如果测试用这个函数、生产走另一份
+ *    等价代码，那断言证明的就不是用户实际执行的那条路 —— 这正是"守卫因为错误的原因通过"。
+ *
+ * ⚠️ 空串 → `null` 的转换（`seriesId` / `stage` / `level` / `scope` / `titleEn` /
+ *    `url` / `location` / `endsAt*` / `noteToReviewer`）**只在这一处**做：草稿里空串
+ *    表示"没填"，而服务端 schema 要的是 `null`。散在多处就会出现两个字段对"没填"
+ *    的理解不一致，而两边都不报错。
+ *
+ * ⚠️ **刻意不写返回类型**（靠推断）：这里产出的是**待校验的输入**，而 schema 的
+ *    `CalendarEventInput` 是**输出**（`tags` 已是枚举、`allDay` 已填上默认值）。
+ *    标成输出类型会逼出 `as` 转型，而转型恰好会把这个函数最该被检查的地方
+ *    （"映射出来的东西 schema 收不收"）**静默关掉**。
+ *    ⚠️ 也别去取 schema 的输入类型：`apps/web` 的 dependencies 里**没有 zod**
+ *    （只 `import type` 也解析不到）。表单草稿里 `level`/`scope`/`stage` 本来就是
+ *    **普通字符串** —— 收紧成枚举会让"用户选了非法值"变成编译错误，而不是一条界面红字。
+ */
+export function calendarEventInputOf(draft: CalendarDraft) {
+  return {
+    title: draft.title.trim(),
+    titleEn: draft.titleEn.trim() || null,
+    descriptionMd: draft.descriptionMd,
+    startsAtLocal: draft.startsAtLocal,
+    startsAtTz: draft.startsAtTz.trim(),
+    // ⚠️ 结束时间这一对**原样透传**，不做"缺一个就一起丢掉"的补救。
+    //    丢掉的话，用户填了结束时区忘了时间会看到一条"什么都没说"的失败，
+    //    而 schema 里本来就有一条专门解释这件事的规则。
+    endsAtLocal: draft.endsAtLocal || null,
+    endsAtTz: draft.endsAtTz.trim() || null,
+    allDay: draft.allDay,
+    url: draft.url.trim() || null,
+    location: draft.location.trim() || null,
+    tags: draft.tags,
+    stage: draft.stage || null,
+    // 空串 → null（草稿里三个维度都是空串表示"没填"）
+    level: draft.level || null,
+    scope: draft.scope || null,
+    // ③：同上，空串 → null（"不归到任何系列"）
+    seriesId: draft.seriesId || null,
+    lang: draft.lang,
+    noteToReviewer: draft.noteToReviewer.trim() || null,
+  };
 }

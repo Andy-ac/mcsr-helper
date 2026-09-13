@@ -73,6 +73,17 @@ export const en: TranslationSchema = {
     tabAll: 'All',
     tabWebsite: 'Websites',
     tabTool: 'Tools',
+    /*
+     * ① The video sub-tab.
+     *
+     * ⚠️ Deliberately different from `kindVideo` ("Video resource") — two
+     *    different positions, not two sources of truth:
+     *      · this one is a short tab label sitting next to "Websites"/"Tools";
+     *      · `kindVideo` is the type badge on a card, and it must stay longer
+     *        because it has to distinguish this from /videos (entertainment).
+     *    Both are driven by the same `video` kind value.
+     */
+    tabVideo: 'Videos',
     allKinds: 'All types',
     allLangs: 'All languages',
     kindWebsite: 'Website',
@@ -215,7 +226,7 @@ export const en: TranslationSchema = {
       'Browse the library, search, filter, open detail pages — nothing on the site requires signing in',
     guestCan2: 'Cannot submit, edit or review (signing in is for participating, not for reading)',
     rankNoteOwner:
-      "The top level. Same capabilities as an admin; what is extra is **rank**: only an owner can set or unset admins, and an owner's own role cannot be changed from the web at all — that takes admin.js on the server.",
+      "The top level. **One capability beyond an admin**: only an owner can delete an entry for good without taking it down first; the rest of what is extra is **rank**: only an owner can set or unset admins, and an owner's own role cannot be changed from the web at all — that takes admin.js on the server.",
     rankNoteAdmin:
       'Manages accounts and roles: can promote a member to reviewer or content editor. But **admins are peers** — cannot change another admin, cannot demote themselves, and cannot promote anyone to admin.',
     rankNoteEditor:
@@ -224,6 +235,9 @@ export const en: TranslationSchema = {
       "Pipeline review: can approve or reject other people's submissions, but **cannot approve their own** — another reviewer has to do that (they can reject their own, which works as a withdrawal).",
     rankNoteUser:
       'Community member. Can submit content, edit what they submitted, and suggest edits to any published entry (those go through review too).',
+    // ⚠️ The 7th key found by t10's static guard on 2026-09-13: `RoleGuide.tsx:115` used it, it never existed.
+    rankNoteGuest:
+      'You are not signed in. Once you sign in you can submit content, edit your own submissions, and suggest edits to any published entry.',
     canSubmitYes: 'You can submit content',
     canSubmitNo: 'Confirm your email before submitting content',
     capTitle: 'What you can do',
@@ -234,6 +248,9 @@ export const en: TranslationSchema = {
     capTypeSeed: 'Seeds',
     capTypeUser: 'Account management',
     capTypeAudit: 'Audit log',
+    // ⚠️ `content.*`'s "type" half is not a content type: it is a cross-cutting
+    //    policy over resources / videos / events (② direct edit, owner hard delete).
+    capTypeContent: 'Content',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
@@ -247,6 +264,7 @@ export const en: TranslationSchema = {
     capActionModerate: 'Manage roles',
     capActionRead: 'View',
     capActionManage: 'Maintain',
+    capActionAuthor: 'Edit content directly',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors
@@ -391,11 +409,43 @@ export const en: TranslationSchema = {
 
     errDuplicate: 'This URL has already been listed.',
     openExisting: 'Open the existing entry',
+    /**
+     * The action label paired with `openExisting`.
+     *
+     * 📌 It was found one round later than the batch above, and the reason is worth
+     *    recording: it is referenced as **data** (`submissionErrors.ts:76` sets
+     *    `action.labelKey = 'submit.goEditMine'`), **not** as a direct `t('…')`
+     *    argument — so t10's "scan `t('literal')`" guard **cannot see it**.
+     *    The consequence is identical: the button renders the raw key
+     *    `submit.goEditMine`. This is a **known gap in that guard** (see the note in
+     *    `services/api/src/i18n-keys.test.ts`); catching it needs a check over
+     *    `labelKey` literals, not that scan.
+     */
+    goEditMine: 'Edit my entry',
     errAlreadyPending:
       'This entry already has an edit waiting for review. Wait for the outcome before editing again.',
     errNotAuthor: 'This entry was not submitted by you, so you cannot edit it.',
     errNeedVerify: 'Your email is not verified yet — verify it and you can submit.',
     errForbidden: 'This account is not allowed to submit content.',
+    /*
+     * ⚠️ The six keys below were found on 2026-09-13 by **t10's static literal-key guard**:
+     *    they are referenced by live code but never existed
+     *    (`submissionErrors.ts:73/:83/:88/:173/:182`, `ResourceForm.tsx:567`).
+     *    `t()` returns an unknown key **as-is**, so on a failed submit the user saw
+     *    strings like `submit.errUrlExistsMine` — the worst possible place.
+     *    📌 Attribution: **pre-existing gap**, not something this round introduced.
+     */
+    errUrlExistsMine:
+      'You already submitted this URL, but it is not live yet (still pending, or it was rejected). Fix that one instead of submitting again.',
+    errUrlExistsLive: 'This URL is already live. Open that entry instead of submitting it again.',
+    errUrlExistsOther:
+      'Someone else already submitted this URL, and it is not live yet. Check back once it is published.',
+    errSessionExpired:
+      'Your session has expired (or you are not signed in). Sign in again to continue.',
+    errCrossOrigin:
+      'The request was rejected by the security policy: the front end and the API do not share an origin. In local development this is almost always a misconfigured proxy.',
+    hintNote:
+      '{{used}} / {{max}} characters. Only reviewers see this — it never appears on the resource page.',
   },
   /**
    * Review (**generic** — the M4 calendar / videos / seeds reuse this exact UI).
@@ -606,6 +656,29 @@ export const en: TranslationSchema = {
       'Use "Favourite" on an entry page — then you can come back here, and jot down why you kept it.',
     gone: 'This entry is not on the site right now',
     loadFailed: 'Failed to load. Please try again later.',
+
+    /*
+     * ⑤ 收藏数。
+     *
+     * ⚠️ 措辞说明（与 spec 的 `saved` 一致，刻意与上面的 `Favourite` 不同）：
+     *    这一节里表示**动作**的词是 `Favourite` / `Favourited`，
+     *    而这两条表示的是**总数**。两条各有理由：
+     *      · 只在这里用 `Favourite` 会得到 "3 favourited" —— 读起来像一个动词短语，
+     *        而它要表达的是一个数字（有多少人收藏了它）；
+     *      · `saved` 是资源库语境里通用的说法，且不牵扯英式/美式拼写
+     *        （`Favourite` 是英式，`Favorite` 是美式 —— 这句文案不该成为
+     *         决定全站拼写风格的那一处）。
+     *    ⚠️ 这是一次**有意识的用词不统一**，不是漏改；若将来全站统一拼写风格，
+     *    这两条应当一起纳入考虑，而不是单独改成 `favourited`。
+     *
+     * ⚠️ 插值必须写**双**花括号 `{{count}}`：i18next 对单花括号的 `{count}`
+     *    **不替换、原样显示**（实测 `t('... {count}', { count: 3 })` → `"… {count}"`）。
+     *    第一版这里漏写成单花括号，英文界面上会直接显示成字面的 `{count} saved` ——
+     *    与 zh-CN 那份（`收藏 {{count}}`）不一致，而**对齐测试查不出这个**
+     *    （它比的是键，不是值的内容）。
+     */
+    favoriteCount: '{{count}} saved',
+    noFavoriteYet: 'No saves yet',
   },
   /**
    * Calendar (M4).
@@ -764,6 +837,61 @@ export const en: TranslationSchema = {
       'Calendar clients usually refresh every few hours to a day, so an event approved just now will not show up on the phone immediately.',
     icsPublishedOnly:
       'Only published events go into the subscription. Pending and rejected ones do not — they appear automatically once approved.',
+
+    /**
+     * ③ Top-of-page anchor shown after the subscribe block moved to the bottom.
+     *
+     * ⚠️ This link is part of the move, not an optional extra: "you can find the
+     *    subscribe entry" was an acceptance criterion for the original layout.
+     * ⚠️ It is **not** a second subscribe entry — copying the link and the
+     *    step-by-step instructions still live in exactly one place, at the bottom.
+     */
+    icsJump: 'Subscribe ↓',
+
+    // -------------------------------------------------------------------------
+    // Event series (③)
+    //
+    // Series are a real entity (the `calendar_series` table): the form either
+    // picks an existing series or creates a new one.
+    //
+    // ⚠️ Series are **public** (§9-5): listing and searching need no login, so
+    //    there is deliberately no "log in to search" line here — that line makes
+    //    anonymous visitors think they are locked out while they are not.
+    // -------------------------------------------------------------------------
+    seriesSectionTitle: 'Event series',
+    seriesSectionHint: 'Editions of the same event are grouped when they share a series name.',
+    seriesSearch: 'Search series',
+    /**
+     * ⚠️ A different message from `seriesEmpty`, deliberately: this one means
+     *    "searched, nothing matched"; `seriesEmpty` means "there are no series yet".
+     *    Merging them makes users think the data is gone instead of their query missing.
+     */
+    seriesNoMatch: 'No matching series',
+    seriesEmpty: 'No event series yet',
+    /**
+     * ⚠️ `{{count}}` is i18next's interpolation syntax (single braces render literally).
+     *
+     * ⚠️ The noun must be in the string. `'{{count}} upcoming'` read as a half sentence
+     *    ("3 upcoming") and it also described something other than what the number means:
+     *    the count is "published events of this series that have not ended yet"
+     *    (`services/api/src/calendar/events.ts:970`, `COALESCE(ends_at_utc, starts_at_utc) >= now`)
+     *    — an event that is running right now is counted too, and "upcoming" would be wrong
+     *    for it. zh-CN (`'{{count}} 场未结束'`) has always said "not finished yet".
+     *
+     * ⚠️ Do **not** add plural-suffix keys (`seriesCount_one` / `_other`): this repo has no
+     *    plural suffixes at all (F27), counted strings are single-key + `{{count}}`, and the
+     *    `(s)` form is the established way here (see `marks.ratingCount`, `calendar.resultCount`).
+     */
+    seriesCount: '{{count}} event(s) not finished yet',
+    seriesNoneUpcoming: 'No upcoming events',
+    seriesFilterActive: 'Series: {{name}}',
+    seriesFilterClear: 'Clear series filter',
+    seriesField: 'Series',
+    seriesFieldHint:
+      'Optional. Use the same name for different editions of the same event; the calendar page groups them at the bottom.',
+    seriesCreate: 'New series',
+    /** Hitting `COLLATE NOCASE UNIQUE` on `POST /api/calendar/series` (`reason: 'series_name_taken'`). */
+    seriesNameTaken: 'That series name is already taken.',
 
     // -------------------------------------------------------------------------
     // Detail page
@@ -1465,9 +1593,24 @@ export const en: TranslationSchema = {
      *    clearly turned channel embedding on and sees nothing, so they conclude
      *    the page is broken — when the real cause is that the handle is not a
      *    `UC...` channel id.
+     *
+     * ⚠️ `noEmbedPlatform` used to read "unverified" — that was **false**: all
+     *    three platforms have been tested, and "could not reach it from this
+     *    machine" is not "untested" (Twitch resolved once tested via Hong Kong).
+     *    It now serves the **generic** case, `'no_origin'`: without an `origin`,
+     *    `liveEmbedDecision()` cannot build Twitch's `parent`, so "cannot embed
+     *    here" holds while "the platform forbids it" does not.
+     *
+     * ★ Bilibili therefore gets its **own** string (`noEmbedBilibili`) — a
+     *   *settled* state: `x-frame-options: SAMEORIGIN` forbids embedding. The
+     *   two must not be merged, or we recreate the very lie this change removes.
+     *   The key name stays and only the value changes so that `LiveCard`'s
+     *   exhaustive map and the `liverender` assertion keep working within one
+     *   change.
      */
-    noEmbedPlatform:
-      'Live embedding for this platform is unverified, so this row links out instead.',
+    noEmbedPlatform: 'This platform cannot be embedded here. Open the original site instead.',
+    noEmbedBilibili:
+      'Bilibili does not allow its live rooms to be embedded on other sites (it blocks them itself). Open the live room instead.',
     noEmbedNoId: 'This row has no live video id recorded, so there is no player.',
     noEmbedNotChannelId:
       'Channel embedding is on for this row, but the handle is not a UC… channel id, so it cannot embed (that mode only accepts those).',
@@ -1475,6 +1618,45 @@ export const en: TranslationSchema = {
     empty: 'No channels recorded yet',
     emptyHint: 'This list is kept by the content editors and changes slowly.',
     loadFailed: 'Failed to load. Please try again later.',
+  },
+  /**
+   * ④=B "My live links" — the signed-in user's **own** links.
+   *
+   * A separate section rather than folded into `live`: that one is read by
+   * **visitors** (the public list), this one by the user managing their own
+   * private links. One difference is decisive — every row here is visible to
+   * **that user alone**, so the copy must never say things like "it will show
+   * up in the list right away" or "submitted for review": those are **false**
+   * under the personal model. (That whole 15-string `liveSubmit.*` group was
+   * retired with ④=B. Do not revive it.)
+   */
+  myLive: {
+    title: 'My links',
+    addHint: 'Just paste the link to the channel page.',
+    addAction: 'Add',
+    saveAction: 'Save',
+    deleteAction: 'Delete',
+    /*
+     * "Edit" — the inline-edit affordance (t37: `updateMyLiveLink` had no caller).
+     *
+     * ⚠️ Deliberately different from `saveAction`: that one is the submit button
+     *    **inside** the form, this one **expands** the row into a form. Both can be
+     *    on screen at once, so sharing a word would leave users unsure which to press.
+     */
+    editAction: 'Edit',
+    deleteConfirm: 'Delete this one?',
+    empty: 'Nothing added yet.',
+    needLogin: 'Sign in to save your own live channel links here.',
+    gotoLogin: 'Sign in',
+    /*
+     * Three possible outcomes for a link, and they must stay separate.
+     * Getting one wrong sends the user to click something they should not —
+     * or makes them think the page is broken.
+     */
+    embedOk: 'This one plays right here.',
+    linkOnly:
+      'We cannot tell which platform this link belongs to, so the original site is all we can offer.',
+    notSupported: 'This platform cannot be played in-page. Open the original site instead.',
   },
   /**
    * The **editing** UI for the live list (editors and above only).
@@ -1568,5 +1750,42 @@ export const en: TranslationSchema = {
     errNameRequired: 'A name is required.',
     errSortOrder: 'Order must be a whole number from 0 to 9999 (lower comes first).',
     errGeneric: 'A field did not pass validation — check the ones marked above.',
+  },
+  /**
+   * ② Direct authoring — the content-editor path that bypasses the review queue.
+   *
+   * A separate namespace from `resources` / `calendar` / `videos` because the
+   * reader is different: those sections are the words a **submitter** sees,
+   * this one is what an **editor** sees when their change will go live at once.
+   * Mixing them would blur the one distinction that matters most here:
+   * a direct edit takes effect immediately, a submission does not.
+   *
+   * ⚠️ Every string that says "no review" must stay explicit. The whole risk of
+   *    this feature is an editor believing they are submitting for review when
+   *    they are actually publishing.
+   */
+  authoring: {
+    directPublish: 'Publish directly (no review)',
+    directSave: 'Save directly (no review)',
+    directHint:
+      'You are a content editor: this change goes live immediately (no review queue) and is recorded in the audit log.',
+    published: 'Published — live now.',
+    saved: 'Saved — the live version is updated.',
+    /*
+     * ⚠️ This one has to explain the *consequence*, not just refuse. The editor
+     *    asked for a direct edit and got a 409; if we only say "there is a
+     *    pending change", they will retry, or look for another way in, instead
+     *    of doing the one thing that actually unblocks them.
+     */
+    alreadyPending:
+      'There is a pending change on this entry. Reject or approve it first: otherwise your direct edit is silently rolled back the moment that change is approved.',
+    deleteTitle: 'Delete this entry',
+    deleteAction: 'Delete',
+    deleteImpact:
+      "Deleting also removes the version history; for library entries it removes everyone's saves, notes and ratings. This cannot be undone.",
+    mustHideFirst: 'Take it offline first: deletion is irreversible, hiding is not.',
+    deleted: 'Deleted.',
+    deleteConfirmYes: 'Delete for good',
+    deleteConfirmNo: 'Keep it',
   },
 };

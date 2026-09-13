@@ -278,6 +278,12 @@ videosRoute.post('/videos', requireCapability('video.submit'), async (c) => {
        * 而漂移的表现是"界面说支持、播放器不跳"，没有人会把它当成 bug 报上来。
        */
       startOffsetSupported: platformSupportsStartOffset(link.platform),
+      /*
+       * ⚠️ `liveRevisionUnchanged: false`（spec §3.2b）：视频**没有审核**，贴上来就是可见的
+       *    ⇒ "线上那一版没变"**不成立**。这里的 false 是"已经生效"，不是"失败了"——
+       *    字段名里的 "Revision" 对没有版本表的内容只是"线上那一行"的意思。
+       */
+      liveRevisionUnchanged: false,
     },
     201,
   );

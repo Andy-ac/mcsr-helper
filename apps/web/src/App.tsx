@@ -77,6 +77,14 @@ const CalendarEditPage = lazy(() =>
   import('@/routes/CalendarEdit').then((m) => ({ default: m.CalendarEdit })),
 );
 const VideosPage = lazy(() => import('@/routes/Videos').then((m) => ({ default: m.Videos })));
+/**
+ * 视频编辑页（需求②，t14）—— 懒加载，理由同其它次级页面：
+ * 它只有 `content.author`（editor 及以上）会打开，
+ * 让只来看墙的访客为首屏之后不会发生的事付下载成本没有意义。
+ */
+const VideoEditPage = lazy(() =>
+  import('@/routes/VideoEdit').then((m) => ({ default: m.VideoEdit })),
+);
 const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.Seeds })));
 /**
  * 「直播」板块（与「娱乐视频」并列）。
@@ -257,6 +265,21 @@ export default function App() {
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <VideosPage />
+              </Suspense>
+            }
+          />
+          {/*
+            ⚠️ `/videos/:id/edit` 必须排在 `/videos` 之后吗？**不需要** ——
+                react-router 按"具体段优先"，多一段的路径永远不会被 `/videos` 吃掉。
+                和 `/resources/:id/edit`、`/calendar/:id/edit` 同一个形状。
+            ⚠️ 它是 `/videos` 的**子路径**而不是一个独立的编辑板块：
+                视频不审核，所以这里做的是"改"，不是"提审"（见 `VideoEdit` 的头注释）。
+          */}
+          <Route
+            path="/videos/:id/edit"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <VideoEditPage />
               </Suspense>
             }
           />

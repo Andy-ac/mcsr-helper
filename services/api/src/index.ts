@@ -14,6 +14,7 @@ import { getDb } from './db';
 import { checkMailConfig, mailDriverName } from './email/transport';
 import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
+import { authoringRoute } from './routes/authoring';
 import { calendarRoute } from './routes/calendar';
 import { desktopRoute } from './routes/desktop';
 import { liveRoute } from './routes/live';
@@ -141,6 +142,14 @@ app.route('/api', marksRoute);
 app.route('/api', adminRoute);
 // 桌面客户端的分发信息（公开读）。见 routes/desktop.ts 的文件头。
 app.route('/api', desktopRoute);
+/*
+ * ② 直编（`content.author`；硬删走 shared 的谓词 `canHardDelete`）。
+ *
+ * ⚠️ 它**绕过审核快照、直接写线上那一行** —— 这是本仓唯一一组这样的端点，
+ *    所以刻意单独一个文件、单独一行挂载，好让"哪些接口能绕开审核"一眼可见
+ *    （见 routes/authoring.ts 的文件头）。
+ */
+app.route('/api/authoring', authoringRoute);
 // 通用审核接口（跨内容类型）。加一类内容要改的是 review/registry.ts，
 // 不是这里 —— 见 routes/review.ts 的文件头。
 app.route('/api', reviewRoute);

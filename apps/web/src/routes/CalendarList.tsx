@@ -20,7 +20,8 @@ import {
 } from '@/components/CalendarGrid';
 import { CalendarIcsSubscribe } from '@/components/CalendarIcsSubscribe';
 import { CalendarMonthNav } from '@/components/CalendarMonthNav';
-import { type CalendarListResponse, fetchCalendarEvents } from '@/lib/api';
+import { CalendarSeriesSection } from '@/components/CalendarSeriesSection';
+import { type CalendarListResponse, fetchCalendarEvents, fetchCalendarSeries } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { CALENDAR_PAGE_SIZE } from '@/lib/calendarFormat';
 import { useAsync } from '@/lib/useAsync';
@@ -268,6 +269,29 @@ export function CalendarList() {
   const showPast = params.get('past') === '1';
   const page = Math.max(Number(params.get('page') ?? '1') || 1, 1);
 
+  /*
+   * 系列活动（需求③）。
+   *
+   * ⚠️ 筛选状态放 URL（`?seriesId=`），和这个页面其它筛选同一条约定：
+   *    刷新不丢、能分享、后退键符合直觉。**它同时是"点进去看该系列的事件"的载体** ——
+   *    栏目里点一个系列就是写这个参数，不再另开页面。
+   *
+   * ⚠️ 搜索词**不进 URL**，放在本地 state（`seriesQuery`）。理由和资源库的
+   *    `searchInput` 一样：直接绑 URL 的话每敲一个字都会产生一条历史记录，
+   *    后退键会变成"一个字一个字地退"。而它又**不参与取数**（客户端过滤），
+   *    所以没有"URL 与输入框不同步"的问题。
+   */
+  const seriesId = params.get('seriesId');
+  const [seriesQuery, setSeriesQuery] = useState('');
+
+  /*
+   * 系列列表：**一次取回、之后全在客户端筛**（spec D3.9）。
+   *
+   * ⚠️ 不传 `seriesQuery` 进依赖数组：它只影响展示层过滤，进依赖会让每敲一个字
+   *    都重新请求一次 —— 而服务端根本不收这个参数，那几次请求的返回值**一模一样**。
+   */
+  const series = useAsync((signal) => fetchCalendarSeries(signal), []);
+
   const dirty =
     tags.length !== CALENDAR_TAGS.length ||
     level !== null ||
@@ -425,10 +449,15 @@ export function CalendarList() {
       level,
       scope,
       stage,
+      /*
+       * 系列筛选（需求③）。列表视图**服务端筛**（它是无限长的，客户端筛不了），
+       * 月视图走下面的客户端筛 —— 两个视图各自回到既有范式，不发明第三种。
+       */
+      seriesId,
       page,
       pageSize: CALENDAR_PAGE_SIZE,
     }),
-    [showPast, tags, level, scope, stage, page],
+    [showPast, tags, level, scope, stage, seriesId, page],
   );
 
   const list = useAsync(
@@ -467,9 +496,15 @@ export function CalendarList() {
       if (level !== null && e.level !== level) return false;
       if (scope !== null && e.scope !== scope) return false;
       if (stage !== null && e.stage !== stage) return false;
+      /*
+       * 系列筛选（需求③）。⚠️ 比的是 **id**（事件行上只有这一个指针），
+       * 不是名字 —— 服务端 LEFT JOIN 出来的 `seriesName` 只用来**显示**。
+       * 拿名字比会让"改过名的系列"漏掉全部老事件，而且不报错。
+       */
+      if (seriesId !== null && e.seriesId !== seriesId) return false;
       return true;
     });
-  }, [rawEvents, tags, level, scope, stage]);
+  }, [rawEvents, tags, level, scope, stage, seriesId]);
 
   const byDate = useMemo(() => eventsByDate(filtered), [filtered]);
 
@@ -494,6 +529,16 @@ export function CalendarList() {
 
   const totalPages =
     list.status === 'ok' ? Math.max(1, Math.ceil(list.data.total / CALENDAR_PAGE_SIZE)) : 1;
+
+  /*
+   * 当前筛的是哪个系列 —— **一处定义、两处使用**（顶部状态条 + 底部栏目高亮）。
+   * ⚠️ 找不到时返回 null（而不是一个 `{ name: '' }` 之类的假对象）：
+   *    两处都必须能表达"这个名字还不知道"，见状态条那段的注释。
+   */
+  const activeSeries =
+    seriesId && series.status === 'ok'
+      ? (series.data.items.find((s) => s.id === seriesId) ?? null)
+      : null;
 
   return (
     <>
@@ -549,6 +594,21 @@ export function CalendarList() {
               + {t('calendar.submitAction')}
             </Link>
           ) : null}
+
+          {/*
+            ★ 顶部锚点（需求③ 的配套件，**不是可选项**）。
+            ⚠️ 订阅块被下移到页面底部之后，"找得到它"这件事就没了保障 ——
+               而 M4 当年正是把它放在筛选栏之后才让它可以被找到（验收标准之一）。
+               所以下移必须配这一条：一次点击换回"别让一次性动作用掉首屏"。
+            ⚠️ 它**不是第二个订阅入口**：复制链接与那几步分步说明仍然只有底部一处。
+               这里只是一个锚点，没有第二份可复制的内容。
+            ⚠️ 用普通 `<a href="#ics">` 而不是 react-router 的 `<Link>`：这是**页内**
+               跳转，走 Link 会把它当成一次路由变化（页面重挂、滚动位置被重置），
+               而原生锚点由浏览器直接处理，也自带焦点转移。
+          */}
+          <a className="pagehead__action authform__link" href="#ics">
+            {t('calendar.icsJump')}
+          </a>
         </div>
         <p className="pagehead__sub">{t('calendar.listSubtitle')}</p>
       </header>
@@ -572,7 +632,34 @@ export function CalendarList() {
         onShowPast={view === 'list' ? setShowPast : undefined}
       />
 
-      <CalendarIcsSubscribe />
+      {/*
+        ★ 系列筛选状态条（需求③）。
+        ⚠️ 它是"当前正在看哪个系列"的**唯一**提示 —— 系列**不往筛选栏里加第五个维度**
+           （那是 A3.3 否决的：取值集合开放、会打破 `check:grid` 守着的 4 个维度）。
+           没有这条状态条，用户点了栏目里的一个系列之后，页面会"少了一大半内容"
+           而看不出为什么。
+        ⚠️ 只在**系列确实加载到了**才显示名字（`series.data.items.find`）。
+           拿不到时**不显示这一条**，而不是显示一个空名字：一个写着"正在看："的
+           状态条比没有更让人困惑，而这种时刻恰恰是"到底筛没筛"最需要说清的时候。
+      */}
+      {activeSeries ? (
+        <div className="series__statusbar">
+          <span>{t('calendar.seriesFilterActive', { name: activeSeries.name })}</span>
+          <button
+            type="button"
+            className="filters__clear"
+            onClick={() =>
+              write((p) => {
+                p.delete('seriesId');
+                // 换筛选要回到第一页（和其它筛选同一个约定）
+                p.delete('page');
+              })
+            }
+          >
+            {t('calendar.seriesFilterClear')}
+          </button>
+        </div>
+      ) : null}
 
       {view === 'month' ? (
         <>
@@ -705,6 +792,37 @@ export function CalendarList() {
           )}
         </div>
       )}
+
+      {/*
+        ========================================================================
+        页面底部区域（需求③）：先「订阅日历」，再「系列活动」。
+        ========================================================================
+
+        ⚠️ **顺序是 spec D3.1b 定的**：«内容（网格/列表 + 分页）→ 订阅块 → 系列栏目»。
+           也就是说"下移到页面底部"应当理解为**底部区域**，而不是"必须是最后一个元素"。
+           两种顺序都满足需求，改起来只是一次 JSX 调序 —— 写在这里是为了让下一个人
+           知道这是**定过的口径**，不是随手排的。
+
+        ⚠️ **两个视图共用这一处**（不在 `view === 'month'` 的两个分支里各放一次）：
+           放两份的话，"切一下视图订阅入口就换了位置"是最容易被当成 bug 的一类不一致。
+      */}
+      <CalendarIcsSubscribe />
+
+      <CalendarSeriesSection
+        items={series.status === 'ok' ? series.data.items : []}
+        query={seriesQuery}
+        onQueryChange={setSeriesQuery}
+        selectedId={seriesId}
+        onSelect={(id) =>
+          write((p) => {
+            p.set('seriesId', id);
+            // 换筛选要回到第一页：停在第三页而结果只剩一页的话，用户看到的是一片空白
+            p.delete('page');
+          })
+        }
+        status={series.status}
+        errorText={series.status === 'error' ? series.error : null}
+      />
     </>
   );
 }

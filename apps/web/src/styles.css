@@ -1119,6 +1119,23 @@ html:not(.vt) .route-fade {
   margin-right: 2px;
 }
 
+/*
+ * 卡片脚部的收藏数（需求⑤）。
+ *
+ * ⚠️ 用 `--gold` 是因为"收藏"在站上的既有符号就是金星（`MarksPanel` 的
+ *    `★`、`RatingStars`），而 `--gold` 也是徽章里 `featured` 用的那个色。
+ *    这不是新配色，是复用既有语义色。
+ * ⚠️ 字号与 `.rescard__host` 对齐：它们在脚部同一行里，差一档会显得没对齐。
+ */
+.rescard__favorites {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--gold);
+}
+
 /* ==================================================================
    徽章
    ================================================================== */
@@ -2968,6 +2985,27 @@ textarea.mcsr-field__input {
   gap: 10px;
   margin-bottom: 10px;
 }
+
+/*
+ * 详情页的收藏数（需求⑤）。
+ *
+ * ⚠️ 它**不是** `.rating` 的变体，所以没有复用那一族的类名：两者是相邻但
+ *    不同的两件事（一个是评分的平均分+人数，一个是收藏人数），共用类名会让
+ *    "改评分样式顺手改了收藏数"变成默认行为。样式上刻意与 `.rating` 对齐
+ *    （同一行、同字号、同样的金色星星），那是对齐而不是同源。
+ */
+.marks__favcount {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--gold);
+}
+/* 0 的时候那句"还没有人收藏"是**说明**，不是数字 —— 用弱色，别抢眼 */
+.marks__favcount--empty {
+  color: var(--fg-faint);
+}
 .marks__row {
   display: flex;
   align-items: center;
@@ -3264,6 +3302,13 @@ textarea.mcsr-field__input {
   padding: 18px;
   margin-bottom: 22px;
   box-shadow: var(--sh-1);
+  /*
+   * 需求③ 把这一块下移到页面底部，顶部那条 `#ics` 锚点会跳到这里。
+   * ⚠️ 没有这一行时，锚点会把这个块的**顶边**对到视口顶边 —— 而它在视觉上
+   *    正好贴着上一块的底边，看起来像"跳到了一个没有标题的地方"。
+   *    留出标题那一行的高度，落点才是"这一块的开始"。
+   */
+  scroll-margin-top: 24px;
 }
 .calendar-ics__title {
   font-family: var(--font-pixel);
@@ -3361,6 +3406,152 @@ textarea.mcsr-field__input {
   color: var(--fg-faint);
   margin: 12px 0 0;
   line-height: 1.8;
+}
+
+/* ==================================================================
+   系列活动（需求③）—— 日历页底部那一栏
+   ==================================================================
+   它和上面的 `.calendar-ics` 刻意用**同一族形状语言**（surface + 1px 细线 +
+   圆角 + 同一个 margin），因为它们在页面上是上下相邻的两块"页面级"内容；
+   形状不同会让底部看起来像两个来源不同的拼贴。
+   而它与下面的**列表**不同类（一个是筛选入口、一个是内容），所以靠
+   `.series__item` 的按钮形态区分，不靠容器区分。 */
+.series {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  margin-bottom: 22px;
+  scroll-margin-top: 24px;
+}
+.series__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--gold);
+  margin: 0 0 8px;
+}
+.series__hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  max-width: 70ch;
+}
+.series__search {
+  margin-bottom: 14px;
+}
+.series__search input {
+  width: 100%;
+  max-width: 320px;
+}
+
+/* 筛选状态条：贴在内容区顶部，说清"现在正在看哪个系列" */
+.series__statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  border-left: 3px solid var(--gold);
+  background: var(--surface);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+
+.series__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+/* 一行一个系列：整行可点（和 `.rescard` 同一条"点哪里都能进"的约定） */
+.series__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.series__item:hover {
+  border-color: var(--gold);
+}
+/*
+ * ⚠️ 选中态**只靠左边框**，不改背景色：这一栏是"点进去筛内容"的入口，
+ *    而列表里其余部分才是被筛的内容 —— 整块变色会让它看起来像被选中的内容。
+ *    与站内其它"选中"（草绿填充的 chip）刻意不同：那是筛选控件，这是导航入口。
+ */
+.series__item--on {
+  border-left: 3px solid var(--gold);
+}
+.series__name {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+.series__meta {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+.series__next {
+  margin-left: auto;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--diamond);
+}
+
+/* ==================================================================
+   危险区：真删（需求②，只有 owner 看得到这一块）
+   ==================================================================
+   ⚠️ 用红石色（`--redstone` = 本仓的"破坏性"语义色）**只在边框和标题上**，
+   按钮本体交给既有的 `.dangerbtn`：那一族已经定好了危险按钮的样子，
+   这里再画一套会出现"两个长得不一样的删除按钮"。 */
+.dangerzone {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid rgba(232, 86, 74, 0.35);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.dangerzone__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+  margin: 0 0 8px;
+}
+/* 这句话是**知情同意**，不是装饰 —— 所以给它正文级可读性，而不是一行小灰字 */
+.dangerzone__impact {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  max-width: 70ch;
+}
+.dangerzone__confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/*
+ * editor/admin 那一档的"先下架，再删除"说明（需求② 两档）。
+ * ⚠️ 用正文级可读性而不是一行小灰字：它是**下一步该做什么**的指路，不是脚注 ——
+ *    少了它，编辑就只会反复点那个必然 409 的按钮（见 submissionErrors.ts 的注释）。
+ */
+.dangerzone__hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  max-width: 70ch;
 }
 
 /* ---- 详情页的时间块 ---- */
@@ -4724,6 +4915,90 @@ html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
   margin: 0 0 12px;
   font-size: 14px;
   color: var(--fg);
+}
+
+/* ---- 「我的链接」（需求④=B）：私人列表 ---- */
+/*
+ * ⚠️ 它**故意长得和公开名单（`.live-list` / `.live-card`）不一样**：
+ *    两者在同一页上、都叫"直播"，但一个是"编辑维护的公开名单"，
+ *    另一个是"我自己的链接"。长得一样的话，用户会以为自己也进了那份公开名单 ——
+ *    而那是这一整条需求（④=B 个人化模型）明确否掉的。
+ *    所以这里用：① 左边一条竖线 ② 单列（不是自适应网格）③ 稍暗的底色。
+ */
+.mylive {
+  margin-top: 40px;
+  padding-top: 24px;
+  /* 与编辑面板同一个做法：一条分界线把它和"访客看的名单"分开 */
+  border-top: 1px solid var(--line);
+}
+
+.mylive__title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  color: var(--fg);
+}
+
+.mylive-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mylive-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  /* 左边一条竖线 = "这是我自己的东西"，与公开名单的卡片区分开 */
+  border-left: 3px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.mylive-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mylive-row__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  /* 用户可能是直接贴链接、没起名字 —— 那种标题很长，不能把行撑破 */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * "为什么没有播放器"那一句 —— **中性色，不是错误色**。
+ * 与 `.live-card__noembed` 同一判断：多数情况下这是**正常状态**
+ * （链接认不出平台 / 平台不许嵌），报警式配色会让用户以为自己做错了什么。
+ */
+.mylive-row__why {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.8;
+  color: var(--fg-faint);
+}
+
+.mylive-row__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mylive-row__confirm {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
 }
 
 /* ---- 资源库「视频资料」里嵌出来的播放器 ---- */

@@ -188,6 +188,56 @@ export function ratingsFor(resourceIds: string[]): Map<string, RatingSummary> {
   return out;
 }
 
+/**
+ * 多条内容的**收藏数**聚合（列表页用）。
+ *
+ * ⚠️ 与 `ratingsFor` **逐字同形**，理由也一模一样：列表一页 24 条，每条查一次
+ *    就是 24 次查询，而它本来只需要一次 `GROUP BY`。这不是"顺手优化"，
+ *    而是本仓对列表聚合的既有形状 —— 两处的写法必须看起来一样，
+ *    否则下一个人只会照着其中一处改。
+ *
+ * ⚠️ **只数 `favorite = 1` 的行**。`resource_marks` 里一个人只要写过**备注或评分**
+ *    就会有一行（`setMarks` 把三项合在一行里），把那种行也算进来，这个数字就变成
+ *    "标记过它的人数"，而界面上写的是"收藏" —— 那是两个不同的数。
+ *    （迁移 013 的 `idx_marks_favorite ... WHERE favorite = 1` 正是服务这条查询的。）
+ *
+ * ⚠️ 返回 **Map，查不到的 id 由调用方补 0**，而不是在这里把传入的 id 全部填满：
+ *    调用方本来就要 `?? 0`；而那个 `0` 必须是**真的 0**（没有人收藏就是 0），
+ *    不能变成 `undefined` —— 字段在契约里是**必填非空**的。
+ */
+export function favoritesFor(resourceIds: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (resourceIds.length === 0) return out;
+
+  const placeholders = resourceIds.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare(
+      `SELECT resource_id, COUNT(*) AS n
+       FROM resource_marks
+       WHERE favorite = 1 AND resource_id IN (${placeholders})
+       GROUP BY resource_id`,
+    )
+    .all(...resourceIds) as unknown as Array<{ resource_id: string; n: number }>;
+
+  for (const row of rows) out.set(row.resource_id, Number(row.n));
+  return out;
+}
+
+/**
+ * 单条内容的收藏数（详情页用，与 `ratingOf` 对应）。
+ *
+ * ⚠️ **没有人收藏时必须回 0，不是 null**：契约里 `favoriteCount` 是必填的
+ *    `number`（见 shared/resources.ts 的 `FavoriteCountSchema`）。收藏数没有
+ *    "还没有这个数据"这种状态 —— `0` 就是 0，这与 `rating.average` 为 null
+ *    表示"还没有人评过分"是两种情况，不能互相套用。
+ */
+export function favoriteCountOf(resourceId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM resource_marks WHERE favorite = 1 AND resource_id = ?')
+    .get(resourceId) as { n: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
 /** 把 SQL 的 AVG/COUNT 结果整成对外的形状：没评过分时 average 是 null，不是 0。 */
 function summarize(row: { avg: number | null; n: number } | undefined): RatingSummary {
   const count = Number(row?.n ?? 0);

@@ -24,6 +24,11 @@ export function ResourceCard({
 }) {
   const { t } = useTranslation();
   const titleId = `restitle-${item.id}`;
+  /*
+   * 收藏数（需求⑤）。`?? 0` 的理由见脚部那段注释 —— 服务端字段就位之前这里是
+   * `undefined`，兜成 0 会让这一格静默不显示，而不是渲染出 "undefined"。
+   */
+  const favoriteCount = item.favoriteCount ?? 0;
 
   return (
     <li>
@@ -91,6 +96,35 @@ export function ResourceCard({
                 {tag}
               </span>
             ))}
+            {/*
+              ★ 收藏数（需求⑤）。
+
+              ⚠️ **只在 `> 0` 时渲染**（spec D5.5）：每张卡都挂一个「收藏 0」
+                 既是噪音，也和评分在卡片上的处理不一致 —— 评分在卡片上
+                 **不显示**、只在详情页显示"暂无评分"。
+
+              ⚠️ `?? 0` 是刻意的兜底，不是多余的：服务端把字段加回来之前
+                 （t3 并行在做）这里会拿到 `undefined`，而 `undefined > 0`
+                 是 false ⇒ 这一格**静默不显示**，页面不会崩。它不改变契约
+                 （类型仍是必填 number）；真正的值是服务端给的。
+
+              ⚠️ 显示成 `★ N` 而不是 `t('marks.favoriteCount')`（"收藏 N"）：
+                 卡片脚部那一行是**窄栏**（host + 标签），完整文案在那里会挤爆；
+                 完整的话留给 `title`（悬停可见），而且**不是**丢掉可读性 ——
+                 屏幕阅读器读到的就是这句（星级符号是 aria-hidden）。
+                 这里刻意复用**同一个词条**：数字的措辞只有一处定义。
+            */}
+            {favoriteCount > 0 ? (
+              <span
+                className="rescard__favorites"
+                title={t('marks.favoriteCount', { count: favoriteCount })}
+              >
+                <span aria-hidden="true">★</span> {favoriteCount}
+                <span className="sr-only">
+                  {t('marks.favoriteCount', { count: favoriteCount })}
+                </span>
+              </span>
+            ) : null}
           </div>
         </div>
       </Link>

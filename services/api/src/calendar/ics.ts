@@ -254,6 +254,15 @@ function eventLines(event: CalendarEvent, opts: IcsOptions): string[] {
     ...(event.stage ? [event.stage] : []),
     ...(event.level ? [event.level] : []),
     ...(event.scope ? [event.scope] : []),
+    /*
+     * ③ 系列名（013）。它和上面几项是同一类东西（"这场赛事属于哪一摊"），
+     * 所以走同一个属性；`escapeIcsText` 已经会转义逗号（见它的实现），
+     * 所以系列名里的标点不会拼出一个坏值。
+     *
+     * ⚠️ 用的是 `seriesName`（LEFT JOIN 出来的显示名），不是 `seriesId` ——
+     *    日历客户端里出现一串十六进制 id 对人没有意义。
+     */
+    ...(event.seriesName ? [event.seriesName] : []),
   ];
   if (categories.length > 0) {
     push(prop('CATEGORIES', categories.map(escapeIcsText).join(',')));

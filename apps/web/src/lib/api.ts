@@ -12,8 +12,20 @@
 //    （它住在 constants.ts），而 package.json 的 exports 里没有 "./constants"。
 import type { VideoPlatform } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
-import type { CalendarEvent, CalendarEventInput } from '@mcsr/shared/calendar';
-import type { LiveChannel, LiveChannelInput } from '@mcsr/shared/live';
+import type {
+  CalendarEvent,
+  CalendarEventInput,
+  CalendarSeries,
+  CalendarSeriesInput,
+  CalendarSeriesList,
+} from '@mcsr/shared/calendar';
+import type {
+  LiveChannel,
+  LiveChannelInput,
+  UserLiveLink,
+  UserLiveLinkInput,
+  UserLiveLinkPatch,
+} from '@mcsr/shared/live';
 import type { UserRole } from '@mcsr/shared/permissions';
 import type {
   FavoriteItem,
@@ -697,6 +709,14 @@ export interface CalendarQuery {
   level?: string | null;
   scope?: string | null;
   stage?: string | null;
+  /**
+   * 系列筛选（需求③）。
+   *
+   * ⚠️ 参数名是 **`seriesId`**（系列的 id），**不是**系列名 —— 事件行上只有这一个
+   *    指针，名字由服务端 LEFT JOIN 出来（见 `shared/calendar.ts` 的 `seriesId` 说明）。
+   *    传名字上去服务端只当"不限"，表现是"筛选点了没反应"，而不会有任何报错。
+   */
+  seriesId?: string | null;
   page?: number;
   pageSize?: number;
 }
@@ -726,6 +746,9 @@ export function fetchCalendarEvents(
   if (query.level) params.set('level', query.level);
   if (query.scope) params.set('scope', query.scope);
   if (query.stage) params.set('stage', query.stage);
+  // 系列筛选（需求③）。**空串/不传都不拼**：服务端把空串当"不限"，
+  // 留着 `?seriesId=` 只会让分享出去的链接看起来像"筛过什么"。
+  if (query.seriesId) params.set('seriesId', query.seriesId);
   if (query.page && query.page > 1) params.set('page', String(query.page));
   if (query.pageSize) params.set('pageSize', String(query.pageSize));
   const s = params.toString();
@@ -783,6 +806,55 @@ export function updateCalendarEvent(
 }
 
 /**
+ * 全部系列（`GET /api/calendar/series`）—— 需求③ 的「系列活动」栏目的数据源。
+ *
+ * ⚠️ **公开**：匿名访客也能看也能搜（spec §9-5 的裁决把"按字面挡游客"**否决**了），
+ *    所以这里**没有**登录判断，`seriesNeedLogin` 那条词条也已随裁决删除。
+ *    前端因此不需要"未登录只显示登录入口"那条分支 —— 加它会挡住本来能看的访客。
+ *
+ * ⚠️ **不带分页参数**：系列是人眼能扫完的量级（spec D3.9 的原话），
+ *    服务端也会按 `limit` 上限截断。真到需要分页那天，改这里一处即可。
+ *
+ * ⚠️ **不在前端重排**：排序（未结束的在前、按下一场时间升序）**服务端已排好**。
+ *    前端再排一次就是第二份排序规则，而两份规则一旦不一致，
+ *    表现只是"顺序看着怪"，不会有任何报错。
+ */
+export function fetchCalendarSeries(signal?: AbortSignal): Promise<CalendarSeriesList> {
+  return request<CalendarSeriesList>('/api/calendar/series', signal);
+}
+
+/**
+ * 新建一个系列（需求③ 的写路径，t17）。
+ *
+ * ⚠️ 权限是 **`content.author`**（editor 及以上）—— 与"谁能建系列"的裁决一致：
+ *    普通提交者从已有系列里选，选不到就留空。所以调用方必须先用
+ *    `useCan('content.author')` 决定**入口显不显示**；这里不做判断（服务端会 403）。
+ *
+ * ⚠️ 重名会回 **409 `invalid_state` + `reason: 'series_name_taken'`** ——
+ *    判重由 `calendar_series.name` 的 `COLLATE NOCASE UNIQUE` 决定（大小写变体算同一个）。
+ *    界面要把它显示成 `calendar.seriesNameTaken`，**不要**自己在前端查重：
+ *    前端查重必然与服务端的折叠规则漂移，而"看起来没重名、提交却被拒"最难解释。
+ */
+export function createCalendarSeries(
+  input: CalendarSeriesInput,
+): Promise<{ series: CalendarSeries }> {
+  return sendJson('POST', '/api/calendar/series', input);
+}
+
+/**
+ * 给一个系列改名（需求③）。
+ *
+ * ⚠️ 改名在"实体"模型下**是一条 UPDATE**（这正是当初选 (A) 而否掉"事件上挂名字"的理由之一：
+ *    后者要扫全部事件行）。所以这里不需要、也不该去动任何事件。
+ */
+export function renameCalendarSeries(
+  id: string,
+  input: CalendarSeriesInput,
+): Promise<{ series: CalendarSeries }> {
+  return sendJson('PATCH', `/api/calendar/series/${encodeURIComponent(id)}`, input);
+}
+
+/**
  * ICS 订阅地址（**绝对 URL**）。
  *
  * ⚠️ 它必须是**绝对**地址而不是 `/api/calendar.ics`：
@@ -809,6 +881,104 @@ export function calendarWebcalUrl(): string | null {
   if (!origin) return null;
   // https://host → webcal://host。换成 http 的话系统不会接管。
   return calendarIcsUrl().replace(/^https?:\/\//, 'webcal://');
+}
+
+// ---------------------------------------------------------------------------
+// 直接编辑（需求②）—— `/api/authoring/*`
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这一族端点的共同语义：**绕过审核快照、直接写线上那一行**。
+ *    它们是全站唯一会这么做的写路径，所以集中在 `/api/authoring/*` 下，
+ *    权限统一是 `content.author`（editor / admin / owner，**不含 reviewer**）。
+ *
+ * ⚠️ 前端只负责"把表单内容送过去"，**不判断权限**成不成立：`useCan('content.author')`
+ *    只决定按钮显不显示，真正的拦截在服务端（手动发请求会拿到 403）。
+ */
+
+/**
+ * 直编的结果。
+ *
+ * ⚠️ `liveRevisionUnchanged` **两条路都会返回**（提审为 `true`、直编为 `false`），
+ *    而且它是"这次改动有没有进线上那一行"的**唯一判据**。
+ *    前端不许按"我调的是哪个端点"去推它 —— 同一个端点对不同状态的条目
+ *    （已发布 / 草稿 / 待审）结果不同，推出来的会是对用户撒谎的那一种。
+ */
+export interface DirectWriteResult {
+  ok: true;
+  id: string;
+  revision: number;
+  status: string;
+  liveRevisionUnchanged: boolean;
+}
+
+/** 直接保存一条资料（写线上行，不进审核队列）。 */
+export function saveResourceDirect(
+  id: string,
+  input: ResourceSubmission,
+): Promise<DirectWriteResult> {
+  return sendJson('PATCH', `/api/authoring/resources/${encodeURIComponent(id)}`, input);
+}
+
+/** 直接发布一条新资料（`source` 由服务端强制为 `user`）。 */
+export function createResourceDirect(input: ResourceSubmission): Promise<DirectWriteResult> {
+  return sendJson('POST', '/api/authoring/resources', input);
+}
+
+/** 直接发布一场新活动（需求②，t14）—— 写线上行、不进审核队列。 */
+export function createCalendarEventDirect(input: CalendarEventInput): Promise<DirectWriteResult> {
+  return sendJson('POST', '/api/authoring/calendar', input);
+}
+
+/** 直接保存一场已有活动（需求②，t14）。 */
+export function saveCalendarEventDirect(
+  id: string,
+  input: CalendarEventInput,
+): Promise<DirectWriteResult> {
+  return sendJson('PATCH', `/api/authoring/calendar/${encodeURIComponent(id)}`, input);
+}
+
+/**
+ * 直接删除一场活动（需求②，t14）—— **一档：owner 与 editor/admin 都是一次调用直删**。
+ *
+ * ⚠️ 赛事与资料/视频**不同**，**不要**照抄那两类的两档写法：
+ *   · **赛事没有下架入口**（全仓没有任何把 `calendar_events.status` 写成 `'hidden'` 的地方），
+ *     所以"先下架，再删除"这一步在赛事上**不存在** —— 照抄会给出一个把人引向死路的提示；
+ *   · 赛事也**没有**收藏/备注这类连带数据（那才是"资料/视频要两档"的原因：
+ *     真删会 CASCADE 掉**别人**写的备注与评分）。
+ *   ⇒ 服务端 `DELETE /api/authoring/calendar/:id` 写死 `force: true`，判据只有能力/谓词。
+ */
+export function deleteCalendarEventDirect(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/authoring/calendar/${encodeURIComponent(id)}`);
+}
+
+/**
+ * 直接删除一条资料（真删，不可逆）—— **两档**（与删除视频**逐字同一条规则**）。
+ *
+ * ⚠️ 两档的**分界在路由层，不在这个函数里**：路由用 `force: isOwner` 决定要不要
+ *    跳过"先下架"，所以前端读到的两种结果是**两种不同的响应**，不是同一个码的变体：
+ *   · **owner**（`canHardDelete(role)`）⇒ 路由传 `force: true` ⇒ **任何 status 都直接删**；
+ *   · **editor / admin**（`content.author`）⇒ 路由传 `force: false` ⇒ 内容**还在线上**时
+ *     回 **409 `invalid_state` + `reason: 'must_hide_first'`**（先用
+ *     `PATCH /api/admin/resources/:id/visibility` 下架，下架可恢复）；
+ *   · **其它任何角色** ⇒ **403**（连 `content.author` 都没有）。
+ *
+ * ⚠️ 这条判据**曾经来回震荡过 (a)/(b)**，captain 已于 2026-09-13 **定案 (b) 并在服务端就地固定**
+ *    （两处路由都写成 (b)，注释里写明"不要再改回 (a)"）。⇒ **前端按 (b) 写，不要再根据
+ *    服务端源码去猜口径** —— 它以 `routes/authoring.ts` 为准并且不会再动。
+ *   **最终事实**（行号于 2026-09-13 核对）：
+ *     · **资料** `:182` → 两档（`:208` 是 `force: isOwner`）；
+ *     · **视频** `:473` → 两档（`:495` 是 `force: isOwner`），那里的注释明确写着
+ *       「**不要再改回 (a)** —— 那会让 editor/admin 永远删不掉视频」；
+ *     · **赛事** `:335` → **一档**（`:355` 写死 `force: true`）：赛事**没有**下架入口、
+ *       也没有收藏/备注这类连带数据，所以"先下架"那一步在它上面**不存在**。
+ *   ⇒ 教训（保留，因为它不随口径变）：**"某类内容怎么删"要看那一类的路由**，
+ *     不能从兄弟类型（甚至不能从同一个文件里的另一个端点）推 —— 我就是这么错过三次的。
+ *
+ * ⚠️ 前端**不做本地预判**（"它现在是 published 所以先禁用按钮"）——
+ *    "能不能删"只在服务端判断；前端只负责把 403 与 409 两句话分开说清楚。
+ */
+export function deleteResourceDirect(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/authoring/resources/${encodeURIComponent(id)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -913,6 +1083,33 @@ export interface VideoDeleteResult {
 
 export function deleteVideo(id: string): Promise<VideoDeleteResult> {
   return sendJson('DELETE', `/api/videos/${encodeURIComponent(id)}`);
+}
+
+/**
+ * 改一条视频的链接 / 标题 / 起始偏移（需求②，t14）。
+ *
+ * ⚠️ **这不是"绕过审核"**：视频本来就不审核（Q6：贴了就可见），所以这条路的语义
+ *    与"资料/赛事的直编"不同 —— 它没有"提审"这一档可比。界面上因此**不该**用
+ *    `authoring.directSave`（那句带"（不审核）"，会让人以为视频平时是要审的）。
+ * ⚠️ 权限是 `content.author`（editor 及以上）；作者改自己那条走的是同一端点。
+ * ⚠️ 响应形状与资料/赛事**接近但不同**：它回的是 `{ ok, video, status, liveRevisionUnchanged }`
+ *    （服务端 `routes/authoring.ts` 的 `PATCH /videos/:id` 回读整行，并把 `status` 提到顶层）。
+ *    ★ 顶层 `status` 是 `video.status` 的**镜像**（同一次响应、同一个值），刻意与资源/日历
+ *    两条直编改写**同形** —— 有了它，`directWriteNotice(result, t)` 可以直接吃这个返回值，
+ *    视频这条路径**不需要破例**去读 `video.status`。没有它的话，三个直编端点里就这一个要
+ *    特判，而"某一类型要特殊处理"正是它们最容易漂移的地方。
+ *    ⚠️ 仍然**不能**套 `DirectWriteResult`：那个还带 `id`/`revision`，视频这条没有版本表。
+ *    两者共用的部分是 `directWriteNotice` 的入参（`status` + `liveRevisionUnchanged`），
+ *    所以"该说什么"的判据仍然只有一处。
+ *    ⚠️ 为什么 `status` 不能省：一条**被隐藏**的视频改完之后仍然是 `hidden`，
+ *    只说"已保存"会让用户以为它回到了墙上 —— 而这件事**不会有任何报错**。
+ * ⚠️ 撞上已存在的链接会回 **409 `video_exists` + `existingId`**（形状同 `submitVideo`）。
+ */
+export function saveVideoDirect(
+  id: string,
+  input: VideoInput,
+): Promise<{ ok: true; video: Video; status: string; liveRevisionUnchanged: boolean }> {
+  return sendJson('PATCH', `/api/authoring/videos/${encodeURIComponent(id)}`, input);
 }
 
 /** 隐藏 / 恢复。只有 `resource.moderate`（editor 及以上）能调。 */
@@ -1079,4 +1276,57 @@ export function setLiveChannelVisibility(
 
 export function deleteLiveChannel(id: string): Promise<{ ok: true; id: string }> {
   return sendJson('DELETE', `/api/live/${encodeURIComponent(id)}`);
+}
+
+// ---------------------------------------------------------------------------
+// ④=B 私人列表：`user_live_links`（**只给自己看**，见 spec §5.3b D4b.3）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「我的链接」——**只有自己那几行**。
+ *
+ * ⚠️ 只要求登录（`requireAuth`），**不要求邮箱验证、也没有新能力**：
+ *    这与收藏/备注同一档 —— 私人、低风险、不对外可见。
+ *    所以**不要**给它套 `useCan(...)` 之类的门（那是"编辑维护公开名单"的形状）。
+ * ⚠️ 服务端回 `no-store`：这是"我刚加完要看到它"的那类列表，
+ *    任何缓存都会让用户以为没保存成功。
+ */
+export function fetchMyLiveLinks(signal?: AbortSignal): Promise<{ items: UserLiveLink[] }> {
+  return request<{ items: UserLiveLink[] }>('/api/live/mine', signal);
+}
+
+/**
+ * 加一条。
+ *
+ * ⚠️ **只传 `url`（+ 可选 `title`）**，平台与标识**全由服务端从链接推导**
+ *    （`parseLiveLink`）：客户端指定的话，表里的 `platform` 会和链接实际指向的平台
+ *    不一致，而两边都不报错。
+ * ⚠️ `.strict()`：多余字段直接 400（不是被悄悄忽略）—— 所以这里**不要**顺手多传字段。
+ * ⚠️ ★ **认不出的链接也收（201）**，那时 `platform`/`handle` 为 null、`url` 原样存。
+ *    ⇒ 界面**不许**在前端拦"链接不合法"：那是私人列表**允许**的东西
+ *    （与公开名单那个 `handle` 字段的判据完全不同，别把两边的校验抄成一份）。
+ */
+export function createMyLiveLink(
+  input: UserLiveLinkInput,
+): Promise<{ ok: true; link: UserLiveLink }> {
+  return sendJson('POST', '/api/live/mine', input);
+}
+
+/**
+ * 改自己那一行（`url` 或 `title`，至少给一个）。
+ *
+ * ⚠️ `title: null` 是**清空**（"去掉之前起的名字"），与"没传这个字段"是两件事 ——
+ *    传 `undefined` 会被 `.strict()` 之外的 refine 判成"什么都没改"（400）。
+ * ⚠️ 别人的行 / 不存在的行回 **404**（不是 403）：**不泄露"这一行存在但不属于你"**。
+ */
+export function updateMyLiveLink(
+  id: string,
+  patch: UserLiveLinkPatch,
+): Promise<{ ok: true; link: UserLiveLink }> {
+  return sendJson('PATCH', `/api/live/mine/${encodeURIComponent(id)}`, patch);
+}
+
+/** 删自己那一行。别人的行同样是 **404**（理由同上）。 */
+export function deleteMyLiveLink(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/live/mine/${encodeURIComponent(id)}`);
 }

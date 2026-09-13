@@ -257,7 +257,16 @@ resourcesRoute.post('/', requireCapability('resource.submit'), async (c) => {
     now,
   });
 
-  return c.json({ ok: true, id, revision, status: 'pending', isEdit: false }, 201);
+  /*
+   * ⚠️ `liveRevisionUnchanged: true` —— 提审**新建**也必须显式给（spec §3.2b）。
+   *    "线上没有这一条" ⇒ "线上那一版一个字都没变"成立，所以是 `true` 而不是 `false`。
+   *    漏写它不会有编译错误（响应是内联字面量，而前端的类型是自己手写的），
+   *    所以有一条测试专门守这个字段的**存在性**。
+   */
+  return c.json(
+    { ok: true, id, revision, status: 'pending', isEdit: false, liveRevisionUnchanged: true },
+    201,
+  );
 });
 
 /**

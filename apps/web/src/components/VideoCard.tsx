@@ -3,6 +3,7 @@ import type { Video } from '@mcsr/shared/videos';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { VideoEmbed } from '@/components/VideoEmbed';
 import { deleteVideo, setVideoVisibility } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -52,12 +53,19 @@ export function VideoCard({
   video,
   onResult,
   onFilterAuthor,
+  canAuthor = false,
 }: {
   video: Video;
   /** 结果交给页面显示 —— 卡片自己要消失了，它说的话也会跟着消失。 */
   onResult: (ok: boolean, text: string) => void;
   /** 点作者名按作者筛选。只看自己那一片时不传（筛了也没有意义）。 */
   onFilterAuthor?: (authorId: string) => void;
+  /**
+   * 需求②（t14）：调用方按 `useCan('content.author')` 传进来，决定要不要给「编辑」链接。
+   * ⚠️ 组件里**不判断能力**（见上面那段说明）；默认 `false` 是刻意的 ——
+   *    忘了传的后果是"少一个入口"，而不是"多给一个不该有的入口"。
+   */
+  canAuthor?: boolean;
 }) {
   const { t } = useTranslation();
   const auth = useAuth();
@@ -227,10 +235,24 @@ export function VideoCard({
 
       <VideoEmbed video={video} />
 
-      {primary || restoreButton ? (
+      {primary || restoreButton || canAuthor ? (
         <div className="video-card__actions">
           {primary}
           {restoreButton}
+          {/*
+            「编辑」（需求②，t14）—— 只对 `content.author`（editor 及以上）出现。
+            ⚠️ 视频本来就不走审核，所以这里是"改"而不是"绕过审核"（与资料/赛事不同）。
+            ⚠️ 判据由调用方传进来（`useCan('content.author')`），组件里**不判断能力** ——
+               组件自己写一份"谁是编辑"就是第二份真相。
+            ⚠️ 文案用 `edit.modifyAction`（zh「修改」/ en「Edit」）—— 与资源详情页那个入口
+               **同一个词条**。刻意不复用 `authoring.directSave`（那是"直接保存（不审核）"，
+               一句话里带着"不审核"，出现在卡片上会与"视频本来就不审核"重复且更吓人）。
+          */}
+          {canAuthor ? (
+            <Link className="ghostbtn" to={`/videos/${encodeURIComponent(video.id)}/edit`}>
+              {t('edit.modifyAction')}
+            </Link>
+          ) : null}
         </div>
       ) : null}
     </li>

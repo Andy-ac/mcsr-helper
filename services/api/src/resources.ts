@@ -17,7 +17,7 @@ import {
   type ResourceQuery,
 } from '@mcsr/shared/resources';
 import { getDb } from './db';
-import { EMPTY_RATING, ratingOf, ratingsFor } from './marks';
+import { EMPTY_RATING, favoriteCountOf, favoritesFor, ratingOf, ratingsFor } from './marks';
 
 /** 数据库里的一行（snake_case，tags 是 JSON 文本，featured/official 是 0/1）。 */
 interface ResourceRow {
@@ -78,13 +78,18 @@ function toResource(row: ResourceRow): Resource {
 /**
  * 列表项去掉 body —— 列表接口不下发正文，省带宽也省序列化时间。
  *
- * ⚠️ `rating` 由调用方**必须传入**（它来自另一张表的聚合，不是这一行的字段）。
- *    在函数里给它一个默认值的话，"忘了查评分"会变成"评分永远是空的" ——
- *    静默失效，而不是编译报错。
+ * ⚠️ `rating` 与 `favoriteCount` 都由调用方**必须传入**（它们来自另一张表的聚合，
+ *    不是这一行的字段）。在函数里给它们一个默认值的话，"忘了查"会变成
+ *    "永远是空的/永远是 0" —— 静默失效，而不是编译报错。
+ *    两个参数都**没有默认值**，这条是刻意的（见 callers 里那次 GROUP BY）。
  */
-function toListItem(resource: Resource, rating: RatingSummary): ResourceListItem {
+function toListItem(
+  resource: Resource,
+  rating: RatingSummary,
+  favoriteCount: number,
+): ResourceListItem {
   const { body: _body, ...rest } = resource;
-  return { ...rest, rating };
+  return { ...rest, rating, favoriteCount };
 }
 
 /**
@@ -165,13 +170,21 @@ export function listResources(
     .all(...params, query.pageSize, offset) as unknown as ResourceRow[];
 
   /*
-   * 评分是一次 GROUP BY 拿回来的，不是每条内容查一次 ——
-   * 列表一页 24 条，那样就是 24 次查询，而它本来只需要一次。
+   * 评分与收藏数各是一次 GROUP BY 拿回来的，不是每条内容查一次 ——
+   * 列表一页 24 条，那样就是 48 次查询，而它本来只需要两次。
+   *
+   * ⚠️ 两批聚合**用同一批 id**（`rows.map(...)`）在紧挨着的地方算：
+   *    分成两处算很容易出现"某天只在一条路上加了聚合、另一条路忘了"，
+   *    而那种漏掉不会有任何报错（只是数字停在 0）。
    */
-  const ratings = ratingsFor(rows.map((row) => row.id));
+  const ids = rows.map((row) => row.id);
+  const ratings = ratingsFor(ids);
+  const favorites = favoritesFor(ids);
 
   return {
-    items: rows.map((row) => toListItem(toResource(row), ratings.get(row.id) ?? EMPTY_RATING)),
+    items: rows.map((row) =>
+      toListItem(toResource(row), ratings.get(row.id) ?? EMPTY_RATING, favorites.get(row.id) ?? 0),
+    ),
     total,
     page: query.page,
     pageSize: query.pageSize,
@@ -266,7 +279,13 @@ export function getResource(id: string): ResourceDetail | null {
   const row = db
     .prepare(`SELECT ${SELECT_COLUMNS} FROM resources WHERE id = ? AND status = 'published'`)
     .get(id) as unknown as ResourceRow | undefined;
-  return row ? { ...toResource(row), rating: ratingOf(id) } : null;
+  /*
+   * 详情只有一条，所以这里用 `ratingOf` / `favoriteCountOf` 各查一次 —— 不需要
+   * 列表那条"一次 GROUP BY"的路。两者都是**必填字段**，所以都要给值。
+   */
+  return row
+    ? { ...toResource(row), rating: ratingOf(id), favoriteCount: favoriteCountOf(id) }
+    : null;
 }
 
 /**
@@ -284,8 +303,11 @@ export function getResourceAnyStatus(id: string): ResourceDetail | null {
   const row = getDb()
     .prepare(`SELECT ${SELECT_COLUMNS} FROM resources WHERE id = ?`)
     .get(id) as unknown as ResourceRow | undefined;
-  // 未上架的内容也要带评分：编辑页会显示它，而"评分"和"上没上架"无关
-  return row ? { ...toResource(row), rating: ratingOf(id) } : null;
+  // 未上架的内容也要带评分与收藏数：编辑页会显示它们，而这两者和"上没上架"无关
+  // （收藏是**别人**对这条内容做的动作，内容被下架不会让那些收藏消失）
+  return row
+    ? { ...toResource(row), rating: ratingOf(id), favoriteCount: favoriteCountOf(id) }
+    : null;
 }
 
 /** 侧边栏的标签云：返回出现次数最多的标签。 */
@@ -556,4 +578,50 @@ export function uniqueResourceId(url: string): string {
     if (!taken(candidate)) return candidate;
   }
   return `${base}-${Date.now().toString(36)}`;
+}
+
+/**
+ * ② 硬删除：**真删那一行**（只有 owner 能调 —— 判据是 shared 的谓词 `canHardDelete`）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 这是本轮**唯一一条不可逆的动作**，代价必须写在这里
+ * ---------------------------------------------------------------------------
+ * `DELETE FROM resources` 会通过 `ON DELETE CASCADE` 连带删掉：
+ *   · `resource_revisions` —— **这条内容的全部版本历史**；
+ *   · `resource_marks` —— **所有人**（不只是作者）的收藏、私人备注、评分。
+ * 私人备注是**别人写的东西**，而且没有备份。
+ *
+ * ⚠️ 权限**不在这里判**：判定在路由层（`routes/authoring.ts` 的 `DELETE` 处理里，
+ *    owner 走 shared 的 `canHardDelete(role)` 谓词，editor/admin 走 `content.author`），
+ *    数据层只回答**这一步能不能删** —— "谁能删"只有一处定义，不在这里再写一遍。
+ *
+ * ⚠️ `force` = **owner 的"一键"**：跳过"先下架"那一步。
+ *    非 owner（editor/admin）必须为 `false` —— 他们删一条**已上架**的内容要先下架，
+ *    路由层把这种情况回成 409 `invalid_state` + `reason: 'must_hide_first'`；
+ *    那道缓冲保护的是"一次手滑不要把版本历史 + **别人的**收藏/备注/评分一起销毁"。
+ *
+ * ⚠️ 与既有取向的差异也是刻意的：之前两次设计都写着"治理者不给真删，
+ *    因为删除不可撤销、还会把'它曾经存在过'一起抹掉"（`routes/videos.ts` 的文件头）。
+ *    这次是**用户明确要求** owner 能一键真删，约束在于"只有 owner + 一次确认 + 审计"。
+ */
+export function deleteResourceDirect(
+  id: string,
+  options: { force: boolean },
+): { ok: true } | { ok: false; reason: 'not_found' | 'must_hide_first' } {
+  const row = getDb().prepare('SELECT status FROM resources WHERE id = ?').get(id) as
+    | { status: string }
+    | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  /*
+   * ⚠️ 判据是 `published`（**不是**"有没有版本号"）：导入的条目 `current_revision`
+   *    是 NULL 但它在线上 —— 用版本号判断会让它们绕过这道缓冲。
+   *    这个坑在本仓的 rejectRevision 注释里写着（"判断线上有没有内容要看 status"）。
+   */
+  if (!options.force && row.status === 'published') {
+    return { ok: false, reason: 'must_hide_first' };
+  }
+
+  getDb().prepare('DELETE FROM resources WHERE id = ?').run(id);
+  return { ok: true };
 }

@@ -31,6 +31,18 @@ import { calendarIcsUrl, calendarWebcalUrl } from '@/lib/api';
  * 三条路走完之后一定会有一个明确的结果状态（已复制 / 请手动复制），
  * 不会出现"按钮按下去什么都不发生"。
  */
+/**
+ * 这个块的锚点 id —— 需求③ 把它下移到页面底部之后，页面顶部靠它跳过来。
+ *
+ * ⚠️ 导出成常量而不是在两处 JSX 里各写一遍字面量：顶部那条 `href="#ics"`
+ *    与这里必须**永远一致**，而写两遍字面量时改一处漏一处的表现是
+ *    "点顶部那个链接什么都不发生"（锚点找不到，浏览器静默不动）。
+ * ⚠️ 两个 return 分支（拿不到 origin / 正常）**都要**带它：拿不到 origin 时
+ *    那个块仍然在页面上，缺了 id 会让锚点在最需要解释"为什么没有链接"的
+ *    情况下失效。
+ */
+export const ICS_ANCHOR_ID = 'ics';
+
 export function CalendarIcsSubscribe() {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -80,7 +92,7 @@ export function CalendarIcsSubscribe() {
   if (!usable) {
     // 拿不到站点地址时**不要**显示一个坏链接加一堆步骤。说清楚为什么、怎么办。
     return (
-      <section className="calendar-ics">
+      <section className="calendar-ics" id={ICS_ANCHOR_ID}>
         <h2 className="calendar-ics__title">{t('calendar.icsTitle')}</h2>
         <p className="calendar-ics__note">{t('calendar.icsNoOrigin')}</p>
       </section>
@@ -88,7 +100,7 @@ export function CalendarIcsSubscribe() {
   }
 
   return (
-    <section className="calendar-ics">
+    <section className="calendar-ics" id={ICS_ANCHOR_ID}>
       <h2 className="calendar-ics__title">{t('calendar.icsTitle')}</h2>
 
       {/*

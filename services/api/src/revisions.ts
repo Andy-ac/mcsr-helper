@@ -564,3 +564,221 @@ export function revisionSummary(resourceId: string): string[] {
     (r) => `r${r.revision} ${r.status}${r.review_reason ? ` (${r.review_reason})` : ''}`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// ② 直编：不经审核，**直接写"线上那一行"**
+//
+// ⚠️ 这两条是 `resources` 内容字段的**第二个**（也是唯一一个额外的）写入点。
+//    在此之前只有 `approveRevision` 会写它们 —— 加它们不是因为审核那条规则放松了，
+//    而是因为②有了一个明确的新动作：**content.author**（editor 及以上）。
+//    ⚠️ `reviewer` 拿不到那个能力，因为一旦他能直编，"审核员不能批准自己提交的东西"
+//      就被掏空了（自己改、自己生效，审计里只是两条互不相干的记录）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 直编新建：**建出来就已经上架**（一条 `approved` 快照 + `current_revision = 1`）。
+ *
+ * ⚠️⚠️ `source` 必须是 `'user'`，**绝不能是 `'import'`**。
+ *    导入脚本（`import.ts`）每次部署都会跑一遍"删掉库里 source='import'
+ *    但不在 content/resources.json 里的条目"（`deleteImportedNotIn`）——
+ *    直编建出来的条目如果被标成 import，**下一次部署就会静默消失**，
+ *    而删除那一刻没有任何报错，人只会看到"我加的那条不见了"。
+ *
+ * ⚠️ 第 1 版快照必须**同时**写：`current_revision = 1` 而没有对应快照的话，
+ *    审核详情页的"线上版本"对照会指向一条不存在的记录；
+ *    而且日历那边有一个用版本号判断"有没有上架过"的历史坑（见 rejectRevision 的注释），
+ *    系列/事件也会因为同一形状的判据出错。
+ */
+export function createResourceDirect(input: {
+  id: string;
+  submission: ResourceSubmission;
+  actorId: string;
+  now: number;
+}): { revision: number } {
+  const db = getDb();
+  const fields = snapshotFields(input.submission);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(
+      `INSERT INTO resources
+         (id, kind, title, title_en, url, image_url, summary, body, lang, tags,
+          featured, official, status, source, author_id, current_revision, pending_revision,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'published', 'user', ?, 1, NULL, ?, ?)`,
+    ).run(
+      input.id,
+      fields.kind,
+      fields.title,
+      fields.titleEn,
+      fields.url,
+      fields.imageUrl,
+      fields.summary,
+      fields.body,
+      fields.lang,
+      fields.tags,
+      input.actorId,
+      input.now,
+      input.now,
+    );
+
+    db.prepare(
+      `INSERT INTO resource_revisions
+         (id, resource_id, revision, kind, title, title_en, url, image_url, summary,
+          body, lang, tags, status, editor_id, created_at, reviewed_by, reviewed_at)
+       VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+    ).run(
+      newId(),
+      input.id,
+      fields.kind,
+      fields.title,
+      fields.titleEn,
+      fields.url,
+      fields.imageUrl,
+      fields.summary,
+      fields.body,
+      fields.lang,
+      fields.tags,
+      input.actorId,
+      input.now,
+      input.actorId,
+      input.now,
+    );
+
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return { revision: 1 };
+}
+
+/**
+ * 直编一条**已存在**的条目：写线上那一行 + 拍一条 `approved` 快照（同一个事务）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 与 `approveRevision` 的两个差别，都是刻意的
+ * ---------------------------------------------------------------------------
+ * 1. 内容**不来自待审快照**，而是来自这次请求本身 —— 直编根本没有待审版本。
+ * 2. 它**不接受**"正在有待审改动"的条目（D2.6，返回 `already_pending`）。
+ *    理由是一条会静默丢数据的时序：那条待审快照是基于**更早的线上版本**拍的，
+ *    一旦它稍后被批准，就会把这次直编的内容**原样覆盖回去** ——
+ *    没有任何报错，作者只会看到"我改的东西自己变回去了"。
+ *    所以这里宁可拒绝，并让调用方先把那份待审改动处理掉（批准或驳回）。
+ *
+ * ⚠️ `status` 规则与 `approveRevision` **逐字一致**：下架过（`hidden`）的条目
+ *    改内容之后**仍然保持下架**。下架是一个明确的编辑决定，
+ *    不该被一次内容修改顺手撤销 —— 否则"下架"就变成了一个改一个错别字就能恢复的状态。
+ *
+ * ⚠️ 它**不动** `featured` / `official`：那两个是 `resource.feature` 的事
+ *    （`ResourceSubmissionSchema` 里本来就没有它们，保持同一个立场）。
+ */
+export function applyDirectRevision(input: {
+  resourceId: string;
+  submission: ResourceSubmission;
+  actorId: string;
+  now: number;
+}): { revision: number; status: string } | { error: 'not_found' | 'already_pending' } {
+  const db = getDb();
+  const fields = snapshotFields(input.submission);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const row = db
+      .prepare('SELECT current_revision, pending_revision FROM resources WHERE id = ?')
+      .get(input.resourceId) as
+      | { current_revision: number | null; pending_revision: number | null }
+      | undefined;
+    if (!row) {
+      db.exec('ROLLBACK');
+      return { error: 'not_found' };
+    }
+    if (row.pending_revision !== null) {
+      db.exec('ROLLBACK');
+      return { error: 'already_pending' };
+    }
+
+    /*
+     * ⚠️⚠️ 版本号必须从 **`MAX(revision) + 1`** 推，**不能**从 `current_revision + 1` 推。
+     *
+     *    这是被测试抓到的一个真 bug：一条条目可能是
+     *      r1（审核通过，current_revision = 1）→ r2（用户提的修改，**被驳回**）
+     *    这时 `current_revision` 仍然是 1，于是 `+1` 又算出 r2 —— 撞上
+     *    `resource_revisions` 的 `(resource_id, revision)` UNIQUE，
+     *    直编整个 500，而错误信息是 `UNIQUE constraint failed`，
+     *    和真正的原因（"驳回过的版本仍然占着号"）毫无关系。
+     *
+     *    用 `MAX(revision)` 就同时覆盖了两种情况：导入的条目没有任何快照 → 从 r1 开始；
+     *    有历史快照的 → 接着最大的那个往下排（与 `reviseResource` 的口径**逐字一致**）。
+     */
+    const maxRow = db
+      .prepare(
+        'SELECT COALESCE(MAX(revision), 0) AS n FROM resource_revisions WHERE resource_id = ?',
+      )
+      .get(input.resourceId) as { n: number };
+    const revision = Number(maxRow.n) + 1;
+
+    db.prepare(
+      `INSERT INTO resource_revisions
+         (id, resource_id, revision, kind, title, title_en, url, image_url, summary,
+          body, lang, tags, status, editor_id, created_at, reviewed_by, reviewed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+    ).run(
+      newId(),
+      input.resourceId,
+      revision,
+      fields.kind,
+      fields.title,
+      fields.titleEn,
+      fields.url,
+      fields.imageUrl,
+      fields.summary,
+      fields.body,
+      fields.lang,
+      fields.tags,
+      input.actorId,
+      input.now,
+      input.actorId,
+      input.now,
+    );
+
+    db.prepare(
+      `UPDATE resources
+         SET kind = ?, title = ?, title_en = ?, url = ?, image_url = ?, summary = ?,
+             body = ?, lang = ?, tags = ?,
+             -- ⚠️ 保留 'hidden'：理由见上面的注释与 approveRevision 里同一处
+             status = CASE WHEN status = 'hidden' THEN 'hidden' ELSE 'published' END,
+             current_revision = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      fields.kind,
+      fields.title,
+      fields.titleEn,
+      fields.url,
+      fields.imageUrl,
+      fields.summary,
+      fields.body,
+      fields.lang,
+      fields.tags,
+      revision,
+      input.now,
+      input.resourceId,
+    );
+
+    db.exec('COMMIT');
+
+    /*
+     * ⚠️ 回读 status 而不是让调用方猜：下架过的条目直编之后**仍然是 hidden**
+     *    （见上面 UPDATE 里的 CASE）。把它写死在路由里会让界面说"线上已可见"，
+     *    而它其实还在下架状态 —— 那是对用户撒谎。
+     */
+    const after = db.prepare('SELECT status FROM resources WHERE id = ?').get(input.resourceId) as
+      | { status: string }
+      | undefined;
+    return { revision, status: after?.status ?? 'published' };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}

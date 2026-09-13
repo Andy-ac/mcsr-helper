@@ -32,6 +32,52 @@ export const EVENT_TITLE_MAX = 200;
 export const EVENT_LOCATION_MAX = 200;
 
 /**
+ * 系列名的长度上限。
+ *
+ * 80 是**按最长的真实名字**定的：`MCSR Ranked Season 5 Playoffs` 这类
+ * 带届次后缀的写法，再加一点余量。它比 `EVENT_TITLE_MAX`（200）短得多，
+ * 因为系列名是**用来归类与检索**的键，不是一个标题 ——
+ * 一个能写 200 字的"系列名"会让归类功能失去意义（每一条自成一系列）。
+ */
+export const EVENT_SERIES_MAX = 80;
+
+/** 系列 id 的长度上限。与 `newId()` 生成的那一串同量级，够用，也能挡住异常长的输入。 */
+export const SERIES_ID_MAX = 64;
+
+/**
+ * 系列名的归一化 —— **只做两件事**：`trim` + 把内部连续空白折叠成一个空格。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ (A) 分支（系列实体）下它为什么仍然必须存在
+ * ---------------------------------------------------------------------------
+ * ③ 已裁决为 **(A) 实体**：`calendar_series.name` 上有 `COLLATE NOCASE UNIQUE`
+ * （迁移 013），于是"同一个系列"由数据库来判。但 **NOCASE 只折叠 ASCII 大小写，
+ * 不折叠空白** —— `MCSR Ranked` 与 `MCSR  Ranked`（两个空格）在库眼里是
+ * 两个不同的名字，会**建出两个系列**，而它们在栏目里并排显示成一模一样的两行。
+ * 所以"建系列 / 找系列"之前，一律先过这个函数。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 刻意**不做大小写折叠**
+ * ---------------------------------------------------------------------------
+ * 大小写交给数据库的 `COLLATE NOCASE`：它让大小写变体命中同一条 UNIQUE，
+ * 同时**保住用户第一次输入的显示名**（`MCSR Ranked` 不会被改写成 `mcsr ranked`）。
+ * 在应用层再折叠一次就会连显示名一起改小写 —— 那看起来像我们把他的名字打错了。
+ *
+ * ⚠️ 空串归一成 `null`，不是 `''`：本仓的规矩是"库里只应该有一种没有值的表示"
+ *    （见 resources.ts 的 normalizeResourceInput 同名处理）。`''` 和 `null` 并存的话，
+ *    每个读取处都要判断两次，而漏判的那次会让一个空系列出现在栏目里。
+ *
+ * 放在 shared 而不是服务端，是因为**表单也要用它**：用户填完点保存前，
+ * 前端要用同一个判据算出"这个名字最后会存成什么"，否则会出现在前端显示
+ * `MCSR  Ranked`（两个空格）、存进去变成 `MCSR Ranked` 的错位。
+ */
+export function normalizeSeriesName(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const collapsed = raw.trim().replace(/\s+/g, ' ');
+  return collapsed === '' ? null : collapsed;
+}
+
+/**
  * 墙钟时间：`YYYY-MM-DDTHH:mm`。
  *
  * ⚠️ 刻意**不接受**带时区后缀（`...Z` 或 `...+08:00`）的写法。
@@ -89,6 +135,23 @@ export const CalendarEventInputSchema = z
      */
     level: z.enum(EVENT_LEVELS).nullish(),
     scope: z.enum(EVENT_SCOPES).nullish(),
+
+    /**
+     * 系列（③）—— 填**系列的 id**，不是名字。
+     *
+     * ⚠️ 事件行上**只有 id 这一个指针**，名字永远从 `calendar_series` 取
+     *    （读路径 LEFT JOIN 出 `seriesName`）。在事件上再冗余一份名字是
+     *    "同一件事存两份"的经典形态：系列一改名，老事件上留着旧名字，
+     *    而**两边都不会报错**，只是显示不一致。
+     *
+     * ⚠️ 它**不进筛选栏**（不是第五个筛选维度）：筛选栏那四个都是**封闭枚举**，
+     *    而系列的取值集合是开放的（可能有几十个）—— 混进去会让 chip 栏排不下，
+     *    也会打破"筛选栏 = 4 个维度"这条被 `check:grid` 守着的规则。
+     *    系列筛选走 `?seriesId=<id>` 这个独立查询参数。
+     *
+     * ⚠️ 可空，而且**绝大多数事件都会是 null** —— 不属于任何系列是常态，不是"还没填"。
+     */
+    seriesId: z.string().trim().max(SERIES_ID_MAX).nullish(),
 
     lang: z.enum(LOCALES).default('zh-CN'),
 
@@ -172,6 +235,20 @@ export interface CalendarEvent {
   /** 专业程度 / 参与范围。**可空** —— 排位节点没有这两维。 */
   level: string | null;
   scope: string | null;
+  /**
+   * 系列（③）。**可空** —— 绝大多数赛事不属于任何系列，这不是"还没填"。
+   *
+   * ⚠️ `seriesId` 是**事件行上的那一列**；`seriesName` 是**读的时候 JOIN 出来的**，
+   *    不落库（理由见入参 schema 里 `seriesId` 的说明）。
+   *
+   * ⚠️ 加这两个字段时有三处必须同步（漏一处**没有编译错误**，因为快照 payload 是 JSON）：
+   *    `CalendarEventInputSchema` / `EventPayload` / `toColumns` + `payloadToColumns`。
+   *    加在界面显示层的那几处同理 —— 日历上"某个写死的字段清单"漏掉它，
+   *    表现是"填了系列但界面上看不到"。
+   */
+  seriesId: string | null;
+  /** 系列显示名。由列表/详情查询 LEFT JOIN `calendar_series` 得到；**不在事件表里**。 */
+  seriesName: string | null;
   lang: string;
   authorId: string | null;
   authorName: string | null;
@@ -179,6 +256,67 @@ export interface CalendarEvent {
   createdAt: number;
   updatedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// 系列活动（③）：系列实体与它的对外形状
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个系列活动。
+ *
+ * ⚠️ `count` / `pastCount` / `nextStartsAtUtc` 都是**算出来的**，不是系列表上的列 ——
+ *    它们描述的是"这个系列下面的事件现在长什么样"，而那是会随时间变的量，
+ *    存起来就得有定时任务去翻（本仓对派生数据的立场见 `isEventPast` 的注释）。
+ *
+ * ⚠️ 计数**只数已发布的事件**（`status = 'published'`）：把已下架/待审的场次算进来，
+ *    会让栏目里的数字与点进去看到的列表对不上，而那种不一致**不会报错**。
+ */
+export const CalendarSeriesSchema = z.object({
+  id: z.string().min(1).max(SERIES_ID_MAX),
+  /** 显示名。大小写唯一性由 `calendar_series.name` 的 `COLLATE NOCASE UNIQUE` 保证。 */
+  name: z.string().min(1).max(EVENT_SERIES_MAX),
+  /** 未结束的场次数 */
+  count: z.number().int().nonnegative(),
+  /** 已结束的场次数 */
+  pastCount: z.number().int().nonnegative(),
+  /** 最近一场未结束赛事的开始时间（UTC 毫秒）；没有未结束场次时为 null。 */
+  nextStartsAtUtc: z.number().int().nonnegative().nullable(),
+  /**
+   * 建系列的人。**可空** —— 与 `CalendarEvent.authorId` 同一个理由：
+   * 删账号不删内容（`audit_log` 与内容行都没有外键），所以这里可能指向一个
+   * 已经不存在的用户，读的时候要按"没有作者"处理，而不是当成异常。
+   */
+  createdBy: z.string().nullable(),
+  createdAt: z.number().int().nonnegative(),
+});
+export type CalendarSeries = z.infer<typeof CalendarSeriesSchema>;
+
+/**
+ * 系列列表的响应（`GET /api/calendar/series`）。
+ *
+ * ⚠️ `total` 是**系列数**，不是事件数。同一屏里同时出现"系列数"与"场次数"两个数字时，
+ *    把它们弄混是最容易发生的一种错（而表现只是"数字看起来很大"，不会报错）。
+ */
+export const CalendarSeriesListSchema = z.object({
+  items: z.array(CalendarSeriesSchema),
+  total: z.number().int().nonnegative(),
+});
+export type CalendarSeriesList = z.infer<typeof CalendarSeriesListSchema>;
+
+/**
+ * 新建 / 改名一个系列（`POST` / `PATCH /api/calendar/series`）。
+ *
+ * ⚠️ 只有 `name` 一个字段：本轮**不做**系列描述、封面、单系列订阅（见 spec §4.7），
+ *    因此不该先造出"填了但没人看"的字段。
+ *
+ * ⚠️ 写入前服务端必须过 `normalizeSeriesName`（折叠空白）—— `COLLATE NOCASE`
+ *    只折叠大小写、**不折叠空白**，不过一遍会让 `MCSR Ranked` 与 `MCSR  Ranked`
+ *    各建一个系列。
+ */
+export const CalendarSeriesInputSchema = z.object({
+  name: z.string().trim().min(1, { message: '需要系列名' }).max(EVENT_SERIES_MAX),
+});
+export type CalendarSeriesInput = z.infer<typeof CalendarSeriesInputSchema>;
 
 /**
  * ⚠️ **"已结束"是算出来的，不是状态字段**。

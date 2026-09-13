@@ -390,3 +390,140 @@ export function deleteVideo(id: string): boolean {
   const result = getDb().prepare('DELETE FROM videos WHERE id = ?').run(id);
   return Number(result.changes) > 0;
 }
+
+// ---------------------------------------------------------------------------
+// ② 直编（`/api/authoring/videos/:id`）
+//
+// ⚠️ 上面那两条（`createVideo` / `deleteVideo`）是**提交路径**，语义不变；
+//    下面这两条是新建的**直编路径**，与它们并存。
+// ---------------------------------------------------------------------------
+
+/** `updateVideoDirect` 的三种结局。字形与 `CreateVideoResult` 保持一致。 */
+export type UpdateVideoDirectResult =
+  | { ok: true; video: Video }
+  | { ok: false; reason: 'not_found' }
+  | { ok: false; reason: 'duplicate'; existing: DuplicateVideo };
+
+/**
+ * 直编一条视频的**原文本**（`url` → (platform, video_id)、`title`、`startOffsetSec`）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 它与 `createVideo` 的差别只有一处：改的是**已存在的那一行**
+ * ---------------------------------------------------------------------------
+ * 视频**没有版本表**（`videos` 表上没有 revision 那一套，见文件头第一节：
+ * 贴了上去就是可见的）。所以"直编"在这里就是一次普通的 UPDATE ——
+ * 不像资源/赛事那样要同时拍一条 `approved` 快照。
+ * 也因此响应里的 `liveRevisionUnchanged` 对这个类型只是"线上那一行"的意思。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 两件**绝不能顺手做**的事
+ * ---------------------------------------------------------------------------
+ * 1. **不动 `status`**。改一个错别字的标题不该把一条被隐藏的视频放回墙上 ——
+ *    那会让 `hidden` 变成一个"随便改点什么就恢复"的状态，而隐藏是治理动作。
+ *    （资源/赛事那边是逐字同一条规则：`CASE WHEN status = 'hidden' THEN 'hidden' ...`。）
+ * 2. **不动 `user_id`**。"这条是谁贴的"不随内容转移：转移作者会让「我贴的」里
+ *    凭空出现别人的帖子，而原作者的帖子里凭空消失一条。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 查重要**排除自己**（这是本函数最容易写成 bug 的一处）
+ * ---------------------------------------------------------------------------
+ * `(platform, video_id)` 上有全表 UNIQUE，而**改了标题、链接没改**是最常见的一次编辑。
+ * 直接用 `findVideoByPair` 会查到**这一行自己**，于是"改个标题"被判成
+ * "这个视频已经在站上了" —— 一个用户完全无法理解的 409（他改的正是那一条）。
+ * 所以命中之后必须比一次 id。
+ */
+export function updateVideoDirect(input: {
+  id: string;
+  platform: VideoPlatform;
+  videoId: string;
+  title: string;
+  startOffsetSec: number | null;
+  now: number;
+}): UpdateVideoDirectResult {
+  const db = getDb();
+
+  const row = db.prepare('SELECT id FROM videos WHERE id = ?').get(input.id) as
+    | { id: string }
+    | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  /*
+   * 与 `createVideo` 一样**先查一次**，而不是靠插入失败来发现重复：
+   * 重复是这条接口最常见的失败之一（把链接改成另一个已经被贴过的视频），
+   * 让常见结果走异常路径，读代码的人就得一路追到 catch 才看得懂。
+   */
+  const duplicate = findVideoByPair(input.platform, input.videoId);
+  if (duplicate && duplicate.id !== input.id) {
+    return { ok: false, reason: 'duplicate', existing: duplicate };
+  }
+
+  try {
+    db.prepare(
+      `UPDATE videos
+          SET platform = ?, video_id = ?, title = ?, start_offset_sec = ?, updated_at = ?
+        WHERE id = ?`,
+    ).run(input.platform, input.videoId, input.title, input.startOffsetSec, input.now, input.id);
+  } catch (error) {
+    /*
+     * ⚠️ 兜底与 `createVideo` 里那条 catch 同形，但**多一次排除自己**：
+     *    上面那次预查在单进程下挡得住，可一旦这里多了 `await`（或部署成多进程），
+     *    两个请求同时改两条视频时，其中一个会撞上 UNIQUE。
+     *    不排除自己的话，这条错误会被翻译成"这个视频已经在站上了"，
+     *    而它指的其实是**调用方正改着的那一条**。
+     */
+    const existing = findVideoByPair(input.platform, input.videoId);
+    if (existing && existing.id !== input.id) {
+      return { ok: false, reason: 'duplicate', existing };
+    }
+    // 查不到同一个 (platform, video_id) 说明这不是重复，而是真 bug —— 让它变成 5xx + 日志
+    throw error;
+  }
+
+  const video = getVideo(input.id);
+  /*
+   * 刚更新过的行不可能读不回来。真读不回来就**抛**（→ 5xx），
+   * 而不是返回一个缺字段的"成功"响应 —— 理由与 `createVideo` 末尾同一条。
+   */
+  if (!video) throw new Error(`视频 ${input.id} 更新成功却读不回来`);
+  return { ok: true, video };
+}
+
+/**
+ * 直编真删一条视频。
+ *
+ * ⚠️ 与 `deleteVideo`（作者删自己的）**并存、语义不变**：那个是"作者收拾自己的帖子"，
+ *    这个是 ② 的直编删除（editor 及以上的"删"、owner 的"一键"）。
+ *    两条路都真删，差别只在**谁**能走、以及走之前要不要先下架。
+ *
+ * ⚠️ **两档**，与资源 / 赛事**逐字同一条规则**（同一个概念在两处用不同判据，
+ *    下一个人只会照着其中一处改）：
+ *      · `force`（owner 的"一键"）→ 不做前置检查，直接删；
+ *      · editor / admin → 条目还在墙上（`status = 'visible'`）就先下架
+ *        （409 `must_hide_first`），下架之后再删。
+ *
+ * ⚠️ 判据是 `status`，**不是**"别的什么"：视频本来就没有版本号那一列，
+ *    而且"在不在站上"这个问题在整张表里只有 `status` 回答得了。
+ *    ⚠️ 反过来，已经是 `hidden` 的**应当删得掉** —— 它本来就不在墙上，
+ *    再要求一次"先下架"会变成一个谁也走不通的死路。
+ *
+ * ⚠️ 与资源不同：视频**没有连带数据**（收藏/备注/评分的外键只指向 `resources`），
+ *    所以这里不存在"一次手滑销毁别人的东西"那层代价；两步在这里是为了
+ *    **与其它两个类型的规矩保持一致**，而不是因为删视频本身危险。
+ */
+export function deleteVideoDirect(
+  id: string,
+  options: { force: boolean },
+): { ok: true } | { ok: false; reason: 'not_found' | 'must_hide_first' } {
+  const db = getDb();
+  const row = db.prepare('SELECT status FROM videos WHERE id = ?').get(id) as
+    | { status: string }
+    | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  if (!options.force && row.status === 'visible') {
+    return { ok: false, reason: 'must_hide_first' };
+  }
+
+  db.prepare('DELETE FROM videos WHERE id = ?').run(id);
+  return { ok: true };
+}
