@@ -100,11 +100,21 @@ async function makeUser(role: Role) {
   return { email, cookie: (login.setCookie ?? '').split(';')[0] as string };
 }
 
+/**
+ * 一份合法的赛事入参。
+ *
+ * ⚠️ 017（2026-09-13）起时间是 `slots`（一个时区 + 若干段）。顶层 `startsAtLocal`
+ *    已经不是入参了 —— 留着它的后果是每一笔提交都 400
+ *    `slots: expected array, received undefined`，而那看起来像"这个测试文件坏了"。
+ * ⚠️ 想改时间的用例**必须改 `slots` 里的值**：写在顶层会被 Zod 剥掉，
+ *    于是那一场仍然落在夹具默认的 2030 年 —— 而用例只会红在"数字不对"上
+ *    （下面"全部场次都已结束"那条就踩过这个形状）。
+ */
 function input(overrides: Record<string, unknown> = {}) {
   return {
     title: '系列删除测试赛事',
-    startsAtLocal: '2030-09-05T16:00',
     startsAtTz: 'Asia/Shanghai',
+    slots: [{ startsAtLocal: '2030-09-05T16:00' }],
     tags: ['TOURNAMENT'],
     ...overrides,
   };
@@ -321,12 +331,15 @@ describe('★★ 删除影响（impact）：确认框里那个数字的来源', 
 
     await publish(author.cookie, reviewer.cookie, {
       seriesId: sid,
-      startsAtLocal: '2020-01-01T00:00',
+      // ⚠️ "很久以前"只能写进 `slots`（017 之后时间是多段的）；留在顶层会被剥掉，
+      //    于是两场都落在 2030 年 ⇒ `count` 变成 2、`pastCount` 变成 0，
+      //    而这条用例的**前提**就先错了（红在"前置条件"上，看着像计数写错）。
+      slots: [{ startsAtLocal: '2020-01-01T00:00' }],
       title: '很久以前那场',
     });
     await publish(author.cookie, reviewer.cookie, {
       seriesId: sid,
-      startsAtLocal: '2021-01-01T00:00',
+      slots: [{ startsAtLocal: '2021-01-01T00:00' }],
       title: '也很久以前那场',
     });
 

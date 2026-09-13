@@ -60,7 +60,16 @@ import { useTranslation } from 'react-i18next';
  */
 interface Props {
   platform: VideoPlatform;
-  /** 门面上显示的那串标识（视频 ID，或直播那行的频道标识）。 */
+  /**
+   * 门面上显示的那串标识（视频 ID；直播那行的具体视频 ID）。
+   *
+   * ⚠️★ **空串 = 门面上不画这一格**（2026-09-14）。
+   *    直播卡片的**频道级**嵌入就是这么传的：那里没有一个"属于这条内容"的 ID
+   *    （频道本身不是内容），而以前拿来顶替的 `channel.handle` 已经不是给人看的
+   *    东西了 —— 它现在是用户贴的链接**解析出来的副产品**（见 LiveCard 的注释）。
+   *    注意这个口子和 `src` 是**各管各的**：`src` 给了地址之后，`idLabel`
+   *    纯属显示，所以空串不会让谁拿到一个拼坏的 URL。
+   */
   idLabel: string;
   /** 播放器的可访问名字应当是"播什么"，而不是装饰性文字。 */
   title: string;
@@ -169,7 +178,17 @@ export function ClickToPlayEmbed({
             <span className="video-embed__badge">{platformLabel(platform, t)}</span>
             {/* 三角形用 CSS 画，不用 ▶ —— 那个字符不在自托管像素字体的子集里 */}
             {resolved ? <span className="video-embed__playshape" aria-hidden="true" /> : null}
-            <span className="video-embed__id">{idLabel}</span>
+            {/*
+              ⚠️★ 标识为**空串时整格不渲染**（2026-09-14）。
+              直播卡片的**频道级**嵌入就是这么传的：那里的 `idLabel` 原来放
+              `channel.handle`，而 `handle` 已经不是给人看的东西了（见 LiveCard 的注释）。
+              留一个空的 `<span>` 会照样占掉一行里的间距 —— 表现是
+              "这一块比别的高一点"，而那种不齐没人会认出是 bug。
+              ⚠️ 这个判断**只影响显示**：`idLabel` 参与拼 URL 的那条路在
+              `resolved` 之前就走完了（`src` 给了就用 `src`），所以给空串不会
+              让谁拿到一个拼坏的地址。
+            */}
+            {idLabel !== '' ? <span className="video-embed__id">{idLabel}</span> : null}
             {startAt !== null ? (
               <span className="video-embed__start">
                 {seekable

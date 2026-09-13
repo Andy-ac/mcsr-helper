@@ -104,12 +104,20 @@ async function makeUser(role: 'user' | 'reviewer' | 'editor' = 'user') {
   return { email, cookie: (login.setCookie ?? '').split(';')[0] as string };
 }
 
-/** 一份合法的赛事入参。默认是**将来**的时间。 */
+/**
+ * 一份合法的赛事入参。默认是**将来**的时间。
+ *
+ * ⚠️ 017（2026-09-13）起时间不再是"一对起止 + 每端一个时区"，而是
+ *    **一个时区 + 若干段**：顶层只有 `startsAtTz`，每一段是
+ *    `{ startsAtLocal, endsAtLocal? }`。留着老写法的话每一笔提交都会 400
+ *    `slots: expected array, received undefined`，而那条报错看起来像
+ *    "这个测试文件坏了"，不像"契约变了"。
+ */
 function input(overrides: Record<string, unknown> = {}) {
   return {
     title: '第 11 赛季资格赛',
-    startsAtLocal: '2030-09-05T16:00',
     startsAtTz: 'Asia/Shanghai',
+    slots: [{ startsAtLocal: '2030-09-05T16:00' }],
     tags: ['TOURNAMENT'],
     ...overrides,
   };
@@ -139,7 +147,17 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
   it('★ 日历出现在队列里，而且带自己的计数 —— 注册表真的接上了', async () => {
     const author = await makeUser();
     const reviewer = await makeUser('reviewer');
-    const id = await submit(author.cookie);
+    /*
+     * ⚠️ 刻意提交**两段**（017 之后时间是"一个时区 + 多段"）：副标题只有一行，
+     *    它必须显示**最早那一段**（审核员要知道"它哪天开始"），既不是包络、
+     *    也不是最后一段。单段的夹具区分不出这三种写法，这条断言就会变成恒真。
+     */
+    const id = await submit(author.cookie, {
+      slots: [
+        { startsAtLocal: '2030-09-05T16:00' },
+        { startsAtLocal: '2030-09-12T16:00', endsAtLocal: '2030-09-12T18:00' },
+      ],
+    });
 
     const queue = await call('GET', '/api/admin/queue', { cookie: reviewer.cookie });
     assert.equal(queue.status, 200);
@@ -154,11 +172,13 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
     assert.equal(mine.isEdit, false, '全新事件不是"修改"');
     assert.equal(mine.mine, false, '审核员不是提交者');
     /*
-     * ★ 副标题必须是**时间 + 时区**。
+     * ★ 副标题必须是**第一段的时间 + 时区**。
      *
      * 两场同名的比赛（同一届赛事的资格赛和正赛）唯一的区别就是时间，
      * 所以时间在列表里就得看得见。而时区名不能省 —— 单独一个 "16:00"
      * 是没有意义的信息（那是哪个 16:00？）。
+     * ⚠️ 而且第一段与最后一段在这里**必须给出不同的字符串**（09-05 vs 09-12）——
+     *    取错那一段的表现是审核员照着一条自己没在审的日期做判断，**不报错**。
      */
     assert.equal(mine.subtitle, '2030-09-05 16:00 · Asia/Shanghai');
     assert.equal(mine.expired, false, '将来的事件不是"已结束"');
@@ -264,17 +284,24 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
   it('★★ 改已发布事件：审核期间线上一个字都没变', async () => {
     const author = await makeUser();
     const reviewer = await makeUser('reviewer');
-    const id = await submit(author.cookie, {
-      title: '原始标题',
-      startsAtLocal: '2030-09-05T16:00',
-    });
+    const id = await submit(author.cookie, { title: '原始标题' });
 
     await call('POST', `/api/admin/review/calendar/${id}/approve`, { cookie: reviewer.cookie });
 
-    // 提一次修改
+    /*
+     * 提一次修改。⚠️ 待审那一版给的是**两段**时间（017 之后时间是多段的），
+     *    这样"线上没变"的断言才有分量：只给一段时，待审版与线上版的形状太像，
+     *    连"包络有没有被顺手重算"都看不出来。
+     */
     const revised = await call('PATCH', `/api/calendar/${id}`, {
       cookie: author.cookie,
-      json: input({ title: '改过的标题', startsAtLocal: '2030-09-05T18:00' }),
+      json: input({
+        title: '改过的标题',
+        slots: [
+          { startsAtLocal: '2030-09-05T18:00' },
+          { startsAtLocal: '2030-09-06T18:00', endsAtLocal: '2030-09-06T20:00' },
+        ],
+      }),
     });
     assert.equal(revised.status, 200, JSON.stringify(revised.body));
     assert.equal(revised.body.revision, 2);
@@ -282,6 +309,9 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
     /*
      * ★ 这是整个设计的核心断言：**线上那一行没有被碰过**。
      *   不是"状态还是 published"，而是标题、时间都还是旧的那一份。
+     *   ⚠️ 时间那一半要连同**包络**一起看：`starts_at_local` 是包络的开始，
+     *      而它现在由 `time_slots` 派生 —— 只看包络的话，"线上那一行的
+     *      `time_slots` 被待审版覆盖了、而包络恰好没变"这种形状会漏网。
      */
     const during = row(id);
     assert.equal(during.title, '原始标题', '待审期间线上标题必须不变');
@@ -299,9 +329,21 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
     assert.equal((detail.body.live as Record<string, unknown>).title, '原始标题');
     assert.equal((detail.body.pending as Record<string, unknown>).title, '改过的标题');
 
-    // 公开页面也仍然是旧版
+    // 公开页面也仍然是旧版 —— 而且**连时间段都是原来那一段**
     const publicDetail = await call('GET', `/api/calendar/${id}`);
     assert.equal((publicDetail.body.event as Record<string, unknown>).title, '原始标题');
+    assert.deepEqual(
+      (publicDetail.body.event as { slots: unknown }).slots,
+      [
+        {
+          startsAtLocal: '2030-09-05T16:00',
+          endsAtLocal: null,
+          startsAtUtc: Date.UTC(2030, 8, 5, 8, 0, 0),
+          endsAtUtc: null,
+        },
+      ],
+      '线上那一版的时间段必须还是原来那一段（待审的两段绝不能漏到线上）',
+    );
 
     // 批准之后才替换
     const approved = await call('POST', `/api/admin/review/calendar/${id}/approve`, {
@@ -312,6 +354,22 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
     assert.equal(row(id).title, '改过的标题');
     assert.equal(row(id).current_revision, 2);
     assert.equal(row(id).pending_revision, null);
+    // 批准之后包络才跟着变成"最早那段开始 → 最晚那段结束"
+    const afterApprove = await call('GET', `/api/calendar/${id}`);
+    assert.deepEqual(
+      (
+        (
+          afterApprove.body.event as {
+            slots: Array<{ startsAtLocal: string; endsAtLocal: string | null }>;
+          }
+        ).slots ?? []
+      ).map((s) => [s.startsAtLocal, s.endsAtLocal]),
+      [
+        ['2030-09-05T18:00', null],
+        ['2030-09-06T18:00', '2030-09-06T20:00'],
+      ],
+      '批准之后线上的时间段换成待审那一版（两段，都没变样）',
+    );
   });
 
   it('★★ 驳回对已发布事件的修改：线上那一版完整留在原地', async () => {
@@ -402,8 +460,10 @@ describe('★ 日历接进审核引擎（走 HTTP，不再是数据层直调）'
 
     const id = await submit(author.cookie, {
       title: '很久以前的比赛',
-      startsAtLocal: '2020-01-01T12:00',
-      startsAtTz: 'Asia/Shanghai',
+      // ⚠️ 017 之后"过去"这件事只能写进 `slots` —— 顶层 `startsAtLocal` 已经不是入参了
+      //    （会被 Zod 剥掉），那样这一场仍然落在 2030 年，`expired` 就永远是 false，
+      //    而失败信息看起来像"过期判定坏了"。
+      slots: [{ startsAtLocal: '2020-01-01T12:00' }],
     });
 
     const queue = await call('GET', '/api/admin/queue', { cookie: reviewer.cookie });

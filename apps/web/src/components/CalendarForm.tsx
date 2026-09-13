@@ -1,4 +1,14 @@
-import { CALENDAR_TAGS, EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, LOCALES } from '@mcsr/shared';
+import {
+  CALENDAR_TAGS,
+  // 「参与范围」明细的两份名单（2026-09-13）。⚠️ 词条是动态拼的（`calendar.continent.ASIA`），
+  // i18n 的静态守卫扫不到它们 —— 漏一条词条的表现是界面上显示成代码本身（`BR`），不会报错。
+  CONTINENTS,
+  COUNTRIES,
+  EVENT_ACCESS,
+  EVENT_LEVELS,
+  EVENT_SCOPES,
+  LOCALES,
+} from '@mcsr/shared';
 import {
   ALL_DAY_TIME,
   type CalendarEvent,
@@ -7,6 +17,7 @@ import {
   type CalendarSeries,
   EVENT_DESCRIPTION_MAX,
   EVENT_LOCATION_MAX,
+  EVENT_SLOTS_MAX,
   EVENT_TITLE_MAX,
   // t17 验收第 6 条：系列名写入前必须过它（折叠空白；`NOCASE` 只折大小写）
   normalizeSeriesName,
@@ -48,42 +59,82 @@ import { useCan } from '@/lib/capabilities';
  *      跨时区时字符串比较会给出相反的答案（开始是 UTC+8 的 20:00、结束是
  *      UTC 的 15:00 —— 字符串上 20:00 > 15:00，实际上开始更晚）。
  *      这里直接调 shared 的 `wallClockToUtc`，和 schema 用的是同一个函数。
+ *      ⚠️ 2026-09-13 起它是**逐段**判的（一场赛事可以有多段不连续的时间），
+ *      所以校验结果也逐段落回**那一段的那一行**，而不是表单顶上的一句
+ *      "有字段没通过校验" —— 8 段里让用户自己找是哪一段是最糟的体验。
  */
+
+/**
+ * 表单里的**一段**比赛时间（2026-09-13，多段）。
+ *
+ * ⚠️ 与 shared 的 `EventSlotInput` **同形但不同义**：这里的空串是"还没填"，
+ *    而 schema 那边 `startsAtLocal` 是必填的墙钟串、`endsAtLocal` 可空。
+ *    空串 → null 的转换**只在 `calendarEventInputOf` 一处**做 —— 散在多处就会出现
+ *    两个地方对"没填"的理解不一致，而两边都不报错。
+ * ⚠️ **没有时区**：用户要求「时区放在最上面，只填一次即可」，
+ *    所以整条事件共用草稿上的那一个 `startsAtTz`，每一段只有本地时间。
+ */
+export interface CalendarSlotDraft {
+  /** 'YYYY-MM-DDTHH:mm'，或空串（还没填） */
+  startsAtLocal: string;
+  /** 同上；空串表示"不填结束时间"（它在订阅里是一个时间点） */
+  endsAtLocal: string;
+}
+
+/** 一段空白时间。新建那一段时用它 —— 免得在 JSX 里手写一个字面量对象。 */
+export function emptyCalendarSlot(): CalendarSlotDraft {
+  return { startsAtLocal: '', endsAtLocal: '' };
+}
 
 /** 表单内部状态。提交时才转成 CalendarEventInput。 */
 export interface CalendarDraft {
   title: string;
   titleEn: string;
   descriptionMd: string;
-  /** 'YYYY-MM-DDTHH:mm'，或空串（还没填） */
-  startsAtLocal: string;
+  /**
+   * ★ **时间 = 一个时区 + 一段或多段时间**（2026-09-13，用户第 ④ 条需求）。
+   *
+   * ⚠️ 它替代的是原来那一对 `startsAtLocal` / `endsAtLocal`（外加 `endsAtTz`）：
+   *    用户原话是「把『开始时间』『结束时间』改成允许输入多段不连续的时间
+   *    （如在下面新增『添加』按钮，允许再填一组），同时时区放在最上面，只填一次即可」。
+   * ⚠️ 段**不在这里排序**：服务端写入时会按开始时间升序重排（schema 里写着
+   *    "入参的顺序**不承重**"），界面保持用户输入的顺序 —— 理由见下面渲染处的注释。
+   */
+  slots: CalendarSlotDraft[];
   startsAtTz: string;
-  /** 同上；空串表示"不填结束时间" */
-  endsAtLocal: string;
-  endsAtTz: string;
   allDay: boolean;
-  /** 具体时间：**离散的多个时间段**，一行一个（015 / 2026-09-13）。 */
-  scheduleText: string;
   url: string;
   location: string;
   tags: string[];
-  /** 空串 = 不填轮次（stage 是可选的） */
-  stage: string;
   /**
-   * 专业程度 / 参与范围（011 新增）。空串 = 不填。
+   * 专业程度 / 参与范围 / 参赛门槛（011 + 2026-09-13）。空串 = 不填。
    *
-   * ⚠️ 三个维度都用**空串**表示"没填"，而不是 `null` —— 它们是 `<select>`
+   * ⚠️ 这几维都用**空串**表示"没填"，而不是 `null` —— 它们是 `<select>`
    *    的值，而 DOM 里"没选"就是空串。真正转成 `null` 发生在提交那一步
-   *    （`draft.stage || null`），只在一个地方做，见 buildInput。
+   *    （`draft.level || null`），只在一个地方做，见 `calendarEventInputOf`。
+   * ⚠️ **`stage`（轮次）在 2026-09-13 被去掉了**（用户第 ⑥ 条要求），
+   *    所以这里没有它 —— 而它当年在这里的那一格正是"多加一个维度"这条路上
+   *    最省事的那一步，别照着旧版本把它加回来。
    */
   level: string;
   scope: string;
+  access: string;
+  /**
+   * 「参与范围」的明细：`scope` 选到「大洲」时放大洲代码，选到「国家」时放国家代码。
+   *
+   * ⚠️ 它是**多选**（用户举的例子就是"亚洲&大洋洲"），语义与 `tags` 一致：
+   *    命中任一即算匹配。做成单选的话，一场跨两个大洲的赛事只能在两条记录之间搬。
+   * ⚠️ 切换 `scope` 时界面会清掉**不匹配的**明细（见 `setScope`）——
+   *    那是**体验**不是校验：schema 不强制这条（它只是一条无意义的冗余），
+   *    但界面上留着上一半的取值会让人以为选上了。
+   */
+  scopeDetail: string[];
   lang: string;
   /**
    * 系列活动（③）。`''` = **不归到任何系列**（绝大多数赛事如此，这不是"还没填"）。
    *
-   * ⚠️ 与 `stage` / `level` / `scope` 同一个约定：`<select>` 的"没选"就是空串，
-   *    真正转成 `null` 只发生在 `buildEvent()` 一处。
+   * ⚠️ 与 `level` / `scope` / `access` 同一个约定：`<select>` 的"没选"就是空串，
+   *    真正转成 `null` 只发生在 `calendarEventInputOf()` 一处。
    */
   seriesId: string;
   /**
@@ -104,7 +155,14 @@ export function emptyCalendarDraft(): CalendarDraft {
     title: '',
     titleEn: '',
     descriptionMd: '',
-    startsAtLocal: '',
+    /*
+     * ★ 起手就是**一段空白时间**，而不是空数组。
+     *
+     * ⚠️ 空数组会让表单渲染成"没有任何时间输入框、下面却挂着一句『至少要有一段时间』"
+     *    —— 用户看到一句抱怨，却看不到那个需要改的东西（要改的东西是一个按钮，
+     *    而按钮在抱怨下面）。schema 的 `.min(1)` 是**兜底**，不是起手状态。
+     */
+    slots: [emptyCalendarSlot()],
     /*
      * ⚠️ 默认值必须是**用户自己的时区**，不能是 'UTC' 或 'Asia/Shanghai'。
      *
@@ -113,16 +171,14 @@ export function emptyCalendarDraft(): CalendarDraft {
      * 几个小时 —— 而偏移几个小时的赛事时间看起来完全正常。
      */
     startsAtTz: VIEWER_TZ,
-    endsAtLocal: '',
-    endsAtTz: '',
     allDay: false,
-    scheduleText: '',
     url: '',
     location: '',
     tags: [],
-    stage: '',
     level: '',
     scope: '',
+    access: '',
+    scopeDetail: [],
     lang: LOCALES[0],
     // 新建时**默认不属于任何系列** —— 系列要人去选，默认挂上一个就是在替用户猜
     seriesId: '',
@@ -137,18 +193,32 @@ export function draftFromEvent(event: CalendarEvent): CalendarDraft {
     title: event.title,
     titleEn: event.titleEn ?? '',
     descriptionMd: event.descriptionMd,
-    scheduleText: event.scheduleText ?? '',
-    startsAtLocal: event.startsAtLocal,
+    /*
+     * ★ `event.slots` **直接映射**成草稿的段（多段模型下没有"另一个真相"）。
+     *
+     * ⚠️ 兜底那一条分支：服务端读旧行时会用包络**合成一段**（`slotsOfRow`，
+     *    017 之前的行没有 `time_slots`），所以正常情况下 `slots` 不会是空的。
+     *    留着它是因为"空数组"在这里的后果特别难查：表单会渲染出**零行**时间输入框、
+     *    却挂着一条"至少要有一段时间" —— 用户既看不到要改什么，也加不出东西来。
+     */
+    slots:
+      event.slots.length > 0
+        ? event.slots.map((s) => ({
+            startsAtLocal: s.startsAtLocal,
+            endsAtLocal: s.endsAtLocal ?? '',
+          }))
+        : [{ startsAtLocal: event.startsAtLocal, endsAtLocal: event.endsAtLocal ?? '' }],
     startsAtTz: event.startsAtTz,
-    endsAtLocal: event.endsAtLocal ?? '',
-    endsAtTz: event.endsAtTz ?? '',
     allDay: event.allDay,
     url: event.url ?? '',
     location: event.location ?? '',
     tags: event.tags,
-    stage: event.stage ?? '',
     level: event.level ?? '',
     scope: event.scope ?? '',
+    access: event.access ?? '',
+    // ⚠️ 复制一份（`[...]`）：草稿会被就地改（切换 scope 时过滤明细），
+    // 直接共用事件对象上那个数组会让"取消编辑"也改到刚取回来的那一条。
+    scopeDetail: [...event.scopeDetail],
     lang: event.lang,
     // ③：编辑时**必须把系列带进来**，否则"改一个无关字段"会静默把系列丢掉
     seriesId: event.seriesId ?? '',
@@ -203,83 +273,98 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
  * ⚠️ 有两处按 `code` 分不出是哪条规则（同一个字段上挂着不同的 custom issue），
  *    这时用**和 schema 相同的判据**再算一次来决定文案 —— 而不是去匹配消息文本。
  *    匹配消息文本是这个项目已经证伪过一次的写法：文案一改，分支静默失效。
+ *
+ * ⚠️ 返回的 `key` 是**错误要挂到的那个控件的路径**，不是字段名：
+ *    逐段的错误路径是 `['slots', i, 'startsAtLocal']`，拼成 `slots.0.startsAtLocal`，
+ *    由那一行自己去 `fieldError()` 找它。若把它压成 `'slots'`，
+ *    所有段的错误会挤在段列表下面一句话里（"时间填错了"），
+ *    而用户要在 8 段里自己找是哪一段 —— 那正是多段最需要避免的一种体验。
  */
 function issueText(
   issue: Issue,
   draft: CalendarDraft,
   t: Translate,
-): { field: string; text: string } {
-  const field = String(issue.path[0] ?? '');
+): { key: string; text: string } {
+  const path = issue.path.map((p) => String(p));
+  const field = path[0] ?? '';
   // 长度类的问题在 Zod 里统一是 too_big，字段名决定文案
   const tooBig = issue.code === 'too_big';
 
   switch (field) {
     case 'title':
       return {
-        field,
+        key: field,
         text: tooBig
           ? t('calendar.errTitleTooLong', { max: EVENT_TITLE_MAX })
           : t('calendar.errTitleRequired'),
       };
     case 'titleEn':
-      return { field, text: t('calendar.errTitleTooLong', { max: EVENT_TITLE_MAX }) };
+      return { key: field, text: t('calendar.errTitleTooLong', { max: EVENT_TITLE_MAX }) };
     case 'descriptionMd':
-      return { field, text: t('calendar.errDescTooLong', { max: EVENT_DESCRIPTION_MAX }) };
+      return { key: field, text: t('calendar.errDescTooLong', { max: EVENT_DESCRIPTION_MAX }) };
     case 'location':
-      return { field, text: t('calendar.errLocationTooLong', { max: EVENT_LOCATION_MAX }) };
+      return { key: field, text: t('calendar.errLocationTooLong', { max: EVENT_LOCATION_MAX }) };
     case 'url':
-      return { field, text: t('calendar.errUrlTooLong') };
+      return { key: field, text: t('calendar.errUrlTooLong') };
     case 'noteToReviewer':
-      return { field, text: t('calendar.errNoteTooLong', { max: CALENDAR_NOTE_MAX }) };
+      return { key: field, text: t('calendar.errNoteTooLong', { max: CALENDAR_NOTE_MAX }) };
     case 'tags':
-      return { field, text: t('calendar.errTagsMin') };
+      return { key: field, text: t('calendar.errTagsMin') };
+    case 'scopeDetail':
+      // 唯一可能的失败是"选得比名单还多"，那不是用户能做的事（名单本身有上限）。
+      // 仍然给它一条话说：`errGeneric` 至少指向了正确的一格。
+      return { key: field, text: t('calendar.errGeneric') };
 
-    case 'startsAtTz':
-    case 'endsAtTz': {
-      if (tooBig) return { field, text: t('calendar.errTzTooLong') };
+    case 'startsAtTz': {
+      if (tooBig) return { key: field, text: t('calendar.errTzTooLong') };
       /*
-       * 同一个字段上有两条 custom：时区名非法（TimeZoneSchema 的 refine），
-       * 以及"结束时间需要同时给出时间和时区"（superRefine，路径会落在
-       * 缺的那一侧）。用 isValidTimeZone 再判一次就知道是哪一条。
-       *
-       * ⚠️ 而空值必须先判：`isValidTimeZone('')` 是 false，落到下面那句
-       *    "结束时间需要同时给出时间和时区" 上，会在用户**漏填开始时间的时区**
-       *    时说一句关于结束时间的话。（这条是由 .cache/calverify.ts 跑出来的，
-       *    不是想出来的。）
+       * ⚠️ 空值必须先判：`isValidTimeZone('')` 是 false，不先判就会把
+       *    "时区没填"说成"这个时区名无效" —— 而用户根本还没打任何东西。
+       *    （2026-09-13 之前这里还多一条"结束时间需要同时给出时间和时区"，
+       *     `endsAtTz` 那个字段随多段模型一起没了。）
        */
-      const value = (field === 'startsAtTz' ? draft.startsAtTz : draft.endsAtTz).trim();
-      if (value === '') {
-        return {
-          field,
-          text:
-            field === 'startsAtTz' ? t('calendar.errTzRequired') : t('calendar.errEndNeedsBoth'),
-        };
-      }
-      if (!isValidTimeZone(value)) return { field, text: t('calendar.errInvalidTz') };
-      return { field, text: t('calendar.errEndNeedsBoth') };
+      const value = draft.startsAtTz.trim();
+      if (value === '') return { key: field, text: t('calendar.errTzRequired') };
+      return { key: field, text: t('calendar.errInvalidTz') };
     }
 
-    case 'startsAtLocal':
-    case 'endsAtLocal': {
-      const value = field === 'startsAtLocal' ? draft.startsAtLocal : draft.endsAtLocal;
+    case 'slots': {
       /*
-       * 空值放在最前，因为它有两种来路，而两种都不该说"格式不对"：
-       *   · `invalid_type` —— 这个 key 根本没给
-       *   · `invalid_format` —— 给了但空串（表单原样传字符串，空表单走的是这条）
-       * 对一个空输入框说"格式应为 2026-08-30T20:00"，用户得自己先猜出
-       * "原来它是必填的"。
+       * ★ 这一支要处理**两种形状**，而且它们不是同一类错误（判据是路径的深度）：
+       *
+       *   · 只有一段路径（`['slots']`）—— 数组本身的 min/max，
+       *     挂在**段列表整体**下面（"至少要有一段时间"/"最多 8 段时间"）。
+       *   · 三段路径（`['slots', i, 'startsAtLocal'|'endsAtLocal']`）—— 逐段的校验，
+       *     必须落回**第 i 段的那一行**（见 shared 的 superRefine 里那两条 addIssue）。
        */
-      if (issue.code === 'invalid_type' || value === '') {
+      if (path.length === 1) {
         return {
-          field,
-          text:
-            field === 'startsAtLocal'
-              ? t('calendar.errStartRequired')
-              : t('calendar.errEndNeedsBoth'),
+          key: 'slots',
+          text: tooBig
+            ? t('calendar.errSlotsMax', { max: EVENT_SLOTS_MAX })
+            : t('calendar.errSlotsMin'),
         };
       }
+
+      // 路径原样拼成 key：`slots.0.endsAtLocal` —— 渲染处按同一把 key 找它
+      const key = path.join('.');
+      const which = path[2];
+      const slot = draft.slots[Number(path[1])];
+      const value =
+        which === 'startsAtLocal' ? (slot?.startsAtLocal ?? '') : (slot?.endsAtLocal ?? '');
+
+      /*
+       * 空值：只有**开始时间是必填的**（结束留空 = 不填，schema 那边是 `.nullish()`）。
+       * 空值有两种来路，而两种都不该说"格式不对"：
+       *   · `invalid_type` —— 这个 key 根本没给
+       *   · 空串 —— 表单原样传字符串，用户还没填
+       * 对一个空输入框说"格式应为 2026-08-30T20:00"，用户得自己先猜出"原来它是必填的"。
+       */
+      if (which === 'startsAtLocal' && value === '') {
+        return { key, text: t('calendar.errSlotStartRequired') };
+      }
       // 不是 custom 就只剩正则那一条（格式不对）
-      if (issue.code !== 'custom') return { field, text: t('calendar.errWallClock') };
+      if (issue.code !== 'custom') return { key, text: t('calendar.errWallClock') };
       /*
        * custom 有两类：整天事件的时间必须是 00:00，以及"结束必须晚于开始"。
        * 判据用的是 schema 里那句话本身（`endsWith('T00:00')`）。
@@ -289,17 +374,54 @@ function issueText(
        *    这个映射对**任何**来源的 payload 都成立，而不是只对当前这份 UI 成立。
        */
       if (draft.allDay && !value.endsWith(`T${ALL_DAY_TIME}`)) {
-        return { field, text: t('calendar.errAllDayTime') };
+        return { key, text: t('calendar.errAllDayTime') };
       }
       return {
-        field,
+        key,
         text: draft.allDay ? t('calendar.errAllDayEndOrder') : t('calendar.errEndBeforeStart'),
       };
     }
 
     default:
-      return { field: field || 'form', text: t('calendar.errGeneric') };
+      return { key: field || 'form', text: t('calendar.errGeneric') };
   }
+}
+
+/**
+ * 「参与范围明细」的候选项 —— **跟着 `scope` 走**。
+ *
+ * ⚠️ 两份名单共用同一个字段 `scopeDetail`，但它们**不重叠**
+ *    （`SCOPE_DETAILS = 大洲 ∪ 国家`）。所以切换 scope 时必须清掉不匹配的那些，
+ *    否则保存下来的是一个"选了大洲却带着国家代码"的明细 —— 筛选时它匹配不上
+ *    任何东西，而界面上看起来是选过的。
+ * ⚠️ `GLOBAL`（以及"不填"）返回**空数组**：那两档没有明细可选，
+ *    渲染处也正因此整块不渲染。
+ */
+export function scopeDetailOptions(scope: string): readonly string[] {
+  if (scope === 'CONTINENT') return CONTINENTS;
+  if (scope === 'COUNTRY') return COUNTRIES;
+  return [];
+}
+
+/**
+ * 切换 `scope` 之后**还留得下**的那些明细。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么单独抽成一个导出的纯函数（而不是写在 `setScope` 的闭包里）
+ * ---------------------------------------------------------------------------
+ * 这条规则是"**体验**而不是校验"（schema 刻意不强制，见 `scopeDetail` 的注释），
+ * 也就是说**服务端永远不会替我们兜底**：清错了，库里就真的存着一条无意义的冗余，
+ * 而界面上看不出任何异常。闭包里的那条 `filter` 没有任何验证点 ——
+ * 纯 node SSR 不跑交互，`renderToStaticMarkup` 也发不出 change 事件。
+ * ⇒ 抽成纯函数，让自检脚本能直接驱动它。这和 `calendarEventInputOf` 是同一条理由
+ *   （见它的头注释），也同样是**生产路径真的会调它**（`setScope` 就是用这个）。
+ *
+ * ⚠️ 顺序按 `current` 原样保留，不按名单顺序重排：用户勾选的先后不重要，
+ *    但"我勾的那个还在不在"必须一眼看得出来。
+ */
+export function keepScopeDetail(scope: string, current: readonly string[]): string[] {
+  const keep = scopeDetailOptions(scope);
+  return current.filter((code) => keep.includes(code));
 }
 
 // ---------------------------------------------------------------------------
@@ -377,7 +499,16 @@ export function CalendarForm({
    *    没有这个 ref 的话，用户填了 20:00 → 勾上整天（被改成 00:00）→
    *    发现勾错了 → 取消勾选，得到 00:00。他的输入被吃掉了，而且没有任何提示。
    */
-  const lastTimed = useRef({ start: '', end: '' });
+  /**
+   * 「整天」来回切换时要还原用户原来填的**每一段**的钟点。
+   *
+   * ⚠️ 这就是需求里那句"取消勾选时**不要**silently 留着 00:00"。
+   *    没有这个 ref 的话，用户填了 20:00 → 勾上整天（被改成 00:00）→
+   *    发现勾错了 → 取消勾选，得到 00:00。他的输入被吃掉了，而且没有任何提示。
+   * ⚠️ 2026-09-13 起它按**段的下标**存：多段之后"记一个钟点"是不够的，
+   *    3 段赛事勾一下再取消，会得到 3 段一模一样的 00:00。
+   */
+  const lastTimed = useRef<{ start: string; end: string }[]>([]);
 
   function set<K extends keyof CalendarDraft>(key: K, value: CalendarDraft[K]) {
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -391,49 +522,149 @@ export function CalendarForm({
     });
   }
 
-  /** 填时间输入框。`allDay` 时只收到日期部分，钟点固定为 00:00。 */
-  function setStart(raw: string) {
-    if (draft.allDay) {
-      set('startsAtLocal', withTime(raw, ALL_DAY_TIME));
-      return;
-    }
-    // 有的实现会给出带秒的值，这里统一截到分钟 —— schema 只认 'HH:mm'
-    const value = raw.slice(0, 16);
-    lastTimed.current.start = timeOf(value);
-    set('startsAtLocal', value);
+  /** 按**路径**撤掉一条错误（逐段的错误键是 `slots.0.startsAtLocal` 这种，不是字段名）。 */
+  function clearError(...keys: string[]) {
+    setErrors((prev) => {
+      const next = { ...prev };
+      let touched = false;
+      for (const key of keys) {
+        if (key in next) {
+          delete next[key];
+          touched = true;
+        }
+      }
+      return touched ? next : prev;
+    });
   }
 
-  function setEnd(raw: string) {
-    if (draft.allDay) {
-      set('endsAtLocal', withTime(raw, ALL_DAY_TIME));
-      return;
-    }
-    const value = raw.slice(0, 16);
-    lastTimed.current.end = timeOf(value);
-    set('endsAtLocal', value);
+  /**
+   * 改某一段的时间输入框。`allDay` 时只收到日期部分，钟点固定为 00:00。
+   *
+   * ⚠️ 它**同时撤掉这一段上两个时间框的错误**（不是只撤当前这个框的）：
+   *    "结束必须晚于开始"是**一对值**的性质，用户改开始时间就是在改那个判据本身，
+   *    只撤结束那一格的红字会让它挂在原地——而它可能已经不成立了。
+   */
+  function setSlot(index: number, which: keyof CalendarSlotDraft, raw: string) {
     /*
-     * 结束时区默认跟开始一致 —— 一场比赛的首尾几乎总在同一个时区里，
-     * 让用户再填一遍是白费一道工。仍然是**独立字段**，可以改：
-     * 跨时区的线上赛确实存在，硬绑成"跟开始一样"会让那种赛事填不出来。
+     * ⚠️ 新值在这里算好，更新的**更新函数保持纯粹**（只做数组映射）。
+     *    把 `lastTimed` 那次赋值写进 updater 里会在并发渲染下跑两遍 ——
+     *    而它记的正是"用户上次填的钟点"，记错一次就是切换「整天」时
+     *    悄悄吐出别人那一段的时间。
      */
-    if (value !== '' && draft.endsAtTz.trim() === '') set('endsAtTz', draft.startsAtTz);
+    const value = draft.allDay ? withTime(raw, ALL_DAY_TIME) : raw.slice(0, 16);
+    if (!draft.allDay) {
+      const before = lastTimed.current[index] ?? { start: '', end: '' };
+      lastTimed.current[index] =
+        which === 'startsAtLocal'
+          ? { ...before, start: timeOf(value) }
+          : { ...before, end: timeOf(value) };
+    }
+
+    setDraft((prev) => ({
+      ...prev,
+      slots: prev.slots.map((slot, i) => {
+        if (i !== index) return slot;
+        // 整天事件：`<input type="date">` 只给 'YYYY-MM-DD'，钟点固定 00:00。
+        // ⚠️ schema 那边会拒掉别的钟点（superRefine 的第一条），
+        //    界面在这里就让它**填不出**别的值，而不是填完再报错。
+        return which === 'startsAtLocal'
+          ? { ...slot, startsAtLocal: value }
+          : { ...slot, endsAtLocal: value };
+      }),
+    }));
+    clearError(`slots.${String(index)}.startsAtLocal`, `slots.${String(index)}.endsAtLocal`);
+  }
+
+  /**
+   * 「添加一段时间」——**只往后追加**，不插到中间、也不重排。
+   *
+   * ⚠️ 不重排的理由见渲染处那段注释（打字打到一半被挪走会丢焦点）。
+   * ⚠️ 新加的那一段必然是空的，所以顺手撤掉"至少要有一段时间"那条组级错误：
+   *    用户点这个按钮就是在解决那件事，红字还留着就是在骂他刚做的动作。
+   */
+  function addSlot() {
+    setDraft((prev) =>
+      prev.slots.length >= EVENT_SLOTS_MAX
+        ? prev
+        : { ...prev, slots: [...prev.slots, emptyCalendarSlot()] },
+    );
+    clearError('slots');
+  }
+
+  /**
+   * 删掉某一段。**只剩一段时不给这个入口**（唯一那段不能被删 ——
+   * 删掉之后表单就变成"一场没有时间的赛事"，而 schema 一定会拒它）。
+   *
+   * ⚠️ 删完必须把**所有**错误清掉：错误是按 `slots.<下标>` 存的，
+   *    少了一段之后原来的第 2 段变成第 1 段 —— 留着旧红字会让它挂到
+   *    **另一段**头上，而那种错位没有任何东西会报错。
+   */
+  function removeSlot(index: number) {
+    setDraft((prev) =>
+      prev.slots.length <= 1 ? prev : { ...prev, slots: prev.slots.filter((_, i) => i !== index) },
+    );
+    setErrors({});
   }
 
   function toggleAllDay(next: boolean) {
     if (next === draft.allDay) return;
     if (next) {
-      lastTimed.current = { start: timeOf(draft.startsAtLocal), end: timeOf(draft.endsAtLocal) };
+      lastTimed.current = draft.slots.map((slot) => ({
+        start: timeOf(slot.startsAtLocal),
+        end: timeOf(slot.endsAtLocal),
+      }));
     }
-    // 取消勾选时还原记住的钟点；本来就没填过时间的，用 00:00 起头（它会显示在输入框里）
-    const startTime = next ? ALL_DAY_TIME : lastTimed.current.start || ALL_DAY_TIME;
-    const endTime = next ? ALL_DAY_TIME : lastTimed.current.end || ALL_DAY_TIME;
+    /*
+     * 取消勾选时还原记住的钟点；本来就没填过时间的，用 00:00 起头
+     * （它会显示在输入框里，用户可以改）。
+     * ⚠️ `withTime('')` 返回空串 ⇒ 本来就没填的那一段**仍然是空的**，
+     *    不会被这个切换塞进一个 00:00（那会让"没填"变成"填了午夜"）。
+     */
+    const remembered = lastTimed.current;
     setDraft((prev) => ({
       ...prev,
       allDay: next,
-      startsAtLocal: withTime(prev.startsAtLocal, startTime),
-      endsAtLocal: withTime(prev.endsAtLocal, endTime),
+      slots: prev.slots.map((slot, i) => ({
+        startsAtLocal: withTime(
+          slot.startsAtLocal,
+          next ? ALL_DAY_TIME : remembered[i]?.start || ALL_DAY_TIME,
+        ),
+        endsAtLocal: withTime(
+          slot.endsAtLocal,
+          next ? ALL_DAY_TIME : remembered[i]?.end || ALL_DAY_TIME,
+        ),
+      })),
     }));
     setErrors({});
+  }
+
+  /**
+   * 切换「参与范围」。
+   *
+   * ⚠️ 必须顺手清掉**不匹配的**明细（大洲 ↔ 国家），这是**体验**不是校验：
+   *    schema 刻意不强制这条（选 GLOBAL 却留着明细只是一条无意义的冗余，
+   *    不会让人看错数据，见 `scopeDetail` 的注释）。但界面上留着上一半的取值
+   *    会让人**以为它选上了** —— 而它在那张表里已经不存在了，
+   *    保存之后它会凭空出现在详情页上。
+   * ⚠️ 判据在 `keepScopeDetail` 那个纯函数里（它有一条自检的验证点，
+   *    见那个函数的注释 —— 这条规则服务端不会替我们兜底）。
+   */
+  function setScope(next: string) {
+    setDraft((prev) => ({
+      ...prev,
+      scope: next,
+      scopeDetail: keepScopeDetail(next, prev.scopeDetail),
+    }));
+    clearError('scope', 'scopeDetail');
+  }
+
+  /** 明细的 chip 多选。顺序跟着名单走（和标签同一条约定）：集合一样时 payload 就该一模一样。 */
+  function toggleScopeDetail(code: string) {
+    const source = scopeDetailOptions(draft.scope);
+    const next = draft.scopeDetail.includes(code)
+      ? draft.scopeDetail.filter((x) => x !== code)
+      : source.filter((x) => draft.scopeDetail.includes(x) || x === code);
+    set('scopeDetail', [...next]);
   }
 
   function toggleTag(tag: string) {
@@ -520,11 +751,16 @@ export function CalendarForm({
 
     const parsed = CalendarEventInputSchema.safeParse(candidate);
     if (!parsed.success) {
+      /*
+       * ⚠️ 键是 `issueText` 给出的**控件路径**（逐段的是 `slots.0.endsAtLocal`），
+       *    不是字段名 —— 渲染处按同一把键去找它，所以这两边必须共用 `issueText`，
+       *    不能各拼一套。拼错的表现是"红字消失了"，而它不会报错。
+       */
       const next: Record<string, string> = {};
       for (const issue of parsed.error.issues) {
-        const { field, text } = issueText(issue, draft, t);
-        // 每个字段只留第一条：同一条规则可能报多条，叠在一起反而看不清
-        if (!next[field]) next[field] = text;
+        const { key, text } = issueText(issue, draft, t);
+        // 每个控件只留第一条：同一条规则可能报多条，叠在一起反而看不清
+        if (!next[key]) next[key] = text;
       }
       setErrors(next);
       return null;
@@ -537,29 +773,31 @@ export function CalendarForm({
   // ---- 实时校验（不等提交） ----
 
   const startTzTrimmed = draft.startsAtTz.trim();
-  const endTzTrimmed = draft.endsAtTz.trim();
 
   const live: Record<string, string> = {};
   if (startTzTrimmed !== '' && !isValidTimeZone(startTzTrimmed)) {
     live.startsAtTz = t('calendar.errInvalidTz');
   }
-  if (endTzTrimmed !== '' && !isValidTimeZone(endTzTrimmed)) {
-    live.endsAtTz = t('calendar.errInvalidTz');
-  }
   /*
-   * "结束晚于开始"的实时提示。
+   * 逐段的"结束晚于开始"实时提示。
+   *
    * 两端都还没填全时不算 —— 那会在一张还空着的表单上先亮一条红字。
-   * 判据和 schema 一样是**换算成 UTC 之后的时刻**（见文件头第 3 条）。
+   * 判据和 schema 一样是**换算成 UTC 之后的时刻**（见文件头第 3 条）；
+   * 时区名非法时 `wallClockToUtc` 返回 null，于是这一段自然不报 ——
+   * 那种情况下该说的是上面那条"这个时区名无效"。
+   *
+   * ⚠️ 结果按 `slots.<i>.endsAtLocal` 存放，落到**那一段的那一行**上。
    */
-  if (draft.startsAtLocal && startTzTrimmed && draft.endsAtLocal && endTzTrimmed) {
-    const startUtc = wallClockToUtc(draft.startsAtLocal, startTzTrimmed);
-    const endUtc = wallClockToUtc(draft.endsAtLocal, endTzTrimmed);
+  draft.slots.forEach((slot, i) => {
+    if (!slot.startsAtLocal || !slot.endsAtLocal) return;
+    const startUtc = wallClockToUtc(slot.startsAtLocal, startTzTrimmed);
+    const endUtc = wallClockToUtc(slot.endsAtLocal, startTzTrimmed);
     if (startUtc !== null && endUtc !== null && endUtc <= startUtc) {
-      live.endsAtLocal = draft.allDay
+      live[`slots.${String(i)}.endsAtLocal`] = draft.allDay
         ? t('calendar.errAllDayEndOrder')
         : t('calendar.errEndBeforeStart');
     }
-  }
+  });
 
   /** 字段下的红字。实时结果优先 —— 它反映的是**现在**输入框里的内容。 */
   const fieldError = (key: string) => {
@@ -574,8 +812,22 @@ export function CalendarForm({
     return offset ? t('calendar.tzOffsetHint', { offset }) : fallback;
   };
 
-  const startValue = draft.allDay ? dateOf(draft.startsAtLocal) : draft.startsAtLocal;
-  const endValue = draft.allDay ? dateOf(draft.endsAtLocal) : draft.endsAtLocal;
+  /** 某一格的输入值：整天事件只给日期部分（`<input type="date">` 的 value 形状）。 */
+  const slotValue = (local: string): string => (draft.allDay ? dateOf(local) : local);
+
+  /**
+   * 「参与范围明细」的候选项与词条前缀 —— **跟着 `scope` 走**。
+   *
+   * ⚠️ 名单本身在 `scopeDetailOptions`（纯函数、自检脚本能直接驱动它）；
+   *    这里只补上词条前缀。渲染处已经由
+   *    `scope === 'CONTINENT' || 'COUNTRY'` 把门，而 `scopeDetailOptions`
+   *    对其它档返回空数组 ⇒ 那两个变量的取值只可能是"洲"或"国家"。
+   */
+  const detailOptions = scopeDetailOptions(draft.scope);
+  const detailKeyPrefix = draft.scope === 'CONTINENT' ? 'calendar.continent.' : 'calendar.country.';
+
+  /** 段数到顶时「添加」按钮禁用 —— 再点也不会有第 9 段（schema 的 `.max` 会拒）。 */
+  const slotsFull = draft.slots.length >= EVENT_SLOTS_MAX;
 
   /*
    * 下拉框的选项 = 服务端给的列表 +（必要时）**当前这一条已经挂着的那个系列**。
@@ -621,31 +873,20 @@ export function CalendarForm({
           </select>
         </Field>
 
-        <Field id="cal-stage" label={t('calendar.fields.stage')} hint={t('calendar.hintStage')}>
-          <select
-            id="cal-stage"
-            className="mcsr-field__input"
-            value={draft.stage}
-            onChange={(e) => set('stage', e.target.value)}
-          >
-            {/* 空选项 = 不填。stage 是可选的，而"必须选一个"会逼录入者猜一个错的 */}
-            <option value="">{t('calendar.stageNone')}</option>
-            {EVENT_STAGES.map((s) => (
-              <option key={s} value={s}>
-                {t(`calendar.stage.${s}`)}
-              </option>
-            ))}
-          </select>
-        </Field>
-
         {/*
-          011 新增的两维。和 stage 放同一排，因为它们是同一类东西：
-          **都是可空的单选标签**，都用来让筛选更准。
+          专业程度 / 参与范围 / 参赛门槛 —— **同一排的三个可空单选标签**，
+          它们是一类东西：都用来让筛选更准，都不参与时间定位。
 
-          ⚠️ 两处都保留了"不填"的空选项，而且文案和 stage 那条不同：
-          stage 那条说的是"不填"，这两条说的是**"不适用"** ——
-          因为排位节点这类事件本来就没有专业程度可言，
-          "不填"会让录入者觉得自己漏了一项，而"不适用/不限"才是事实。
+          ⚠️ 这里原来是「轮次」（`stage`），**2026-09-13 按用户第 ⑥ 条要求删掉了**：
+              轮次不做父子层级、只是个标签，而录数据时"横跨一周的连续赛事"根本填不了它
+              —— 那种赛事被逼着在六个选项里挑一个错的。
+              位置上顶替它的是「参赛门槛」（`EVENT_ACCESS`），一个真的能回答
+              "怎么才能进"的维度。
+          ⚠️ 三处都保留了"选择不填"的空选项，而且文案**不是** `stageNone`：
+              `stageNone`（"不填"）说的是"这场还没到那个轮次"—— 那个含义对
+              专业程度/参与范围/参赛门槛**完全不成立**（它们对排位节点这类活动是
+              **根本不存在**）。所以这里用 `dimNone`（"不适用 / 不限"），
+              否则录入者会以为自己漏了一项，然后随便选一个把数据污染掉。
         */}
         <Field id="cal-level" label={t('calendar.fields.level')} hint={t('calendar.hintLevel')}>
           <select
@@ -668,7 +909,12 @@ export function CalendarForm({
             id="cal-scope"
             className="mcsr-field__input"
             value={draft.scope}
-            onChange={(e) => set('scope', e.target.value)}
+            /*
+             * ⚠️ 走 `setScope` 而不是通用的 `set`：换范围时要顺手把**不匹配的明细**
+             *    清掉（大洲 ↔ 国家是两份不重叠的名单）。理由见 setScope 的注释 ——
+             *    那是**体验**，schema 不强制这条。
+             */
+            onChange={(e) => setScope(e.target.value)}
           >
             <option value="">{t('calendar.dimNone')}</option>
             {EVENT_SCOPES.map((s) => (
@@ -678,7 +924,63 @@ export function CalendarForm({
             ))}
           </select>
         </Field>
+
+        <Field id="cal-access" label={t('calendar.fields.access')} hint={t('calendar.hintAccess')}>
+          <select
+            id="cal-access"
+            className="mcsr-field__input"
+            value={draft.access}
+            onChange={(e) => set('access', e.target.value)}
+          >
+            <option value="">{t('calendar.dimNone')}</option>
+            {EVENT_ACCESS.map((a) => (
+              <option key={a} value={a}>
+                {t(`calendar.access.${a}`)}
+              </option>
+            ))}
+          </select>
+        </Field>
       </div>
+
+      {/*
+        ★ 「参与范围明细」（2026-09-13，用户第 ⑥ 条：「参赛范围非全球时允许选具体信息
+          （如大洲）」）—— **只在选到「大洲」或「国家」时出现**。
+
+        ⚠️ 它放在「参与范围」那一排**下面**，而不是塞进上面那个 2×2 的 grid：
+            它是从属于「参与范围」的**二级选择**，塞进 grid 会变成"第五个维度"，
+            而它和 `scope` 的关系（谁决定谁）在视觉上就看不出来了。
+        ⚠️ 选到「全球」时**整块不渲染**（不是灰掉）：全球范围的赛事没有"哪些大洲"
+            可言，留一块灰按钮会让人以为那里还能填。
+        ⚠️ 多选、命中任一即算匹配 —— 用户举的例子就是"亚洲 & 大洋洲"，
+            单选会逼这场赛事在两条记录之间搬来搬去。
+      */}
+      {draft.scope === 'CONTINENT' || draft.scope === 'COUNTRY' ? (
+        <div className="mcsr-field scopedetail">
+          <span className="mcsr-field__label">{t('calendar.fields.scopeDetail')}</span>
+          <div className="tagpicker__row">
+            {detailOptions.map((code) => (
+              <button
+                key={code}
+                type="button"
+                className={`tagchip${draft.scopeDetail.includes(code) ? ' tagchip--on' : ''}`}
+                onClick={() => toggleScopeDetail(code)}
+                aria-pressed={draft.scopeDetail.includes(code)}
+              >
+                {/*
+                  ⚠️ 这里是**动态**词条键（`calendar.continent.ASIA`），
+                     i18n 的静态守卫（services/api/src/i18n-keys.test.ts 守卫三）
+                     只认字面量 ⇒ 它扫不到这两族。所以漏一条词条的表现是
+                     界面上显示成代码本身（`BR`）—— 那比冒出一个裸 key 更不显眼，
+                     只能靠渲染自检抓。加国家/大洲时**记得同时补中英各一条**。
+                */}
+                {t(`${detailKeyPrefix}${code}`)}
+              </button>
+            ))}
+          </div>
+          {fieldError('scopeDetail')}
+          <p className="mcsr-field__hint">{t('calendar.hintScopeDetail')}</p>
+        </div>
+      ) : null}
 
       <Field id="cal-title" label={t('calendar.fields.title')} hint={t('calendar.hintTitle')}>
         <input
@@ -725,37 +1027,25 @@ export function CalendarForm({
         <p className="mcsr-field__hint">{t('calendar.hintAllDay')}</p>
       </div>
 
+      {/*
+        ★ 时区：**整条事件只有一个，填一次**（用户原话：「时区放在最上面，
+          只填一次即可」）。
+
+        ⚠️ 所以它**不在**每一段里重复。这是刻意的简化，也是多段模型的前提：
+           一场赛事通常在一个时区里办，而每段各带一个时区会让"跨时区换算"
+           在事件内部就开始互相打架（哪一段用哪个时区显示？包络又怎么算？）。
+           真要跨时区办，本仓的答案是**拆成两个事件**。
+        ⚠️ 它排在段列表**前面**：下面每一段填的都是"这个时区里的本地时间"，
+           先定时区再填时间，读起来才是一句话。
+      */}
       <div className="formrow">
         <Field
-          id="cal-starts"
-          label={t('calendar.fields.startsAt')}
-          hint={t('calendar.hintStartsAt')}
-        >
-          <input
-            id="cal-starts"
-            className="mcsr-field__input"
-            /*
-             * ⚠️ 值是**原样的墙钟字符串**，不是 `new Date(...)` 的结果。
-             *    `<input type="datetime-local">` 的 value 恰好就是
-             *    'YYYY-MM-DDTHH:mm'，和数据库里那个字段一字不差。
-             *    中间过一次 Date 就会引入"按本机时区解释"这个陷阱
-             *    （calendar-time.ts 开头专门警告过它）。
-             */
-            type={draft.allDay ? 'date' : 'datetime-local'}
-            value={startValue}
-            onChange={(e) => setStart(e.target.value)}
-            required
-          />
-          {fieldError('startsAtLocal')}
-        </Field>
-
-        <Field
-          id="cal-starts-tz"
+          id="cal-tz"
           label={t('calendar.fields.timezone')}
           hint={tzHint(startTzTrimmed, t('calendar.hintTimezone'))}
         >
           <input
-            id="cal-starts-tz"
+            id="cal-tz"
             className="mcsr-field__input"
             list="cal-tz-options"
             value={draft.startsAtTz}
@@ -769,68 +1059,157 @@ export function CalendarForm({
         </Field>
       </div>
 
-      <div className="formrow">
-        <Field
-          id="cal-ends"
-          label={t('calendar.fields.endsAt')}
-          hint={draft.allDay ? t('calendar.hintEndsAtAllDay') : t('calendar.hintEndsAt')}
-        >
-          <input
-            id="cal-ends"
-            className="mcsr-field__input"
-            type={draft.allDay ? 'date' : 'datetime-local'}
-            value={endValue}
-            onChange={(e) => setEnd(e.target.value)}
-          />
-          {fieldError('endsAtLocal')}
-        </Field>
-
-        <Field
-          id="cal-ends-tz"
-          label={t('calendar.fields.endsTz')}
-          hint={tzHint(endTzTrimmed, t('calendar.hintEndsTz'))}
-        >
-          <input
-            id="cal-ends-tz"
-            className="mcsr-field__input"
-            list="cal-tz-options"
-            value={draft.endsAtTz}
-            onChange={(e) => set('endsAtTz', e.target.value)}
-            placeholder="Asia/Shanghai"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {fieldError('endsAtTz')}
-        </Field>
-      </div>
-
       {/*
-        ★ 具体时间：**离散的多个时间段**（015 / 2026-09-13，用户要求
-          「活动的时间允许填入离散的时间」）。
+        ★★ 比赛时间：**多段不连续的时间**（2026-09-13，用户第 ④ 条需求原话：
+          「把『开始时间』『结束时间』改成允许输入多段不连续的时间（如在下面新增
+          『添加』按钮，允许再填一组『开始时间』『结束时间』，同时时区放在最上面，
+          只填一次即可）」）。
 
-        ⚠️ 用 `<textarea>` 而不是 `<input>`：内容天然是多行的（一行一个时间段），
-           而 `<input>` 里换行会被浏览器吃掉 —— 用户敲的回车会静默消失。
-        ⚠️ 它放在**起止时间下面**、而不是并进上面那个 `formrow`：它是上面那对时间的
-           补充说明，不是一个平级的第四个时间字段。放进 formrow 会变成四列，
-           在窄屏上挤成一团，也让人以为"要填四个时间"。
-        ⚠️ 这一栏**不参与**日历网格定位（见 i18n 的 hintScheduleText）——
-           所以它没有 `required`，也没有进 `localErrors` 的顺序里。
+        ⚠️⚠️ **界面不替用户重排这些段**，理由是一条具体的坏后果而不是洁癖：
+            用户在第 3 段打到一半时，按开始时间重排会把它挪到第 1 行，
+            React 按位置复用 DOM ⇒ **输入焦点当场丢掉**，剩下的半句话
+            落进另一段。而重排在功能上**什么都不换**：段是按开始时间排序存进库的，
+            那是服务端写入时做的事（schema 里写着"入参的顺序不承重"）。
+            少排一次 = 少一类"打字打到一半东西跑了"的 bug，代价是用户在
+            提交前看到的顺序可能不是时间顺序 —— 而那一眼在提交后的详情页上有。
+        ⚠️ 每段只有本地时间、没有自己的时区（时区在上面那一格，只填一次）。
+        ⚠️ 每一段都有**自己的无障碍名字**（`aria-label` 里带「第 N 段」）：
+            屏幕阅读器里那几组"开始时间/结束时间"长得一模一样，没有序号，
+            用户分不清自己正在改哪一段。
       */}
-      <Field
-        id="cal-schedule"
-        label={t('calendar.fields.scheduleText')}
-        hint={t('calendar.hintScheduleText')}
-      >
-        <textarea
-          id="cal-schedule"
-          className="mcsr-field__input"
-          rows={3}
-          value={draft.scheduleText}
-          onChange={(e) => set('scheduleText', e.target.value)}
-          placeholder={t('calendar.placeholderScheduleText')}
-        />
-        {fieldError('scheduleText')}
-      </Field>
+      <div className="mcsr-field slotlist">
+        <span className="mcsr-field__label">{t('calendar.fields.slots')}</span>
+
+        {draft.slots.map((slot, i) => {
+          /*
+           * ⚠️ **刻意用下标当 key**，并且显式关掉这条 lint 规则（它是 `suspicious`，
+           *    默认的担心在这里不成立，理由有三条）：
+           *      · 段行**没有任何内部状态**：两个输入框的值全部来自草稿（受控），
+           *        id / aria-label 也由下标推导 ⇒ 复用 DOM 节点时不会有"上一段的残留"；
+           *      · 段的**顺序永不改变**（不重排、只在末尾追加、删除时整体重编下标）
+           *        ⇒ 下标与段的对应关系是稳定的；
+           *      · 换成一个随机 id 会带来一个真实的坏处：**纯 SSR 的快照每次不同**，
+           *        而本仓的渲染自检正是拿那份快照做断言的。
+           *    另外，用内容（开始时间）当 key 更糟：用户每敲一个字符 key 就变一次，
+           *    React 会**重建那一行**，输入焦点当场丢掉。
+           */
+          return (
+            <div
+              className="slotrow"
+              // biome-ignore lint/suspicious/noArrayIndexKey: 段行无内部状态、顺序永不改变，且随机 key 会破坏 SSR 快照的可断言性（理由见上面的注释）
+              key={i}
+            >
+              <div className="slotrow__head">
+                {/*
+                  ⚠️ 序号在**行首**是给眼睛的（哪一段到哪一段），下面输入框的
+                     `aria-label` 里也带上它 —— 那是给读屏的。两处都必要：
+                     行首那个是纯视觉的分隔，读屏不会把它当输入框的名字读出来。
+                */}
+                <span className="slotrow__index">{t('calendar.slotLabel', { n: i + 1 })}</span>
+                {/*
+                  ⚠️ **只有一段时不给这个按钮**。唯一那一段被删掉之后，表单会变成
+                     "一场没有时间的赛事" —— schema 一定会拒（`.min(1)`），
+                     而用户在界面上找不到任何东西可以补救。
+                */}
+                {draft.slots.length > 1 ? (
+                  <button
+                    type="button"
+                    className="ghostbtn slotrow__remove"
+                    onClick={() => removeSlot(i)}
+                  >
+                    {t('calendar.removeSlot')}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="slotrow__fields">
+                <Field
+                  id={`cal-slot-${String(i)}-start`}
+                  label={t('calendar.fields.startsAt')}
+                  /*
+                   * ⚠️ 提示只在**第一段**下面出现一次。
+                   *    同一句话在 8 行里重复 8 遍会让这一块看着像 8 组必填的大字段，
+                   *    而它对每一段说的话是一模一样的。
+                   */
+                  hint={i === 0 ? t('calendar.hintStartsAt') : undefined}
+                >
+                  <input
+                    id={`cal-slot-${String(i)}-start`}
+                    className="mcsr-field__input"
+                    /*
+                     * ⚠️ 值是**原样的墙钟字符串**，不是 `new Date(...)` 的结果。
+                     *    `<input type="datetime-local">` 的 value 恰好就是
+                     *    'YYYY-MM-DDTHH:mm'，和数据库里那个字段一字不差。
+                     *    中间过一次 Date 就会引入"按本机时区解释"这个陷阱
+                     *    （calendar-time.ts 开头专门警告过它）。
+                     */
+                    type={draft.allDay ? 'date' : 'datetime-local'}
+                    value={slotValue(slot.startsAtLocal)}
+                    onChange={(e) => setSlot(i, 'startsAtLocal', e.target.value)}
+                    /*
+                     * ⚠️ `aria-label` 会**覆盖** `<label>` 作为可访问名字 ——
+                     *    所以它必须把字段名一起带上。只写「第 1 段」的话，
+                     *    读屏会把这几个框念成一排没有名字的输入框。
+                     */
+                    aria-label={`${t('calendar.slotLabel', { n: i + 1 })} · ${t('calendar.fields.startsAt')}`}
+                    required
+                  />
+                  {fieldError(`slots.${String(i)}.startsAtLocal`)}
+                </Field>
+
+                <Field
+                  id={`cal-slot-${String(i)}-end`}
+                  label={t('calendar.fields.endsAt')}
+                  hint={
+                    i === 0
+                      ? draft.allDay
+                        ? t('calendar.hintEndsAtAllDay')
+                        : t('calendar.hintEndsAt')
+                      : undefined
+                  }
+                >
+                  <input
+                    id={`cal-slot-${String(i)}-end`}
+                    className="mcsr-field__input"
+                    type={draft.allDay ? 'date' : 'datetime-local'}
+                    value={slotValue(slot.endsAtLocal)}
+                    onChange={(e) => setSlot(i, 'endsAtLocal', e.target.value)}
+                    aria-label={`${t('calendar.slotLabel', { n: i + 1 })} · ${t('calendar.fields.endsAt')}`}
+                  />
+                  {fieldError(`slots.${String(i)}.endsAtLocal`)}
+                </Field>
+              </div>
+            </div>
+          );
+        })}
+
+        {/*
+          「至少要有一段时间」/「最多 8 段时间」—— 这两条是**段列表整体**的错误
+          （路径是 `['slots']`），所以挂在列表下面，而不是任何一行上。
+        */}
+        {fieldError('slots')}
+
+        <div className="slotlist__actions">
+          <button
+            type="button"
+            className="ghostbtn"
+            /* 到顶时**禁用**：再点也变不出第 9 段（schema 的 `.max` 会拒它） */
+            disabled={slotsFull}
+            onClick={addSlot}
+          >
+            {t('calendar.addSlot')}
+          </button>
+          {/*
+            ⚠️ 禁用必须**说清为什么**：一个点不动的按钮不解释一句，
+               用户只会以为是页面卡了。到顶时换成那句"最多 8 段时间"。
+          */}
+          <p className="mcsr-field__hint">
+            {slotsFull
+              ? t('calendar.errSlotsMax', { max: EVENT_SLOTS_MAX })
+              : t('calendar.hintSlots')}
+          </p>
+        </div>
+      </div>
 
       <div className="formrow">
         <Field
@@ -890,11 +1269,13 @@ export function CalendarForm({
         系列活动（需求③）
         ----------------------------------------------------------------------
         · 系列的**名字是用户内容**，不翻译 —— 选项直接显示 `name`。
-        · ⚠️ 那个"什么都不选"的空选项**借用** `calendar.stageNone`（它的值就是
-          「不填」）：本轮**不新增词条**（`packages/shared` 不在本任务范围内）。
-          下一轮补上 `calendar.seriesNone` 时只换**这一处** —— `t()` 调用全仓共两处
-          （stage 自己那个下拉框 + 这一处）。⚠️ 本注释自己也写着这个词条名，
-          所以 grep `calendar.stageNone` 会得到**三**处命中，别把注释当成第三处引用。
+        · ⚠️ 那个"什么都不选"的空选项走 `calendar.seriesNone`（值「不填」）。
+          2026-09-14 之前它**借用**的是 `calendar.stageNone`，理由是"那一轮不新增词条"。
+          ⚠️ 借用已经还回去了：`stageNone` 随「轮次」那一维一起删掉，而"借用"的代价
+          正好在这一轮显形 —— 删 stage 的词条会顺手把系列下拉框的空选项弄没，
+          两者除了恰好都叫「不填」之外没有任何关系。
+          ⚠️ 值刻意**不是** `dimNone`（「不适用 / 不限」）：不属于任何系列是**常态**，
+          不是"这一维不适用"（那说的是专业程度/范围/门槛对排位节点不适用）。
         · ⚠️ 错误只落在这个字段下面：重名是**这一格**的问题。挂成整张表单的红条会让
           用户去别处找一个不在那里的错。
       */}
@@ -909,7 +1290,7 @@ export function CalendarForm({
             setDraft((prev) => ({ ...prev, seriesId: id, seriesName: picked?.name ?? '' }));
           }}
         >
-          <option value="">{t('calendar.stageNone')}</option>
+          <option value="">{t('calendar.seriesNone')}</option>
           {seriesOptions.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
@@ -1120,20 +1501,24 @@ export function SeriesErrorNote({ text }: { text: string | null }) {
  * 自检脚本就无法驱动它 —— 于是这一跳只能靠人眼看，而"人眼看"在输出上与"验过了"
  * **无法区分**（本仓反复吃亏的形状）。
  *
+ * ⚠️ 2026-09-13 起它还承载**多段时间**那一跳（`slots` + `startsAtTz`）—— 那是本轮
+ *    最容易抄错的映射（旧的 `startsAtLocal`/`endsAtLocal`/`endsAtTz` 三个字段现在
+ *    只剩一个数组），而它同样是纯函数、自检脚本能直接驱动。
+ *
  * ⚠️ 关键：抽出来之后 `buildEvent` **必须真的调它**。如果测试用这个函数、生产走另一份
  *    等价代码，那断言证明的就不是用户实际执行的那条路 —— 这正是"守卫因为错误的原因通过"。
  *
- * ⚠️ 空串 → `null` 的转换（`seriesId` / `stage` / `level` / `scope` / `titleEn` /
- *    `url` / `location` / `endsAt*` / `noteToReviewer`）**只在这一处**做：草稿里空串
- *    表示"没填"，而服务端 schema 要的是 `null`。散在多处就会出现两个字段对"没填"
- *    的理解不一致，而两边都不报错。
+ * ⚠️ 空串 → `null` 的转换（`seriesId` / `level` / `scope` / `access` / `titleEn` /
+ *    `url` / `location` / 每一段的 `endsAtLocal` / `noteToReviewer`）**只在这一处**做：
+ *    草稿里空串表示"没填"，而服务端 schema 要的是 `null`。散在多处就会出现两个字段
+ *    对"没填"的理解不一致，而两边都不报错。
  *
  * ⚠️ **刻意不写返回类型**（靠推断）：这里产出的是**待校验的输入**，而 schema 的
  *    `CalendarEventInput` 是**输出**（`tags` 已是枚举、`allDay` 已填上默认值）。
  *    标成输出类型会逼出 `as` 转型，而转型恰好会把这个函数最该被检查的地方
  *    （"映射出来的东西 schema 收不收"）**静默关掉**。
  *    ⚠️ 也别去取 schema 的输入类型：`apps/web` 的 dependencies 里**没有 zod**
- *    （只 `import type` 也解析不到）。表单草稿里 `level`/`scope`/`stage` 本来就是
+ *    （只 `import type` 也解析不到）。表单草稿里 `level`/`scope`/`access` 本来就是
  *    **普通字符串** —— 收紧成枚举会让"用户选了非法值"变成编译错误，而不是一条界面红字。
  */
 export function calendarEventInputOf(draft: CalendarDraft) {
@@ -1141,23 +1526,37 @@ export function calendarEventInputOf(draft: CalendarDraft) {
     title: draft.title.trim(),
     titleEn: draft.titleEn.trim() || null,
     descriptionMd: draft.descriptionMd,
-    // 空串 → null：服务端 schema 是 `.nullish()`，而空串会被判成"填了一个空值"
-    scheduleText: draft.scheduleText.trim() === '' ? null : draft.scheduleText,
-    startsAtLocal: draft.startsAtLocal,
+    // 时区**整条只有一个**（用户要求"只填一次"），所以在段的数组外面
     startsAtTz: draft.startsAtTz.trim(),
-    // ⚠️ 结束时间这一对**原样透传**，不做"缺一个就一起丢掉"的补救。
-    //    丢掉的话，用户填了结束时区忘了时间会看到一条"什么都没说"的失败，
-    //    而 schema 里本来就有一条专门解释这件事的规则。
-    endsAtLocal: draft.endsAtLocal || null,
-    endsAtTz: draft.endsAtTz.trim() || null,
+    /*
+     * ★ 逐段映射。两点刻意为之：
+     *
+     * ⚠️ **不排序**。段按开始时间排序是**服务端写入时**做的事（schema 里写着
+     *    "入参的顺序不承重"）。在这里排一次就等于有了两份排序规则，而它们分叉时
+     *    不会有任何报错 —— 只有"库里的顺序和界面上的顺序不一样"。
+     * ⚠️ 结束时间空串 → `null`（schema 是 `.nullish()`）；`startsAtLocal` 原样透传，
+     *    **不做**"缺了就丢掉这一段"的补救：丢掉的话，用户少填一格会看到
+     *    "至少要有一段时间"，而真正的原因（这一段缺开始时间）不在那句话里。
+     */
+    slots: draft.slots.map((slot) => ({
+      startsAtLocal: slot.startsAtLocal,
+      endsAtLocal: slot.endsAtLocal || null,
+    })),
     allDay: draft.allDay,
     url: draft.url.trim() || null,
     location: draft.location.trim() || null,
     tags: draft.tags,
-    stage: draft.stage || null,
-    // 空串 → null（草稿里三个维度都是空串表示"没填"）
+    // 空串 → null（草稿里这几个维度都是空串表示"没填"）
     level: draft.level || null,
     scope: draft.scope || null,
+    access: draft.access || null,
+    /*
+     * ⚠️ 明细**原样传**，不做"scope 是 GLOBAL 就清空"的加工：清不匹配的那一步
+     *    发生在用户切 scope 的那一刻（`setScope`），那是**体验**。在这里再清一次
+     *    就等于多了一份"什么时候该清"的规则，而它与界面上的那份迟早分叉 ——
+     *    表现是"我明明选了，提交完却没了"，且两边都不报错。
+     */
+    scopeDetail: draft.scopeDetail,
     // ③：同上，空串 → null（"不归到任何系列"）
     seriesId: draft.seriesId || null,
     lang: draft.lang,

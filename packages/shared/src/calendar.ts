@@ -24,12 +24,18 @@
  */
 import { z } from 'zod';
 import { isValidTimeZone, wallClockToUtc } from './calendar-time';
-import { CALENDAR_TAGS, EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, LOCALES } from './constants';
+import {
+  CALENDAR_TAGS,
+  EVENT_ACCESS,
+  EVENT_LEVELS,
+  EVENT_SCOPES,
+  LOCALES,
+  SCOPE_DETAILS,
+  SERIES_COLOR_KEYS,
+} from './constants';
 
 /** 描述长度上限。和 v1-plan 里其它正文的量级一致。 */
 export const EVENT_DESCRIPTION_MAX = 20000;
-/** 具体赛程（离散时间段）的字符上限。够写十几个时间段，又不至于变成第二篇说明。 */
-export const EVENT_SCHEDULE_MAX = 500;
 export const EVENT_TITLE_MAX = 200;
 export const EVENT_LOCATION_MAX = 200;
 
@@ -99,6 +105,36 @@ export const TimeZoneSchema = z
 /** 是否整天事件。整天事件的时间部分必须是 00:00（下面 superRefine 会查）。 */
 export const ALL_DAY_TIME = '00:00';
 
+/**
+ * 一场赛事的一段时间（2026-09-13，多段时间）。
+ *
+ * ⚠️ **没有时区**：用户要求"时区放在最上面，只填一次即可"，
+ *    所以整条事件共用一个 `startsAtTz`，每一段只有本地时间。
+ * ⚠️ `endsAtLocal` 可空（很多赛事只公布开始时间）—— 留空时它在订阅里是一个时间点。
+ */
+export const EventSlotInputSchema = z.object({
+  startsAtLocal: WallClockSchema,
+  endsAtLocal: WallClockSchema.nullish(),
+});
+
+export type EventSlotInput = z.infer<typeof EventSlotInputSchema>;
+
+/**
+ * 一段时间（**读路径**用的形状，UTC 已经算好）。
+ *
+ * ⚠️ 与 `EventSlotInput` 的区别只有"多了两个 UTC"：入参里没有 UTC（那是服务端算的），
+ *    响应里有（前端要按它排序、判断哪一段正在进行）。
+ */
+export interface EventSlot {
+  startsAtLocal: string;
+  endsAtLocal: string | null;
+  startsAtUtc: number;
+  endsAtUtc: number | null;
+}
+
+/** 一段时间的个数上限。3 个周末是常态，留一倍余量；再多说明该拆成多个事件。 */
+export const EVENT_SLOTS_MAX = 8;
+
 export const CalendarEventInputSchema = z
   .object({
     title: z.string().trim().min(1, { message: '标题不能为空' }).max(EVENT_TITLE_MAX),
@@ -108,21 +144,25 @@ export const CalendarEventInputSchema = z
      */
     titleEn: z.string().trim().max(EVENT_TITLE_MAX).nullish(),
     descriptionMd: z.string().max(EVENT_DESCRIPTION_MAX).default(''),
+
     /**
-     * 具体赛程 —— **离散的多个时间段**写在这里（一行一个），2026-09-13 新增。
+     * ★ 时间：**一个时区 + 一段或多段时间**（2026-09-13 用户定稿）。
      *
-     * ⚠️ 它不是"事件的起止时间"：`startsAtLocal` / `endsAtLocal` 仍然决定这条事件
-     *    在日历网格上的位置、排序与 ICS。这一栏是**给人读的补充**，用于那种
-     *    "横跨三周、但只在三个周末各打两天"的赛事 —— 用一对起止时间表达不了。
+     * 用户原话：「不是单纯加一个『具体时间』填写框，而是把『开始时间』
+     * 『结束时间』改成允许输入多段不连续的时间（如在下面新增『添加』按钮，
+     * 允许再填一组『开始时间』『结束时间』，同时时区放在最上面，只填一次即可）」。
+     *
+     * ⚠️ 这里说的"只填一次"就是 `startsAtTz` **只有一个** —— 每一段没有自己的时区。
+     *    这是刻意的简化，也是本设计的前提：一场赛事通常在一个时区里办。
+     *    （真要跨时区办，现在的答案是**拆成两个事件**，而不是让每一段各带时区。）
+     * ⚠️ 服务端会按开始时间**升序重排**这些段（界面上允许乱序添加），
+     *    所以入参的顺序**不承重**。
      */
-    scheduleText: z.string().trim().max(EVENT_SCHEDULE_MAX).nullish(),
-
-    startsAtLocal: WallClockSchema,
     startsAtTz: TimeZoneSchema,
-
-    /** 结束时间可空（很多赛事只公布开始时间）。给了 local 就必须给 tz。 */
-    endsAtLocal: WallClockSchema.nullish(),
-    endsAtTz: TimeZoneSchema.nullish(),
+    slots: z
+      .array(EventSlotInputSchema)
+      .min(1, { message: '至少要有一段时间' })
+      .max(EVENT_SLOTS_MAX, { message: `最多 ${String(EVENT_SLOTS_MAX)} 段时间` }),
 
     allDay: z.boolean().default(false),
 
@@ -135,16 +175,31 @@ export const CalendarEventInputSchema = z
       .min(1, { message: '至少选一个标签' })
       .max(CALENDAR_TAGS.length),
 
-    stage: z.enum(EVENT_STAGES).nullish(),
-
     /**
-     * 专业程度 / 参与范围 —— 两维**都可空**，见 constants.ts 里的说明。
+     * 专业程度 / 参与范围 / 参赛门槛 —— **三维都可空**，见 constants.ts。
      *
-     * ⚠️ 它们和 `stage` 一样是**单选**，不是数组。理由：一场比赛的专业程度
-     *    和参与范围各自只有一个答案；做成多选以后筛选就变成"或"，而用户想的是"且"。
+     * ⚠️ 它们都是**单选**，不是数组（`scopeDetail` 除外）。理由：一场比赛的
+     *    专业程度和参与范围各自只有一个答案；做成多选以后筛选就变成"或"，
+     *    而用户想的是"且"。
+     * ⚠️ **`stage`（轮次）在 2026-09-13 被去掉了**（用户要求）：它只是一个标签、
+     *    不做父子层级，而实际录数据时"横跨一周的连续赛事"根本填不了它。
+     *    数据库那一列**保留但不再读写**（与"已发布的迁移不许改"同一条纪律）。
      */
     level: z.enum(EVENT_LEVELS).nullish(),
     scope: z.enum(EVENT_SCOPES).nullish(),
+    access: z.enum(EVENT_ACCESS).nullish(),
+
+    /**
+     * 「参与范围」的明细：选到「大洲」时填大洲代码、选到「国家」时填国家代码。
+     *
+     * ⚠️ 它是**多选**（用户举的例子就是"亚洲&大洋洲"），而且筛选语义是
+     *    **命中任一即展示**（OR）—— 与 `tags` 的多选语义一致。
+     * ⚠️ 与 `scope` 的联动**不在 schema 里强制**（选 GLOBAL 却填了明细不会报错）：
+     *    那只是一条无意义的冗余，而不是一条会让人看错的数据。强制它要多一套
+     *    跨字段规则与错误码，而收益是"少一行垃圾"。
+     *    ⚠️ 但**界面**会在切换 `scope` 时把不匹配的明细清掉（那是体验，不是校验）。
+     */
+    scopeDetail: z.array(z.enum(SCOPE_DETAILS)).max(SCOPE_DETAILS.length).default([]),
 
     /**
      * 系列（③）—— 填**系列的 id**，不是名字。
@@ -154,7 +209,7 @@ export const CalendarEventInputSchema = z
      *    "同一件事存两份"的经典形态：系列一改名，老事件上留着旧名字，
      *    而**两边都不会报错**，只是显示不一致。
      *
-     * ⚠️ 它**不进筛选栏**（不是第五个筛选维度）：筛选栏那四个都是**封闭枚举**，
+     * ⚠️ 它**不进筛选栏**（不是第五个筛选维度）：筛选栏那些都是**封闭枚举**，
      *    而系列的取值集合是开放的（可能有几十个）—— 混进去会让 chip 栏排不下，
      *    也会打破"筛选栏 = 4 个维度"这条被 `check:grid` 守着的规则。
      *    系列筛选走 `?seriesId=<id>` 这个独立查询参数。
@@ -169,53 +224,49 @@ export const CalendarEventInputSchema = z
     noteToReviewer: z.string().trim().max(500).nullish(),
   })
   .superRefine((v, ctx) => {
-    // 1) 结束时间的两个字段必须成对出现
-    const hasLocal = v.endsAtLocal !== null && v.endsAtLocal !== undefined;
-    const hasTz = v.endsAtTz !== null && v.endsAtTz !== undefined;
-    if (hasLocal !== hasTz) {
-      ctx.addIssue({
-        code: 'custom',
-        path: [hasLocal ? 'endsAtTz' : 'endsAtLocal'],
-        message: '结束时间需要同时给出时间和时区',
-      });
-      return;
-    }
+    /*
+     * 逐段校验（2026-09-13 起是**循环**，不再是"检查那一对"）。
+     *
+     * ⚠️ 这里原来写的是三条针对 `startsAtLocal`/`endsAtLocal` 的规则；
+     *    多段之后它们必须逐段跑，否则"第 2 段的结束早于开始"会一路放进库里 ——
+     *    而它在界面上只表现为"日历上那一条看起来比另一条矮一截"。
+     */
+    v.slots.forEach((slot, i) => {
+      // ① 整天事件的时间部分必须是 00:00
+      if (v.allDay) {
+        const bad = (local: string | null | undefined) =>
+          typeof local === 'string' && !local.endsWith(`T${ALL_DAY_TIME}`);
+        if (bad(slot.startsAtLocal)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['slots', i, 'startsAtLocal'],
+            message: '整天事件的开始时间应为 00:00',
+          });
+        }
+        if (bad(slot.endsAtLocal)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['slots', i, 'endsAtLocal'],
+            message: '整天事件的结束时间应为 00:00',
+          });
+        }
+      }
 
-    // 2) 整天事件的时间部分必须是 00:00
-    if (v.allDay) {
-      const bad = (local: string | null | undefined) =>
-        typeof local === 'string' && !local.endsWith(`T${ALL_DAY_TIME}`);
-      if (bad(v.startsAtLocal)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['startsAtLocal'],
-          message: '整天事件的开始时间应为 00:00',
-        });
+      // ② 结束必须晚于开始。
+      //    ⚠️ 比较的是**换算成 UTC 之后**的时刻，不是字符串：
+      //       跨时区时字符串比较会给出相反的答案。
+      if (slot.endsAtLocal !== null && slot.endsAtLocal !== undefined) {
+        const start = wallClockToUtc(slot.startsAtLocal, v.startsAtTz);
+        const end = wallClockToUtc(slot.endsAtLocal, v.startsAtTz);
+        if (start !== null && end !== null && end <= start) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['slots', i, 'endsAtLocal'],
+            message: '结束时间必须晚于开始时间',
+          });
+        }
       }
-      if (bad(v.endsAtLocal)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['endsAtLocal'],
-          message: '整天事件的结束时间应为 00:00',
-        });
-      }
-    }
-
-    // 3) 结束必须晚于开始。
-    //    ⚠️ 比较的是**换算成 UTC 之后**的时刻，不是字符串。
-    //       跨时区时字符串比较会给出相反的答案（比如开始是 UTC+8 的 20:00、
-    //       结束是 UTC 的 15:00 —— 字符串上 20:00 > 15:00，实际上开始更晚）。
-    if (hasLocal && hasTz) {
-      const start = wallClockToUtc(v.startsAtLocal, v.startsAtTz);
-      const end = wallClockToUtc(v.endsAtLocal as string, v.endsAtTz as string);
-      if (start !== null && end !== null && end <= start) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['endsAtLocal'],
-          message: '结束时间必须晚于开始时间',
-        });
-      }
-    }
+    });
   });
 
 export type CalendarEventInput = z.infer<typeof CalendarEventInputSchema>;
@@ -231,8 +282,18 @@ export interface CalendarEvent {
   title: string;
   titleEn: string | null;
   descriptionMd: string;
-  /** 具体赛程（离散时间段），2026-09-13 加。没填就是 null。 */
-  scheduleText: string | null;
+
+  /**
+   * ★ 这场赛事的**全部时间段**（2026-09-13 起）。
+   *
+   * ⚠️ 下面的 `startsAt*` / `endsAt*` 是它**派生出来的包络**（最早那段的开始 /
+   *    最晚那段的结束），保留它们是因为**排序、索引、系列计数、ICS 的
+   *    "还没结束"筛选**全都建在那一对列上 —— 一条都不需要改。
+   *    ⇒ **要判断"这场什么时候打"就读 `slots`；要排序/算时间跨度就读包络。**
+   *    ⚠️ 两者不一致 = 写入路径漏了重算包络（`toColumns` 是唯一的写入点）。
+   */
+  slots: EventSlot[];
+
   startsAtLocal: string;
   startsAtTz: string;
   startsAtUtc: number;
@@ -243,10 +304,17 @@ export interface CalendarEvent {
   url: string | null;
   location: string | null;
   tags: string[];
+  /**
+   * 轮次。**2026-09-13 起不再读写**（用户要求去掉），保留这一格只为兼容旧快照。
+   * ⚠️ 新写入的事件它**永远是 null**；别照着它写新逻辑。
+   */
   stage: string | null;
-  /** 专业程度 / 参与范围。**可空** —— 排位节点没有这两维。 */
+  /** 专业程度 / 参与范围 / 参赛门槛。**都可空** —— 排位节点没有这几维。 */
   level: string | null;
   scope: string | null;
+  access: string | null;
+  /** 参与范围的明细（大洲或国家代码，多选）。命中任一即算匹配。 */
+  scopeDetail: string[];
   /**
    * 系列（③）。**可空** —— 绝大多数赛事不属于任何系列，这不是"还没填"。
    *
@@ -261,6 +329,17 @@ export interface CalendarEvent {
   seriesId: string | null;
   /** 系列显示名。由列表/详情查询 LEFT JOIN `calendar_series` 得到；**不在事件表里**。 */
   seriesName: string | null;
+  /**
+   * 系列的颜色（调色板的**键**，如 `'red'`；没上色 / 不属于任何系列时是 `null`）。
+   *
+   * ⚠️ 和 `seriesName` 一样是**读的时候 JOIN 出来的**，不落库 —— 理由同上一段的
+   *    "同一件事存两份"：owner 改一次颜色，事件行上留着的旧颜色不会报错，
+   *    只会在日历上显示成上一版的颜色。
+   * ⚠️ 它传的是**键**不是色值：键 → 色值由 `constants.ts` 的 `seriesColorValue()`
+   *    翻，而那个函数是"两种主题下都看得见"这条论证的唯一落点。
+   *    这里存 `#d9534f` 的话，主题一调，库里就全是过期的色值。
+   */
+  seriesColor: string | null;
   lang: string;
   authorId: string | null;
   authorName: string | null;
@@ -287,6 +366,15 @@ export const CalendarSeriesSchema = z.object({
   id: z.string().min(1).max(SERIES_ID_MAX),
   /** 显示名。大小写唯一性由 `calendar_series.name` 的 `COLLATE NOCASE UNIQUE` 保证。 */
   name: z.string().min(1).max(EVENT_SERIES_MAX),
+  /**
+   * 系列颜色 —— 存**调色板的键**（`red` / `teal` …），不是色值。
+   *
+   * ⚠️ 为什么不是色值：色值要按主题推导（白天/黑夜两套），存在库里的话
+   *    owner 选一个 `#ffffff` 就会在白天主题下把那一行变成隐形；
+   *    而存键之后"哪个颜色在哪个主题下长什么样"由我们一处决定。
+   * ⚠️ `null` = 没上色（界面走"无系列"那一档：白色 + 细描边）。
+   */
+  color: z.string().max(24).nullable(),
   /** 未结束的场次数 */
   count: z.number().int().nonnegative(),
   /** 已结束的场次数 */
@@ -329,6 +417,31 @@ export const CalendarSeriesInputSchema = z.object({
   name: z.string().trim().min(1, { message: '需要系列名' }).max(EVENT_SERIES_MAX),
 });
 export type CalendarSeriesInput = z.infer<typeof CalendarSeriesInputSchema>;
+
+/**
+ * 给一个系列上色 / 去掉颜色（`PUT /api/calendar/series/:id/color`，需求⑤）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 传**调色板的键**（`'red'` / `'teal'` …），**不是色值**（`#d9534f`）
+ * ---------------------------------------------------------------------------
+ * 色值与主题绑定：同一条线在白天主题和黑夜主题下要取不同的值才看得见，
+ * 而"哪个键在哪个主题下长什么样"由 `constants.ts` 一处决定
+ * （`SERIES_COLORS` + `seriesColorValue()`）。让客户端提交色值就等于把那份决定
+ * 搬进库里：用户今天选的 `#d9534f` 会一直待在库里，主题一调，界面上就会出现
+ * **两种红**，而两边都不报错。
+ *
+ * ⚠️ 枚举来自 `SERIES_COLOR_KEYS`（从 `SERIES_COLORS` 推导），不是手抄的字符串表 ——
+ *    手抄的那份会在加新颜色时漂移，表现是"加了个色块，点了却 400"。
+ * ⚠️ `null` 是**合法输入**，含义是「不上色」（界面走"无系列"那一档：白色 + 描边）。
+ *    所以这里用 `.nullable()` 而**不是** `.optional()` —— 两者在服务端的表现不同：
+ *    缺席（`{}`）应当被拒（客户端漏传字段是 bug），而 `{ color: null }` 是明确的指令。
+ *    这与 `seriesId` / `level` 那几处用 `.nullish()` 不同：那些字段"不填"和"填 null"
+ *    是同一个意思（没这个值），颜色这里"没传"和"调成不上色"不是。
+ */
+export const CalendarSeriesColorInputSchema = z.object({
+  color: z.enum(SERIES_COLOR_KEYS).nullable(),
+});
+export type CalendarSeriesColorInput = z.infer<typeof CalendarSeriesColorInputSchema>;
 
 /**
  * ⚠️ **"已结束"是算出来的，不是状态字段**。

@@ -40,7 +40,12 @@ function draftFromDateParam(raw: string | null): ReturnType<typeof emptyCalendar
     return draft;
   }
 
-  draft.startsAtLocal = `${raw}T00:00`;
+  /*
+   * ⚠️ 预填的是**第一段**的开始时间（2026-09-13 起时间是 `slots` 数组）。
+   *    起手只有一段，所以这里就是把那一段的日期填上 —— 用户想再加几段
+   *    就点下面的「添加一段时间」。
+   */
+  draft.slots = [{ startsAtLocal: `${raw}T00:00`, endsAtLocal: '' }];
   draft.allDay = true;
   return draft;
 }

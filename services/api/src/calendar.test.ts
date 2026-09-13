@@ -99,12 +99,21 @@ async function makeUser(verify = true) {
   return { email, cookie: (login.setCookie ?? '').split(';')[0] as string };
 }
 
-/** 一份合法的赛事入参。 */
+/**
+ * 一份合法的赛事入参。
+ *
+ * ⚠️ 017（2026-09-13）起时间不再是"一对起止 + 每端一个时区"，而是
+ *    **一个时区 + 若干段**：顶层只有 `startsAtTz`，每一段是
+ *    `{ startsAtLocal, endsAtLocal? }`。老写法（顶层 `startsAtLocal`）现在会被
+ *    Zod 当成未知键**剥掉**，于是每一笔提交都 400
+ *    `slots: expected array, received undefined` —— 那条报错看起来像"这个
+ *    测试文件坏了"，而不是"契约变了"。
+ */
 function input(overrides: Record<string, unknown> = {}) {
   return {
     title: '第 11 赛季资格赛',
-    startsAtLocal: '2030-09-05T16:00',
     startsAtTz: 'Asia/Shanghai',
+    slots: [{ startsAtLocal: '2030-09-05T16:00' }],
     tags: ['TOURNAMENT'],
     ...overrides,
   };
@@ -148,14 +157,30 @@ describe('★ 日历（提交 / 审核 / ICS 订阅）', () => {
 
   it('★ 批准之后出现在公开列表和 ICS 里', async () => {
     const user = await makeUser();
-    const id = await submitAndApprove(user.cookie);
+    /*
+     * ⚠️ 017 之后"时间"是**多段**，而列表里那对 `startsAt*` / `endsAt*` 是它派生出来的
+     *    **包络**（最早那段的开始 → 最晚那段的结束）。这里刻意用**两段**：
+     *    只给一段的话包络与"第一段"是同一个值，那样即便实现把包络算错
+     *    （例如只取第一段）也看不出来。
+     */
+    const id = await submitAndApprove(user.cookie, {
+      slots: [
+        { startsAtLocal: '2030-09-05T16:00' },
+        { startsAtLocal: '2030-09-12T16:00', endsAtLocal: '2030-09-12T18:00' },
+      ],
+    });
 
     const list = await call('GET', '/api/calendar');
     const items = list.body.items as Array<Record<string, unknown>>;
     assert.equal(items.length, 1);
     assert.equal(items[0]?.id, id);
     // 派生字段确实被算出来了（2030-09-05 16:00 @ Asia/Shanghai = 08:00Z）
-    assert.equal(items[0]?.startsAtUtc, Date.UTC(2030, 8, 5, 8, 0, 0));
+    assert.equal(items[0]?.startsAtUtc, Date.UTC(2030, 8, 5, 8, 0, 0), '包络的开始 = 最早那一段');
+    assert.equal(
+      items[0]?.endsAtUtc,
+      Date.UTC(2030, 8, 12, 10, 0, 0),
+      '包络的结束 = 最晚那一段的结束（09-12 18:00 @ Asia/Shanghai = 10:00Z），不是第一段的',
+    );
 
     const ics = await call('GET', '/api/calendar.ics');
     assert.equal(ics.status, 200);
@@ -308,9 +333,16 @@ describe('★ 日历（提交 / 审核 / ICS 订阅）', () => {
 
   it('★ 默认只列还没结束的；from=0 才显示历史', async () => {
     const user = await makeUser();
+    /*
+     * ⚠️ "很久以前"必须写进 `slots`：017 之后顶层 `startsAtLocal` 会被 Zod 剥掉，
+     *    于是这一场仍然落在夹具默认的 2030 年、**混进"还没结束"那一档** ——
+     *    那时这条用例红在"过去的赛事不该堆在默认列表顶上"，
+     *    看起来像过滤逻辑写错了。
+     *    （判据本身没变：读路径用的是包里那对 UTC 包络。）
+     */
     await submitAndApprove(user.cookie, {
       title: '很久以前的比赛',
-      startsAtLocal: '2020-01-01T12:00',
+      slots: [{ startsAtLocal: '2020-01-01T12:00' }],
     });
     await submitAndApprove(user.cookie, { title: '未来的比赛' });
 

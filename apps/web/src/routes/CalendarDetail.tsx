@@ -1,3 +1,4 @@
+import { CONTINENTS } from '@mcsr/shared';
 import type { CalendarEvent } from '@mcsr/shared/calendar';
 import { isEventPast } from '@mcsr/shared/calendar';
 import { useTranslation } from 'react-i18next';
@@ -6,7 +7,7 @@ import { Notice } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
 import { ApiError, fetchCalendarEvent, fetchCalendarForEdit } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { eventTitles, eventWhen, VIEWER_TZ, viewerWallClock } from '@/lib/calendarFormat';
+import { eventTitles, eventWhenAll, VIEWER_TZ, viewerWallClock } from '@/lib/calendarFormat';
 import { useCan } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
@@ -95,7 +96,14 @@ export function CalendarDetailPage() {
   }
 
   const { event, pendingRevision } = state.data;
-  const when = eventWhen(event);
+  /*
+   * ★ 「比赛时间」那一行的值（需求⑦）：**所有段**用词条里的分隔符拼起来。
+   * ⚠️ 用 `eventWhenAll` 而不是 `eventWhen`（只给第一段）：这一页有整行的空间，
+   *    而"分三个周末打"和"连着打三周"是两件完全不同的事 —— 只显示第一段的话，
+   *    后者在前者眼里长得一模一样（见 `eventWhen` 的注释里那段论证）。
+   * ⚠️ 算不出来时是空串（`slots` 坏掉/为空），由下面的 `||` 退回单一的开始时间。
+   */
+  const slotsText = eventWhenAll(event, t('calendar.slotSeparator'));
   const { primary, secondary } = eventTitles(event, i18n.language);
   const past = isEventPast(event, Date.now());
   const mine = viewerWallClock(event.startsAtUtc, event.startsAtTz, event.allDay);
@@ -140,9 +148,12 @@ export function CalendarDetailPage() {
                 {t(`calendar.tag.${tag}`)}
               </span>
             ))}
-            {event.stage ? (
-              <span className="badge badge--kind">{t(`calendar.stage.${event.stage}`)}</span>
-            ) : null}
+            {/*
+              ⚠️ 这里原来还有一枚**轮次**徽章（`calendar.stage.*`），2026-09-13 随
+                 需求⑦一起去掉：`stage` 这一维已经不是"这次要填的东西"了，
+                 而一个只在旧数据上出现的徽章会让"这一条为什么和别人不一样"变成
+                 一个没人答得上来的问题。类型上那一格还在（兼容旧快照），界面不再读它。
+            */}
             <span className="badge badge--kind">
               {event.lang === 'en' ? t('resources.langEn') : t('resources.langZh')}
             </span>
@@ -195,38 +206,98 @@ export function CalendarDetailPage() {
       */}
       <h2 className="related__title">{t('calendar.infoTitle')}</h2>
       <dl className="infotable">
-        <dt>{t('calendar.fields.startsAt')}</dt>
-        <dd>
-          {when ? (
-            <>
-              <span className="calendar-time__value">{when.start}</span>
-              <span className="calendar-time__zone">{when.zones}</span>
-              {mine ? (
-                <>
-                  <br />
-                  <span className="calendar-time__mine">
-                    {t('calendar.yourTime', { time: mine, tz: VIEWER_TZ })}
-                  </span>
-                </>
-              ) : null}
-            </>
-          ) : (
-            event.startsAtLocal
-          )}
-        </dd>
+        {/*
+          ★ 需求⑦（2026-09-13）：原来「开始时间」「结束时间」是**两行**，现在并成
+          一行「比赛时间」，值是把**每一段**都写出来的 `eventWhenAll(...)`
+          （段与段之间用 `calendar.slotSeparator` 拼 —— 中文是「，」、英文是「, 」
+          —— 标点属于文案，见那个词条的注释）。
 
-        {when?.end ? (
-          <>
-            <dt>{t('calendar.fields.endsAt')}</dt>
-            <dd>
-              <span className="calendar-time__value">{when.end}</span>
-              <span className="calendar-time__zone">{when.zones}</span>
-            </dd>
-          </>
-        ) : null}
+          ⚠️⚠️ 并成一行之后，**时区名不能跟着丢**：Q2 那条硬规矩是"时间必须和时区名
+            一起出现"，而一旦这一行只剩一个值，`20:00` 就会重新变成一个不知道指哪里
+            的数字。所以时区仍然是行尾那一格 `.calendar-time__zone`。
+            它现在**比原来更要紧**：原来两行各带一次（漏一处还有另一处），
+            现在只有这一处，漏掉就真的没有了。
+
+          ⚠️ 多段时**不要**再补一句"跨几天"的包络（第一段 ~ 最后一段）：用户明确
+            不喜欢那个展示，而包络本身是可以从段列表算出来的冗余量 ——
+            它还会把"分三个周末打"说成"连着打二十天"，那正是最容易被误读的一种写法。
+        */}
+        <dt>{t('calendar.fields.slots')}</dt>
+        <dd>
+          {/*
+            ⚠️ `||` 的右半边是**老数据的兜底**：`slots` 为空或坏掉时 `eventWhenAll`
+               回空串，这时退回单一的开始时间 —— **不编一个日期出来**。
+               时区那一格两种情况都在，因为 `startsAtTz` 是必填字段。
+          */}
+          <span className="calendar-time__value">{slotsText || event.startsAtLocal}</span>
+          <span className="calendar-time__zone">{event.startsAtTz}</span>
+          {mine ? (
+            <>
+              <br />
+              <span className="calendar-time__mine">
+                {t('calendar.yourTime', { time: mine, tz: VIEWER_TZ })}
+              </span>
+            </>
+          ) : null}
+        </dd>
 
         <dt>{t('calendar.fields.location')}</dt>
         <dd>{event.location ?? '—'}</dd>
+
+        {/*
+          ★ 「参赛门槛」与「参与范围明细」（需求⑦把这两维摆到活动信息页上）。
+          ⚠️ 两行**有值才显示**（下面的系列名同理）：这两维都可以为空
+             （排位节点那类活动没有门槛可言，见 shared/calendar.ts），
+             而一屏 `—` 会让这一块看起来"没填完"。
+          ⚠️ 与上面几行**刻意不同**：地点 / 链接 / 标签是每一个活动都有的字段，
+             空缺本身是信息（"没填地点"）；这两维是"大部分活动都没有"的，
+             占位行只会变成噪音。
+        */}
+        {event.access ? (
+          <>
+            <dt>{t('calendar.fields.access')}</dt>
+            <dd>{t(`calendar.access.${event.access}`)}</dd>
+          </>
+        ) : null}
+
+        {event.scopeDetail.length > 0 ? (
+          <>
+            <dt>{t('calendar.fields.scopeDetail')}</dt>
+            <dd>{scopeDetailLabels(event.scopeDetail, event.scope, t)}</dd>
+          </>
+        ) : null}
+
+        {/*
+          ★ 系列名（需求③ / spec D3.10「详情页显示 + 链到筛选 URL」）。
+
+          ⚠️ 这一页原来**没有**它，而且当时是对的：详情端点的 `getEventRow`
+             这一轮才修好 `calendar_series` 的 JOIN（以前 `seriesName` 恒为 null）。
+             现在名字真的有了 —— 而"填了系列却在详情页看不到"正是 D3.10 点名的那种漏：
+             某个写死的字段清单漏掉一项，**不会报错**，只会让人以为这个字段不存在。
+
+          ⚠️ 只在**有值**时渲染：绝大多数活动不属于任何系列，而那不是"还没填"
+             （见 shared/calendar.ts 的 `seriesId` 注释）。一行恒为 `—` 的
+             「系列活动」会让读者以为这块坏了。
+
+          ⚠️ `seriesName` 与 `seriesId` 在服务端是一起 JOIN 出来的（同生同灭），
+             但类型上各自可空、编译器认不出这个相关性 —— 所以这里按可空处理，
+             而不是用一个断言把话说死。
+        */}
+        {event.seriesName ? (
+          <>
+            <dt>{t('calendar.seriesField')}</dt>
+            <dd>
+              {event.seriesId ? (
+                /* 点它就去看这一串的全部场次（`?seriesId=` 是列表页那一处的同一个参数） */
+                <Link to={`/calendar?seriesId=${encodeURIComponent(event.seriesId)}`}>
+                  {event.seriesName}
+                </Link>
+              ) : (
+                event.seriesName
+              )}
+            </dd>
+          </>
+        ) : null}
 
         <dt>{t('calendar.fields.url')}</dt>
         <dd>
@@ -242,15 +313,18 @@ export function CalendarDetailPage() {
         <dt>{t('calendar.fields.tags')}</dt>
         <dd>{event.tags.map((tag) => t(`calendar.tag.${tag}`)).join('、')}</dd>
 
-        <dt>{t('calendar.fields.stage')}</dt>
-        {/* 轮次是**可选**的，没填时要显示成"没填"而不是一个空白单元格 */}
-        <dd>{event.stage ? t(`calendar.stage.${event.stage}`) : '—'}</dd>
-
         <dt>{t('calendar.fields.titleEn')}</dt>
         <dd>{event.titleEn ?? '—'}</dd>
 
-        <dt>{t('calendar.author')}</dt>
-        <dd>{event.authorName ?? t('review.unknownAuthor')}</dd>
+        {/*
+          ⚠️ 这里原来是两行：「轮次」和「提交者」，需求⑦把它们一起去掉了。
+             两行的理由不同，但都成立：
+               · 轮次（`stage`）这一维已经不再填写（见 `CalendarCard` 的同一条注释），
+                 留着它只会在旧数据上冒出一格别人都没有的值；
+               · 提交者（`calendar.author`）是**审核视角**的信息，而审核页
+                 （`CalendarReviewView` + 队列）本来就显示作者 ——
+                 详情页是给访客看的，作者是谁对"这场什么时候打"没有帮助。
+        */}
 
         <dt>{t('calendar.updatedAt')}</dt>
         <dd>{new Date(event.updatedAt).toLocaleString()}</dd>
@@ -260,20 +334,13 @@ export function CalendarDetailPage() {
       </dl>
 
       {/*
-        ★ 具体时间（015 / 2026-09-13）：**离散的多个时间段**。
-
-        ⚠️ 用 `whitespace: pre-line`（CSS 类 `.calendar-schedule`）渲染，**不走 Markdown**：
-           这一栏的内容是"一行一个时间段"，用户敲的换行就是它的结构；
-           过 Markdown 会把单换行折成一个空格，"三个周末"会挤成一行。
-        ⚠️ 位置在活动信息**下面**、说明**上面**：它比说明更"硬"（是时间事实），
-           但比左边那对起止时间更次要 —— 那对才是日历定位用的。
+        ⚠️ 这里原来是「具体时间」（015 的 `scheduleText` 自由文本框）。
+            那个字段**已经整个从模型里去掉了**（`CalendarEvent` 上不再有它），
+            取而代之的正是上面那一行「比赛时间」：真实的**多段**时间，每段有
+            自己的开始 / 结束。所以这一块连同 `.calendar-schedule` 的样式一起退休。
+            （⚠️ `.calendar-schedule` 的三条 CSS 规则因此变成了孤儿样式，
+              但它们不在本次写入范围内 —— 记在报告里。）
       */}
-      {event.scheduleText ? (
-        <section className="calendar-schedule">
-          <h2 className="calendar-schedule__title">{t('calendar.fields.scheduleText')}</h2>
-          <p className="calendar-schedule__body">{event.scheduleText}</p>
-        </section>
-      ) : null}
 
       {/*
         ⚠️ Markdown 走 components/Markdown.tsx，那是全站唯一的渲染入口 ——
@@ -283,6 +350,44 @@ export function CalendarDetailPage() {
       <Markdown>{event.descriptionMd}</Markdown>
     </article>
   );
+}
+
+type Translate = (key: string) => string;
+
+/**
+ * 大洲代码的集合。
+ *
+ * ⚠️ 用 `Set` 而不是 `CONTINENTS.includes(code)`：后者要先把那个 `as const` 的元组
+ *    放宽成 `readonly string[]`（一次断言），而集合连断言都不需要，
+ *    也顺手把 O(n) 变成 O(1)。
+ */
+const CONTINENT_SET: ReadonlySet<string> = new Set<string>(CONTINENTS);
+
+/**
+ * 「参与范围明细」→ 人话（`calendar.continent.*` / `calendar.country.*`）。
+ *
+ * ⚠️⚠️ 词条前缀**不能写死一个**。明细里存的是大洲代码（`ASIA`）或国家代码
+ *    （`BR`），选哪一套由 `scope` 说；而 schema 刻意**不强制**两者联动
+ *    （见 shared/calendar.ts 的 `scopeDetail` 注释：选 GLOBAL 却填了明细不会报错），
+ *    所以这里让 `scope` 只做**首选**，认不出时按代码本身属于哪一份名单来判 ——
+ *    两份名单没有交集（`ASIA` 不会出现在国家里），这个判断是确定的。
+ *    写死 `country` 的后果是显示成 `calendar.country.ASIA` 那个不存在的 key，
+ *    而 i18next 会把它**原样**印在页面上，且只出现在选了大洲的那几条活动上。
+ *
+ * ⚠️ 这段与 `components/CalendarReviewView.tsx` 里的同名一段是**刻意重复**的：
+ *    两个页面拿到的数据形状不同（那边是从快照 payload 里"先判断类型再取"的
+ *    `unknown`，这边是类型齐全的 `CalendarEvent`）。真正该共享的那一天，它应该落在
+ *    `lib/calendarFormat.ts` —— 那个文件由另一个人拥有，本轮不动它。
+ *    （改这里时**同时**看那一边，两边必须给出同一个词条。）
+ */
+function scopeDetailLabels(codes: readonly string[], scope: string | null, t: Translate): string {
+  const group = scope === 'CONTINENT' ? 'continent' : scope === 'COUNTRY' ? 'country' : null;
+  return codes
+    .map((code) => {
+      const prefix = group ?? (CONTINENT_SET.has(code) ? 'continent' : 'country');
+      return t(`calendar.${prefix}.${code}`);
+    })
+    .join('、');
 }
 
 /**

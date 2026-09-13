@@ -1,4 +1,4 @@
-import type { CalendarEvent, CalendarEventInput } from '@mcsr/shared/calendar';
+import type { CalendarEvent, CalendarEventInput, EventSlot } from '@mcsr/shared/calendar';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -14,7 +14,7 @@ import {
   updateCalendarEvent,
 } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
-import { eventWhen } from '@/lib/calendarFormat';
+import { eventWhenAll } from '@/lib/calendarFormat';
 import { useCan } from '@/lib/capabilities';
 import { directWriteNotice } from '@/lib/directWriteNotice';
 
@@ -225,7 +225,14 @@ export function CalendarEdit() {
         <div className="calendar-pending">
           <span className="calendar-pending__label">{t('calendar.editBusyWhat')}</span>
           <p className="calendar-pending__title">{String(pending.payload.title ?? '—')}</p>
-          <p className="calendar-pending__when">{pendingWhen(pending.payload) ?? '—'}</p>
+          <p className="calendar-pending__when">
+            {/*
+              ⚠️ 分隔符走词条（`calendar.slotSeparator`），不在这里写死 `', '`：
+                  中文那一行用中文逗号读起来才是"一列并列的时间"，英文要用 `, `。
+                  写死一个的话总有一种语言会显示成不是那种语言习惯的标点。
+            */}
+            {pendingWhen(pending.payload, t('calendar.slotSeparator')) ?? '—'}
+          </p>
         </div>
 
         {canReview ? (
@@ -400,19 +407,55 @@ export function CalendarEdit() {
  * ⚠️ 快照是一个 `Record<string, unknown>`（服务端原样存的 payload），
  *    所以每个字段都要现判类型。判不出来就返回 null，界面上显示 `—` ——
  *    宁可少显示一行，也不要把 `undefined` 渲染出来。
+ *
+ * ⚠️ **每一段都要写出来**（`eventWhenAll`），不能只取第一段：
+ *    这一屏的用途是"作者看看别人改了什么"，而一场分三段打的赛事只显示第一段时，
+ *    剩下两段被删掉和被保留**长得一模一样** —— 他会以为对方把比赛砍成了一天。
+ *    （卡片上只用第一段是另一回事：那里只有一行的宽度，理由见 calendarFormat.ts。）
+ * ⚠️ 时区仍然来自 `startsAtTz`（整条事件只有一个，见 shared 的 `EventSlotInput`），
+ *    所以它拼在最后，而不是每段各带一个。
  */
-function pendingWhen(payload: Record<string, unknown>): string | null {
-  const startsAtLocal = payload.startsAtLocal;
+function pendingWhen(payload: Record<string, unknown>, separator: string): string | null {
   const startsAtTz = payload.startsAtTz;
-  if (typeof startsAtLocal !== 'string' || typeof startsAtTz !== 'string') return null;
+  if (typeof startsAtTz !== 'string') return null;
+  const allDay = payload.allDay === true;
 
-  const when = eventWhen({
-    startsAtLocal,
-    startsAtTz,
-    endsAtLocal: typeof payload.endsAtLocal === 'string' ? payload.endsAtLocal : null,
-    endsAtTz: typeof payload.endsAtTz === 'string' ? payload.endsAtTz : null,
-    allDay: payload.allDay === true,
-  });
-  if (!when) return null;
-  return when.end ? `${when.start} - ${when.end} · ${when.zones}` : `${when.start} · ${when.zones}`;
+  /*
+   * ⚠️ 旧快照（017 之前）**没有 `slots`**，只有那一对 `startsAtLocal`/`endsAtLocal`。
+   *    服务端读它的地方（`events.ts` 的 `payloadSlots`）会用那一对合成一段，
+   *    这里也照样兜一下 —— 否则"有人在改"那一屏会把时间显示成 `—`，
+   *    而作者会以为对方把时间删了（那是完全不同的一件事）。
+   *
+   * ⚠️ 两个 UTC 字段（`startsAtUtc` / `endsAtUtc`）**只有读路径的响应里才有**：
+   *    快照存的是入参形状，而 UTC 是服务端写入时算出来的。这里缺了就补 `0` / `null` ——
+   *    `eventWhenAll` 只读两个 local 字段，它们不会被读到。刻意**不**在这一屏
+   *    自己把 UTC 重算一遍：那等于在界面上再造一个"墙钟 + 时区 → 时刻"的换算点，
+   *    而 calendar-time.ts 开头警告的正是这件事（算错了没人会发现）。
+   */
+  const slots: EventSlot[] = [];
+  if (Array.isArray(payload.slots)) {
+    for (const raw of payload.slots) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.startsAtLocal !== 'string') continue;
+      slots.push({
+        startsAtLocal: entry.startsAtLocal,
+        endsAtLocal: typeof entry.endsAtLocal === 'string' ? entry.endsAtLocal : null,
+        startsAtUtc: typeof entry.startsAtUtc === 'number' ? entry.startsAtUtc : 0,
+        endsAtUtc: typeof entry.endsAtUtc === 'number' ? entry.endsAtUtc : null,
+      });
+    }
+  }
+  if (slots.length === 0) {
+    if (typeof payload.startsAtLocal !== 'string') return null;
+    slots.push({
+      startsAtLocal: payload.startsAtLocal,
+      endsAtLocal: typeof payload.endsAtLocal === 'string' ? payload.endsAtLocal : null,
+      startsAtUtc: typeof payload.startsAtUtc === 'number' ? payload.startsAtUtc : 0,
+      endsAtUtc: typeof payload.endsAtUtc === 'number' ? payload.endsAtUtc : null,
+    });
+  }
+
+  const when = eventWhenAll({ slots, startsAtTz, allDay }, separator);
+  return when === '' ? null : `${when} · ${startsAtTz}`;
 }

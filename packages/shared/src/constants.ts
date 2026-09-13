@@ -201,12 +201,29 @@ export const CALENDAR_TAGS = ['TOURNAMENT', 'COMMUNITY', 'RANKED_MILESTONE'] as 
 export type CalendarTag = (typeof CALENDAR_TAGS)[number];
 
 /**
- * 赛事轮次（用户 Q20）。
+ * 赛事轮次（用户 Q20）—— ⚠️★ **2026-09-13 起界面上不再使用**（用户要求⑥「去掉轮次」）。
  *
- * ⚠️ 它**只是一个标签，不做父子层级**。真实数据里两种形态并存：
- *   · `playoffs_s1` 是横跨 7 天的连续窗口（不分轮次）
- *   · `playoffs_s5` 是按轮次拆开的独立时间片（r1 / r2 / qf / sf / 3rd / final）
- * 硬做统一的 bracket 模型，会有一半的真实赛事填不进去。
+ * ---------------------------------------------------------------------------
+ * 为什么这一组**还留着**，而 `calendar.stage.*` 的词条已经删了
+ * ---------------------------------------------------------------------------
+ * 这一组不是"活着的功能"，它是**库里那些值的词汇表**：
+ *   · `calendar_events.stage` 那一列还在（与"已发布的迁移不许改"同一条纪律），
+ *     老行上仍然躺着 `FINAL` / `SEMIFINAL` 这些字符串；
+ *   · `CalendarEvent.stage` 也还在类型上，为的是让 **017 之前的旧快照**能正常渲染
+ *     （审核页读老快照时那一格是 null，不会报错）。
+ * ⇒ 删掉它，读代码的人就再也查不到 `'THIRD_PLACE'` 是什么意思，
+ *   而词条（界面文案）随那一维一起删掉是对的 —— 没人会再显示它。
+ *
+ * ⚠️⚠️ **不要再往这里加值，也不要在新代码里 import 它**。新增的维度一律走
+ *    `EVENT_ACCESS` / `EVENT_SCOPES` 那种形状（有词条、进筛选、进胶囊）。
+ *    这一组当年的定位就写在下半段：它只是一个标签、不做父子层级 ——
+ *    而那个"只做标签"的取舍正是它后来被删掉的原因（见 `calendar.ts` 里
+ *    `CalendarEventInputSchema` 对 `stage` 的说明）。
+ *
+ * 历史（保留原文，它解释了当年为什么会存在这一维）：真实数据里两种形态并存 ——
+ * `playoffs_s1` 是横跨 7 天的连续窗口（不分轮次）、`playoffs_s5` 是按轮次拆开的
+ * 独立时间片（r1 / r2 / qf / sf / 3rd / final），硬做统一的 bracket 模型会有一半
+ * 的真实赛事填不进去。
  */
 export const EVENT_STAGES = [
   'QUALIFIER',
@@ -236,8 +253,134 @@ export type EventStage = (typeof EVENT_STAGES)[number];
  *    将来如果要按"正式程度"排序或做筛选区间，这个顺序就是依据 ——
  *    所以**不要**为了字母序好看去重排这个数组。
  */
-export const EVENT_LEVELS = ['PRO', 'SEMI_PRO', 'AMATEUR', 'CASUAL'] as const;
+export const EVENT_LEVELS = ['PRO', 'AMATEUR'] as const;
 export type EventLevel = (typeof EVENT_LEVELS)[number];
+
+/**
+ * 参赛门槛（2026-09-13，用户要求新增）。
+ *
+ * ⚠️ 它与「专业程度」是**两个正交维度**：一场选拔赛可以是业余赛事，
+ *    一场邀请赛也可以是职业级。合成一维会逼录入者在两个都对的答案里挑一个。
+ *
+ * ⚠️ **可空**：排位节点那类活动没有门槛可言（与 `EVENT_LEVELS` 同一条理由）。
+ *
+ * ⚠️ 不加 DB CHECK（与 level/scope 相同）：SQLite 改不了 CHECK，
+ *    而这一维的取值一定会变 —— 用户这一轮就刚把「专业程度」从四档砍到两档。
+ */
+export const EVENT_ACCESS = ['QUALIFIER', 'INVITE', 'OPEN'] as const;
+export type EventAccess = (typeof EVENT_ACCESS)[number];
+
+/**
+ * 大洲（「参与范围」的明细，2026-09-13）。
+ *
+ * ⚠️ 按**电竞赛事实际用的分区**切，不是地理教材的七洲：
+ *    南北美分开（MCSR 的赛事公告几乎总是分开写），南极洲不参与。
+ * ⚠️ 用户举的例子是"亚洲&大洋洲"，所以**多选**是必需的。
+ */
+export const CONTINENTS = [
+  'ASIA',
+  'EUROPE',
+  'NORTH_AMERICA',
+  'SOUTH_AMERICA',
+  'OCEANIA',
+  'AFRICA',
+] as const;
+export type Continent = (typeof CONTINENTS)[number];
+
+/**
+ * 「参与范围」选到**国家**时可选的具体国家（2026-09-13）。
+ *
+ * ⚠️ 这是**手写的一份短名单**，不是 ISO 3166 全表：全表约 250 项，
+ *    会让一个三选一的界面变成翻两百项，而 MCSR 社区的赛事国家来来回回就是这些。
+ * ⚠️ 想加就加，加完记得**同时补词条**（`calendar.country.<CODE>` 中英各一条）——
+ *    漏了的话界面上会显示成代码本身（`BR`），而那种"显示得出来但看不懂"的错
+ *    没有 `t()` 的裸 key 那么显眼，只能靠 `calendarrender` 那类自检抓。
+ */
+export const COUNTRIES = [
+  'CN',
+  'JP',
+  'KR',
+  'SG',
+  'PH',
+  'ID',
+  'VN',
+  'TH',
+  'IN',
+  'AU',
+  'NZ',
+  'US',
+  'CA',
+  'MX',
+  'BR',
+  'AR',
+  'CL',
+  'GB',
+  'DE',
+  'FR',
+  'NL',
+  'SE',
+  'PL',
+  'ES',
+  'IT',
+  'UA',
+  'RU',
+  'TR',
+] as const;
+export type CountryCode = (typeof COUNTRIES)[number];
+
+/** 参与范围的明细取值 = 大洲 ∪ 国家（`scope` 决定界面显示哪一半）。 */
+export const SCOPE_DETAILS = [...CONTINENTS, ...COUNTRIES] as const;
+export type ScopeDetail = (typeof SCOPE_DETAILS)[number];
+
+/**
+ * 系列的颜色调色板（2026-09-13，用户要求 ⑤）。
+ *
+ * ⚠️ **固定调色板，不是 color picker**。用户原话是「每个系列用一个颜色标注，
+ *    允许 owner 修改每个系列的颜色，无系列的为白色（**注意描边，以免底色为白色时
+ *    看不见**）」—— 他明确在意可读性，而可读性只有在我们控制色板时才可保证：
+ *    让他自由选色，他选了 `#f7f8fa`（白天主题的页面底色）那一行就会消失。
+ *
+ * ⚠️ 颜色**只用于两处**（用户原话）：日历上那条日期横线 + 「系列活动」左侧的小点。
+ *    **不是**卡片底色 —— 所以这里的色值只要"在两种主题下都能当一条细线看见"即可。
+ *
+ * ⚠️ 色值刻意取**中等明度**：太亮在白天主题上发白、太暗在黑夜主题上糊进背景。
+ *    下面这 12 个都在两种底色（`#131519` / `#f7f8fa`）上测过对比度。
+ */
+export const SERIES_COLORS = {
+  red: '#d9534f',
+  orange: '#e08b2e',
+  amber: '#c9a227',
+  green: '#5aa02c',
+  teal: '#2f9e8f',
+  cyan: '#2b8fb3',
+  blue: '#3b7dd8',
+  indigo: '#5b5bd6',
+  purple: '#8b5cd6',
+  pink: '#d1568f',
+  brown: '#9a6b4f',
+  slate: '#6b7a8f',
+} as const;
+
+export type SeriesColor = keyof typeof SERIES_COLORS;
+
+/** 调色板的键，**有序**（界面上按这个顺序排色块）。 */
+export const SERIES_COLOR_KEYS = Object.keys(SERIES_COLORS) as SeriesColor[];
+
+/**
+ * 「没有系列」时那条线的颜色 —— 用户要求是**白色**，并特意提醒"注意描边"。
+ *
+ * ⚠️ 白色在**白天主题**下与卡片底色几乎同色 ⇒ 必须配一圈描边才看得见。
+ *    那个描边不在这个常量里，而在 CSS（`--series-none-line`），因为它是"画法"不是"颜色"。
+ * ⚠️ 存进库里表示"不上色"的是 `null`，**不是**这个白色：白色是**渲染约定**，
+ *    将来主题改了它可能跟着变，而 `null`（没上色）不会。
+ */
+export const SERIES_COLOR_NONE = '#ffffff';
+
+/** 把库里的键翻成色值；认不出的键（手改过库）回退到"没上色"。 */
+export function seriesColorValue(key: string | null | undefined): string {
+  if (!key) return SERIES_COLOR_NONE;
+  return (SERIES_COLORS as Record<string, string>)[key] ?? SERIES_COLOR_NONE;
+}
 
 /**
  * 赛事的**参与范围**（地理覆盖）。
@@ -249,8 +392,15 @@ export type EventLevel = (typeof EVENT_LEVELS)[number];
  * ⚠️ 它和 `location` 字段不是一回事：`location` 是"在哪打"（自由文本，
  *    可能写"线上"），而这一维是"**谁**能参加"。一场线上赛可以是全球性的，
  *    也可以在某个国家内部 —— 所以地点填"线上"时这一维照样有意义。
+ *
+ * ⚠️⚠️ **2026-09-13 删掉了「地区」（REGION）这一档**（用户要求）。
+ *    它当年加进来的理由是"MCSR 社区按国家/地区组织"，但实际录数据时
+ *    "地区"和"国家"根本分不开（"东南亚"算地区还是国家？"中国港澳台"呢？），
+ *    而分不开的后果是**同一场赛事在两个档位之间反复搬**。
+ *    ⇒ 现在只有三档，而且选到「大洲」「国家」之后可以再选**具体是哪些**
+ *      （`scope_detail`，多选、命中任一即算匹配）。
  */
-export const EVENT_SCOPES = ['GLOBAL', 'CONTINENT', 'COUNTRY', 'REGION'] as const;
+export const EVENT_SCOPES = ['GLOBAL', 'CONTINENT', 'COUNTRY'] as const;
 export type EventScope = (typeof EVENT_SCOPES)[number];
 
 /** 各平台视频 ID 的形状校验（只校验形状，**绝不抓取元数据**）。 */

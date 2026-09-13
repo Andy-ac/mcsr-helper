@@ -695,11 +695,11 @@ export interface CalendarQuery {
   /** 标签多选（Q1）。命中任意一个即可。 */
   tags?: string[];
   /**
-   * 三个**单选**维度（011 新增了后两个）。不传 / 传空 = 不限。
+   * 三个**单选**维度 + 一个**从属**维度。不传 / 传空 = 不限。
    *
    * ⚠️ 它们和 `tags` 的语义**不同**，这一点在界面上也要看得出来：
    *   · `tags` 多选 → 任一命中（"赛事**或**社区活动"）
-   *   · 这三个 → 就是这个（"我只看**职业**赛"）
+   *   · 这几个 → 就是这个（"我只看**职业**赛"）
    * 把单选维度也做成数组，筛选就变成了"或"，而用户想要的是"且"。
    *
    * ⚠️ 服务端会**对着枚举校验**这些值，非法值一律当"不限"。
@@ -708,7 +708,24 @@ export interface CalendarQuery {
    */
   level?: string | null;
   scope?: string | null;
-  stage?: string | null;
+  /**
+   * 参赛门槛（2026-09-14 新增的第三维）。
+   *
+   * ⚠️ `stage`（轮次）在同一轮被去掉了 —— 这里不再有那个参数。
+   */
+  access?: string | null;
+  /**
+   * 「参与范围」的**明细**（大洲或国家代码），**单选一个**。
+   *
+   * ⚠️ 它和上面那三个不是并列关系：选了 `scope='CONTINENT'` 才有大洲可选，
+   *    选了 `'COUNTRY'` 才是国家。所以界面上那一行紧贴在「参与范围」下面。
+   * ⚠️ 传的是**一个值**，而事件那一侧 `scopeDetail` 是**多值**、匹配语义是
+   *    **命中任一即展示**（一场"亚洲 & 大洋洲"的赛事，选任一个大洲都该出现）。
+   *    服务端那边收的是**逗号分隔**（`csv()` + `json_each` + `EXISTS`），
+   *    这里只拼一个 —— 要支持"同时选两个大洲"是这里改成 join(',') 就够了，
+   *    但那是**产品决定**（一次只看一个洲是不是够），不是实现限制。
+   */
+  scopeDetail?: string | null;
   /**
    * 系列筛选（需求③）。
    *
@@ -741,11 +758,21 @@ export function fetchCalendarEvents(
   if (query.tags && query.tags.length > 0) params.set('tags', query.tags.join(','));
   // 单选维度：null / 空串都是"不限"，一律不拼进 URL（和 buildResourceQuery 同一个约定）。
   // ⚠️ 不能把空串拼成 `?level=` —— 服务端会把它当"不限"（结果一样），
-  //    但 URL 里会留一堆 `level=&scope=&stage=` 的噪音，而分享出去的链接
+  //    但 URL 里会留一堆 `level=&scope=&access=` 的噪音，而分享出去的链接
   //    看起来像"筛过什么"，其实什么都没筛。
   if (query.level) params.set('level', query.level);
   if (query.scope) params.set('scope', query.scope);
-  if (query.stage) params.set('stage', query.stage);
+  /*
+   * ⚠️★ `scopeDetail` 单独一位，而且**必须在 `scope` 之后**拼（顺序只影响可读性，
+   *    但这三个参数在 URL 里挨着出现，人才看得懂它们是同一维的两级）。
+   *
+   * ⚠️⚠️ 它**必须真的拼进去**：2026-09-14 的第一版把 `scopeDetail` 放进了
+   *    `CalendarList` 的 `listQuery`，却漏了这一行 ⇒ **列表视图的明细筛选完全不生效**
+   *    （点一个洲，列表纹丝不动，而没有任何报错）。月视图当时是对的（它逐条客户端筛），
+   *    于是"同一个筛选在两个视图里行为不同"—— 那是最难被当成 bug 的一类不一致。
+   */
+  if (query.scopeDetail) params.set('scopeDetail', query.scopeDetail);
+  if (query.access) params.set('access', query.access);
   // 系列筛选（需求③）。**空串/不传都不拼**：服务端把空串当"不限"，
   // 留着 `?seriesId=` 只会让分享出去的链接看起来像"筛过什么"。
   if (query.seriesId) params.set('seriesId', query.seriesId);
@@ -852,6 +879,29 @@ export function renameCalendarSeries(
   input: CalendarSeriesInput,
 ): Promise<{ series: CalendarSeries }> {
   return sendJson('PATCH', `/api/calendar/series/${encodeURIComponent(id)}`, input);
+}
+
+/**
+ * 给一个系列换颜色（需求⑤，2026-09-13）。
+ *
+ * ⚠️ 权限是 **owner 专属**（共享谓词 `canHardDelete`）—— 和上面改名的
+ *    `content.author` **不是同一档**。这是用户原话「允许 owner 修改颜色」的直接落地：
+ *    owner 之外的人连入口都不该看见。所以调用方必须用 `useCanHardDelete()`
+ *    决定**入口显不显示**，这里不做判断（服务端会 403）。
+ *
+ * ⚠️ 传的是调色板的**键**（`'red'` … `'slate'`）或 `null`（不上色），**不是色值**：
+ *    键 → 色值由 shared 的 `seriesColorValue()` 翻，而那是"两种主题下都看得见"
+ *    这条论证的唯一落点（见 constants.ts 的 `SERIES_COLORS`）。
+ *    这里传 `#d9534f` 的话，主题一调，界面上就会出现两种红。
+ *
+ * ⚠️ 回包里的 `previousColor` 不是装饰：它是"改回上一个颜色"唯一需要的信息
+ *    （界面上暂时没做撤销，但排查"颜色怎么变成这个了"只能靠它）。
+ */
+export function setCalendarSeriesColor(
+  id: string,
+  color: string | null,
+): Promise<{ ok: true; id: string; color: string | null; previousColor: string | null }> {
+  return sendJson('PUT', `/api/calendar/series/${encodeURIComponent(id)}/color`, { color });
 }
 
 /**

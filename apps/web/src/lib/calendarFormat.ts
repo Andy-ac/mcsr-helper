@@ -83,42 +83,56 @@ export interface EventWhen {
   /** 完整结束；没有结束时间时是 null */
   end: string | null;
   endShort: string | null;
-  /** 时区行。首尾时区不同时写成 'Asia/Shanghai → Europe/London' */
+  /**
+   * 时区名。
+   *
+   * ⚠️ 2026-09-13（多段）之前这里可能是 `'Asia/Shanghai → Europe/London'`
+   *    —— 那时开始和结束各带一个时区。多段之后**整条事件只有一个时区**
+   *    （用户要求"时区放在最上面，只填一次"），所以它现在就是那一个名字。
+   *    类型留着不动：改了它，四个调用点都要跟着改，而它们要的东西一模一样。
+   */
   zones: string;
   allDay: boolean;
+  /** 这条事件一共有几段。1 段是常态；>1 时界面会额外显示"共 N 段"。 */
+  slotsCount: number;
 }
 
 /**
- * 事件 → 界面上的时间显示。
+ * 一段时间的开始/结束 （完整的和短的两种写法）。
  *
- * 三处判断都是有理由的：
- *
- *   1. **整天事件不带时间部分**。它存的确实是 `T00:00`，但把 `00:00` 显示出来
- *      会让人以为"这场比赛零点开始"。真正要说的信息是"9 月 5 日这一天"。
- *
- *   2. **同一天的结束时间只显示钟点**（'20:00 → 22:00' 而不是
- *      '20:00 → 08-30 22:00'）。重复一遍日期会让这一行变长，而它并没有多出信息。
- *
- *   3. **首尾时区不同时要两个都显示**。结束时间用另一个时区写是完全合法的
- *      （跨时区的线上赛很常见），只显示开始那个时区会让结束时间被读错。
+ * 两个"短"是给卡片那一小块用的（'08-30 20:00'），两个"全"是给详情页
+ * 和表单预填用的（'2026-08-30 20:00'）。
  */
-export function eventWhen(
-  event: Pick<
-    CalendarEvent,
-    'startsAtLocal' | 'startsAtTz' | 'endsAtLocal' | 'endsAtTz' | 'allDay'
-  >,
-): EventWhen | null {
-  const s = wallClockParts(event.startsAtLocal);
-  if (!s) return null;
-  const e = wallClockParts(event.endsAtLocal);
+interface SlotWhen {
+  start: string;
+  startShort: string;
+  end: string | null;
+  endShort: string | null;
+}
 
-  const start = event.allDay ? s.date : `${s.date} ${s.time}`;
-  const startShort = event.allDay ? s.short : `${s.short} ${s.time}`;
+/**
+ * 一段 → 显示用的字符串。整天事件不带时间部分（理由见下）。
+ *
+ * ⚠️ "结束和开始同一天就只显示钟点"这一条**按段各自判断**，不再按整条事件判断：
+ *    多段之后，第 1 段跨天、第 2 段不跨天是完全正常的组合 ——
+ *    用整条的包络去决定每段怎么写，会让不跨天的那一段显示成
+ *    '09-12 20:00 ~ 09-14 22:00'，而它其实当天就结束了。
+ */
+function slotWhen(
+  slot: Pick<CalendarEvent['slots'][number], 'startsAtLocal' | 'endsAtLocal'>,
+  allDay: boolean,
+): SlotWhen | null {
+  const s = wallClockParts(slot.startsAtLocal);
+  if (!s) return null;
+  const e = wallClockParts(slot.endsAtLocal);
+
+  const start = allDay ? s.date : `${s.date} ${s.time}`;
+  const startShort = allDay ? s.short : `${s.short} ${s.time}`;
 
   let end: string | null = null;
   let endShort: string | null = null;
   if (e) {
-    if (event.allDay) {
+    if (allDay) {
       // 整天事件里"结束日期和开始日期是同一天"等于没有额外信息（就是这一天）
       if (e.date !== s.date) {
         end = e.date;
@@ -133,12 +147,72 @@ export function eventWhen(
     }
   }
 
-  const zones =
-    event.endsAtTz && event.endsAtTz !== event.startsAtTz
-      ? `${event.startsAtTz} → ${event.endsAtTz}`
-      : event.startsAtTz;
+  return { start, startShort, end, endShort };
+}
 
-  return { start, startShort, end, endShort, zones, allDay: event.allDay };
+/**
+ * 事件 → 界面上的时间显示（**第一段**，多段那一轮之后）。
+ *
+ * 三处判断都是有理由的：
+ *
+ *   1. **整天事件不带时间部分**。它存的确实是 `T00:00`，但把 `00:00` 显示出来
+ *      会让人以为"这场比赛零点开始"。真正要说的信息是"9 月 5 日这一天"。
+ *
+ *   2. **同一天的结束时间只显示钟点**（'20:00 → 22:00' 而不是
+ *      '20:00 → 08-30 22:00'）。重复一遍日期会让这一行变长，而它并没有多出信息。
+ *
+ *   3. **多段时这里只给第一段**，段数由 `slotsCount` 带出去，由界面额外显示
+ *      「共 N 段」。
+ *
+ *      ⚠️ 这是刻意的：卡片上那一行只有一行宽，把三段拼起来会写成
+ *      '09-12 ~ 09-14, 09-20 ~ 09-21, 09-27'，而**跨三周**和**分三段打**
+ *      在那一行里长得一模一样 —— 前者是连续的，后者中间是空的。
+ *      真实调度只有详情页那种有整行空间的版面才放得下。
+ *      分不清这两种的后果是有人按连续三周去安排自己的时间。
+ */
+export function eventWhen(
+  event: Pick<CalendarEvent, 'slots' | 'startsAtTz' | 'allDay'>,
+): EventWhen | null {
+  const first = event.slots[0];
+  if (!first) return null;
+  const w = slotWhen(first, event.allDay);
+  if (!w) return null;
+
+  return {
+    start: w.start,
+    startShort: w.startShort,
+    end: w.end,
+    endShort: w.endShort,
+    zones: event.startsAtTz,
+    allDay: event.allDay,
+    slotsCount: event.slots.length,
+  };
+}
+
+/**
+ * 事件 → **每一段**都写出来的一行（详情页的「比赛时间」用）。
+ *
+ * 用户原话是「分离的用逗号分隔」，所以段与段之间用 `separator` 拼；
+ * 分隔符由调用方从词条传进来，而不是在这里写死 `', '` ——
+ * 中文的顿号、逗号、分号在这一行里读起来是不一样的，而那是文案的事，
+ * 不是格式化的事（全站的 `t()` 都遵守同一条分工）。
+ *
+ * ⚠️ 单段时**不加分隔符**（只有一个元素），所以一段的赛事看起来
+ *    仍然是一个普通的时间范围，不会多出一个孤零零的逗号。
+ */
+export function eventWhenAll(
+  event: Pick<CalendarEvent, 'slots' | 'startsAtTz' | 'allDay'>,
+  separator: string,
+): string {
+  return event.slots
+    .map((slot) => {
+      const w = slotWhen(slot, event.allDay);
+      if (!w) return '';
+      if (w.end === null) return w.start;
+      return `${w.start} ~ ${w.end}`;
+    })
+    .filter((s) => s !== '')
+    .join(separator);
 }
 
 /**

@@ -15,11 +15,21 @@
  * 这不是靠"如果已发布则跳过更新"这种容易被后人改坏的判断，
  * 而是因为**修改线上内容的语句根本不在这里**。
  */
+
+/*
+ * ⚠️ 走包根 `@mcsr/shared` 而不是 `@mcsr/shared/constants`：`package.json` 的
+ *    `exports` 里**没有** `./constants` 这个子路径，写子路径的报错是
+ *    "Failed to resolve entry for package"，而它看起来像依赖没装。
+ *    （constants 由包根的 index.ts 全量 re-export。）
+ */
+import { SERIES_COLOR_KEYS } from '@mcsr/shared';
 import {
   type CalendarEvent,
   type CalendarEventInput,
   type CalendarSeries,
   type CalendarSeriesInput,
+  type EventSlot,
+  type EventSlotInput,
   normalizeSeriesName,
 } from '@mcsr/shared/calendar';
 import { wallClockToUtc } from '@mcsr/shared/calendar-time';
@@ -34,8 +44,15 @@ interface EventRow {
   title: string;
   title_en: string | null;
   description_md: string;
-  /** 015 才加的列；`SELECT *` 对旧行拿到 NULL，所以读的时候 `?? null`。 */
-  schedule_text: string | null;
+  /**
+   * ★ 全部时间段（017 起的真相），JSON 数组文本。
+   *
+   * ⚠️ 下面那 6 个时间列是它的**包络**（最早那段开始 / 最晚那段结束）——
+   *    排序、索引、系列计数、ICS 的"还没结束"筛选都读那一对，**一条都没改**。
+   *    两者不一致 = 写入路径漏了重算包络（`toColumns` 是唯一写入点）。
+   * ⚠️ 017 之前的行它是 NULL ⇒ 读路径要**用包络合成一段**（见 `slotsOfRow`）。
+   */
+  time_slots: string | null;
   starts_at_local: string;
   starts_at_tz: string;
   starts_at_utc: number;
@@ -46,21 +63,34 @@ interface EventRow {
   url: string | null;
   location: string | null;
   tags: string;
+  /** ⚠️ 017 起**不再读写**（用户要求去掉「轮次」）。列还在，新行永远是 NULL。 */
   stage: string | null;
   /** 011 新增的两维筛选项。可空 —— 排位节点没有专业程度/参与范围。 */
   level: string | null;
   scope: string | null;
+  /** 017 新增：参赛门槛与参与范围的明细。都可空。 */
+  access: string | null;
+  scope_detail: string | null;
   /** 013 新增：所属系列（③）。可空 —— "不属于任何系列"是常态，不是"还没填"。 */
   series_id: string | null;
   /**
    * 读路径上 `LEFT JOIN calendar_series` 得到的**系列显示名**（不是本表的列）。
    *
-   * ⚠️ 刻意标成**可选**：`getEventRow` 走的是裸 `SELECT *`（没有 JOIN），
-   *    那种路径下这个键根本不存在。写成必填会逼**每一个**查询都去 JOIN 一次，
-   *    而详情页并不需要名字；所以这里用 `?`，由 `toCalendarEvent` 里的
-   *    `?? null` 兜住 —— 漏了 JOIN 的表现是"系列名显示不出来"，不是崩溃。
+   * ⚠️ 刻意标成**可选**：写成必填会逼**每一个**查询都去 JOIN 一次。
+   *    由 `toCalendarEvent` 里的 `?? null` 兜住 —— 漏了 JOIN 的表现是
+   *    "系列名/颜色显示不出来"，而不是崩溃。
+   *
+   * ⚠️⚠️ **三条读路径都必须 JOIN**（`listEvents` / `listPublishedForIcs` /
+   *    `getEventRow`）。这条注释过去写着"详情页并不需要名字，所以 `getEventRow`
+   *    走裸 `SELECT *` 也没关系"—— 那是错的，而且错了两个版本：
+   *      · 详情页正是最需要"它属于哪个系列"的地方（点进去看不到系列名，
+   *        而列表页看得到，看起来像随机丢失）；
+   *      · 颜色（017）加进来之后，漏 JOIN 还会让 ICS 与详情页**静默地少一个字段**。
+   *    两者都不会报错，所以只能靠这三处 SQL 的形状一致来保证。
    */
   series_name?: string | null;
+  /** 同上是 JOIN 出来的**调色板键**（`red` / `teal` …），或 NULL（没上色）。 */
+  series_color?: string | null;
   lang: string;
   author_id: string | null;
   current_revision: number | null;
@@ -68,6 +98,98 @@ interface EventRow {
   status: string;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * ★ 多段时间 → 「存进库的那两样东西」：`time_slots` 本身 + 它的**包络**。 *
+ * ⚠️ 这是**唯一**一处把多段算成列的地方。任何新增的写入路径都必须走它 ——
+ *    否则包络会和新加的那一段脱节，表现是"日历上多出来一天，但那一场仍显示已结束"，
+ *    而**两边都不会报错**。
+ *
+ * ⚠️ 按开始时间**升序**排：界面上允许乱序添加，而"最早那段"是包络的判据，
+ *    顺序错了包络就错。
+ */
+function slotsToColumns(slots: readonly EventSlotInput[], tz: string) {
+  const resolved: EventSlot[] = slots
+    .map((slot) => {
+      const startUtc = wallClockToUtc(slot.startsAtLocal, tz);
+      if (startUtc === null) {
+        throw new Error(`日历事件的时间段无法换算成 UTC：${slot.startsAtLocal} @ ${tz}`);
+      }
+      const endUtc = slot.endsAtLocal ? wallClockToUtc(slot.endsAtLocal, tz) : null;
+      return {
+        startsAtLocal: slot.startsAtLocal,
+        endsAtLocal: slot.endsAtLocal ?? null,
+        startsAtUtc: startUtc,
+        endsAtUtc: endUtc,
+      };
+    })
+    .sort((a, b) => a.startsAtUtc - b.startsAtUtc);
+
+  const first = resolved[0];
+  if (!first) throw new Error('日历事件必须至少有一段时间');
+
+  /*
+   * 包络的**结束**取"所有段里最晚的那个结束"。
+   *
+   * ⚠️ 一段没有结束时间时要退回它自己的**开始** —— 与既有那条
+   *    `COALESCE(ends_at_utc, starts_at_utc)` 的口径一致：一场只有开始时间的
+   *    单点活动，它的包络结束就是那个点，而不是 NULL（NULL 会被读路径当成"没有结束"）。
+   */
+  let endsAtUtc: number | null = null;
+  let endsAtLocal: string | null = null;
+  for (const slot of resolved) {
+    const candidate = slot.endsAtUtc ?? slot.startsAtUtc;
+    if (endsAtUtc === null || candidate > endsAtUtc) {
+      endsAtUtc = candidate;
+      endsAtLocal = slot.endsAtLocal ?? slot.startsAtLocal;
+    }
+  }
+
+  return {
+    time_slots: JSON.stringify(resolved),
+    starts_at_local: first.startsAtLocal,
+    starts_at_tz: tz,
+    starts_at_utc: first.startsAtUtc,
+    ends_at_local: endsAtLocal,
+    /* 收尾时区与开始时区相同（用户要求"时区只填一次"）—— 保留这一列只为兼容既有读路径。 */
+    ends_at_tz: tz,
+    ends_at_utc: endsAtUtc,
+    /** 响应里用的那段（`toCalendarEvent` 直接拿它，避免再解析一次 JSON）。 */
+    slots: resolved,
+  };
+}
+
+/**
+ * 行 → 时间段。**017 之前的行没有 `time_slots`**，那时用包络**合成一段**。
+ *
+ * ⚠️ 这个兜底不是"防御性代码"：线上在迁移之前就存在的事件（我导入的 15 条历史赛事
+ *    以及用户自己录的）都会走这一支，直到数据脚本把 slots 补上。
+ *    少了它，那些事件在日历网格上会**一段都不显示**（`slots` 为空 ⇒ 没有日期条）。
+ */
+export function slotsOfRow(row: {
+  time_slots: string | null;
+  starts_at_local: string;
+  starts_at_utc: number;
+  ends_at_local: string | null;
+  ends_at_utc: number | null;
+}): EventSlot[] {
+  if (row.time_slots) {
+    try {
+      const parsed: unknown = JSON.parse(row.time_slots);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as EventSlot[];
+    } catch {
+      // 坏 JSON 不该让整个列表 500 —— 退回包络合成的那一段（下面那支）
+    }
+  }
+  return [
+    {
+      startsAtLocal: row.starts_at_local,
+      endsAtLocal: row.ends_at_local,
+      startsAtUtc: Number(row.starts_at_utc),
+      endsAtUtc: row.ends_at_utc === null ? null : Number(row.ends_at_utc),
+    },
+  ];
 }
 
 /**
@@ -87,45 +209,36 @@ function toColumns(
   | 'status'
   | 'created_at'
   | 'updated_at'
-> {
-  const startsAtUtc = wallClockToUtc(input.startsAtLocal, input.startsAtTz);
-  const endsAtUtc =
-    input.endsAtLocal && input.endsAtTz ? wallClockToUtc(input.endsAtLocal, input.endsAtTz) : null;
-
-  /*
-   * 理论上为 null 是不可能的：Zod 层已经保证格式合法、时区存在，
-   * 而且校验过"结束晚于开始"。但类型上必须处理，所以**抛**而不是兜底 ——
-   * 兜底（比如退化成 0）会让这条不该发生的路径变成一个静默的错误时间。
-   */
-  if (startsAtUtc === null) {
-    throw new Error(
-      `日历事件的开始时间无法换算成 UTC：${input.startsAtLocal} @ ${input.startsAtTz}`,
-    );
-  }
+> & { slots: EventSlot[] } {
+  const timing = slotsToColumns(input.slots, input.startsAtTz);
 
   return {
     title: input.title,
     title_en: input.titleEn ?? null,
     description_md: input.descriptionMd,
-    schedule_text: input.scheduleText ?? null,
-    starts_at_local: input.startsAtLocal,
-    starts_at_tz: input.startsAtTz,
-    starts_at_utc: startsAtUtc,
-    ends_at_local: input.endsAtLocal ?? null,
-    ends_at_tz: input.endsAtTz ?? null,
-    ends_at_utc: endsAtUtc,
+    time_slots: timing.time_slots,
+    starts_at_local: timing.starts_at_local,
+    starts_at_tz: timing.starts_at_tz,
+    starts_at_utc: timing.starts_at_utc,
+    ends_at_local: timing.ends_at_local,
+    ends_at_tz: timing.ends_at_tz,
+    ends_at_utc: timing.ends_at_utc,
     all_day: input.allDay ? 1 : 0,
     url: input.url ?? null,
     location: input.location ?? null,
     tags: JSON.stringify(input.tags),
-    stage: input.stage ?? null,
+    /* ⚠️ 017 起不再写这一列（用户要求去掉「轮次」）—— 留着键是为了类型完整，值恒 null。 */
+    stage: null,
     level: input.level ?? null,
     scope: input.scope ?? null,
+    access: input.access ?? null,
+    scope_detail: input.scopeDetail.length > 0 ? JSON.stringify(input.scopeDetail) : null,
     /**
      * ③ 系列：只存**指针**，不存名字（名字在 calendar_series 里，读时 JOIN）。
      */
     series_id: input.seriesId ?? null,
     lang: input.lang,
+    slots: timing.slots,
   };
 }
 
@@ -138,23 +251,41 @@ export interface EventPayload {
   title: string;
   titleEn: string | null;
   descriptionMd: string;
+
   /**
-   * 具体赛程（**离散的多个时间段**就写在这里，一行一个）。
+   * ★ 全部时间段（017 起）。
    *
-   * ⚠️ **旧快照里没有这个键**，所以读的地方必须 `?? null`（同下面 seriesId 的理由）。
+   * ⚠️⚠️ **旧快照里没有这个键**，所以读的地方必须**从旧字段合成一段**
+   *    （见 `payloadToColumns` 里那段兜底）：011/015 那几批快照只有
+   *    `startsAtLocal` / `endsAtLocal`，直接读 `p.slots` 会得到 `undefined`，
+   *    而 node:sqlite 对 `undefined` 绑参是**报错**的 —— 一条在 017 之前提交、
+   *    一直没审的待审事件，会在审核通过的那一刻把整个审批动作炸掉，
+   *    而错误信息指向的是**绑参个数**（F11/F25 记的就是这个坑）。
    */
-  scheduleText: string | null;
-  startsAtLocal: string;
+  slots?: EventSlotInput[];
+  /** 整条事件共用的时区（用户要求"时区只填一次"）。 */
   startsAtTz: string;
-  endsAtLocal: string | null;
-  endsAtTz: string | null;
   allDay: boolean;
+
+  /*
+   * ⚠️ 下面三个是 **017 之前**的快照才有的键（那时没有 `slots`）。
+   *    它们**只为读旧快照而存在**：`payloadSlots` 在 `slots` 缺席时用它合成一段。
+   *    **不要**在新写入里填它们（`toPayload` 一个都不写）。
+   *    删掉它们的后果：线上那些"017 之前提交、还没审"的事件在审批时会
+   *    `undefined` 绑参而整笔失败（错误信息只指向绑参个数）。
+   */
+  startsAtLocal?: string;
+  endsAtLocal?: string | null;
+  endsAtTz?: string | null;
+
   url: string | null;
   location: string | null;
   tags: string[];
-  stage: string | null;
   level: string | null;
   scope: string | null;
+  /** 017 新增的两维。旧快照没有 ⇒ 读的时候 `?? null` / `?? []`。 */
+  access?: string | null;
+  scopeDetail?: string[];
   /**
    * ③ 系列的 id。
    *
@@ -171,60 +302,87 @@ function toPayload(input: CalendarEventInput): EventPayload {
     title: input.title,
     titleEn: input.titleEn ?? null,
     descriptionMd: input.descriptionMd,
-    scheduleText: input.scheduleText ?? null,
-    startsAtLocal: input.startsAtLocal,
+    slots: input.slots,
     startsAtTz: input.startsAtTz,
-    endsAtLocal: input.endsAtLocal ?? null,
-    endsAtTz: input.endsAtTz ?? null,
     allDay: input.allDay,
     url: input.url ?? null,
     location: input.location ?? null,
     tags: input.tags,
-    stage: input.stage ?? null,
     level: input.level ?? null,
     scope: input.scope ?? null,
+    access: input.access ?? null,
+    scopeDetail: input.scopeDetail,
     seriesId: input.seriesId ?? null,
     lang: input.lang,
   };
 }
 
+/**
+ * 快照里的时间段 —— **含旧快照的兜底**。
+ *
+ * ⚠️ 这一支不是防御性代码：线上在 017 之前提交过、还没审的事件都会走它。
+ *    没有它，那些事件在审批时会因为 `undefined` 绑参而**整笔失败**。
+ */
+function payloadSlots(p: EventPayload): EventSlotInput[] {
+  if (Array.isArray(p.slots) && p.slots.length > 0) return p.slots;
+  const legacy = p.startsAtLocal;
+  /*
+   * ⚠️ 走到这里说明这是一份 **017 之前**的快照。`startsAtLocal` 是旧快照的必填键，
+   *    所以它缺席只可能是"快照被写坏了" ⇒ **抛**，而不是编一个时间出来。
+   *    编时间的后果是"审批通过之后事件出现在一个没人填过的日子上"，而没有任何痕迹。
+   */
+  if (typeof legacy !== 'string' || legacy === '') {
+    throw new Error('待审快照里既没有 slots，也没有旧版的 startsAtLocal —— 这份快照是坏的');
+  }
+  return [{ startsAtLocal: legacy, endsAtLocal: p.endsAtLocal ?? null }];
+}
+
 /** payload → 数据库列（审核通过时把快照写回线上行用的路径）。 */
 function payloadToColumns(p: EventPayload) {
-  const startsAtUtc = wallClockToUtc(p.startsAtLocal, p.startsAtTz);
-  const endsAtUtc = p.endsAtLocal && p.endsAtTz ? wallClockToUtc(p.endsAtLocal, p.endsAtTz) : null;
-  if (startsAtUtc === null) {
-    throw new Error(`待审快照里的开始时间无法换算：${p.startsAtLocal} @ ${p.startsAtTz}`);
-  }
+  const timing = slotsToColumns(payloadSlots(p), p.startsAtTz);
+
   return {
     title: p.title,
     title_en: p.titleEn,
     description_md: p.descriptionMd,
-    // ⚠️ `?? null` 是**必需的**，不是防御性写法：015 之前的快照没有这个键（见 EventPayload）
-    schedule_text: p.scheduleText ?? null,
-    starts_at_local: p.startsAtLocal,
-    starts_at_tz: p.startsAtTz,
-    starts_at_utc: startsAtUtc,
-    ends_at_local: p.endsAtLocal,
-    ends_at_tz: p.endsAtTz,
-    ends_at_utc: endsAtUtc,
+    time_slots: timing.time_slots,
+    starts_at_local: timing.starts_at_local,
+    starts_at_tz: timing.starts_at_tz,
+    starts_at_utc: timing.starts_at_utc,
+    ends_at_local: timing.ends_at_local,
+    ends_at_tz: timing.ends_at_tz,
+    ends_at_utc: timing.ends_at_utc,
     all_day: p.allDay ? 1 : 0,
     url: p.url,
     location: p.location,
     tags: JSON.stringify(p.tags),
-    stage: p.stage,
-    /*
-     * ⚠️ `?? null` 而不是直接 `p.level`：快照是**历史数据**，而 011 之前的
-     *    快照里根本没有这两个字段。直接取值会得到 `undefined`，
-     *    而 node:sqlite 对 `undefined` 绑参是**报错**的（对 null 才正常）。
-     *    也就是说：一条在 011 之前提交、一直没审的待审事件，
-     *    会在审核通过的那一刻把整个审批动作炸掉 —— 而错误信息指向的是绑参数量。
-     */
     level: p.level ?? null,
     scope: p.scope ?? null,
+    access: p.access ?? null,
+    scope_detail: (p.scopeDetail ?? []).length > 0 ? JSON.stringify(p.scopeDetail) : null,
     // ③ 系列：同上面两条的理由 —— 旧快照没有这个键，`?? null` 是必需的（不是防御性写法）
     series_id: p.seriesId ?? null,
     lang: p.lang,
   };
+}
+
+/**
+ * `scope_detail` 列 → 数组。
+ *
+ * ⚠️ 与 `tags` 不同，这一列**可空**（没填就是 NULL）⇒ 读的时候要处理 null。
+ * ⚠️ 也**必须容忍坏 JSON**：手改过库、或将来别的脚本写进一段坏 JSON，
+ *    都不该让**整个日历**500 —— 解析失败退成空数组并留一条 warn。
+ */
+function parseScopeDetail(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === 'string' && v !== '');
+  } catch {
+    console.warn(`[calendar] scope_detail 不是合法 JSON，按空处理：${raw.slice(0, 80)}`);
+    return [];
+  }
 }
 
 /** 行 → 对外的 CalendarEvent。 */
@@ -235,7 +393,11 @@ export function toCalendarEvent(row: EventRow): CalendarEvent {
     title: row.title,
     titleEn: row.title_en,
     descriptionMd: row.description_md,
-    scheduleText: row.schedule_text ?? null,
+    /*
+     * ⚠️ 用 `slotsOfRow` 而不是直接读 `time_slots`：017 之前的行没有它，
+     *    那一支会用包络**合成一段** —— 少了它，那些事件在网格上会一段都不显示。
+     */
+    slots: slotsOfRow(row),
     startsAtLocal: row.starts_at_local,
     startsAtTz: row.starts_at_tz,
     startsAtUtc: Number(row.starts_at_utc),
@@ -251,16 +413,21 @@ export function toCalendarEvent(row: EventRow): CalendarEvent {
     stage: row.stage,
     level: row.level,
     scope: row.scope,
+    access: row.access ?? null,
+    /* ⚠️ 可空列 + 坏 JSON 都要容错：解析失败退成空数组，而不是让整页 500。 */
+    scopeDetail: parseScopeDetail(row.scope_detail),
     /*
-     * 系列（③）。`seriesId` 是事件行上那一列；`seriesName` 是读路径
-     * `LEFT JOIN calendar_series` 得到的显示名 —— **不落库**，因为两份名字必然漂移
-     * （系列一改名，老事件上留着旧名字，而两边都不会报错，只是显示不一致）。
+     * 系列（③）。`seriesId` 是事件行上那一列；`seriesName` / `seriesColor` 是读路径
+     * `LEFT JOIN calendar_series` 得到的 —— **不落库**，因为两份数据必然漂移
+     * （系列一改名/换色，老事件上留着旧值，而两边都不会报错，只是显示不一致）。
      *
-     * ⚠️ 两者都用 `?? null`：`series_name` 在没 JOIN 的路径（`getEventRow`）上
-     *    根本不存在，而 `series_id` 对 013 之前写入的行是 NULL。
+     * ⚠️ 三者都用 `?? null`：`series_name` / `series_color` 在漏了 JOIN 的路径上
+     *    根本不存在（而且那种漏法**没有编译错误**，因为行对象的形状是断言出来的），
+     *    而 `series_id` 对 013 之前写入的行是 NULL。
      */
     seriesId: row.series_id ?? null,
     seriesName: row.series_name ?? null,
+    seriesColor: row.series_color ?? null,
     lang: row.lang,
     authorId: row.author_id,
     authorName: author?.display_name ?? null,
@@ -270,10 +437,34 @@ export function toCalendarEvent(row: EventRow): CalendarEvent {
   };
 }
 
+/**
+ * 按 id 读一行（详情页、`/mine/:id`、以及所有"先查存在性"的写路径都用它）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 这里原本是裸 `SELECT *`，于是**详情端点的 `seriesName` 永远是 null**
+ * ---------------------------------------------------------------------------
+ * 那条 SQL 没有 JOIN，`row.series_name` 根本不存在，而 `toCalendarEvent` 里的
+ * `?? null` 把它兜成了 null —— 表现是"活动详情页从不显示它属于哪个系列"，
+ * 列表页却显示得好好的。**没有任何报错**，因为两边都是合法的 null。
+ * （同一个坑 011 也踩过：新维度漏在某个写死的字段清单里。）
+ *
+ * ⚠️ 所以改成 `e.*` + 两个 JOIN 列：`e.*` 保证**原来所有列一个不少**
+ *    （`approveEvent` / `reviseEvent` 那些调用方读的是 `pending_revision`、
+ *    `status`、`author_id` …），JOIN 只**追加**两列。
+ *
+ * ⚠️⚠️ JOIN 之后 `WHERE id = ?` 会变成**歧义列**：`calendar_series` 也有 `id`。
+ *    SQLite 对歧义列的报错是 `ambiguous column name: id` —— 一条让**每个**
+ *    详情页 500 的错误。所以这里必须写 `e.id`，并且给主表起了别名 `e`。
+ */
 export function getEventRow(id: string): EventRow | null {
-  const row = getDb().prepare('SELECT * FROM calendar_events WHERE id = ?').get(id) as
-    | EventRow
-    | undefined;
+  const row = getDb()
+    .prepare(
+      `SELECT e.*, s.name AS series_name, s.color AS series_color
+       FROM calendar_events AS e
+       LEFT JOIN calendar_series AS s ON s.id = e.series_id
+       WHERE e.id = ?`,
+    )
+    .get(id) as EventRow | undefined;
   return row ?? null;
 }
 
@@ -295,19 +486,36 @@ export function submitEvent(input: {
 
   db.exec('BEGIN IMMEDIATE');
   try {
+    /*
+     * ⚠️⚠️ **两份手写的 INSERT 是独立的两份**：这一份（用户提交）与下面
+     *    `submitEventDirect` 那一份，差别只有中间三个字面量
+     *    （`NULL, 1, 'pending'` vs `1, NULL, 'published'`）。
+     *    没有共享的列清单 ⇒ **加一列要改两处**，而漏改的那一份
+     *    **类型检查、lint、任何静态检查都看不见**：`node:sqlite` 只在**运行时**
+     *    数一遍"值 vs 列"，报的是 `26 values for 27 columns`，路由把它变成
+     *    500 `internal_error`，用户看到的是"提交失败"。
+     *
+     *    ⚠️ 本仓真的踩过（2026-09-14 才发现）：017 给两条 INSERT 都加了
+     *       `access` / `scope_detail` 两列，**这一份改对了**，`submitEventDirect`
+     *       那一份漏了一个 `?`。它一直没暴露，是因为覆盖那条路的测试当时
+     *       **红在更前面一步**（入参 schema 已经变，请求在到 INSERT 之前就被 400 挡掉）
+     *       —— 一个红着的测试**挡住了它后面的第二个缺陷**。
+     *    ⇒ 改列清单时的自检：数一遍 `?` 的个数（`id` … `lang` 是 21 个，
+     *      加 `author_id` 一共 **22** 个），再数一遍 `.run()` 的参数个数，两者必须相等。
+     */
     db.prepare(
       `INSERT INTO calendar_events
-         (id, title, title_en, description_md, schedule_text, starts_at_local, starts_at_tz, starts_at_utc,
-          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage,
+         (id, title, title_en, description_md, time_slots, starts_at_local, starts_at_tz, starts_at_utc,
+          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, access, scope_detail,
           level, scope, series_id, lang,
           author_id, current_revision, pending_revision, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, 'pending', ?, ?)`,
     ).run(
       input.id,
       cols.title,
       cols.title_en,
       cols.description_md,
-      cols.schedule_text,
+      cols.time_slots,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -318,7 +526,8 @@ export function submitEvent(input: {
       cols.url,
       cols.location,
       cols.tags,
-      cols.stage,
+      cols.access,
+      cols.scope_detail,
       cols.level,
       cols.scope,
       cols.series_id,
@@ -490,20 +699,25 @@ export function getPendingRevision(id: string): PendingRevision | null {
 /**
  * 待审的一条日历事件 —— 审核队列与详情页要用的最小信息集。
  *
- * 时间字段直接来自**快照**（而不是 `calendar_events` 行）：审核员要看的是
- * "待审的那一版把时间改成了什么时候"，而行里放着的是**线上那一版**的时间。
- * 两者在一次修改里通常不同，拿错了会让审核员对着一份自己没在审的时间做判断。
+ * ⚠️ 2026-09-13（多段那一轮）之前这里摊开着几个时间字段
+ *    （`startsAtLocal` / `endsAtLocal` / `allDay` …）。摊平之后**两个读者要的
+ *    根本不是同一样东西**：队列副标题要**第一段**（它只有一行，包络会写成
+ *    "连着打十几天"），而过期判据要**最后一段**的结束（还有一段没打完就不算过去）。
+ *    同一个字段被两处按两种含义读，是那种能跑、只是偶尔显示错的错。
+ *    所以改成整份 `payload`：两个读者各自去取自己那一段，而旧快照的兜底
+ *    （`slots` 缺席时合成一段）只留下 `payloadSlots` 一处。
+ *
+ * ⚠️ 时间仍然来自**快照**（而不是 `calendar_events` 行）：审核员要看的是
+ *    "待审的那一版把时间改成了什么时候"，而行里放着的是**线上那一版**的时间。
+ *    两者在一次修改里通常不同，拿错了会让审核员对着一份自己没在审的时间做判断。
  */
 export interface PendingEventItem {
   id: string;
   revision: number;
   /** 待审版本的标题（不是线上那一版的） */
   title: string;
-  startsAtLocal: string;
-  startsAtTz: string;
-  endsAtLocal: string | null;
-  endsAtTz: string | null;
-  allDay: boolean;
+  /** 待审版本的完整快照 —— 标题之外的一切都在这里，别在别处再摊平一份。 */
+  payload: EventPayload;
   editorId: string | null;
   createdAt: number;
   /** 这个事件是否**已经有线上版本**（true = 这是一次修改，线上仍是旧版） */
@@ -567,11 +781,11 @@ export function listPendingEvents(
         id: r.id,
         revision: Number(r.revision),
         title: p.title,
-        startsAtLocal: p.startsAtLocal,
-        startsAtTz: p.startsAtTz,
-        endsAtLocal: p.endsAtLocal,
-        endsAtTz: p.endsAtTz,
-        allDay: p.allDay,
+        /*
+         * ⚠️ 整份 payload 原样带上，**不要**在这里摊平成"第一段的时间"：
+         *    队列副标题要第一段、过期判据要最后一段（见 `PendingEventItem` 的注释）。
+         */
+        payload: p,
         editorId: r.editor_id,
         createdAt: Number(r.created_at),
         isEdit: r.current_revision !== null,
@@ -643,10 +857,10 @@ export function approveEvent(input: {
   try {
     db.prepare(
       `UPDATE calendar_events SET
-         title = ?, title_en = ?, description_md = ?, schedule_text = ?,
+         title = ?, title_en = ?, description_md = ?, time_slots = ?,
          starts_at_local = ?, starts_at_tz = ?, starts_at_utc = ?,
          ends_at_local = ?, ends_at_tz = ?, ends_at_utc = ?,
-         all_day = ?, url = ?, location = ?, tags = ?, stage = ?,
+         all_day = ?, url = ?, location = ?, tags = ?, access = ?, scope_detail = ?,
          level = ?, scope = ?, series_id = ?, lang = ?,
          status = 'published', current_revision = ?, pending_revision = NULL, updated_at = ?
        WHERE id = ?`,
@@ -654,7 +868,7 @@ export function approveEvent(input: {
       cols.title,
       cols.title_en,
       cols.description_md,
-      cols.schedule_text,
+      cols.time_slots,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -665,7 +879,8 @@ export function approveEvent(input: {
       cols.url,
       cols.location,
       cols.tags,
-      cols.stage,
+      cols.access,
+      cols.scope_detail,
       cols.level,
       cols.scope,
       cols.series_id,
@@ -774,11 +989,24 @@ export interface ListEventsOptions {
   toUtc?: number | null;
   /** 标签筛选：命中任意一个即可（Q1 的多选语义）。 */
   tags?: string[];
-  /** 专业程度 / 参与范围 / 轮次。**单选**，`null`/缺省表示不限。 */
+  /** 专业程度 / 参与范围 / 参赛门槛。**单选**，`null`/缺省表示不限。 */
   level?: string | null;
   scope?: string | null;
-  stage?: string | null;
-  /** ③ 按系列筛（`?seriesId=`）。单值等值，和 level/scope/stage 同一档语义。 */
+  /**
+   * 参赛门槛（017 新增的第三维）：`QUALIFIER` / `INVITE` / `OPEN`。
+   *
+   * ⚠️ 它与 `level` / `scope` **完全同档**（单选等值），所以走下面同一个循环 ——
+   *    单独写一条 SQL 会让"三维叠加是 AND"这条规则多一处实现。
+   */
+  access?: string | null;
+  /**
+   * ⚠️ **`stage`（轮次）在 2026-09-13 从筛选里删掉了**（用户要求去掉这一维）。
+   *    查询参数 `?stage=` 现在被忽略 —— 与"非法值当不限"是同一个行为，
+   *    所以老的分享链接不会 404，只是不再筛。
+   */
+  /** 参与范围明细：`?scopeDetail=ASIA,OCEANIA`，命中任一即匹配。 */
+  scopeDetail?: string[] | null;
+  /** ③ 按系列筛（`?seriesId=`）。单值等值，和 level/scope 同一档语义。 */
   seriesId?: string | null;
   status?: string;
   limit?: number;
@@ -792,7 +1020,7 @@ export interface ListEventsOptions {
  *    Node 的 `node:sqlite` 自带 JSON1 扩展，而这个表以后会有很多行，
  *    在内存里过滤意味着分页会算错（先 LIMIT 再过滤，页大小就不是页大小了）。
  *
- * ⚠️ 而 `level` / `scope` / `stage` 是**单值等值**条件，直接 `= ?` 就行。
+ * ⚠️ 而 `level` / `scope` 是**单值等值**条件，直接 `= ?` 就行。
  *    注意它们和 `tags` 的语义差别：标签是"任一命中"，这三个是"就是这个"。
  *    混起来的后果是"我筛了职业赛，结果业余的也出来了"，而那种错很难被看出来。
  *
@@ -827,13 +1055,34 @@ export function listEvents(opts: ListEventsOptions = {}): {
     );
     args.push(...opts.tags);
   }
+  /*
+   * ★ 参与范围明细（2026-09-13）：`?scopeDetail=ASIA,OCEANIA` —— **命中任一即算匹配**（OR）。
+   *
+   * ⚠️ 用 `json_each` 展开事件那一列再求交集，而不是 `LIKE`：
+   *    LIKE 既会把子串误配（`APAC` 撞上别的代码），又带来转义那一堆坑。
+   *    `tags` 那条走的也是 json_each，形状一致。
+   * ⚠️ 用 `EXISTS` 而不是 JOIN：JOIN 会让"命中两个大洲"的事件出现两行，
+   *    而分页的 `total` 是按行数算的 —— 那样它会把同一场算两次。
+   * ⚠️ 与 `tags` 一样放在这个循环**外面**：循环里每条都是 `column = ?`，
+   *    而我这条是一整段 EXISTS 子查询 + 一个数组参数，形状不同。
+   */
+  if (opts.scopeDetail && opts.scopeDetail.length > 0) {
+    const placeholders = opts.scopeDetail.map(() => '?').join(', ');
+    where.push(
+      `EXISTS (SELECT 1 FROM json_each(COALESCE(calendar_events.scope_detail, '[]')) AS sd
+                WHERE sd.value IN (${placeholders}))`,
+    );
+    args.push(...opts.scopeDetail);
+  }
+
   // 三个单选维度。它们可空，所以 `= NULL` 永远不成立 ——
   // 但"不限"本来就不该加条件，所以这里不为"筛没填的"提供入口（见下面注释）。
   for (const [column, value] of [
     ['level', opts.level],
     ['scope', opts.scope],
-    ['stage', opts.stage],
-    // ③ 系列：`?seriesId=` —— 与上面三个同档（单值等值），因为"就是这个系列"是唯一读法
+    // 017 的参赛门槛：与上面两个同档（这就是它不单独写一条的原因）
+    ['access', opts.access],
+    // ③ 系列：`?seriesId=` —— 与上面两个同档（单值等值），因为"就是这个系列"是唯一读法
     ['series_id', opts.seriesId],
   ] as const) {
     if (value === undefined || value === null || value === '') continue;
@@ -856,8 +1105,9 @@ export function listEvents(opts: ListEventsOptions = {}): {
   const rows = db
     .prepare(
       /*
-       * ⚠️ 这里多了一次 `LEFT JOIN calendar_series`，只为**显出系列名**（③）。
-       *    不 JOIN 的话 `seriesName` 恒为 null —— 表现是"填了系列但界面上看不到"，
+       * ⚠️ 这里多了一次 `LEFT JOIN calendar_series`，只为**显出系列名与颜色**（③/⑤）。
+       *    不 JOIN 的话 `seriesName` / `seriesColor` 恒为 null —— 表现是
+       *    "填了系列但界面上看不到"、"owner 改了颜色但线上没变"，
        *    而**不会报错**（这正是 011 那次 `level/scope` 漏在某个写死清单里时的形状）。
        *
        * ⚠️ `LEFT JOIN` 而不是 `JOIN`：绝大多数事件不属于任何系列，
@@ -865,8 +1115,14 @@ export function listEvents(opts: ListEventsOptions = {}): {
        *
        * 计数那条（上面的 COUNT）**不 JOIN** —— 系列名与总数无关，
        * 而带 JOIN 的计数在日历表上会白白多一次查找。
+       *
+       * ⚠️ `LEFT JOIN calendar_series AS s` 与 `FROM calendar_events` 之间还有一条
+       *    形状约束：下面那些 WHERE 片段写的是**不带表名的列**（`status`、
+       *    `starts_at_utc`、`calendar_events.tags`…）。主表**刻意不起别名**，
+       *    否则其中带 `calendar_events.` 前缀的那几条会立刻变成
+       *    `no such column` —— 而那是"一筛选就 500"，看起来和 JOIN 毫无关系。
        */
-      `SELECT calendar_events.*, s.name AS series_name
+      `SELECT calendar_events.*, s.name AS series_name, s.color AS series_color
        FROM calendar_events
        LEFT JOIN calendar_series AS s ON s.id = calendar_events.series_id
        ${whereSql}
@@ -904,11 +1160,12 @@ export function listPublishedForIcs(fromUtc: number): EventRow[] {
     .prepare(
       /*
        * ⚠️ 带 `LEFT JOIN calendar_series` 是为了让 ICS 的 CATEGORIES 能带上系列名
-       *    （③/D3.11：RFC 的 CATEGORIES 就是为分类准备的）。
+       *    （③/D3.11：RFC 的 CATEGORIES 就是为分类准备的），并让 `seriesColor`
+       *    和别的读路径一样有值（⑤）—— 漏了它不会报错，只会让这一条路径少一个字段。
        *    JOIN 的形式与 `listEvents` 一致 —— 两处写法不同的话，
        *    下一个人只会照着其中一处改，而另一处会静默地拿不到系列名。
        */
-      `SELECT calendar_events.*, s.name AS series_name
+      `SELECT calendar_events.*, s.name AS series_name, s.color AS series_color
        FROM calendar_events
        LEFT JOIN calendar_series AS s ON s.id = calendar_events.series_id
        WHERE calendar_events.status = 'published'
@@ -926,6 +1183,8 @@ export function listPublishedForIcs(fromUtc: number): EventRow[] {
 interface SeriesRow {
   id: string;
   name: string;
+  /** 017 新增：调色板的键，或 NULL（没上色 ⇒ 界面用白色 + 描边）。 */
+  color: string | null;
   created_by: string | null;
   created_at: number;
   /** 未结束的场次数 */
@@ -947,6 +1206,7 @@ function toSeries(row: SeriesRow): CalendarSeries {
   return {
     id: row.id,
     name: row.name,
+    color: row.color ?? null,
     count: Number(row.upcoming),
     pastCount: Number(row.past),
     nextStartsAtUtc: row.next_start === null ? null : Number(row.next_start),
@@ -981,7 +1241,7 @@ export function listSeries(now: number, limit = 200): CalendarSeries[] {
   const capped = Math.min(Math.max(limit, 1), 200);
   const rows = getDb()
     .prepare(
-      `SELECT s.id, s.name, s.created_by, s.created_at,
+      `SELECT s.id, s.name, s.color, s.created_by, s.created_at,
               SUM(CASE WHEN COALESCE(e.ends_at_utc, e.starts_at_utc) >= ? THEN 1 ELSE 0 END) AS upcoming,
               SUM(CASE WHEN COALESCE(e.ends_at_utc, e.starts_at_utc) <  ? THEN 1 ELSE 0 END) AS past,
               MIN(CASE WHEN COALESCE(e.ends_at_utc, e.starts_at_utc) >= ? THEN e.starts_at_utc END) AS next_start
@@ -1046,6 +1306,8 @@ export function createSeries(
     series: {
       id,
       name,
+      /* 新建的系列没上色（界面走"无系列"那一档：白色 + 描边），颜色由 owner 之后点小点选。 */
+      color: null,
       count: 0,
       pastCount: 0,
       nextStartsAtUtc: null,
@@ -1083,6 +1345,56 @@ function findSeriesByName(name: string): { id: string } | null {
     | { id: string }
     | undefined;
   return row ?? null;
+}
+
+/**
+ * 给一个系列上色 / 去掉颜色（需求⑤，**owner 专属**；权限在路由层判）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么先把旧值读出来
+ * ---------------------------------------------------------------------------
+ * 与 `renameSeries` 完全同一个理由：**只记新值等于没记**。审计要回答的是
+ * "颜色怎么变成这个了"，而调用方手里只有新颜色 —— 把旧值在这里一并带出去，
+ * 路由就不必再查一次（两次查询之间还能插入一次改动，那样记下来的"旧值"是错的）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 认不出的键**抛**，不静默存下去
+ * ---------------------------------------------------------------------------
+ * `seriesColorValue()` 对认不出的键回退成"没上色"（那是渲染层的兜底，见 constants.ts）。
+ * 于是把 `reddd` 这样的键存进去，表现是"owner 点了颜色，界面上什么都没变" ——
+ * **没有任何报错**，而且库里从此多了一个永远不生效的值。
+ * zod 已经在路由层挡了一层（`CalendarSeriesColorInputSchema`），这里的断言是第二层：
+ * 直接调数据层的脚本、测试、将来的批量工具都不经过 zod。
+ * ⚠️ 断言**放在存在性检查之前**：键非法是**我们的** bug，不该被"这个 id 不存在"
+ *    掩盖成 404 —— 那会让人去查一个根本不存在的数据问题。
+ */
+export function setSeriesColor(
+  id: string,
+  color: string | null,
+): { ok: true; previousColor: string | null } | { ok: false; reason: 'not_found' } {
+  if (color !== null && !(SERIES_COLOR_KEYS as readonly string[]).includes(color)) {
+    throw new Error(
+      `系列颜色必须是调色板的键（${SERIES_COLOR_KEYS.join(' / ')}）或 null，收到：${JSON.stringify(color)}`,
+    );
+  }
+
+  const db = getDb();
+  const row = db.prepare('SELECT color FROM calendar_series WHERE id = ?').get(id) as
+    | { color: string | null }
+    | undefined;
+  if (!row) return { ok: false, reason: 'not_found' };
+
+  /*
+   * ⚠️ 只 UPDATE `calendar_series.color` **一列**，一个事件行都不碰。
+   *
+   * 颜色**不落库到事件行上**（事件读的是 JOIN 出来的系列颜色，见 `toCalendarEvent`）——
+   * 这也是"换一次颜色 = 一条 UPDATE"的原因。若哪天有人把颜色冗余到事件行上，
+   * 这里就得改成"扫一遍该系列下所有事件"，而漏掉待审/已下架的那几条的表现是
+   * "日历上大部分线变色了，少数几条还是旧颜色"，不会报错。
+   */
+  db.prepare('UPDATE calendar_series SET color = ? WHERE id = ?').run(color, id);
+
+  return { ok: true, previousColor: row.color ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,19 +1460,36 @@ export function submitEventDirect(input: {
 
   db.exec('BEGIN IMMEDIATE');
   try {
+    /*
+     * ⚠️⚠️ **这一份是上面 `submitEvent` 的孪生兄弟**，两份手写的列清单没有共享。
+     *    差别只有中间三个字面量：那一份是 `NULL, 1, 'pending'`，这一份是
+     *    `1, NULL, 'published'`。⇒ **加一列要改两处**。
+     *
+     *    ⚠️⚠️ 2026-09-14：**这一份就是漏掉的那个**。017 给两条 INSERT 都加了
+     *       `access` / `scope_detail` 两列，`submitEvent` 改对了，这一份的
+     *       `VALUES` 只加了 21 个 `?`（应为 22 个，第 22 个是 `author_id`）。
+     *       漏一个 `?` 没有任何静态检查能发现：`node:sqlite` 运行时才数
+     *       "值 vs 列"，报 `26 values for 27 columns`，路由把它变成 500
+     *       `internal_error` —— 用户看到的是"直编失败"，日志里那行 SQL 错误
+     *       与"少一个问号"之间没有任何提示。
+     *       它藏了两天，是因为覆盖这条路的 5 条测试当时**红在更前面一步**
+     *       （入参 schema 已经变，请求在到 INSERT 之前就被 400 挡回去）——
+     *       **一个红着的测试挡住了它后面的第二个缺陷**（§5.55）。
+     *    ⇒ 改列清单时的自检：`?` 一共 **22** 个，`.run()` 的参数也必须是 22 个。
+     */
     db.prepare(
       `INSERT INTO calendar_events
-         (id, title, title_en, description_md, schedule_text, starts_at_local, starts_at_tz, starts_at_utc,
-          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, stage,
+         (id, title, title_en, description_md, time_slots, starts_at_local, starts_at_tz, starts_at_utc,
+          ends_at_local, ends_at_tz, ends_at_utc, all_day, url, location, tags, access, scope_detail,
           level, scope, series_id, lang,
           author_id, current_revision, pending_revision, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'published', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'published', ?, ?)`,
     ).run(
       input.id,
       cols.title,
       cols.title_en,
       cols.description_md,
-      cols.schedule_text,
+      cols.time_slots,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -1171,7 +1500,8 @@ export function submitEventDirect(input: {
       cols.url,
       cols.location,
       cols.tags,
-      cols.stage,
+      cols.access,
+      cols.scope_detail,
       cols.level,
       cols.scope,
       cols.series_id,
@@ -1243,10 +1573,10 @@ export function applyEventDirectRevision(input: {
 
     db.prepare(
       `UPDATE calendar_events SET
-         title = ?, title_en = ?, description_md = ?, schedule_text = ?,
+         title = ?, title_en = ?, description_md = ?, time_slots = ?,
          starts_at_local = ?, starts_at_tz = ?, starts_at_utc = ?,
          ends_at_local = ?, ends_at_tz = ?, ends_at_utc = ?,
-         all_day = ?, url = ?, location = ?, tags = ?, stage = ?,
+         all_day = ?, url = ?, location = ?, tags = ?, access = ?, scope_detail = ?,
          level = ?, scope = ?, series_id = ?, lang = ?,
          status = CASE WHEN status = 'hidden' THEN 'hidden' ELSE 'published' END,
          current_revision = ?, updated_at = ?
@@ -1255,7 +1585,7 @@ export function applyEventDirectRevision(input: {
       cols.title,
       cols.title_en,
       cols.description_md,
-      cols.schedule_text,
+      cols.time_slots,
       cols.starts_at_local,
       cols.starts_at_tz,
       cols.starts_at_utc,
@@ -1266,7 +1596,8 @@ export function applyEventDirectRevision(input: {
       cols.url,
       cols.location,
       cols.tags,
-      cols.stage,
+      cols.access,
+      cols.scope_detail,
       cols.level,
       cols.scope,
       cols.series_id,

@@ -1,4 +1,11 @@
+import {
+  SERIES_COLOR_KEYS,
+  SERIES_COLOR_NONE,
+  SERIES_COLORS,
+  seriesColorValue,
+} from '@mcsr/shared';
 import type { CalendarEvent, CalendarSeries } from '@mcsr/shared/calendar';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CalendarCard } from '@/components/CalendarCard';
 import { VIEWER_TZ } from '@/lib/calendarFormat';
@@ -68,6 +75,29 @@ export interface CalendarSeriesSectionProps {
   onConfirmDelete?: () => void;
   onCancelDelete?: () => void;
   /**
+   * ★ 这个观看者能不能改系列的颜色（需求⑤，2026-09-13）。
+   *
+   * ⚠️ 和上面 `onAskDelete` **同一个约定**：判据（owner 专用谓词 `canHardDelete`，
+   *    经 `useCanHardDelete()`）由**容器**算好再决定传不传，组件里**不判断角色**。
+   *    在组件里再判一次就是第二份会漂移的权限真相 —— 而这一条比删除那条更需要
+   *    从容器传进来：颜色入口的判据**和删除是同一条**（都是 owner），
+   *    两边各写一次的话，将来"谁能改颜色"变宽时，只会改到其中一处。
+   *    前端隐藏入口只是为了"别让人看见一个按了会 403 的按钮"，**拦截在服务端**。
+   *    ⚠️ 不传 ⇒ **完全不渲染**选色入口（不是渲染成灰色按钮）。
+   */
+  canSetColor?: boolean;
+  /**
+   * ★ 把某个系列改成某个颜色。`color` 是调色板的**键**（`'red'` …）或 `null`（不上色）。
+   *
+   * ⚠️ 传**键**不是色值：色值由 `seriesColorValue()` 一处决定（见 `lib/api.ts` 的
+   *    `setCalendarSeriesColor` 注释）。
+   * ⚠️ 这个函数**必须把失败抛出来**：组件 await 它，靠"有没有抛"来决定那一行
+   *    显不显示「颜色没改成功」。吞掉异常（改成返回 `{ ok: false }`）的话，
+   *    界面会在颜色根本没存下的时候表现成成功 —— 而那颗小点**不会自己变回去**，
+   *    用户只会以为"点了没反应"。
+   */
+  onSetColor?: (id: string, color: string | null) => Promise<void>;
+  /**
    * ★ 展开某个系列时要显示的那一批卡片（2026-09-13，用户要求
    *   「点击合集时应当在下方展开所有在其范围内的赛事信息卡片」）。
    *
@@ -93,9 +123,46 @@ export function CalendarSeriesSection({
   deleteErrorText,
   onConfirmDelete,
   onCancelDelete,
+  canSetColor,
+  onSetColor,
   expanded,
 }: CalendarSeriesSectionProps) {
   const { t } = useTranslation();
+
+  /*
+   * 选色那一行的**本地**异步状态：正在存的那一行、以及存失败的那一行。
+   *
+   * ⚠️ 与删除不同，这两个状态住在**组件里**，而不是像 `deleteBusy` / `deleteErrorText`
+   *    那样从容器传进来。理由是两者对"列表"的影响不同：删掉一个系列会让整块数据失效
+   *    （容器要重取、要重算确认框里的数字），而改颜色只动一行 —— 冻结的
+   *    `onSetColor` 接口本来就是"返回一个 Promise 给组件自己 await"。
+   * ⚠️ 存的是 **id 而不是布尔**：失败提示要出现在**那一行**上，不然用户分不清
+   *    是哪一个系列没改成功（系列一多，页面底部的一句提示就滚出视野了）。
+   */
+  const [colorBusyId, setColorBusyId] = useState<string | null>(null);
+  const [colorErrorId, setColorErrorId] = useState<string | null>(null);
+
+  async function pickColor(seriesId: string, color: string | null): Promise<void> {
+    // ⚠️ 没传 `onSetColor` 时**不点**（按钮本身也是 disabled 的，这里是第二道，
+    //    因为 disabled 只挡住"点"，挡不住将来别处调用这个函数）。
+    if (!onSetColor) return;
+    setColorErrorId(null);
+    setColorBusyId(seriesId);
+    try {
+      await onSetColor(seriesId, color);
+    } catch {
+      /*
+       * ⚠️ 显示的是**词条**而不是 `error.message`：这一句要回答的是"改成了没有、
+       *    要不要再试一次"，而服务端的原文（`Forbidden` / `invalid_state`）
+       *    既不是给用户看的，也没说清"颜色还停在原来那个"。
+       * ⚠️ 也**不**把错误写进上面那个 `errorText`（那个是"系列列表没拿到"）：
+       *    混在一起会让用户以为整块数据坏了（见 `deleteErrorText` 的注释）。
+       */
+      setColorErrorId(seriesId);
+    } finally {
+      setColorBusyId(null);
+    }
+  }
 
   /*
    * 过滤放在组件内部：它是**展示的派生量**（同一份 props 永远得到同一份结果），
@@ -206,6 +273,15 @@ export function CalendarSeriesSection({
                */
               const next = nextLabel(s.nextStartsAtUtc);
               const confirming = deleteConfirm?.id === s.id;
+              /*
+               * ⚠️ 「没上色」按**算出来的色值**判，而不是按 `s.color === null` 判：
+               *    `seriesColorValue()` 对**认不出的键**（有人手改过库的那种脏数据）
+               *    也回退成白色，而那种白同样需要描边才看得见。
+               *    按色值判，两条路（没上色 / 键坏了）一起兜住 —— 它们在界面上
+               *    本来就该长得一样（与 `CalendarGrid` 那条日期横线同一个判据）。
+               */
+              const dotColor = seriesColorValue(s.color);
+              const uncolored = dotColor === SERIES_COLOR_NONE;
               return (
                 /*
                  * ⚠️ 删除入口是选择按钮的**兄弟**，不是它的子节点。
@@ -221,6 +297,28 @@ export function CalendarSeriesSection({
                     aria-pressed={selectedId === s.id}
                     onClick={() => onSelect(s.id)}
                   >
+                    {/*
+                      ★ 颜色小点（需求⑤，2026-09-13）。颜色**只用两处**：日历上那条
+                        日期横线（`CalendarGrid` 的 `.grid__bar`）和这里 —— 用户原话。
+
+                      ⚠️ 它在整行那个 `<button>` **里面**，不是行外的一个装饰：它标注的
+                        就是"这一行是哪个系列"，跟着名字走才不会在窄屏换行时跑偏。
+                      ⚠️ `aria-hidden`：它是**装饰**。系列名已经把"这是哪一个系列"说清了，
+                        读屏软件再念一遍颜色名只是噪音 —— 颜色是给人眼扫的通道，
+                        不是一条独立的信息（真正的信息在「改颜色」那个面板里）。
+                      ⚠️ 内联 `style` 而不是 12 条 CSS 类：色值的**唯一真相**是
+                        `SERIES_COLORS`（那份"两种主题下都看得见"的论证跟着色值走，
+                        见 shared/constants.ts）。在 CSS 里再抄一份色值，
+                        就是第二份会漂移的真相。
+                      ⚠️ 内联样式来自数据、通常是注入风险 —— 这里不是：
+                        `seriesColorValue()` 只会返回调色板里那 12 个色值或
+                        `SERIES_COLOR_NONE`，认不出的键一律回退成白色。
+                    */}
+                    <span
+                      className={uncolored ? 'series__dot series__dot--none' : 'series__dot'}
+                      style={{ background: dotColor }}
+                      aria-hidden="true"
+                    />
                     <span className="series__name">{s.name}</span>
                     <span className="series__meta">
                       {s.count > 0
@@ -233,6 +331,79 @@ export function CalendarSeriesSection({
                     */}
                     {next ? <span className="series__next">{next}</span> : null}
                   </button>
+
+                  {/*
+                    ★ 选色面板（需求⑤：「允许 owner 修改颜色」）。
+                    ⚠️ 它同样是整行那个 `<button>` 的**兄弟**（理由见下面删除入口那段
+                       注释：`<button>` 里不能再放可交互元素）。
+                  */}
+                  {canSetColor === true ? (
+                    <details className="series__colors">
+                      {/*
+                        ⚠️ 用原生 `<details>` 而不是自己做一个 `useState` 开关，两个理由：
+                          ① 闭合的 `<details>` 内容**仍然在 DOM 里** ⇒ `check:calendar`
+                             那个纯 SSR 渲染自检（`renderToStaticMarkup`：不跑 effect、
+                             不点击）**看得见**那 13 个色块。做成受控开关的话，SSR 里
+                             永远只有一个 summary —— 色板本身就成了**没有任何检查覆盖**
+                             的东西，而它恰恰是这一轮的功能本体。
+                          ② 展开态天然是**每个系列各自一份**：`<details>` 按元素存，
+                             `useState` 要么每行拆一个子组件、要么自己维护一个 id 集合，
+                             都是给浏览器已经有的机制重写一遍。
+                        （直播板块的 `.livemanage__advanced` 是同一个做法、同两条理由。）
+                      */}
+                      <summary className="series__colorsbtn">
+                        {t('calendar.seriesColorSet')}
+                      </summary>
+                      <div className="series__swatches">
+                        {/* 12 个色块按 `SERIES_COLOR_KEYS` 的顺序 —— 有序是那个常量的契约 */}
+                        {SERIES_COLOR_KEYS.map((key) => (
+                          <button
+                            key={key}
+                            type="button"
+                            className="series__swatch"
+                            style={{ background: SERIES_COLORS[key] }}
+                            title={t(`calendar.seriesColor.${key}`)}
+                            aria-label={t(`calendar.seriesColor.${key}`)}
+                            /*
+                             * ⚠️ 选中态用 `aria-pressed` 而不是只加一个 class：这一排
+                             *    色块是**单选**（同一时刻只有一个颜色），读屏软件靠它
+                             *    才知道"现在是哪一个"，而不是把 13 个色块念成一串名字。
+                             * ⚠️ 认不出的键（脏数据）时**一个都不算选中** —— 除了下面
+                             *    那个「不上色」：那时小点显示的正是白色（见上面的判据）。
+                             */
+                            aria-pressed={s.color === key}
+                            disabled={!onSetColor || colorBusyId !== null}
+                            onClick={() => void pickColor(s.id, key)}
+                          />
+                        ))}
+                        {/*
+                          「不上色」（`null`）。
+                          ⚠️ 它是**一个正常的选项**，不是"清除"按钮：用户要求的是
+                             "无系列的为白色"，所以"不上色"是这一排里的第 13 种取值，
+                             和其余 12 个平权（词条也刻意不叫"清除颜色"）。
+                        */}
+                        <button
+                          type="button"
+                          className="series__swatch series__swatch--none"
+                          style={{ background: SERIES_COLOR_NONE }}
+                          title={t('calendar.seriesColorNone')}
+                          aria-label={t('calendar.seriesColorNone')}
+                          aria-pressed={uncolored}
+                          disabled={!onSetColor || colorBusyId !== null}
+                          onClick={() => void pickColor(s.id, null)}
+                        />
+                      </div>
+                    </details>
+                  ) : null}
+
+                  {/*
+                    ★ 改颜色失败（只出现在没改成功的那一行）。
+                    ⚠️ 不弹 `alert`：那个框会挡住整页、而且关掉之后页面上不留痕迹，
+                       用户回头就分不清"是没改成还是我记错了"。行内的一句留着不走。
+                  */}
+                  {colorErrorId === s.id ? (
+                    <p className="series__colorerror">{t('calendar.seriesColorFailed')}</p>
+                  ) : null}
 
                   {onAskDelete && !confirming ? (
                     <button

@@ -1,3 +1,4 @@
+import { SERIES_COLOR_NONE, seriesColorValue } from '@mcsr/shared';
 import type { CalendarEvent } from '@mcsr/shared/calendar';
 import { isEventPast } from '@mcsr/shared/calendar';
 import { useMemo } from 'react';
@@ -145,8 +146,14 @@ export function buildGridCells(ym: YearMonth): GridCell[] {
   return cells;
 }
 
+/** 一个闭区间的日期跨度：`2025-08-30` … `2025-08-31`。 */
+export interface DateRange {
+  from: string;
+  to: string;
+}
+
 /**
- * 一个事件**覆盖哪几天**（闭区间，按事件自己的时区）。
+ * **一段**覆盖哪几天（闭区间，按事件自己的时区）。
  *
  * ⚠️ 一个事件可以出现在多个格子上，这是刻意的。
  *    真实数据里存在横跨 7 天的季后赛窗口（见 `docs/own-db-facts.md` §7），
@@ -157,50 +164,142 @@ export function buildGridCells(ym: YearMonth): GridCell[] {
  *     **含**的那一天（见 CalendarForm 的提示），所以闭区间对整天和定时刻都成立。
  *   · 没有结束时间 → 只有开始那一天。
  *
- * 返回 `null` 表示这个事件的开始时间读不出来（格式坏了）—— 调用方应当**跳过它**
- * 而不是把它塞到某一天：塞进去的位置一定是错的，而"哪一天多了一个东西"
- * 在日历上很难被发现。
+ * 返回 `null` 表示**这一段**的开始时间读不出来（格式坏了）—— 调用方应当
+ * **只跳过这一段**而不是把它塞到某一天：塞进去的位置一定是错的，而
+ * "哪一天多了一个东西"在日历上很难被发现。
+ * （整条事件什么时候该被丢掉，由 `eventDateRanges` 决定：**所有**段都读不出来时。）
  */
-export function eventDateRange(event: CalendarEvent): { from: string; to: string } | null {
-  const s = parseDateKey(event.startsAtLocal.slice(0, 10));
+function slotDateRange(slot: CalendarEvent['slots'][number]): DateRange | null {
+  const s = parseDateKey(slot.startsAtLocal.slice(0, 10));
   if (!s) return null;
   const from = dateKey(s.year, s.month, s.day);
 
-  const e = event.endsAtLocal ? parseDateKey(event.endsAtLocal.slice(0, 10)) : null;
+  const e = slot.endsAtLocal ? parseDateKey(slot.endsAtLocal.slice(0, 10)) : null;
   if (!e) return { from, to: from };
 
   const start = Date.UTC(s.year, s.month - 1, s.day);
   const end = Date.UTC(e.year, e.month - 1, e.day);
   // 结束早于开始的数据不该出现（schema 挡着），真出现时按"一天"处理而不是
-  // 让区间反着走 —— 反着走的区间在展开时会产生一个空集合，于是这个事件
+  // 让区间反着走 —— 反着走的区间在展开时会产生一个空集合，于是这一段
   // 从日历上**整个消失**，而且没有任何报错。
   if (end < start) return { from, to: from };
   return { from, to: dateKey(e.year, e.month, e.day) };
 }
 
-/** 把事件按日期摊平成一个 Map：一天 → 那天覆盖到的事件（已排序）。 */
+/**
+ * 一个事件覆盖的**全部**日期跨度 —— **每一段一个区间**（多段那一轮之后）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 为什么必须逐段摊平，不能拿包络凑合
+ * ---------------------------------------------------------------------------
+ * `event.startsAtLocal` / `event.endsAtLocal` 在多段之后**不是数据**，而是
+ * **派生出来的包络**（最早那段的开始 / 最晚那段的结束，见 `shared/calendar.ts`
+ * 里 `CalendarEvent.slots` 的注释）。拿包络摊平，一条"分三个周末打"的赛事
+ * （`08-23` / `08-30~08-31` / `09-06~09-10`）会在日历上把中间的
+ * `08-24` ~ `08-29` 那六天**也画上横线** —— 看起来就是"连着打了十九天"。
+ *
+ * ⚠️ 那正是用户第 ④ 条需求明确不要的展示：**看上去是连续的一段**，而中间是空的。
+ *    他会照着它安排自己的时间，而日历上没有任何东西会提示"这中间其实没比赛"。
+ * ⇒ 所以这里按 `slots` 逐段算，段与段之间的空隙**没有横线**。
+ *
+ * ⚠️ 某一段读不出日期 ⇒ **跳过那一段**（不是整条）：一段坏掉不该让另外两段
+ *    也跟着消失。**所有**段都读不出来时返回空数组，那才是"整条跳过"
+ *    —— 调用方据此把它丢掉（塞到某一天一定是错的，而"哪一天多了一个东西"
+ *    在日历上很难被发现）。
+ *
+ * ⚠️ 服务端**不需要**跟着改，这一点是刻意的：`GET /api/calendar?from=&to=`
+ *    是按**包络列**筛的，而包络是全部段的超集（最早开始 / 最晚结束），
+ *    所以"有一段落在本月"的事件**一定**会被取回来（`CalendarList` 的
+ *    `gridRangeUtc` 还各多留了一天）。精确摊平放在客户端是对的 ——
+ *    服务端要按段筛就得 `json_each` 展开，而正确性上并不需要：
+ *    多取回来的那几天由这里的逐段判断挡掉。
+ */
+export function eventDateRanges(event: CalendarEvent): DateRange[] {
+  return event.slots.map(slotDateRange).filter((range): range is DateRange => range !== null);
+}
+
+/**
+ * 把事件按日期摊平成一个 Map：一天 → 那天覆盖到的事件（已排序）。
+ *
+ * ⚠️ 摊平是**逐段**的（见 `eventDateRanges`）：排在两个周末之间的那几天
+ *    **不在**里面，所以日历上那几天没有横线。
+ */
 export function eventsByDate(events: readonly CalendarEvent[]): Map<string, CalendarEvent[]> {
-  const map = new Map<string, CalendarEvent[]>();
+  /*
+   * 桶里的一项：事件 +「**这一天里那一段**」的开始时刻（排序用）。
+   *
+   * ⚠️ 排序键必须在**入桶时**一起记下来，事后推不出来：一条事件有哪几段、
+   *    哪一段盖住了这一天，是这一趟循环里才知道的信息。
+   */
+  interface DayEntry {
+    event: CalendarEvent;
+    slotStart: number;
+  }
+
+  const buckets = new Map<string, DayEntry[]>();
+
   for (const event of events) {
-    const range = eventDateRange(event);
-    if (!range) continue;
+    for (const slot of event.slots) {
+      const range = slotDateRange(slot);
+      if (!range) continue;
 
-    const [fy, fm, fd] = range.from.split('-').map(Number) as [number, number, number];
-    const [ty, tm, td] = range.to.split('-').map(Number) as [number, number, number];
+      /*
+       * ⚠️ `Number.isFinite` 兜的是"手改过库 / 老快照"（那一格在类型上不可空，
+       *    但库里的 payload 是 JSON）：拿 `undefined` 去相减会得到 `NaN`，
+       *    而 `NaN` 参与的排序**不报错**，只是顺序变成实现相关的 ——
+       *    那正是"某一天的活动顺序偶尔不对"的形态，查起来毫无线索。
+       */
+      const slotStart = Number.isFinite(slot.startsAtUtc) ? slot.startsAtUtc : event.startsAtUtc;
 
-    for (let t = Date.UTC(fy, fm - 1, fd); t <= Date.UTC(ty, tm - 1, td); t += 86_400_000) {
-      const d = new Date(t);
-      const key = dateKey(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
-      const bucket = map.get(key);
-      if (bucket) bucket.push(event);
-      else map.set(key, [event]);
+      const [fy, fm, fd] = range.from.split('-').map(Number) as [number, number, number];
+      const [ty, tm, td] = range.to.split('-').map(Number) as [number, number, number];
+
+      for (let t = Date.UTC(fy, fm - 1, fd); t <= Date.UTC(ty, tm - 1, td); t += 86_400_000) {
+        const d = new Date(t);
+        const key = dateKey(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+        const bucket = buckets.get(key);
+        if (!bucket) {
+          buckets.set(key, [{ event, slotStart }]);
+          continue;
+        }
+
+        /*
+         * ★ **同一条事件在同一天里只放一次。**
+         *
+         * ⚠️ 两段重叠是真实存在的：夏令时切换那天的相邻段、或者手填的两段
+         *    压在同一天上。不去重的话那一天的格子里会凭空多出一条横线
+         *    （看起来像有两个活动），`CalendarDayPanel` 里同一张卡片也会印两遍 ——
+         *    而"同一场活动印两遍"在列表里非常像数据重复，不像渲染问题。
+         *    ⇒ 这是那种**数据正常时永远看不出来**的分支，所以它必须有断言守着。
+         */
+        const seen = bucket.find((entry) => entry.event.id === event.id);
+        if (seen) {
+          // 排序键取**更早**的那一段：那才是"这一天这件事从什么时候开始"的答案
+          // （`08-01~08-10` 与 `08-05` 两段都盖住 08-05 时，该按 08-01 那一段排）。
+          if (slotStart < seen.slotStart) seen.slotStart = slotStart;
+          continue;
+        }
+        bucket.push({ event, slotStart });
+      }
     }
   }
 
-  // 一天之内按绝对时刻排序；同一时刻的按 id 兜底，保证顺序稳定
-  // （否则两次渲染的顺序可能不同，React 会因为 key 的位置变化而重建 DOM）。
-  for (const bucket of map.values()) {
-    bucket.sort((a, b) => a.startsAtUtc - b.startsAtUtc || a.id.localeCompare(b.id));
+  /*
+   * ⚠️ 排序键是**这一段**在**这一天**里的开始时刻（入桶时记下的 `slotStart`），
+   *    不是事件的 `startsAtUtc`。
+   *    `startsAtUtc` 在多段之后是**包络**的开始：一条 `08-30` 开赛、另有一段在
+   *    `09-06` 的赛事，在 `09-06` 那一天会拿着 `08-30` 的时刻去和别的活动比大小 ——
+   *    于是"这一天谁在前"会在跨段、跨月时排错，而排错的顺序看起来非常正常。
+   * ⚠️ 同刻时按 id 兜底，保证顺序**稳定**（否则两次渲染的顺序可能不同，
+   *    React 会因为 key 的位置变化而重建 DOM）。
+   */
+  const map = new Map<string, CalendarEvent[]>();
+  for (const [key, entries] of buckets) {
+    entries.sort((a, b) => a.slotStart - b.slotStart || a.event.id.localeCompare(b.event.id));
+    map.set(
+      key,
+      entries.map((entry) => entry.event),
+    );
   }
   return map;
 }
@@ -235,13 +334,6 @@ export function todayKeyInViewerTz(): string {
 
 /** 每个格子最多画几条标记条，超出的收成 `+N`。 */
 const MAX_BARS = 3;
-
-/** 一个事件用哪个标签的颜色。取**标签表里的第一个**命中的，保证同一事件每次同色。 */
-const TAG_ORDER = ['TOURNAMENT', 'COMMUNITY', 'RANKED_MILESTONE'] as const;
-function primaryTag(event: CalendarEvent): string {
-  for (const tag of TAG_ORDER) if (event.tags.includes(tag)) return tag;
-  return 'OTHER';
-}
 
 export interface CalendarGridProps {
   ym: YearMonth;
@@ -419,18 +511,48 @@ export function CalendarGrid({ ym, events, selected, today, now, onSelect }: Cal
                 于是整个网格在切月时跳动，而"跳动的网格"正是要避免的不丝滑。
               */}
               <span className="grid__bars" aria-hidden="true">
-                {shown.map((event) => (
-                  <span
-                    key={event.id}
-                    className={[
-                      'grid__bar',
-                      `grid__bar--${primaryTag(event)}`,
-                      isEventPast(event, now) ? 'grid__bar--past' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                  />
-                ))}
+                {shown.map((event) => {
+                  /*
+                   * ★ 日期横线的颜色 = **所属系列的颜色**（需求⑤，2026-09-13）。
+                   *
+                   * ⚠️ 这是一次**刻意的取舍**：颜色这条通道从「主标签」整体让给了
+                   *    「系列」。原来它按主标签上色（TOURNAMENT 金 / COMMUNITY 青 /
+                   *    RANKED_MILESTONE 绿），现在按 `seriesColor` 上。
+                   *    理由是用户那两句话必须同时成立：「每个系列用一个颜色标注」+
+                   *    「无系列的为白色」。而"白色 = 没有系列"只有在**横线就是系列色**
+                   *    时才说得通 —— 按标签上色的话，一条 TOURNAMENT 的白色横线到底
+                   *    表示"没挂系列"还是"金标签"？同一个像素说不出两个答案。
+                   *    ⇒ 标签**没有**因此丢失：它在卡片和详情页仍然是 chip。
+                   *      这是换了一条通道，不是删掉了一条信息。
+                   *
+                   * ⚠️⚠️ 将来若要**同时**表达"系列色"和"标签"，正确做法是加**第二种**
+                   *    视觉（形状 / 纹理 / 前缀图标），**不是**让两个颜色去抢同一条线。
+                   *    那条线只能有一个颜色，抢的结果是两种语义互相污染 ——
+                   *    而两种颜色都是合法颜色，界面上看起来完全正常，没人会发现。
+                   */
+                  const color = seriesColorValue(event.seriesColor);
+                  /*
+                   * ⚠️ `--none` 这一档由**色值**判定，不是由 `event.seriesColor === null`
+                   *    判定：`seriesColorValue()` 对"认不出的键"（有人手改过库）也回退成
+                   *    那个白色，而那种白同样需要描边才看得见。
+                   *    按色值判，两条路（没系列 / 键坏了）一起兜住 —— 它们在界面上
+                   *    本来就该长得一样，而"键坏了"是查不出来的那种脏数据。
+                   */
+                  const uncolored = color === SERIES_COLOR_NONE;
+                  return (
+                    <span
+                      key={event.id}
+                      className={[
+                        'grid__bar',
+                        uncolored ? 'grid__bar--none' : '',
+                        isEventPast(event, now) ? 'grid__bar--past' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      style={{ background: color }}
+                    />
+                  );
+                })}
               </span>
 
               {more > 0 ? (

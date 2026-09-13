@@ -209,6 +209,23 @@ function liveChannelHref(markup: string): string | null {
   return href ? decodeEntities(href[1]) : null;
 }
 
+/**
+ * 把标签切掉，只留**人看得见的文字**。
+ *
+ * ⚠️ 为什么不能直接 `markup.includes('某个标识')`：频道标识**同时出现在那条外链的
+ *    `href` 里**（`youtube.com/channel/MCSR_Ranked`）。在原始字符串上找，一条
+ *    "界面上不再印标识"的反面断言会**永远为真**（永远红，或者被人改松之后静默失效）。
+ *    要断言的是"**看得见的地方**没有它"，所以必须先切标签。
+ * ⚠️ 实体要解回来：`&#x27;` 这类写法会让某个值"看起来不在"。
+ * ⚠️ 标签被换成空格而不是删掉：`<span>a</span><span>b</span>` 删掉标签会得到
+ *    `ab`，而屏幕上看到的是两个词 —— 拼出来的假字符串会让反面断言红在一个不存在的东西上。
+ */
+function visibleText(markup: string): string {
+  return decodeEntities(markup.replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 console.log(`【${LANG}】直播卡：能嵌的那一行`);
 
 /*
@@ -448,6 +465,117 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
     `解释必须真的解析成译文，不能是原始 key —— 实际渲染成「${biliSaid}」`,
   );
   ok('★ B站直播间 → 没有门面、原站外链在、且那句话真的解析了（不是原始 key）');
+
+  /*
+   * ★★ 2026-09-14（用户要求）：卡片上**不再印频道标识**。
+   *
+   * 现场：用户看到某一行印着 `MCSR_Ranked`，而他从没填过这个标识 —— 那是当年
+   * 「频道标识」还是个**手填字段**时留下的值。2026-09-13 那一轮把那个字段整条
+   * 去掉了（Q13：表单只剩 显示名 / 直播链接 / 一句话说明 / 标签），`handle` 现在
+   * 是**用户贴的链接解析出来的副产品**。把它印出来，等于把中间产物当成用户在意的信息。
+   *
+   * ⚠️ 这一节刻意用一个**看着就不该出现**的值（`MCSR_Ranked`），而不是别处
+   *    夹具里的 `Someone`：后者是上面那些正面断言里"应当在"的字符串，
+   *    拿它做反面断言，两条会互相掩护。
+   *
+   * ⚠️⚠️ 反面断言的写法照抄本文件上面踩过的那条规矩（见 `noEmbedBilibili` 那一段）：
+   *    **先证明这个字符串本来会出现**（正面控制），**再断言它没有出现**。
+   *    缺了前半条，"找不到"完全可能只是因为夹具换了值 —— 那是**空跑**。
+   */
+  {
+    const HANDLE = 'MCSR_Ranked';
+    const card = html(
+      <ul>
+        <LiveCard
+          channel={channel({
+            platform: 'youtube',
+            handle: HANDLE,
+            liveVideoId: null,
+            embedChannel: true,
+          })}
+        />
+      </ul>,
+    );
+
+    // ① 正面控制：这个标识**确实还在那条外链里**（所以下面"看不到它"是有意义的）
+    const href = liveChannelHref(card);
+    assert.ok(
+      href?.includes(HANDLE) === true,
+      `前置：这一行的原站链接本来应当带着那个标识（href=${String(href)}）—— ` +
+        '不然下面那条反面断言就是空跑',
+    );
+
+    // ② 反面：**可见文本**里一个字符都不该有
+    const text = visibleText(card);
+    assert.equal(
+      text.includes(HANDLE),
+      false,
+      `卡片上不该再出现频道标识 —— 实际可见文本是「${text}」`,
+    );
+
+    // ③ 那一格的类名也不该在（CSS 规则与 `<span>` 是一起删的）
+    assert.equal(
+      card.includes('live-card__handle'),
+      false,
+      '`live-card__handle` 那一格应当已经删掉（留着类名 = 改动只做了一半）',
+    );
+
+    ok('★★ 卡片上不再印频道标识（可见文本里没有、那一格也没有），而外链里仍然带着它');
+  }
+
+  /*
+   * ★★ 同一件事的**另一半**：门面上那一格（`video-embed__id`）。
+   *
+   * ⚠️ 这一半不查会漏：用户看到的 `MCSR_Ranked` 有**两处**来源 ——
+   *    「去原频道看」旁边那格，和**门面**里那格（`idLabel`）。只删前者，
+   *    门面上照旧印着同一个字符串，用户会再报一次"还没删干净"。
+   *
+   * ⚠️ 用 B站 的数字房间号当输入，因为它是**确定会画出门面**的一档
+   *    （YouTube 的 `@handle` / 非 UC… 标识按设计就不出播放器，见上面那两节）。
+   */
+  {
+    const room = '21452505';
+    const card = html(
+      <ul>
+        <LiveCard channel={channel({ platform: 'bilibili', handle: room, liveVideoId: null })} />
+      </ul>,
+    );
+    // 前置：门面真的在（否则"门面上没有标识"是一句废话）
+    assert.ok(hasFacade(card), '前置：数字房间号这一档应当画出播放器门面');
+    assert.equal(
+      card.includes('video-embed__id'),
+      false,
+      '频道级嵌入的门面上不该再有标识那一格（它原来印的就是 `handle`）',
+    );
+    assert.equal(
+      visibleText(card).includes(room),
+      false,
+      '房间号也不该出现在可见文本里（它会让人以为那是"内容标识"，其实只是频道）',
+    );
+    ok('★★ 频道级嵌入的门面上不再有标识那一格（原来印的是 handle）');
+  }
+
+  /*
+   * ★★ 反过来的一条：**有具体视频 ID 时那一格必须还在**。
+   *
+   * ⚠️ 没有这条，"把 `video-embed__id` 整格删掉"也能让上面全部通过 ——
+   *    而那会顺手删掉娱乐视频那一侧要用的东西（视频墙靠它显示视频 ID）。
+   *    反面断言必须配一条正面的，否则它守不住边界。
+   */
+  {
+    const vid = 'abcdefghijk';
+    const card = html(
+      <ul>
+        <LiveCard channel={channel({ platform: 'youtube', liveVideoId: vid })} />
+      </ul>,
+    );
+    assert.ok(
+      card.includes('video-embed__id'),
+      '有具体视频 ID 时，门面上那一格必须还在（别把孩子跟洗澡水一起倒了）',
+    );
+    assert.ok(visibleText(card).includes(vid), '门面上显示的应当是那个**视频 ID**');
+    ok('★ 有具体视频 ID 时门面标识仍在，且显示的是视频 ID');
+  }
 
   /*
    * ★ t24（词条改名）的守卫。

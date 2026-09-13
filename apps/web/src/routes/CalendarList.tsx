@@ -1,4 +1,4 @@
-import { CALENDAR_TAGS } from '@mcsr/shared';
+import { CALENDAR_TAGS, CONTINENTS, COUNTRIES } from '@mcsr/shared';
 import type { CalendarEvent } from '@mcsr/shared/calendar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
@@ -27,6 +27,7 @@ import {
   fetchCalendarEvents,
   fetchCalendarSeries,
   fetchCalendarSeriesImpact,
+  setCalendarSeriesColor,
 } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { CALENDAR_PAGE_SIZE } from '@/lib/calendarFormat';
@@ -61,7 +62,8 @@ const SERIES_EXPAND_TO = 4102444800000;
  * ⚠️⚠️ 两个视图的筛选**不在同一层做**，这是刻意的
  * ---------------------------------------------------------------------------
  *   · **月历表**：一个月的（其实是网格覆盖的那 40 来天）数据**一次全拉回来**，
- *     四个维度**全在客户端筛**。
+ *     所有筛选维度**全在客户端筛**（含「参与范围明细」——它也是月视图唯一
+ *     真正生效的地方，见下面 `listQuery` 里那条 ⚠️）。
  *   · **列表**：服务端筛 + 服务端分页（它是无限的，客户端筛不了）。
  *
  * 为什么月历表要挪到客户端：
@@ -285,7 +287,19 @@ export function CalendarList() {
 
   const level = params.get('level');
   const scope = params.get('scope');
-  const stage = params.get('stage');
+  /*
+   * ★ 参与范围**明细**（大洲 / 国家代码，需求⑥，2026-09-13）。
+   *
+   * ⚠️ 它和 `scope` 是**一对**参数：`?scope=CONTINENT&scopeDetail=ASIA`。
+   *    所以它从不单独出现在 URL 里 —— 没有 `scope` 时它是没有意义的，
+   *    而"切换 `scope` 要清掉不匹配的明细"这条规则在 `pickSingle` 里（见那里）。
+   *
+   * ⚠️ 原来的 `?stage=`（轮次）随需求⑥ **删掉了**（用户要求「去掉轮次」）。
+   *    一个分享出去的老链接 `?stage=FINAL` 现在只是一个被忽略的参数 ——
+   *    界面不会因此报错，也**不会**把它当成筛选条件（这正是要的：
+   *    轮次不再是维度，那么"用它筛"这件事本身就不存在了）。
+   */
+  const scopeDetail = params.get('scopeDetail');
   const showPast = params.get('past') === '1';
   const page = Math.max(Number(params.get('page') ?? '1') || 1, 1);
 
@@ -410,7 +424,7 @@ export function CalendarList() {
     tags.length !== CALENDAR_TAGS.length ||
     level !== null ||
     scope !== null ||
-    stage !== null ||
+    scopeDetail !== null ||
     showPast;
 
   function write(mutate: (p: URLSearchParams) => void, replace = false): void {
@@ -443,10 +457,28 @@ export function CalendarList() {
     });
   }
 
-  function pickSingle(dim: 'level' | 'scope' | 'stage', value: string | null): void {
+  /**
+   * ★ 三个单选维度共用一个"选一个值 / 退回不限"的入口（`level` / `scope` / `scopeDetail`）。
+   *
+   * ⚠️ `scopeDetail` 是 `scope` 的**下级**，所以改 `scope` 时要把**不匹配的明细**
+   *    一起清掉：从「大洲」切到「国家」时，`ASIA` 不是一个合法的国家代码 ——
+   *    留着它，用户会看到一个 URL 里写着 `scope=COUNTRY&scopeDetail=ASIA` 的状态，
+   *    而列表会**永远为空**（没有任何一场赛事的明细里有 ASIA 这个国家）。
+   *    "筛出来是空的"看起来完全像"确实没有这类赛事"，没人会去怀疑 URL。
+   *
+   * ⚠️ 判据用 `CONTINENTS` / `COUNTRIES` 这两张**共享表**，不是在这里手写一遍
+   *    两端（`value === 'CONTINENT'`）的 if-else 就够用，且新增档位时不会漏。
+   */
+  function pickSingle(dim: 'level' | 'scope' | 'scopeDetail', value: string | null): void {
     write((p) => {
       if (value === null) p.delete(dim);
       else p.set(dim, value);
+      if (dim === 'scope') {
+        const pool: readonly string[] =
+          value === 'CONTINENT' ? CONTINENTS : value === 'COUNTRY' ? COUNTRIES : [];
+        const current = p.get('scopeDetail');
+        if (current !== null && !pool.includes(current)) p.delete('scopeDetail');
+      }
       afterFilterChange(p);
     });
   }
@@ -456,7 +488,7 @@ export function CalendarList() {
       p.delete('tags');
       p.delete('level');
       p.delete('scope');
-      p.delete('stage');
+      p.delete('scopeDetail');
       p.delete('past');
       afterFilterChange(p);
     });
@@ -562,7 +594,22 @@ export function CalendarList() {
       tags: tags.length > 0 ? tags : undefined,
       level,
       scope,
-      stage,
+      /*
+       * 明细（`?scope=CONTINENT&scopeDetail=ASIA`）。
+       *
+       * ⚠️★ 它**两个视图都生效**，但走的是**两条不同的路**，这是刻意的：
+       *   · 列表视图 —— 服务端筛（`routes/calendar.ts` 的 `csv()` + `json_each` + `EXISTS`），
+       *     因为列表是无限长的，客户端筛不了；分页的 `total` 也必须是筛过之后的数。
+       *   · 月视图 —— 下面的 `filtered` 逐条客户端筛（月视图一次只取一个月的全部事件，
+       *     本来就不分页）。
+       *
+       * ⚠️⚠️ 2026-09-14 的第一版**不是**这样：`api.ts` 的 `fetchCalendarEvents`
+       *    当时还没有 `scopeDetail` 这一支 ⇒ 这一项**根本传不出去**，
+       *    表现是"点一个洲，列表纹丝不动，而没有任何报错"（月视图却是对的 ——
+       *    于是同一个筛选在两个视图里行为不同，那是最难被当成 bug 的一类不一致）。
+       *    现在 `api.ts` 补上了那一支，这一项是真生效的。
+       */
+      scopeDetail,
       /*
        * 系列筛选（需求③）。列表视图**服务端筛**（它是无限长的，客户端筛不了），
        * 月视图走下面的客户端筛 —— 两个视图各自回到既有范式，不发明第三种。
@@ -571,7 +618,7 @@ export function CalendarList() {
       page,
       pageSize: CALENDAR_PAGE_SIZE,
     }),
-    [showPast, tags, level, scope, stage, seriesId, page],
+    [showPast, tags, level, scope, scopeDetail, seriesId, page],
   );
 
   const list = useAsync(
@@ -595,8 +642,8 @@ export function CalendarList() {
   const rawEvents = month.committed?.events ?? [];
 
   /*
-   * 客户端筛选（月历表专用）。四个维度的语义和 api.ts 上写的**完全一致**：
-   * 标签是"任一命中"，另外三个是"等于"。
+   * 客户端筛选（月历表专用）。各维度的语义和 api.ts 上写的**完全一致**：
+   * 标签是"任一命中"，单选维度是"等于"，而 `scopeDetail` 是**"命中任一"**（见下）。
    *
    * ⚠️ 这一份判据必须和服务端那份对得上，否则两个视图筛出来的东西不一样，
    *    而"切一下视图结果就变了"是最难被归因的那类不一致。
@@ -609,7 +656,20 @@ export function CalendarList() {
       if (!e.tags.some((tag) => tags.includes(tag))) return false;
       if (level !== null && e.level !== level) return false;
       if (scope !== null && e.scope !== scope) return false;
-      if (stage !== null && e.stage !== stage) return false;
+      /*
+       * ★ 明细的语义是「**命中任一即展示**」（需求⑥）。
+       *
+       * 一场写着"亚洲 & 大洋洲"的赛事，`scopeDetail` 是 `['ASIA', 'OCEANIA']` ——
+       * 用户在筛选栏里选「亚洲」或选「大洋洲」，它都**应该**出现。
+       * 写成 `e.scopeDetail === [scopeDetail]` 之类的"等于"判断会让这种赛事
+       * 在**两个**洲下面都消失，而那正是它最该出现的地方。
+       * （事件那一侧是多选，见 shared/constants.ts 的 `SCOPE_DETAILS` 注释。）
+       *
+       * ⚠️ `?? []` 是给"老快照 / 手改过的行"兜底：这一格在类型上不可空，
+       *    但库里的 JSON 列可能没有这个键 —— 少了兜底，那种行会让整页渲染抛异常，
+       *    而表现是"日历整页白屏"，和一个筛选条件毫无关系。
+       */
+      if (scopeDetail !== null && !(e.scopeDetail ?? []).includes(scopeDetail)) return false;
       /*
        * 系列筛选（需求③）。⚠️ 比的是 **id**（事件行上只有这一个指针），
        * 不是名字 —— 服务端 LEFT JOIN 出来的 `seriesName` 只用来**显示**。
@@ -618,7 +678,7 @@ export function CalendarList() {
       if (seriesId !== null && e.seriesId !== seriesId) return false;
       return true;
     });
-  }, [rawEvents, tags, level, scope, stage, seriesId]);
+  }, [rawEvents, tags, level, scope, scopeDetail, seriesId]);
 
   const byDate = useMemo(() => eventsByDate(filtered), [filtered]);
 
@@ -738,7 +798,7 @@ export function CalendarList() {
         onToggleTag={toggleTag}
         level={level}
         scope={scope}
-        stage={stage}
+        scopeDetail={scopeDetail}
         onPick={pickSingle}
         dirty={dirty}
         onReset={resetFilters}
@@ -748,8 +808,8 @@ export function CalendarList() {
 
       {/*
         ★ 系列筛选状态条（需求③）。
-        ⚠️ 它是"当前正在看哪个系列"的**唯一**提示 —— 系列**不往筛选栏里加第五个维度**
-           （那是 A3.3 否决的：取值集合开放、会打破 `check:grid` 守着的 4 个维度）。
+        ⚠️ 它是"当前正在看哪个系列"的**唯一**提示 —— 系列**不往筛选栏里加维度**
+           （那是 A3.3 否决的：取值集合开放、会打破 `check:grid` 守着的维度结构）。
            没有这条状态条，用户点了栏目里的一个系列之后，页面会"少了一大半内容"
            而看不出为什么。
         ⚠️ 只在**系列确实加载到了**才显示名字（`series.data.items.find`）。
@@ -960,6 +1020,29 @@ export function CalendarList() {
         onCancelDelete={() => {
           setSeriesDeleteConfirm(null);
           setSeriesDeleteError(null);
+        }}
+        /*
+         * ★ 给系列上色（需求⑤，2026-09-13）。两个 prop 都是**可选**的，
+         *   判据和上面删除入口**一模一样**（`canHardDeleteNow`，owner 专属）：
+         *   用户原话是「允许 **owner** 修改颜色」，所以非 owner 连入口都不该看见。
+         *   前端不显示只是"别让人按一个会 403 的按钮"，**拦截在服务端**。
+         *
+         * ⚠️ 传的是调色板的**键**（`'red'` / `null`），不是色值 —— 色值由
+         *   `seriesColorValue()` 按主题翻（见 shared/constants.ts 的 `SERIES_COLORS`）。
+         *   这里传 `#d9534f` 的话，主题一调，界面上就会出现两种红。
+         *
+         * ⚠️ 写完**重取一次系列列表**（`seriesReloadKey`）：颜色以**服务端**为准，
+         *   本地不自己拼一个"应该是这个颜色"的状态 —— 那种本地推断一旦和服务端
+         *   不一致（比如请求被 403 挡下），界面会显示一个**并不存在**的颜色，
+         *   而它看起来完全正常。
+         *   ⚠️ 这里**不** catch 错误：失败要冒出来（`useAsync` 的错误态会显示在
+         *   栏目里，见 `series.status === 'error'` 那条分支）。吞掉它的话，
+         *   "点了一下没反应"就成了唯一的反馈。
+         */
+        canSetColor={canHardDeleteNow}
+        onSetColor={async (id, color) => {
+          await setCalendarSeriesColor(id, color);
+          setSeriesReloadKey((k) => k + 1);
         }}
       />
 

@@ -32,6 +32,7 @@ import { m013SeriesAndMarksIndex } from './migrations/013_series_and_marks_index
 import { m014UserLiveLinks } from './migrations/014_user_live_links';
 import { m015LiveTagsAndSchedule } from './migrations/015_live_tags_and_schedule';
 import { m016LiveDedupeKey } from './migrations/016_live_dedupe_key';
+import { m017SlotsAndDimensions } from './migrations/017_slots_and_dimensions';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -110,6 +111,15 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    * ⚠️ 它与 012 一样属于"不可回滚的一次动作"，代价可接受：这张表只有三行。
    */
   { name: '016_live_dedupe_key', sql: m016LiveDedupeKey, noTransaction: true },
+  /*
+   * 017：多段时间 + 参赛门槛 + 参与范围明细 + 系列颜色，并删掉 015 的 schedule_text。
+   *
+   * ⚠️ **留在事务里**（不加 noTransaction）：全是 `ADD COLUMN` 与一次 `DROP COLUMN`，
+   *    不需要关外键 ⇒ 失败即整条回滚，不会留下半成品。
+   * ⚠️ `DROP COLUMN` 要 SQLite ≥ 3.35。部署前在本机实测过版本（3.53.4）；
+   *    线上同一个 Node 运行时，所以同一个 SQLite。
+   */
+  { name: '017_slots_and_dimensions', sql: m017SlotsAndDimensions },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

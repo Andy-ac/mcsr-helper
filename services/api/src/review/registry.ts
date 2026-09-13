@@ -26,6 +26,7 @@
  *    理由写在 `packages/shared/src/review.ts` 的 REVIEWABLE_TYPES 旁边。
  */
 
+import type { EventSlotInput } from '@mcsr/shared/calendar';
 import { wallClockToUtc } from '@mcsr/shared/calendar-time';
 import type { Capability } from '@mcsr/shared/permissions';
 import type { QueueItem, ReviewableType, ReviewDetail } from '@mcsr/shared/review';
@@ -307,35 +308,89 @@ const resourceImpl: ReviewableImpl = {
  * 而公告上写的就是当地时间。转成审核员自己的时区反而让他没法核对
  * （他得先在心里做一次换算，而那正是最容易出错的一步）。
  */
-function eventTimeSummary(p: { startsAtLocal: string; startsAtTz: string }): string {
-  return `${p.startsAtLocal.replace('T', ' ')} · ${p.startsAtTz}`;
+/**
+ * 队列副标题里的时间：**第一段**（2026-09-13 起多段）。
+ *
+ * ⚠️ 多段赛事显示"最早那一段"而不是整条的包络：副标题只有一行，
+ *    包络会写成"2026-09-12 ~ 09-27"，而那看起来像"连着打 16 天"（正是用户
+ *    不满意的那种展示）。审核员真正想知道的是"它哪天开始"。
+ * ⚠️ 旧快照没有 `slots` ⇒ 用 `legacySlots` 合成（那一支就是为它写的）。
+ */
+function eventTimeSummary(p: EventPayload): string {
+  const first = legacySlots(p)[0];
+  if (!first) return '—';
+  return `${first.startsAtLocal.replace('T', ' ')} · ${p.startsAtTz}`;
 }
 
 /**
  * 这条内容**描述的时刻**是否已经过去（Q4c 让"过去的事件"也会进队列）。
  *
- * 判据与 shared 的 `isEventPast` 保持一致：有结束时间按结束时间算，
- * 否则按开始时间算。这里不能直接调 `isEventPast`，因为快照 payload 里
- * **没有** `startsAtUtc`（那是派生列，见 shared/calendar.ts 的说明），
- * 所以现算一次。
+ * 判据与 shared 的 `isEventPast` 保持一致，多段之后取**最后一段**的结束：
+ * 只要还有一段没结束，这场赛事就没结束。
  *
+ * ⚠️ 这里不能直接调 `isEventPast`，因为快照 payload 里**没有** `startsAtUtc`
+ *    （那是派生列，见 shared/calendar.ts 的说明），所以现算一次。
  * ⚠️ 算不出来（时区名非法 — 理论上 Zod 已经挡住了）时**返回 false**，
  *    也就是"不标成过期"。宁可漏标一个，也不要把一条正常的事件标成历史 ——
  *    后者会让审核员直接跳过它。
  */
-function eventPayloadIsPast(
-  p: {
-    startsAtLocal: string;
-    startsAtTz: string;
-    endsAtLocal: string | null;
-    endsAtTz: string | null;
-  },
-  now: number,
-): boolean {
-  const start = wallClockToUtc(p.startsAtLocal, p.startsAtTz);
-  if (start === null) return false;
-  const end = p.endsAtLocal && p.endsAtTz ? wallClockToUtc(p.endsAtLocal, p.endsAtTz) : null;
-  return (end ?? start) < now;
+function eventPayloadIsPast(p: EventPayload, now: number): boolean {
+  const slots = legacySlots(p);
+  let latest: number | null = null;
+  for (const slot of slots) {
+    const start = wallClockToUtc(slot.startsAtLocal, p.startsAtTz);
+    if (start === null) return false;
+    const end = slot.endsAtLocal ? wallClockToUtc(slot.endsAtLocal, p.startsAtTz) : null;
+    const point = end ?? start;
+    if (latest === null || point > latest) latest = point;
+  }
+  if (latest === null) return false;
+  return latest < now;
+}
+
+/**
+ * 快照里的时间段 —— **含旧快照的兜底**（与 `calendar/events.ts` 的 `payloadSlots` 同源）。
+ *
+ * ⚠️ 为什么不 import 那一个，而是又写了一份 —— **两条理由，缺一都不能省**：
+ *    ① 它是模块私有的，导出它只为省这 6 行，会让"哪些东西是它的公开面"变模糊；
+ *    ② 更要紧的是**失败策略不同**：`payloadSlots` 在快照坏掉时**抛**
+ *       （审批那一刻必须炸，不能编一个时间出来），而这里读的是**队列**——
+ *       一条坏快照不该让整个审核队列 500。所以这里坏掉时退成空数组/返回 false。
+ *    代价是**两处必须同时改** —— 所以两边的注释互相点名（搜 `payloadSlots`）。
+ */
+function legacySlots(p: EventPayload): EventSlotInput[] {
+  if (Array.isArray(p.slots) && p.slots.length > 0) return p.slots;
+  if (typeof p.startsAtLocal === 'string' && p.startsAtLocal !== '') {
+    return [{ startsAtLocal: p.startsAtLocal, endsAtLocal: p.endsAtLocal ?? null }];
+  }
+  return [];
+}
+
+/** `time_slots` 列（JSON 文本）→ 数组。坏 JSON 退成空数组，而不是让审核页 500。 */
+function parseSlotsColumn(raw: string | null): EventSlotInput[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as EventSlotInput[]).filter(
+      (s) => typeof s?.startsAtLocal === 'string' && s.startsAtLocal !== '',
+    );
+  } catch {
+    console.warn(`[review] time_slots 不是合法 JSON：${raw.slice(0, 80)}`);
+    return [];
+  }
+}
+
+/** `scope_detail` 列（JSON 文本）→ 字符串数组。同上面的容错理由。 */
+function parseScopeDetailColumn(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === 'string' && v !== '');
+  } catch {
+    return [];
+  }
 }
 
 /** 快照 payload（已经是驼峰命名）→ 审核详情里的线上侧形状。这里只需要原样返回。 */
@@ -343,39 +398,44 @@ function liveEventPayload(row: {
   title: string;
   title_en: string | null;
   description_md: string;
-  starts_at_local: string;
   starts_at_tz: string;
-  ends_at_local: string | null;
-  ends_at_tz: string | null;
   all_day: number;
   url: string | null;
   location: string | null;
   tags: string;
-  stage: string | null;
   level: string | null;
   scope: string | null;
   /** ③ 迁移 013 加的列。审核详情的"线上版本"读的就是这一行，漏掉它**不会报错**。 */
   series_id: string | null;
   lang: string;
-  /** 015 加的列（具体赛程）。⚠️ 同 `series_id` 的理由：这里漏掉它**不会报错**。 */
-  schedule_text: string | null;
+  /**
+   * ⚠️ **017 起这里放 `time_slots`（旧版是 `schedule_text`）**。
+   *    同 `series_id` 的理由：**漏掉它不会报错** —— 线上侧会显示成"没有时间"，
+   *    于是审核员看到一个"待审版有三段、线上版什么都没有"的假差异。
+   */
+  time_slots: string | null;
+  access: string | null;
+  scope_detail: string | null;
 }): EventPayload {
   return {
     title: row.title,
     titleEn: row.title_en,
     descriptionMd: row.description_md,
-    scheduleText: row.schedule_text ?? null,
-    startsAtLocal: row.starts_at_local,
+    /*
+     * ⚠️ 这里**不是**原样透传：库里存的是 JSON 文本，而 `EventPayload.slots` 要的是数组。
+     *    直接塞字符串进去的话，前端拿到的会是一串带引号的 JSON ——
+     *    它"看起来像有值"，所以不会报错，只会在审核页上显示成一堆转义字符。
+     */
+    slots: parseSlotsColumn(row.time_slots),
     startsAtTz: row.starts_at_tz,
-    endsAtLocal: row.ends_at_local,
-    endsAtTz: row.ends_at_tz,
     allDay: row.all_day === 1,
     url: row.url,
     location: row.location,
     tags: JSON.parse(row.tags) as string[],
-    stage: row.stage,
     level: row.level,
     scope: row.scope,
+    access: row.access ?? null,
+    scopeDetail: parseScopeDetailColumn(row.scope_detail),
     /*
      * ③ 系列。
      *
@@ -420,12 +480,12 @@ const calendarImpl: ReviewableImpl = {
         id: e.id,
         revision: e.revision,
         title: e.title,
-        subtitle: eventTimeSummary(e),
+        subtitle: eventTimeSummary(e.payload),
         isEdit: e.isEdit,
         authorName: e.editorId ? (findUserById(e.editorId)?.display_name ?? null) : null,
         mine: viewerId !== null && e.editorId === viewerId,
         createdAt: e.createdAt,
-        expired: eventPayloadIsPast(e, now),
+        expired: eventPayloadIsPast(e.payload, now),
       })),
     };
   },

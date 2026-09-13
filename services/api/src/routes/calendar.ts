@@ -18,9 +18,10 @@
  * 既然这条 URL 要进用户的手机设置里，就让它长得像个日历文件。
  */
 
-import { EVENT_LEVELS, EVENT_SCOPES, EVENT_STAGES, SITE, type UserRole } from '@mcsr/shared';
+import { EVENT_ACCESS, EVENT_LEVELS, EVENT_SCOPES, SITE, type UserRole } from '@mcsr/shared';
 import {
   CalendarEventInputSchema,
+  CalendarSeriesColorInputSchema,
   CalendarSeriesInputSchema,
   normalizeSeriesName,
 } from '@mcsr/shared/calendar';
@@ -35,12 +36,14 @@ import {
   deleteSeriesCascade,
   getEventRow,
   getPendingRevision,
+  getSeries,
   listEvents,
   listPublishedForIcs,
   listSeries,
   rejectEvent,
   renameSeries,
   reviseEvent,
+  setSeriesColor,
   submitEvent,
   toCalendarEvent,
 } from '../calendar/events';
@@ -64,6 +67,26 @@ function csv(value: string | undefined): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * 多选查询参数 → 数组，**两种拼法都要认**：`?x=A,B` 与 `?x=A&x=B`。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么重复参数这一支是必需的（2026-09-13，参与范围明细那一维）
+ * ---------------------------------------------------------------------------
+ * `c.req.query('x')` 对重复参数只返回**第一个**值。于是前端的筛选栏若用
+ * `URLSearchParams.append`（多选控件的自然写法）拼出 `?scopeDetail=ASIA&scopeDetail=OCEANIA`，
+ * 服务端只会筛亚洲 —— 用户选了"亚洲&大洋洲"，列表里**一个澳洲赛事都不出现**，
+ * 而**不会报错**：那一屏看起来完全正常，只是少了几条。
+ * （"命中任一即显示"是用户对这一维的原话，所以少掉的那一半正是他要的那一半。）
+ *
+ * ⚠️ 逗号那一支保留：它是本仓既有的拼法（`?tags=A,B`，见 `fetchCalendarEvents`），
+ *    而且已经分享出去的链接就是那个形状 —— 换掉会让老链接静默地筛不到东西。
+ */
+function csvAll(values: readonly string[] | undefined): string[] {
+  if (!values) return [];
+  return values.flatMap((v) => csv(v));
 }
 
 // ---------------------------------------------------------------------------
@@ -123,12 +146,15 @@ calendarRoute.get('/calendar', (c) => {
   const to = c.req.query('to');
 
   /*
-   * 三个**单选**维度：level / scope / stage。
+   * 三个**单选**维度：level / scope / access
+   * （`stage` / 轮次在 2026-09-13 按用户要求删除了；`access` / 参赛门槛同一天加进来）。
    *
    * ⚠️ 和 tags 的处理刻意不同：
-   *   · tags 走 csv() → 数组 → "任一命中"（多选）
+   *   · tags 走 csvAll() → 数组 → "任一命中"（多选）
    *   · 这三个是单值等值条件
    * 把单选维度也写成数组会得到一个"或"的语义，而界面上它们是"就是这个"。
+   * ⚠️ `scopeDetail`（大洲/国家明细）走"任一命中"：它是多选，
+   *    语义与 tags 一致（用户原话："选亚洲或大洋洲都会展示"）。
    *
    * ⚠️ 值要**对着 shared 的枚举校验**，不能原样透传。理由和 tags 一样：
    *    查询参数是用户可以手打的，而 `?level=PRO` 传错成 `?level=pro`
@@ -150,10 +176,31 @@ calendarRoute.get('/calendar', (c) => {
     //    否则它会在自己的第二个月里凭空消失。
     fromUtc: from === undefined ? Date.now() : Number(from) || 0,
     toUtc: to ? Number(to) || null : null,
-    tags: csv(c.req.query('tags')),
+    tags: csvAll(c.req.queries('tags')),
     level: oneOf(c.req.query('level'), EVENT_LEVELS),
     scope: oneOf(c.req.query('scope'), EVENT_SCOPES),
-    stage: oneOf(c.req.query('stage'), EVENT_STAGES),
+    /*
+     * ★ 参赛门槛（2026-09-13 新增的第三维）：与 level / scope **完全同档** ——
+     *   单选等值、非法值当"不限"。
+     *
+     * ⚠️ 少这一行的话，界面上那个筛选项就是**假筛选**：点了之后列表一条不少，
+     *    而看起来完全正常（"可能这个门槛的赛事就只有这些吧"）。这一维是新加的，
+     *    所以它没有任何历史包袱来提醒我们别漏 —— 只能靠与另外两维形状一致。
+     */
+    access: oneOf(c.req.query('access'), EVENT_ACCESS),
+    /*
+     * ★ 参与范围明细（2026-09-13）：`?scopeDetail=ASIA,OCEANIA`，**命中任一即匹配**。
+     *
+     * ⚠️ 这里**不做枚举校验**（连 `scope` 那一档的 `oneOf` 都没有）：
+     *    传一个拼错的代码只会匹配不到任何事件 —— 那是**诚实**的结果；
+     *    把它当"不限"反而会让用户看到"筛了却像没筛"的一屏。
+     * ⚠️ 也**不**依据 `scope` 去校验"选全球时不该有明细"：那只是一条无意义的冗余，
+     *    不是一条会让人看错的数据；为此写一套跨字段规则只会多一处会漂移的真相。
+     * ⚠️ 走 `csvAll`（而不是 `csv(c.req.query(...))`）：多选控件常拼成重复参数
+     *    `?scopeDetail=ASIA&scopeDetail=OCEANIA`，而 `req.query()` 只认第一个 ——
+     *    见 `csvAll` 的注释。
+     */
+    scopeDetail: csvAll(c.req.queries('scopeDetail')),
     /*
      * ③ 按系列筛（`?seriesId=`）。
      *
@@ -254,6 +301,7 @@ calendarRoute.patch('/calendar/series/:id', requireCapability('content.author'),
   }
 
   const id = c.req.param('id');
+  const now = Date.now();
   const result = renameSeries(id, parsed.data);
   if (!result.ok) {
     if (result.reason === 'name_taken') {
@@ -270,10 +318,98 @@ calendarRoute.patch('/calendar/series/:id', requireCapability('content.author'),
     // 审计要回答"把什么改成了什么"，所以两个名字都记 —— 只记新的那个等于没记
     reason: `${result.previousName} → ${normalizeSeriesName(parsed.data.name) ?? parsed.data.name}`,
     ip: c.req.header('x-real-ip') ?? null,
-    now: Date.now(),
+    now,
   });
 
-  return c.json({ ok: true, id, name: normalizeSeriesName(parsed.data.name) ?? parsed.data.name });
+  /*
+   * ⚠️ 回包必须是 `{ series }`（**整行**），不是 `{ id, name }`。
+   *
+   * 前端 `apps/web/src/lib/api.ts` 的 `renameCalendarSeries` 声明返回
+   * `{ series: CalendarSeries }`。以前服务端回的是 `{ ok, id, name }` ——
+   * 那份类型声明**是假的**：调用方拿 `res.series.name` 会得到
+   * `undefined` 而不是报错（JSON 响应的类型是手写的，没有编译期关系）。
+   * 表现是"改完名，列表里那一行的名字没变"，而**没有任何报错**。
+   *
+   * ⚠️ 用 `getSeries` 回读而不是把入参拼成对象：`CalendarSeries` 上还有
+   *    `count` / `pastCount` / `nextStartsAtUtc` 三个**算出来的**数字，
+   *    入参里没有它们。手拼一份等于给这三个字段编值，而它们会被直接渲染。
+   *
+   * ⚠️ 回读不到就**抛**（500），不编一个假对象：改名刚刚成功、行一定在，
+   *    回读不到只可能是并发删除或查询写错了 —— 那时回一个"看起来正常"的
+   *    series 会让调用方把一次失败当成成功。
+   */
+  const series = getSeries(id, now);
+  if (!series) {
+    throw new Error(`改名成功之后回读不到系列 ${id} —— 这不该发生`);
+  }
+
+  return c.json({ ok: true, series });
+});
+
+/**
+ * 给一个系列上色 / 去掉颜色（需求⑤，2026-09-13）。**owner 专属**。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么权限是 `canHardDelete`（与删除同档），而不是与改名同档的 `content.author`
+ * ---------------------------------------------------------------------------
+ * 用户原话是「允许 **owner** 修改每个系列的颜色」，所以这一条是**指名给 owner 的**。
+ * 判据直接用谓词 `canHardDelete`：`permissions.ts` 写明它是"谁能动系列/谁能真删"
+ * 的**唯一**定义点，前端隐藏按钮与服务端拦截都调它。
+ *
+ * ⚠️ **不要**在这里写 `role === 'owner'`，也**不要**新开一个能力（比如 `series.color`）：
+ *    能力是可以被一行矩阵编辑静默授予的，而谓词不可能（见 permissions.ts 里那段长注释）。
+ *    这是本项目为"只有 owner"这件事定下的唯一写法。
+ *
+ * ⚠️ 路径里的 `color` 是**第三段**，所以它不会被 `/calendar/:id` 吃掉；
+ *    但它仍然必须留在这一块里（`/calendar/:id` 之前）—— 理由见上面那条
+ *    "系列这一块必须留在前面"的说明：`series` 是字面量段，`/calendar/:id`
+ *    会把它当成事件 id。
+ */
+calendarRoute.put('/calendar/series/:id/color', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  if (!canHardDelete(user.role as UserRole)) return c.json({ error: 'forbidden' }, 403);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = CalendarSeriesColorInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    /*
+     * ⚠️ 400 走既有的 `invalid_input` + issues，**不新增错误码** ——
+     *    `error-codes.test.ts` 里有一张 KNOWN_CODES 白名单，新码会让那条测试红，
+     *    而"颜色值不合法"本来就属于"入参不合法"这一档。
+     */
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const id = c.req.param('id');
+  const result = setSeriesColor(id, parsed.data.color);
+  if (!result.ok) return c.json({ error: 'not_found' }, 404);
+
+  const now = Date.now();
+  writeAudit({
+    actorId: user.id,
+    action: 'series.color',
+    entityType: 'calendar_series',
+    entityId: id,
+    /*
+     * 审计要回答"颜色怎么变成这个了"，所以两个值都记 —— 只记新值等于没记
+     * （与 series.rename 同一条规则）。
+     * ⚠️ `null` 写成「不上色」：库里存的是键，而审计是**给人看的**，
+     *    一行 `null → red` 里那个 null 会被读成"数据坏了"而不是"他之前没上色"。
+     */
+    reason: `${result.previousColor ?? '不上色'} → ${parsed.data.color ?? '不上色'}`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  /*
+   * 回包形状与 `apps/web/src/lib/api.ts` 的 `setCalendarSeriesColor` 对齐
+   * （`{ ok, id, color, previousColor }`）—— 那个函数已经写好，服务端跟着它来。
+   * ⚠️ `color` 回的是**请求里的那个键**（不是色值）：调用方拿它直接更新本地状态，
+   *    若服务端回色值，界面上的"当前选中色块"就会和服务端的键对不上。
+   */
+  return c.json({ ok: true, id, color: parsed.data.color, previousColor: result.previousColor });
 });
 
 /**

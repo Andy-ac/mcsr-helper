@@ -3688,37 +3688,17 @@ textarea.mcsr-field__input {
 }
 
 /*
- * 详情页的「具体时间」（015 / 2026-09-13）。
+ * ⚠️ 这里原来是 `.calendar-schedule` 的三条规则（015 那个「具体时间」自由文本框：
+ *    多行文本 + `white-space: pre-line`）。
  *
- * ⚠️ `white-space: pre-line` 是这一块的**全部要点**：内容是"一行一个时间段"，
- *    用户敲的换行就是它的结构。用默认的 `normal` 会把单换行折成一个空格，
- *    于是"三个周末"显示成挤在一起的一长串。
- * ⚠️ 但同时要 `overflow-wrap: anywhere`：时间段可能写成很长的一串（带日期与时间），
- *    窄屏上不换行会把整页撑出横向滚动条。
+ * 2026-09-13 删除，它不是"顺手清理"，而是**那个字段整个没了**：
+ *   · 模型侧：`CalendarEvent.scheduleText` 被 `slots` 取代（迁移 017）；
+ *   · 消费侧：详情页那一块同时退休（`CalendarDetail.tsx` 里现在渲染的是
+ *     「比赛时间」那一行真实的多段时间，它自己那一节的样式走 2026-09-13 追加区）；
+ *   · 生产侧：表单里那个 `<textarea>` 也换成了多段编辑器（同一个追加区）。
+ * ⇒ 三条规则一条引用都没有了。留着它们不会报错，只会让下一个人以为
+ *   "详情页还有一个叫 schedule 的块"，然后在改样式时白找一遍。
  */
-.calendar-schedule {
-  margin: 20px 0;
-  padding: 12px 14px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-}
-
-.calendar-schedule__title {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: var(--fg-muted);
-}
-
-.calendar-schedule__body {
-  margin: 0;
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  line-height: 2;
-  color: var(--fg);
-  white-space: pre-line;
-  overflow-wrap: anywhere;
-}
 
 /*
  * 页面最下面的空档（2026-09-13，用户要求「订阅日历放在页面最下面并留出一部分空档」）。
@@ -4842,15 +4822,13 @@ textarea.mcsr-field__input {
   width: 100%;
   background: var(--fg-faint);
 }
-.grid__bar--TOURNAMENT {
-  background: var(--gold);
-}
-.grid__bar--COMMUNITY {
-  background: var(--diamond);
-}
-.grid__bar--RANKED_MILESTONE {
-  background: var(--grass-bright);
-}
+/*
+ * ⚠️ 这里原有 `.grid__bar--TOURNAMENT` / `--COMMUNITY` / `--RANKED_MILESTONE`
+ *    三条“按标签上色”的规则（金 / 青 / 绿），随需求⑤ 一起**删掉**了：
+ *    颜色这条通道整体让给了**系列**（理由见 CalendarGrid 里那段取舍说明），
+ *    颜色现在由行内 `style` 给，类名只剩“没上色”“已结束”两种修饰。
+ *    留着它们就是三条永远不命中的死代码 —— 下一个人会以为标签颜色还在。
+ */
 /* 已结束的活动：条子减淡到 55%。
    不用 display:none —— 那等于在一个"这个月发生了什么"的视图里
    把发生过的事藏起来。 */
@@ -5080,13 +5058,13 @@ html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
   flex-wrap: wrap;
   margin-top: auto; /* 卡片高度不齐时，把这一行压到底部 */
 }
-.live-card__handle {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  color: var(--fg-faint);
-  /* 频道标识可能很长（UC 开头那串 24 位），别让它把卡片撑破 */
-  overflow-wrap: anywhere;
-}
+/*
+ * ⚠️★ 这里原来还有 `.live-card__handle`（「去原频道看」旁边那格灰色的频道标识），
+ *    **2026-09-14 删掉**。规则和用到它的那个 `<span>` 是一起删的 ——
+ *    留着一条没人引用的规则不会报错，只会让下一个人以为界面上还有那一格，
+ *    然后花时间去查它为什么不显示。
+ *    理由（用户要求，两条）写在 `LiveCard.tsx` 里那段注释里。
+ */
 
 /* ---- 编辑面板 ---- */
 .livemanage {
@@ -5296,4 +5274,384 @@ html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
   max-width: 720px;
   margin: 4px 0 20px;
 }
+
+/* ==================================================================
+   2026-09-13 本轮追加区：多段时间 / 参赛门槛 / 范围明细 / 系列颜色
+   
+   ⚠️⚠️ 下面三块是**三个并行任务各自的锚点**，同一时间只有一个人写一块。
+      改的时候**只动自己那一块的锚点行**，不要动别人的块，也不要把整块重排 ——
+      并行编辑同一个文件时，"动到别人的块"正是两边改动互相覆盖的方式。
+      写完把自己那一块的锚点注释**换成一个说人话的小标题**（见上面的既有小节）。
+   ================================================================== */
+
+/* ==================================================================
+   比赛时间的多段编辑器 + 参赛门槛 + 参与范围明细
+   （2026-09-13，用户第 ④⑥ 条需求的表单侧）
+   ================================================================== */
+
+/*
+ * ★ 段列表。它是「比赛时间」这一个字段的**整体**，外面套一层 `.mcsr-field`
+ *   （拿到和其它字段一样的间距），里面自己排。
+ *
+ * ⚠️ `gap` 调大一档（12px 而不是那个类的通用 6px）：这一块里同时有组名、
+ *    N 段输入、两条错误、一个按钮，6px 之下它们会糊成一片 ——
+ *    而"哪两个输入框属于同一段"正是这里最需要一眼看清的事。
+ */
+.slotlist {
+  gap: 12px;
+}
+
+/*
+ * 一行 = 一段时间。
+ *
+ * ⚠️ 左竖线是**必需的分隔**，不是装饰：段与段的结构完全一样（两个输入框），
+ *    8 段叠在一起、只靠上下间距时，眼睛要把每一行都读一遍才能确定
+ *    "这个结束时间配的是上面那个开始时间"。竖线把"一段"画成一个块。
+ * ⚠️ 竖线用 `--line`（比底纹强、比正文弱）：它的作用是**分组**，
+ *    抢眼到像边框就会让整张表单看着像 8 个独立的小表单。
+ */
+.slotrow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 4px 14px;
+  border-left: 3px solid var(--line);
+}
+
+/* 鼠标经过 / 焦点落进这一段时竖线加深：多段时这是"我在改哪一段"的即时反馈
+   （输入框自己的 focus 环只在框里，管不到整段的边界）。 */
+.slotrow:hover,
+.slotrow:focus-within {
+  border-left-color: var(--line-strong);
+}
+
+.slotrow__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* 「第 N 段」——给眼睛的序号（输入框的 `aria-label` 里另有给读屏的那一份） */
+.slotrow__index {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+
+/* 删掉这一段：比通用 `.ghostbtn` 更小。
+   ⚠️ 它**必须弱**：这是个每段都有的破坏性按钮，做成和「添加一段时间」
+      一样大小时，用户想在下面加一段、手一滑会点掉上面这一段
+      —— 而删掉是无声的：少一段不会触发任何校验错误，只有看见才会发现。 */
+.slotrow__remove {
+  padding: 3px 10px;
+}
+
+/* 一段里的两个输入框。和 `.formrow` 同样是两列，但间距小一档 ——
+   它们属于**同一段**，比跨字段的两列该挨得更近。 */
+.slotrow__fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .slotrow__fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 「添加一段时间」+ 它旁边那句解释（段数到顶时换成"最多 8 段时间"）。
+   ⚠️ 提示和按钮**同一行**：那句"为什么点不动"必须紧挨着那个点不动的按钮，
+      隔开放到下面一行时会被当成另一段的说明。 */
+.slotlist__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/*
+ * 参与范围明细（chip 多选）。
+ *
+ * ⚠️ chip 自己的样式一律复用 `.tagchip` / `.tagchip--on`（见上面"标签选择"那一节）：
+ *    同一个"多选值"的控件在两张表单里长得不一样，是用户会当成两件事的那种不一致。
+ * ⚠️ 这里只补一条左竖线，让它看起来是**从属于**上面那一排下拉框的二级选择 ——
+ *    不给它做缩进的话，它会像"第四个维度"，而它和 `scope` 的从属关系就看不出来了。
+ */
+.scopedetail {
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+}
+
+/* ------------------------------------------------------------------
+   日历格与卡片：无系列横线的描边（卡片上的段数徽章复用 `.badge--dim`，
+   这里不需要新规则 —— 标题留着是为了让下一个人知道那块归谁管）
+   ------------------------------------------------------------------ */
+
+/*
+ * ★「没有系列」的日期横线：白色 + 一圈描边（需求⑤，2026-09-13）。
+ *
+ * ⚠️⚠️ 描边不是装饰，它是"这条线能不能被看见"的前提。用户原话里特意点了这一条
+ *    （「无系列的为白色（**注意描边**，以免底色为白色时看不见）」）：
+ *    白天主题下 `.grid__day` 的底色就是 `--surface: #ffffff` —— 一条纯白的
+ *    3px 横线画在纯白的格子里，等于**没有画**。而"这天的活动少了一条"在日历上
+ *    看起来非常像"这天确实没有活动"，没人会去怀疑。
+ *
+ * ⚠️ 用 `inset` 阴影而不是 `border`：`.grid__bar` 高度只有 3px，而 `border`
+ *    参与盒模型 —— 要么把线挤成 1px（颜色又变细了），要么把格子撑高一行。
+ *    inset 阴影画在元素内部，不改变布局，网格每行的高度因此完全不受影响。
+ *
+ * ⚠️ `var(--series-none-line, var(--line-strong))` 这个回退链是**故意的**：
+ *    · `--series-none-line` 是与「系列活动」左侧那个小点**共用**的"没上色"描边色
+ *      （需求⑤ 说颜色只用在这两处，那么"没上色"在两处就该长得一样）。
+ *      它由另一块样式定义；本块不定义它，也不假设它一定存在。
+ *    · 拿不到时回退 `--line-strong`（白天 rgba(16,24,40,.2) / 黑夜 rgba(255,255,255,.14)），
+ *      **两种主题下都看得见**。
+ *      ⚠️ 刻意**不用** `--line`：它在白天只有 10% 的黑，压在纯白上只剩一点点灰，
+ *         在格子里几乎看不出来 —— 那正是用户提醒的那个坑。
+ */
+.grid__bar--none {
+  box-shadow: inset 0 0 0 1px var(--series-none-line, var(--line-strong));
+}
+
+/* ------------------------------------------------------------------
+   详情页与系列选色（2026-09-13，需求⑤⑦）
+   ——「系列活动」左侧的颜色小点、owner 的选色面板、活动信息页那一行
+     「比赛时间」，以及审核详情页里"系列名查不到"的那一格。
+   ------------------------------------------------------------------ */
+
+/*
+ * ★「没上色」那一档的描边色（需求⑤）。
+ *
+ * ⚠️⚠️ 描边不是装饰，它是"这一档能不能被看见"的前提。用户原话特意点了这一条
+ *    （「无系列的为白色（**注意描边**，以免底色为白色时看不见）」）：
+ *    白天主题下 `.series__item` 的底色是 `--surface-2: #f1f3f7`，而
+ *    `SERIES_COLOR_NONE` 是**纯白** —— 一个纯白的圆点画在上面几乎看不见，
+ *    于是"这个系列没上色"和"这一行压根没有小点"在用户眼里变成了同一件事。
+ *
+ * ⚠️ 这个名字是**与日历格那条日期横线共用**的：`.grid__bar--none` 里写的是
+ *    `var(--series-none-line, var(--line-strong))`（那一块由另一位同事写，
+ *    它的注释里点名了"由「系列活动」左侧那个小点那块样式定义"）。
+ *    需求⑤ 说颜色只用在两处，那么"没上色"在这两处就该是同一个灰。
+ *
+ * ⚠️ 定义放在**本块的锚点里**、而不是上面那两个主题块里：并行开发时别人的块不能动，
+ *    而"顺手在别人的块里加一行"正是两边改动互相覆盖的方式。
+ *    `html[data-theme='light']` 的特异性高于 `:root`，所以写在这里照样两种主题都对。
+ *
+ * ⚠️ 取值与 `--line-strong` 相同（黑夜 14% 白 / 白天 20% 黑），但**刻意不复用它**：
+ *    `--line-strong` 是"通用分隔线"，而这一档将来说不定要单独调
+ *    （小点比 3px 的横线细得多，很可能需要更重一点才等价）。
+ *    共用变量会让"把小点描边调重"变成"同时调重全站所有分隔线"。
+ * ⚠️ 黑夜主题下白点本身就看得见，描边在那里只是让"白色"看起来是**有意选的**，
+ *    而不是一颗没上样式的默认圆点。
+ */
+:root {
+  --series-none-line: rgba(255, 255, 255, 0.14);
+}
+html[data-theme='light'] {
+  --series-none-line: rgba(16, 24, 40, 0.2);
+}
+
+/*
+ * ★ 系列行左侧那颗颜色小点（需求⑤："颜色只用在这两处"之一）。
+ *
+ * ⚠️ 用 `border-radius: 50%` 画圆，**不用字符**：本仓的像素字体是自托管子集，
+ *    一个没进子集的字符会让 `check-font-coverage` 直接让构建失败
+ *    （`.livemanage__advanced > summary::before` 那里记着同一个坑的完整经过）。
+ * ⚠️ `flex: 0 0 auto` + 写死的 12px：`.series__item` 是一条**可换行**的 flex 行，
+ *    小点被压扁成椭圆的话，"是哪个颜色"就看不出来了 —— 那正是它存在的全部意义。
+ * ⚠️ 尺寸写死而不是用 `em`：它旁边是像素字体（12px）和正文（13px）两种字号，
+ *    跟着字号走会让同一个栏目里的小点大小不一。
+ */
+.series__dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+/*
+ * ★★「没上色」（白色 + 描边）。
+ *
+ * ⚠️ 用 `box-shadow: inset ...` 而不是 `border`：边框参与盒模型，会让"有颜色"和
+ *    "没上色"两种小点**差 2px 大小** —— 而它们在同一个列表里上下相邻，
+ *    那 2px 看得出来（会像"这一行的点没画好"）。
+ * ⚠️ 底色（白色）是**内联**写在 JSX 上的（色值来自 `SERIES_COLOR_NONE`，
+ *    那是唯一真相，见 shared/constants.ts），所以这里只负责"圈"，不负责"填"。
+ */
+.series__dot--none {
+  box-shadow: inset 0 0 0 1px var(--series-none-line);
+}
+
+/*
+ * owner 的选色入口（`<details>`，需求⑤"允许 owner 修改颜色"）。
+ *
+ * ⚠️ 它是 `.series__row` 里的一格（和 `.series__delete` 并列），闭合时只占
+ *    summary 那一点宽度，不会把系列名挤掉。
+ */
+.series__colors {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+/*
+ * ⚠️ 展开之后**自己占满一行**（`flex-basis: 100%` 在可换行的 flex 行里等于强制换行）：
+ *    13 个色块排开有 200px 出头，硬塞在系列名右边会把名字压成两三个字一行。
+ *    这与 `.series__confirm`（删除确认块）是同一个做法 —— 同一个容器里，
+ *    "展开出来的东西占一整行"应该只有一种表现。
+ */
+.series__colors[open] {
+  flex: 1 1 100%;
+}
+
+.series__colorsbtn {
+  cursor: pointer;
+  display: inline-block;
+  padding: 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  /* 去掉 Safari 默认的三角，下面自己画一个，保证两个浏览器一致 */
+  list-style: none;
+}
+.series__colorsbtn::-webkit-details-marker {
+  display: none;
+}
+.series__colorsbtn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+/*
+ * ⚠️ 三角**用边框画，不用字符**（与 `.livemanage__advanced > summary::before` 同一个
+ *    做法、同一个理由）：`▸`（U+25B8）不在自托管像素字体的子集里 ——
+ *    一个纯装饰的字符让整个构建失败是不值得的。
+ */
+.series__colorsbtn::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  /* 指向右：左边框着色，上下透明 */
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 120ms ease;
+}
+.series__colors[open] .series__colorsbtn::before {
+  transform: rotate(90deg);
+}
+
+/*
+ * 色板：12 个色块 + 1 个「不上色」。
+ *
+ * ⚠️ `flex-wrap: wrap` + `max-width`：窄屏上一行放不下 13 个方块时**换行**，
+ *    而不是把页面撑出一条横向滚动条（面板里出现滚动条会被当成界面坏了）。
+ */
+.series__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px;
+  max-width: 320px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+/*
+ * 一个色块（`<button>`，只有 `aria-label` 与 `title`，没有文字）。
+ *
+ * ⚠️ 一圈描边是**所有**色块都有的，不只是白色那个：`amber`（#c9a227）这类浅色
+ *    在白天主题的面板底色上很接近，没有描边就看不出"这里有一个可点的方块"。
+ *    用户提醒"注意描边"针对的是白色那一档，但那条理由对浅色同样成立。
+ * ⚠️ 尺寸写死 22px：色块的**大小**不承载信息，颜色才承载；让它们随内容或
+ *    随主题变化，会让人以为"大一点的那个更重要"。
+ * ⚠️ `padding: 0; border: 0`：`<button>` 默认带内边距与边框，不清掉的话色块里会
+ *    留一圈"没被填满的边"，而那圈边看起来正好像一个选中态。
+ */
+.series__swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px var(--series-none-line);
+}
+.series__swatch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/*
+ * ★「不上色」那一块。
+ *
+ * ⚠️ 它和其余 12 个**不是同一类东西**（那些是颜色，它是"没有颜色"），所以描边用
+ *    **虚线**：白色实心方块摆在一排彩色方块里，会被当成"一个很浅的颜色"
+ *    （`amber` 就那么浅）。虚线说的是"这一格是空的"。
+ * ⚠️ `box-shadow: none` 是必需的：实线那一圈会与虚线叠在一起，两条边看起来
+ *    只是"画歪了"。全局 `box-sizing: border-box`，所以换成 1px 边框**不改尺寸**。
+ */
+.series__swatch--none {
+  border: 1px dashed var(--series-none-line);
+  box-shadow: none;
+}
+
+/*
+ * 当前选中的那个（`aria-pressed`）。
+ *
+ * ⚠️ 靠**外圈金色**而不是"变粗/变亮"：色块本身已经有一圈描边，再加粗一点在
+ *    13 个方块里根本分辨不出来。金色是全站统一的选中色，用户不用学第二套语言。
+ * ⚠️ 用 `outline` + `outline-offset` 而不是 `box-shadow`：那圈要画在方块**外面**，
+ *    而 `outline` 不参与盒模型 —— 加它不会让色板重排（重排会让用户点完一次之后
+ *    所有方块都挪一下位置，下一次就点错了）。
+ */
+.series__swatch[aria-pressed='true'] {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/*
+ * ★「颜色没改成功」那一行。
+ *
+ * ⚠️ 占满自己一行（与 `.series__confirm` 同一个做法）：它说的是**上面那一行**的系列，
+ *    挤在删除按钮右边的话，用户分不清是哪一条没改成功 —— 而系列一多，
+ *    页面底部那种位置的一句提示会直接滚出视野。
+ * ⚠️ 用 `--redstone`（全站的错误色）而不是新色：这一句和"删除失败"是同一类消息。
+ */
+.series__colorerror {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--redstone);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  color: var(--redstone);
+}
+
+/*
+ * 审核详情页：「系列名查不到，这一格显示的是 id」。
+ *
+ * ⚠️ 等宽 + 变暗，与详情页的「编号」那一格（`.calendar-info__id`）同一套做法：
+ *    一串 `s1a2b3c` 和正常的中英文系列名摆在一起本来就"不像名字"，
+ *    再给它一点机器味，审核员一眼就知道"这一格是原始值，不是查到的名字"。
+ *    （不写"未知"之类的词是因为没有对应词条，而编一个词条名就等于替这一格
+ *     编了一句它答不上来的话：查不到可能是系列被删了，也可能是列表没取到。）
+ */
+.reviewview__raw {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
 

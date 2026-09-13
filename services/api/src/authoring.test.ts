@@ -149,7 +149,13 @@ function countRows(table: string, column: string, id: string): number {
   ).n;
 }
 
-/** 用直编建一场**已发布**的赛事（editor 及以上才能调）。 */
+/**
+ * 用直编建一场**已发布**的赛事（editor 及以上才能调）。
+ *
+ * ⚠️ 017（2026-09-13）起时间是 `slots`（一个时区 + 若干段）；顶层
+ *    `startsAtLocal` 已经被删掉，留着它这一笔就会 400
+ *    `slots: expected array, received undefined`。
+ */
 async function directEvent(
   cookie: string,
   overrides: Record<string, unknown> = {},
@@ -157,8 +163,8 @@ async function directEvent(
   const res = await call('POST', '/api/authoring/calendar', {
     json: {
       title: '直编测试赛事',
-      startsAtLocal: '2030-09-05T16:00',
       startsAtTz: 'Asia/Shanghai',
+      slots: [{ startsAtLocal: '2030-09-05T16:00' }],
       tags: ['TOURNAMENT'],
       ...overrides,
     },
@@ -172,8 +178,9 @@ async function directEvent(
 function eventInput(overrides: Record<string, unknown> = {}) {
   return {
     title: '改过的赛事标题',
-    startsAtLocal: '2030-09-06T16:00',
     startsAtTz: 'Asia/Shanghai',
+    // ⚠️ 同上：时间只能写在 `slots` 里
+    slots: [{ startsAtLocal: '2030-09-06T16:00' }],
     tags: ['TOURNAMENT'],
     ...overrides,
   };
@@ -450,8 +457,10 @@ describe('② 直编：赛事', () => {
     const res = await call('POST', '/api/authoring/calendar', {
       json: {
         title: '编辑直接建的赛事',
-        startsAtLocal: '2030-09-05T16:00',
         startsAtTz: 'Asia/Shanghai',
+        // ⚠️ 017 起时间只能写在 `slots` 里（顶层 `startsAtLocal` 已被删掉，
+        //    留着它这一笔就是 400 `slots: expected array, received undefined`）
+        slots: [{ startsAtLocal: '2030-09-05T16:00' }],
         tags: ['TOURNAMENT'],
       },
       cookie: editor.cookie,

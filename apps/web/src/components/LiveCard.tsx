@@ -90,11 +90,18 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
 
         ⚠️ 频道级嵌入那条地址由 `liveEmbedUrl` 给：`buildEmbedUrl` 拼不出
         `live_stream?channel=` 这个形状，所以走 `src` 覆盖（见 ClickToPlayEmbed）。
+
+        ⚠️★ 门面上的标识**只在有具体视频 ID 时才有内容**（2026-09-14，用户要求）：
+        频道级嵌入给空串，于是门面上不画那一格。理由与下面 footer 那段相同 ——
+        `handle` 已经不是给人看的东西了，把它印在门面上只是把"解析出来的副产品"
+        当成用户在意的信息。
+        ⚠️ 这里之所以敢直接给空串而不是换个字段：`src` 已经给了地址，
+          `ClickToPlayEmbed` 不会再用 `idLabel` 去拼 URL（见它对 `buildEmbedUrl` 那条分支）。
       */}
       {embedUrl ? (
         <ClickToPlayEmbed
           platform={channel.platform}
-          idLabel={channel.liveVideoId?.trim() ? channel.liveVideoId.trim() : channel.handle}
+          idLabel={channel.liveVideoId?.trim() ?? ''}
           title={channel.displayName}
           startOffsetSec={null}
           src={embedUrl}
@@ -107,7 +114,22 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
         频道链接**永远**在（有播放器的时候也在）。
         播放器可能失败 —— 第三方、CSP、网络，任何一样都会让那一块变成空白，
         而那时用户需要一个能走的路。这和 `VideoEmbed` 里那条"去原站看"同理。
-        标识一起显示出来：它是这张卡上唯一能核对的客观信息。
+
+        ⚠️★ 2026-09-14（用户要求）：链接旁边原来还印着 `channel.handle`
+        （那句"标识一起显示出来：它是这张卡上唯一能核对的客观信息"已经作废）。
+        删掉它有两个理由，第二个是硬的：
+
+        ① `handle` 现在**是解析出来的**，不是人填的。2026-09-13 那一轮把
+           「频道标识」这个字段整条去掉了（Q13：表单只剩 显示名 / 直播链接 /
+           一句话说明 / 标签），`handle` 由用户贴的链接反推 —— 它对用户不再
+           有任何可操作性，印出来只是在展示解析器的中间产物。
+           用户实测看到的就是这一条：某一行印着 `MCSR_Ranked`，而他根本没填过
+           这个标识（那是当年手填字段时留下的值）。
+
+        ② ⊙ **贴的是具体某一场直播时，`handle` 可以是空串**（迁移 016 为此
+           专门放宽了去重键）。原来那一格在那种行上会渲染成一个**空的 `<span>`**，
+           而它照样吃掉 `--gap` 那点间距 —— 表现是"这一行的按钮比别行靠左一点"，
+           一像素级的不齐，最难被认出是 bug。删掉这一格等于顺手把那条分支也删了。
       */}
       <div className="live-card__foot">
         <a
@@ -118,7 +140,6 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
         >
           {t('live.gotoChannel')}
         </a>
-        <span className="live-card__handle">{channel.handle}</span>
       </div>
     </li>
   );

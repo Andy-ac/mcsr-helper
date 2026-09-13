@@ -737,39 +737,198 @@ export const en: TranslationSchema = {
       COMMUNITY: 'Community event',
       RANKED_MILESTONE: 'Ranked milestone',
     },
-    stage: {
-      QUALIFIER: 'Qualifier',
-      ROUND: 'Main round',
-      QUARTERFINAL: 'Quarter-final',
-      SEMIFINAL: 'Semi-final',
-      THIRD_PLACE: 'Third-place match',
-      FINAL: 'Final',
-    },
     /*
-     * Professionalism level / participation scope (the two dimensions added by
-     * migration 011).
+     * ⚠️★ The `stage` group (Qualifier / Main round / Quarter-final /
+     *    Semi-final / Third-place match / Final) used to live here. It was
+     *    **removed on 2026-09-13** with requirement ⑥.
      *
-     * ⚠️ The only difference from the `tag` / `stage` groups above: these two go
+     * Not because nothing used it — because the dimension itself was
+     * meaningless: it is a flat label with no hierarchy ("semi-final of
+     * what?"), and in practice you cannot fill it in for the events that
+     * matter. The four rounds of one tournament are played on four different
+     * days, while an event has one set of times, so at most one of the six
+     * values ever applies and the editor has to guess which.
+     *
+     * ⚠️ The database column is still there (`calendar_events.stage`, same rule
+     *    as every published migration), new writes leave it NULL, and the
+     *    `stage` field on `CalendarEvent` survives only so pre-017 snapshots
+     *    still render — the one screen that read it was removed in the same
+     *    round.
+     */
+    /*
+     * Professionalism level / participation scope / entry requirement (the two
+     * dimensions added by migration 011, plus the requirement added on
+     * 2026-09-13), and the detail lists behind "scope" (continents / countries).
+     *
+     * ⚠️ The only difference from the `tag` group above: these go
      *    through i18n from day one rather than being hard-coded in a shared map.
-     *    Those two are legacy (see the note at the end of shared/calendar.ts) —
-     *    do not copy them.
+     *    That one is legacy (see the note at the end of shared/calendar.ts) —
+     *    do not copy it.
      *
-     * ⚠️ Both are **nullable** (a ranked milestone has no meaningful level), so
-     *    every filter group needs an explicit "any" option: otherwise "not filled
-     *    in" and "not filtering" look identical while meaning opposite things.
+     * ⚠️ All of them are **nullable** (a ranked milestone has no meaningful
+     *    level), so every group needs an explicit "any" option: otherwise "not
+     *    filled in" and "not filtering" look identical while meaning opposite
+     *    things.
+     *
+     * ⚠️ **`level` was narrowed from four values to two on 2026-09-13** (user
+     *    request): `SEMI_PRO` and `CASUAL` were folded into `AMATEUR`.
+     *    Two of the four could not be told apart from "amateur" when data was
+     *    actually being entered — the person filling the form was guessing, so
+     *    the same event kept moving between the two and nothing ever errored:
+     *    only the filtered results disagreed. The two-value line ("does this put
+     *    food on the table") can be judged at a glance; four could not.
+     *    📌 The value list now lives in `EVENT_LEVELS` (shared/constants.ts).
      */
     level: {
       PRO: 'Professional',
-      SEMI_PRO: 'Semi-professional',
       AMATEUR: 'Amateur',
-      CASUAL: 'Casual',
     },
+    /**
+     * ⚠️ **"Regional" (`REGION`) was removed on 2026-09-13** (user request).
+     *
+     *    The reason it was added was that MCSR communities organise by country
+     *    and by region, but when data was actually entered "region" and
+     *    "country" could not be told apart (is "Southeast Asia" a region or a
+     *    country? what about "Greater China"?), and the result was the same
+     *    event being moved back and forth between the two.
+     *    📌 The value list now lives in `EVENT_SCOPES` (shared/constants.ts).
+     */
     scope: {
       GLOBAL: 'Worldwide',
       CONTINENT: 'Continental',
       COUNTRY: 'National',
-      REGION: 'Regional',
     },
+    /**
+     * Entry requirement (added 2026-09-13).
+     *
+     * ⚠️ "Requirement" here means **how you get in** (qualify / invited / anyone
+     *    can enter), not how formal the event is — that is `level`. The
+     *    distinction is not decoration: a qualifier can be an amateur event and
+     *    an invitational can be professional. Folding them into one dimension
+     *    forces whoever fills the form to pick between two correct answers, and
+     *    whichever they pick, filtering loses the event.
+     * ⚠️ Nullable for the same reason as the others: a ranked milestone has no
+     *    entry requirement to speak of.
+     */
+    access: {
+      QUALIFIER: 'Qualifier',
+      INVITE: 'Invitational',
+      OPEN: 'Open to all',
+    },
+    /**
+     * The **detail** behind "scope": when `scope` is a continent, pick from the
+     * group above; when it is a country, pick from the group below.
+     *
+     * ⚠️ Both are **multi-select** (the user's own example was "Asia & Oceania")
+     *    and they match on **any** selected value, exactly like tags — writing
+     *    it as "all of them" would make "Asia + Oceania" match nothing at all.
+     * ⚠️ `country` is a **hand-written short list, not the ISO 3166 table**: the
+     *    full table is ~250 entries and would turn a three-item control into a
+     *    200-row scroll, while MCSR events keep coming back to these.
+     *    📌 The list is `COUNTRIES` in shared/constants.ts — **adding a country
+     *      means adding a key here too** (both languages). Miss it and the UI
+     *      shows the bare code (`BR`), and that kind of "renders, but means
+     *      nothing to the reader" mistake is much less obvious than a raw
+     *      `t()` key.
+     * ⚠️ Continents follow **how esports events actually split regions** (the
+     *    Americas are separate, Antarctica does not play) rather than the seven
+     *    continents of a geography textbook — do not "fix" it by adding a
+     *    seventh.
+     */
+    continent: {
+      ASIA: 'Asia',
+      EUROPE: 'Europe',
+      NORTH_AMERICA: 'North America',
+      SOUTH_AMERICA: 'South America',
+      OCEANIA: 'Oceania',
+      AFRICA: 'Africa',
+    },
+    country: {
+      CN: 'China',
+      JP: 'Japan',
+      KR: 'South Korea',
+      SG: 'Singapore',
+      PH: 'Philippines',
+      ID: 'Indonesia',
+      VN: 'Vietnam',
+      TH: 'Thailand',
+      IN: 'India',
+      AU: 'Australia',
+      NZ: 'New Zealand',
+      US: 'United States',
+      CA: 'Canada',
+      MX: 'Mexico',
+      BR: 'Brazil',
+      AR: 'Argentina',
+      CL: 'Chile',
+      GB: 'United Kingdom',
+      DE: 'Germany',
+      FR: 'France',
+      NL: 'Netherlands',
+      SE: 'Sweden',
+      PL: 'Poland',
+      ES: 'Spain',
+      IT: 'Italy',
+      UA: 'Ukraine',
+      RU: 'Russia',
+      TR: 'Turkey',
+    },
+    /**
+     * Series colour names (2026-09-13, item ⑤).
+     *
+     * When an owner picks a colour for a series these are the **tooltips /
+     * aria-labels on the swatches** — they only have to answer "which one did I
+     * pick", not to describe what the colour looks like.
+     *
+     * ⚠️ These are **names only; the colour values are not here**. The palette is
+     *    a fixed twelve, and every value has to read as a thin line on **both**
+     *    themes (dark `#131519` / light `#f7f8fa`). That contrast argument
+     *    travels with the values, so they live in `SERIES_COLORS`
+     *    (shared/constants.ts) — copying them here would turn "which copy is
+     *    right" into a question with two drifting answers.
+     * ⚠️ Colour is used in exactly **two** places: the date line on the calendar
+     *    and the small dot beside a series in the list. **Not** as a card
+     *    background — so the names do not need "light red / dark red" detail;
+     *    one extra level only makes people guess once more.
+     */
+    seriesColor: {
+      red: 'Red',
+      orange: 'Orange',
+      amber: 'Amber',
+      green: 'Green',
+      teal: 'Teal',
+      cyan: 'Cyan',
+      blue: 'Blue',
+      indigo: 'Indigo',
+      purple: 'Purple',
+      pink: 'Pink',
+      brown: 'Brown',
+      slate: 'Slate',
+    },
+    /**
+     * "No colour". What is stored is `null`, **not** white — white is only a
+     * rendering convention (`SERIES_COLOR_NONE` in shared/constants.ts) and may
+     * change with the theme, while `null` will not. So this string says "no
+     * colour was picked", not "white was picked".
+     */
+    seriesColorNone: 'No colour',
+    /**
+     * Tooltip / aria-label of the little dot an owner clicks.
+     *
+     * ⚠️ Neither this nor `seriesColorNone` is a colour name, so neither is in
+     *    the table above: those keys have to line up one-for-one with
+     *    `SERIES_COLORS`, and two non-colour entries in there would make "is the
+     *    palette complete" impossible to check mechanically.
+     */
+    seriesColorSet: 'Change colour',
+    /*
+     * Shown when the colour write fails.
+     *
+     * ⚠️ It has to say "nothing was saved, try again" rather than just "error":
+     *    the swatch on screen does not roll back by itself, so without this the
+     *    user believes the colour stuck.
+     */
+    seriesColorFailed: 'The colour was not saved. Try again.',
     /** The "no filter" option shared by all three single-choice dimensions. */
     filterAny: 'Any',
 
@@ -797,14 +956,23 @@ export const en: TranslationSchema = {
       startsAt: 'Starts (local time)',
       timezone: 'Time zone',
       endsAt: 'Ends (local time)',
-      endsTz: 'End time zone',
       allDay: 'All day',
-      /** 015: the discrete time slots (one per line). */
-      scheduleText: 'Specific times',
+      /*
+       * ⚠️ There used to be a `scheduleText` key here ("Specific times", the 015
+       *    free-text box). It is **gone**: the field was removed from the model
+       *    entirely and replaced by `slots` below — real **multiple** time slots,
+       *    each with its own start and end, rather than a few unchecked lines.
+       *    A free-text box looks like structured data while being neither
+       *    positionable on the grid nor filterable.
+       *    (An orphan key costs nothing, it just leaves the next reader thinking
+       *    that branch is still there.)
+       */
+      slots: 'Match times',
       tags: 'Tags',
-      stage: 'Stage',
       level: 'Level',
       scope: 'Scope',
+      access: 'Entry requirement',
+      scopeDetail: 'Regions',
       location: 'Location',
       url: 'Link',
       lang: 'Language',
@@ -837,6 +1005,27 @@ export const en: TranslationSchema = {
     backToList: 'Back to calendar',
     until: 'to {{time}}',
     allDayBadge: 'All day',
+    /**
+     * Slot count on a card (2026-09-13, alongside the multi-slot `fields.slots`).
+     *
+     * ⚠️ It answers "does this run over several days": if a card prints one start
+     *    time only, an event played in three stretches looks exactly like a
+     *    one-day event.
+     * ⚠️ The number counts **slots**, not matches — three weekends is three
+     *    slots while still being one event. That is why the wording says "times"
+     *    and not "matches".
+     * ⚠️ `{{count}}` is i18next interpolation (single braces render literally,
+     *    see `marks.favoriteCount`).
+     */
+    slotsCount: '{{count}} times',
+    /*
+     * Separator between the slots on the event page's "Match times" line.
+     *
+     * ⚠️ It is a dictionary entry, not a hard-coded `', '`: the Chinese line
+     *    needs a full-width comma to read as a list of parallel times. Hard-code
+     *    one and the other language gets punctuation from the wrong script.
+     */
+    slotSeparator: ', ',
     yourTime: 'That is {{time}} your time ({{tz}})',
 
     // -------------------------------------------------------------------------
@@ -967,7 +1156,18 @@ export const en: TranslationSchema = {
     // -------------------------------------------------------------------------
     openLink: 'Open the link',
     infoTitle: 'Event details',
-    author: 'Submitted by',
+    /*
+     * ⚠️★ An `author` key ("Submitted by") used to live here; **removed
+     *    2026-09-14** with requirement ⑦.
+     *
+     * Not because nothing used it — because it sat in the wrong place. Who
+     * submitted an entry is a *review* fact (who proposed this revision, how
+     * often they have been rejected), while a reader of the public page wants
+     * to know what the event is and how to enter it. The review screen still
+     * shows the author, which is where that question is actually asked.
+     * ⚠️ It is hidden, not deleted: `calendar_events.author_id`, the audit log
+     *    and the review queue all still carry it.
+     */
     updatedAt: 'Last updated',
     infoId: 'ID',
     pastNotice:
@@ -1017,19 +1217,53 @@ export const en: TranslationSchema = {
     hintAllDay:
       'An all-day event only needs a date — the time is fixed at 00:00, and a date picker cannot enter a clock time at all.',
     /*
-     * ★ Specific times (015): the **discrete slots**, one per line.
+     * ★ Match times (2026-09-13): the **real, multiple slots** (`slots` in the
+     * model).
      *
-     * ⚠️ This field does NOT position the event on the calendar grid — the
-     *    start/end pair above does. The hint has to say so, or whoever edits it
-     *    will expect the grid to move.
+     * This replaces the 015 free-text box (`hintScheduleText` +
+     * `placeholderScheduleText`, both deleted) — "one slot per line" looked like
+     * structured data while being unchecked text that could neither position the
+     * event on the grid nor be filtered on. Now each slot has its own start and
+     * end and is validated one by one (see the `superRefine` in
+     * shared/calendar.ts).
+     *
+     * ⚠️ The hint has to say the split is **by run of days, not by match**: an
+     *    event played over three weekends is three slots, not "three matches" —
+     *    the count is for the calendar, not for a fixture list.
+     * ⚠️ It also has to say the **time zone is filled in once, above**: giving
+     *    every slot its own zone is the most natural and most annoying
+     *    misreading, and once two zones are really in play the cross-zone
+     *    conversion starts contradicting itself.
      */
-    hintScheduleText:
-      '(Optional) For events spread over several days, list the individual time slots here, one per line. It is display-only — the start/end pair above is what places the event on the calendar.',
-    placeholderScheduleText: 'e.g.\n09-12 ~ 09-14\n09-19 ~ 09-21\n09-26 ~ 09-28',
+    hintSlots:
+      '(Add more if needed) one slot per stretch of days. The timezone above is filled in once.',
+    addSlot: 'Add another time',
+    removeSlot: 'Remove this time',
+    /**
+     * The **accessible name** of each slot group (`aria-label`).
+     *
+     * ⚠️ It has to carry "which slot": in a screen reader those "start / end"
+     *    input pairs are indistinguishable, and without an index the user cannot
+     *    tell which one they are editing.
+     * ⚠️ `{{n}}` is i18next interpolation (single braces render literally, see
+     *    `marks.favoriteCount`).
+     */
+    slotLabel: 'Time {{n}}',
     hintStartsAt: 'The time the organiser published — not the time in your own zone.',
     hintTimezone:
       'IANA zone name, e.g. Asia/Shanghai. Getting it wrong shifts the whole event by hours, and it will look completely normal.',
-    hintEndsTz: 'Only change this when the end is in a different zone.',
+    /*
+     * ⚠️★ Two keys used to sit here and were removed on 2026-09-13/14:
+     *    · `hintEndsTz` ("Only change this when the end is in a different zone")
+     *      — there is only **one** time zone for the whole event now (requirement
+     *      ④, "set the zone once at the top"), so "the zone the end uses" does not
+     *      exist and the sentence had nothing left to explain;
+     *    · `stageNone` ("Not set") — the whole stage dimension is gone (see the
+     *      note where the `stage.*` group used to be). It was on loan as the
+     *      empty option of the series dropdown, and that now uses `seriesNone`:
+     *      borrowing meant editing the stage wording silently changed the series
+     *      dropdown, and the two have nothing in common beyond both saying "not set".
+     */
     hintEndsAt:
       'Many events only publish a start time, so this can be left empty. When empty the event is a single point in time in the subscription.',
     hintEndsAtAllDay:
@@ -1039,13 +1273,19 @@ export const en: TranslationSchema = {
     hintUrl: 'Link to the announcement, the sign-up page or the stream.',
     hintTags:
       'Pick at least one. An event with no tags is invisible on a page that filters by tag.',
-    hintStage:
-      'Optional. It is only a label, with no bracket hierarchy — an event running across a whole week can simply leave it empty.',
-    stageNone: 'Not set',
     /*
-     * The two dimensions added by migration 011.
+     * The empty option of the series dropdown.
      *
-     * ⚠️ The empty option deliberately does **not** reuse `stageNone`'s wording
+     * ⚠️ It is deliberately **not** `dimNone` ("Not applicable / Any"):
+     *    belonging to no series is the normal case, not a dimension that fails
+     *    to apply (that is what the three rating dimensions are for).
+     */
+    seriesNone: 'Not set',
+    /*
+     * The two dimensions added by migration 011, plus the entry requirement
+     * added on 2026-09-13 (`access`).
+     *
+     * ⚠️ The empty option deliberately does **not** reuse `seriesNone`'s wording
      *    ("Not set" vs "Not applicable / Any"): for a ranked milestone the level
      *    and scope genuinely do not exist, and telling someone they "did not set
      *    it" makes them feel they missed a field — so they pick one at random and
@@ -1054,6 +1294,22 @@ export const en: TranslationSchema = {
     hintLevel: 'Optional. How competitive the event is — a ranked milestone can leave this empty.',
     hintScope:
       'Optional. Who can take part — not "where it is played", so it still means something for an online event.',
+    /*
+     * Entry requirement (the third dimension, added 2026-09-13).
+     *
+     * ⚠️ Keep it about *how you get in*, not about how competitive the event
+     *    is: that is `level`. An amateur community event can still be
+     *    invitation-only.
+     */
+    hintAccess: 'Optional. Qualifiers first, invitation only, or anyone can sign up.',
+    /*
+     * The detail half of the scope dimension — it only appears once a continent
+     * or country is picked.
+     *
+     * ⚠️ Say that several can be picked: the case that drove this field was
+     *    "Asia and Oceania" in one event.
+     */
+    hintScopeDetail: 'Optional. Pick which ones — several allowed.',
     dimNone: 'Not applicable / Any',
     descriptionPlaceholder:
       'Markdown supported. Say what the event is, how to take part, and anything to watch out for.',
@@ -1077,11 +1333,35 @@ export const en: TranslationSchema = {
     errUrlTooLong: 'That link is too long.',
     errNoteTooLong: 'A note to the reviewer is at most {{max}} characters.',
     errTagsMin: 'Pick at least one tag.',
+    /**
+     * Validation for the multiple match times (2026-09-13).
+     *
+     * ⚠️ The first two are **word-for-word the schema messages** (the min / max
+     *    on `slots` in shared/calendar.ts) — they are duplicated so the English
+     *    UI has something to say, rather than falling back to showing the
+     *    server's hard-coded Chinese line.
+     * ⚠️ The third is **not** the same kind: the schema reports the path
+     *    `['slots', i, 'startsAtLocal']`, and the UI has to turn that into "slot
+     *    i has no start". It is more specific than the two above and must not be
+     *    merged into one "a field did not pass validation" — that would leave the
+     *    user to work out which slot it meant.
+     */
+    errSlotsMin: 'At least one time is required',
+    errSlotsMax: 'At most {{max}} times',
+    errSlotStartRequired: 'This time is missing a start',
     errTzTooLong: 'That time zone name is too long.',
     errTzRequired: 'Enter the time zone (e.g. Asia/Shanghai).',
-    errStartRequired: 'Enter the start time.',
+    /*
+     * ⚠️★ Two keys used to sit here and were removed on 2026-09-13:
+     *    `errStartRequired` ("Enter the start time.") — replaced by
+     *    `errSlotStartRequired`, because with several slots "the start time is
+     *    missing" has to say **which** slot, or you cannot find it among eight;
+     *    and `errEndNeedsBoth` ("The end needs both a time and a time zone") —
+     *    its premise is gone. It used to be possible to give an end time without
+     *    an end zone; now there is one zone for the whole event, so that
+     *    combination cannot even be constructed.
+     */
     errInvalidTz: 'That time zone name is not valid — check the spelling (e.g. Asia/Shanghai).',
-    errEndNeedsBoth: 'The end needs both a time and a time zone.',
     errWallClock: 'The time format should be 2026-08-30T20:00.',
     errAllDayTime: 'An all-day event must be at 00:00.',
     errEndBeforeStart:
@@ -1135,15 +1415,32 @@ export const en: TranslationSchema = {
     // ---- Filter bar ----
     filterLevel: 'Level',
     filterScope: 'Scope',
-    filterStage: 'Stage',
+    /*
+     * ⚠️★ A `filterStage` key ("Stage") used to sit here; removed on 2026-09-13
+     *    with that dimension (requirement ⑥). The bar is now **three** blocks:
+     *    tags (multi-select) plus Level and Scope — where the scope *detail* is a
+     *    subordinate row directly underneath, not a peer dimension.
+     *    ⚠️ `apps/web/scripts/gridrender.tsx` has a negative assertion guarding
+     *       "no trace of stage anywhere". It must **not** use this key as its
+     *       needle any more — with the key gone, `t()` returns the key itself and
+     *       the assertion silently becomes always-true. It uses literals instead.
+     */
+    /*
+     * The second level of the scope filter — the row that only appears once a
+     * continent or a country is picked.
+     *
+     * ⚠️ It is subordinate to `filterScope`, not a fourth peer dimension, so it
+     *    sits directly under that row. It matches any of the event's detail
+     *    values, so an "Asia and Oceania" event shows up whichever one you pick.
+     */
+    filterScopeDetail: 'Scope detail',
     /*
      * ⚠️ This sentence exists to say that tags are not the same kind of filter
-     * as the other three. Without it, someone who picked "Professional" and
+     * as the other two. Without it, someone who picked "Professional" and
      * then sees amateur events (matched because a *tag* hit) has no way to work
      * out why.
      */
-    filterHint:
-      'Tags are multi-select — any match shows. Level, Scope and Stage are single-select.',
+    filterHint: 'Tags are multi-select — any match shows. Level and Scope are single-select.',
     filterReset: 'Clear filters',
     noTagsSelected: 'No tags selected.',
     noTagsHint: 'Turn at least one tag on to see events.',

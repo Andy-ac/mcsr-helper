@@ -134,8 +134,13 @@ async function submitEvent(cookie: string): Promise<string> {
   const res = await call('POST', '/api/calendar', {
     json: {
       title: '契约测试赛事',
-      startsAtLocal: '2030-09-05T16:00',
       startsAtTz: 'Asia/Shanghai',
+      // ⚠️ 017（2026-09-13）起时间是 `slots`（一个时区 + 若干段）。
+      //    顶层 `startsAtLocal` 已经不是入参 ⇒ 这一笔会 400
+      //    `slots: expected array, received undefined`，于是下面那条
+      //    `expectFlag` 会红在"响应里没有 liveRevisionUnchanged"上 ——
+      //    看起来像服务端漏了字段，其实是**请求本身没被接受**。
+      slots: [{ startsAtLocal: '2030-09-05T16:00' }],
       tags: ['TOURNAMENT'],
     },
     cookie,
@@ -209,8 +214,9 @@ describe('§3.2b liveRevisionUnchanged：每条写路径都必须显式返回', 
     const patchedEvent = await call('PATCH', `/api/calendar/${eventId}`, {
       json: {
         title: '改过的赛事标题',
-        startsAtLocal: '2030-09-06T16:00',
         startsAtTz: 'Asia/Shanghai',
+        // ⚠️ 同上：017 起时间只能写在 `slots` 里
+        slots: [{ startsAtLocal: '2030-09-06T16:00' }],
         tags: ['TOURNAMENT'],
       },
       cookie: author.cookie,
@@ -273,8 +279,9 @@ describe('§3.2b liveRevisionUnchanged：每条写路径都必须显式返回', 
     const directEvent = await call('POST', '/api/authoring/calendar', {
       json: {
         title: '直编建的赛事',
-        startsAtLocal: '2030-10-05T16:00',
         startsAtTz: 'Asia/Shanghai',
+        // ⚠️ 017 起时间只能写在 `slots` 里（见 `submitEvent` 的注释）
+        slots: [{ startsAtLocal: '2030-10-05T16:00' }],
         tags: ['TOURNAMENT'],
       },
       cookie: editor.cookie,
@@ -288,8 +295,9 @@ describe('§3.2b liveRevisionUnchanged：每条写路径都必须显式返回', 
       {
         json: {
           title: '直编改过的赛事标题',
-          startsAtLocal: '2030-10-06T16:00',
           startsAtTz: 'Asia/Shanghai',
+          // ⚠️ 同上
+          slots: [{ startsAtLocal: '2030-10-06T16:00' }],
           tags: ['TOURNAMENT'],
         },
         cookie: editor.cookie,

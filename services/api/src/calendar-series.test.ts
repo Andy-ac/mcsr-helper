@@ -92,8 +92,13 @@ async function makeUser(role: 'user' | 'reviewer' | 'editor') {
 function input(overrides: Record<string, unknown> = {}) {
   return {
     title: '系列活动测试赛事',
-    startsAtLocal: '2030-09-05T16:00',
+    /*
+     * ⚠️ 017 起时间是 `slots`（多段）而不是 `startsAtLocal`。
+     *    老写法会让每一笔提交都 400 `slots: expected array, received undefined` ——
+     *    而那条报错看起来像"这个测试文件坏了"，不是"契约变了"。
+     */
     startsAtTz: 'Asia/Shanghai',
+    slots: [{ startsAtLocal: '2030-09-05T16:00' }],
     tags: ['TOURNAMENT'],
     ...overrides,
   };
@@ -245,10 +250,13 @@ describe('③ 系列活动', () => {
     });
     assert.equal(pending.status, 201);
     // 一场已发布但**已经结束**（2020）—— 进 pastCount，不进 count
+    // ⚠️ 时间要写在 `slots` 里：`startsAtLocal` 从 017 起已经不是入参了，
+    //    留在外面的话这一场仍然落在 2030 年，于是它会**混进 count**，
+    //    而这条用例的断言看起来只是"数字不对"。
     await publish(author.cookie, reviewer.cookie, {
       seriesId,
       title: '早就结束的场次',
-      startsAtLocal: '2020-09-05T16:00',
+      slots: [{ startsAtLocal: '2020-09-05T16:00' }],
     });
 
     const list = await seriesList();
@@ -272,6 +280,27 @@ describe('③ 系列活动', () => {
       cookie: editor.cookie,
     });
     assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+
+    /*
+     * ⚠️ 回包必须是**整行** `{ series }`（`CalendarSeries`），而不是 `{ ok, id, name }`。
+     *
+     * 前端 `apps/web/src/lib/api.ts` 的 `renameCalendarSeries` 声明的是
+     * `{ series: CalendarSeries }` —— 服务端以前回的是 `{ok, id, name}`，
+     * 那份声明**是假的**：调用方拿 `res.series.name` 只会得到 `undefined`，
+     * 而**不会有任何报错**（响应类型是手写的，跟服务端没有编译期关系）。
+     * 表现是"改完名，列表里那一行还是旧名字"。
+     *
+     * ⚠️ 三个**算出来的**数字（count / pastCount / nextStartsAtUtc）必须在，
+     *    它们是"回读整行"与"把入参拼成一个对象"的分水岭 —— 后者不会有它们。
+     */
+    const series = renamed.body.series as Record<string, unknown> | undefined;
+    assert.ok(series, `回包必须有 series：${JSON.stringify(renamed.body)}`);
+    assert.equal(series.id, seriesId);
+    assert.equal(series.name, '改名后');
+    assert.equal(series.count, 1, '这个系列下面有一场未结束的已发布赛事');
+    assert.equal(series.pastCount, 0);
+    assert.equal(typeof series.nextStartsAtUtc, 'number');
+    assert.equal(series.color, null, '没上色的系列是 null（界面走白色 + 描边那一档）');
 
     const listed = await call('GET', '/api/calendar?from=0');
     const row = (listed.body.items as Array<{ id: string; seriesName: string | null }>).find(

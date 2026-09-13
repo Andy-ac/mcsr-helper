@@ -30,9 +30,10 @@
  * 所以下面直接扫产物里有没有残留的 `calendarGrid.` / `calendar.` 前缀。
  */
 import assert from 'node:assert/strict';
+import { CONTINENTS, COUNTRIES } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
 // 系列的形状（需求③）—— 与 `event()` 那个 fixture 同理：字段要齐全
-import type { CalendarSeries } from '@mcsr/shared/calendar';
+import type { CalendarEvent, CalendarSeries } from '@mcsr/shared/calendar';
 import { zhCN } from '@mcsr/shared/i18n';
 import type { ResourceListItem } from '@mcsr/shared/resources';
 import i18n from 'i18next';
@@ -54,6 +55,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
 
+import { CalendarCard } from '@/components/CalendarCard';
 import { CalendarDayPanel } from '@/components/CalendarDayPanel';
 import { CalendarFilters } from '@/components/CalendarFilters';
 import {
@@ -62,7 +64,13 @@ import {
   emptyCalendarDraft,
   SeriesErrorNote,
 } from '@/components/CalendarForm';
-import { buildGridCells, CalendarGrid, todayKeyInViewerTz } from '@/components/CalendarGrid';
+import {
+  buildGridCells,
+  CalendarGrid,
+  eventDateRanges,
+  eventsByDate,
+  todayKeyInViewerTz,
+} from '@/components/CalendarGrid';
 import { CalendarSeriesSection } from '@/components/CalendarSeriesSection';
 import { ResourceCard } from '@/components/ResourceCard';
 import { AuthProvider } from '@/lib/auth';
@@ -90,18 +98,31 @@ const ok = (m: string): void => {
 const YM = { year: 2026, month: 11 };
 
 /** 一个形状完整的事件 —— 少一个字段渲染就可能悄悄少一块。 */
-function event(over: Record<string, unknown> = {}): never {
+function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
+  /*
+   * ⚠️ `slots` **默认从包络派生**（`startsAtLocal` / `endsAtLocal` / 那两个 UTC），
+   *    而不是写死一段。真实数据里就是"slots 是源、包络是派生"，反过来
+   *    （只改包络、不改 slots）会让下面 11-15 那五条 fixture 在摊平时**全部落回
+   *    11-14** —— 于是 "+2" 那条断言会因为一个和它无关的原因失败，
+   *    而"某一天多出几条"看起来完全正常，没人会怀疑是 fixture 的问题。
+   *    要造多段就**显式传 `slots`**（见下面那些三段 / 重叠的 fixture）。
+   */
+  const startsAtLocal = over.startsAtLocal ?? '2026-11-14T20:00';
+  const endsAtLocal = over.endsAtLocal ?? null;
+  const startsAtUtc = over.startsAtUtc ?? Date.UTC(2026, 10, 14, 12, 0);
+  const endsAtUtc = over.endsAtUtc ?? null;
   return {
     id: 'e1',
     title: '测试赛事',
     titleEn: null,
     descriptionMd: '',
-    startsAtLocal: '2026-11-14T20:00',
+    startsAtLocal,
     startsAtTz: 'Asia/Shanghai',
-    startsAtUtc: Date.UTC(2026, 10, 14, 12, 0),
-    endsAtLocal: null,
+    startsAtUtc,
+    endsAtLocal,
     endsAtTz: null,
-    endsAtUtc: null,
+    endsAtUtc,
+    slots: over.slots ?? [{ startsAtLocal, endsAtLocal, startsAtUtc, endsAtUtc }],
     allDay: false,
     url: null,
     location: null,
@@ -109,6 +130,11 @@ function event(over: Record<string, unknown> = {}): never {
     stage: null,
     level: null,
     scope: null,
+    access: null,
+    scopeDetail: [],
+    seriesId: null,
+    seriesName: null,
+    seriesColor: null,
     lang: 'zh-CN',
     authorId: null,
     authorName: null,
@@ -116,7 +142,7 @@ function event(over: Record<string, unknown> = {}): never {
     createdAt: 0,
     updatedAt: 0,
     ...over,
-  } as never;
+  };
 }
 
 const html = (node: React.ReactElement): string =>
@@ -153,6 +179,12 @@ function series(over: Partial<CalendarSeries> = {}): CalendarSeries {
   return {
     id: 's0',
     name: '测试系列',
+    /*
+     * ⚠️ `color` 必须在这里给一个值：它决定「系列活动」左边那个小点的颜色，
+     *    而 `null` 是"没上色"（白色 + 描边）那一档。缺了它，渲染出来的是
+     *    `undefined` —— 看起来只是"没颜色"，不会报错。
+     */
+    color: null,
     count: 1,
     pastCount: 0,
     nextStartsAtUtc: Date.UTC(2026, 10, 20, 12),
@@ -334,7 +366,310 @@ assert.equal(cardCount(panelNoDay), 0);
 ok('没选中任何一天时显示提示，不显示卡片');
 
 // ---------------------------------------------------------------------------
-console.log(`【${LANG}】④ 筛选栏：四个维度，两个种类`);
+console.log(`【${LANG}】③b 日期横线的颜色 = 系列色（需求⑤）`);
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 断言必须落在**具体哪一格**上。整份 HTML `includes('#d9534f')` 那种写法
+ *    在这里抓不到两种真实失效：横线画到了别的日子上、或者颜色来自别的元素。
+ *    所以先把网格切成一格一格，再在格子内部断言。
+ */
+function cellOf(grid: string, date: string): string {
+  const at = grid.indexOf(`data-grid-date="${date}"`);
+  /*
+   * ⚠️ 找不到就**当场失败**，而不是返回空串：空串里当然"没有横线"，
+   *    于是下面那些断言会因为**错误的原因**通过 —— 那是最难发现的一类假绿。
+   */
+  assert.notEqual(at, -1, `${date} 这一格应当存在（否则下面的断言是在空字符串上做的）`);
+  const rest = grid.slice(at);
+  const next = rest.indexOf('data-grid-date="', 1);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+/** 这段 HTML 里有几条日期横线。 */
+const barsIn = (fragment: string): number =>
+  // ⚠️ 必须带边界：容器 `grid__bars` 也以 `grid__bar` 开头，按子串数会把容器也算一条。
+  (fragment.match(/class="grid__bar(?=[" ])/g) ?? []).length;
+
+const nowLate = Date.UTC(2026, 10, 20);
+
+const redGrid = html(
+  <CalendarGrid
+    ym={YM}
+    events={[event({ id: 'red-1', seriesId: 's-red', seriesColor: 'red' })]}
+    selected={null}
+    today={today}
+    now={nowLate}
+    onSelect={() => {}}
+  />,
+);
+const redCell = cellOf(redGrid, '2026-11-14');
+assert.equal(barsIn(redCell), 1, '11-14 应当有且只有一条横线');
+assert.ok(
+  /<span class="grid__bar[^"]*"[^>]*style="background:#d9534f"><\/span>/.test(redCell),
+  '★ 属于 red 系列的事件，格子里那条横线的 style 必须带 #d9534f（断言的是色值本身，不是"有 style"）',
+);
+ok('★ ① 属于 red 系列的事件：日期横线的 style 是 #d9534f');
+
+const plainGrid = html(
+  <CalendarGrid
+    ym={YM}
+    events={[event({ id: 'plain-1' })]}
+    selected={null}
+    today={today}
+    now={nowLate}
+    onSelect={() => {}}
+  />,
+);
+const plainCell = cellOf(plainGrid, '2026-11-14');
+assert.equal(barsIn(plainCell), 1, '11-14 应当有且只有一条横线');
+assert.ok(
+  /*
+   * ⚠️ 类名里 `grid__bar--none` 后面**还可能有别的修饰**（已结束的 `--past`、
+   *    将来加的更多），所以收尾用 `[^"]*"` 而不是 `"` —— 第一版写死了引号，
+   *    于是"没系列的已结束事件"这条断言直接红在了正则上，
+   *    而它看起来像"组件没加那个类"。
+   */
+  /<span class="grid__bar[^"]*grid__bar--none[^"]*"[^>]*style="background:#ffffff"><\/span>/.test(
+    plainCell,
+  ),
+  '★ 没有系列的事件 = 白色 + `grid__bar--none`，**两样都要**：只有白色时，白天主题下这条线等于没画（描边挂在那两个类上）',
+);
+ok('★ ② 没有系列的事件：横线是 #ffffff **且**带 grid__bar--none（描边靠它才看得见）');
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】③c 多段事件：**逐段**摊平，不按包络涂满（需求④）`);
+// ---------------------------------------------------------------------------
+/*
+ * ★ 用户第 ④ 条要的是「不要看起来连着打十几天」。而 `startsAtLocal` /
+ *   `endsAtLocal` 在多段之后是**包络**（最早那段的开始 / 最晚那段的结束）——
+ *   按包络摊平，一条"分三个周末打"的赛事会把中间的空档**也涂满**，
+ *   正好变成用户不要的那个样子，而界面上看起来完全正常。
+ *
+ * ⚠️ fixture 用的是**真实的那条数据**（`hist-playoffs-s08`：`08-23` /
+ *    `08-30~08-31` / `09-06~09-10`，见 docs/own-db-facts.md 那一类记录），
+ *    所以这条断言和"我在线上看到的那场季后赛到底长什么样"是同一件事。
+ */
+const threeSlot = event({
+  id: 'hist-playoffs-s08',
+  startsAtLocal: '2025-08-23T20:00',
+  startsAtUtc: Date.UTC(2025, 7, 23, 12),
+  endsAtLocal: '2025-09-10T22:00',
+  endsAtUtc: Date.UTC(2025, 8, 10, 14),
+  slots: [
+    {
+      startsAtLocal: '2025-08-23T20:00',
+      endsAtLocal: null,
+      startsAtUtc: Date.UTC(2025, 7, 23, 12),
+      endsAtUtc: null,
+    },
+    {
+      startsAtLocal: '2025-08-30T20:00',
+      endsAtLocal: '2025-08-31T22:00',
+      startsAtUtc: Date.UTC(2025, 7, 30, 12),
+      endsAtUtc: Date.UTC(2025, 7, 31, 14),
+    },
+    {
+      startsAtLocal: '2025-09-06T20:00',
+      endsAtLocal: '2025-09-10T22:00',
+      startsAtUtc: Date.UTC(2025, 8, 6, 12),
+      endsAtUtc: Date.UTC(2025, 8, 10, 14),
+    },
+  ],
+});
+
+/*
+ * ★ 先把**逐段摊平**这件事本身断言掉（`eventDateRanges` 是它的唯一入口）：
+ *   三段就是**三个区间**，而且第二段是 `08-30~08-31` 这个闭区间 ——
+ *   不是被包络撑成 `08-23~09-10` 的一条。
+ *   ⚠️ 上面那些"某一天没有横线"的断言守的是结果，这一条守的是**判据**，
+ *      两条一起才能在"渲染恰好对了但数据其实错了"时说得清是哪里错。
+ */
+assert.deepEqual(
+  eventDateRanges(threeSlot),
+  [
+    { from: '2025-08-23', to: '2025-08-23' },
+    { from: '2025-08-30', to: '2025-08-31' },
+    { from: '2025-09-06', to: '2025-09-10' },
+  ],
+  '★ 三段事件必须给出三个区间（按包络摊平只会给出一个 08-23~09-10）',
+);
+ok('★ eventDateRanges：三段 → 三个区间，段之间的空档不在里面');
+
+const gridOf = (ym: { year: number; month: number }, events: CalendarEvent[]): string =>
+  html(
+    <CalendarGrid
+      ym={ym}
+      events={events}
+      selected={null}
+      today=""
+      now={Date.UTC(2025, 6, 1)}
+      onSelect={() => {}}
+    />,
+  );
+
+const augGrid = gridOf({ year: 2025, month: 8 }, [threeSlot]);
+assert.equal(barsIn(cellOf(augGrid, '2025-08-23')), 1, '第一段的第一天必须有横线');
+for (let d = 24; d <= 29; d += 1) {
+  assert.equal(
+    barsIn(cellOf(augGrid, `2025-08-${String(d)}`)),
+    0,
+    `2025-08-${String(d)} 落在两段之间，**不该**有横线（按包络摊平时它会有）`,
+  );
+}
+assert.equal(barsIn(cellOf(augGrid, '2025-08-30')), 1, '第二段的第一天要有横线');
+assert.equal(barsIn(cellOf(augGrid, '2025-08-31')), 1, '第二段的最后一天要有横线（闭区间）');
+ok('★ 2025-08：08-23 有、08-24~08-29 空档一条都没有、08-30 / 08-31 有');
+
+const sepGrid = gridOf({ year: 2025, month: 9 }, [threeSlot]);
+for (let d = 1; d <= 5; d += 1) {
+  assert.equal(
+    barsIn(cellOf(sepGrid, `2025-09-0${String(d)}`)),
+    0,
+    `2025-09-0${String(d)} 落在空档里，不该有横线`,
+  );
+}
+for (const day of ['06', '07', '08', '09', '10']) {
+  assert.equal(barsIn(cellOf(sepGrid, `2025-09-${day}`)), 1, `2025-09-${day} 属于第三段`);
+}
+assert.equal(
+  barsIn(cellOf(sepGrid, '2025-09-11')),
+  0,
+  '第三段到 09-10 为止（闭区间），09-11 不该有',
+);
+ok('★ 2025-09：09-01~09-05 空档没有横线、09-06~09-10 有、09-11 没有');
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】③d 两段压在同一天：只画一条横线、只印一张卡片`);
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这是"数据正常时永远看不出来"的那一类分支：两段重叠（夏令时那天切换出来的
+ *    相邻段、或者手填的两段落在同一天）时，逐段往桶里 push 会让那一天的格子里
+ *    凭空多出一条横线（像有两个活动），面板里同一张卡片印两遍。
+ */
+const overlap = event({
+  id: 'overlap-1',
+  startsAtLocal: '2026-11-14T10:00',
+  startsAtUtc: Date.UTC(2026, 10, 14, 2),
+  slots: [
+    {
+      startsAtLocal: '2026-11-14T10:00',
+      endsAtLocal: '2026-11-14T12:00',
+      startsAtUtc: Date.UTC(2026, 10, 14, 2),
+      endsAtUtc: Date.UTC(2026, 10, 14, 4),
+    },
+    {
+      startsAtLocal: '2026-11-14T20:00',
+      endsAtLocal: null,
+      startsAtUtc: Date.UTC(2026, 10, 14, 12),
+      endsAtUtc: null,
+    },
+  ],
+});
+const overlapGrid = html(
+  <CalendarGrid
+    ym={YM}
+    events={[overlap]}
+    selected={null}
+    today={today}
+    now={nowLate}
+    onSelect={() => {}}
+  />,
+);
+assert.equal(barsIn(cellOf(overlapGrid, '2026-11-14')), 1, '两段同一天 → 只画**一条**横线');
+ok('★ 两段压在同一天：格子里只有一条横线（不是两条）');
+
+const overlapDayEvents = eventsByDate([overlap]).get('2026-11-14') ?? [];
+assert.equal(overlapDayEvents.length, 1, '两段同一天 → 这一天的事件列表里只有一条');
+const overlapPanel = html(
+  <CalendarDayPanel day="2026-11-14" events={overlapDayEvents} now={nowLate} canSubmit={false} />,
+);
+assert.equal(cardCount(overlapPanel), 1, '两段同一天 → 面板里只印**一张**卡片');
+ok('★ 两段压在同一天：面板里只有一张卡片（同一场活动印两遍非常像数据重复）');
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】③e 卡片：第一段时间 + 段数徽章 + 三个维度（需求⑥）`);
+// ---------------------------------------------------------------------------
+const threeSlotCard = html(
+  <ul>
+    <CalendarCard event={threeSlot} now={Date.UTC(2025, 6, 1)} />
+  </ul>,
+);
+const slotsBadge = i18n.t('calendar.slotsCount', { count: 3 });
+assert.notEqual(slotsBadge, 'calendar.slotsCount', '键必须在当前语言下真的解析出文字');
+assert.ok(
+  threeSlotCard.includes(slotsBadge),
+  `★ 三段的事件卡片上必须出现段数徽章（${LANG === 'zh-CN' ? '共 3 段' : '3 times'}）`,
+);
+assert.equal(
+  threeSlotCard.includes('{count}'),
+  false,
+  '不该出现字面的 {count} —— 出现了说明词条用了单花括号',
+);
+ok(`★ ③ 三段的事件卡片显示段数徽章：「${slotsBadge}」`);
+
+assert.ok(threeSlotCard.includes('08-23'), '卡片的时间块必须是**第一段**（08-23）');
+assert.equal(
+  threeSlotCard.includes('09-06'),
+  false,
+  '★ 卡片上只该有第一段：把三段拼在一行里，"跨三周"和"分三段打"会长得一模一样',
+);
+ok('★ 卡片只显示第一段（08-23），第三段（09-06）不出现在卡片上');
+
+const oneSlotCard = html(
+  <ul>
+    <CalendarCard event={event({ id: 'one-slot' })} now={nowLate} />
+  </ul>,
+);
+assert.equal(
+  oneSlotCard.includes(i18n.t('calendar.slotsCount', { count: 1 })),
+  false,
+  '单段是常态，**不该**给每张卡都挂一枚「共 1 段」（与"评分 0 分不显示"同一条规矩）',
+);
+ok('★ 单段事件不显示段数徽章（两个方向都断言了）');
+
+const accessCard = html(
+  <ul>
+    <CalendarCard
+      event={event({
+        id: 'acc-1',
+        level: 'PRO',
+        scope: 'CONTINENT',
+        scopeDetail: ['ASIA'],
+        access: 'QUALIFIER',
+      })}
+      now={nowLate}
+    />
+  </ul>,
+);
+for (const key of ['calendar.level.PRO', 'calendar.scope.CONTINENT', 'calendar.access.QUALIFIER']) {
+  assert.ok(
+    accessCard.includes(i18n.t(key)),
+    `★ 卡片上必须有「${i18n.t(key)}」（走词条，不显示枚举值）`,
+  );
+}
+assert.equal(
+  />(PRO|CONTINENT|QUALIFIER)</.test(accessCard),
+  false,
+  '★ 三个维度的**枚举原始值**不该出现在可见文本里',
+);
+ok('★ 三个维度徽章：专业程度 / 参与范围 / 参赛门槛（都是词条，不是枚举原始值）');
+
+/*
+ * ⚠️ 下面这条是给 ⑤ 那组反向断言用的**对照 fixture**：它**带着** `stage: 'FINAL'`
+ *    进入渲染。没有它的话，"界面上没有轮次"会因为"没有任何 fixture 带过 stage"
+ *    而通过 —— 那是纯粹的假绿（见 ⑤ 那一段的注释）。
+ */
+const stageCardHtml = html(
+  <ul>
+    <CalendarCard
+      event={event({ id: 'stage-final', stage: 'FINAL', seriesColor: 'red' })}
+      now={nowLate}
+    />
+  </ul>,
+);
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】④ 筛选栏：三个维度 + 一条从属行`);
 // ---------------------------------------------------------------------------
 const filtersHtml = html(
   <CalendarFilters
@@ -342,20 +677,20 @@ const filtersHtml = html(
     onToggleTag={() => {}}
     level={null}
     scope={null}
-    stage={null}
+    scopeDetail={null}
     onPick={() => {}}
     dirty={false}
     onReset={() => {}}
   />,
 );
 
-assert.equal(countOf(filtersHtml, '<fieldset'), 4, '四个维度各一个 fieldset');
-ok('4 个维度各是一个 fieldset（HTML 原生分组，不是手写 ARIA）');
+assert.equal(countOf(filtersHtml, '<fieldset'), 3, '三个维度各一个 fieldset');
+ok('3 个维度各是一个 fieldset（HTML 原生分组，不是手写 ARIA）');
 
-assert.equal(countOf(filtersHtml, '<legend'), 4, '每个 fieldset 都要有 legend');
+assert.equal(countOf(filtersHtml, '<legend'), 3, '每个 fieldset 都要有 legend');
 ok('每个维度都有 legend（组名）');
 
-// 标签 3 个 + 三个单选维度各 1(不限)+取值数
+// 标签 3 个 + 两个单选维度各 1(不限)+取值数
 /*
  * ⚠️ 数的是 `aria-pressed=`，不是 `tagchip`。
  *    选中的 chip 渲染成 `class="tagchip tagchip--on"` —— 里面 `tagchip`
@@ -364,18 +699,103 @@ ok('每个维度都有 legend（组名）');
  */
 assert.equal(
   countOf(filtersHtml, 'aria-pressed='),
-  3 + (1 + 4) + (1 + 4) + (1 + 6),
-  'chip 总数应为 20',
+  3 + (1 + 2) + (1 + 3),
+  'chip 总数应为 10（scope=null 时明细那一行不渲染）',
 );
-ok('chip 总数 = 标签 3 + 专业程度 5 + 参与范围 5 + 轮次 7 = 20');
+ok('chip 总数 = 标签 3 + 专业程度 3 + 参与范围 4 = 10（轮次那一维已删）');
 
-// 三个单选维度都是"不限"选中（current === null）
+// 两个单选维度都是"不限"选中（current === null）
 assert.equal(
   countOf(filtersHtml, 'aria-pressed="true"'),
-  3 + 3,
-  '三个维度各有一个"不限"亮着，加上三个标签全选',
+  3 + 2,
+  '两个单选维度各有一个"不限"亮着，加上三个标签全选',
 );
-ok('三个单选维度的默认都是「不限」，而不是"没选"（两者含义相反）');
+ok('两个单选维度的默认都是「不限」，而不是"没选"（两者含义相反）');
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】④a 参与范围明细：从属行，跟着「参与范围」出现 / 消失（需求⑥）`);
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 这一组四条断言缺一不可，因为它们各自守着一个不同的失效形状：
+ *   ① `scope=null` 时**没有**这一行（"全球还要选哪个洲？"）
+ *   ② `scope=CONTINENT` 时**有**，而且**六个大洲的名字都在**（不是只有一行标题）
+ *   ③ 它的**位置**：紧贴「参与范围」之下、在尾部提示之前（从属关系靠位置表达）
+ *   ④ 切到 `COUNTRY` 时换成国家表，**大洲不再出现**（`ASIA` 不是国家，
+ *      留着它筛出来永远是空的）
+ * 只断言"出现了一行标题"的话，取值集合接错了（比如大洲那一行挂了国家表）
+ * 照样是绿的。
+ */
+const filtersContinent = html(
+  <CalendarFilters
+    tags={['TOURNAMENT', 'COMMUNITY', 'RANKED_MILESTONE']}
+    onToggleTag={() => {}}
+    level={null}
+    scope="CONTINENT"
+    scopeDetail={null}
+    onPick={() => {}}
+    dirty={false}
+    onReset={() => {}}
+  />,
+);
+const filtersCountry = html(
+  <CalendarFilters
+    tags={['TOURNAMENT', 'COMMUNITY', 'RANKED_MILESTONE']}
+    onToggleTag={() => {}}
+    level={null}
+    scope="COUNTRY"
+    scopeDetail={null}
+    onPick={() => {}}
+    dirty={false}
+    onReset={() => {}}
+  />,
+);
+const detailLabel = i18n.t('calendarGrid.filterScopeDetail');
+const scopeLabel = i18n.t('calendarGrid.filterScope');
+
+assert.equal(
+  filtersHtml.includes(detailLabel),
+  false,
+  '★ `scope` 没选时**不该**出现「参与范围明细」这一行',
+);
+ok('★ ④① scope=null：没有「参与范围明细」这一行');
+
+assert.ok(filtersContinent.includes(detailLabel), '★ 选「大洲」时必须出现明细行');
+for (const c of CONTINENTS) {
+  assert.ok(
+    filtersContinent.includes(i18n.t(`calendar.continent.${c}`)),
+    `大洲 ${c} 应当在明细行里（词条：${i18n.t(`calendar.continent.${c}`)}）`,
+  );
+}
+assert.equal(
+  countOf(filtersContinent, 'aria-pressed='),
+  3 + (1 + 2) + (1 + 3) + (1 + CONTINENTS.length),
+  '选「大洲」时明细行是「不限 + 六个大洲」',
+);
+ok('★ ④② scope=CONTINENT：明细行出现，六个大洲的名字都在');
+
+assert.ok(
+  filtersContinent.indexOf(detailLabel) > filtersContinent.indexOf(scopeLabel),
+  '明细行必须排在「参与范围」的**后面**（它是下级，不是并列维度）',
+);
+assert.ok(
+  filtersContinent.indexOf(detailLabel) <
+    filtersContinent.indexOf(i18n.t('calendarGrid.filterHint')),
+  '明细行必须排在尾部提示**之前** —— 排到后面它就看起来像又一个独立维度',
+);
+ok('★ ④③ 位置：明细行紧贴「参与范围」之下（顺序断言，不是"存在即可"）');
+
+assert.ok(filtersCountry.includes(i18n.t('calendar.country.CN')), '选「国家」时明细行给的是国家表');
+assert.equal(
+  filtersCountry.includes(i18n.t('calendar.continent.ASIA')),
+  false,
+  '★ 选「国家」时**不该**还有大洲 —— ASIA 不是一个国家，留着它筛出来永远是空的',
+);
+assert.equal(
+  countOf(filtersCountry, 'aria-pressed='),
+  3 + (1 + 2) + (1 + 3) + (1 + COUNTRIES.length),
+  '选「国家」时明细行是「不限 + 全部国家」',
+);
+ok('★ ④④ scope=COUNTRY：明细行换成国家表，大洲不再出现');
 
 assert.equal(filtersHtml.includes('filters__clear'), false, '默认状态不该显示"清空筛选"');
 ok('没有筛选时不给「清空筛选」（一个点了没反应的按钮比没有更糟）');
@@ -729,7 +1149,25 @@ const all =
   panelAnon +
   seriesHtml +
   searchedHtml +
-  cardRich;
+  cardRich +
+  /*
+   * ⚠️ 本轮新渲染的那些**必须也进 `all`**：下面的词条泄漏扫描和 ⑤ 的反向断言
+   *    都只扫 `all`。不并进来的话，它们渲染出来的东西等于**没被扫过**，
+   *    而那两条断言照样是绿的 —— 这正是本文件 ④b 那一大段警告过的假通过，
+   *    每新增一个渲染产物都要在这里补一笔。
+   */
+  redGrid +
+  plainGrid +
+  augGrid +
+  sepGrid +
+  overlapGrid +
+  overlapPanel +
+  threeSlotCard +
+  oneSlotCard +
+  accessCard +
+  stageCardHtml +
+  filtersContinent +
+  filtersCountry;
 const leaks = [...all.matchAll(/(calendarGrid|calendar|resources|marks)\.[a-zA-Z]+/g)]
   .map((m) => m[0])
   // aria-label / title 之外的属性里的路径不算（比如 /calendar/submit 是路由）
@@ -749,6 +1187,55 @@ assert.ok(
   '「不限」这一项渲染出来了',
 );
 ok(`「不限」渲染出来了（${LANG === 'zh-CN' ? '不限' : 'Any'}）`);
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】⑤ 反向断言：轮次（stage）在界面上**一点都没有**（需求⑥）`);
+// ---------------------------------------------------------------------------
+/*
+ * ★ 这条守的是"**删掉了没有**"，而它正是最容易**假绿**的一类检查：
+ *   如果没有任何 fixture 带着 `stage` 值，"界面上没有轮次"就会因为它压根
+ *   没被渲染过而通过 —— 那和"我删干净了"完全是两件事，而两者的结果都是绿的。
+ *
+ * ⇒ 所以先用一条**真的带 `stage: 'FINAL'`** 的事件（`stageCardHtml`）把
+ *   "库里有这个值"这个前提造出来，再去证明它没有冒出来。
+ *
+ * ⚠️ 下面那条**对照断言**（卡片里必须有「赛事」这个标签）是必须的：
+ *    它证明那张卡片的徽章区**真的渲染了**。少了它，"没有轮次"可能只是因为
+ *    整张卡片没渲染出来（fixture 打错字、组件抛异常被吞掉……）—— 另一种假绿。
+ */
+assert.ok(
+  stageCardHtml.includes(i18n.t('calendar.tag.TOURNAMENT')),
+  '对照：这张带 stage 的卡片本身渲染出来了（否则下面那条"没有轮次"是假绿）',
+);
+/*
+ * ⚠️⚠️ 这两条针**必须**是字面量，不能写成 `i18n.t('calendar.stage.FINAL')` ——
+ *    那是 2026-09-14 之前的写法，而 `calendar.stage.*` 这批词条已经随「轮次」
+ *    一起从字典里删掉了。i18next 对**缺键**是"原样返回键名"，于是针变成了字符串
+ *    `'calendar.stage.FINAL'`，而渲染结果里当然不会有这串键 ⇒
+ *    `includes(...) === false` **恒成立**，这条断言从此什么都没验。
+ *
+ *    这就是本仓记过的「反面断言换名/换词条之后是**静默变绿**，不是变红」
+ *    （`liverender.tsx` 的 `noEmbedBilibili` 那一段有同族的完整记录）。
+ *    ⇒ 词条没了的检查，针只能写字面量：现在唯一还成立的说法就是
+ *      "「轮次」这两个字，以及枚举原始值 `FINAL`，都不该出现"。
+ */
+assert.equal(stageCardHtml.includes('轮次'), false, '★ 卡片上不该再印「轮次」徽章');
+assert.equal(stageCardHtml.includes('FINAL'), false, '★ 枚举原始值 FINAL 更不该出现');
+ok('★ 对照 fixture（stage: FINAL）渲染了，但「轮次」一个字都没冒出来');
+
+/*
+ * ⚠️ 同理：`calendarGrid.filterStage` 也已经删了，针换成字面量。
+ *    中文那一侧被 `'轮次'` 覆盖（上面那条 + 这一条各查一遍不同的产物），
+ *    英文那一侧靠 `'Stage'` —— 英文词条的值逐字就是它。
+ */
+for (const needle of ['轮次', 'Stage']) {
+  assert.equal(
+    all.includes(needle),
+    false,
+    `★ 整份渲染结果里不该出现「${needle}」（轮次这一维已经从界面上删掉）`,
+  );
+}
+ok('★ ⑤ 反向断言：筛选栏词条 + 卡片徽章 + 枚举原始值，轮次一个都不剩');
 
 console.log('');
 console.log(`通过 ${pass} 项。`);
