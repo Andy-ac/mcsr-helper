@@ -1114,7 +1114,161 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
     false,
     '★ 能红证明：旧写法（同一判据）会被认出来 ⇒ 上面那条断言有区分力',
   );
-  ok('★ F2 回归守卫：列表不再由 loading 状态决定画不画（能红证明：旧写法会被认出）');
+  ok('★ F2 回归守卫（t40 那一版）：列表不再由 loading 状态决定画不画');
+
+  /*
+   * ★★ t41 返工：**上面那条守卫只防住了"整块消失"，防不住"塌成空数组"。**
+   *
+   * ⚠️ 这正是 t40 的失败形状：`items` 写成
+   *      `auth.user && mine.status === 'ok' ? mine.data.items : []`
+   *    ⇒ 重拉期间（`status` 被 `useAsync` 置回 `loading`）`items` 变成 **`[]`**，
+   *    而 `hasLoaded` 已经为真 ⇒ `MyLiveList` 收到 0 条 ⇒ 渲染**空态那句**
+   *    「还没有添加过。」—— 那是它自己注释里写明"不能给可能有数据的人看"的一句话。
+   *    ⇒ verifier 的判定：**"从『没东西』变成『说错话』"**，而且窗口 == 整次重拉时长
+   *      （扣住响应 700ms ⇒ 空态 727/715ms）。
+   *
+   * ⚠️ 所以这条守卫换了**形态**而不是只换措辞：它现在查的是
+   *    **"status 不是 ok 就落到 `[]`"** 这个形状 —— 修好的写法必须保留一份快照
+   *    （`lastOkItems.current`）作为 fallback，于是正则不再命中。
+   */
+  /*
+   * ⚠️ 这个判据的边界我写错过两版，都留档（否则下一个人会再错一次）：
+   *    · 第一版 `[^?]{0,60}?` ⇒ **对真缺陷也不命中**：`?` 后面紧跟空格，而 `[^?]`
+   *      把那个空格之后的内容也挡掉了 ⇒ 连旧写法都测不到（**探针自己先红了**）；
+   *    · 第二版 `[\s\S]{0,80}?` ⇒ **对修好的代码误报**：它能跨过嵌套三目，
+   *      把**外层**（登录态那层）末尾的 `: []` 也算成命中；
+   *    · 现在这版 `[^()]{0,60}?`（**同一分支里不许出现括号**）：
+   *      · `… === 'ok' ? mine.data.items : []`                   ⇒ 命中（真缺陷）；
+   *      · `… === 'ok' ? mine.data.items : lastOkItems.current`  ⇒ 不命中（修好的写法）；
+   *      · `auth.user ? (… ? … : lastOkItems.current) : []`      ⇒ 不命中（t41 的真实形状：
+   *        内层带回退、外层才是 `[]` —— 那时它**是登录态兜底，不是缺陷**）。
+   *    ★ 与"**问题对照**"同一条：判据必须回答**你要问的那个问题**
+   *      （"非 ok 时是否塌成空数组"），而不是"文件里出现过 `: []`"。
+   */
+  /*
+   * ★★ 判据的选择过程值得留档 —— 我先写错过**三版负向正则**，全部失败：
+   *    · `[^?]{0,60}?`  ⇒ 对真缺陷也不命中（`?` 后的空格被一起挡掉，探针自己先红）；
+   *    · `[\s\S]{0,80}?` ⇒ 对修好的代码误报（跨过嵌套三目，把**外层** `: []` 算成命中）；
+   *    · `[^()]{0,60}?`  ⇒ 仍然误报 —— 因为**外层那个 `: []` 之前没有任何括号**，
+   *      而内层的 `? … : lastOkItems.current` 全在限定长度之内 ⇒ 正则照样走到外层。
+   *    ⇒ 根因不是正则写得不够巧，而是**「这个 `: []` 到底属于哪一层三目」本质上是
+   *      嵌套结构问题，正则判不了**（我们没有解析器，也不该为一条自检引入解析器）。
+   *
+   * ★ 所以换成**正向不变量**，它才是"不许塌成空数组"的可判定形式：
+   *    **首次成功之后，`items` 的 fallback 必须是那份快照（`lastOkItems.current`）。**
+   *    这一句直接描述"重拉期间列表里还有东西"，而不是"某个子串没出现"。
+   *    ⚠️ 旧写法（`… : []`）会让这条**不命中** ⇒ 有区分力；
+   *    ⚠️ 但它**不是充分条件**：把快照赋成 `[]` 仍然能骗过它（见下面那条"快照来源"断言）。
+   */
+  const hasSnapshotFallback = /status\s*===\s*['"]ok['"][\s\S]{0,120}?lastOkItems\.current/;
+  assert.ok(
+    hasSnapshotFallback.test(withoutComments),
+    '★ F2 回归守卫（t41）：`items` 在非 ok 时**必须回退到快照**（`lastOkItems.current`）—— ' +
+      '否则重拉期间会塌成 `[]`，`MyLiveList` 就会说"还没有添加过。"',
+  );
+  assert.equal(
+    hasSnapshotFallback.test("const items = mine.status === 'ok' ? mine.data.items : [];"),
+    false,
+    '★ 能红证明：旧写法（t40 的 `… : []`）**没有快照回退** ⇒ 上面那条断言会失败',
+  );
+  /*
+   * 补上"快照从哪来" —— 防止有人把快照写成常量空数组来骗过上面那条。
+   * ⚠️ 两句合起来才构成"重拉期间仍有数据"的完整判据。
+   */
+  assert.ok(
+    /if\s*\(mine\.status\s*===\s*['"]ok['"]\)\s*lastOkItems\.current\s*=\s*mine\.data\.items/.test(
+      withoutComments,
+    ),
+    '★ F2 回归守卫（t41）：那份快照**必须在 `status === "ok"` 时由真实数据刷新**' +
+      '（否则它可能是个恒空的常量，照样会说错话）',
+  );
+  ok(
+    '★ F2 回归守卫（t41）：`items` 回退到「上次成功的数据」快照，且快照由真实数据刷新（能红证明：旧写法无快照 ⇒ 红）',
+  );
+
+  /*
+   * ★★ t41 的第二条守卫：**补丁不许用定时器清。**
+   *
+   * ⚠️ 这是我这一轮**真正踩到**的回归，代价可量化：把「`setTimeout(0)` 清补丁」与
+   *    「重拉期间继续渲染上一份 rows」放在一起之后，**用户刚保存的名字会闪回旧的**
+   *    （补丁一清，列表就拿 `lastOkItems` 渲染）。实测 `03-browser-live.mjs` 从
+   *    **109 passed / 0 failed** 掉到 **99 / 10**，并连带打乱后续删除步骤。
+   *    ⇒ 补丁必须**活到"服务端新数据真的到了"**为止（`refetching` + `useEffect`）。
+   *    ⚠️ 判据是「同一处既出现 `setTimeout` 又出现 `setPatches({})`」——
+   *    两条同时出现才是那个错法；修好的写法里 `setPatches({})` 只在 effect 内。
+   */
+  const timerClearsPatches = /setTimeout\([^;]{0,80}setPatches\(\{\}\)/.test(withoutComments);
+  assert.equal(
+    timerClearsPatches,
+    false,
+    '★ t41 回归守卫：不许用 `setTimeout(…)` 清 patches —— 那会让刚保存的值闪回旧的（实测代价 99/10）',
+  );
+  assert.equal(
+    /setTimeout\([^;]{0,80}setPatches\(\{\}\)/.test('setTimeout(() => setPatches({}), 0);'),
+    true,
+    '★ 能红证明：旧写法（定时器清补丁）会被同一判据认出 ⇒ 上面那条断言有区分力',
+  );
+  ok('★ t41 回归守卫：patches 不用定时器清（等服务端新数据到位，而不是等几帧）');
+
+  /*
+   * ★★ t41 / F3：**`/live` 里"加载中"必须只渲染一处。**
+   *
+   * t40 新增的那一块与既有那一块**在同一条渲染路径上** ⇒ `auth.loading` 为真时
+   * `.mylive` 里会渲染出 **「加载中… 加载中…」两遍**（verifier 扣住 `/api/auth/me`
+   * 拉长窗口后确定性复现，连续 8 个样本）。
+   * ⚠️ 判据同样先剥注释（否则我自己那段"原来还有一块"的说明会把计数顶到 2），
+   *    再数**渲染语句**的形状；两句自己拼一个能红的样例 + 一个不该命中的样例。
+   */
+  const loadingNode = /\{\s*auth\.loading\s*\?[\s\S]{0,60}?common\.loading/;
+  const loadingNodeHits = (withoutComments.match(new RegExp(loadingNode.source, 'g')) ?? []).length;
+  assert.equal(
+    loadingNodeHits,
+    1,
+    `★ F3：\`/live\` 里"加载中"的渲染只能有 1 处，实际 ${String(loadingNodeHits)} 处 ` +
+      '（两处同路径 ⇒ 界面会出现「加载中… 加载中…」）',
+  );
+  assert.equal(
+    (
+      "{auth.loading ? <p>{t('common.loading')}</p> : null}\n"
+        .repeat(2)
+        .match(new RegExp(loadingNode.source, 'g')) ?? []
+    ).length,
+    2,
+    '★ 能红证明：重复两块（t40 的形状）会被同一判据数到 2 ⇒ 上面那条断言有区分力',
+  );
+  ok(`★ F3：\`/live\` 的"加载中"渲染恰好 1 处（能红证明：重复两块会被数到 2）`);
+
+  /*
+   * ★★ F3 的**正面对照**（captain 的判据 ② 点名要的）：**"恰好 1 处"不能靠把 loading 整个删掉满足。**
+   *
+   * ⚠️ 上面那条只数"有几处"—— 把那一块**删掉**会得到 `0`，而 `0 ≠ 1` 会红 ✓；
+   *    但如果有人把它改成**渲染一个空元素**（`{auth.loading ? <p /> : null}`），
+   *    计数仍是 1，**判据照样绿**，而 `t40` 想要的语义（"加载时给一句话"）已经没了。
+   *    ⇒ 所以必须再钉两件：
+   *      ① 那一块**确实调用** `t('common.loading')`（不是渲染空壳）；
+   *      ② 该词条在**当前语言下真的解析出文字**（`t(key) !== key`）——
+   *         否则界面会显示 `common.loading` 这个原始键（本仓真发生过的那一类）。
+   */
+  assert.ok(
+    /auth\.loading\s*\?\s*<p[^>]*>\s*\{\s*t\(\s*['"]common\.loading['"]\s*\)/.test(withoutComments),
+    "★ F3 正面对照：加载中那一块必须**真的渲染 `t('common.loading')` 的文案**，" +
+      '不能靠"删掉这一块"或"渲染空元素"来满足"恰好 1 处"',
+  );
+  assert.notEqual(
+    i18n.t('common.loading'),
+    'common.loading',
+    '★ F3 正面对照：`common.loading` 必须在当前语言下解析出真实文案（否则界面会显示原始 key）',
+  );
+  assert.equal(
+    /auth\.loading\s*\?\s*<p[^>]*>\s*\{\s*t\(\s*['"]common\.loading['"]\s*\)/.test(
+      '{auth.loading ? <p /> : null}',
+    ),
+    false,
+    '★ 能红证明：空壳写法（`<p />`，不渲染文案）会被同一判据拒绝',
+  );
+  ok(
+    `★ F3 正面对照：那一块真的渲染文案「${i18n.t('common.loading')}」，且空壳写法会被拒`,
+  );
 
   /*
    * ★★ 行内编辑（t37）：`updateMyLiveLink` 此前**零调用者** —— 贴错了只能删掉重贴。

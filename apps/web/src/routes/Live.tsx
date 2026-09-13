@@ -1,5 +1,5 @@
 import type { UserLiveLink } from '@mcsr/shared/live';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { em } from '@/components/Emphasis';
 import { LiveCard } from '@/components/LiveCard';
@@ -174,7 +174,36 @@ function MyLiveSection() {
     [reloadKey, auth.user],
   );
 
-  const items: UserLiveLink[] = auth.user && mine.status === 'ok' ? mine.data.items : [];
+  /*
+   * ★★ t41 返工（verifier 在 t40 上复测判未达标）：**重拉期间不能再让 `items` 塌成 `[]`。**
+   *
+   * ⚠️⚠️ 这里踩的是一个比"整块消失"**更糟**的坑，值得写清楚：
+   *    `useAsync` 每次重跑都**先把状态置回 `loading`、旧数据被丢掉**（`useAsync.ts:34`），
+   *    所以原来这行的三目在重拉期间会给出 **`[]`**。
+   *    · t40 之前：那个状态**什么都不渲染** ⇒ 看起来"整块消失"（难看的空档）；
+   *    · t40 之后：有 `hasLoaded` 就渲染列表 ⇒ `MyLiveList` 拿到 **0 条**
+   *      ⇒ 它渲染**空态那句话**「还没有添加过。」—— 而那句正是它自己的注释写明
+   *      **"不能给可能有数据的人看"**的一句。⇒ verifier 的原话：**"从『没东西』变成『说错话』"。**
+   *    ⚠️ 而且窗口**等于整次重拉时长**：扣住 `GET /api/live/mine` 的响应 700ms
+   *      ⇒ 空态窗口 727ms / 715ms（慢网络下就是几百毫秒的假话）。
+   *
+   * ⇒ 修法：用 ref **保留"上一次成功拿到的那份 rows"**，重拉期间照旧渲染它（再叠加 `patches`）。
+   *    · `status === 'ok'` 时才刷新这份快照 ⇒ **不会闪回旧值**（新数据一到就整份替换）；
+   *    · 首次加载仍走骨架（`hasLoaded.current === false`）——
+   *      那时"一条都没有"与"还没拿到"本来就不该混淆。
+   */
+  const lastOkItems = useRef<UserLiveLink[]>([]);
+  if (mine.status === 'ok') lastOkItems.current = mine.data.items;
+
+  /*
+   * ⚠️ 只有**首次成功之后**才用这份快照：否则首次加载时 `shown` 会是 `[]`，
+   *    而调用方那层判断（`hasLoaded.current`）此时还是 false ⇒ 走骨架，不会说错话。
+   */
+  const items: UserLiveLink[] = auth.user
+    ? mine.status === 'ok'
+      ? mine.data.items
+      : lastOkItems.current
+    : [];
 
   /**
    * ★ 改完**就地更新**（t37 验收第 2 条），而不是重拉整页。
@@ -202,6 +231,40 @@ function MyLiveSection() {
    */
   const hasLoaded = useRef(false);
   if (mine.status === 'ok') hasLoaded.current = true;
+
+  /*
+   * ★★ t41：**补丁活到"服务端新数据真的到了"为止**（见 `save` 里那段三种清法对比）。
+   *
+   * ⚠️ 判据这里踩过一个坑，写下来：`useAsync` 在 loading 期间**保留上一次的 `data`**
+   *    ⇒ 不能只看 `status === 'ok'` 就清补丁 —— 那一刻 `data` 很可能还是**旧的一份**，
+   *    清掉补丁就把旧值放回屏幕上了（正是它要防的事）。
+   *    ⇒ 所以额外记一个「这次重拉到哪里为止」的标记：状态**离开 `ok`** 时说明新一轮
+   *      开始了，之后**再次回到 `ok`** 才说明新数据落定、可以安全清补丁。
+   *    ⚠️ 首次挂载时 `status === 'loading'`、`hasLoaded` 仍为 false ⇒ 不标记，
+   *      否则首次加载会被当成"一次重拉结束"而误清（虽然那时本来也没补丁）。
+   */
+  const refetching = useRef(false);
+  if (mine.status !== 'ok' && hasLoaded.current) refetching.current = true;
+  /*
+   * ★★ t41：`rev` —— 行内表单保存之后，用它让那一行**重挂载**（收起编辑表单）。
+   *
+   * ⚠️ 为什么必须显式做：行的"展开"态是 `MyLiveRow` 的**局部 state**，父组件改不到。
+   *    t40 时代它靠"重拉期间列表整块卸载"这个**副作用**顺便复位；t41 把卸载修掉之后
+   *    那个复位就没了 ⇒ 保存后表单一直开着，`03-browser-live.mjs` 从 109/0 掉到 99/10。
+   *    ⇒ 用 `rev` 把"该收起来了"这件事**显式**表达出来（见 `MyLiveList` 的 key）。
+   */
+  const [rev, setRev] = useState(0);
+  /*
+   * ⚠️ 依赖里用 `mine.status === 'ok' ? mine.data : null`，**不是 `mine.data`** ——
+   *    后者在联合类型上不成立（`data` 只属于 `ok` 那一支），TS 会直接报错。
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mine.status 是**纯触发器** —— 它标记「这一轮重拉的开始与结束」，effect 体内只读 ref
+  useEffect(() => {
+    if (refetching.current && mine.status === 'ok') {
+      refetching.current = false;
+      setPatches({});
+    }
+  }, [mine.status, mine.status === 'ok' ? mine.data : null]);
 
   const shown: UserLiveLink[] = items.map((it) => {
     const patch = patches[it.id];
@@ -245,19 +308,32 @@ function MyLiveSection() {
        * ② 再重拉一次，让服务端把 `platform` / `handle` 这些**派生字段**补齐
        *    （把 YouTube 换成 Twitch，平台就变了，"能嵌/不能嵌 + 那句解释"全跟着变）。
        *
-       * ⚠️ 补丁的清理时机是这段代码里**最容易写错**的一处，两个错法都试过：
-       *    · 用 `useEffect` 盯 `mine.status === 'ok'` 清 ⇒ 会在**旧数据仍为 ok 的那一帧**
+       * ⚠️ 补丁的清理时机是这段代码里**最容易写错**的一处（三个错法我都试过，代价各不相同）：
+       *    · `useEffect` 盯 `mine.status === 'ok'` 清 ⇒ 会在**旧数据仍为 ok 的那一帧**
        *      就清掉补丁，列表先闪回旧值、新值一个 RTT 后才到 —— 正好把"就地更新"抵消掉；
-       *    · 在 `save` 里 `await fetch()` 完再清 ⇒ 要多发一次请求，而且与 `useAsync`
-       *      那次拉取的返回顺序不确定。
-       *    ⇒ 最终做法：**在一次提交渲染之后再清**（`setTimeout(0)` 排在提交之后），
-       *      这样补丁至少生效一帧（用户看得见改动），随后 `useAsync` 的新数据接上，
-       *      而 `useAsync` 自己在 `loading` 期间**不渲染列表** ⇒ 不会出现"旧值闪回"。
+       *    · `save` 里 `await` 第二次 `fetch` 再清 ⇒ 多发一次请求，且与 `useAsync`
+       *      那次拉取的返回顺序不确定；
+       *    · ★★ **`setTimeout(0)` 在一次提交后就清** ⇒ t40 时代"碰巧能用"：那时候
+       *      列表在 `loading` 期间**整块不渲染**，所以清掉补丁也没有旧值可闪。
+       *      但 t41 改成"重拉期间继续渲染上一份 rows"之后，**它立刻变成真缺陷**：
+       *      补丁一清 → 列表拿 `lastOkItems`（**旧标题**）渲染 → 用户刚保存的名字闪回旧的。
+       *      实测代价：`03-browser-live.mjs` 从 **109 passed / 0 failed** 掉到
+       *      **99 / 10**（"the row shows the NEW name immediately" 失败，并连带打乱后续删除步骤）。
+       *    ⇒ 最终做法（t41）：**让补丁活到"服务端的新数据真的到了"为止** —— 见下面的
+       *      `patches` 清理 effect（它按"数据是否已重新到位"清，而不是按"过了几帧"清）。
        */
-      setPatches((p) => {
-        setTimeout(() => setPatches({}), 0);
-        return { ...p, [id]: patch };
-      });
+      setPatches((p) => ({ ...p, [id]: patch }));
+      /*
+       * ★★ t41：**这一行该收起来了。**
+       *
+       * ⚠️ 为什么必须显式做：行内表单的展开态（`editing`）是 `MyLiveRow` 的**局部 state**，
+       *    父组件改不到；t40 时代它靠"重拉期间整块卸载"这个**副作用**顺便复位，
+       *    而 t41 把卸载修掉之后那个偶然复位就没了 ⇒ 保存后表单**一直开着**
+       *    （`03-browser-live.mjs` 因此从 109/0 掉到 99/10：那一行此刻是表单、
+       *    不是展示态，`the row shows the NEW name immediately` 拿到 `null`）。
+       *    ⇒ `rev + 1` ⇒ `MyLiveRow` 的 effect 收起编辑表单（见那里的注释）。
+       */
+      setRev((r) => r + 1);
       setReloadKey((k) => k + 1);
     } catch (error) {
       setFailure(errorText(error));
@@ -324,7 +400,12 @@ function MyLiveSection() {
         </div>
       ) : null}
 
-      {auth.loading ? <p className="state">{t('common.loading')}</p> : null}
+      {/*
+        ★★ t41 / F3（t40 引入）：这里**原来还有一块** `{auth.loading ? <p>加载中…</p> : null}`
+        —— 与上面（登录态判断那段）的那一块**在同一条渲染路径上**，于是 `auth.loading`
+        为真时 `.mylive` 里会渲染出 **「加载中… 加载中…」两遍**（verifier 扣住
+        `/api/auth/me` 拉长窗口后确定性复现，连续 8 个样本）。⇒ **删掉这一块**，只保留上面那一处。
+      */}
 
       {/*
         ★★ F2（t38 实测）：**后台重拉期间列表不能消失**。
@@ -354,6 +435,7 @@ function MyLiveSection() {
           origin={origin}
           onDelete={(id) => void remove(id)}
           onEdit={(id, patch) => void save(id, patch)}
+          rev={rev}
           deletingId={deletingId}
           savingId={savingId}
         />

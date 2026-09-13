@@ -1,6 +1,6 @@
 import type { LiveEmbedReason, UserLiveLink } from '@mcsr/shared/live';
 import { liveEmbedDecision, userLiveLinkUrl } from '@mcsr/shared/live';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
 import { MyLiveForm } from '@/components/MyLiveForm';
@@ -35,6 +35,7 @@ export function MyLiveList({
   origin,
   onDelete,
   onEdit,
+  rev = 0,
   deletingId,
   savingId = null,
 }: {
@@ -52,6 +53,16 @@ export function MyLiveList({
    *    编辑态的提交体形状与新增态不同，这是最容易写错的一处。
    */
   onEdit: (id: string, patch: { url: string; title: string | null }) => void;
+  /**
+   * ★ t41：**保存代号** —— 每次"某一行保存成功"就 +1。
+   *
+   * ⚠️ 它存在的唯一理由：行内表单的展开态（`editing`）是**行自己的局部 state**，
+   *    父组件改不到它；而 t40 时代它靠"重拉期间整块卸载"这个**副作用**顺便复位 ——
+   *    t41 把"卸载"修掉之后，那个偶然复位就没了 ⇒ 保存后表单**一直开着**
+   *    （`03-browser-live.mjs` 从 109/0 掉到 99/10）。
+   *    ⇒ 用这个数字把"该收起来了"这件事**显式**表达出来（见 `MyLiveRow` 的 effect）。
+   */
+  rev?: number;
   /** 正在删的那一行（行内二次确认之后置位，用来禁用按钮）。 */
   deletingId: string | null;
   /** 正在保存的那一行（编辑表单提交中，用来禁用按钮）。 */
@@ -91,6 +102,7 @@ export function MyLiveList({
           origin={origin}
           onDelete={onDelete}
           onEdit={onEdit}
+          rev={rev}
           deleting={deletingId === link.id}
           saving={savingId === link.id}
         />
@@ -110,6 +122,7 @@ function MyLiveRow({
   origin,
   onDelete,
   onEdit,
+  rev,
   deleting,
   saving,
 }: {
@@ -117,6 +130,8 @@ function MyLiveRow({
   origin: string;
   onDelete: (id: string) => void;
   onEdit: (id: string, patch: { url: string; title: string | null }) => void;
+  /** ★ t41：保存代号（父层每次"某行保存成功"就 +1）—— 它变化 ⇒ 收起本行的编辑表单。 */
+  rev: number;
   deleting: boolean;
   saving: boolean;
 }) {
@@ -127,6 +142,29 @@ function MyLiveRow({
    *   展开态与删除确认一样是**这一行**的状态，所以放在这里而不是列表层。
    */
   const [editing, setEditing] = useState(false);
+
+  /*
+   * ★★ t41：**`rev` 变了就把编辑表单收起来。**
+   *
+   * ⚠️ 为什么必须有这一段：`editing` 是本行的局部 state，父组件改不到它。
+   *    t40 时代它靠一个**偶然**复位 —— 重拉期间列表整块卸载 ⇒ 行被重挂载 ⇒ `editing` 回 false。
+   *    t41 把"重拉期间继续渲染列表"修好之后，那个**副作用没了** ⇒ 保存成功后
+   *    编辑表单**一直开着**，于是 `03-browser-live.mjs` 的
+   *    `the row shows the NEW name immediately` 拿到 `null`（那一刻那一行还是**表单**），
+   *    整脚本从 **109 passed / 0 failed** 掉到 **99 / 10**。
+   *    ⇒ 把"该收起来了"**显式**表达出来，不再依赖卸载。
+   *
+   * ⚠️ 用 ref 记住上一次的 `rev`，**不是**把 `rev` 放进 key —— 放进 key 会连带把
+   *    删除确认态 `confirming` 也重置，那是另一件事的副作用（而且 key 一变就是重挂载，
+   *    代价比"改一个 state"大）。
+   */
+  const seenRev = useRef(rev);
+  useEffect(() => {
+    if (seenRev.current !== rev) {
+      seenRev.current = rev;
+      setEditing(false);
+    }
+  }, [rev]);
 
   /*
    * 外链**一定存在**：认得出平台就按平台拼频道页，认不出就用用户原样那条 ——
