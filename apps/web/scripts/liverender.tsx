@@ -429,7 +429,7 @@ console.log(`\n【${LANG}】直播卡：四种"嵌不出来"，各自说清为�
       '若两者相同，下面的区分度断言就自动成立、失去意义（等于没有区分度）',
   );
   assert.ok(
-    /不允许|不支持|不能|禁止|cannot|not allowed|does not allow/.test(biliSaid),
+    /不允许|不支持|不能|禁止|cannot|not allowed|does not allow/i.test(biliSaid),
     `那句必须明说"这个平台自己禁止嵌入"（不能只说外链、也不能是转圈的空话）—— 实际渲染「${biliSaid}」`,
   );
   ok('★★ B站 那一行用的是**专属句**（与通用句不同），且明说了"不允许嵌"');
@@ -624,6 +624,27 @@ const authoringForm = html(
      *    扫描扫一片空白，断言恒绿。见上面 `authoringForm` 的说明。
      */
     authoringForm,
+    /*
+     * ★ 同理（④ 的 `myLive.`）：**两件必须成对** —— 把 `myLive.` 加进前缀表，
+     *   同时把私人列表的产物并进这里。少任何一半都是“换个姿势的假通过”：
+     *   · 只加前缀 ⇒ 扫空产品，那道前缀恒绿；
+     *   · 只加产物 ⇒ 那一组键没人守。
+     * ⚠️ `MyLiveList` 的三档结局里，**只有“认不出平台”那一档会渲染 `myLive.*`**
+     *    （能嵌时画播放器、B站 时渲染 `myLive.notSupported`）——
+     *    两者都会命中，所以这一条一行把两个键都拉进了扫描面。
+     */
+    html(
+      <ul>
+        <MyLiveList
+          items={[myLink({ platform: null, handle: null, url: 'https://example.invalid/x' })]}
+          loggedIn={true}
+          origin="mcsr.example"
+          onDelete={() => undefined}
+          onEdit={() => undefined}
+          deletingId={null}
+        />
+      </ul>,
+    ),
   ].join('\n');
 
   /*
@@ -636,7 +657,12 @@ const authoringForm = html(
    *    是因为 `authoringForm` 现在真的把 `authoring.directHint` 渲染进了产物 ——
    *    两者**必须成对**：只加前缀 = 假通过；只加产物 = 那个键没人守。
    */
-  const prefixes = ['live.', 'liveManage.', 'enterVideo.', 'authoring.'];
+  /*
+   * ⚠️ `'myLive.'` 是**需求④** 的命名空间。加它的前提是上面 `everything` 里
+   *    **真的并进了 `MyLiveList` 的产物**（否则扫一片空白）—— 加名字 ≠ 有覆盖，
+   *    `authoring.*` 就是活教训：**只加前缀 = 假通过；只加产物 = 那个键没人守。**
+   */
+  const prefixes = ['live.', 'liveManage.', 'enterVideo.', 'authoring.', 'myLive.'];
   const leaked: string[] = [];
   for (const p of prefixes) {
     const re = new RegExp(`${p.replace('.', '\\.')}[a-zA-Z][A-Za-z]*`, 'g');
@@ -692,6 +718,13 @@ const authoringForm = html(
      */
     ['live.', 'live.gotoChannel'],
     ['authoring.', 'authoring.directHint'],
+    /*
+     * ★ ④ 的 `myLive.` —— 上面 `everything` 里并进的那一行正是"认不出平台"的私人行，
+     *   而那一档渲染的就是 `myLive.linkOnly`。⇒ 译文在产物里 ⇒ 那个组件真的被渲染了。
+     * ⚠️ 挑这个键（而不是 `myLive.title`）：`title` 在**页面**上（`Live.tsx`），
+     *   不在这个产物里 —— 那正是上面 `live.title` 那个假守卫踩过的同一个坑。
+     */
+    ['myLive.', 'myLive.linkOnly'],
   ];
   for (const [prefix, key] of coverage) {
     assert.ok(
