@@ -347,29 +347,48 @@ calendarRoute.patch('/calendar/series/:id', requireCapability('content.author'),
 });
 
 /**
- * 给一个系列上色 / 去掉颜色（需求⑤，2026-09-13）。**owner 专属**。
+ * 给一个系列上色 / 去掉颜色（需求⑤，2026-09-13）。**owner 或编辑（`content.author`）**。
  *
  * ---------------------------------------------------------------------------
- * 为什么权限是 `canHardDelete`（与删除同档），而不是与改名同档的 `content.author`
+ * 权限：与「建系列 / 改系列名」同档，**不是**与删除同档（2026-09-14 用户裁决）
  * ---------------------------------------------------------------------------
- * 用户原话是「允许 **owner** 修改每个系列的颜色」，所以这一条是**指名给 owner 的**。
- * 判据直接用谓词 `canHardDelete`：`permissions.ts` 写明它是"谁能动系列/谁能真删"
- * 的**唯一**定义点，前端隐藏按钮与服务端拦截都调它。
+ * 用户原话是「允许 owner 修改每个系列的颜色」。第一版照字面做成了 **owner 专属**
+ * （谓词 `canHardDelete`），并把这个取舍报了上去 —— 用户随后裁决**放宽**：
+ * 编辑器也可以改。
  *
- * ⚠️ **不要**在这里写 `role === 'owner'`，也**不要**新开一个能力（比如 `series.color`）：
- *    能力是可以被一行矩阵编辑静默授予的，而谓词不可能（见 permissions.ts 里那段长注释）。
- *    这是本项目为"只有 owner"这件事定下的唯一写法。
+ * 理由与本仓那条通用规矩一致：**可逆的走 `content.author`，不可逆的才留给 owner**。
+ * 「换个颜色」正是一个可逆的、纯装饰的动作（再点一下就回去了），
+ * 而用户为删除系列定下 owner 专属的理由恰恰是"它在一次动作里硬删掉该系列下每一场
+ * 赛事**连同版本历史**"——这一条完全没有那个性质。
+ * ⚠️ 另一个现实理由：系列是**编辑建的**。要求 owner 才能上色，等于"谁建的谁不能调"，
+ *    而那不是一条能长期维持的规则。
+ *
+ * ⚠️ 判据用的是**同一个能力** `content.author`（与建系列 / 改系列名那两条端点完全一样），
+ *    而不是再拼一个 `canHardDelete(role) || can(…)`。理由：**判据只能有一处**。
+ *    owner 本来就包含 `content.author`（`permissions.ts` 里 `owner: [...EDITOR_CAPS, …]`
+ *    —— owner 的能力与 admin 完全相同，多出来的那一份是**等级**不是能力），
+ *    所以"owner 或编辑"这件事由**矩阵一行**表达就够了。
+ *    ⚠️ 代价要说清楚：**owner 能不能改颜色，从此取决于矩阵里 owner 那一行**。
+ *      将来若有人把它拆开（比如规定"只有编辑能上色"），owner 会**静默**失去这个入口
+ *      —— 而 `calendar-series-color.test.ts` 里那条用例把 editor 与 owner **两个都**
+ *      断言成 200，所以那种改动会红，不会静默。
+ *    ⚠️ 也**不要**新开一个能力（比如 `series.color`）：那样矩阵里会多一条
+ *      "永远和 content.author 同进同退"的行（见 permissions.ts 开头对这类拆分的批评）。
+ *
+ * ⚠️ 与**删除**那条的关键区别（这一条最容易写错，而错了不会报错）：
+ *    删除系列**不是**这个能力 —— 它走 owner 专属谓词 `canHardDelete`
+ *    （见下面 `DELETE /calendar/series/:id`）。两者判据不同是**故意的**：
+ *    删除不可逆（连带删掉该系列下每一场赛事与版本历史），换颜色可逆。
+ *    写成同一个的话，要么编辑改不了颜色，要么编辑能删系列。
  *
  * ⚠️ 路径里的 `color` 是**第三段**，所以它不会被 `/calendar/:id` 吃掉；
  *    但它仍然必须留在这一块里（`/calendar/:id` 之前）—— 理由见上面那条
  *    "系列这一块必须留在前面"的说明：`series` 是字面量段，`/calendar/:id`
  *    会把它当成事件 id。
  */
-calendarRoute.put('/calendar/series/:id/color', requireAuth, async (c) => {
+calendarRoute.put('/calendar/series/:id/color', requireCapability('content.author'), async (c) => {
   const user = c.get('user');
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-
-  if (!canHardDelete(user.role as UserRole)) return c.json({ error: 'forbidden' }, 403);
 
   const body = await c.req.json().catch(() => null);
   const parsed = CalendarSeriesColorInputSchema.safeParse(body ?? {});

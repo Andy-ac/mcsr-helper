@@ -4,9 +4,11 @@
  * ---------------------------------------------------------------------------
  * 这个文件守的六件事（每一条都是"错了不会报错"的那种）
  * ---------------------------------------------------------------------------
- * 1. **权限是owner 专属**，用谓词 `canHardDelete` 判（不是 `role === 'owner'`，
- *    也不是新开一个能力）。判错的后果是**双向的**：判宽了，editor 能改颜色
- *    （用户原话是"允许 owner 修改"）；判窄了，owner 点不动 —— 而两次都不会报错。
+ * 1. **权限是 owner 或编辑（`content.author`）**（2026-09-14 用户裁决放宽），
+ *    用 `canHardDelete(role) || can('content.author', role)` 判 —— 不是
+ *    `role === 'owner'`，也不是新开一个能力。判错的后果是**双向的**：
+ *    判宽了，reviewer / admin 也能改颜色；判窄了，**编辑点不动**（而系列是编辑建的，
+ *    那等于"谁建的谁不能调"）—— 而两次都不会报错。
  * 2. **传的是键、不是色值**。`#ff0000` 必须 400：静默存进去的话，
  *    `seriesColorValue()` 会在渲染时把它当成"没上色"（那个函数只认键），
  *    表现是"owner 改了颜色但界面没变"，而库里从此多了一个永远不生效的值。
@@ -163,7 +165,7 @@ function eventRowsSnapshot(): Array<Record<string, unknown>> {
   return rows.map((r) => ({ ...r }));
 }
 
-describe('⑤ 系列颜色：owner 专属的写路径', () => {
+describe('⑤ 系列颜色：owner 与编辑可写的写路径', () => {
   it('★ 路由顺序：这个端点存在，而不是被 /calendar/:id 吃掉回 404', async () => {
     /*
      * ⚠️ 一条最便宜的守门：**匿名**打这个端点必须回 401（未登录），
@@ -181,32 +183,44 @@ describe('⑤ 系列颜色：owner 专属的写路径', () => {
     assert.equal(res.status, 401, `匿名必须是 401，实际 ${String(res.status)}`);
   });
 
-  it('★★ 非 owner（editor / reviewer / admin / 普通用户）一律 403 —— 用户原话是"允许 owner 修改"', async () => {
+  it('★★ 编辑及以上（editor / admin / owner）都能改；reviewer 与普通用户 403', async () => {
     /*
-     * ⚠️ 这里刻意**把四个非 owner 角色都测一遍**，因为"判据写错"有好几种长相，
-     *    而它们各自只被其中一个角色抓到：
-     *      · 写成 `content.author` → **editor 会被放行**（他有那个能力）；
-     *      · 写成 `content.author` 或 `role !== 'user'` → reviewer 也会被放行；
-     *      · 把权限做成**能力矩阵里的一行**并顺手给 admin → **admin 会被放行**。
-     *        这正是 `permissions.ts` 里那段长注释警告的失效方式：
-     *        "只要有人后来把这一项也加进 admin 那一行，'只有 owner'就静默失效了，
-     *        而所有测试依然全绿"。
-     *      · 只测一个角色的话，上面三种都溜得过去 —— 所以四个都要测。
+     * ★ 2026-09-14 用户裁决**放宽**了这条权限：第一版做成了 owner 专属
+     *    （照"允许 owner 修改颜色"的字面），用户随后选择"也放开给编辑"。
+     *    理由与本仓那条通用规矩一致：**可逆的走 `content.author`，
+     *    不可逆的才留给 owner** —— 换个颜色再点一下就回去了，
+     *    而删系列是"一次动作硬删掉该系列下每一场赛事连同版本历史"。
+     *    ⚠️ 现实理由同样重要：**系列是编辑建的**，要求 owner 才能上色
+     *      等于"谁建的谁不能调"，那不是一条能长期维持的规则。
      *
-     * ⚠️ 判据是谓词 `canHardDelete(role)`（只有 owner 为真），不是 `role === 'owner'`
-     *    那种写法散在路由里 —— 谓词是"谁能真删/谁能动系列"的唯一定义点。
+     * ⚠️★ 判据就是**建系列 / 改系列名的那个能力** `content.author`，
+     *    而它是"**editor 及以上**"：`MATRIX.admin` 与 `MATRIX.owner` 都包含
+     *    `EDITOR_CAPS`。⇒ **admin 能改颜色是预期行为**，不是判宽了
+     *    （第一版这条用例把 admin 也算进"该被挡住"，实测拿到 200 —— 那是**用例写错了**，
+     *    不是实现错了。把它记在这里，免得下一个人再按"只有 editor 和 owner"去改实现）。
+     *    真正被挡住的只有**没有那个能力**的两个：reviewer（只能审）与普通用户。
+     *
+     * ⚠️ 这里刻意**把五种角色都测一遍**，因为"判据写错"有好几种长相：
+     *      · 写成 `role !== 'user'` → **reviewer 会被放行**（而它不该）；
+     *      · 写成 `canHardDelete(role)` → **editor 会被挡住**（回到第一版的窄口径）；
+     *      · 写成 `role === 'editor' || role === 'owner'`（硬编码角色名）→
+     *        矩阵一改就**静默失效**，而所有测试依然全绿
+     *        （这正是 `permissions.ts` 里那段长注释警告的失效方式）。
+     *      · 只测一两个角色的话，上面几种都溜得过去。
+     *
+     * ⚠️ 判据是那个能力本身（`requireCapability('content.author')`），
+     *    不是散在路由里的 `role === '…'`。
      */
     const owner = await makeUser('owner');
     const editor = await makeUser('editor');
-    const reviewer = await makeUser('reviewer');
     const admin = await makeUser('admin');
+    const reviewer = await makeUser('reviewer');
     const member = await makeUser('user');
     const seriesId = await createSeries(owner.cookie, '权限边界');
 
+    // ① 该被挡住的：没有 `content.author` 的那两个
     for (const [who, cookie] of [
-      ['editor', editor.cookie],
       ['reviewer', reviewer.cookie],
-      ['admin', admin.cookie],
       ['普通用户', member.cookie],
     ] as const) {
       const res = await call('PUT', `/api/calendar/series/${seriesId}/color`, {
@@ -222,16 +236,32 @@ describe('⑤ 系列颜色：owner 专属的写路径', () => {
     assert.equal(colorAuditEntries(seriesId).length, 0);
 
     /*
-     * ★ 正面对照：同一批人里唯一能改的 owner 必须能改 ——
-     *   只断言"别人都不行"的话，一个把所有人都挡住的实现（比如错误地回 404）
-     *   也能让上面四条全绿。
+     * ② 该被放行的三个：**editor / admin / owner**。
+     *    ⚠️ 只断言"别人都不行"的话，一个把所有人都挡住的实现（比如错误地回 404）
+     *      也能让上面两条全绿 —— 所以正面那一半必须有，而且要断言**库里真的落了值**。
      */
-    const allowed = await call('PUT', `/api/calendar/series/${seriesId}/color`, {
-      json: { color: 'red' },
-      cookie: owner.cookie,
-    });
-    assert.equal(allowed.status, 200, `owner 必须能改：${JSON.stringify(allowed.body)}`);
-    assert.equal((await seriesRow(seriesId))?.color, 'red');
+    /*
+     * ⚠️ `previousColor` 逐次断言：第一次是 `null`（还没上过色），后面两次是 `'red'`
+     *   —— 三个角色**依次**改同一个系列。写成"每次都 null"会红，而那不是实现的错：
+     *   previousColor 的定义就是"这一次之前是什么"，第二次开始它就真的是 red。
+     */
+    let expectedPrevious: string | null = null;
+    for (const [who, cookie] of [
+      ['editor', editor.cookie],
+      ['admin', admin.cookie],
+      ['owner', owner.cookie],
+    ] as const) {
+      const res = await call('PUT', `/api/calendar/series/${seriesId}/color`, {
+        json: { color: 'red' },
+        cookie,
+      });
+      assert.equal(res.status, 200, `${who} 必须能改：${JSON.stringify(res.body)}`);
+      assert.equal((await seriesRow(seriesId))?.color, 'red', `${who} 改完之后库里要真的是 red`);
+      assert.equal(res.body.previousColor, expectedPrevious, `${who} 那一次的 previousColor`);
+      expectedPrevious = 'red';
+    }
+    // 三次都写成功 ⇒ 审计三条（每次改色各留一条）
+    assert.equal(colorAuditEntries(seriesId).length, 3);
   });
 
   it('★ 不存在的 id → 404', async () => {

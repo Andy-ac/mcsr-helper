@@ -31,7 +31,7 @@ import {
 } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { CALENDAR_PAGE_SIZE } from '@/lib/calendarFormat';
-import { useCanHardDelete } from '@/lib/capabilities';
+import { useCan, useCanHardDelete } from '@/lib/capabilities';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -334,6 +334,16 @@ export function CalendarList() {
    */
   const errorText = useApiErrorText();
   const canHardDeleteNow = useCanHardDelete();
+  /*
+   * 「能直接写内容」= **编辑及以上**（editor / admin / owner），与「建系列 / 改系列名 /
+   * 提交活动」同一个能力。
+   *
+   * ⚠️ 它和 `canHardDeleteNow` 是**两个不同的判据**，而这一页同时用到了：
+   *    · 删系列 —— 只有 owner（不可逆，连带删掉该系列下每一场赛事与版本历史）
+   *    · 改系列颜色 —— `content.author`（可逆、纯装饰）
+   *    写成同一个的话，要么编辑改不了颜色，要么编辑能删系列 —— 两种都不会报错。
+   */
+  const canAuthor = useCan('content.author');
   const [seriesReloadKey, setSeriesReloadKey] = useState(0);
   const [seriesDeleteConfirm, setSeriesDeleteConfirm] = useState<{
     id: string;
@@ -1022,10 +1032,22 @@ export function CalendarList() {
           setSeriesDeleteError(null);
         }}
         /*
-         * ★ 给系列上色（需求⑤，2026-09-13）。两个 prop 都是**可选**的，
-         *   判据和上面删除入口**一模一样**（`canHardDeleteNow`，owner 专属）：
-         *   用户原话是「允许 **owner** 修改颜色」，所以非 owner 连入口都不该看见。
-         *   前端不显示只是"别让人按一个会 403 的按钮"，**拦截在服务端**。
+         * ★ 给系列上色（需求⑤，2026-09-13；权限 2026-09-14 放宽）。
+         *   两个 prop 都是**可选**的：不传 ⇒ 组件不渲染选色入口。
+         *
+         * ⚠️ 判据是**建系列 / 改系列名的同一个能力** `content.author`（这里经
+         *   `useCan('content.author')`），也就是"编辑及以上"：editor / admin / owner
+         *   都包含它（`MATRIX.owner = [...EDITOR_CAPS, 'user.moderate']`）。
+         *   与**删除入口不同档**：删除仍是 owner 专属（`canHardDeleteNow`），
+         *   因为它在一次动作里硬删掉该系列下每一场赛事连同版本历史；
+         *   而换个颜色再点一下就回去了，是可逆的、纯装饰的 —— 本仓那条通用规矩是
+         *   "可逆的走 `content.author`，不可逆的才留给 owner"。
+         *   ⚠️ 现实理由：**系列是编辑建的**，只给 owner 会让"谁建的谁不能调"。
+         *   ⚠️ 判据只有一处（`content.author`）—— 不要再写成
+         *   `canAuthor || canHardDeleteNow`：那是第二份会漂移的权限真相，而 owner
+         *   本来就在这个能力里。
+         *   ⚠️ 前端不显示只是"别让人按一个会 403 的按钮"，**拦截在服务端**
+         *   （`PUT /api/calendar/series/:id/color` 用 `requireCapability('content.author')`）。
          *
          * ⚠️ 传的是调色板的**键**（`'red'` / `null`），不是色值 —— 色值由
          *   `seriesColorValue()` 按主题翻（见 shared/constants.ts 的 `SERIES_COLORS`）。
@@ -1035,11 +1057,11 @@ export function CalendarList() {
          *   本地不自己拼一个"应该是这个颜色"的状态 —— 那种本地推断一旦和服务端
          *   不一致（比如请求被 403 挡下），界面会显示一个**并不存在**的颜色，
          *   而它看起来完全正常。
-         *   ⚠️ 这里**不** catch 错误：失败要冒出来（`useAsync` 的错误态会显示在
-         *   栏目里，见 `series.status === 'error'` 那条分支）。吞掉它的话，
+         *   ⚠️ 这里**不** catch 错误：失败要冒出来（组件自己的 `onSetColor` 调用点
+         *   接住它并显示「颜色没改成功」，见 `CalendarSeriesSection`）。吞掉它的话，
          *   "点了一下没反应"就成了唯一的反馈。
          */
-        canSetColor={canHardDeleteNow}
+        canSetColor={canAuthor}
         onSetColor={async (id, color) => {
           await setCalendarSeriesColor(id, color);
           setSeriesReloadKey((k) => k + 1);
