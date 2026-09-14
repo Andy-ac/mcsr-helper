@@ -63,13 +63,14 @@
  */
 import assert from 'node:assert/strict';
 import { SERIES_COLOR_KEYS, SERIES_COLOR_NONE, SERIES_COLORS } from '@mcsr/shared';
-import type { CalendarSeries } from '@mcsr/shared/calendar';
+import type { CalendarEvent, CalendarSeries } from '@mcsr/shared/calendar';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import type { QueueItem, ReviewDetail } from '@mcsr/shared/review';
 import i18n from 'i18next';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
+import { MemoryRouter } from 'react-router';
 
 import { CalendarReviewView } from '@/components/CalendarReviewView';
 import { CalendarSeriesSection } from '@/components/CalendarSeriesSection';
@@ -198,6 +199,98 @@ function series(over: Partial<CalendarSeries> = {}): CalendarSeries {
 }
 
 const noop = (): void => undefined;
+
+/**
+ * 一个形状完整的**赛事**（2026-09-14 加这一节时才有）。
+ *
+ * ⚠️ 这个夹具**不在 tsconfig 的 include 里**（`scripts/**`），所以字段少一个
+ *    不会有编译错误 —— 缺 `slots` 时 `CalendarCard` 会直接抛异常（它读
+ *    `event.slots.length`），而那看起来像"组件坏了"。字段按 `CalendarEvent` 写全。
+ * ⚠️ 标题用 **ASCII**：下面第 ⑯ 条要断言"英文界面里零汉字"，而事件标题是**数据**
+ *    （由这里喂进去）—— 用中文当夹具会让那条断言挂在夹具上，而不是产品文案上。
+ */
+function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
+  const startsAtLocal = over.startsAtLocal ?? '2026-11-14T20:00';
+  const endsAtLocal = over.endsAtLocal ?? null;
+  const startsAtUtc = over.startsAtUtc ?? Date.UTC(2026, 10, 14, 12, 0);
+  const endsAtUtc = over.endsAtUtc ?? null;
+  return {
+    id: 'ev-0',
+    title: 'Event zero',
+    titleEn: null,
+    descriptionMd: '',
+    startsAtLocal,
+    startsAtTz: 'Asia/Shanghai',
+    startsAtUtc,
+    endsAtLocal,
+    endsAtTz: null,
+    endsAtUtc,
+    slots: over.slots ?? [{ startsAtLocal, endsAtLocal, startsAtUtc, endsAtUtc }],
+    allDay: false,
+    url: null,
+    location: null,
+    tags: ['TOURNAMENT'],
+    stage: null,
+    level: null,
+    scope: null,
+    access: null,
+    scopeDetail: [],
+    seriesId: null,
+    seriesName: null,
+    seriesColor: null,
+    lang: 'zh-CN',
+    authorId: null,
+    authorName: null,
+    status: 'published',
+    createdAt: 0,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+/**
+ * **带 Router 上下文**的渲染，只给"展开块里有 `CalendarCard`"那一节用。
+ *
+ * ⚠️ 卡片是 `<Link to="/calendar/…">`，没有 Router 时它**抛异常**（`useHref() may be
+ *    used only in the context of a <Router>`）；而那个报错指向"路由"，不指向
+ *    "卡片该不该在这里" —— 用不带 Router 的 `render` 验展开，接线一坏就跑偏方向。
+ */
+const renderRouted = (props: Parameters<typeof CalendarSeriesSection>[0]): string =>
+  renderToStaticMarkup(
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(MemoryRouter, null, createElement(CalendarSeriesSection, props)),
+    ),
+  );
+
+/** 这段 HTML 里出现了几次某个子串。 */
+const countOf = (s: string, needle: string): number => s.split(needle).length - 1;
+
+/** 这段 HTML 里有几张指向赛事详情页的卡片（每张卡恰好一个 `/calendar/…` 链接）。 */
+const cardLinks = (s: string): number => (s.match(/href="\/calendar\//g) ?? []).length;
+
+/**
+ * 每一行系列按钮的「名字 + `aria-pressed` + `aria-expanded`」，**按渲染顺序**。
+ *
+ * ⚠️ 只读那一个 `<button>` 标签本身的属性 + 它后面的那一段文字（到下一个按钮为止），
+ *    不去匹配 `</button>` 收尾 —— 行内还有别的元素，非贪婪到第一个闭合标签
+ *    只能靠运气对得上。属性读完就够：这一节要问的是"哪一行展开着"。
+ */
+function rowStates(html: string): [string, string, string][] {
+  const re = /<button[^>]*class="series__item[^"]*"[^>]*>/g;
+  const rows: [string, string, string][] = [];
+  for (const m of html.matchAll(re)) {
+    const from = (m.index ?? 0) + m[0].length;
+    const nextAt = html.indexOf('<button', from);
+    const chunk = html.slice(from, nextAt === -1 ? undefined : nextAt);
+    const name = /class="series__name">([^<]*)</.exec(chunk)?.[1] ?? '';
+    const pressed = /aria-pressed="([^"]*)"/.exec(m[0])?.[1] ?? '';
+    const expanded = /aria-expanded="([^"]*)"/.exec(m[0])?.[1] ?? '';
+    rows.push([name, pressed, expanded]);
+  }
+  return rows;
+}
 
 /** 一组"服务已经答完了"的 props —— 每个用例只改它关心的那几项。 */
 function baseProps(over: Partial<Parameters<typeof CalendarSeriesSection>[0]> = {}) {
@@ -528,6 +621,193 @@ assert.equal(
 ok('没有 `onSetColor` ⇒ 色块全部禁用');
 
 /**
+ * ⑫b ★★ 系列的**展开 / 收起**（2026-09-14，用户第 ② 条）
+ *      —— 这一节**只覆盖渲染**，点击本身覆盖不了（见本节末尾那段边界说明）。
+ *
+ * 用户原话是「系列卡片点一下展开，**再点一下收起**（后者目前未做到）」。
+ * "再点一下收起"这件事的**判据**（URL 里的 `seriesId` 要不要清掉）住在容器
+ * （`routes/CalendarList.tsx` 的 `onSelect`）里，而那个组件这个脚本渲染不了：
+ * `CalendarList` 自己取数，纯 SSR 下永远停在"加载中"（见文件头的边界说明）。
+ *
+ * ⇒ 这里能覆盖、也必须覆盖的是**组件这一侧的判据**：
+ *   `expanded` 只有"非空 **且** `selectedId === s.id`"时才渲染出卡片。
+ *   两道判据里的第二道是**收起那一半的兜底** —— 容器把 `expanded` 传成 `null`
+ *   是第一道。只留第一道的话，接线写错就是"点了收起、卡片还在"，而那种错
+ *   在界面上看起来和"没点"一模一样。
+ */
+const expandableItems = [
+  series({ id: 's1', name: 'Row one' }),
+  series({ id: 's2', name: 'Row two' }),
+];
+const twoEvents: CalendarEvent[] = [
+  event({ id: 'ev-1', title: 'Event one' }),
+  event({ id: 'ev-2', title: 'Event two' }),
+];
+
+/*
+ * ⚠️ 探针：行状态提取器本身必须能命中。它写坏时返回空数组，而空数组在下面那些
+ *    `deepEqual` 里不会混过去 —— 但报出来的会是"组件没渲染出行"，指向错的地方。
+ *    先钉住它（本文件 `dots()` / `swatchLabels()` 两处都有同一条）。
+ */
+assert.deepEqual(
+  rowStates(
+    '<button type="button" class="series__item" aria-pressed="true" aria-expanded="false"><span class="series__name">X</span></button>',
+  ),
+  [['X', 'true', 'false']],
+  '行状态提取器本身必须能命中（否则下面几条是在比空数组）',
+);
+
+/*
+ * ⚠️ 这一节全部走 `renderRouted`（带 MemoryRouter），**不是**上面那个 `render`：
+ *    卡片里是 `<Link to="/calendar/...">`，没有 Router 上下文时它会**抛异常**。
+ *    用不带 Router 的那个渲染，接线一旦写错这里报的是 `useHref() may be used only
+ *    in the context of a <Router>` —— 那句话指向的是路由，而不是"卡片该不该在"，
+ *    排查方向当场就跑偏了。
+ */
+const collapsed = renderRouted(baseProps({ items: expandableItems }));
+assert.equal(countOf(collapsed, 'series__expanded'), 0, '没选中任何系列时不该有展开块（默认态）');
+assert.equal(cardLinks(collapsed), 0, '没选中任何系列时一张赛事卡片都不该有');
+assert.deepEqual(
+  rowStates(collapsed),
+  [
+    ['Row one', 'false', 'false'],
+    ['Row two', 'false', 'false'],
+  ],
+  '★ 没选中时每一行的 `aria-expanded` 都是 false（否则读屏软件会说反）',
+);
+ok('★ 没选中系列 ⇒ 无展开块、零卡片、每行 `aria-expanded="false"`');
+
+/*
+ * ★★ 这一条是**"收起"在组件这一侧的等价物**：容器收起时会把 `expanded` 传成
+ *    `null`，而这里**故意**传一份"已经取回来的上一次数据" + `selectedId: null`
+ *    —— 模拟"容器接线写错了/晚了一拍"的那一瞬间。
+ *    第二道判据（`selectedId === s.id`）必须把它挡住：用户点了收起，
+ *    屏幕上就不能再留着上一次的卡片。
+ */
+const staleData = renderRouted(
+  baseProps({
+    items: expandableItems,
+    selectedId: null,
+    expanded: { events: twoEvents, loading: false, now: 0 },
+  }),
+);
+assert.equal(
+  countOf(staleData, 'series__expanded'),
+  0,
+  '★ 收起之后**不能**继续显示上一次那份展开数据 —— 即使容器一时还握着它',
+);
+assert.equal(
+  cardLinks(staleData),
+  0,
+  '★ 收起之后卡片必须一张不剩（"点了收起、卡片还在"在界面上和"没点"长得一模一样）',
+);
+ok('★ 收起：即使 `expanded` 还握着上一份数据、`selectedId` 空了，也一张卡片都不渲染');
+
+const expandedS1 = renderRouted(
+  baseProps({
+    items: expandableItems,
+    selectedId: 's1',
+    expanded: { events: twoEvents, loading: false, now: 0 },
+  }),
+);
+assert.equal(
+  countOf(expandedS1, 'series__expanded'),
+  1,
+  '★ 选中 s1 且有数据 ⇒ 有且只有**一个**展开块（两个的话说明它对每一行都展开了）',
+);
+assert.equal(cardLinks(expandedS1), twoEvents.length, '★ 展开块里要真的渲染出那两张赛事卡片');
+assert.deepEqual(
+  rowStates(expandedS1),
+  [
+    ['Row one', 'true', 'true'],
+    ['Row two', 'false', 'false'],
+  ],
+  '★ `aria-expanded`（以及同源的 `aria-pressed`）必须**逐行**跟着 `selectedId`：命中的那一行 true，其它行 false',
+);
+assert.ok(
+  expandedS1.indexOf('series__expanded') > expandedS1.indexOf('Row one') &&
+    expandedS1.indexOf('series__expanded') < expandedS1.indexOf('Row two'),
+  '★ 展开块必须**夹在选中那一行和下一行之间** —— 长在整块末尾的话，用户会以为点开的是别的系列',
+);
+ok('★ 选中 s1 ⇒ 一个展开块 + 两张卡片，且 `aria-expanded` 只有命中那一行是 true');
+
+/*
+ * ⚠️ 反向：选中**另一个**系列（且它没有数据）⇒ 一个展开块都不该有。
+ *    这一条守着"展开块跟着 `selectedId` 走"的另一半：只验命中那一半的话，
+ *    `expanded && true` 这种恒真写法照样能过。
+ */
+const selectedOther = renderRouted(
+  baseProps({
+    items: expandableItems,
+    selectedId: 's2',
+    expanded: { events: twoEvents, loading: false, now: 0 },
+  }),
+);
+assert.equal(
+  countOf(selectedOther, 'series__expanded'),
+  1,
+  '★ 选中 s2 ⇒ 展开块仍然只有一个（它得跟着选中项换行，不能变成两个）',
+);
+assert.deepEqual(
+  rowStates(selectedOther),
+  [
+    ['Row one', 'false', 'false'],
+    ['Row two', 'true', 'true'],
+  ],
+  '★ 换一个系列选中：`aria-expanded` 也跟着换行（成对断言两个方向）',
+);
+assert.ok(
+  selectedOther.indexOf('series__expanded') > selectedOther.indexOf('Row two'),
+  '★ 展开块必须移到 s2 那一行下面去',
+);
+ok('★ 换成选中 s2 ⇒ 展开块移到 s2 下面，`aria-expanded` 与选中项一起换行');
+
+/*
+ * 取数中 / 空系列这两支也顺手钉住：它们是"点一下之后的头几百毫秒"和"点开一个
+ * 一场赛事都没有的系列"两种真实画面，而两者都必须**不是**一个空白块。
+ */
+const expanding = renderRouted(
+  baseProps({
+    items: expandableItems,
+    selectedId: 's1',
+    expanded: { events: [], loading: true, now: 0 },
+  }),
+);
+assert.equal(
+  cardLinks(expanding),
+  0,
+  '数据还没到时不该有卡片（拿 loading 那一份当数据的话，这里会是 0 张卡 + 一个空块）',
+);
+assert.ok(
+  textOf(expanding).includes(norm(t('common.loading'))),
+  '★ 取数中要说"加载中"，而不是渲染一个空块 —— 空块看起来像"这个系列没有赛事"',
+);
+ok('★ 展开取数中：说「加载中」，且没有卡片');
+
+const emptyExpanded = renderRouted(
+  baseProps({
+    items: expandableItems,
+    selectedId: 's1',
+    expanded: { events: [], loading: false, now: 0 },
+  }),
+);
+assert.ok(
+  textOf(emptyExpanded).includes(norm(t('calendar.seriesExpandedEmpty'))),
+  '★ 系列存在但一场赛事都没有时说「这个系列下暂时没有活动」那一句',
+);
+assert.equal(cardLinks(emptyExpanded), 0, '空系列不该有卡片');
+ok('★ 空系列展开：说"这个系列下没有活动"，不是空白块、也不是"还没有系列活动"');
+
+/*
+ * ⚠️⚠️ 边界（必须写清楚，别让下一个人以为这里验过交互）：
+ *    这一节**没有点击**。`renderToStaticMarkup` 不跑事件处理器，所以
+ *    "点一下会不会真的把 `seriesId` 清掉"（`CalendarList.onSelect` 里那三行）
+ *    **没有被任何自检覆盖** —— 它只能靠浏览器里点一次，或者容器层的测试。
+ *    这里验的是：**把 props 给对了**，组件会渲染成"展开"还是"收起"。
+ *    两者合起来才是那个功能；缺了容器那半，"再点一下收起"仍然可以是坏的。
+ */
+
+/**
  * ⑬ ★★ 审核详情页的时间：**多段必须全都看得见**，而且**旧快照也不能是空白**。
  *
  * ⚠️ 这一节存在的理由就是那个文件自己的头注释：手写的字段清单漏一项**不会报错**。
@@ -641,6 +921,18 @@ const all = [
   colored,
   withPicker,
   noOnSetColor,
+  /*
+   * ⚠️ 展开 / 收起那一节（⑫b）的产物**也要并进来**：泄漏扫描与第 ⑯ 条
+   *    "英文界面零汉字"都只扫这个数组。展开块里渲染的是**真的卡片**
+   *    （`CalendarCard`）—— 它是本脚本第一次把卡片渲进样本集，
+   *    不并进来的话，卡片那一堆词条在这份自检里等于没被看过。
+   */
+  collapsed,
+  staleData,
+  expandedS1,
+  selectedOther,
+  expanding,
+  emptyExpanded,
   multi,
   unresolved,
 ].join('');

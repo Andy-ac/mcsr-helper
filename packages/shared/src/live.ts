@@ -257,11 +257,22 @@ function fromLiveUrl(
   }
 
   if (host === 'youtube.com' || host === 'm.youtube.com') {
-    // `youtube.com/@handle`
-    if (segments.length === 1 && first.startsWith('@') && first.length > 1) {
+    /*
+     * `youtube.com/@handle` —— 也接受 `youtube.com/@handle/live`（2026-09-14）。
+     *
+     * ⚠️★ 为什么必须接受带 `/live` 的那一种：`/live` 是 YouTube **唯一**的
+     *    "频道级直播地址"（实测见 `liveChannelHref` 的注释）。用户从浏览器复制
+     *    频道直播页时拿到的是**带 `/live`** 的那一条 —— 不接受它就等于
+     *    "我们把最该用的那种链接判成坏链接"，而报错信息只会说他贴的东西认不出来。
+     */
+    if (
+      first.startsWith('@') &&
+      first.length > 1 &&
+      (segments.length === 1 || (segments.length === 2 && segments[1] === 'live'))
+    ) {
       return { platform: 'youtube', handle: first, liveVideoId: null };
     }
-    // `youtube.com/channel/UC…`（老的频道 ID）
+    // `youtube.com/channel/UC…`（老的频道 ID）；`/channel/UC…/live` 也走这条
     if (first === 'channel' && YOUTUBE_CHANNEL_ID.test(segments[1] ?? '')) {
       return { platform: 'youtube', handle: segments[1] ?? '', liveVideoId: null };
     }
@@ -567,29 +578,70 @@ export function liveVideoUrl(platform: LivePlatform, videoId: string): string {
 }
 
 /**
- * 卡片上「去原频道看」/「去看这一场」该指向哪。
+ * 「去原频道看」/「去看这一场」该指向哪。
  *
- * ⚠️ 与 `liveEmbedDecision` 的取值**方向一致**（都优先视频），但用途不同：
- *    那个回答"嵌哪个播放器地址"，这个回答"点出去看哪里"。
- *    两者用同一个优先级，界面上才不会出现"播的是这一场、点出去是频道页"的割裂。
+ * ---------------------------------------------------------------------------
+ * ★★ 2026-09-14 改了优先级：**优先频道级的"现在在播"地址**，不是那一场视频
+ * ---------------------------------------------------------------------------
+ * 用户报的现象：「目前我贴的 youtube 链接就不是频道通用的，而是指向上一场直播
+ * 的视频」—— 一条 `watch?v=<id>` 指向的是**某一次广播**，它下一场就过期了，
+ * 而这块界面列的是**频道**。
+ *
+ * 三个平台逐一实测过（方法：看页面自己声明的 canonical / og:url；从服务器上
+ * 抓的，本机 DNS 不可信 —— `.cache/probe-live-links4.mjs`）：
+ *
+ *   · **Twitch** `twitch.tv/<login>`
+ *       canonical 就是它自己 ⇒ **固定**。开播/没开播都指向同一个频道。
+ *   · **Bilibili** `live.bilibili.com/<房间号>`
+ *       房间页 ⇒ **固定**。标题跟着当前直播变，地址不变。
+ *   · **YouTube** `youtube.com/@handle/live`（或 `/channel/<UC…>/live`）
+ *       开播时 canonical = `watch?v=<当前这一场>`；
+ *       **没开播时回落到频道页**（200，canonical = `channel/<UC…>`）；
+ *       handle 不存在才是 404。
+ *       ⇒ 所以 YouTube **也有**频道级固定地址，就是 `/live` 这一条。
+ *       而 `watch?v=<id>` 的 canonical 就是它自己 —— 一次广播，必然过期。
+ *
+ * ⇒ 取值顺序（YouTube）：
+ *     ① 有频道标识（`handle` 非空）⇒ `<频道地址>/live`
+ *     ② 只有视频 ID ⇒ 那一场视频（**会过期**，但没有别的可指）
+ *     ③ 都没有 ⇒ 频道地址兜底
+ *   Twitch/B站 与以前一样，永远是频道/房间地址。
+ *
+ * ⚠️★ 与 **播放器**的取值**不再强求同源**，这一点和上一版不同，要写清楚：
+ *    上一版的判据是"嵌入用视频，链接才用视频；否则一律频道页"，目的是不让
+ *    "播的是这一场、点出去是频道页"那种割裂。现在两者回答的是**两个不同的问题**：
+ *      · 播放器 = "**这一条记录钉住的那一场**"（`liveVideoId` 存在时嵌它）
+ *      · 链接   = "**这个频道现在在播什么**"（`/live`）
+ *    对一块写着「直播」、按**频道**罗列的界面，链接那一侧必须是后者 ——
+ *    否则用户点进去看到的是上周那场，而那正是他报的缺陷。
+ *    ⚠️ 上一版那条判据要防的**死链**依然防住了：`/live` 是活的（频道存在时），
+ *      它不再指向 `youtube.com/channel/<非 UC 的垃圾>` 那种必然 404 的地址。
+ *
+ * ⚠️ Twitch 与 B站 解析出的 `liveVideoId` 永远是 null（`parseLiveLink` 对它们
+ *    只产出 handle）⇒ 这两个平台走的始终是频道页那条路。
+ *    库里可能有历史值（线上那行 Twitch 存过 `mcsrranked`）⇒ `liveVideoUrl` 里
+ *    有形状守卫，形状不对就退回频道页，免得拼出 `twitch.tv/videos/mcsrranked`。
  */
 export function liveChannelHref(
   channel: Pick<LiveChannel, 'platform' | 'handle' | 'liveVideoId'>,
 ): string {
   const videoId = channel.liveVideoId?.trim() ?? '';
+  const handle = channel.handle.trim();
+
   /*
-   * ⚠️ **只有 YouTube 走视频那条路** —— 判据是"**嵌入**也会用这个视频"。
-   *
-   * 这是被渲染自检逼出来的：夹具里有一条 Twitch 行带着数字 `liveVideoId`
-   * （`twitch.tv/videos/1234567` 确实是个合法形状），如果这里照用，
-   * 卡片就变成"**播放器放的是频道，点出去是另一个录像**"—— 两者指向不同的东西。
-   * 而 `liveEmbedDecision` 对 Twitch/B站 **根本不读** `liveVideoId`
-   * （它们的嵌入对象是频道/房间，Twitch 的录像也没有"正在直播"那种地址）。
-   * ⇒ 链接与播放器的取值**必须同源**：嵌入用视频，链接才用视频；否则一律频道页。
-   *   （用户报的那个缺陷正是这条规则的反面：YouTube 有视频却去指死链频道页。）
+   * ⚠️ `/live` 这条后缀**只对 YouTube 用**。Twitch 与 B站 的频道地址本来就是
+   *    "现在在播什么"（实测过），再加一段只会拼出一个不存在的路径
+   *    （`twitch.tv/Someone/live` 是频道页的一个 tab，`live.bilibili.com/123/live` 直接 404）。
    */
-  const prefersVideo = channel.platform === 'youtube' && videoId !== '';
-  if (prefersVideo) return liveVideoUrl(channel.platform, videoId);
+  if (channel.platform === 'youtube' && handle !== '') {
+    return `${liveChannelUrl(channel.platform, handle)}/live`;
+  }
+
+  // 只有视频 ID：那一场视频。⚠️ 它会过期 —— 这是没有频道标识时唯一能指的地址。
+  if (channel.platform === 'youtube' && videoId !== '') {
+    return liveVideoUrl(channel.platform, videoId);
+  }
+
   return liveChannelUrl(channel.platform, channel.handle);
 }
 

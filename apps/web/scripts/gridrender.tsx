@@ -30,7 +30,7 @@
  * 所以下面直接扫产物里有没有残留的 `calendarGrid.` / `calendar.` 前缀。
  */
 import assert from 'node:assert/strict';
-import { CONTINENTS, COUNTRIES } from '@mcsr/shared';
+import { CONTINENTS, COUNTRIES, EVENT_ACCESS } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
 // 系列的形状（需求③）—— 与 `event()` 那个 fixture 同理：字段要齐全
 import type { CalendarEvent, CalendarSeries } from '@mcsr/shared/calendar';
@@ -669,7 +669,7 @@ const stageCardHtml = html(
 );
 
 // ---------------------------------------------------------------------------
-console.log(`【${LANG}】④ 筛选栏：三个维度 + 一条从属行`);
+console.log(`【${LANG}】④ 筛选栏：四个维度 + 一条从属行`);
 // ---------------------------------------------------------------------------
 const filtersHtml = html(
   <CalendarFilters
@@ -678,19 +678,25 @@ const filtersHtml = html(
     level={null}
     scope={null}
     scopeDetail={null}
+    access={null}
     onPick={() => {}}
     dirty={false}
     onReset={() => {}}
   />,
 );
 
-assert.equal(countOf(filtersHtml, '<fieldset'), 3, '三个维度各一个 fieldset');
-ok('3 个维度各是一个 fieldset（HTML 原生分组，不是手写 ARIA）');
+/*
+ * ⚠️ 4 而不是 3（2026-09-14 加了「参赛门槛」那一维）。这个数字**必须跟着维度走**：
+ *    它守的正是"新维度有没有真的长出一个 fieldset"—— 漏了渲染的话，下面那一行
+ *    「参赛门槛」的断言会红，而这里也会红，两处一起指出来比一处更容易定位。
+ */
+assert.equal(countOf(filtersHtml, '<fieldset'), 4, '四个维度各一个 fieldset');
+ok('4 个维度各是一个 fieldset（HTML 原生分组，不是手写 ARIA）');
 
-assert.equal(countOf(filtersHtml, '<legend'), 3, '每个 fieldset 都要有 legend');
+assert.equal(countOf(filtersHtml, '<legend'), 4, '每个 fieldset 都要有 legend');
 ok('每个维度都有 legend（组名）');
 
-// 标签 3 个 + 两个单选维度各 1(不限)+取值数
+// 标签 3 个 + 三个单选维度各 1(不限)+取值数
 /*
  * ⚠️ 数的是 `aria-pressed=`，不是 `tagchip`。
  *    选中的 chip 渲染成 `class="tagchip tagchip--on"` —— 里面 `tagchip`
@@ -699,18 +705,18 @@ ok('每个维度都有 legend（组名）');
  */
 assert.equal(
   countOf(filtersHtml, 'aria-pressed='),
-  3 + (1 + 2) + (1 + 3),
-  'chip 总数应为 10（scope=null 时明细那一行不渲染）',
+  3 + (1 + 2) + (1 + 3) + (1 + EVENT_ACCESS.length),
+  'chip 总数应为 14（scope=null 时明细那一行不渲染）',
 );
-ok('chip 总数 = 标签 3 + 专业程度 3 + 参与范围 4 = 10（轮次那一维已删）');
+ok('chip 总数 = 标签 3 + 专业程度 3 + 参与范围 4 + 参赛门槛 4 = 14（轮次那一维已删）');
 
-// 两个单选维度都是"不限"选中（current === null）
+// 三个单选维度都是"不限"选中（current === null）
 assert.equal(
   countOf(filtersHtml, 'aria-pressed="true"'),
-  3 + 2,
-  '两个单选维度各有一个"不限"亮着，加上三个标签全选',
+  3 + 3,
+  '三个单选维度各有一个"不限"亮着，加上三个标签全选',
 );
-ok('两个单选维度的默认都是「不限」，而不是"没选"（两者含义相反）');
+ok('三个单选维度的默认都是「不限」，而不是"没选"（两者含义相反）');
 
 // ---------------------------------------------------------------------------
 console.log(`【${LANG}】④a 参与范围明细：从属行，跟着「参与范围」出现 / 消失（需求⑥）`);
@@ -732,6 +738,7 @@ const filtersContinent = html(
     level={null}
     scope="CONTINENT"
     scopeDetail={null}
+    access={null}
     onPick={() => {}}
     dirty={false}
     onReset={() => {}}
@@ -744,6 +751,7 @@ const filtersCountry = html(
     level={null}
     scope="COUNTRY"
     scopeDetail={null}
+    access={null}
     onPick={() => {}}
     dirty={false}
     onReset={() => {}}
@@ -768,8 +776,8 @@ for (const c of CONTINENTS) {
 }
 assert.equal(
   countOf(filtersContinent, 'aria-pressed='),
-  3 + (1 + 2) + (1 + 3) + (1 + CONTINENTS.length),
-  '选「大洲」时明细行是「不限 + 六个大洲」',
+  3 + (1 + 2) + (1 + 3) + (1 + CONTINENTS.length) + (1 + EVENT_ACCESS.length),
+  '选「大洲」时明细行是「不限 + 六个大洲」（参赛门槛那一行不受影响，仍然 4 个）',
 );
 ok('★ ④② scope=CONTINENT：明细行出现，六个大洲的名字都在');
 
@@ -792,13 +800,182 @@ assert.equal(
 );
 assert.equal(
   countOf(filtersCountry, 'aria-pressed='),
-  3 + (1 + 2) + (1 + 3) + (1 + COUNTRIES.length),
+  3 + (1 + 2) + (1 + 3) + (1 + COUNTRIES.length) + (1 + EVENT_ACCESS.length),
   '选「国家」时明细行是「不限 + 全部国家」',
 );
 ok('★ ④④ scope=COUNTRY：明细行换成国家表，大洲不再出现');
 
 assert.equal(filtersHtml.includes('filters__clear'), false, '默认状态不该显示"清空筛选"');
 ok('没有筛选时不给「清空筛选」（一个点了没反应的按钮比没有更糟）');
+
+// ---------------------------------------------------------------------------
+console.log(`【${LANG}】④a2 参赛门槛：新维度真的进了筛选栏（用户第 ③ 条）`);
+// ---------------------------------------------------------------------------
+/*
+ * ★ 这一节守的是「**新维度有没有被接到界面上**」，而它的失效形状恰恰是**看不见**的：
+ *   用户要的是"参赛门槛也贴到日历栏目上方的选择框里"，实现漏了的话页面**不会报错** ——
+ *   只是少了一行，而"少了一行"在一整栏筛选里很容易被当成"本来就这样"。
+ *
+ * ⚠️ 它的射程**只有渲染**：`?access=` 会不会真的传出去（服务端筛选）、月视图会不会
+ *    真的逐条筛，都发生在 `routes/CalendarList.tsx` 的运行时，而这个脚本渲染的是
+ *    **组件本身**。别把这一节读成"筛选生效了"。
+ */
+
+/** 从整份筛选栏产物里切出**某一行**（它那个 `<legend>` 到下一个 `<fieldset` 为止）。 */
+function filterRow(html: string, label: string): string {
+  const at = html.indexOf(label);
+  /*
+   * ⚠️ 找不到就**当场失败**，不是返回空串：空串里当然"没有多出来的 chip"，
+   *    下面那些成对断言会因为**错误的原因**通过（与 ③b 的 `cellOf` 同一条教训）。
+   */
+  assert.notEqual(
+    at,
+    -1,
+    `筛选栏里必须有「${label}」这一行（找不到的话下面的断言都是在空串上做的）`,
+  );
+  const rest = html.slice(at);
+  const next = rest.indexOf('<fieldset', 1);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+/**
+ * 一行里的 chip：「可见文案 + 有没有亮」，按渲染顺序。
+ * ⚠️ 只认带 `aria-pressed` 的按钮 —— 同在一个容器里的"清空筛选"那类按钮没有它，
+ *    于是不会被算成这一行的一个取值（数错 chip 的断言看起来只是"数量对不上"）。
+ */
+function rowChips(row: string): { label: string; on: boolean }[] {
+  return [...row.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]*)/g)].map((m) => ({
+    label: (m[2] ?? '').trim(),
+    on: m[1] === 'true',
+  }));
+}
+
+/*
+ * ⚠️ 探针：提取器本身必须能命中。它写坏时返回空数组，而空数组在下面的 deepEqual
+ *    里确实不会混过去 —— 但"只亮一个"那种断言会变成"0 个亮"，报的是组件的问题。
+ *    先把它钉住，红的时候才说得清是提取器还是组件。
+ */
+assert.deepEqual(
+  rowChips('<button type="button" class="tagchip tagchip--on" aria-pressed="true">X</button>'),
+  [{ label: 'X', on: true }],
+  'chip 提取器本身必须能命中（否则下面几条断言的失败会指向错误的地方）',
+);
+
+const accessRowLabel = i18n.t('calendarGrid.filterAccess');
+/*
+ * ⚠️ 这条**必须**先查：i18next 对**缺键**是原样返回键名，于是 `includes(键名)` 在
+ *    键压根不存在时也会因为错误的原因通过（本仓记过这个坑，见 ④e 那条同样的先例）。
+ */
+assert.notEqual(
+  accessRowLabel,
+  'calendarGrid.filterAccess',
+  '键必须在当前语言下真的解析出文字（缺键时 i18next 原样返回 key，下面全是假绿）',
+);
+assert.ok(
+  filtersHtml.includes(accessRowLabel),
+  '★ 筛选栏里必须有「参赛门槛」这一行（用户第 ③ 条要求它贴在日历栏目上方的选择框里）',
+);
+
+const accessOptions = EVENT_ACCESS.map((value) => ({
+  value,
+  label: i18n.t(`calendar.access.${value}`),
+}));
+for (const option of accessOptions) {
+  assert.notEqual(
+    option.label,
+    `calendar.access.${option.value}`,
+    `门槛取值 ${option.value} 的词条必须在当前语言下解析出文字`,
+  );
+}
+
+/*
+ * ★★ 默认态：这一行是「不限 + 三个取值」，而且**只有「不限」亮着**。
+ *    ⚠️ 整行一起比（文案 + 顺序 + 亮不亮），而不是"能找到『不限』"：
+ *    只查"出现"的话，把三个取值也全挂上选中样式照样能过 —— 而界面上会是
+ *    "四个都亮着"，用户根本看不出自己筛的是什么。
+ */
+assert.deepEqual(
+  rowChips(filterRow(filtersHtml, accessRowLabel)),
+  [
+    { label: i18n.t('calendar.filterAny'), on: true },
+    ...accessOptions.map((option) => ({ label: option.label, on: false })),
+  ],
+  `★ 没选门槛时：这一行是「不限 + ${EVENT_ACCESS.length} 个取值」，且**只有「不限」亮着**（成对断言）`,
+);
+ok(
+  `★ 参赛门槛那一行在筛选栏里，三个选项的词条都解析出来了：${accessOptions
+    .map((o) => o.label)
+    .join(' / ')}`,
+);
+ok('★ 没选门槛时「不限」是选中的，三个取值都不选中（`aria-pressed` 成对断言）');
+
+/*
+ * ★★ 选中态：**成对**断言"亮着的就是选的那一个，其余都不亮"。
+ *    ⚠️ 这是"接线错了但看起来正常"最容易漏的一条：把 `current === value` 写成
+ *    `current !== null`、或者干脆三个按钮都挂选中样式，界面都还能看，而筛选是坏的。
+ */
+const filtersQualifier = html(
+  <CalendarFilters
+    tags={['TOURNAMENT', 'COMMUNITY', 'RANKED_MILESTONE']}
+    onToggleTag={() => {}}
+    level={null}
+    scope={null}
+    scopeDetail={null}
+    access="QUALIFIER"
+    onPick={() => {}}
+    dirty={false}
+    onReset={() => {}}
+  />,
+);
+const qualifierRow = filterRow(filtersQualifier, accessRowLabel);
+assert.deepEqual(
+  rowChips(qualifierRow),
+  [
+    { label: i18n.t('calendar.filterAny'), on: false },
+    { label: i18n.t('calendar.access.QUALIFIER'), on: true },
+    { label: i18n.t('calendar.access.INVITE'), on: false },
+    { label: i18n.t('calendar.access.OPEN'), on: false },
+  ],
+  '★ 选了「选拔制」时：**只有它**亮着，「不限」和另外两个都不亮 —— 成对断言，不是"能找到即可"',
+);
+assert.equal(
+  />(QUALIFIER|INVITE|OPEN)</.test(qualifierRow),
+  false,
+  '★ 三个门槛的**枚举原始值**不该出现在可见文本里（都走词条）',
+);
+ok('★ 选了 QUALIFIER：它选中、其余三个不选中（`aria-pressed` 成对断言），且不显示枚举原始值');
+
+/*
+ * ★★ 位置：**新维度插错地方**是那种肉眼看不出、只会觉得别扭的错 ——
+ *    它不报错、不丢功能，只是把"哪些维度是并列的"这个结构说错了。
+ *    所以这里钉死它排在**范围那一组之后**、**尾部提示之前**。
+ *
+ * ⚠️ 判据用 `indexOf`（**第一次**出现的位置）。门槛这个词在尾部提示里也会出现
+ *    （`filterHint` 那句列举了单选维度），而 legend 是先出现的那个 ——
+ *    万一哪天它被挪到提示之后，`indexOf` 会返回提示里那一次，这一条当场红。
+ * ⚠️⚠️ 这一条**只在本脚本里成立**：它是"组件按我们选的位置渲染"，不是
+ *    "CSS 真的把它画在那里"（`grid-filters__row` 是 flex 列，顺序由 DOM 决定 ——
+ *     但那是 styles.css 的约定，不在这个脚本的射程里）。见仓库里那条通用边界。
+ */
+const filterHintLabel = i18n.t('calendarGrid.filterHint');
+assert.ok(filterHintLabel.length > 0, '尾部提示词条必须存在（否则下面的相对位置是在和 -1 比）');
+assert.ok(
+  filtersHtml.indexOf(accessRowLabel) > filtersHtml.indexOf(i18n.t('calendarGrid.filterLevel')),
+  '参赛门槛要排在「专业程度」**之后**（它是并列维度，但不是第一个）',
+);
+assert.ok(
+  filtersHtml.indexOf(accessRowLabel) > filtersHtml.indexOf(i18n.t('calendarGrid.filterScope')),
+  '参赛门槛要排在「参与范围」**之后**（它不插到范围那一组的前面去）',
+);
+assert.ok(
+  filtersHtml.indexOf(accessRowLabel) < filtersHtml.indexOf(filterHintLabel),
+  '参赛门槛要排在尾部提示**之前** —— 排到提示后面它就成了提示的附属，用户会漏看',
+);
+assert.ok(
+  filtersContinent.indexOf(accessRowLabel) > filtersContinent.indexOf(detailLabel),
+  '★ 有「参与范围明细」那一行时，参赛门槛排在**明细行之后**：明细行是 scope 的下级，"紧贴"是它表达从属关系的唯一方式，插在两者之间会把那对父子行拆散',
+);
+ok('★ 位置：参赛门槛排在「参与范围（+明细）」之后、尾部提示之前（顺序断言，不是"存在即可"）');
 
 // ---------------------------------------------------------------------------
 console.log(`【${LANG}】④b 系列活动栏目（需求③）—— 真的渲染它，否则上面那条扫描是空的`);
@@ -1167,7 +1344,14 @@ const all =
   accessCard +
   stageCardHtml +
   filtersContinent +
-  filtersCountry;
+  filtersCountry +
+  /*
+   * ⚠️ 参赛门槛那一份（④a2 的选中态）**也必须进 `all`**：它的词条是
+   *    `calendar.access.*`，而泄漏扫描只扫 `all` 里的样本 —— 不并进来的话，
+   *    "门槛那一行的词条真的解析出来了"这件事就只由上面那条 `includes` 断言守着，
+   *    扫描器看不到它（多一份样本不花什么钱）。
+   */
+  filtersQualifier;
 const leaks = [...all.matchAll(/(calendarGrid|calendar|resources|marks)\.[a-zA-Z]+/g)]
   .map((m) => m[0])
   // aria-label / title 之外的属性里的路径不算（比如 /calendar/submit 是路由）

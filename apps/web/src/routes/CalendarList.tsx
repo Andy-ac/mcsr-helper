@@ -288,6 +288,18 @@ export function CalendarList() {
   const level = params.get('level');
   const scope = params.get('scope');
   /*
+   * ★ 参赛门槛（2026-09-14，第二批上线后用户第 ③ 条：「『参赛门槛』（选拔制/邀请制/
+   *   无门槛）也贴在日历栏目上方的选择框中」）。
+   *
+   * ⚠️ 这**不是**新后端功能：服务端早就在收 `?access=`，和 `level` / `scope` 走的
+   *    是同一个循环（`services/api/src/routes/calendar.ts` + `calendar/events.ts` 的
+   *    `ListEventsOptions.access`），`api.ts` 的 `fetchCalendarEvents` 也早就把它拼进
+   *    URL 了（`if (query.access) params.set('access', query.access)`）。差的一直只是
+   *    这一页把它接出来 —— 所以这一维**和 `level` / `scope` 完全同档**：
+   *    URL 里是**单选等值**（`?access=QUALIFIER`），不是 `tags` 那种多选。
+   */
+  const access = params.get('access');
+  /*
    * ★ 参与范围**明细**（大洲 / 国家代码，需求⑥，2026-09-13）。
    *
    * ⚠️ 它和 `scope` 是**一对**参数：`?scope=CONTINENT&scopeDetail=ASIA`。
@@ -435,6 +447,11 @@ export function CalendarList() {
     level !== null ||
     scope !== null ||
     scopeDetail !== null ||
+    /*
+     * ⚠️ 新维度**必须**进这一条：漏了它的表现是"选着门槛，却没有『清空筛选』可按"，
+     *    于是用户只能手改 URL 才能退回不限（`level` / `scope` 都在这里，别只补一半）。
+     */
+    access !== null ||
     showPast;
 
   function write(mutate: (p: URLSearchParams) => void, replace = false): void {
@@ -468,7 +485,8 @@ export function CalendarList() {
   }
 
   /**
-   * ★ 三个单选维度共用一个"选一个值 / 退回不限"的入口（`level` / `scope` / `scopeDetail`）。
+   * ★ 四个单选维度共用一个"选一个值 / 退回不限"的入口
+   *   （`level` / `scope` / `scopeDetail` / `access`）。
    *
    * ⚠️ `scopeDetail` 是 `scope` 的**下级**，所以改 `scope` 时要把**不匹配的明细**
    *    一起清掉：从「大洲」切到「国家」时，`ASIA` 不是一个合法的国家代码 ——
@@ -478,8 +496,14 @@ export function CalendarList() {
    *
    * ⚠️ 判据用 `CONTINENTS` / `COUNTRIES` 这两张**共享表**，不是在这里手写一遍
    *    两端（`value === 'CONTINENT'`）的 if-else 就够用，且新增档位时不会漏。
+   *
+   * ⚠️ `access` 加进来**不需要**任何配套清理：它是和 `level` / `scope` 平权的
+   *    独立一维，没有下级、也不依赖别的维度 —— 这正是它和 `scopeDetail` 的区别。
    */
-  function pickSingle(dim: 'level' | 'scope' | 'scopeDetail', value: string | null): void {
+  function pickSingle(
+    dim: 'level' | 'scope' | 'scopeDetail' | 'access',
+    value: string | null,
+  ): void {
     write((p) => {
       if (value === null) p.delete(dim);
       else p.set(dim, value);
@@ -499,7 +523,21 @@ export function CalendarList() {
       p.delete('level');
       p.delete('scope');
       p.delete('scopeDetail');
+      // ⚠️ 新维度也要在这里删一次：漏了它的表现是"点了清空筛选，门槛还亮着"，
+      //    而 `dirty` 仍然为真 ⇒ 那个按钮看起来点了没反应。
+      p.delete('access');
       p.delete('past');
+      /*
+       * ⚠️★ 这里**故意不删 `seriesId`**（2026-09-14 复核过，是有意的）。
+       *
+       * 理由：系列筛选**不在筛选栏里**，它有自己的状态条和一个「清除」按钮
+       * （见页面底部那条 `seriesFilterActive`），而且它还兼任"展开哪一个系列"。
+       * 而 `dirty`（决定「清空筛选」显不显示）**也不含 `seriesId`** ⇒
+       * 不会出现"按钮亮着、点了却什么都没变"那种假按钮。
+       * ⇒ 两套控件管两件事，各自闭环。要是哪天把系列也并进筛选栏，
+       *   这三处（`dirty` / `resetFilters` / 状态条）必须**一起**改，
+       *   漏一处的表现是按钮说谎，而不是报错。
+       */
       afterFilterChange(p);
     });
   }
@@ -605,6 +643,20 @@ export function CalendarList() {
       level,
       scope,
       /*
+       * ★ 参赛门槛（2026-09-14，用户第 ③ 条）。**列表视图走服务端筛**。
+       *
+       * ⚠️ 放在这里 = 分页的 `total` 是**筛过之后**的数。`level` / `scope` /
+       *    `scopeDetail` / `seriesId` 全都在这一份对象里，理由同一个：列表是无限长的，
+       *    客户端筛不了；而 `total` 如果没筛过，界面会出现"共 12 个活动"却只列 3 条，
+       *    翻到第二页是空白。
+       *
+       * ⚠️ 月视图**不走这里**（`useMonthData` 只按月份取一个月的数据、不传任何筛选），
+       *    它走下面 `filtered` 那一处**逐条客户端筛**。两条路各自对应一个视图，
+       *    这是本文件开头那条"两个视图的筛选不在同一层做"的既有范式 ——
+       *    不是"服务端筛完客户端再筛一遍"（那会是第三种的发明）。
+       */
+      access,
+      /*
        * 明细（`?scope=CONTINENT&scopeDetail=ASIA`）。
        *
        * ⚠️★ 它**两个视图都生效**，但走的是**两条不同的路**，这是刻意的：
@@ -628,7 +680,7 @@ export function CalendarList() {
       page,
       pageSize: CALENDAR_PAGE_SIZE,
     }),
-    [showPast, tags, level, scope, scopeDetail, seriesId, page],
+    [showPast, tags, level, scope, scopeDetail, access, seriesId, page],
   );
 
   const list = useAsync(
@@ -667,6 +719,17 @@ export function CalendarList() {
       if (level !== null && e.level !== level) return false;
       if (scope !== null && e.scope !== scope) return false;
       /*
+       * ★ 参赛门槛（2026-09-14，用户第 ③ 条）——**月视图走这里**。
+       *
+       * ⚠️ 语义是**「等于」**，和 `level` / `scope` 一致：用户选「邀请制」就是想
+       *    只看邀请制，混进别的门槛那一条筛选就是坏的。
+       *    ⚠️ **不是**下面 `scopeDetail` 那种「命中任一」—— 那个语义的来源是
+       *    **事件那一侧是多值**（一场赛事可以同时属于亚洲和大洋洲，`scope_detail`
+       *    是数组）。`access` 在这一侧是**单值**（`CalendarEvent.access` 是
+       *    `string | null`），所以"命中任一"在这里没有对象可命中。
+       */
+      if (access !== null && e.access !== access) return false;
+      /*
        * ★ 明细的语义是「**命中任一即展示**」（需求⑥）。
        *
        * 一场写着"亚洲 & 大洋洲"的赛事，`scopeDetail` 是 `['ASIA', 'OCEANIA']` ——
@@ -688,7 +751,7 @@ export function CalendarList() {
       if (seriesId !== null && e.seriesId !== seriesId) return false;
       return true;
     });
-  }, [rawEvents, tags, level, scope, scopeDetail, seriesId]);
+  }, [rawEvents, tags, level, scope, scopeDetail, access, seriesId]);
 
   const byDate = useMemo(() => eventsByDate(filtered), [filtered]);
 
@@ -809,6 +872,7 @@ export function CalendarList() {
         level={level}
         scope={scope}
         scopeDetail={scopeDetail}
+        access={access}
         onPick={pickSingle}
         dirty={dirty}
         onReset={resetFilters}
@@ -1007,10 +1071,31 @@ export function CalendarList() {
                 now,
               }
         }
+        /*
+         * ★★ 点一下展开、**再点一下收起**（2026-09-14，第二批上线后用户第 ② 条）。
+         *
+         * ⚠️ 原来是 `p.set('seriesId', id)` —— 只设不清。于是"点第二次"写进去的是
+         *    同一个值：URL 没变 ⇒ 组件没重渲染 ⇒ 界面纹丝不动。用户看到的就是
+         *    "展开了，但收不起来"。
+         *
+         * ⚠️★ 判据用**同一个来源**：`seriesId`（就是 URL 里那一个，也就是下面
+         *    `<CalendarSeriesSection selectedId>` 拿到的那个值）。
+         *    在这个组件里再加一个 `expandedId` 之类的本地 state 会立刻变成两份真相 ——
+         *    典型失效是"界面收起了、URL 里还选着"（或者反过来），刷新一下内容自己回来，
+         *    而两次看起来都很正常。
+         *
+         * ⚠️ 这里**只动 `seriesId` 和 `page`**，别的筛选参数一个都不碰：
+         *    收起一个系列不该顺手把 tags / level / scope / scopeDetail / access /
+         *    month / view / past 清掉 —— 那是"我收起一块内容，结果筛选全丢了"。
+         *    （`past` 同理：它是列表视图的开关，和系列无关。）
+         *
+         * ⚠️ `page` 无论展开还是收起都要删：这一维一直在改**结果集的大小**
+         *    （展开时结果变少、收起时结果变多），而停在旧页码时看到的是一片空白。
+         */
         onSelect={(id) =>
           write((p) => {
-            p.set('seriesId', id);
-            // 换筛选要回到第一页：停在第三页而结果只剩一页的话，用户看到的是一片空白
+            if (seriesId === id) p.delete('seriesId');
+            else p.set('seriesId', id);
             p.delete('page');
           })
         }

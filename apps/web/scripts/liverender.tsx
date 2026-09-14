@@ -257,23 +257,59 @@ console.log(`【${LANG}】直播卡：能嵌的那一行`);
   ok('可嵌的行门面按钮**没有** disabled');
 
   /*
-   * ⚠️⚠️ **2026-09-13：这一条改过判据，原因值得留在这里。**
+   * ⚠️⚠️ **2026-09-14：这一条又改过判据，第二版的原因同样值得留在这里。**
    *
-   * 原文是「频道链接必须永远在」，断言卡片链接 == `youtube.com/@Someone`。
-   * 而用户实测发现：给 YouTube 那行填了正在直播的视频 ID 之后，播放器**能播**，
-   * 但这条链接指向 `youtube.com/channel/MCSR_Ranked` —— 一条**死链**。
-   * ⇒ 判据改成：**有视频 ID 就指向那一场，没有才指向频道页。**
+   * 第一版（2026-09-13）是「有视频 ID 就指向那一场，没有才指向频道页」——
+   * 它修掉了"给 YouTube 填了视频 ID、链接却指向 `channel/MCSR_Ranked` 死链"。
+   * 但用户随后报：那条链接「不是频道通用的，而是指向上一场直播的视频」——
+   * **一次广播的地址下一场就过期了**，而这块界面列的是**频道**。
    *
-   * ★ 两半都要断言，缺一半就等于没有区分力：
-   *   · 只测"有视频 ⇒ 指向视频"：有人把频道页那条路删掉也照样绿；
-   *   · 只测"没视频 ⇒ 指向频道页"：用户报的那个缺陷（有视频却指死链）会漏过去。
+   * 实测（`.cache/probe-live-links4.mjs`，从服务器抓页面自己声明的 canonical）：
+   *   · `youtube.com/@handle/live` 开播时 canonical = `watch?v=<当前这场>`，
+   *     **没开播时回落到频道页**（200），handle 不存在才 404 ⇒ 它是**频道级固定地址**；
+   *   · `twitch.tv/<login>` 与 `live.bilibili.com/<房间号>` 本来就是这样。
+   * ⇒ 第二版判据：**有频道标识就用 `<频道>/live`**，只有视频 ID 时才退回那一场。
+   *
+   * ★ 三条都要断言，缺一条就少一种区分力：
+   *   · 只测"有频道 ⇒ /live"：把"只有视频 ID"那条路删掉也照样绿；
+   *   · 只测"只有视频 ⇒ watch?v="：用户报的缺陷（有频道却指过期视频）会漏过去；
+   *   · 只测 Twitch/B站：YouTube 那条 `watch?v=` 里**没有频道**，它是最容易写错的一条。
    */
-  assert.equal(
-    liveChannelHref(withVideo),
-    'https://www.youtube.com/watch?v=abcdefghijk',
-    '★ 有视频 ID 时，卡片链接要指向**那一场** —— 原来它无条件指向频道页，那正是用户报的死链',
+  const withChannelAndVideo = html(
+    <ul>
+      <LiveCard channel={channel({ handle: '@Someone', liveVideoId: 'abcdefghijk' })} />
+    </ul>,
   );
-  ok('★ 有视频 ID → 卡片链接指向那一场视频（不是频道页）');
+  assert.equal(
+    liveChannelHref(withChannelAndVideo),
+    'https://www.youtube.com/@Someone/live',
+    '★ 有频道标识时，链接必须是**频道级**地址（`/live`）—— 指向某一场视频的地址下一场就过期',
+  );
+  assert.equal(
+    liveChannelHref(withChannelAndVideo)?.includes('watch?v='),
+    false,
+    '★ 反面：频道级地址里**不能**出现 `watch?v=`（那正是"指向上一场直播"的形态）',
+  );
+  ok('★ 有频道标识 → 卡片链接是频道级的 /live（不是某一场视频）');
+
+  /*
+   * ⚠️ 夹具必须**显式**给空 handle：`channel()` 的默认值是 `'@Someone'`，
+   *    而"只有视频 ID"这一档在真实数据里正是 handle 为空的那种行
+   *    （线上那行 YouTube 就是 `handle: ''` + `liveVideoId: 'zsb-ZDznGIA'`）。
+   *    忘了这一条的话，这条断言测的其实是"有频道标识"那一档 ——
+   *    而它照样会通过（`/live` 也含 `youtube.com`），只是**什么都没验**。
+   */
+  const videoOnly = html(
+    <ul>
+      <LiveCard channel={channel({ handle: '', liveVideoId: 'abcdefghijk' })} />
+    </ul>,
+  );
+  assert.equal(
+    liveChannelHref(videoOnly),
+    'https://www.youtube.com/watch?v=abcdefghijk',
+    '只有视频 ID（没有频道标识）时退回那一场视频 —— 它会过期，但那是唯一能指的地址',
+  );
+  ok('★ 只有视频 ID → 退回那一场视频');
 
   const noVideo = html(
     <ul>
@@ -282,10 +318,26 @@ console.log(`【${LANG}】直播卡：能嵌的那一行`);
   );
   assert.equal(
     liveChannelHref(noVideo),
-    'https://www.youtube.com/@Someone',
-    '没有视频 ID 时就退回频道页 —— "链接永远在"这条原意保住了，只是判据收窄了',
+    'https://www.youtube.com/@Someone/live',
+    '没有视频 ID 时是频道级的 /live —— "链接永远在"这条原意保住了',
   );
-  ok('没有视频 ID → 退回频道页');
+  /*
+   * ⚠️ 反向：**只有 YouTube 有 `/live` 这一段**。Twitch/B站 的频道地址本来就是
+   *    "现在在播什么"，再加一段只会拼出一个不存在的路径
+   *    （`live.bilibili.com/123/live` 是 404）。
+   */
+  assert.equal(
+    liveChannelHref(
+      html(
+        <ul>
+          <LiveCard channel={channel({ platform: 'bilibili', handle: '21452505' })} />
+        </ul>,
+      ),
+    )?.endsWith('/live'),
+    false,
+    '★ B站 的房间地址**不能**加 `/live` 后缀（那条路径不存在）',
+  );
+  ok('没有视频 ID → 频道级的 /live（且只有 YouTube 用这个后缀）');
 }
 
 // ---------------------------------------------------------------------------

@@ -826,6 +826,42 @@ describe('★ parseLiveLink：认得出 / 判不出平台 / 完全认不出', ()
     });
   });
 
+  it('★★ 频道级的 `/live` 地址：必须认得出，而且归一化时**把 `/live` 丢掉**', () => {
+    /*
+     * ★ 2026-09-14：用户在浏览器里复制"这个频道现在在播什么"时，拿到的就是
+     *   `youtube.com/@Someone/live` 这一条 —— 它就是我们在卡片上要用的那种
+     *   **频道级固定地址**（实测见 `liveChannelHref` 的注释）。
+     *   ⚠️ 不接受它，等于"我们把最该用的那种链接判成坏链接"，
+     *      而报错只会说认不出他贴的东西。
+     *
+     * ⚠️ 归一化必须**丢掉 `/live`**：库里存的是**频道标识**，不是"哪个页面"。
+     *    留着它会让 `handle` 变成 `@Someone/live`，
+     *    而那个字符串会被拼进嵌入地址和 `twitch.tv/…` 那种地方 —— 全是死链。
+     */
+    assert.deepEqual(parseLiveLink('https://www.youtube.com/@Someone/live'), {
+      platform: 'youtube',
+      handle: '@Someone',
+      liveVideoId: null,
+    });
+    // 老的频道 ID 形式（`/channel/UC…/live`）同样：标识是 UC… 那一段
+    assert.deepEqual(
+      parseLiveLink('https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/live'),
+      {
+        platform: 'youtube',
+        handle: 'UCabcdefghijklmnopqrstuv',
+        liveVideoId: null,
+      },
+    );
+    /*
+     * ⚠️ 反面：`/live` 只在**路径第二段**成立。`@Someone/streams`（流媒体列表页）
+     *    和 `@Someone/anything` 都不是"现在在播什么"，认了它们会让
+     *    `handle` 变成 `@Someone`（看起来对）而用户贴的是另一个页面 ——
+     *    这条断言本身不区分那个，但它钉住"只认 `live` 这一个词"。
+     */
+    assert.equal(parseLiveLink('https://www.youtube.com/@Someone/streams'), null);
+    assert.equal(parseLiveLink('https://www.youtube.com/@Someone/videos'), null);
+  });
+
   it('★ 裸标识：是标识、但**判不出平台**（platform 为 null，与"完全认不出"不是一回事）', () => {
     assert.deepEqual(parseLiveLink('@Someone'), {
       platform: null,

@@ -41,6 +41,16 @@ export interface CalendarSeriesSectionProps {
   onQueryChange: (next: string) => void;
   /** 当前筛选中的系列 id；null = 没筛。 */
   selectedId: string | null;
+  /**
+   * 请求选中某个系列。
+   *
+   * ⚠️★ 它是**开关**、不是"设置"（2026-09-14，用户第 ② 条：「系列卡片点一下展开，
+   *    **再点一下收起**」）：再点一次**已经选中**的那一个，调用方要把它**清掉**。
+   *    ⚠️ 这件事**不住在这个组件里** —— 本地 state 会和 `selectedId` 变成两份真相
+   *      （典型失效：URL 里还选着、界面已经收起）。所以组件只负责"把点击报出去"，
+   *      判据仍然是它拿到的那一个 `selectedId`（见 `routes/CalendarList.tsx` 里
+   *      `onSelect` 那一处）。
+   */
   onSelect: (seriesId: string) => void;
   status: 'loading' | 'ok' | 'error';
   errorText?: string | null;
@@ -110,6 +120,11 @@ export interface CalendarSeriesSectionProps {
    *    `now`）：它们只在"正在展开"这一种情况下同时有意义，拆成三个 prop 会出现
    *    "传了 events 忘了传 loading"这种半截状态，而那种状态画出来像加载失败。
    * ⚠️ 传 `null`（或不传）= 这一页不支持展开（**不是**"这个系列是空的"）。
+   * ⚠️★ 但**渲染与否**还要再过一道 `selectedId === s.id`（见下面那一处）：
+   *    收起的那一刻，容器给的是 `null`（`seriesId` 清掉了）——
+   *    于是"上一份已经取回来的展开数据"不会留在屏幕上。
+   *    两道判据是刻意的：只留前一道的话，容器的接线一旦写错，
+   *    用户就会看到"点了收起、卡片还在"。
    */
   expanded?: { events: CalendarEvent[]; loading: boolean; now: number } | null;
 }
@@ -296,10 +311,32 @@ export function CalendarSeriesSection({
                  *    而且 **React 会报 validateDOMNesting 警告**（生产构建里看不见）。
                  */
                 <li key={s.id} className="series__row">
+                  {/*
+                    ★★ 点一下展开、再点一下收起（2026-09-14，用户第 ② 条）。
+
+                    ⚠️ 那一行本来就是一个 `<button>`（点哪都能选中系列），所以
+                       **开关语义的元素已经有了**，这里只补一个属性，不换元素、
+                       不改结构（换成 `<div role="button">` 只会把免费的键盘支持扔掉）。
+                    ⚠️ `aria-expanded` **必须跟着真实状态变**：它说的是"这一行下面
+                       有没有正在展开的内容"。判据和 `series__item--on` /
+                       `aria-pressed` **同源**（都是 `selectedId === s.id`）——
+                       这里**不引入第二份状态**（比如组件内的 `expandedId`）：
+                       两份状态的漂移形状是"URL 里还选着、界面已经收起"，
+                       而它看起来完全正常。
+                    ⚠️ 那么为什么**两个属性都留着**？它们回答的是两个不同的问题：
+                       · `aria-pressed` —— "筛选项里选中了这一个"（这个按钮的**本职**，
+                         从系列筛选上线起就有，读屏软件靠它念出当前筛的是哪个系列）；
+                       · `aria-expanded` —— "这块内容现在是展开的"（本轮补的，
+                         与 `<summary>` 那类控件同一套语义）。
+                       两者此刻同真同假（同一个 `selectedId`），但这不是冗余：
+                       哪天收起不再等于"取消筛选"（比如允许"筛着但收起来看"），
+                       只有 `aria-expanded` 会跟着变 —— 那时前者仍然是对的。
+                  */}
                   <button
                     type="button"
                     className={`series__item${selectedId === s.id ? ' series__item--on' : ''}`}
                     aria-pressed={selectedId === s.id}
+                    aria-expanded={selectedId === s.id}
                     onClick={() => onSelect(s.id)}
                   >
                     {/*
@@ -461,6 +498,10 @@ export function CalendarSeriesSection({
 
                     ⚠️ 判据是**当前选中的那个系列**（`selectedId === s.id`），不是"被点过" ——
                        于是"点第二个系列"天然收起了第一个，不需要额外记一个展开态。
+                       ⚠️★ 它同时也是**收起**那一半的兜底（2026-09-14）：容器在收起时
+                       会把 `expanded` 传成 `null`，而这里再过一道 `selectedId === s.id`
+                       —— 两道都挡住之后，"点第二下"不可能留下上一份卡片。
+                       只留一道的话，任何一处接线写错都是"点收起没反应"。
                     ⚠️ 数据是容器单独取的（`from: 0`，含已结束的）：见 `CalendarList`
                        里 `seriesEvents` 的注释 —— 复用主列表那一份会让历届系列点开是空的。
                     ⚠️ 卡片复用 `CalendarCard`（日历列表里那个）而不是另画一种：

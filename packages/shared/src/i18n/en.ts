@@ -29,13 +29,21 @@ export const en: TranslationSchema = {
     calendar: 'Calendar',
     seeds: 'Seeds',
     /*
-     * ⚠️ This key points at the `/videos` section, now called "Entertainment
-     * videos" — it sits next to the new "Live" section (the old "Videos" was
-     * split in two at the user's request). The key keeps the name `videos`
-     * because the route is still `/videos`; changing the value rather than the
-     * key avoids a repo-wide rename that would miss somewhere.
+     * ⚠️ This key points at the `/videos` section, whose name is "Videos".
+     * The key keeps the name `videos` because the route is still `/videos`;
+     * changing the value rather than the key avoids a repo-wide rename that
+     * would miss somewhere.
+     *
+     * ⚠️★ 2026-09-14: the user asked for it to go **back to "Videos"** ("the left
+     * sidebar's Entertainment videos should read Videos"). It had been renamed to
+     * "Entertainment videos" when Live was split out, to keep the two apart in
+     * the sidebar. But a section may only have ONE name: renaming just the
+     * sidebar row leaves the page itself headed "Entertainment videos" -- and
+     * this repo already recorded that exact mistake once (see the note at
+     * `videos.title`). So the section's own name (sidebar, page title, "see all")
+     * is now "Videos", and prose says "the Videos section".
      */
-    videos: 'Entertainment videos',
+    videos: 'Videos',
     live: 'Live',
     profile: 'Profile',
     admin: 'Admin',
@@ -95,10 +103,10 @@ export const en: TranslationSchema = {
     /*
      * "Video resource" — a resource-library entry type.
      *
-     * ⚠️ Not the same thing as the "Entertainment videos" section, and the
+     * ⚠️ Not the same thing as the "Videos" section, and the
      * wording has to keep them apart: a video *resource* goes through
-     * submit → review → tags ("this video is worth cataloguing"), while the
-     * video wall is post-and-it-is-live ("this video is fun"). Both are videos;
+     * submit → review → tags ("this video is worth cataloguing"), while that
+     * section is post-and-it-is-visible ("this video is fun"). Both are videos;
      * one is reference material, the other is content.
      */
     kindVideo: 'Video resource',
@@ -1435,12 +1443,28 @@ export const en: TranslationSchema = {
      */
     filterScopeDetail: 'Scope detail',
     /*
-     * ⚠️ This sentence exists to say that tags are not the same kind of filter
-     * as the other two. Without it, someone who picked "Professional" and
-     * then sees amateur events (matched because a *tag* hit) has no way to work
-     * out why.
+     * The entry-requirement row (2026-09-14: "put 参赛门槛 in the filter bar above
+     * the calendar too").
+     *
+     * ⚠️ The dimension entered the *model* on 2026-09-13 (form select, card
+     *    badge) but was deliberately left out of the filter bar, because nobody
+     *    had asked for it. The next day the user did, so it is now the third
+     *    single-select dimension.
+     * ⚠️ The server has always accepted `?access=` (it goes through the same loop
+     *    as level/scope), so this was a front-end wiring job, not a new endpoint.
      */
-    filterHint: 'Tags are multi-select — any match shows. Level and Scope are single-select.',
+    filterAccess: 'Entry requirement',
+    /*
+     * ⚠️ This sentence exists to say that tags are not the same kind of filter
+     * as the others. Without it, someone who picked "Professional" and then sees
+     * amateur events (matched because a *tag* hit) has no way to work out why.
+     * ⚠️★ It has to track the number of single-select dimensions: `scopeDetail`
+     *    is a subordinate row of Scope (not a dimension of its own), so with the
+     *    entry requirement added on 2026-09-14 there are **three**: Level, Scope
+     *    and Entry requirement.
+     */
+    filterHint:
+      'Tags are multi-select — any match shows. Level, Scope and Entry requirement are single-select.',
     filterReset: 'Clear filters',
     noTagsSelected: 'No tags selected.',
     noTagsHint: 'Turn at least one tag on to see events.',
@@ -1460,17 +1484,31 @@ export const en: TranslationSchema = {
   videos: {
     // ---- Page shell ----
     /*
-     * ⚠️ The section was **renamed**: 「视频」→「娱乐视频」, "Videos" → "Entertainment
-     * videos" (see docs/calendar-video-rework.md). Only the strings that **name the
-     * section** change — `title` / `subtitle` / `viewAll` here, plus the zh strings
-     * that spelled out 视频墙. The bare "wall" metaphor elsewhere ("on the wall")
-     * stays: it describes the layout, not the name, and it still reads fine.
+     * ⚠️★ This section's name has changed **twice**, and both rounds are worth
+     * keeping because the lesson in the middle is real:
+     *
+     *   1. (earlier) 「视频」→「娱乐视频」 / "Videos" → "Entertainment videos",
+     *      when `/videos` and the new Live section were split apart, so the two
+     *      would not look the same in the sidebar. See docs/calendar-video-rework.md.
+     *   2. (2026-09-14) **back to "Videos"**: the user asked for the left
+     *      sidebar's 「娱乐视频」 to read 「视频」.
+     *
+     *   ⚠️ Round 1 only changed the **sidebar row** (`nav.videos`); this `title`
+     *      stayed "Videos" — so one section was called "Entertainment videos" in
+     *      the sidebar and "Videos" on the page itself. Round 2 removes that
+     *      mismatch rather than renaming anything again.
+     *   ⇒ A section has exactly **one** name (this `title`); the sidebar refers to
+     *      it, it does not spell out a second copy.
+     *   ⚠️ "Only the strings that name the section change" still holds, just in the
+     *      other direction now: prose that said "Entertainment videos" says
+     *      "the Videos section". The bare "wall" metaphor ("on the wall") stays —
+     *      it describes the layout, not the name.
      */
-    title: 'Entertainment videos',
+    title: 'Videos',
     subtitle:
       'Bilibili and YouTube videos the community has posted — tutorials, montages, match recordings. Constantly changing. No login needed to watch. For live streams, see the "Live" section.',
     pasteAction: 'Post a video',
-    viewAll: 'Entertainment videos',
+    viewAll: 'Videos',
     viewMine: 'My posts',
 
     // ---- Filters ----
@@ -1900,12 +1938,12 @@ export const en: TranslationSchema = {
     },
   },
   /**
-   * The "Entertainment videos" section (the old "Videos", renamed — see
-   * docs/calendar-video-rework.md).
+   * How the "Videos" section differs from "Live"
+   * (see docs/calendar-video-rework.md).
    *
-   * ⚠️ Only the **name** changed; the `videos.*` section is essentially
-   * untouched, because what changed is what this section is called, not how it
-   * works (Q6: post and it is live, rolling).
+   * ⚠️ Only that division of labour lives here — what the section is **called**
+   *    comes from one place, `videos.title` (that name changed twice; the lesson
+   *    is recorded there).
    */
   enterVideo: {
     /*
@@ -1957,8 +1995,11 @@ export const en: TranslationSchema = {
     recordsChannels:
       'These are **channels**, not a "who is live right now" board — we do not detect liveness, so there is no live badge.',
     relationToVideos:
-      'How this differs from "Entertainment videos": that one is whatever anyone posted (constantly changing), this one is a slow-moving curated list.',
+      'How this differs from the "Videos" section: that one is whatever anyone posted (constantly changing), this one is a slow-moving curated list.',
 
+    // NOTE: `gotoChannel` is also the label for the channel-stable link we now
+    // prefer on YouTube (youtube.com/@handle/live — measured: it resolves to the
+    // current broadcast, and falls back to the channel page when nothing is on).
     gotoChannel: 'Open the channel',
 
     /*
@@ -2109,14 +2150,23 @@ export const en: TranslationSchema = {
 
     /*
      * ⚠️ This hint has to carry "both kinds of link work, and we derive the
-     *    platform" — the user went three rounds on exactly this confusion. It
-     *    also has to say that only a link to **the stream currently on air**
-     *    produces a player (the video id changes per stream, so it needs
-     *    updating), and that a bare YouTube channel page has **no player**.
+     *    platform" — the user went three rounds on exactly this confusion.
+     *
+     * ★★ Changed again on 2026-09-14, because measuring is what finally made the
+     *    difference clear (.cache/probe-live-links4.mjs, reading each page's own
+     *    canonical URL):
+     *      · a **channel** link (YouTube: `…/@handle/live`) gives a 「Open the
+     *        channel」 button that **never goes stale** — live, it resolves to the
+     *        current broadcast; offline, it falls back to the channel page.
+     *        The cost: YouTube's channel-level *embed* only accepts a UC… channel
+     *        id, so a row pasted as `@handle/live` gets **no player**.
+     *      · a **single stream** link (`watch?v=…`) gets a player, but that link
+     *        is dead as soon as the stream ends — which is the defect the user hit.
+     *    ⇒ "both work" is not enough; the hint has to say what each one buys.
      */
     hintUrl:
-      'Paste either a **channel page** or a link to **the stream currently on air**. Only the latter gives you a player (and it changes every stream, so come back and update it).',
-    placeholderUrl: 'https://www.youtube.com/watch?v=…',
+      'Paste either a **channel** link or a link to **the stream on air now**. A channel link gives a 「Open the channel」 button that never goes stale (on YouTube that is a `…/@handle/live` URL); a single-stream link gives you a player, but you have to update it every stream. To get both, paste the channel link and have someone add the channel id.',
+    placeholderUrl: 'https://www.youtube.com/@handle/live',
     hintName: 'The human-readable name; spaces are fine.',
     /* One comma-separated line, not a chip editor — that would need its own keyboard model. */
     hintTags: 'Optional, comma-separated, up to 12. e.g. speedrun, Ranked, highlights',
@@ -2124,11 +2174,13 @@ export const en: TranslationSchema = {
     /*
      * ⚠️ Carries three facts at once: YouTube only, `UC…` ids only, and
      *    experimental. Drop any one and an editor turns on a switch that does
-     *    nothing. ⚠️ Today's rows do not need it at all (a link to a specific
-     *    stream goes down the video-id path instead).
+     *    nothing.
+     * ★ 2026-09-14: it is no longer "something today's rows do not need" — paste
+     *    a `/channel/UC…/live` link and this switch is what makes the player
+     *    follow the channel instead of staying pinned to one broadcast.
      */
     hintEmbedChannel:
-      'Experimental, off by default. It can only work for YouTube rows whose channel handle is a UC… channel id; when it does not work the player area is a black box that looks like our bug.',
+      'Experimental, off by default. It can only work for YouTube rows whose channel handle is a UC… channel id (pasting a `/channel/UC…/live` link produces one); with it on, the player follows the channel rather than one pinned broadcast. When it does not work the player area is a black box that looks like our bug.',
     hintSortOrder: 'Lower numbers come first.',
 
     // ---- Row actions ----
