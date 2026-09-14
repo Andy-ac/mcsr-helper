@@ -44,6 +44,7 @@ import { initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
 
 import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
+import { emText } from '@/components/Emphasis';
 import { LiveCard } from '@/components/LiveCard';
 import { MyLiveForm } from '@/components/MyLiveForm';
 import { MyLiveList } from '@/components/MyLiveList';
@@ -948,7 +949,7 @@ const authoringForm = html(
    * ⚠️ 配对关系**显式写出来**（不是"任意命中即可"）：这样把某个 fixture 从 `everything`
    *    里删掉时，会**指名道姓**地告诉你是哪一道前缀失去了覆盖。
    */
-  const coverage: readonly (readonly [prefix: string, key: string])[] = [
+  const coverage: readonly (readonly [prefix: string, key: string, needle: string])[] = [
     /*
      * ⚠️⚠️ 这里原来是 `['live.', 'live.title']`，**那是一条假守卫**（本脚本英文模式把它抓出来了）：
      *    `everything` 里只有 `LiveCard`（和视频播放器、authoring 表单），
@@ -965,20 +966,34 @@ const authoringForm = html(
      *
      *    `live.gotoChannel` 是稳的：`LiveCard` 底部那个"去频道看"的链接**在每一张卡上都有**
      *    （嵌入成功/失败都有兜底链接），所以它是这个产物里 `live.` 命名空间的可靠实证。
+     *
+     * ⚠️ 字形那一栏（第 3 项）用 `emText()` 之后的那串字，**不是**词条原文 —— 见
+     *    `authoring.directHint` 那一行的说明。
      */
-    ['live.', 'live.gotoChannel'],
-    ['authoring.', 'authoring.directHint'],
+    ['live.', 'live.gotoChannel', i18n.t('live.gotoChannel')],
+    /*
+     * ⚠️★ 2026-09-14：这一行原来比的是**词条原文**（`i18n.t('authoring.directHint')`），
+     *    而修掉「`title=` 里显示字面星号」那个缺陷时，它**当场红了** ——
+     *    那是**正确的红**：这一句挂在「直接保存」按钮的 `title` 上，而 `title` 是
+     *    **字符串上下文**（没有粗体 tooltip）⇒ 渲染出来的是 `emText(...)` 的结果，
+     *    也就是**剥掉 `**`** 的那一串。产物里的字确实变了。
+     *    ⇒ 判据改成"产物里**应该出现的那串字**"。这么一改，它顺带守住了
+     *      "这一处还在剥标记"：哪天有人把它写回 `t(...)`，这里立刻红。
+     *    ⚠️ 这与上面 `live.title` 那条假守卫是**同一条教训的两面**：
+     *      针必须对着**这个 fixture 真的渲染出来的那串字**，不能对着"我以为它渲染的东西"。
+     */
+    ['authoring.', 'authoring.directHint', emText(i18n.t('authoring.directHint'))],
     /*
      * ★ ④ 的 `myLive.` —— 上面 `everything` 里并进的那一行正是"认不出平台"的私人行，
      *   而那一档渲染的就是 `myLive.linkOnly`。⇒ 译文在产物里 ⇒ 那个组件真的被渲染了。
      * ⚠️ 挑这个键（而不是 `myLive.title`）：`title` 在**页面**上（`Live.tsx`），
      *   不在这个产物里 —— 那正是上面 `live.title` 那个假守卫踩过的同一个坑。
      */
-    ['myLive.', 'myLive.linkOnly'],
+    ['myLive.', 'myLive.linkOnly', i18n.t('myLive.linkOnly')],
   ];
-  for (const [prefix, key] of coverage) {
+  for (const [prefix, key, needle] of coverage) {
     assert.ok(
-      everything.includes(i18n.t(key)),
+      everything.includes(needle),
       `前缀 ${prefix} 失去覆盖：产物里找不到 ${key} 的译文（那个组件没被渲染进 everything？）`,
     );
   }
@@ -1006,6 +1021,43 @@ const authoringForm = html(
     assert.notEqual(i18n.t(key), key, `词条 ${key} 必须解析得到，不能原样回显 key`);
   }
   ok('★ authoring.directSave / directHint 都真的解析了（防词条缺失时原样回显 key）');
+
+  /*
+   * ★★ 字面的 `**` 一个都不许留在产物里（2026-09-14）。
+   *
+   * ⚠️ 守的是一个**真的发生过**的界面缺陷：词条里用 `**这样**` 表示强调（中英都有），
+   *    而它只有在经过 `em()`（节点上下文）或 `emText()`（字符串上下文）之后才会消失。
+   *    落到"只能是字符串"的地方（`title=` / `aria-label=`）而**没**过处理的，浏览器
+   *    气泡里就是一对字面星号 —— 而**任何自动检查都发现不了它**：词条存在、两种语言
+   *    对齐、字体覆盖全过（`components/Emphasis.tsx` 的文件头记着这个缺陷类，
+   *    `docs/pending.md §5.62` 记着 2026-09-14 那次复查为什么**按页面扫**抓不到它）。
+   *
+   * ⚠️ 判据用的是 `everything`（本脚本**所有**渲染产物的并集），不是某一个片段：
+   *    只查其中一份的话，漏点落在别处就完全看不出来。而这一条正是本脚本里
+   *    **唯一**能看见 `authoring.directHint` 那一对星号的断言 —— 它挂在
+   *    `ResourceForm` 的「直接保存」按钮的 `title` 上（见上面 `authoringForm` 的说明），
+   *    `title` 的值原样进 HTML，`**` 不经过任何实体转义，所以这个 includes 看得见它。
+   *
+   * ⚠️ 反面控制（本仓老规矩）：给同一段判据喂一个**故意带星号**的串，证明它真的能命中。
+   *    没有它的话，"产物里没有 `**`"与"这条断言写坏了"在输出上完全一样。
+   */
+  assert.notEqual(
+    'title="a**b**c"'.includes('**'),
+    false,
+    '反面控制：这条 `**` 抽查本身必须能命中一个带星号的串（否则它是恒真的空跑）',
+  );
+  const strongCount = countOf(everything, '<strong>');
+  assert.equal(
+    everything.includes('**'),
+    false,
+    '★★ 产物里有字面的 `**`：词条里的强调必须过 `em()`（节点）或 `emText()`（字符串），' +
+      '没过的那些会在界面上显示成一对星号（tooltip 里最常见）。' +
+      `本次产物 ${String(everything.length)} 字符；前 200 字符：${everything.slice(0, 200)}`,
+  );
+  ok(
+    `★ 产物里没有字面的 ** 星号（本次 ${String(everything.length)} 字符，` +
+      `em() 渲染出 ${String(strongCount)} 处 <strong>）`,
+  );
 
   /*
    * 反面：这个扫描器本身**能**发现泄漏 —— 否则上面那条是"因为找不到而通过"。

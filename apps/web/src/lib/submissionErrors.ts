@@ -34,28 +34,104 @@
  * 判断逻辑**不在前端**：`url_exists` 到底属于哪种情况（已上架 / 自己没上架的 /
  * 别人没上架的），由服务端算好随响应一起返回（见 routes/resources.ts）。
  * 前端只负责把结论翻译成文字和链接 —— 规则只有一份。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 为什么是两个函数（2026-09-14）：所有出口都必须过 `em()`
+ * ---------------------------------------------------------------------------
+ * 这个模块的文案里有带 `**` 强调的词条（`authoring.mustHideFirst`）。而它的三个
+ * 消费点是这样渲染的：
+ *
+ *     <Notice kind="bad">{failure.message}{failure.action ? <>…</> : null}</Notice>
+ *
+ * ⚠️ `Notice` 只对**单一字符串子节点**走 `em()`（`typeof children === 'string'`），
+ *    而这里的 `children` 是**数组** ⇒ 它**不会**兜这一层。
+ *    ⇒ 标记必须在**离开这个模块之前**就被处理掉，否则用户看到的是一对字面星号。
+ *
+ * 做法（`docs/pending.md §5.62` 的两条落点之一）：
+ *   1. 把整个大 switch 抽进**内部**函数 `describeRawSubmissionError`，
+ *      它的返回类型 `RawSubmissionErrorInfo` 里 `message` 是 **`string`**
+ *      —— 也就是说**类型**不允许它返回节点，"这一层只产出纯字符串"是编译期事实；
+ *   2. 对外的 `describeSubmissionError` 里**只有一个 return**，它把那份纯字符串
+ *      整体交给 `em()` 一次。
+ *
+ * ⇒ 这就是"怎么保证**每一条**出口都过了处理"的答案：**出口只有一个**。
+ *    switch 里那十几处 `return { message: t(…) }` 全都只是内部函数的出口，
+ *    它们**没有**、也**不该有**第二个绕过 `em()` 的机会。
+ *    ⚠️ 不要在这个文件里给 `describeSubmissionError` 加第二条 `return`：那等于
+ *       新开一条绕过 `em()` 的路，而它的后果（界面上出现一对字面星号）**不会有
+ *       任何报错**。`scripts/authoringNotice.ts` 里那条"每一个出口"的矩阵断言
+ *       就是为这件事准备的。
  */
+import type { ReactNode } from 'react';
+import { em } from '@/components/Emphasis';
 import { ApiError } from '@/lib/api';
 
 type Translate = (key: string) => string;
 
+/** 可点的下一步。两种形状（内部的、出口的）共用它，改一处就够。 */
+interface ErrorAction {
+  to: string;
+  labelKey: string;
+}
+
 export interface SubmissionErrorInfo {
-  message: string;
-  /** 可点的下一步。没有合适的下一步时就只显示文字。 */
-  action?: { to: string; labelKey: string };
+  /**
+   * ⚠️ **`ReactNode` 而不是 `string`**（2026-09-14）。
+   *
+   * 因为带 `**` 的词条在这里就已经被 `em()` 处理成了"文本 + `<strong>`"，
+   * 而三个消费点（`SubmitResource` / `EditResource` / `VideoForm`）把它放进
+   * `<Notice>` 的**子节点**位置 —— 那里接受节点，所以换类型是安全的。
+   *
+   * ⚠️ 但**不能**把它再喂给"只收字符串"的地方（`title=` / `aria-label=` /
+   *    存进 string 类型的 state）：那种地方要用 `emText()` 而不是 `em()`，
+   *    见 `components/Emphasis.tsx`。
+   */
+  message: ReactNode;
+  action?: ErrorAction;
 }
 
 /**
- * 提交/编辑失败时的提示。
+ * **内部**形状：`switch` 的每一支只产出纯字符串（标记还没处理）。
+ *
+ * ⚠️ 这个类型是这一层的**闸门**：`message` 是 `string`，所以任何一支想返回
+ *    `em(...)`（`ReactNode`）都**编译不过** —— "所有出口都先给出字符串、
+ *    再由唯一的出口统一处理"这件事因此是**类型保证的**，不靠人记住。
+ */
+interface RawSubmissionErrorInfo {
+  message: string;
+  action?: ErrorAction;
+}
+
+/**
+ * 提交/编辑失败时的提示 —— **唯一的出口**。
  *
  * `fallback` 传 useApiErrorText() 的结果 —— 它会处理那些**通用的**
  * 失败（登录失效、限流、校验、网络），这里只补上前端能给出更好答案的那些。
+ *
+ * ⚠️ 这个函数体里**只有一条 return**（下面那一条）。加第二条之前先读文件头
+ *    "为什么是两个函数"那一节：多一条出口 = 多一条绕过 `em()` 的路。
  */
 export function describeSubmissionError(
   error: unknown,
   t: Translate,
   fallback: (error: unknown) => string,
 ): SubmissionErrorInfo {
+  const raw = describeRawSubmissionError(error, t, fallback);
+  return { ...raw, message: em(raw.message) };
+}
+
+/**
+ * 内部分派：`code` → 一句话 + 下一步。返回的是**纯字符串**。
+ *
+ * ⚠️ 它的返回值**必须**是 `RawSubmissionErrorInfo`（`message: string`）：
+ *    升成 `SubmissionErrorInfo` 就等于允许某一支自己处理标记，
+ *    于是"所有出口都过 `em()`"这句话立刻不成立了。
+ */
+function describeRawSubmissionError(
+  error: unknown,
+  t: Translate,
+  fallback: (error: unknown) => string,
+): RawSubmissionErrorInfo {
   if (!(error instanceof ApiError)) {
     return { message: fallback(error) };
   }

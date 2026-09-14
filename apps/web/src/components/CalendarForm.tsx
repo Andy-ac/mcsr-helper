@@ -25,6 +25,7 @@ import {
 import { isValidTimeZone, wallClockToUtc } from '@mcsr/shared/calendar-time';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { emText } from '@/components/Emphasis';
 import { Field } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
 import { ApiError, createCalendarSeries, fetchCalendarSeries } from '@/lib/api';
@@ -1454,7 +1455,13 @@ export function CalendarForm({
             className="ghostbtn"
             disabled={busy}
             onClick={submitDirect}
-            title={t('authoring.directHint')}
+            /*
+             * ⚠️ `emText(...)` —— 与 `ResourceForm` 同一处判据，理由抄在那边更全：
+             *    这里是**字符串上下文**（原生 tooltip 里没有粗体），所以是**剥掉**
+             *    `**` 标记而不是渲染成 `<strong>`；`em()` 返回的是 ReactNode，
+             *    而 `title` 的形参类型就是 `string`。分工见 `components/Emphasis.tsx`。
+             */
+            title={emText(t('authoring.directHint'))}
           >
             {busy ? secondaryAction.busyLabel : secondaryAction.label}
           </button>

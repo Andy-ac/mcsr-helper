@@ -8,6 +8,7 @@ import {
 } from '@mcsr/shared/resources';
 import { type ChangeEvent, type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { emText } from '@/components/Emphasis';
 import { Field } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
 import { ApiError, fetchTags, uploadImage } from '@/lib/api';
@@ -592,7 +593,15 @@ export function ResourceForm({
             className="ghostbtn"
             disabled={busy}
             onClick={submitDirect}
-            title={t('authoring.directHint')}
+            /*
+             * ⚠️ `emText(...)` —— 这里是**字符串上下文**，不是渲染点：
+             *    `title` 的内容是浏览器的原生 tooltip，HTML 里**没有粗体 tooltip**。
+             *    所以这一处是**剥掉** `**` 标记，而不是把它渲染成 `<strong>`
+             *    （词条 `authoring.directHint` 的 zh 值里就有一对星号；
+             *     用 `em()` 的话类型也不对 —— 它返回 ReactNode，`title` 要 string）。
+             *    分工见 `components/Emphasis.tsx` 的文件头。
+             */
+            title={emText(t('authoring.directHint'))}
           >
             {busy ? secondaryAction.busyLabel : secondaryAction.label}
           </button>

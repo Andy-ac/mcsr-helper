@@ -387,9 +387,17 @@ export function EditResource() {
             ⚠️ 这一句**只对 editor/admin 那一档**出现（owner 走的是一键真删，不需要它）。
                它是"下一步该做什么"的说明，而不是一句拒绝 —— 差别参见 submissionErrors.ts
                里 `must_hide_first` 的注释：只被告知"不行"的编辑会反复重试。
+
+            ⚠️★ 2026-09-14：这里必须与上面第 384 行的 `authoring.deleteImpact` **同样处理** ——
+               走 `em()`。两句都是"删除的知情同意"（一句说代价、一句说下一步），
+               而且**都不能漏掉强调**：词条里写着 `**下架**`／`**版本历史**`，
+               不走 `em()` 的话界面上会原样印出一对星号。
+               这一处曾经是**裸的** `t(...)`（同一个文件里一句套了、一句没套），
+               于是"中文里莫名其妙多两个星号"只出现在 editor/admin 看到的这一句上。
+               `i18n-keys.test.ts` 里那条静态守卫现在逐处盯着这类形状，改回去会当场红。
           */}
           {!canHardDeleteNow ? (
-            <p className="dangerzone__hint">{t('authoring.mustHideFirst')}</p>
+            <p className="dangerzone__hint">{em(t('authoring.mustHideFirst'))}</p>
           ) : null}
 
           {confirmingDelete ? (

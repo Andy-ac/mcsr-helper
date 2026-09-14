@@ -418,4 +418,712 @@ describe('★ 词条 key 的存在性', () => {
         `（本次扫到 ${String(found.length)} 处 labelKey 字面量。）`,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // 守卫五（★ 2026-09-14 新增）：`**强调**` 只能落在**会处理标记**的形状里
+  // -------------------------------------------------------------------------
+  /**
+   * 守的是一个**真的发生过**的界面缺陷（`docs/pending.md §5.62`）：
+   * 词条里用 `**这样**` 表示强调（中英都是），界面靠 `components/Emphasis.tsx` 的
+   * `em()` 渲染成 `<strong>`。而**落到字符串上下文**（`title=` / `aria-label=`）或
+   * **落进一个不会处理标记的组件**时，用户看到的是一对**字面星号** ——
+   * 而词条存在、两种语言对齐、字体覆盖全过，**上面四条守卫一条都拦不住它**。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️⚠️ 为什么不能做成"±N 行里出现过 `em(` 就算过"（这一条是**踩过的坑**）
+   * ---------------------------------------------------------------------------
+   * 2026-09-14 的复查里先写过一版**窗口启发式**（"调用点 ±3 行内找 `em(`"），
+   * 它报了 10 个可疑点，逐个读代码之后**7 个是假警报** —— 因为渲染点常常离调用点
+   * 隔着一个组件（`<Field hint={…}>` 与 `<Notice>{…}</Notice>` **自己就会** `em()`）。
+   * ⇒ 窗口匹配的两个方向都不可靠：**够宽就误报，够窄就漏报**。
+   * 所以这里的判据是**紧贴调用点的形状**（结构性的、不含行距），
+   * 并且把"哪些形状是允许的、为什么允许"**逐条写出来**（下面 `SHAPES` 那张表）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️ 判据的来源必须分开：**key 集合从"加载后的字典"来**（不扫字典源码）
+   * ---------------------------------------------------------------------------
+   * 因为源码里的值会**折行**（`en.ts` 的 `directHint` 就是三行字符串拼接），
+   * 按源码 grep `\*\*` 会**不全** —— 本仓已有先例（`check-font-coverage.mjs`
+   * 与 `zh-CN.ts` 注释里那两段都记着"扫源码会漏"）。遍历对象天然没有这个问题。
+   *
+   * ---------------------------------------------------------------------------
+   * 覆盖边界（写清楚，免得下一个人高估它）
+   * ---------------------------------------------------------------------------
+   * ⚠️ 它**看不见**这些：
+   *   · **拼出来的 key**（`t(\`calendar.continent.${code}\`)`）：静态扫描只认字面量，
+   *     拼出来的那一类由 `roleguide.tsx` 的渲染断言与 `DYNAMIC_KEYS` 那张白名单分别处置；
+   *   · **CSS 的 `content:` / `::before`**：词条要是被写进样式表，这里一个都扫不到；
+   *   · **组件内部的接线**：`<Notice>` 只在**单一字符串子节点**时才 `em()` ——
+   *     这一条断言能判"是不是单一字符串子节点"，判不了"Notice 里那句 `typeof` 还在不在"
+   *     （那一半由 `Form.tsx` 的两条接线自证兜住，见下面 `WIRING`）。
+   *     而"渲染点离调用点更远"的那些（值先存进 state 再交给组件）只能进白名单，
+   *     每一条都要写理由。
+   */
+  it('★ 带 `**` 的词条，每处 t(字面量) 都必须在会处理标记的形状里（或写明理由的白名单）', () => {
+    const herePath = new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const repo = resolve(dirname(herePath), '..', '..', '..');
+    const roots = [join(repo, 'apps', 'web', 'src'), join(repo, 'apps', 'desktop', 'src')];
+
+    /**
+     * ★ 允许的四种**形状**（分类器只认这四种，其余一律 `unsafe`），以及它们
+     *   为什么允许 —— 这一张表就是这条守卫的判据本身，**放宽它等于废掉这条守卫**。
+     *
+     * | 形状 | 长什么样 | 为什么允许 |
+     * |---|---|---|
+     * | `em` | `em(t('k'))` | 直接的渲染点，`em()` 把 `**x**` 变成 `<strong>` |
+     * | `emText` | `emText(t('k'))`（多用于 `title={…}`） | **字符串上下文**：原生 tooltip 里没有粗体，所以这里只**剥掉**标记 |
+     * | `field-hint` | `<Field … hint={… t('k') …}>` | `Field` 自己会 `em(hint)`（`Form.tsx`，见 `WIRING` 自证） |
+     * | `notice-child` | `<Notice …>{t('k')}</Notice>` | 单一**字符串**子节点 ⇒ `Notice` 会 `em(children)`（同上） |
+     *
+     * ⚠️ `notice-child` 的"单一字符串子节点"这半句是关键：`<Notice>{a}{b}</Notice>`
+     *    （两个子节点）**不在**这个形状里 —— 那时 `children` 是数组，
+     *    `Notice` 的 `typeof children === 'string'` 为假 ⇒ **不处理标记**。
+     *    2026-09-14 修掉的两处缺陷里，有一处正是这个形状（`failure.message` + 链接）。
+     */
+    const AUTO_SHAPES = ['em', 'emText', 'field-hint', 'notice-child'] as const;
+    type Shape = (typeof AUTO_SHAPES)[number] | 'unsafe';
+
+    /**
+     * ★★ **唯一的清单**：每个带 `**` 的词条、**每一处**字面量调用点，都必须在下面
+     *    出现**一次**（`count` 是同一个文件里同一形状的条数）。
+     *
+     * ⚠️ 判据是"清单 == 实测"，所以**任何**漂移都会红，包括：
+     *   · 有人新写一个**裸**的 `t('带星号的键')` ⇒ 多出一条 `unsafe`（**这就是要抓的**）；
+     *   · 有人把某处的 `em(...)` 删掉 ⇒ 那一行的形状从 `em` 变成 `unsafe`；
+     *   · 有人把某处**修好**（比如把一个 `unsafe` 改成 `em(...)`）⇒ 少一条 ⇒ 也红，
+     *     那时**应当**把这一行删掉并说明原因（本仓 `EXPECTED_LABEL_KEY_LITERALS`
+     *     用的是同一条规矩：**让人来确认，而不是让覆盖悄悄变化**）。
+     *
+     * `kind` 三种取值，含义不同、**绝不能混**：
+     *   · `auto`        —— 形状由分类器判定，`shape` 必须与实测一致；
+     *   · `why-safe`    —— 形状匹配不到（`unsafe`），但**确实安全**，理由 **必须**写在 `why`；
+     *   · `open-defect` —— 形状匹配不到，而且**是真的缺陷、还没修**（只报告）。
+     *     ⚠️ 这一类**不是**"允许的形状"，它在这里是为了让守卫**知道**它存在、
+     *     并且**修好之后这一行会消失 ⇒ 守卫变红 ⇒ 有人来更新**。别把它当安全形状读。
+     *     ★ 今天这张表里是 **0 条**。它被用掉过一次（2026-09-14）：本轮复查发现
+     *     `EditResource.tsx` 的危险区里 `authoring.mustHideFirst` 是**裸**调用
+     *     （同一段里 `deleteImpact` 走了 `em()`、这一条没有 ⇒ editor/admin 会看到
+     *     「要先**下架**再删除」的一对字面星号）。当时先把它记成 `open-defect`
+     *     （因为"只报告不改"），随后被授权修掉，那一行就删掉了 —— 这正是
+     *     "清单描述现状"的示例：**修缮会让这条守卫变红，而红就是让人来更新清单**。
+     */
+    const EXPECTED_SITES: readonly {
+      file: string;
+      key: string;
+      shape: Shape;
+      count: number;
+      kind: 'auto' | 'why-safe' | 'open-defect';
+      why?: string;
+    }[] = [
+      {
+        file: 'apps/web/src/routes/Home.tsx',
+        key: 'home.statusHint',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/RoleGuide.tsx',
+        key: 'auth.roleGuideIntro',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/ReviewDetail.tsx',
+        key: 'review.selfReviewBlocked',
+        shape: 'notice-child',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/ReviewDetail.tsx',
+        key: 'review.editExplain',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'edit.liveUnchanged',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/ModerationBar.tsx',
+        key: 'moderate.hiddenNote',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/MarksPanel.tsx',
+        key: 'marks.noteHint',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/VideoForm.tsx',
+        key: 'videos.hintUrl',
+        shape: 'field-hint',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/Seeds.tsx',
+        key: 'seedsPage.resultStale',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/SeedSaveForm.tsx',
+        key: 'seedsPage.saveWarning',
+        shape: 'notice-child',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/SeedSaveForm.tsx',
+        key: 'seedsPage.saveQuotaNote',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/Live.tsx',
+        key: 'live.recordsChannels',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/LiveManagePanel.tsx',
+        key: 'liveManage.hintUrl',
+        shape: 'field-hint',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/CalendarForm.tsx',
+        key: 'authoring.directHint',
+        shape: 'emText',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/ResourceForm.tsx',
+        key: 'authoring.directHint',
+        shape: 'emText',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/CalendarEdit.tsx',
+        key: 'authoring.deleteImpact',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'authoring.deleteImpact',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/components/LiveManagePanel.tsx',
+        key: 'liveManage.errUrlNotLink',
+        shape: 'unsafe',
+        count: 1,
+        kind: 'why-safe',
+        why:
+          '值先存进 `errors.url`（一个 Record<string,string>），随后在同一个文件的 ' +
+          "`<Field … hint={errors.url ?? t('liveManage.hintUrl')}>` 上交给 `Field` —— " +
+          '而 `Field` 会对 hint 调 `em()`（见 WIRING 自证：Form.tsx 里 `em(hint)` + ' +
+          '"hint 只挂在 Field 上"）。⇒ **渲染点是安全的**，只是离调用点隔着一个变量，' +
+          '静态形状匹配不到它。⚠️ 这一条的前提是"errors.url 只喂给 hint"——' +
+          '哪天有人把它喂给 title= 或 aria-label=，这里必须跟着改。',
+      },
+      {
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'authoring.alreadyPending',
+        shape: 'unsafe',
+        count: 1,
+        kind: 'why-safe',
+        why:
+          '值存进 state（`setDirectNotice({ ok: false, text: t(...) })`），随后渲染成 ' +
+          '`<Notice kind={…}>{directNotice.text}</Notice>` —— **单一字符串子节点**，' +
+          "所以 `Notice` 会对它调 `em()`（`typeof children === 'string'` 那一支）。" +
+          '⇒ 安全，但形状匹配不到（中间隔着一个 state）。' +
+          '⚠️ 前提是"这个 text 只喂给 Notice 的子节点位置"；喂给 `title=` 就不安全了。',
+      },
+      {
+        file: 'apps/web/src/lib/submissionErrors.ts',
+        key: 'authoring.mustHideFirst',
+        shape: 'unsafe',
+        count: 1,
+        kind: 'why-safe',
+        why:
+          '这是**模块内部的出口**：整个 `switch` 已抽进 `describeRawSubmissionError`，' +
+          '它的返回类型 `RawSubmissionErrorInfo` 里 `message` 是 **string**；' +
+          '对外的 `describeSubmissionError` **只有一个 return**，整体套一次 `em()`。' +
+          '⇒ "所有出口都过 em()"是**结构 + 类型**保证的（第二条 return 会让这句话不成立）。' +
+          '运行时的逐出口证明在 `apps/web/scripts/authoringNotice.ts`（喂带 `**` 的探针，' +
+          '每一个出口都必须渲染出 `<strong>`）。',
+      },
+      {
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'authoring.mustHideFirst',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+    ];
+
+    /**
+     * ★ 白名单 B：**拼出来的 key**（没有字面量调用点）。
+     *    ⚠️ 这一张不是"免检通道"：下面同时断言
+     *      ① 这些键**确实**没有任何字面量调用点（哪天有人写了字面量，它就必须从这里搬走）；
+     *      ② 它们**唯一的渲染点**长什么样（`RoleGuide.tsx` 里的两处 `em(t(表[?]))`）——
+     *         那张表自己写错/少一行不会有任何报错，所以渲染点必须被钉住。
+     */
+    const DYNAMIC_KEYS: readonly { key: string; why: string }[] = [
+      {
+        key: 'auth.rankNoteOwner',
+        why: 'RoleGuide 的 RANK_NOTES 表按角色取（`t(RANK_NOTES[role])`）',
+      },
+      { key: 'auth.rankNoteAdmin', why: '同上（RANK_NOTES）' },
+      { key: 'auth.rankNoteReviewer', why: '同上（RANK_NOTES）' },
+      { key: 'auth.capDescResourceEditAny', why: 'RoleGuide 的 CAP_DESC 表按能力名取' },
+      { key: 'auth.capDescResourceEditUnpublished', why: '同上（CAP_DESC）' },
+      { key: 'auth.capDescResourceModerate', why: '同上（CAP_DESC）' },
+    ];
+
+    /**
+     * ★ 白名单 C：带 `**`、但**今天没有任何调用点**的词条（第 ⑨ 条完整性检查要它）。
+     *
+     * ⚠️ 为什么需要这张表：第 ⑨ 条要求"每一个带 `**` 的 key 都要么有字面量调用点、
+     *    要么在白名单上" —— 没有它的话，一个"词条写好了但界面还没接"的条目会被
+     *    要求**立刻**有覆盖，而那时最省事的处置往往是**把 `**` 从词条里删掉**
+     *    （等于把问题藏起来）。有了这张表，处置是"写清打算接到哪"。
+     *
+     * ★ 今天这张表里是 **0 条**（24 个带 `**` 的键：18 个有字面量调用点 + 6 个动态）。
+     *   它留着是为了让下一个人**有地方写理由**，而不是去改词条。
+     */
+    const UNWIRED_KEYS: readonly { key: string; why: string }[] = [];
+
+    /**
+     * ★★ 把**注释**挖成空格（**等长**、换行保留 ⇒ 行号不漂）。
+     *
+     * ⚠️ 为什么非做不可（这一条是**实测撞出来的**，不是预防性设计）：
+     *    本守卫第一版直接在源码文本上找 `t('…')`，结果**当场报了一个假警报** ——
+     *    `Emphasis.tsx` 的**文档注释**里写着
+     *    「把 `t('authoring.directHint')` 原样放进去，浏览器气泡里就是一对星号」，
+     *    而那句话是在**解释**这个缺陷，不是调用点。
+     *    假警报的下场是可预料的：下一个人给守卫加一条"注释不算"的白名单，
+     *    然后**真缺陷也一起被放过**（`check-font-coverage.mjs` 与 `zh-CN.ts`
+     *    的注释里为同一件事写过记录）。
+     *
+     * ⚠️ 但"挖注释"必须**认得字符串**：本仓到处都是 `'https://…'`，
+     *    朴素实现会把 `//` 当成行注释开头、把这一行**后面**的东西一起挖掉 ——
+     *    那会**漏掉真调用点**（比假警报更坏：它是静默的）。
+     *    所以这里按状态机走：字符串 / 模板串里的 `//` **不是**注释；
+     *    而模板串里的 `${…}` **仍然是代码**（要找的调用点可能就在那里面）。
+     *    ⇒ 三条都由下面 `BLANK_PROBES` 逐条证。
+     */
+    function blankComments(src: string): string {
+      const out = src.split('');
+      const stack: string[] = [];
+      const wipe = (from: number, to: number): void => {
+        for (let k = from; k < to && k < src.length; k += 1) {
+          if (src[k] !== '\n') out[k] = ' ';
+        }
+      };
+      let i = 0;
+      while (i < src.length) {
+        const ch = src[i] as string;
+        const top = stack[stack.length - 1];
+        if (top === "'" || top === '"') {
+          if (ch === '\\') i += 2;
+          else {
+            if (ch === top) stack.pop();
+            i += 1;
+          }
+          continue;
+        }
+        if (top === '`') {
+          if (ch === '\\') i += 2;
+          else if (ch === '`') {
+            stack.pop();
+            i += 1;
+          } else if (ch === '$' && src[i + 1] === '{') {
+            stack.push('{');
+            i += 2;
+          } else i += 1;
+          continue;
+        }
+        // 代码态（顶层，或模板串 `${}` 里面）
+        if (ch === '/' && src[i + 1] === '/') {
+          const nl = src.indexOf('\n', i);
+          const end = nl === -1 ? src.length : nl;
+          wipe(i, end);
+          i = end;
+          continue;
+        }
+        if (ch === '/' && src[i + 1] === '*') {
+          const close = src.indexOf('*/', i + 2);
+          const end = close === -1 ? src.length : close + 2;
+          wipe(i, end);
+          i = end;
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') {
+          stack.push(ch);
+          i += 1;
+          continue;
+        }
+        if (ch === '}' && top === '{') {
+          stack.pop();
+          i += 1;
+          continue;
+        }
+        i += 1;
+      }
+      return out.join('');
+    }
+
+    /** 抽出一次 `t('字面量')` 调用的实参括号位置。 */
+    function callEnd(src: string, paren: number): number {
+      let depth = 0;
+      let quote: string | null = null;
+      for (let i = paren; i < src.length; i += 1) {
+        const ch = src[i] as string;
+        if (quote) {
+          if (ch === '\\') i += 1;
+          else if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+        else if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) return i + 1;
+        }
+      }
+      return src.length;
+    }
+
+    /**
+     * ⚠️ 判据是**紧贴调用点**的结构（没有行距参数）：函数一律不成比例地放宽，
+     *    因为"放宽到能过"的那一天，它同时也放过了真缺陷。
+     */
+    function classify(src: string, at: number, paren: number): Shape {
+      const before = src.slice(Math.max(0, at - 48), at);
+      if (/(?:^|[^\w$.])emText\(\s*$/.test(before)) return 'emText';
+      if (/(?:^|[^\w$.])em\(\s*$/.test(before)) return 'em';
+      // <Field … hint={ … t('k') … }>：`hint={` 之后没有闭合的 `}`（那会说明属性已经结束）
+      const hintAt = src.lastIndexOf('hint={', at);
+      if (hintAt >= 0 && !/[}<]/.test(src.slice(hintAt + 6, at))) return 'field-hint';
+      // <Notice …>{t('k')}</Notice>：**整个**子节点表达式就是这一次调用
+      const braceAt = src.lastIndexOf('{', at);
+      if (braceAt >= 0 && src.slice(braceAt + 1, at).trim() === '') {
+        const end = callEnd(src, paren);
+        const closeAt = src.indexOf('}', end);
+        if (closeAt >= 0 && src.slice(end, closeAt).trim() === '') {
+          const lt = src.lastIndexOf('<', braceAt);
+          const tag = lt >= 0 ? /^([A-Za-z][\w.]*)/.exec(src.slice(lt + 1))?.[1] : undefined;
+          if (tag === 'Notice') return 'notice-child';
+        }
+      }
+      return 'unsafe';
+    }
+
+    const CALL = /\bt\(\s*(?:'([^'\\]+)'|"([^"\\]+)")\s*(?:,|\))/g;
+
+    /** 从一段源码里抽出"某个 key 的调用点"及其形状。 */
+    function sitesIn(
+      file: string,
+      src: string,
+      marked: Set<string>,
+    ): {
+      file: string;
+      line: number;
+      key: string;
+      shape: Shape;
+    }[] {
+      const out: { file: string; line: number; key: string; shape: Shape }[] = [];
+      for (const m of src.matchAll(CALL)) {
+        const key = m[1] ?? m[2];
+        if (!key || !marked.has(key)) continue;
+        const at = m.index ?? 0;
+        const paren = at + m[0].indexOf('(');
+        out.push({
+          file,
+          key,
+          shape: classify(src, at, paren),
+          line: src.slice(0, at).split('\n').length,
+        });
+      }
+      return out;
+    }
+
+    /*
+     * ① ★ key 集合来自**加载后的字典**（不扫源码、不 grep）—— 见本节说明。
+     */
+    const marked = new Set<string>();
+    for (const dict of [zhCN, en]) {
+      for (const [key, value] of valueMap(dict)) if (value.includes('**')) marked.add(key);
+    }
+    assert.ok(
+      marked.size >= 24,
+      `只有 ${String(marked.size)} 个词条带 \`**\`（实测 24）—— 少了多半是**词条被改坏**：` +
+        '把强调标记去掉之后，这些词条在字符串上下文里就不再有星号，下面整条守卫会跟着空转。' +
+        '（确实有意删掉时，把 24 改成新的实测值并在注释里说明。）',
+    );
+    // 针孔探针：两个**真的修过**的靶子必须在集合里（否则下面的断言是在验空气）
+    for (const key of [
+      'authoring.directHint',
+      'authoring.mustHideFirst',
+      'liveManage.hintUrl',
+      'videos.hintUrl',
+    ]) {
+      assert.ok(marked.has(key), `针孔探针：${key} 必须带 \`**\`（它是本守卫的靶子之一）`);
+    }
+
+    /*
+     * ② 覆盖面控制：两个根目录都必须存在（改名/挪位时立刻红，而不是静默少扫）。
+     */
+    for (const root of roots) {
+      assert.ok(
+        statSync(root).isDirectory(),
+        `应扫的目录不存在：${root.slice(repo.length + 1)} —— 少扫一个根，` +
+          '"没问题"与"没扫到"就是同一个结果。',
+      );
+    }
+
+    /*
+     * ③ 扫源码（两个根），按 (文件, 键, 形状) 汇总。
+     */
+    const measured = new Map<string, number>();
+    const scanned: string[] = [];
+    /** 文件 → 挖掉注释之后的那份源码（形状判定与属性归属都在它上面做）。 */
+    const codeOf = new Map<string, string>();
+    let total = 0;
+    for (const root of roots) {
+      for (const file of walk(root)) {
+        const rel = file.slice(repo.length + 1).replaceAll('\\', '/');
+        scanned.push(rel);
+        const code = blankComments(readFileSync(file, 'utf8'));
+        codeOf.set(rel, code);
+        for (const site of sitesIn(rel, code, marked)) {
+          total += 1;
+          const entry = `${site.file} :: ${site.key} :: ${site.shape}`;
+          measured.set(entry, (measured.get(entry) ?? 0) + 1);
+        }
+      }
+    }
+    assert.ok(
+      scanned.includes('apps/web/src/components/RoleGuide.tsx'),
+      '覆盖面退化：没有扫到 apps/web/src/components/RoleGuide.tsx（那是带 `**` 的词条的集中地）',
+    );
+    assert.ok(
+      total >= 21,
+      `只扫到 ${String(total)} 处带 \`**\` 的词条调用点（实测 21）—— 扫描器漏扫了，` +
+        '此时"没问题"与"没扫到"是同一个结果。',
+    );
+    /*
+     * ★ 真实世界里那条假警报的回归：`Emphasis.tsx` 的**注释**里就写着
+     *   `t('authoring.directHint')`（那一段正是"为什么需要 emText"的说明）。
+     *   它必须**不**被当成调用点 —— 这是"注释要被挖掉"那件事的活证据。
+     */
+    assert.equal(
+      [...measured.keys()].some((e) => e.startsWith('apps/web/src/components/Emphasis.tsx ::')),
+      false,
+      'Emphasis.tsx 被扫出了调用点 —— 那里 `t(…)` 只出现在**注释**里（讲 emText 为什么存在），' +
+        '多半是注释没被挖掉。假警报会诱出白名单，而白名单会连真缺陷一起放过。',
+    );
+
+    /*
+     * ④ ★ 分类器**自证**（反面控制在最后一条）：同一个提取器 + 分类器，
+     *    喂一段夹具，四种允许形状各命中一次，**裸调用必须被判成 unsafe** ——
+     *    没有这一条，"分类器写坏了"与"所有调用点都安全"在输出上无法区分。
+     */
+    const FIXTURE = [
+      "const a = em(t('authoring.directHint'));",
+      "const b = emText(t('authoring.directHint'));",
+      'const c = <Field id="x" hint={t(\'videos.hintUrl\')} />;',
+      'const d = <Notice kind="info">{t(\'seedsPage.saveWarning\')}</Notice>;',
+      "const e = <p>{t('authoring.mustHideFirst')}</p>;",
+    ].join('\n');
+    const fixtureShapes = sitesIn('fixture.tsx', blankComments(FIXTURE), marked).map(
+      (s) => s.shape,
+    );
+    assert.deepEqual(
+      fixtureShapes,
+      ['em', 'emText', 'field-hint', 'notice-child', 'unsafe'],
+      '分类器自证失败：`em` / `emText` / `Field 的 hint` / `Notice 的单一字符串子节点` ' +
+        '四种形状必须各命中一次，而**裸调用必须判成 unsafe** —— ' +
+        '这一条不成立的话，下面那条"全都安全"是因为它把什么都当成了安全。',
+    );
+
+    /*
+     * ④b ★ "挖注释"这一步本身也要有探针 —— 它有两个方向都会出错：
+     *    挖太少（注释里的 `t(…)` 变成假警报，诱出白名单）与
+     *    挖太多（字符串里的 `//` 被当成注释开头 ⇒ 漏掉**真**调用点，静默）。
+     */
+    const BLANK_PROBES: readonly (readonly [name: string, src: string, want: number])[] = [
+      ['行注释里的 t(…) 不算调用点', "// t('authoring.directHint')\nconst x = 1;", 0],
+      ['块注释里的 t(…) 不算调用点', "/* t('authoring.directHint') */\nconst x = 1;", 0],
+      [
+        '字符串里的 // 不能把同一行后面的调用点一起挖掉',
+        "const u = 'https://e.x/y';\nconst a = em(t('authoring.directHint'));",
+        1,
+      ],
+      [
+        '模板串里的插值部分仍然是代码（那里面可能就有调用点）',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: 这条探针**就是要**让夹具里出现字面的插值写法 —— 改成模板串的话插值会被求值，探针就变成别的东西了
+        "const s = `x ${t('authoring.directHint')} y`;",
+        1,
+      ],
+    ];
+    for (const [name, src, want] of BLANK_PROBES) {
+      const code = blankComments(src);
+      assert.equal(code.length, src.length, `挖注释必须**等长**（否则行号会漂）：${name}`);
+      assert.equal(
+        sitesIn('probe.tsx', code, marked).length,
+        want,
+        `"挖注释"探针失败（期望 ${String(want)} 处）：${name}`,
+      );
+    }
+    /* 行号必须还对得上（挖注释会把字符换成空格，绝不能把换行也吃掉） */
+    assert.equal(
+      sitesIn(
+        'probe.tsx',
+        blankComments("/* a\nb\nc */ const a = em(t('authoring.directHint'));"),
+        marked,
+      )[0]?.line,
+      3,
+      '挖注释之后行号必须仍然是**原文件的行号**（换行被吃掉的话，报出来的位置会指向别处）',
+    );
+
+    /*
+     * ⑤ ★★ 清单 == 实测。任何漂移都红，报出来的两个方向要分得清：
+     *    "多出来"= 有人新写了调用点（**裸的那种就是要抓的**）；"少了"= 有调用点消失了。
+     */
+    const expectedEntries: string[] = [];
+    for (const row of EXPECTED_SITES) {
+      assert.ok(
+        row.kind === 'auto' || (row.why ?? '').length > 60,
+        `${row.file} 的 ${row.key} 被列成了 ${row.kind}，但没写清理由 —— ` +
+          '白名单必须"每一条都能读懂为什么"，否则它就是静默跳过。',
+      );
+      expectedEntries.push(`${row.file} :: ${row.key} :: ${row.shape} ×${String(row.count)}`);
+    }
+    const measuredEntries = [...measured.entries()].map(([e, n]) => `${e} ×${String(n)}`);
+    const appeared = measuredEntries.filter((e) => !expectedEntries.includes(e)).sort();
+    const vanished = expectedEntries.filter((e) => !measuredEntries.includes(e)).sort();
+    assert.deepEqual(
+      { 新出现或形状变了: appeared, 消失或形状变了: vanished },
+      { 新出现或形状变了: [], 消失或形状变了: [] },
+      '★ 带 `**` 的词条调用点与清单不一致 —— **这不是"测试坏了"，而是"该更新一份清单了"**。\n' +
+        '· 「新出现或形状变了」里如果是 **unsafe**：那是一处**裸调用**，用户会看到一对字面星号 ⇒ ' +
+        '用 `em()`（节点上下文）/ `emText()`（title、aria-label 这类字符串上下文）/ ' +
+        '`Field` 的 `hint` / **单一字符串子节点**的 `Notice` 之一重写它。\n' +
+        '· 新出现的那一处如果形状匹配不到但**确实安全**（值先存进 state、或在模块出口统一处理）：' +
+        '加进 `EXPECTED_SITES`，`kind` 写 `why-safe`，并把 `why` **写成下一个人能读懂的理由**。\n' +
+        '· 「消失或形状变了」= 清单里描述的调用点**源码里已经没有了**。绝大多数情况是' +
+        '**有人把它修好了** ⇒ **要做的不是改这条断言，而是把 `EXPECTED_SITES` 里那一行删掉**' +
+        "（清单描述的是现状）。⚠️ 如果删掉的那一行原本是 `kind: 'open-defect'`：" +
+        '恭喜，那个**已知缺陷已经不存在了** —— 删掉这一行即可。\n' +
+        '· 如果你**并没有**改过那处源码，那说明扫描器漏扫了：先查 `blankComments()` 与两个根目录。\n' +
+        `（本次扫了 ${String(scanned.length)} 个文件、${String(total)} 处调用点。）`,
+    );
+
+    /*
+     * ⑥ 白名单 B 不是黑洞：那些键**确实**没有字面量调用点，而且它们的渲染点
+     *    被钉住了（表写错/少一行不会有任何报错，所以渲染点必须有人守）。
+     */
+    for (const row of DYNAMIC_KEYS) {
+      assert.equal(
+        measuredEntries.some((e) => e.includes(`:: ${row.key} ::`)),
+        false,
+        `${row.key} 被列进了"拼出来的 key"白名单，但它**有了**字面量调用点（${row.why}）—— ` +
+          '这时它必须从白名单里搬走，改由 EXPECTED_SITES 逐处列出。',
+      );
+    }
+    const roleGuide = readFileSync(join(repo, 'apps/web/src/components/RoleGuide.tsx'), 'utf8');
+    for (const needle of ['em(t(RANK_NOTES[role]))', 'em(t(CAP_DESC[action.capability]']) {
+      assert.ok(
+        roleGuide.includes(needle),
+        `RoleGuide.tsx 里找不到 \`${needle}\` —— 动态 key（RANK_NOTES / CAP_DESC 那 6 条）` +
+          '唯一的安全保障就是"渲染点走 em()"，它变了这条白名单立刻失去理由。',
+      );
+    }
+
+    /*
+     * ⑦ ★ 允许形状的**理由本身**也要被守住：`field-hint` 与 `notice-child` 之所以安全，
+     *    靠的是 `Form.tsx` 里那两行接线。它们被改掉时，上面那张表就变成了空话 ——
+     *    所以这里把"理由"也变成断言。
+     */
+    const formSrc = readFileSync(join(repo, 'apps/web/src/components/Form.tsx'), 'utf8');
+    assert.ok(
+      /em\(hint\)/.test(formSrc),
+      'Form.tsx 里找不到 `em(hint)` —— `field-hint` 这个允许形状的理由没了（Field 不再处理标记）',
+    );
+    assert.ok(
+      /typeof children === 'string'\s*\?\s*em\(children\)/.test(formSrc),
+      "Form.tsx 里找不到 `typeof children === 'string' ? em(children)` —— " +
+        '`notice-child` 这个允许形状的理由没了（Notice 不再处理标记）',
+    );
+
+    /*
+     * ⑧ ⚠️ `hint` 这个属性名必须**只**挂在 `<Field>` 上：上面的分类只看属性名，
+     *    若哪天有人给别的组件也传 `hint=`，那个组件的 hint **不一定**会 `em()`，
+     *    而分类器会照样判成安全（静默放过）。
+     */
+    const hintOwners = new Set<string>();
+    for (const rel of scanned) {
+      if (!rel.startsWith('apps/web/src/')) continue;
+      const src = codeOf.get(rel) ?? '';
+      for (const m of src.matchAll(/\bhint=\{/g)) {
+        const lt = src.lastIndexOf('<', m.index ?? 0);
+        const tag = lt >= 0 ? /^([A-Za-z][\w.]*)/.exec(src.slice(lt + 1))?.[1] : undefined;
+        if (tag) hintOwners.add(tag);
+      }
+    }
+    assert.deepEqual(
+      [...hintOwners].sort(),
+      ['Field'],
+      '`hint=` 挂到了别的组件上 —— 分类器把"hint 属性"当成安全形状，' +
+        '依据是"只有 `Field` 收 hint 且它会 `em(hint)`"。多出来的那个组件必须先确认会不会处理标记。',
+    );
+
+    /*
+     * ⑨ ★★ 完整性：字典里**每一个**带 `**` 的 key 都必须落进这条守卫的视野 ——
+     *    要么有字面量调用点（出现在 `EXPECTED_SITES` 里），要么在 `DYNAMIC_KEYS`
+     *    （拼出来的 key）或 `UNWIRED_KEYS`（今天没人渲染）白名单里。
+     *
+     * ⚠️⚠️ 少了这一条就有一个**静默洞**：某个带 `**` 的词条如果只被**拼出来的 key**
+     *    引用（新写一处 `t(某张表[x])`），它就没有任何字面量调用点 ⇒
+     *    上面每一条断言**都不会提到它** —— 而这正是本任务最怕的形状（静默跳过）。
+     *    这一条把它变成"要么有覆盖，要么在白名单上写明理由"。
+     */
+    const coveredKeys = new Set([
+      ...EXPECTED_SITES.map((r) => r.key),
+      ...DYNAMIC_KEYS.map((r) => r.key),
+      ...UNWIRED_KEYS.map((r) => r.key),
+    ]);
+    assert.deepEqual(
+      [...marked].filter((key) => !coveredKeys.has(key)).sort(),
+      [],
+      '这些带 `**` 的词条**既没有字面量调用点、也不在任何白名单里** ⇒ 这条守卫看不见它们。' +
+        '两种处置：① 它由拼出来的 key 渲染 ⇒ 加进 `DYNAMIC_KEYS`（写清渲染点在哪）；' +
+        '② 它今天**根本没人渲染**（词条先写好、界面还没接） ⇒ 加进 `UNWIRED_KEYS`（写清接到哪）。' +
+        '⚠️ 不要让它停在"没人提到"的状态 —— 那正是这条守卫要消灭的静默。',
+    );
+  });
 });

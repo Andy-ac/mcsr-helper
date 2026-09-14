@@ -68,8 +68,28 @@ const decode = (s: string) =>
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
+/**
+ * ⚠️ `norm()` 里**多做了一步**："把星号替换成空串"。
+ *
+ * 那一步是给第 ③ 条用的：它拿**词条原文**（里面写着 `**`）去比页面上的字，
+ * 两边都得先把标记擦掉才比得齐。所以 `norm()` 本身**不该动**。
+ *
+ * ⚠️⚠️ 但也正因为那一步，**它不能用来验"页面上没有星号"** ——
+ *    擦掉之后的字符串里永远不会有 `**`，第 ④ 条于是**恒真**。
+ *    见下面 `textOfUnstripped` 与第 ④ 条的说明。
+ */
 const norm = (s: string) => decode(s).replace(/\*\*/g, '').replace(/\s+/g, '');
 const text = norm(html.replace(/<[^>]+>/g, ' '));
+
+/**
+ * ★ 与 `norm()` 同一条提取链路，**但不擦星号** —— 专门用来问"页面上有没有字面 `**`"。
+ *
+ * 提取链路必须与 `norm()` 一致（同样剥标签、同样还原实体、同样压空白），
+ * 否则两者看到的就不是同一串字，"没有星号"这句话也就无从谈起。
+ */
+const textOfUnstripped = (markup: string) =>
+  decode(markup.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, '');
+const unstripped = textOfUnstripped(html);
 
 const dict = (LANG === 'en' ? en : zhCN) as unknown as { auth: Record<string, string> };
 const descs = Object.entries(dict.auth).filter(([k]) => k.startsWith('capDesc'));
@@ -92,8 +112,41 @@ assert.deepEqual(
 );
 console.log(`✓ ${descs.length} 条能力说明全部来自词条`);
 
-/** ④ 强调标记必须被 `em()` 处理掉。 */
-assert.ok(!text.includes('**'), `渲染结果里有字面 ** ：${html.slice(0, 200)}`);
+/**
+ * ④ ★★ 强调标记必须被 `em()` 处理掉。
+ *
+ * ⚠️⚠️ 2026-09-14：这一条**曾经是恒真的**（本仓"门禁绿但什么都没验"那一族，
+ *    记档见 `docs/pending.md §5.63`）——
+ *    它当时写的是 `!text.includes('**')`，而 `text` 是 `norm(...)` 的结果，
+ *    也就是**已经被"把星号替换成空串"那一步擦过一遍**的字符串 ⇒ 永远不含 `**`。
+ *
+ *    实测（2026-09-14，两次只差这一条断言）：
+ *      · 把 `RoleGuide.tsx` 里 `em(t(RANK_NOTES[role]))` 改成裸的 `t(...)`
+ *        （页面上**真的**会印出 3 个带星号的等级说明）⇒
+ *        **旧断言照样全绿、脚本 exit 0**；
+ *      · 换成下面这条之后再跑同一个改动 ⇒ 当场红。
+ *    ⇒ 教训：**先擦掉要断言的东西，再断言它不存在**，是这类守卫最隐蔽的失效方式
+ *      （同一个形状还有 `roleguide` 之外的地方要留意）。
+ *
+ * ⚠️ 所以这里换用 `unstripped`（同一条提取链路，**不擦星号**）。两个探针跟着钉住
+ *    "两份文本的差别就是擦星号这一步"：少了它们，"这条断言有没有在验东西"
+ *    又要靠人去读实现。
+ */
+assert.equal(
+  norm('a**b**c').includes('**'),
+  false,
+  '探针：`norm()` 会擦掉星号 —— 这正是旧写法恒真的原因（留着当对照，别删）',
+);
+assert.equal(
+  textOfUnstripped('a**b**c').includes('**'),
+  true,
+  '探针：`textOfUnstripped()` 必须**看得见**星号 —— 否则第 ④ 条还是恒真的',
+);
+assert.equal(
+  unstripped.includes('**'),
+  false,
+  `★★ 渲染结果里有字面的 \`**\`（强调没走 em()）：${unstripped.slice(0, 200)}`,
+);
 console.log('✓ `**` 强调已被 em() 处理（没有字面星号）');
 
 /** ⑤ ★ 英文模式：整页不许出现汉字（这条就是这次搬家的目的）。 */
