@@ -35,7 +35,13 @@
 
    ⚠️ 像素字体只在**整数倍**字号下清晰：12px 是设计尺寸，24px 是 2 倍。
       18px / 15px 会让每个"像素"变成 1.5 个设备像素，边缘发灰。
-      所以全站只有 --fs-px-sm(12) 和 --fs-px-lg(24) 两档。
+      ★ 2026-09-14 补一个前提（原话读起来像"中间档不可能"，而实际不是）：
+      这条规则的判据是"**设计像素落在设备像素上是不是整数**"，而它**与设备像素比有关**。
+      半步（1.5 倍 = 18px、2.5 倍 = 30px）在 **2 倍屏**上分别是 3 与 5 个设备像素，
+      **是整数 ⇒ 清晰**；只有 1 倍屏上才会发灰。
+      ⇒ 所以标题那两档取了 30 / 18（用户要的中间值），并且写成两个变量
+        （`--fs-title-page` / `--fs-title-item`），要回到绝对清晰就改那两个数。
+      详见 `docs/pending.md §5.61`。
 
    ⚠️ 字体子集的覆盖有构建期检查守着：
       apps/web/scripts/check-font-coverage.mjs
@@ -291,7 +297,9 @@ html[data-theme='dark'] select {
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
   --sidebar-w: 208px;
-  --sidebar-w-collapsed: 64px;
+  /* ⚠️ 这里原来还有一条 `--sidebar-w-collapsed: 64px`（收起来只剩一条图标条时
+     的宽度）。2026-09-14「收起」改成**整条消失**，那个中间状态连同这个变量
+     一起删掉了 —— 见文件末尾的「侧栏完全收起」一节。 */
 }
 
 * {
@@ -415,12 +423,11 @@ code {
      看起来像页面闪了一下。 */
   view-transition-name: sidebar;
 }
-.sidebar.is-collapsed {
-  flex-basis: var(--sidebar-w-collapsed);
-  width: var(--sidebar-w-collapsed);
-  padding-left: 10px;
-  padding-right: 10px;
-}
+/* ⚠️ 收起态**不定义在这里**，全部写在文件末尾的「侧栏完全收起」一节。
+   这次收起是**替换**旧行为（旧的是压成一条 64px 图标条），不是再加一档，
+   所以只要可能，收起态就该是一个能整段读的块，而不是散在基础规则中间。
+   这里原来那条 `.sidebar.is-collapsed { flex-basis/width: var(--sidebar-w-collapsed) }`
+   是图标条的唯一实现，已经随那个变量一起删掉了。 */
 
 /* 侧边栏在路由切换时保持静止。
    ::view-transition-old/new 默认是交叉淡入；给同一元素显式关掉动画，
@@ -461,7 +468,14 @@ code {
 
 /* 收起时藏起文字。
    ⚠️ 用 opacity + max-width 过渡，不用 display:none ——
-      display 不可动画，切换时会"啪"地消失，那是很生硬的一下。 */
+      display 不可动画，切换时会"啪"地消失，那是很生硬的一下。
+
+   ⚠️ 2026-09-14「收起」改成整条消失之后，下面这三条**留着**，但理由变了：
+      它们不再是为了"让图标条里只剩小方块"，而是为了**收起的那 300ms**。
+      侧栏是滑着关的，没有它们的话文字会一直保持不透明、被收窄的裁剪边
+      "齐刷刷切掉"；有了它们，文字在 --t(200ms) 里先淡掉、宽度在 --t-slow 里
+      跟着侧栏一起收掉，看起来才是"整条滑走"。
+      终态里侧栏宽度已经是 0，这三条在终态确实是冗余的 —— 在那 300ms 里不是。 */
 .sidebar__brandtext,
 .sidebar__label,
 .sidebar__stage {
@@ -499,16 +513,11 @@ code {
   white-space: nowrap;
   overflow: hidden;
 }
-.sidebar.is-collapsed .sidebar__group {
-  padding: 16px 0 6px;
-  text-align: center;
-  font-size: 0;
-}
-.sidebar.is-collapsed .sidebar__group::after {
-  content: '···';
-  font-size: var(--fs-px-sm);
-  letter-spacing: 1px;
-}
+/* ⚠️ 删掉的两条：`.sidebar.is-collapsed .sidebar__group { padding: 16px 0 6px;
+   text-align: center; font-size: 0 }` 和它的 `::after { content: '···' }`。
+   它们唯一的用途是把"分区"这个小组标题压成一个居中的省略号，好让 64px 的
+   图标条看起来不是空的。整条侧栏不再存在之后它没有地方可显示；而在这 300ms
+   的收起过程里，它反而会让小组标题**中途变成三个点**，是一处能看见的抖动。 */
 
 .sidebar__item {
   display: flex;
@@ -548,8 +557,14 @@ code {
   cursor: not-allowed;
 }
 
-/* 每个分区一个方块图标，颜色不同 —— 收起时只显示这个。
-   这也是保留斜面的地方：小方块带上斜面立刻就像 MC 的物品。 */
+/*
+ * 每个分区一个方块图标，颜色不同。
+ * ★ 2026-09-14：原来这里还写着"**收起时只显示这个**"—— 那句话随着侧栏改成
+ *   **完全收起**（不再有 64px 的图标条）已经不成立了，所以删掉。
+ *   ⚠️ 方块本身留着：展开时它仍然是"一眼认出这是哪一栏"最快的东西，
+ *      而且它是全站**仅有的两处保留斜面**之一（另一处是主按钮按下时），
+ *      删了就等于把 MC 味最重的那一小块也拿掉。
+ */
 .sidebar__block {
   flex: 0 0 14px;
   width: 14px;
@@ -572,10 +587,13 @@ code {
 /*
  * 「直播」—— 第七个分区色。
  *
- * ⚠️ 它必须和上面六个**都不一样**：收起侧边栏时只剩这个小方块，
- *    而那时它是唯一能区分分区的线索（见 Layout.tsx 里 SECTIONS 的注释）。
+ * ⚠️ 它必须和上面六个**都不一样**：展开侧栏时方块和名字并排出现，
+ *    而扫一眼颜色是认出"这是哪一栏"最快的方式。
+ *    ★ 2026-09-14：原来这里写的是"收起时只剩这个小方块、它是唯一线索"——
+ *      侧栏改成**完全收起**之后那句不成立了（收起后一个方块都不显示），
+ *      但"七个颜色互不相同"这条要求**照样成立**，只是理由换了。
  *    现有六个已经把暖色系用掉了（土棕 / 草绿 / 赭红 / 钻青 / 紫 / 灰），
- *    所以这里取冷色里的蓝 —— 和「娱乐视频」的赭红在色相环上几乎相对，
+ *    所以这里取冷色里的蓝 —— 和「视频」的赭红在色相环上几乎相对，
  *    两个视频类板块并排时不会看混。
  */
 .sidebar__block--live {
@@ -645,11 +663,10 @@ code {
   padding: 0 10px;
   transition: padding var(--t-slow) var(--ease);
 }
-.sidebar.is-collapsed .sidebar__lang {
-  flex-direction: column;
-  padding: 0;
-  align-items: center;
-}
+/* ⚠️ 删掉的一条：`.sidebar.is-collapsed .sidebar__lang { flex-direction: column;
+   padding: 0; align-items: center }` —— 图标条里把语言/主题这四颗按钮竖着摞
+   起来用的。现在没有图标条，留着它只会在收起动画的第一帧把这四颗按钮
+   重排一次（横排变竖排），那是"收起"过程里最显眼的一处跳变。 */
 .sidebar__lang button {
   flex: 1;
   background: rgba(255, 255, 255, 0.04);
@@ -2909,10 +2926,9 @@ textarea.mcsr-field__input {
   background: currentColor;
   opacity: 0.7;
 }
-/* 收起侧边栏时只剩图标列：小圆点比方块小，缩进会让它落不到中线上 —— 去掉缩进。 */
-.sidebar.is-collapsed .sidebar__item--sub {
-  padding-left: 10px;
-}
+/* ⚠️ 删掉的一条：`.sidebar.is-collapsed .sidebar__item--sub { padding-left: 10px }`
+   （"只剩图标列时去掉子项缩进，好让小圆点落回中线"）。它服务的还是那条图标条：
+   收起态里子项根本不可见，而展开态要的正是那点缩进。 */
 
 /* ---- 内容治理条（详情页顶部，仅 editor / admin 可见）---- */
 .moderatebar {
@@ -5702,18 +5718,23 @@ html[data-theme='light'] {
       边缘发灰。⇒ 下面只用这三档，**不要**给它加"中间档"。
 
    ------------------------------------------------------------------
-   三档的用法（36 / 24 / 12）
+   三档的用法（页面 / 条目 / 标签）
    ------------------------------------------------------------------
-   · 36px（3 倍）= **页面标题**：一页的名字（`h1` 那一层）。
-     ⚠️ 只有三个选择器在这一档，而且都是"一页一个"的那种。原来它们是 24px。
-   · 24px（2 倍）= **区域标题 + 条目标题**：一块内容的名字（系列活动 / 我的链接 /
-     编辑面板）、卡片与列表行的名字、左侧导航项。
-     ⚠️ 这是本轮**最看得见**的变化：卡片标题与侧栏导航原来几乎全是 12px，
-        而这里的区域标题原来是 17px 的系统字体（不是像素字体）——
-        17 是像素网格上不存在的档位，所以它本来就没法"加粗变大"，
-        只能整倍跳到 24。
-     ⚠️ 24px 是设计网格上**唯一**比 12 大一档的选择：想要"稍微大一点"（18px）
-        在这类字体上做不到（见上）。
+   ⚠️★ 2026-09-14 第二轮：用户看过第一版之后要求**改小一些**，原话是
+      "大概是现在和之前的平均值再小一点"。
+      第一版是 36 / 24，之前是 24 / 12 ⇒ 现在取 **30 / 18**（各比平均值略小）。
+      ⚠️ 这两个数**不在像素网格上**：12px 设计网格的整数倍是 12 / 24 / 36。
+         它们仍然是"最不坏"的选择 —— 30 = 2.5 倍、18 = 1.5 倍，在 **2 倍屏**
+         （DPR 2）上分别是 5 与 3 个设备像素/设计像素，**是整数**，所以清晰；
+         而在 1 倍屏上是 2.5 / 1.5，会有一点点发灰。
+         ⇒ 想回到绝对清晰：把下面两个变量改成 24 / 12 或 36 / 24（整数倍那两档）。
+           这两个数是**唯一**的调整点，别去逐个改选择器。
+   ------------------------------------------------------------------
+   具体口径
+   ------------------------------------------------------------------
+   · `--fs-title-page` = **页面标题**：一页的名字（`h1` 那一层）。
+   · `--fs-title-item` = **区域标题 + 条目标题**：一块内容的名字（系列活动 /
+     我的链接 / 编辑面板）、卡片与列表行的名字、左侧导航项。
    · 12px（1 倍）**只加粗不变大** = 标签、说明、状态句。
      ⚠️ 这些是"贴在某样东西旁边的字"，不是标题。把它们也放大只会让
         层次消失 —— 而层次正是"标题"这个词要表达的东西。
@@ -5730,18 +5751,28 @@ html[data-theme='light'] {
       不写的话，二级条目会跟着一级一起变成 24px（那正是"改大"最容易出的错）。
    ================================================================== */
 
-/* ---- 页面标题：36px（一页一个的那种）---- */
+/*
+ * ★ 两个调整点（2026-09-14 第二轮：用户要求"改小一些"）—— 改这两行就够了。
+ * ⚠️ 它们是**唯一**的字号旋钮：下面三组选择器都读这两个变量。
+ * ⚠️ 绝对值不在像素网格上，理由与取舍写在上面那段注释里（30/18 在 2 倍屏清晰）。
+ */
+:root {
+  --fs-title-page: 30px;
+  --fs-title-item: 18px;
+}
+
+/* ---- 页面标题 ---- */
 .pagehead__title,
 .hero__title,
 .detail__title {
   font-family: var(--font-pixel);
-  font-size: 36px;
+  font-size: var(--fs-title-page);
   font-weight: 700;
   line-height: 1.35;
   letter-spacing: 0.5px;
 }
 
-/* ---- 区域标题 + 条目标题：24px（卡片、列表行、左侧导航）---- */
+/* ---- 区域标题 + 条目标题：卡片、列表行、左侧导航 ---- */
 .calendar-ics__title,
 .series__title,
 .mylive__title,
@@ -5767,7 +5798,7 @@ html[data-theme='light'] {
 .video-skel__title,
 .sidebar__item {
   font-family: var(--font-pixel);
-  font-size: 24px;
+  font-size: var(--fs-title-item);
   font-weight: 700;
   line-height: 1.5;
 }
@@ -5775,7 +5806,7 @@ html[data-theme='light'] {
 /*
  * ⚠️ 二级条目（资源库展开后那几个）**显式改回 12px**：它们与一级条目的选择器
  *    特异性相同，靠"写在后面"压住上面那一条。漏了这一条，二级菜单会跟着
- *    变成 24px —— 而那是"导航层级消失"，不是"字体变大"。
+ *    变成标题那一档 —— 而那是"导航层级消失"，不是"字体变大"。
  */
 .sidebar__item--sub {
   font-size: var(--fs-px-sm);
@@ -5803,6 +5834,302 @@ html[data-theme='light'] {
 .seed__valuelabel {
   font-weight: 700;
 }
+
+/* ==================================================================
+   2026-09-14 第三轮追加区（两个并行任务各自的锚点）
+
+   ⚠️⚠️ 下面两块是**两个并行任务各自的锚点**，同一时间只有一个人写一块。
+      改的时候**只动自己那一块的锚点行**，不要动别人的块 —— 并行编辑同一个
+      文件时，"动到别人的块"正是两边改动互相覆盖的方式。
+      写完把自己那一块的锚点注释**换成一个说人话的小标题**。
+   ================================================================== */
+
+/* ==================================================================
+   侧栏「完全收起」—— 收起后的布局 + 左下角那颗固定的「展开」按钮
+   （2026-09-14，用户要求：「收起」要整条收起，左下角留「展开」）
+
+   ⚠️ 这一块是**替换**旧行为，不是再给旧行为加一档。
+      在这之前「收起」是把侧栏压成一条 64px 的图标条（`.sidebar.is-collapsed`
+      把 flex-basis/width 设成 `--sidebar-w-collapsed`）。图标条、那个变量、
+      以及所有**只为图标条存在**的规则都已经删掉了，逐条理由写在原来那些规则
+      的位置上（`:root` 的变量、`.sidebar__group`、`.sidebar__lang`、
+      `.sidebar__item--sub` —— 搜「图标条」能全部找到）。
+
+   ⚠️ 记一笔**没改**的：上面 `.sidebar__block` 那两条注释
+      （「每个分区一个方块图标，颜色不同 —— 收起时只显示这个」和
+      「而那时它是唯一能区分分区的线索」）现在**已经不是事实**了 ——
+      收起态里一个小方块都看不到。本轮约定只在自己的锚点里写，所以没有
+      顺手去改那两行；下一次动到 `.sidebar__block` 的人请把它们删掉，
+      别让下一个人继续按"收起时只剩色块"去理解那几个颜色。
+      ★ 2026-09-14 追记：**已经改了**（集成时由 captain 处理）——
+        那两条注释换成了"方块在展开时仍是最快的识别手段，且它是全站仅有的
+        两处斜面之一"。所以这一段留在这里只是记录当时的边界，不必再照做。
+
+   ⚠️ 新状态为什么写在这里、而不是就地改上面那组 `.sidebar` 基础规则：
+      就地改会让"收起态到底还有哪几条在生效"散在 400 行内外的两个地方，
+      而改的人通常只看得见其中一处，另一处就烂在那儿了。写在这里，收起态的
+      每一条都在一个可以整段读完的块里。
+      上面那组**只在展开态成立**的基础规则（`.sidebar`、`.sidebar__toggle`
+      的外观）一个字没动，它们照常生效 —— 下面这些只是在它后面覆盖。
+
+   ⚠️ 收起与展开的动画全部沿用既有的三档时长（--t-fast / --t / --t-slow）
+      与 --ease，没有第四种时长。
+   ================================================================== */
+
+/* 收起：整条侧栏不可见，内容区自动占满整宽（`.content { flex: 1 }`，
+   侧栏的 flex-basis 归零之后它自然吃掉整行）。
+
+   ⚠️ 为什么选"宽度归零"，而不是"移出视口"（`transform: translateX(-100%)`）：
+      · 侧栏是 `.shell` 这个 flex 行里**参与布局**的一项（`flex: 0 0 208px`）。
+        只加 transform 的话它照样占着那 208px，内容区**不会**占满整宽 ——
+        那就得 width + transform 两套机制描述同一个状态，还要分别对齐过渡。
+      · 上面那组基础规则里已经挂着 flex-basis / width / padding 的
+        `--t-slow` 过渡，宽度归零直接接上它：收起是**滑**过去的，
+        而不是"啪"地消失。
+      · 窄屏（≤820px）下侧栏会变成 `position: fixed` 的浮层（见"窄屏"一节），
+        宽度归零在 sticky / fixed 两种定位下都成立。
+
+   ⚠️ `padding: 0` 不是一行可以省掉的代码：`* { box-sizing: border-box }` 下，
+      盒子**不会小于自己的内边距**。只写 `width: 0` 的话，基础规则里的
+      `padding: 20px 12px` 会在屏幕左边留下一条 24px 宽的"幽灵侧栏"，
+      症状是"明明收起了，内容区左边还空着一条缝"。
+   ⚠️ 这里**不需要**补 `min-width: 0`：flex 项的自动最小尺寸只在 overflow 为
+      visible 时才会挡着不让缩，而 `.sidebar` 有 `overflow-x: hidden`，
+      它的最小尺寸已经是 0。
+   ⚠️ 窄屏那条浮层阴影（`.sidebar { box-shadow: var(--sh-3) }`）由"窄屏"一节里
+      既有的 `.sidebar.is-collapsed { box-shadow: none }` 负责，这里不重复写：
+      阴影画在**边框盒**上，一个 0 宽、满高的盒子会在屏幕最左边留下一条竖直的
+      灰边，而那条规则正好挡掉它。
+
+   ⚠️ "不可见"只是这个状态的一半。另一半在 Layout.tsx 上：收起时 <aside> 必须
+      是 `inert` + `aria-hidden`，否则宽度归零的侧栏仍然会把 Tab 焦点偷走
+      （链接还在 DOM 里，只是不在屏幕上）。样式这一层管不到焦点。 */
+.sidebar.is-collapsed {
+  flex-basis: 0;
+  width: 0;
+  padding: 0;
+}
+
+/* 左下角那颗「展开」（收起时唯一能把它叫回来的东西）。
+
+   ⚠️ 它为什么必须**在 `.sidebar` 外面**：收起态的侧栏整棵是 `inert` 的
+      （为了不偷焦点），里面的按钮自己也点不动 —— 而 `.sidebar__foot` 里那颗
+      「收起」就在里面。所以收起时整个换成这一颗：Layout.tsx 用 `collapsed`
+      二选一渲染，屏幕上永远只有一颗按钮，不会出现"两颗里有一颗是假的"。
+
+   ⚠️ 复用 `.sidebar__toggle` 的外观：它们本来就是同一颗按钮的两个状态，
+      字体/内边距/圆角必须逐像素一致，否则"收起 → 展开"按两下会觉得
+      按钮换了一个人。这个修饰类只改两件事：钉在哪儿、怎么才看得清。
+
+   ⚠️ `left: 12px` 取的正是侧栏原来的左内边距（`.sidebar { padding: 20px 12px }`），
+      所以它收起前长在里侧那个位置、收起后停在几乎同一条竖线上。
+   ⚠️ 位置只能选"左下角"（用户指定的），而收起后内容区是**整宽**的 ——
+      所以它必然会盖住正文最左下那一小块。宽屏下 `.main` 被
+      `max-width: 1120px` 居中，左下本来就是空白槽；中等宽度的窗口里确实会
+      压在正文上。因此这颗按钮**必须不透明**（--surface + 描边 + 投影），
+      不能像里面那颗一样透明：透明按钮压在字上就是一团看不清的东西。
+      另一条路是收起时给内容区留一条左边距，把这一小块让出来 ——
+      但那正好违背"收起后内容区占满整宽"，所以没有走那条。 */
+.sidebar__toggle--float {
+  position: fixed;
+  left: 12px;
+  bottom: 16px;
+  /* 必须压得住正文。z-index 不能省：内容里的卡片悬停时带 transform
+     （`.rescard:hover`），那会让它们各自变成一个层叠上下文，
+     一个 z-index:auto 的固定元素会被后画的它们盖住。
+     30 也在窄屏浮层侧栏的 z-index: 20 之上 —— 虽然两者不会同时出现，
+     但"不会同时出现"是上一层的保证，这里不依赖它。 */
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-1);
+  /* 比里面那颗（--fg-faint）亮一档：它是浮在内容**上方**的，背后不再是页面底色，
+     沿用同一个暗度就真的看不清了。 */
+  color: var(--fg-muted);
+  /* 侧栏是滑着关的（--t-slow），按钮在同一个时间里淡进来，
+     不要"啪"地跳出来。用 --t(200ms)：复用已有的一档，不加新时长。
+     prefers-reduced-motion 那条全局规则会把它压到 0.01ms。 */
+  animation: expand-in var(--t) var(--ease) both;
+}
+@keyframes expand-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 悬停：里面那颗靠**底色**发亮，而底色在这里被上面那条不透明背景盖住了
+   （`.sidebar__toggle:hover` 的特异性更高，所以不写这条的话，悬停时
+   按钮会变成半透明的 rgba(255,255,255,0.05) —— 正好回到"盖不住正文"）。
+   所以浮起来的那颗改用自己的底色 + 描边来给反馈。 */
+.sidebar__toggle--float:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+  border-color: var(--line-strong);
+  box-shadow: var(--sh-2);
+}
+
+/* ==================================================================
+   主页：栏目说明列表 + 连通性两行（2026-09-14，用户要求）
+
+   —— 原来 hero 里那个「资源库 →」按钮和底下那两张卡（API / M1）已经删掉，
+      换成这里的两块：上面是"这个站里有什么"，下面是"当着你的面测出来的连通性"。
+   ================================================================== */
+
+.homesec {
+  margin-bottom: 28px;
+}
+
+/* 两个小节的标题同款（像素字体 + 弱色），和 .card__title 是同一层级的东西。 */
+.homesec__title,
+.homeconn__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0 0 8px;
+}
+.homesec__hint,
+.homeconn__hint {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  max-width: 72ch;
+}
+
+/*
+ * 栏目说明：一行一栏，整行可点。
+ * ⚠️ 名字占固定宽度的左列（min-width 对齐），说明在右列 —— 六行读下来应该像一张表；
+ *    名字那一列忽宽忽窄会让人以为每一行是两句独立的话。
+ */
+.homesec__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.homesec__row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.homesec__row:hover {
+  border-color: var(--grass);
+  background: rgba(127, 178, 56, 0.08);
+}
+/*
+ * 尚未实现的栏目（`milestone` 非空）：**灰的、点不动** —— 与左侧导航同一套语义
+ * （`Layout.tsx` 里那一支渲染成不可点的 `span`）。它不是一个 `<a>`，所以上面那条
+ * `:hover` 不会命中；这里只是把"不可用"这件事画出来。
+ */
+.homesec__row--todo {
+  color: var(--fg-faint);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.homesec__name {
+  flex: 0 0 auto;
+  min-width: 5.5em;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+.homesec__desc {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+
+/* ------------------------------------------------------------------
+   连通性：两行状态。
+
+   左边那道竖条的颜色就是结论（绿=正常 / 红=连不上 / 灰=还没测完），
+   它和胶囊的颜色同源 —— 两者都由 Home.tsx 的 `StatusState` 一个 switch 派生，
+   所以不存在"标签写着连不上、壳子是绿的"这种组合。
+   ------------------------------------------------------------------ */
+.homeconn__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--fg-faint);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.homeconn__row + .homeconn__row {
+  margin-top: 10px;
+}
+.homeconn__row--ok {
+  border-left-color: var(--grass-bright);
+}
+.homeconn__row--checking {
+  border-left-color: var(--fg-faint);
+}
+.homeconn__row--error {
+  border-left-color: var(--redstone);
+}
+
+.homeconn__label {
+  min-width: 4em;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+.homeconn__details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.homeconn__detail {
+  white-space: nowrap;
+}
+/* 失败的原因**原样**显示：长错误（带 URL / 状态码）必须能折行，不能被裁掉。 */
+.homeconn__error {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--redstone);
+  overflow-wrap: anywhere;
+}
+.homeconn__endpoint {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px 7px;
+}
+/* 重试推到最右边：它是"下一步动作"，不是这一行的读数。 */
+.homeconn__retry {
+  margin-left: auto;
+}
+/*
+ * 解释性小字**独占一行**（flex-basis:100% 强制换行）：它说的是"这一行是什么意思"，
+ * 不是某个数值的注解 —— 跟在数字后面会被读成那个数字的注解。
+ */
+.homeconn__note {
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+}
+
 
 
 

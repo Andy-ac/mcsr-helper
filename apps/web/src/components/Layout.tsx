@@ -5,12 +5,13 @@ import { UpdateBanner } from '@/components/UpdateBanner';
 import { setLocale } from '@/i18n';
 import { useAuth } from '@/lib/auth';
 import { canReviewAny, useCan } from '@/lib/capabilities';
+import { NAV_SECTIONS } from '@/lib/nav';
 import { applyTheme, normalizeTheme, storeTheme, type Theme } from '@/lib/theme';
 
 /*
- * 「提交」和「审核」**不放在 SECTIONS 里**。
+ * 「提交」和「审核」**不放在 NAV_SECTIONS 里**。
  *
- * SECTIONS 是所有人都能看到的分区表；这两个是**有权限才存在**的入口 ——
+ * 那张表是所有人都能看到的分区表；这两个是**有权限才存在**的入口 ——
  * 没登录的人看到"提交"点进去只会被弹回来。所以它们按当前账号的能力
  * 决定显不显示（能力矩阵来自 shared/permissions.ts，和服务端是同一份）。
  *
@@ -20,36 +21,18 @@ import { applyTheme, normalizeTheme, storeTheme, type Theme } from '@/lib/theme'
  */
 
 /**
- * 分区导航的数据。
+ * 分区表**不住在这里了** —— 它在 `@/lib/nav.ts`。
  *
- * `block` 决定左边那个小方块的颜色 —— 收起侧边栏时只剩它，所以每一区必须有
- * 一个稳定且互不相同的颜色。`milestone` 非空的表示尚未实现，渲染成不可点击状态：
- * **放一个点了没反应的链接比不放更糟。**
+ * ⚠️ 2026-09-14 搬走的，理由是"同一张表被抄了三份"：首页要"和左侧一样的几个栏目"
+ *    于是手抄一份、渲染自检里又抄一份。三份手抄的东西不会报错，只会在某天变成
+ *    "首页 5 栏、侧栏 6 栏"或者顺序不同 —— 而那种不一致看不出谁对。
+ *    ⇒ 现在 `Layout` 与首页都从 `lib/nav.ts` import（那张表里也写清了各字段的职责）。
  *
  * ⚠️ M4 的日历 / 视频 / 种子三个分区**刚刚把 `milestone: 'M4'` 摘掉**。
  *    它们从 M0 起就一直挂在这里当占位（灰的、点不动），现在后面的页面真的存在了。
  *    如果哪天某个 M4 页面被回退掉，要把 `milestone` 加回去 ——
  *    留一个点进去是空白的分区，比留一个明确灰掉的入口更让人困惑。
  */
-const SECTIONS = [
-  { to: '/resources', labelKey: 'nav.resources', block: 'resources', milestone: '' },
-  { to: '/calendar', labelKey: 'nav.calendar', block: 'calendar', milestone: '' },
-  /*
-   * 原「视频」拆成两个板块（用户要求）：
-   *   · `/videos` = **娱乐视频**：用户贴的 B站/YouTube 链接，即贴即可见、rolling
-   *   · `/live`   = **直播**：一份**编辑维护**的 MCSR streamer 名单，变动很慢
-   *
-   * ⚠️ 两者的权限形状**相反**（谁都能贴 vs 只有 live.manage），
-   *    所以它们是两个板块而不是一个板块下的两个标签 —— 导航分开，
-   *    用户才知道"这里的东西不是我贴的"。
-   */
-  { to: '/videos', labelKey: 'nav.videos', block: 'videos', milestone: '' },
-  { to: '/live', labelKey: 'nav.live', block: 'live', milestone: '' },
-  { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: '' },
-  // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
-  // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。
-  { to: '/me', labelKey: 'nav.profile', block: 'profile', milestone: '' },
-] as const;
 
 const COLLAPSE_KEY = 'mcsr.sidebar.collapsed';
 
@@ -70,6 +53,39 @@ export function Layout() {
   });
 
   /*
+   * 收起 = **整条侧栏消失**，不是压成一条图标（2026-09-14 用户要求）。
+   *
+   * 于是有两条必须一起成立的规则，缺一条这个交互就是坏的：
+   *   ① 收起后屏幕上那半边仍然是可 Tab 的 —— 侧栏只是不可见，没被卸载。
+   *      所以 <aside> 上挂 `inert`，把整棵子树从焦点顺序里摘掉。
+   *   ② 左下角必须留一颗能用的「展开」。它**不能**长在侧栏里：
+   *      侧栏收起时自己就是 inert 的，里面的按钮连点都点不动 ——
+   *      那就再也展不开了。所以收起时渲染的是另一颗、在 `.sidebar` **外面**
+   *      固定定位的按钮，两颗按钮二选一，屏幕上永远只有一颗。
+   *
+   * ⚠️ 两颗按钮是**同一个元素的两个状态、但不是同一个 DOM 节点**（会互相
+   *    卸载重挂），所以键盘操作时焦点会掉回 <body> —— 下面这条 effect
+   *    负责把焦点交到接替它的那颗按钮上。这不是锦上添花：不交的话，
+   *    用户按一下回车，焦点就从屏幕上消失了，他得从整页开头重新 Tab。
+   */
+  const pendingFocus = useRef(false);
+  const collapseRef = useRef<HTMLButtonElement>(null);
+  const expandRef = useRef<HTMLButtonElement>(null);
+
+  /*
+   * ⚠️ 用 pendingFocus 这个 ref 当开关，而不是"collapsed 一变就抢焦点"：
+   *    刷新后如果上次停在收起状态，`collapsed` 的初值就是 true，
+   *    那种情况下焦点应该照常留在文档开头 —— 用户还没做过任何操作，
+   *    凭什么把焦点挪到左下角去。顺带它也躲开了 StrictMode 在 dev 下
+   *    把 effect 连续跑两遍的问题（第二遍时开关已经关上了）。
+   */
+  useEffect(() => {
+    if (!pendingFocus.current) return;
+    pendingFocus.current = false;
+    (collapsed ? expandRef : collapseRef).current?.focus();
+  }, [collapsed]);
+
+  /*
    * 主题（2026-09-13）。
    *
    * ⚠️ 初值从**已经写上去的 `data-theme`** 读，而不是再读一次 localStorage：
@@ -88,6 +104,8 @@ export function Layout() {
   }
 
   function toggle() {
+    // 告诉上面那条 effect：这一次是**用户按的**，焦点要跟着按钮走。
+    pendingFocus.current = true;
     setCollapsed((prev) => {
       const next = !prev;
       try {
@@ -110,7 +128,33 @@ export function Layout() {
 
   return (
     <div className="shell">
-      <aside className={`sidebar${collapsed ? ' is-collapsed' : ''}`}>
+      {/*
+        收起时侧栏只是**移出视野**（宽度归零），DOM 还在 —— 里面的链接
+        仍然能被 Tab 到：焦点跑到一个看不见的地方去，键盘用户直接迷路。
+        `inert` 把整棵子树一次性地从焦点顺序**和无障碍树**里摘掉，
+        这正是"整条收起了"该有的语义。
+
+        ⚠️ 一定写成 `collapsed || undefined`，不要写成 `inert={collapsed}`：
+           这个属性**在不在**才是语义（`inert="false"` 照样是 inert），
+           展开时必须整个不写。`|| undefined` 送进 DOM 的只有 true 或
+           什么都没有，不会出现"展开着但整条侧栏点不动"这种最坏情况。
+           （React 19 已经按布尔属性处理 inert，这么写是为了不依赖版本行为。）
+
+        ⚠️ `aria-hidden` 是同一件事的第二道，理由不同：inert 在现代浏览器上
+           已经把它盖住了，但在**不认识 inert 的旧浏览器**上
+           （Chrome < 102 / Firefox < 112 / Safari < 15.5），它是唯一还起作用的
+           那一道。那些浏览器会安静地忽略不认识的属性 —— **页面不会崩、
+           也不会报错**，代价是里面的链接退回"能被 Tab 到"：
+           侧栏看不见，焦点却还是会被它抢走。
+           这一条没有自动化自检守着（仓里没有一个渲染脚本会渲染 Layout），
+           所以宁可两道都写。
+      */}
+      <aside
+        id="app-sidebar"
+        className={`sidebar${collapsed ? ' is-collapsed' : ''}`}
+        inert={collapsed || undefined}
+        aria-hidden={collapsed || undefined}
+      >
         <NavLink to="/" className="sidebar__brand" viewTransition>
           <span className="sidebar__mark" aria-hidden="true" />
           <span className="sidebar__brandtext">{t('common.appName')}</span>
@@ -120,7 +164,7 @@ export function Layout() {
         <div className="sidebar__group">{t('nav.sections')}</div>
 
         <nav aria-label="main">
-          {SECTIONS.map((s) =>
+          {NAV_SECTIONS.map((s) =>
             s.milestone ? (
               <span key={s.to} className="sidebar__item" aria-disabled="true" title={s.milestone}>
                 <span className={`sidebar__block sidebar__block--${s.block}`} aria-hidden="true" />
@@ -313,23 +357,35 @@ export function Layout() {
             </button>
           </div>
 
-          <button
-            type="button"
-            className="sidebar__toggle"
-            onClick={toggle}
-            aria-expanded={!collapsed}
-            title={collapsed ? t('nav.expand') : t('nav.collapse')}
-          >
-            {/*
-              用 ← / → 而不是 « / »。
-              ⚠️ « (U+00AB) 和 » (U+00BB) **不在**字体子集的 7368 个码位里，
-                 而 .sidebar__toggle 明确指定了 --font-pixel —— 结果是这两个字符
-                 掉回系统字体，和旁边的中文不一样大、不一样粗。只有两个字符，
-                 非常容易漏看。← (U+2190) / → (U+2192) 都在子集里。
-                 这条约束有脚本守着：apps/web/scripts/check-font-coverage.mjs
-            */}
-            {collapsed ? '→' : `← ${t('nav.collapse')}`}
-          </button>
+          {/*
+            「收起」—— 只在展开时存在。
+
+            ⚠️ 收起后它**必须离开这棵子树**：整条侧栏那时是 inert 的
+               （为了不偷走 Tab 焦点），留在里面的话它自己也点不动，
+               那就再也展不开了。所以收起态换成下面那颗固定按钮，
+               两颗二选一渲染，屏幕上不会同时出现两个。
+          */}
+          {collapsed ? null : (
+            <button
+              type="button"
+              ref={collapseRef}
+              className="sidebar__toggle"
+              onClick={toggle}
+              aria-expanded={!collapsed}
+              aria-controls="app-sidebar"
+              title={t('nav.collapse')}
+            >
+              {/*
+                用 ← / → 而不是 « / »。
+                ⚠️ « (U+00AB) 和 » (U+00BB) **不在**字体子集的 7368 个码位里，
+                   而 .sidebar__toggle 明确指定了 --font-pixel —— 结果是这两个字符
+                   掉回系统字体，和旁边的中文不一样大、不一样粗。只有两个字符，
+                   非常容易漏看。← (U+2190) / → (U+2192) 都在子集里。
+                   这条约束有脚本守着：apps/web/scripts/check-font-coverage.mjs
+              */}
+              ← {t('nav.collapse')}
+            </button>
+          )}
         </div>
       </aside>
 
@@ -359,6 +415,38 @@ export function Layout() {
           {t('common.appName')} · M1 · {new Date().getFullYear()}
         </footer>
       </div>
+
+      {/*
+        左下角的「展开」—— 只在收起时存在，和上面那颗「收起」二选一。
+
+        ⚠️ 它必须在 `.sidebar` **外面**：收起态的侧栏整棵是 inert 的，
+           把按钮放在里面等于把自己也一起锁上，然后再也没有办法展开。
+           ⇒ 所以收起态渲染的是**另一颗**按钮（`.sidebar__toggle--float`），
+             由 `collapsed` 和里面那颗二选一 —— 屏幕上永远只有一颗。
+             （不能两颗都留着：里面那颗收起时点不动，会变成一颗假按钮。）
+        ⚠️ 位置放在 `.shell` 的直接子级、`content` 之后：它是固定定位、
+           不参与 flex 布局，所以放这里不用给 `.content` 加任何包装；
+           放在 content 之后是为了让它排在内容之后绘制（真正的层级由
+           `.sidebar__toggle--float` 的 z-index 保证，见 styles.css 的锚点）。
+        ⚠️ 收起态用 → 展开（箭头朝右 = 侧栏从左边回来），展开态用 ← 收起。
+           字符沿用 ← / →，理由见上面「收起」那颗按钮里的字体说明。
+      */}
+      {collapsed ? (
+        <button
+          type="button"
+          ref={expandRef}
+          className="sidebar__toggle sidebar__toggle--float"
+          onClick={toggle}
+          // 这颗只在收起时存在，所以它的展开状态恒为"否"。
+          // 不写 !collapsed 是因为这个分支里 collapsed 一定是 true，
+          // 写成表达式会让读的人以为它还能是别的值。
+          aria-expanded={false}
+          aria-controls="app-sidebar"
+          title={t('nav.expand')}
+        >
+          {`→ ${t('nav.expand')}`}
+        </button>
+      ) : null}
     </div>
   );
 }

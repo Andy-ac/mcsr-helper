@@ -13,5 +13,36 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+  /*
+   * ⚠️⚠️ `packages/ui/src` **必须在 include 里**，尽管它是另一个包（2026-09-14）。
+   *
+   * 起因是一个**门禁缺口**，由主页那个渲染脚本撞出来（它渲染了 `@mcsr/ui` 的 Button）：
+   *   `tsx --tsconfig tsconfig.json scripts/xxx.tsx` 用的是**这一份** tsconfig，
+   *   而它决定 `jsx: react-jsx` 能不能生效的依据是"这个文件在不在 include 里"。
+   *   `packages/ui/src/Button.tsx` 不在 ⇒ 它被当成 **classic runtime** 编译
+   *   （产出 `React.createElement`），可它按 automatic runtime 写、没有 `React`
+   *   这个值导入 ⇒ 运行时 `ReferenceError: React is not defined`，
+   *   报错行指向 Button 自己的 `return (` —— 看起来像"组件坏了"。
+   *
+   *   实测（`.cache` 探针，三条对照）：本文件这样写 ⇒ 绿；
+   *   `--tsconfig ../../packages/ui/tsconfig.json` ⇒ 绿（它 include 了自己的 src）；
+   *   本文件**去掉这一行** ⇒ 红（`ReferenceError`）。
+   *
+   * ⚠️ 影响面：**任何 tsx 渲染脚本，只要渲染到 `@mcsr/ui` 的组件就会崩**
+   *   （Button / SeedInput）。门禁里已经有六个渲染脚本，今天是第一个用到的。
+   *   ⚠️ 产品本身没事：Vite 对**所有**文件都开 automatic runtime，`pnpm build` 一直绿，
+   *      所以这是**门禁侧**的缺口，不是产品缺陷。
+   *
+   * ⚠️ 同一个规则也是文件头那句"`scripts/**` 不在 include 里 ⇒ JSX 走 classic runtime"
+   *    的由来（`homerender.tsx` / `calendarrender.tsx` 都因此不用 JSX）。
+   *    ⇒ 别为了"干净"把下面这行删掉，也别把它理解成"web 依赖了 ui 的实现细节"：
+   *      `apps/web` 本来就在 `paths` 里把 `@mcsr/ui` 指向 `../../packages/ui/src/index.ts`。
+   */
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../../packages/ui/src/**/*.ts",
+    "../../packages/ui/src/**/*.tsx",
+    "vite.config.ts"
+  ]
 }

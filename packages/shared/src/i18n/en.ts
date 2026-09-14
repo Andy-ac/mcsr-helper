@@ -61,7 +61,71 @@ export const en: TranslationSchema = {
   home: {
     tagline: 'Resource hub and calendar for the MCSR community',
     subtitle: 'Websites, tools, events and seeds — all in one place.',
+    /*
+     * ⚠️ No longer referenced (a placeholder from the M0 skeleton).
+     *    It is deliberately **left in place**: the home page is being turned into
+     *    "what each section is + a connectivity check", and that sentence
+     *    belonged to the two cards being removed. Keeping it costs one unused
+     *    entry; the comment is here so the next reader knows why it survived
+     *    (an orphan entry with no note is what this repo keeps warning about).
+     */
     comingSoon: 'We are at the M0 skeleton stage. Features are under construction.',
+
+    /*
+     * -------------------------------------------------------------------------
+     * Home page rework (2026-09-14, user request)
+     * -------------------------------------------------------------------------
+     * "Drop the 资源库 block and the two cards under it; replace them with
+     *  one-line descriptions of the sections (same ones as the sidebar) and a
+     *  connectivity check for the page and the API."
+     *
+     * ⚠️ The section **names** are not here — those are `nav.*`, the very entries
+     *    the sidebar uses. Duplicating a name is how one section ends up with two
+     *    of them, which this repo just spent a round fixing (「娱乐视频」/「视频」).
+     */
+    sectionsTitle: 'What is on this site',
+    sectionsHint: 'Those entries on the left are the whole site. Here is what each one is for.',
+    desc: {
+      resources:
+        'Websites, tools and tutorial videos the community collected — filter by kind and tag.',
+      calendar:
+        'The schedule for tournaments, community events and ranked seasons. Filter by tag, level, scope and entry requirement.',
+      videos:
+        'Bilibili / YouTube videos people posted — tutorials, montages, match recordings. Post it and it is visible; nothing to review.',
+      live: 'A slow-moving list of MCSR streamers, maintained by the editors — a different job from the post-and-go section above.',
+      seeds: 'Search world seeds, and see the ones people shared along with their times.',
+      profile:
+        'Your account: sign-in state, email verification, what you posted and what you saved.',
+    },
+
+    /*
+     * -------------------------------------------------------------------------
+     * Connectivity (page + API)
+     * -------------------------------------------------------------------------
+     * ⚠️★ The one thing this must never do is lie:
+     *    · the "page" row measures whether **this page rendered** (if you can read
+     *      the row, it did), so it must carry a **measured number** (time to first
+     *      paint). A green "OK" with no number is decoration.
+     *    · the "API" row really **issues a request** (`GET /api/health`); green only
+     *      on success, and a failure prints the error rather than staying grey.
+     *    ⚠️ No polling and no auto-retry: this is not a monitoring dashboard, and
+     *      an automatic retry would quietly erase the moment it was unreachable.
+     */
+    statusTitle: 'Connectivity',
+    statusHint: 'The right column is measured **while you watch** — not a hard-coded status.',
+    statusWeb: 'This page',
+    statusApi: 'API',
+    statusOk: 'OK',
+    statusFail: 'Unreachable',
+    statusChecking: 'Checking…',
+    /** The number on the "page" row: time to first paint, in milliseconds. */
+    webLoaded: 'Loaded in {{ms}} ms',
+    webNote: 'Being able to read this row is itself the evidence that the page loaded.',
+    /** The number on the "API" row: the API version and this request's round trip. */
+    apiVersion: '{{version}}',
+    apiRoundTrip: '{{ms}} ms round trip',
+    apiEndpoint: 'GET /api/health',
+    apiNote: 'Your browser really did just call the backend for this.',
   },
   status: {
     draft: 'Draft',
