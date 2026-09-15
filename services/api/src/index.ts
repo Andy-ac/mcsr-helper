@@ -12,6 +12,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { type AuthVariables, loadUser, sameOriginOnly } from './auth/middleware';
 import { getDb } from './db';
 import { checkMailConfig, mailDriverName } from './email/transport';
+import { deleteExpiredShares } from './live-shares';
 import { adminRoute } from './routes/admin';
 import { authRoute } from './routes/auth';
 import { authoringRoute } from './routes/authoring';
@@ -23,6 +24,7 @@ import { moderationRoute } from './routes/moderation';
 import { resourcesRoute } from './routes/resources';
 import { reviewRoute } from './routes/review';
 import { seedsRoute } from './routes/seeds';
+import { sharesRoute } from './routes/shares';
 import { uploadsRoute } from './routes/uploads';
 import { videosRoute } from './routes/videos';
 import { deleteExpiredSessions } from './users';
@@ -183,6 +185,18 @@ app.route('/api', liveRoute);
  */
 app.route('/api/ranked-seeds', seedsRoute);
 
+/*
+ * 实时分享（live shares）。这是本仓第一条"**游客看不到**"的线：四个端点全部要登录
+ * （见 routes/shares.ts 的文件头）。
+ *
+ * ⚠️ 挂载点写全（/api/shares），因为 route 文件里用的是相对路径（/summary、
+ *    /:kind、/:id/visibility）—— 与上面 videosRoute / liveRoute 自带前缀的写法**相反**。
+ *    这两种写法不能混：混了的症状是整组路由一起 404，而不是某个端点 404。
+ * ⚠️ 路由文件里 `/summary` 与 `/:kind` 的**注册顺序**是行为而不是风格
+ *    （Hono 按注册顺序匹配）—— 理由写在那个文件里，别把两条 GET 调换顺序。
+ */
+app.route('/api/shares', sharesRoute);
+
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。
 //
@@ -273,6 +287,29 @@ if (process.env.NODE_ENV !== 'test') {
   sweepSessions();
   // unref()：这个定时器不应该阻止进程退出（systemd stop 时要能干净地停下来）
   setInterval(sweepSessions, 60 * 60 * 1000).unref();
+
+  // -------------------------------------------------------------------------
+  // 过期分享的回收（spec §5.5）。
+  //
+  // ⚠️★ 它**挂了只影响库的大小，不影响任何人看到什么**：一条行"到点之后还在不在
+  // 看板上"完全由查询条件决定（§4.1 那一句 `status='active' AND expires_at > now`），
+  // 这个任务只是把过期超过 24 小时的行物理删掉。这正是把"到点"做成查询条件换来的
+  // 性质 —— 所以它的失败只需要打日志，绝不能让服务或请求受到影响。
+  //
+  // 每小时一次够了：晚清理几小时只让库里多留几行，没有任何人看得出来。
+  // -------------------------------------------------------------------------
+  function sweepShares(): void {
+    try {
+      const removed = deleteExpiredShares(Date.now());
+      if (removed > 0) console.log(`[api] 清理过期分享 ${String(removed)} 条`);
+    } catch (error) {
+      // 与 sweepSessions 同一条理由：后台任务的失败不该影响服务
+      console.error('[api] 清理过期分享失败:', error);
+    }
+  }
+  sweepShares();
+  // unref()：同 sweepSessions —— 它不该阻止进程退出
+  setInterval(sweepShares, 60 * 60 * 1000).unref();
 
   serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
     console.log(`[api] listening on http://${HOST}:${info.port}`);
