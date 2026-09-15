@@ -212,31 +212,22 @@ const SERVER_ERROR_HINT =
  *
  *   默认 `undefined` = 交给浏览器按响应头决定，和加这个参数之前完全一样。
  */
+/**
+ * 读走这一层的一次 GET（写走下面的 `sendJson` / `uploadImage`）。
+ *
+ * ⚠️★ 它的签名**只有三个参数，而且不许再长**：全部既有调用点"行为不变"的保证就挂在这上面 ——
+ *    多出来的那一个行为由下面 `requestCore()` 的一件**模块私有的票据**表达，
+ *    公共签名里连"能传错的那个参数"都不存在（那段注释写了为什么不是可选参数）。
+ * ⚠️ 函数体是**一行转发**：两条读路径共用 `requestCore()` 这一份实现，不是两份逐字重复的副本
+ *    （评审重要 2：副本的失效方式是"改了一处、另一处静默不动"，而且没有任何东西断言两者一致）。
+ */
 async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCache): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(path, { headers: { accept: 'application/json' }, signal, cache });
-  } catch (error) {
-    // abort 是我方主动取消，不应该显示成错误
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new ApiError(UNREACHABLE_API_MESSAGE, 0);
-  }
-
-  if (!res.ok) {
-    // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
-    // 直接把这个猜测写进错误里，省得每次都要重新推一遍。
-    const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
-    throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status);
-  }
-
-  return (await res.json()) as T;
+  return requestCore<T>(path, signal, cache, undefined);
 }
 
-/**
- * 和 `request()` **逐字同形**的一次读，只多一件事：**非 2xx 时把响应体里的错误码读出来**。
- *
+/*
  * ===========================================================================
- * ★★ 为什么需要它：这个端点的两个回绝码**共用 503**
+ * ★★ 为什么这一条读路径要多读一样东西：那个端点的两个回绝码**共用 503**
  * ===========================================================================
  * `GET /api/ranked/status` 失败时回的都是 `{ error }`（`services/api/src/routes/ranked.ts`）：
  *   429 `rate_limited` / 502 `upstream_bad_response` / **503 `ranked_busy`** /
@@ -257,45 +248,101 @@ async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCac
  *    的构造与"状态码 + 码 + 那句提示"整份复制第二遍 —— 本文件 M4 那一节写着
  *    `request` / `sendJson` 为什么是模块私有，正是为了不让人复制它们。
  *
- * 除了"读错误体"这一件事，行为**必须与 `request()` 完全一致**：同一个 `accept`、
- * 同一份 `cache` / `signal` 传递、同一个 abort 原样抛出、同一句"连不上 API"（`status` 也是 0）。
- * ⚠️ 写成**另一个函数**而不是给 `request()` 加第四个可选参数：这样"既有调用点行为不变"是一条
- *    **结构性**的事实 —— 没有任何一个参数是既有调用点可能传错的；可选参数版本靠的是
- *    "每个调用点都别传它、默认值永远别翻转"，而默认值一旦翻转，全站约三十条 GET 的错误形状
- *    会**静默**换掉（没有门禁看得见）。
+ * ⚠️★ 于是**两条读路径共用下面这一个核心**（`requestCore()`），差别只有**一个显式的内部参数**：
+ *    要不要读响应体。上一轮它们是两个**逐字重复**的函数体（init、abort 判据、hint 三元、
+ *    错误构造、JSON 返回各一份）—— 那正是"改了一处、另一处静默不动"的形状，
+ *    而且没有任何东西断言两者一致（评审重要 2，本轮修掉）。
+ *
+ * ⚠️★ 那个参数**不是 boolean，是一张只有本模块拿得到的票据**（`READ_ERROR_CODE`）：
+ *    · 公共的 `request()` 签名**一个参数都没多**（还是那三个）⇒ 约三十个既有调用点
+ *      **连一个能传错的参数都不存在** —— 这是**结构性**的事实，而不是"每个调用点都别传它"；
+ *    · 想打开这个行为，只有本模块内写得出 `READ_ERROR_CODE` 这个名字：别处既 import 不到它
+ *      （没有 export），也伪造不出同一个值（`Symbol()` 每次都是新的，而且符号不参与结构类型，
+ *      传任何一个别的 symbol 都是类型错误）。
+ *    否决了 `request(..., withErrorCode = false)` 那种可选参数：默认值一旦被翻转，
+ *    全站约三十条 GET 的错误形状会**静默**一起变（`ApiError.code` 从恒为 `undefined` 变成真码），
+ *    而按 `code` 选文案的下游不止这一栏（`useApiErrorText` / `lib/shareErrors.ts` /
+ *    `lib/seedErrors.ts`）—— 那需要它自己的一次评审，没有门禁看得见这次翻转。
+ */
+
+/**
+ * 「这一次要不要读响应体」的票据。**模块私有**，且刻意不是 boolean —— 理由见上面那段。
+ */
+const READ_ERROR_CODE = Symbol('readErrorCode');
+
+/**
+ * ★★ 两条读路径（`request()` / `requestWithErrorCode()`）**唯一的一份实现**。
+ *
+ * 除了"读不读错误体"这一件事，两条路的每一行都是**同一行**：同一个 `accept`、
+ * 同一份 `cache` / `signal` 传递、同一个 abort 原样抛出、同一句"连不上 API"（`status` 也是 0）、
+ * 同一句 `API 返回 HTTP …` 与同一个 5xx 猜测。差别只有下面那个三元表达式。
+ */
+async function requestCore<T>(
+  path: string,
+  signal: AbortSignal | undefined,
+  cache: RequestCache | undefined,
+  readErrorCode: typeof READ_ERROR_CODE | undefined,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: { accept: 'application/json' }, signal, cache });
+  } catch (error) {
+    // abort 是我方主动取消，不应该显示成错误
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new ApiError(UNREACHABLE_API_MESSAGE, 0);
+  }
+
+  if (!res.ok) {
+    // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
+    // 直接把这个猜测写进错误里，省得每次都要重新推一遍。
+    const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
+    // ★ 唯一的差额。没拿票据时**连读体的调用都不发生**（不是"读了但不用"）。
+    const code = readErrorCode === READ_ERROR_CODE ? await readRefusalCode(res) : undefined;
+    throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status, code);
+  }
+
+  return (await res.json()) as T;
+}
+
+/**
+ * 从非 2xx 的响应里读出服务端的回绝码（`{ error: 'ranked_busy' }` 的 `error`）。
+ *
+ * ⚠️★ 解析**必须带守卫**（照 `sendJson` 那个写法）：错误响应并不保证有 JSON 体 ——
+ *    502 常常来自反代（Vite 的代理 / Caddy），那时 body 是空的、`res.json()` 会抛。
+ *    少了这道守卫，"后端没起来"会变成一个**读体的**错误，比原来的状态码难查得多。
+ * ⚠️★ 但**我方的取消必须原样抛出去**：abort 会同时中止读取响应体，而 `.catch(() => null)`
+ *    会把它吞成"没有码"—— 于是容器那道"靠 `name === 'AbortError'` 认出取消"的过滤失效，
+ *    用户切一下标签页就会看到一句错误（评审 Minor 2）。判据与 `requestCore()` 上面那个 catch
+ *    逐字相同，本仓三条读路径（`requestCore` / `rankedDirect.getJson` / 这一处）同一份纪律。
+ * ⚠️ 只取 `error` 这一个键，不复用 `sendJson` 那个 `ErrorPayload`：那个形状里还有
+ *    `reason` / `issues` / `existing*`，而它们属于**写路径**的契约；从这里一并传给
+ *    `ApiError` 等于替读接口声明了一组它并不提供的字段（`ApiError.reason` 会被填上
+ *    一个永远是 undefined 的值 —— 那种"看起来可读、其实恒空"的字段比不写更坏）。
+ */
+async function readRefusalCode(res: Response): Promise<string | undefined> {
+  try {
+    const payload = (await res.json()) as { error?: string } | null;
+    return payload?.error;
+  } catch (error) {
+    // abort 是我方主动取消，不应该显示成错误（与 requestCore() 逐字一致）
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    return undefined;
+  }
+}
+
+/**
+ * `requestCore()` 的**第二种模式**：非 2xx 时多读一样东西 —— 响应体里的错误码。
+ *
+ * ⚠️★ 它**只有一个调用点**（`fetchRankedStatus`，`git grep` 可核），而这个"薄壳 + 票据"的形状
+ *    是刻意的：票据只在这一处被交出去，所以"哪个调用点打开了这个行为"在任何时候都一眼可见 ——
+ *    直接在核心上多传一个 `true` 的话，那件事就散在三十几个调用点里了。
  */
 async function requestWithErrorCode<T>(
   path: string,
   signal?: AbortSignal,
   cache?: RequestCache,
 ): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(path, { headers: { accept: 'application/json' }, signal, cache });
-  } catch (error) {
-    // abort 是我方主动取消，不应该显示成错误（与 request() 逐字一致）
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new ApiError(UNREACHABLE_API_MESSAGE, 0);
-  }
-
-  if (!res.ok) {
-    /*
-     * ⚠️ 解析**必须带守卫**（照 `sendJson` 那个写法）：错误响应并不保证有 JSON 体 ——
-     *    502 常常来自反代（Vite 的代理 / Caddy），那时 body 是空的，`res.json()` 会抛。
-     *    少了这道守卫，"后端没起来"会变成一个**读体的**错误，比原来的状态码难查得多。
-     * ⚠️ 只取 `error` 这一个键，不复用 `sendJson` 那个 `ErrorPayload`：那个形状里还有
-     *    `reason` / `issues` / `existing*`，而它们属于**写路径**的契约；从这里一并传给
-     *    `ApiError` 等于替读接口声明了一组它并不提供的字段（`ApiError.reason` 会被填上
-     *    一个永远是 undefined 的值 —— 那种"看起来可读、其实恒空"的字段比不写更坏）。
-     */
-    const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-    // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
-    // 直接把这个猜测写进错误里，省得每次都要重新推一遍。（与 request() 同一句，共用一份常量）
-    const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
-    throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status, payload?.error);
-  }
-
-  return (await res.json()) as T;
+  return requestCore<T>(path, signal, cache, READ_ERROR_CODE);
 }
 
 export function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {

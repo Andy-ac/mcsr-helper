@@ -7,7 +7,7 @@
  * ②③④ 三个面板的数据由**访客自己的浏览器**直连上游：花的是访客自己 IP 的额度，
  * 我们服务器那个出口 IP 的限流额度只被心跳用掉一点。代价写在这里，不藏：
  *   1. **我们看不到前端的失败**（服务端日志里一个字都没有）⇒ 给访客那句话必须**说得具体**
- *      （`lib/rankedErrors.ts`），而这里只负责把失败**分成四种**、别揉成一种；
+ *      （`lib/rankedErrors.ts`），而这里只负责把失败**分成五种**、别揉成一种；
  *   2. **访客的 IP 会到第三方** ⇒ 见下面 `credentials` / `referrerPolicy` 那两条；
  *   3. **没有服务端兜底**：两个入口都失败时只能用手上那份旧数据 + 一句错误。
  *      ⛔ 否决了"失败时回退到我们服务器"：那等于把被否决的代理方案又建一遍，
@@ -74,17 +74,24 @@ const PATH_LEADERBOARD = '/leaderboard';
 const PATH_WEEKLY = '/weekly-race';
 
 /**
- * 上游那一侧失败的**四种**原因。
+ * 上游那一侧失败的**五种**原因。
  *
- * ⚠️ 它们必须分开：`lib/rankedErrors.ts` 把它们映射成四句不同的话，而 §3 的代价 1 说得很直白
+ * ⚠️ 它们必须分开：`lib/rankedErrors.ts` 把它们映射成五句不同的话，而 §3 的代价 1 说得很直白
  *    —— 直连的失败**我们在服务端看不到**，「连不上」「上游回了看不懂的东西」「上游说没有这一周」
- *    是三种不同的处境，笼统一句"出错了"是我们能得到的最少的信息。
+ *    「上游在限你的流」是四种不同的处境，笼统一句"出错了"是我们能得到的最少的信息。
  * ⚠️★ `not_found` 尤其不能并进 `http`：它是**用户**手改 URL 点了一周不存在的数据
  *    （上游对未来的周号与 −1 以下的周号回 400 `race is not found`，实测），
  *    并进 `http` 之后界面会说"上游回了个意外的状态码"，听起来像故障 ——
  *    而用户下一步该做的是**别等了**，不是重试。
+ * ⚠️★ `rated` 同理，而且它就是 spec §7.3 那句话的来历：上游按**访客自己的 IP** 限流
+ *    （每 IP 500 次/10 分钟）回的就是 429（§6.6）。它在界面上**不是**"上游回了个意外的状态码"，
+ *    而是「请求有点频繁，过一会儿再试。」—— 那一句正是**为这一档**写的
+ *    （§7.3 的 `ranked.errRateLimited` 注释：它与全站的 `rate_limited` 文案分开，
+ *    因为被限的是访客自己打到上游的请求数，不是我们对他的限流）。
+ *    ⇒ **只有 429** 从 `http` 里单列出来；其余每一个 4xx/5xx 仍旧是 `http`
+ *    （不逐个成档：我们对其它的状态码没有实测，一个一个给它们编话就是把猜测写成事实）。
  */
-export type RankedDirectErrorReason = 'network' | 'http' | 'not_found' | 'bad_response';
+export type RankedDirectErrorReason = 'network' | 'http' | 'not_found' | 'bad_response' | 'rated';
 
 /**
  * 直连失败的**唯一**形状：一个原因 +（可能）一个上游状态码。
@@ -99,7 +106,7 @@ export type RankedDirectErrorReason = 'network' | 'http' | 'not_found' | 'bad_re
  */
 export class RankedDirectError extends Error {
   readonly reason: RankedDirectErrorReason;
-  /** 上游回的状态码。`http` 上一定有；`not_found` 是那个 400。 */
+  /** 上游回的状态码。`http` 与 `rated` 上一定有；`not_found` 是那个 400。 */
   readonly status: number | undefined;
 
   constructor(reason: RankedDirectErrorReason, message: string, status?: number) {
@@ -127,6 +134,10 @@ let upstreamFetch: typeof globalThis.fetch | null = null;
  * 它就是本栏目最容易犯、也最难从画面上看出来的那个错。
  * ⚠️ 传 `null` 恢复真实 fetch：自检**必须**在断言之后复位，否则那个脚本之后任何一次
  *    真实调用都会打到上游。
+ * ⚠️★ 复位就写 `setUpstreamFetchForTests(null)`，**不要**写成把 `globalThis.fetch` 传进来：
+ *    替身是以**裸函数**形式调用的（`stub(url, init)`，见 `send()`），而原生 `fetch` 要求
+ *    `this` 是 `globalThis` ⇒ 把原生那个函数当替身传进来会当场抛 `Illegal invocation`，
+ *    而那个错在界面上长得像"上游挂了"（真 fetch 那一支是**成员调用**，`this` 天然正确）。
  */
 export function setUpstreamFetchForTests(fn: typeof globalThis.fetch | null): void {
   upstreamFetch = fn;
@@ -177,9 +188,10 @@ async function send(url: string, signal: AbortSignal | undefined): Promise<Respo
 /**
  * 发一个直连请求并读成 JSON。
  *
- * 四种失败里有三种在这里定下来（`bad_response` 还有一半在调用方，见 `fetchRankedLive`）：
+ * 五种失败里有四种在这里定下来（`bad_response` 还有一半在调用方，见 `fetchRankedLive`）：
  *   · 两个入口都 reject（网络层/超时） ⇒ `network`
- *   · 上游回了个非 2xx ⇒ `http`，**除了**"带 id 的周赛回 400"那一支 ⇒ `not_found`
+ *   · 上游回 429（它在按访客的 IP 限流） ⇒ `rated`
+ *   · 上游回了个别的非 2xx ⇒ `http`，**除了**"带 id 的周赛回 400"那一支 ⇒ `not_found`
  *   · 响应体不是 JSON ⇒ `bad_response`
  */
 async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
@@ -211,6 +223,18 @@ async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
      */
     if (response.status === 400 && path.startsWith(`${PATH_WEEKLY}/`)) {
       throw new RankedDirectError('not_found', '上游说这一周不存在', 400);
+    }
+    /*
+     * ★ 429 单独成档（**只有它**）：上游按访客自己的 IP 限流时回的就是这个码，
+     *   而 spec §7.3 的 `ranked.errRateLimited`（「请求有点频繁，过一会儿再试。」）
+     *   正是**为了这一档**才与全站的 `rate_limited` 分开写的 ——
+     *   落进 `http` 的话，那一格会变成一句**永远走不到**的词条（`RANKED_ERROR_KEYS`
+     *   里 `rated` 本来就是七格之一），而用户会看到一句方向不对的"上游回了个错误"。
+     * ⚠️ 其余 4xx/5xx **不逐个成档**：我们对上游的其它状态码没有实测，
+     *   一个一个给它们编话就是把猜测写成事实；它们一律 `http`（那句话里带着真实数字）。
+     */
+    if (response.status === 429) {
+      throw new RankedDirectError('rated', '上游在限流', 429);
     }
     throw new RankedDirectError('http', `HTTP ${String(response.status)}`, response.status);
   }

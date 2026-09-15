@@ -31,17 +31,29 @@
  * 于是 503 的两档在客户端长得一模一样，`busy` 那一格**永远走不到**。
  * ⇒ 现在这一个端点走 `request()` 的兄弟 `requestWithErrorCode()`（`api.ts`，**全仓只有它一处调用**）：
  *   非 2xx 时读响应体，把 `error` 当 `ApiError.code` 交下来 —— 503 的两档从此分得开。
- *   ⚠️ `request()` 本身**一个字节没动**（改它会换掉全站约三十条 GET 的错误形状），
- *      所以别的读端点上 `code` 仍是 `undefined`：**别从这里推"全站都有码了"**
+ *   ⚠️ `request()` 的**行为**一个字节没变（签名还是那三个参数、消息与状态码逐字相同）；
+ *      变了的是它的**函数体**——评审修复轮 2 让它转发给两条读路径共用的 `requestCore()`
+ *      （轮 1 留下的两个逐字重复的函数体就是评审重要 2）。改它的行为会换掉全站约三十条 GET
+ *      的错误形状，所以"要不要读体"那个开关仍然只有这一个端点打开
+ *      ⇒ 别的读端点上 `code` 仍是 `undefined`：**别从这里推"全站都有码了"**
  *      （`lib/seedErrors.ts` 的文件头记着同一处断链，那里今天仍然损失更大 —— 它连 reason 都拿不到；
  *      本轮**没有**顺带修它，那是它自己的一次改动）。
- * ⚠️★ 状态码兜底（`apiStatusSource`）**不是**死代码，三条理由都真实存在：
- *   1. 502 常常来自**反代**（Vite 的代理 / Caddy），那时 body 是空的 ⇒ 没有码，只剩状态码；
- *   2. 服务端哪天回一个这里没登记的码（`apiCodeSource` 认不出来就回 `null`），
+ * ⚠️★ 状态码兜底（`apiStatusSource`）**不是**死代码，两条理由都真实存在：
+ *   1. 服务端哪天回一个这里没登记的码（`apiCodeSource` 认不出来就回 `null`），
  *      兜底至少还说得出"哪一档"；
- *   3. 429 与 502 这两档本来就不需要码：状态码给出的结论与码完全一致。
- * 顺序是**码优先、状态码兜底**（写在 `rankedErrorSource` 里）：两者冲突时以**码**为准，
- * 因为码是服务端**特意为了区分 503 那两档**才写进 body 的。
+ *   2. 429 那一档本来就不需要码：端点契约里 429 只可能是我们自己的限流，与码的结论一致。
+ * ⚠️★ 兜底里**没有 502**（评审重要 3 删掉的，理由写在这里免得它被"补回来"）：
+ *   502 的契约值 `upstream_bad_response` 只可能**从 body 里的码**来（有码时照样认得出、
+ *   照样说「上游返回的数据看不懂」）；而**码读不到**的 502 恰恰是**反代**自己发的
+ *   （Vite 的代理 / Caddy：body 为空、上游**根本没被问到**）——
+ *   那时上游是健康的、坏的是我们这条链路，说"上游返回的数据看不懂"就是**怪错了第三方**
+ *   （文件头最后一节谴责 `status === 0` 的是同一件事，两处是同一种错）。
+ *   ⇒ 认不出来的 502 一律回 `null`，由调用方的 `fallback` 说话：那句话本来就是**真的**
+ *   （「API 返回 HTTP 502 —— 本地开发时后端没启动？…」）。
+ *   否决了"留着它，因为 `upstream_bad_response` 最常见"：最常见的那条路**已经有码了**，
+ *   这一格只在码读不到时被走到，而码读不到时的 502 恰好是**最不该**赖上游的那一种。
+ * 顺序是**码优先、状态码兜底**（写在 `rankedErrorDetail` 里，两个导出函数都从那一处取结论）：
+ * 两者冲突时以**码**为准，因为码是服务端**特意为了区分 503 那两档**才写进 body 的。
  * 历史（它解释了 `apiStatusSource` 为什么给 503 选 `unavailable`）：码读不到的那一天，
  * 503 只能取**不会说错**的那一档 —— 反过来取 `busy` 会把"上游整个挂掉"说轻，
  * 而那会让用户以为"再等等就好"、实际上要等的是上游修好。
@@ -59,6 +71,13 @@
  *     一个"给了却用不上"的参数，与 `shareErrors.ts` 那句"给认不出来的东西一个兜底"直接矛盾。
  *     改的只是 `rankedErrorSource` 的**返回类型**（多一个 `| null`），
  *     `describeRankedError` 的签名、七格表、七个 key 一个字没动。
+ * ⚠️★ 评审修复轮 2 之后，"认不出来"多了一种情形，而判据仍然只有一处：直连那个
+ *   `RankedDirectError('http', …)` 没带状态码时（渲染自检**手搓**错误就会这样），
+ *   `errHttp` 的 `{{status}}` 填不出来 ⇒ 一样回 `null` 走 `fallback`，
+ *   而不是印出一个「上游回了一个错误（HTTP ）。」—— 那正是本轮修掉的那个缺陷的另一种写法。
+ *   ⚠️ 同一轮把"这是什么失败"收进了私有的 `rankedErrorDetail()`：`rankedErrorSource` 取它的
+ *   一半（source，给逐格断言用），`describeRankedError` 取另一半（`errHttp` 要的那个数字）——
+ *   两半必须从**同一个判断**出来，否则就是那种会漂移的第二份规则。
  */
 import { ApiError } from '@/lib/api';
 import { RankedDirectError } from '@/lib/rankedDirect';
@@ -69,9 +88,14 @@ export type Translate = (key: string, options?: Record<string, unknown>) => stri
 /**
  * 这一栏**全部**的失败来源 —— 七个，一个不多一个不少。
  *
- * 前四个来自**直连**（`RankedDirectError` 的四种原因），后三个来自**我们自己的端点**
- * （`GET /api/ranked/status` 的四个码：429 `rate_limited` / 502 `upstream_bad_response` /
- * 503 `ranked_busy` / 503 `upstream_unavailable`）。
+ * 前四个（`network` / `http` / `not_found` / `bad_response`）来自**直连**
+ * （`RankedDirectError` 五个原因里除去 `rated` 的那四个），后三个（`busy` / `unavailable` /
+ * `rated`）来自**我们自己的端点**（`GET /api/ranked/status` 的四个码：429 `rate_limited` /
+ * 502 `upstream_bad_response` / 503 `ranked_busy` / 503 `upstream_unavailable`）。
+ * ⚠️★ `rated` 是**唯一两头都有**的一格：上游按访客自己的 IP 限流时，直连层直接给 `rated`
+ *    （`rankedDirect.ts` 的 429 那一支）；我们那个端点被限流时，它从码或状态码来 ——
+ *    而 spec §7.3 那句话（「请求有点频繁，过一会儿再试。」）对两种情况都成立，
+ *    这正是它当初被写成独立一条（而不是复用全站 `rate_limited`）的理由。
  * ⚠️ **码是权威判据**（`apiCodeSource`），状态码只在码读不到或认不出来时兜底
  *    （`apiStatusSource`）—— 503 那两档**只有响应体分得开**（见文件头）。
  * ⚠️ 类型是**手抄**的联合（上游给过来的是字符串）：服务端哪天加一个码，这里不会有编译错误
@@ -133,14 +157,20 @@ function apiCodeSource(code: string | undefined): RankedErrorSource | null {
 }
 
 /**
- * 码读不到（或认不出来）时的**状态码兜底** —— 今天仍然会走到（无 body 的 502、没登记的码）。
+ * 码读不到（或认不出来）时的**状态码兜底** —— 今天仍然会走到（没登记的码、没码的 429）。
  *
- * ⚠️ 只列**端点契约里钉死**的三个状态（`routes/ranked.ts`）：429 只可能是我们自己的限流、
- *    502 只可能是 `upstream_bad_response`、503 是那两档之一。
+ * ⚠️ 只列**端点契约里钉死**的两个状态（`routes/ranked.ts`）：429 只可能是我们自己的限流、
+ *    503 是那两档之一。
  *    ⚠️ 503 在这里**只能**取 `unavailable`：只有状态码时那两档长得一模一样，取"不会说错"的
  *    那一档 —— 把"上游整个挂掉"说轻（"有点忙，再等等"）等于给用户一个**错的方向**，
  *    而把"上游在限我们的流"说成"暂时读不到"只是模糊一档。**有码时根本不看这里。**
- *    其余的（0 / 404 / 500 / …）一律回 `null` ⇒ 调用方的 `fallback`，
+ * ⚠️★ **502 不在这里**（评审重要 3）：契约里那个 502 的码是 `upstream_bad_response`，
+ *    它**有码**、由 `apiCodeSource` 说成「上游返回的数据看不懂」；而**没有码**的 502
+ *    恰恰是**反代**自己发的（Vite 的代理 / Caddy：body 为空、上游根本没被问到）——
+ *    两件事长得一模一样，责任方却相反，把后者说成"上游返回的数据看不懂"就是**怪错了第三方**。
+ *    ⇒ 它落进下面的 `default`，由调用方的 `fallback` 说一句**真的**话
+ *    （「API 返回 HTTP 502 —— 本地开发时后端没启动？…」比一句方向错了的具体话好）。
+ *    其余的（0 / 404 / 500 / …）同样回 `null` ⇒ 调用方的 `fallback`，
  *    因为"我们服务器 500"与"上游 500"是两件完全不同的事，这里没有判据能分开它们，
  *    编一句"上游"只会把排查方向带偏。
  */
@@ -148,8 +178,6 @@ function apiStatusSource(status: number): RankedErrorSource | null {
   switch (status) {
     case 429:
       return 'rated';
-    case 502:
-      return 'bad_response';
     case 503:
       return 'unavailable';
     default:
@@ -158,19 +186,55 @@ function apiStatusSource(status: number): RankedErrorSource | null {
 }
 
 /**
+ * 一次问出**两件事**：这一格是谁，以及这一格要填的那个数字。
+ *
+ * ⚠️★ 为什么不能只问 source：`ranked.errHttp` 的冻结文案里有一个 `{{status}}` 占位符
+ *    （spec §7.3：「上游回了一个错误（HTTP {{status}}）。」），而七个格子里**只有它**带占位符
+ *    —— 其余六句都是完整的句子，一个变量都没有。占位符与它的取值必须在**同一处**决定：
+ *    分成两处的话，"谁去填这个数字"就变成调用点的纪律，而漏填的样子是**静默**的 ——
+ *    i18next 把缺的变量填成空串，用户看到「上游回了一个错误（HTTP ）。」，
+ *    类型检查、lint、渲染自检一个都不报（这正是评审重要 1 修掉的缺陷）。
+ * ⚠️ 说不出数字的 `http` **不猜**：`RankedDirectError` 是导出的类，渲染自检要**手搓**这些错误
+ *    （T8 逐格断言那张表就是这么写的），"手搓时漏了第三个参数"因此是一个真实存在的状态 ——
+ *    它今天只会印出一个空括号。⇒ 回 `null`，让调用方走 `fallback`
+ *    （一句笼统但**完整**的话，好过一句带着空括号的"具体"话）。
+ * ⚠️ 类型上把 `http` 那一支单列成 `{ source: 'http'; status: number }`，不是"顺手写清楚"：
+ *    它让"`errHttp` 一定有数字可填"成为一条**类型**事实，下一个改这里的人不必再回去读
+ *    `rankedDirect.ts` 才能确认。
+ */
+type RankedErrorDetail =
+  | { source: 'http'; status: number }
+  | { source: Exclude<RankedErrorSource, 'http'>; status: number | undefined };
+
+function rankedErrorDetail(error: unknown): RankedErrorDetail | null {
+  // 直连的五个原因**就是**五个 source，一一对应（`rankedDirect.ts` 的 `reason`）。
+  if (error instanceof RankedDirectError) {
+    if (error.reason === 'http') {
+      return typeof error.status === 'number' ? { source: 'http', status: error.status } : null;
+    }
+    return { source: error.reason, status: error.status };
+  }
+  if (error instanceof ApiError) {
+    // 按码优先：码是权威的那一个（它区分得开 503 的两档）。
+    const source = apiCodeSource(error.code) ?? apiStatusSource(error.status);
+    // ⚠️ 我们那个端点这一侧**没有** `http` 这一格（它的每一档都由码或状态码说清了），
+    //    这里的 status 只是顺手带出来，**没有**哪一格会拿它去填占位符。
+    return source === null ? null : { source, status: error.status };
+  }
+  return null;
+}
+
+/**
  * 把三种失败（**直连错误** / 我们 API 的 `ApiError` / 其它）归一成一个 source。
  *
+ * ⚠️★ 它只是 `rankedErrorDetail()` 的**一半**（只要 source）：渲染自检要**逐格**断言这张表，
+ *    按格问比按"格 + 数字"问更顺手，而"数字"那一半**只有** `describeRankedError` 用得上。
+ *    两者共用同一个判断处 —— 各写一份"这是什么失败"正是那种会漂移的第二份规则。
  * ⚠️ 认不出来时返回 `null` —— **不要**把它当成"未知"以外的东西，调用方必须走 `fallback`
  *    （文件头最后一节写了为什么这一档不能编一句话）。
  */
 export function rankedErrorSource(error: unknown): RankedErrorSource | null {
-  // 直连的四种原因**就是**四个 source，一一对应（`rankedDirect.ts` 的 `reason`）。
-  if (error instanceof RankedDirectError) return error.reason;
-  if (error instanceof ApiError) {
-    // 按码优先：码是权威的那一个（它区分得开 503 的两档）。
-    return apiCodeSource(error.code) ?? apiStatusSource(error.status);
-  }
-  return null;
+  return rankedErrorDetail(error)?.source ?? null;
 }
 
 /**
@@ -178,6 +242,9 @@ export function rankedErrorSource(error: unknown): RankedErrorSource | null {
  *
  * ⚠️★ 它必须**查表**（`t(RANKED_ERROR_KEYS[source])`），不是自己再写一遍映射：
  *    表对了但派发不查表，同样是一个缺陷（`shareErrors.ts` 的注释原话）。
+ * ⚠️★ 选项**只给 `http` 那一格**：它是七句里唯一带 `{{status}}` 的（spec §7.3 的冻结文案）。
+ *    给另外六句传选项不但没用，还会让人以为那六句可以参数化 ——
+ *    下一个改文案的人会去文件里找"它们该填什么"，而那两个变量**不存在**。
  * ⚠️ 认不出来的失败走 `fallback`（`useApiErrorText()` 的结果）——见文件头最后一节：
  *    "我们自己的服务器连不上"那一档**只有**它能说对。
  */
@@ -186,7 +253,9 @@ export function describeRankedError(
   t: Translate,
   fallback: (error: unknown) => string,
 ): string {
-  const source = rankedErrorSource(error);
-  if (source === null) return fallback(error);
-  return t(RANKED_ERROR_KEYS[source]);
+  const detail = rankedErrorDetail(error);
+  if (detail === null) return fallback(error);
+  return detail.source === 'http'
+    ? t(RANKED_ERROR_KEYS[detail.source], { status: detail.status })
+    : t(RANKED_ERROR_KEYS[detail.source]);
 }
