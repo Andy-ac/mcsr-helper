@@ -168,6 +168,10 @@ function useServerOffset(board: ShareListResponse | null, nowMs: number): number
  *    `LiveShare` 里 `kind` 与 `payload` 是两个并列字段，TS 不会按 `kind` 去窄化
  *    `payload`，写成 `kind === 'room'` 就只能靠类型断言。而 payload 的形状本来
  *    就是权威（服务端写入时按 kind 过 `parseSharePayload`）。
+ *
+ * ⚠️ `onCopy` 可选**只**因为它有两个调用点：看板上的行（每一行都要有复制，§7.4）与
+ *    「你的一条」里的行（那里不接复制）。⚠️ 后者的后果写在 `ShareMineBar` 那一段注释里
+ *    （一条已下架的行全页没有复制入口）—— 那是记录下来的取舍，不是漏传。
  */
 function ShareContent({ item, onCopy }: { item: LiveShare; onCopy?: (text: string) => void }) {
   const { t } = useTranslation();
@@ -574,6 +578,12 @@ export function ShareMineBar(props: ShareMineBarProps) {
         ★ 我自己的每一行 —— 这是全站**唯一**有「下架 / 恢复」的地方。
           ⚠️ 已下架的那一条**只在这里**出现（`items` 里没有它，它已经不在看板上），
              所以"恢复"这个动作也只有这里挂得上。
+        ⚠️★ 这一块**没有「复制」**（`ShareContent` 不接 `onCopy`）。理由：§7.4 的复制
+             是给"要把**别人的**房间号/种子拷进游戏"的人用的，而这里每一条都是我自己
+             刚填过的。⚠️ **代价记在明面上**（2026-09-15 评审指出）：一条**已下架**的行
+             只出现在这个列表里，所以对那一行而言，全页**没有任何复制入口**。
+             要补的话就是在这一块也接一个 `onCopy`（`ShareMineBar` 目前没有这一格，
+             那是一处接口变更，不在本轮的冻结清单里）—— 记在这里，不要以为是漏了。
       */}
       {mine.length > 0 ? (
         <ul className="share__minelist">
@@ -674,23 +684,18 @@ export function ShareGuestNotice() {
 /**
  * 「还没验证邮箱」那一屏（§7.5 第 2 行）：看板照常，只有"你的一条"换成它。
  *
- * ⚠️ 重发入口**总是**渲染（`onResend` 可以缺省）：
- *    · `renderToStaticMarkup` 里没有点击，渲染自检拿不到、也不该拿到一个真的处理器，
- *      而它必须能断言这一屏里**有**重发入口；
- *    · 缺省时那颗按钮是**禁用**的（不是"点了没反应"）—— 接通它的唯一方式是
- *      让容器传 `onResend`（`POST /api/auth/verify/send`），而不是在这里悄悄换一个。
+ * ⚠️★ `onResend` **必填**（2026-09-15 订正，见 `ShareBoardViewProps.onResendVerify`）：
+ *    这里原本写成可选、缺省时把按钮禁掉，那样调用方忘了传的后果是**一颗永远灰着的按钮**
+ *    而**所有门禁都绿**（渲染自检只看"入口在不在"，禁用也算在）。改成必填之后
+ *    忘了传是**编译错误** —— 与渲染自检能断言"入口在不在"这两件事都保住了。
+ *    `renderToStaticMarkup` 侧照旧：它传一个空函数就行（它验的是产物，不是点击）。
  */
-export function ShareVerifyNotice({ busy, onResend }: { busy?: boolean; onResend?: () => void }) {
+export function ShareVerifyNotice({ busy, onResend }: { busy: boolean; onResend: () => void }) {
   const { t } = useTranslation();
   return (
     <div className="share__verify">
       <p className="share__verifytext">{t('shares.needVerify')}</p>
-      <button
-        type="button"
-        className="ghostbtn"
-        disabled={busy === true || onResend === undefined}
-        onClick={onResend}
-      >
+      <button type="button" className="ghostbtn" disabled={busy} onClick={onResend}>
         {t('shares.resendVerify')}
       </button>
     </div>
@@ -700,21 +705,16 @@ export function ShareVerifyNotice({ busy, onResend }: { busy?: boolean; onResend
 /**
  * 失败那一屏上的「重试」。
  *
- * ⚠️ 入口**总是**渲染（§7.5 第 4 行要求失败那一屏有重试），而处理器是**可选**的：
- *    渲染自检（`renderToStaticMarkup`）拿不到、也不该拿到一个真的处理器，但它必须
- *    能断言这一屏里有这个入口。缺省时按钮是**禁用**的 —— 不是"点了没反应"。
- *    接通它的唯一方式是容器传 `onRetry`（见 `ShareBoardViewProps.onRetry`）。
+ * ⚠️★ `onRetry` **必填**（2026-09-15 订正，见 `ShareBoardViewProps.onRetry`）：
+ *    这里原本写成可选、缺省时把按钮禁掉 —— 那样"忘了接线"的表现是一颗永远灰着的按钮，
+ *    而**所有门禁都绿**（渲染自检只看"入口在不在"，禁用也算在）。必填之后
+ *    忘了传是**编译错误**，而"入口在不在"照样能被渲染自检断言（脚本传空函数即可）。
  */
-function ShareRetry({ busy, onRetry }: { busy: boolean; onRetry?: () => void }) {
+function ShareRetry({ busy, onRetry }: { busy: boolean; onRetry: () => void }) {
   const { t } = useTranslation();
   return (
     <p className="share__actions">
-      <button
-        type="button"
-        className="ghostbtn"
-        disabled={busy || onRetry === undefined}
-        onClick={onRetry}
-      >
+      <button type="button" className="ghostbtn" disabled={busy} onClick={onRetry}>
         {t('common.retry')}
       </button>
     </p>
@@ -798,14 +798,32 @@ export interface ShareBoardViewProps {
   /** 旧数据有多旧（秒）。`null` = 没有"旧列表"这回事。 */
   staleSecs: number | null;
   /**
-   * ★ 本地时钟 —— 由容器**每秒**推进。
+   * ★ **本地时钟**的读数 —— 由容器**每秒**推进一次（`Date.now()`）。
    *
    * ⚠️ 它必须是 props 而不是组件内部 `Date.now()`：渲染自检要能喂一个**固定的时刻**
    *    进来，才能把三档（还剩 12 分钟 / 不到 1 分钟 / 已经到点）分别断言出来。
-   * ⚠️ 它和 `board.serverNow` 是**同一个瞬间**的两次读数（本地一次、服务端一次）：
-   *    两者的差就是偏移量（见 `useServerOffset`）。容器每秒推进它，偏移量**不**跟着变。
+   * ⚠️★ 它读的是**本地**时钟，而不是"折算成服务端时刻的现在"：
+   *    · 剩余时间的服务端校正靠 `serverOffset`（差一次算一次，见 `useServerOffset`）——
+   *      那个偏移量是由它和 `board.serverNow` 一起算出来的；
+   *    · `lastUpdatedAtMs` 也是本地时钟，所以"多少秒前更新"就是这两个数相减，
+   *      不需要（也不该）经过服务端偏移量。
+   *    ⚠️ 渲染自检里让 `board.serverNow === nowMs` 就等于"本地钟与服务端钟此刻读数相同"，
+   *       于是偏移量是 0、三档剩余时间都钉得住。
    */
   nowMs: number;
+  /**
+   * ★ 上一次**成功**取到看板的时刻（**本地时钟**）。`null` = 还没成功过。
+   *
+   * 它承载 `shares.updatedAgo`（「{{secs}} 秒前更新」，§7.6 第 5 条）：那一行要
+   * **随本地计时走**（每一秒自己往前走），所以秒数在这里用 `nowMs` 现算，
+   * 而不是由容器每隔一秒重算一个数字传下来。
+   * ⚠️ 只有**成功**那一次算数：刷新失败时这个时刻**不动** —— 那正是这一行的意义
+   *    （"你看到的这份数据是多久以前的"）。
+   * ⚠️★ 这一格是 2026-09-15 评审之后补进冻结契约的：原先 props 清单里**没有任何一格**
+   *    承载得了它，于是 §7.6 那条要求**无处落地**，而 `shares.updatedAgo` 里没有 `**`，
+   *    强调守卫也看不见它（正是本仓最怕的那种静默漏项）。
+   */
+  lastUpdatedAtMs: number | null;
   busy: boolean;
   /** 一次操作的结果（发布/下架/复制的成功与失败）。文本由容器给（它才知道用哪句词条）。 */
   notice: { ok: boolean; text: string } | null;
@@ -814,15 +832,21 @@ export interface ShareBoardViewProps {
   onCopy: (text: string) => void;
   onSubmit: (body: unknown) => void;
   /**
-   * 「重试」的落点。
+   * ★★ 「重试」的落点（§7.5 第 4 行：失败那一屏要有重试）。**必填。**
    *
-   * ⚠️ 它是**可选**的，因为冻结的 props 清单里没有它，而 §7.5 第 4 行**要求**失败那一屏
-   *    有重试入口 —— 两者只能这样同时成立：入口**总是**渲染，处理器由容器给。
-   *    缺省时那颗按钮是**禁用**的（不是"点了没反应"）：接通它的唯一方式是容器传它。
+   * ⚠️★ 2026-09-15 的订正：这一格最初**不在**冻结清单里，当时的解法是"入口总是渲染、
+   *    处理器可选、缺省时按钮禁用"。那是错的 —— 调用方忘了传的表现是**一颗永远灰着的
+   *    按钮**，而**所有门禁都绿**（渲染自检断言的是"入口在不在"，禁用也算在）：
+   *    入口"存在"而功能不可用，正是本计划一路在防的那种静默失效。
+   *    ⇒ 改成必填：忘了传是**编译错误**。渲染自检照样能断言入口（它传一个空函数）。
    */
-  onRetry?: () => void;
-  /** 「重发验证邮件」的落点（`POST /api/auth/verify/send`）。可选的理由同上。 */
-  onResendVerify?: () => void;
+  onRetry: () => void;
+  /**
+   * ★★ 「重发验证邮件」的落点（`POST /api/auth/verify/send`）。**必填**，理由同上：
+   *    §11.2 要求未验证那一屏有重发入口，而一颗永远灰着的按钮既"通过了"断言、
+   *    又什么都做不了。
+   */
+  onResendVerify: () => void;
 }
 
 /**
@@ -836,10 +860,32 @@ export interface ShareBoardViewProps {
  */
 export function ShareBoardView(props: ShareBoardViewProps) {
   const { t } = useTranslation();
-  const { kind, authed, verified, board, loadError, staleSecs, nowMs, busy, notice } = props;
+  const {
+    kind,
+    authed,
+    verified,
+    board,
+    loadError,
+    staleSecs,
+    nowMs,
+    lastUpdatedAtMs,
+    busy,
+    notice,
+  } = props;
 
   /* ★ 服务端偏移量：**一次响应只算一次**，然后冻住（理由写在 useServerOffset 上） */
   const offset = useServerOffset(board, nowMs);
+
+  /*
+   * ★ 「{{secs}} 秒前更新」的秒数 —— **每一秒自己往前走**（§7.6 第 5 条），
+   *   所以它是由 `nowMs` 现算的，而不是容器每隔一秒算好一个数字传下来。
+   * ⚠️ 两个数都必须是**本地时钟**（见 `nowMs` / `lastUpdatedAtMs` 的注释）：
+   *    "多久以前"是本地的事，掺进服务端偏移量反而会算出一个错的间隔。
+   * ⚠️ `Math.max(0, …)` 是防**负数**的：`Date.now()` 被系统校时往回调（NTP）
+   *   时，差值会短暂为负 —— 界面上写「-3 秒前更新」比不写更糟。宁可钳到 0。
+   */
+  const updatedAgoSecs =
+    lastUpdatedAtMs === null ? null : Math.max(0, Math.floor((nowMs - lastUpdatedAtMs) / 1000));
 
   /*
    * ⚠️ 剩余时间**只算一次**（每行一次），而不是在 JSX 里反复算：
@@ -947,7 +993,20 @@ export function ShareBoardView(props: ShareBoardViewProps) {
                 <ShareVerifyNotice busy={busy} onResend={props.onResendVerify} />
               )}
 
+              {/*
+                ★ 「{{secs}} 秒前更新」（§7.6 第 5 条）—— 看板这一刻有多新。
+                ⚠️ `lastUpdatedAtMs === null`（还没成功取到过）时**整行不渲染**：
+                   那时候没有任何"上一次"可言，写「0 秒前更新」是在撒谎。
+                ⚠️ 它与刷新失败那一句（`shares.refreshFailed`，也带一个秒数）**会在同一次
+                   渲染里同时出现**，而且两个数字相同（都从"上次成功"算起）。这不是重复：
+                   那一句说的是"**这一次刷新失败了** + 一次重试"，这一行是**常显**的新鲜度
+                   指示，两者职责不同，§7.5 与 §7.6 分别要求它们。要合并的话是一次产品决定，
+                   不是这里的实现细节。
+              */}
               <h2 className="share__boardtitle">{t('shares.boardTitle')}</h2>
+              {updatedAgoSecs !== null ? (
+                <p className="share__updated">{t('shares.updatedAgo', { secs: updatedAgoSecs })}</p>
+              ) : null}
               {/* ⚠️ 看板被 200 行上限截断时必须说一句，**不许安静截断**（§5.1） */}
               {board.truncated ? <p className="share__truncated">{t('shares.truncated')}</p> : null}
               {rows.length === 0 ? (
