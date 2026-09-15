@@ -307,7 +307,7 @@ status = 'active' AND expires_at > now
 
 ### 5.3 写：`POST /api/shares/:kind`
 
-**要求登录 + 邮箱已验证。** body 按 kind 分叉：
+**要求登录 + 邮箱已验证**（`requireAuth` + `requireVerified`，见 §6.1）。body 按 kind 分叉：
 
 ```jsonc
 // room
@@ -368,16 +368,21 @@ status = 'active' AND expires_at > now
 | 看介绍页 `/shares` | **无**（游客可见） | 不需要接口；两块卡片对游客不显示条数 |
 | 看摘要 `GET /api/shares/summary` | 登录 | `requireAuth` |
 | 看看板 `GET /api/shares/:kind` | 登录 | `requireAuth` |
-| 发布 `POST` | 登录 **+ 邮箱已验证** | `requireAuth` + 手写已验证判断（见下） |
+| 发布 `POST` | 登录 **+ 邮箱已验证** | `requireAuth` + **已有的 `requireVerified`**（`auth/middleware.ts:126`） |
 | 下架自己的 | 登录 + 是这条的 `user_id` | 数据层比对 `user_id` |
 | 下架别人的 | `share.moderate` | `requireCapability('share.moderate')` 的**或**关系 |
 | 恢复 | **只有本人** | 数据层比对 `user_id`（管理员走到这里一律 403） |
 
-⚠️ **为什么发布这里手写"邮箱已验证"而不是挂一个能力**：本仓的 `REQUIRES_VERIFIED` 只对**能力**生效，
-而"发一条分享"不是一个能力（它不区分角色 —— 任何验证过邮箱的登录用户都能发）。
-⇒ 与 `routes/authoring.ts` 里贡献者那一条同一个形状：**手写一段判断，并在注释里写明它为什么不是一个能力**。
-❌ **不要**为了省事新加一个"谁都能有"的能力再挂 `REQUIRES_VERIFIED`：那会往矩阵里塞一条所有角色都有的能力，
-而矩阵的每一行都应该回答"谁能做什么"，不是"谁能过验证"。
+⚠️ **为什么发布这一档复用现成的中间件，而不是挂一个能力**：本仓的 `REQUIRES_VERIFIED` 只对**能力**生效，
+而"发一条分享"不是一个能力 —— 它不区分角色（任何验证过邮箱的登录用户都能发）。
+正好 `auth/middleware.ts` 里**已经有** `requireVerified`：它返回的就是我们要的那一对
+（未登录 401 / 已登录但没验证 **403 `email_not_verified`**），两个码与 §5.3 完全一致。
+⇒ 直接 `sharesRoute.post('/:kind', requireAuth, requireVerified, …)` 即可，**不要手写这段判断**。
+
+❌ **也不要**为了"复用 `REQUIRES_VERIFIED`"而新加一个所有角色都有的能力（比如 `share.submit`）：
+本仓 `permissions.test.ts` 里那条"没有孤儿能力"的断言挡不住这个 ——
+真正的问题是矩阵的每一行都应该回答"**谁能做什么**"，而一条人人皆有的能力回答的是"谁能过验证"。
+矩阵一旦开始装这种东西，读它的人就再也无法一眼看完"谁比谁多什么"。
 
 ### 6.2 新能力 `share.moderate`
 
