@@ -743,6 +743,19 @@ describe('★ 词条 key 的存在性', () => {
       { key: 'auth.capDescResourceEditAny', why: 'RoleGuide 的 CAP_DESC 表按能力名取' },
       { key: 'auth.capDescResourceEditUnpublished', why: '同上（CAP_DESC）' },
       { key: 'auth.capDescResourceModerate', why: '同上（CAP_DESC）' },
+      {
+        /*
+         * `share.moderate` 的完整说明（2026-09-15，实时分享）。
+         *
+         * ⚠️ 它属于**这张**表而不是 `UNWIRED_KEYS`：词条加进来的**同一个任务**
+         * 就在 `RoleGuide.tsx` 的 `CAP_DESC` 里接了它 ⇒ 它已经有渲染点，
+         * 只是那个渲染点是**拼出来的 key**（`t(CAP_DESC[cap])`）。
+         * 放进 `UNWIRED_KEYS` 会红在"清单里描述的调用点源码里已经没有了"那一边
+         * （第 ⑥ 条断言这些键**必须**没有字面量调用点，第 ⑨ 条要求有覆盖）。
+         */
+        key: 'auth.capDescShareModerate',
+        why: 'RoleGuide 的 CAP_DESC 表按能力名取（`share.moderate`，渲染点同上）',
+      },
     ];
 
     /**
@@ -753,10 +766,32 @@ describe('★ 词条 key 的存在性', () => {
      *    要求**立刻**有覆盖，而那时最省事的处置往往是**把 `**` 从词条里删掉**
      *    （等于把问题藏起来）。有了这张表，处置是"写清打算接到哪"。
      *
-     * ★ 今天这张表里是 **0 条**（24 个带 `**` 的键：18 个有字面量调用点 + 6 个动态）。
-     *   它留着是为了让下一个人**有地方写理由**，而不是去改词条。
+     * ★ 今天这张表里是 **1 条**（27 个带 `**` 的键：19 个有字面量调用点 +
+     *    7 个动态 + 1 个还没接）。⚠️ 这条注释以前写的是"0 条（24 个 ……18 + 6）"——
+     *    那是**陈旧**的：本轮（2026-09-15）新增两条之后实测 27，
+     *    而当时那条注释里的 24 也已经比实测少 1（字面量那半边是 19 不是 18）。
+     *
+     * ⚠️ `shares.hideHint` 是这一张表**第一次**真正被用到 —— 理由写在下面那一条里。
      */
-    const UNWIRED_KEYS: readonly { key: string; why: string }[] = [];
+    const UNWIRED_KEYS: readonly { key: string; why: string }[] = [
+      {
+        /*
+         * ★ 「下架之后看板上就没有了，随时可以恢复。**到点**之后就不能恢复了。」
+         *
+         * ⚠️ 它今天确实**没有人渲染**：渲染它的 `ShareMineBar` 是 Task 5 才建的
+         * （本任务只加词条与守卫，页面在 T5–T7）。⇒ 此刻的唯一正确处置是
+         * **登记**，而不是把 `**` 从词条里删掉（那等于把"强调还没接上"藏起来），
+         * 也不是在这里写一个**指向还不存在的文件**的 `EXPECTED_SITES` 条目
+         * （那会让第 ⑤ 条"清单 == 实测"红在一个不存在的东西上）。
+         * ★ Task 5 建好 `ShareMineBar` 之后：把它从这张表**搬进** `EXPECTED_SITES`
+         * （按渲染点的真实形状登记，多半是 `em` 或 `field-hint`）。
+         */
+        key: 'shares.hideHint',
+        why:
+          '渲染点是 Task 5 才建的 `ShareMineBar`（此刻还没有这个文件）；' +
+          '建成之后按真实形状搬进 EXPECTED_SITES',
+      },
+    ];
 
     /**
      * ★★ 把**注释**挖成空格（**等长**、换行保留 ⇒ 行号不漂）。
@@ -921,10 +956,14 @@ describe('★ 词条 key 的存在性', () => {
       for (const [key, value] of valueMap(dict)) if (value.includes('**')) marked.add(key);
     }
     assert.ok(
-      marked.size >= 24,
-      `只有 ${String(marked.size)} 个词条带 \`**\`（实测 24）—— 少了多半是**词条被改坏**：` +
+      marked.size >= 27,
+      `只有 ${String(marked.size)} 个词条带 \`**\`（实测 27）—— 少了多半是**词条被改坏**：` +
         '把强调标记去掉之后，这些词条在字符串上下文里就不再有星号，下面整条守卫会跟着空转。' +
-        '（确实有意删掉时，把 24 改成新的实测值并在注释里说明。）',
+        '（确实有意删掉时，把 27 改成新的实测值并在注释里说明。）' +
+        '⚠️ 2026-09-15：下限从 24 改成 27 —— 本轮新增 `shares.hideHint` 与 ' +
+        '`auth.capDescShareModerate` 两条（+2），而 24 这个数**当时就已经比实测少 1**' +
+        '（实测 25：19 个字面量调用点 + 6 个动态，注释里却写着 18 + 6）。' +
+        '按本文件的规矩（下限钉在**实测值**上）钉到 27。',
     );
     // 针孔探针：两个**真的修过**的靶子必须在集合里（否则下面的断言是在验空气）
     for (const key of [

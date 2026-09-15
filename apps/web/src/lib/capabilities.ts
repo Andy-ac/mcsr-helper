@@ -6,9 +6,16 @@
  * 界面自动就有了。给每个能力单写一条文案的话，
  * 加了能力忘了加词条，界面上就会出现一个空白标签，
  * 而且这种遗漏不会有任何东西提醒你。
+ *
+ * ★ 2026-09-15：上面最后半句**不再成立了** —— `apps/web/scripts/roleguide.tsx`
+ *   现在会遍历 `CAPABILITIES`，断言每一个能力的类型 key 与动作 key 都非空
+ *   （走下面导出的 `capabilityLabelKeys`，与 `describeCapabilities` **同一条路**）。
+ *   ⚠️ 这条守卫是被一件真实的事逼出来的：加 `share.moderate` 时，
+ *   它没有自己的动作词条 ⇒ 安静地继承了 `ACTION_KEYS.moderate` 的
+ *   「管理身份组」，界面上于是写着一条他并没有的权限，而**所有门禁都是绿的**。
  */
 import type { Actor, Capability } from '@mcsr/shared/permissions';
-import { can, canHardDelete, canSelfReview } from '@mcsr/shared/permissions';
+import { CAPABILITIES, can, canHardDelete, canSelfReview } from '@mcsr/shared/permissions';
 import { REVIEWABLE_TYPES, type ReviewableType } from '@mcsr/shared/review';
 import { useAuth } from '@/lib/auth';
 
@@ -101,15 +108,29 @@ const TYPE_KEYS: Record<string, string> = {
    *    （而旁边的项都是中文）—— 看起来像界面没做完。
    */
   content: 'auth.capTypeContent',
+  /*
+   * `share.*`（实时分享的治理，2026-09-15）—— 这里要说清它**不是** `shares.*`
+   * 那一节的文案：`shares.*` 是页面上给用户看的句子（房间号、种子、看板），
+   * 而这一行只是账号页能力清单里**类型那一半**的名字。
+   * ⚠️ 不加这一行的后果与上面 `content` 完全一样：账号页会把**类型**显示成英文
+   *    `share`，而旁边的项都是中文。
+   */
+  share: 'auth.capTypeShare',
 };
 
 /**
  * 会**撞名**的能力：动作名相同但含义完全不同，必须按完整能力名区分。
  *
- * 目前的唯一一对是 `resource.moderate`（下架内容）和 `user.moderate`
- * （管理身份组）—— 都叫 moderate，但一个是内容治理、一个是账号治理。
- * 只按动作名映射的话，其中一个会被贴上另一个的标签，
+ * 到今天为止有**三个** moderate：`resource.moderate`（下架内容）、
+ * `user.moderate`（管理身份组）、`share.moderate`（下架别人的分享）——
+ * 内容治理与账号治理是两条线，分享治理又是第三条。
+ * 只按动作名映射的话，后加的那一个会被贴上别的标签，
  * 而"界面上的权限名写错了"是很难被发现的：它看起来只是文案不对。
+ *
+ * ⚠️ 2026-09-15：`share.moderate` 就是这么被漏掉的 —— 它一加进权限矩阵，
+ *    `ACTION_KEYS.moderate`（=「管理身份组」）就接管了它的标签，
+ *    而 `check:roleguide` 那时只验"字典里的词条渲染得出来"，
+ *    所以**没有任何门禁变红**。现在那条守卫会点名。
  *
  * ⚠️ 为什么不去改能力名：能力名是权限矩阵里的**契约**（服务端判权、
  *    审计日志、测试都在用它），不该为了界面文案去动它。
@@ -117,6 +138,7 @@ const TYPE_KEYS: Record<string, string> = {
 const CAP_OVERRIDES: Record<string, string> = {
   'resource.moderate': 'auth.capActionModerateContent',
   'user.moderate': 'auth.capActionModerate',
+  'share.moderate': 'auth.capActionModerateShare',
 };
 
 /** 动作名 → 词条 key。
@@ -130,6 +152,8 @@ const CAP_OVERRIDES: Record<string, string> = {
  *    总比空白强），所以它只会安静地退化成一个英文词。
  *    `.cache/deadkeys.mjs` 会把"有词条但没人引用"的 key 报出来 ——
  *    `capActionEditAny` 就是这样被抓到的（2026-09-13）。
+ * ★ 2026-09-15：漏了**现在会红**了 —— `check:roleguide` 拿
+ *    `capabilityLabelKeys()` 逐个能力断言这张表覆盖到了（见文件头那段说明）。
  */
 const ACTION_KEYS: Record<string, string> = {
   submit: 'auth.capActionSubmit',
@@ -158,6 +182,66 @@ const ACTION_KEYS: Record<string, string> = {
   author: 'auth.capActionAuthor',
 };
 
+/**
+ * 一个能力在界面上用到的两个词条 key（类型、动作）。
+ *
+ * ⚠️ `null` = 那张表里没有 ⇒ 界面上会退化成英文原文
+ *    （类型名或动作名本身，见下面 `describeCapabilities` 的兜底）。
+ *
+ * ★ 抽出来是为了**能被渲染自检断言**：`describeCapabilities` 与守卫走同一条路，
+ *   守卫才不是一份平行的抄写（平行的抄写会漂移，而漂移的守卫是假守卫）。
+ *   ⚠️ 这一点是有来历的：`share.moderate` 那个能力就是这样在界面上被显示成
+ *   「管理身份组」的 —— 表里的兜底**看起来很正常**，所以没人发现。
+ */
+export function capabilityLabelKeys(cap: Capability): {
+  typeKey: string | null;
+  actionKey: string | null;
+} {
+  const [type = '', action = ''] = cap.split('.');
+  return {
+    typeKey: TYPE_KEYS[type] ?? null,
+    actionKey: CAP_OVERRIDES[cap] ?? ACTION_KEYS[action] ?? null,
+  };
+}
+
+/**
+ * ★ 撞名检查：哪些能力**该有自己的动作词条、却还在用兜底**。
+ *
+ * 规则：同一个动作名（比如 `moderate`）只要**有一个**能力在 `CAP_OVERRIDES` 里
+ * 有自己的条目，那么用同一个动作名的**每一个**能力都必须有自己的条目。
+ *
+ * ⚠️ 为什么必须是"成组"的：兜底 `ACTION_KEYS[action]` 是**按动作名**取的 ——
+ *    一个组里只要有人被消歧，就说明这个动作名在矩阵里**是有歧义的**，
+ *    此时还在靠兜底的那个能力会显示成**别人的权限名**，而那一行看起来完全正常。
+ *    `share.moderate` 就是这样显示成「管理身份组」的（2026-09-15）。
+ *
+ * ⚠️ 为什么不能改成"不同能力不许共用同一个动作词条"：`submit` / `review`
+ *    本来就是**同一个动作跨类型共用**的（「资源库 · 提交」「日历 · 提交」）——
+ *    那正是"两张表拼标签"的初衷。⇒ 判据只能是"这个动作名被消歧了没有"。
+ *
+ * @param caps      要检查的能力（默认就是权限矩阵；**参数是给探针用的**）
+ * @param overrides 消歧表（默认就是上面那张；同样是为了让自检能喂一份**假的**表 ——
+ *                  否则"这个检查能不能发现问题"只能靠人去读实现）
+ * @returns 没有被消歧的能力名（空数组 = 通过）
+ */
+export function capabilitiesWithInheritedActionLabel(
+  caps: readonly Capability[] = CAPABILITIES,
+  overrides: Readonly<Record<string, string>> = CAP_OVERRIDES,
+): Capability[] {
+  const byAction = new Map<string, Capability[]>();
+  for (const cap of caps) {
+    const action = cap.split('.')[1] ?? cap;
+    byAction.set(action, [...(byAction.get(action) ?? []), cap]);
+  }
+  const out: Capability[] = [];
+  for (const group of byAction.values()) {
+    // 这一组没有任何人被消歧 ⇒ 通用标签对全组都成立，不算撞名
+    if (!group.some((cap) => overrides[cap])) continue;
+    out.push(...group.filter((cap) => !overrides[cap]));
+  }
+  return out;
+}
+
 export function describeCapabilities(
   grouped: Record<string, Capability[]>,
   t: Translate,
@@ -169,12 +253,13 @@ export function describeCapabilities(
     label: TYPE_KEYS[type] ? t(TYPE_KEYS[type]) : type,
     actions: caps.map((cap) => {
       const action = cap.split('.')[1] ?? cap;
-      const key = CAP_OVERRIDES[cap] ?? ACTION_KEYS[action];
+      // ★ key 的来源与守卫完全同一处：`capabilityLabelKeys`。
+      const { actionKey } = capabilityLabelKeys(cap);
       return {
         capability: cap,
         // 兜底仍然是动作名本身（英文），而不是空字符串 —— 空白标签会让人
         // 以为界面坏了，而英文名至少能读懂是什么。
-        label: key ? t(key) : action,
+        label: actionKey ? t(actionKey) : action,
       };
     }),
   }));

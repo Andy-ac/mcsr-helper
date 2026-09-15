@@ -45,6 +45,14 @@ export const en: TranslationSchema = {
      */
     videos: 'Videos',
     live: 'Live',
+    /*
+     * ★ "Now sharing" -- deliberately NOT "Live sharing": `nav.live` is already
+     *   "Live", and two Live rows in one sidebar read as a duplicate section.
+     *   The two sections really are different jobs: Live is a slow, public list
+     *   of streamers maintained by editors; this one is what signed-in users put
+     *   up for a few minutes.
+     */
+    shares: 'Now sharing',
     profile: 'Profile',
     admin: 'Admin',
     submit: 'Submit',
@@ -93,6 +101,15 @@ export const en: TranslationSchema = {
       videos:
         'Bilibili / YouTube videos people posted — tutorials, montages, match recordings. Post it and it is visible; nothing to review.',
       live: 'A slow-moving list of MCSR streamers, maintained by the editors — a different job from the post-and-go section above.',
+      /*
+       * ⚠️ This entry is mandatory: the home page looks each row's description up
+       *    by the section's `block` name (`home.desc.<block>`), so a nav row
+       *    without it prints a raw key on the home page (`check:home` goes red).
+       *    It has to say the two things that make this section different —
+       *    short-lived, and behind a login.
+       */
+      shares:
+        'Room codes and world seeds people put up for a few minutes — they vanish on their own, and you have to log in to see inside.',
       seeds: 'Search world seeds, and see the ones people shared along with their times.',
       profile:
         'Your account: sign-in state, email verification, what you posted and what you saved.',
@@ -369,12 +386,30 @@ export const en: TranslationSchema = {
     // ⚠️ `content.*`'s "type" half is not a content type: it is a cross-cutting
     //    policy over resources / videos / events (② direct edit, owner hard delete).
     capTypeContent: 'Content',
+    /*
+     * ★ The type half of `share.moderate`.
+     * ⚠️ Missing it does not throw: `capabilities.ts` falls back to printing the
+     *    type name itself, so the account page would show the English word
+     *    `share` next to a column of translated labels. `check:roleguide` now
+     *    asserts every CAPABILITIES entry has both keys.
+     */
+    capTypeShare: 'Sharing',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
     capActionEditUnpublished: 'Edit unpublished entries',
     capActionFeature: 'Set featured / official',
     capActionModerateContent: 'Take content down or restore it',
+    /*
+     * ★ The action half of `share.moderate` — the **third** moderate label here.
+     * ⚠️⚠️ Without the `CAP_OVERRIDES` row in `capabilities.ts` this capability
+     *    silently inherits `capActionModerate` ("Manage roles"), i.e. the UI
+     *    shows a permission the person does not have. It looks like a wording
+     *    bug, which is exactly why nothing was catching it.
+     * ⚠️ Deliberately different from `capActionModerateContent`: a share can only
+     *    be taken down by someone else, never put back (spec ruling 11).
+     */
+    capActionModerateShare: "Take down someone else's share",
     capActionReview: 'Review',
     // ⚠️ user.moderate (account governance). Shares the action name with
     //    resource.moderate (content curation) — CAP_OVERRIDES in
@@ -412,6 +447,17 @@ export const en: TranslationSchema = {
     capDescSeedReview: 'Review ranked seed submissions',
     capDescUserModerate: 'Manage accounts and roles',
     capDescAuditRead: 'Read the audit log',
+    /*
+     * ★ The full description for `share.moderate` (the role guide renders it).
+     * ⚠️ The `**anyone**` pair is real emphasis: the render site is
+     *    `em(t(CAP_DESC[cap]))` in `RoleGuide.tsx`, and this key is registered in
+     *    `DYNAMIC_KEYS` of `services/api/src/i18n-keys.test.ts` because it has no
+     *    literal `t('…')` call site.
+     * ⚠️ It states both halves on purpose: taking a share down is one-way, so an
+     *    admin who expects to restore someone else's share would hit a 403.
+     */
+    capDescShareModerate:
+      'Take down **anyone**’s share that is on the board (but not put someone else’s back).',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors
@@ -2370,5 +2416,189 @@ export const en: TranslationSchema = {
     deleted: 'Deleted.',
     deleteConfirmYes: 'Delete for good',
     deleteConfirmNo: 'Keep it',
+  },
+  /**
+   * Live shares — a signed-in user puts a room code or a set of world seeds on a
+   * shared board for 5 / 10 / 15 / 20 minutes; it disappears by itself, and the
+   * author can take it down (and put it back) at any time.
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ One boundary here has to stay true forever (spec §1.1)
+   * ---------------------------------------------------------------------------
+   * This is the **first section on the site whose contents a guest cannot see**:
+   * both boards require a login (401 for guests) and none of it appears on any
+   * public surface. So every string that points at the content
+   * (`introLead` / `loginNeeded`) has to say "only signed-in users", rather than
+   * something like "you came too late" that sounds like a public board — the
+   * latter leaves a guest refreshing a page they can never see.
+   * ⚠️ The intro page `/shares` itself is **public** (guests issue no requests
+   *    there and it never auto-refreshes): its whole job is turning "walked into
+   *    a wall" into "read one sentence" (spec ruling 6).
+   *
+   * ---------------------------------------------------------------------------
+   * Nothing to do with `live.*`
+   * ---------------------------------------------------------------------------
+   * "Live" is an editor-maintained public list of streamers (slow, stable,
+   * public); this one is what users themselves put up for minutes (fast,
+   * short-lived, behind a login). That is why the English names differ on
+   * purpose: Live vs Now sharing, Ranked seeds vs World seeds.
+   *
+   * ⚠️ The two limits (40 units for a room note / 100 for a seed note) are
+   *    measured in **display width**, where one Han character counts as 2
+   *    (`textWidth()`, spec §3.2.1) — so `errNoteTooLong` has to say so, or a
+   *    user who typed 21 Han characters will think the limit is a lie.
+   */
+  shares: {
+    // ---- Intro page (`/shares`, public) ----
+    /*
+     * ⚠️ These two sentences are the **only** thing a guest gets to read, so the
+     *    first one has to carry both facts: the things here vanish by
+     *    themselves, and the contents need a login. With only the first, a guest
+     *    concludes they were too late instead of not signed in.
+     */
+    introLead:
+      'Anything posted here disappears on its own within minutes. Only signed-in users can see what is inside.',
+    introRoomsTitle: 'Private rooms',
+    introRoomsDesc: 'Share a room code so other people can join you.',
+    introSeedsTitle: 'World seeds',
+    introSeedsDesc: 'Share a set of world seeds: overworld, nether, end, RNG.',
+    /** `{{n}}` is the site-wide count (not "yours"); guests get the other string. */
+    introCount: '{{n}} on the board',
+    introGuestCount: 'Visible once you sign in',
+
+    // ---- Board pages (both kinds, real URLs, switchable tabs) ----
+    /*
+     * ⚠️ Not "Seeds": the sidebar's ranked-seed section is already "Ranked
+     *    seeds", and two Seeds rows would look like the same section twice.
+     */
+    tabRoom: 'Private rooms',
+    tabSeed: 'World seeds',
+    /** The boards are the part a guest cannot see, so each page needs a way back. */
+    backToIntro: '← What this section is',
+    loginNeeded:
+      'Sign in to see what people are sharing here — it is visible only between signed-in users.',
+    needVerify: 'You need to confirm your email before you can post anything.',
+    resendVerify: 'Send a new confirmation email',
+    verifySent: 'Confirmation email sent — go and check your inbox.',
+
+    // ---- "Your one entry" ----
+    mineNone: 'You are not sharing anything right now.',
+    mineHidden: 'You took this one down.',
+    mineCount: 'You are showing {{n}} / {{max}}',
+    mineActive: 'You are showing this one.',
+
+    // ---- Post form ----
+    formRoomCode: 'Room code',
+    /*
+     * ⚠️ This one and `errCodeShape` do **not** copy spec §8's backticks around
+     *    `-` and `_`: those backticks are the **document's markdown syntax** for
+     *    marking literal characters, and nothing in the UI renders markdown — so
+     *    copying them would put a pair of backticks on screen. The server-side
+     *    wording for the same rule reads the same way: "a room code can only use
+     *    letters, digits, - and _".
+     */
+    formRoomCodeHint: 'Letters, digits, - and _, 3–20 characters.',
+    /*
+     * ⚠️ The four buttons are worded differently **on purpose** (spec §7.3):
+     *    a second room post **replaces** ("Swap it"), a second seed post adds
+     *    ("Add another"). One shared string would let a room user believe they
+     *    now have two entries when the first one is already gone — and a
+     *    replaced entry cannot come back.
+     */
+    formOpenRoom: 'Post one',
+    formOpenRoomAgain: 'Swap it',
+    formOpenSeed: 'Post one',
+    formOpenSeedAgain: 'Add another',
+    formOverworld: 'Overworld seed',
+    formNether: 'Nether seed',
+    formEnd: 'End seed',
+    formRng: 'RNG seed',
+    formSeedOptional: 'Only the overworld seed is required — leave the rest blank.',
+    formNote: 'Note (optional)',
+    formNoteHint:
+      'One line saying what this run is. A room is just a code; this is the line people read to decide whether to join.',
+    formMinutes: 'Show it for',
+    minutes: '{{n}} minutes',
+    formSubmitRoom: 'Post to the board',
+    /*
+     * ⚠️ With something already on the board, the room submit button **must**
+     *    become this string (spec §7.3): the entry it replaces never comes back,
+     *    and the button is the only place that says so. Taking an entry down is
+     *    reversible and needs no confirmation; replacing is not.
+     */
+    formReplaceRoom: 'Post to the board (replaces the one you are showing)',
+    formSubmitSeed: 'Add to the board',
+    formSubmitting: 'Posting…',
+
+    // ---- The board ----
+    boardTitle: 'On the board',
+    boardEmpty: 'Nobody is sharing right now.',
+    boardYou: 'You',
+    boardBy: '{{name}}',
+    remainMinutes: '{{n}} minutes left',
+    /**
+     * ★ That a row vanishes **at the very second it expires** is the local
+     *   ticker's job, so with minute granularity "0 minutes left" never appears.
+     */
+    remainUnderOne: 'Less than a minute left',
+    /*
+     * ★ The copy button is for the **reader** (they paste someone else's room
+     *   code into the game), not just for the author — so every row has one, and
+     *   `copyFailed` has to be visible: `navigator.clipboard` rejects outside
+     *   HTTPS or without permission, and failing silently means the button might
+     *   as well not exist.
+     */
+    copy: 'Copy',
+    copied: 'Copied',
+    copyFailed: 'Could not copy — select it by hand.',
+    hide: 'Take down',
+    restore: 'Restore',
+    /*
+     * ★ This string contains `**expires**` — a real emphasis pair — so its
+     *   render site must go through `em()`, and the key is registered in
+     *   `services/api/src/i18n-keys.test.ts`. ⚠️ It has **no call site yet**
+     *   (`ShareMineBar` arrives with Task 5), hence `UNWIRED_KEYS`; once that
+     *   component exists the key moves into `EXPECTED_SITES`.
+     * ⚠️ The sentence has to state where the reversibility **ends**: taking it
+     *   down is undoable, expiring is not. "You can restore it" alone would make
+     *   people expect an expired entry to come back.
+     */
+    hideHint:
+      'Taking it down clears it off the board and you can restore it any time. Once it **expires**, you cannot.',
+    atLimitSeeds: 'You are showing {{max}} already — take some down before adding more.',
+    /*
+     * ⚠️ This refusal has to name the next step: restoring a room is refused
+     *   rather than silently displacing the entry currently up (spec §4.3 —
+     *   displacing is "something disappeared that you never pressed anything
+     *   for"), so it must say which one to take down first.
+     */
+    atLimitRestore:
+      'You are already showing another one — take that one down first, then restore this one.',
+    /*
+     * ⚠️ A failed refresh **keeps** the old list (spec §7.5 row 4), so this
+     *   string says "what you see is the old data" and carries the number that
+     *   makes it meaningful; `{{secs}}` is recomputed every second locally.
+     */
+    refreshFailed: 'The last refresh failed — what you see is {{secs}} seconds old.',
+    updatedAgo: 'Updated {{secs}} seconds ago',
+    loadFailed: 'Could not load the board.',
+    /** ⚠️ The board stops at 200 rows and **says so** instead of truncating quietly. */
+    truncated: 'Only part of the board is shown.',
+
+    // ---- Form validation (the client maps these; they are not server text) ----
+    errCodeShape: 'A room code can only use letters, digits, - and _.',
+    errCodeLength: 'A room code has to be 3–20 characters.',
+    errSeedRequired: 'The overworld seed is required.',
+    errSeedLength: 'A seed can be at most 32 characters.',
+    errSeedSpace: 'A seed cannot contain spaces.',
+    errNoteTooLong: 'That note is too long (at most {{max}} units; a wide character counts as 2).',
+
+    /**
+     * ★ Written into the **audit** `reason` when a moderator takes down someone
+     *   else's share (spec §6.3). It exists so that "who took it down" stays
+     *   readable later: the author's own takedown and a moderator's look
+     *   identical in the table, and only this phrase tells them apart.
+     */
+    moderateHideReason: '(taken down by a moderator)',
   },
 };

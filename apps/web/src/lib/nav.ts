@@ -46,6 +46,23 @@ export const NAV_SECTIONS = [
    */
   { to: '/videos', labelKey: 'nav.videos', block: 'videos', milestone: '' },
   { to: '/live', labelKey: 'nav.live', block: 'live', milestone: '' },
+  /*
+   * ★ 「实时分享」（2026-09-15）—— 夹在「直播」与「排位赛种子」之间：
+   *   紧挨着的都是"看现在正在发生什么"这一类栏目。
+   *
+   * ⚠️ `block` 这个短名同时连着**三样东西**，改它等于同时改三处：
+   *    · 侧栏小方块的 CSS（`.sidebar__block--shares`，styles.css）
+   *    · 首页那一句说明（`home.desc.shares` —— 少了首页会印裸 key，check:home 会红）
+   *    · 本栏目的词条命名空间（`shares.*`）
+   *
+   * ⚠️★ 这一行落地时 `/shares` 路由**还不存在**（介绍页与路由是后面的任务才建的），
+   *   所以 `check:home` 里那条"可点的栏目必须在 App.tsx 里有真路由"会**红**，
+   *   直到那条路由落地为止。⚠️ **这不需要在这一行上做手脚**（比如先挂一个
+   *   `milestone` 把它变成灰的、点不动）：那条断言守的正是"点进去是 404"，
+   *   而 `milestone` 那条路会留下一个**没有任何门禁会提醒摘掉**的灰栏目。
+   *   路由一落地它自己就绿了。
+   */
+  { to: '/shares', labelKey: 'nav.shares', block: 'shares', milestone: '' },
   { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: '' },
   // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
   // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。

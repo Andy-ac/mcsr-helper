@@ -46,9 +46,28 @@ const CAP_DESC: Record<string, string> = {
   'video.submit': 'auth.capDescVideoSubmit',
   'seed.submit': 'auth.capDescSeedSubmit',
   'seed.review': 'auth.capDescSeedReview',
+  /*
+   * ★ `share.moderate`（实时分享的治理）—— 2026-09-15。
+   * ⚠️ 这一行的缺与不缺**在页面上看起来一模一样**：渲染的是
+   *    `t(CAP_DESC[cap] ?? '') || action.label`，少一行只会退回到那个短标签
+   *    （而分享的短标签正是从别人那里继承来的「管理身份组」，见
+   *    `capabilities.ts` 的 `CAP_OVERRIDES`）。⇒ 这一条现在由
+   *    `apps/web/scripts/roleguide.tsx` 第 ⑦ 条守着。
+   */
+  'share.moderate': 'auth.capDescShareModerate',
   'user.moderate': 'auth.capDescUserModerate',
   'audit.read': 'auth.capDescAuditRead',
 };
+
+/**
+ * ★ 上面那张表**覆盖了哪些能力** —— 给渲染自检断言用
+ * （`apps/web/scripts/roleguide.tsx` 第 ⑥/⑦ 条）。
+ *
+ * ⚠️ 为什么要导出它、而不是让脚本把 `CAP_DESC` 再抄一份：抄一份的守卫会和这张表
+ *    一起漂移，而漂移的守卫是假守卫（同一件事在本文件上面那段注释里已经写过一次：
+ *    按字面量 grep key 的守卫看不到 `t(CAP_DESC[cap])` 这种拼出来的引用）。
+ */
+export const CAP_DESC_COVERED: ReadonlySet<string> = new Set(Object.keys(CAP_DESC));
 
 /** 等级规则 —— 这些**不是能力**，矩阵里没有，只能写下来。 */
 const RANK_NOTES: Record<UserRole, string> = {
