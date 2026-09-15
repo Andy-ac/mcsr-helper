@@ -71,7 +71,7 @@
 		#    ★ 判据：**加了任何新的嵌入 host，都必须同时改这一行**，
 		#      并且**在真实浏览器里点一次**验证（只测那个站点自己的响应头是不够的 ——
 		#      它的响应头没有 frame 限制，不代表**我们这边**允许嵌它）。
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com https://www.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.twitch.tv https://player.bilibili.com https://www.bilibili.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 
 		-Server
 	}
