@@ -93,12 +93,24 @@
 ### 2.3 ★★ 时间：带筛选的查询要 **3.2–4.1 秒**
 
 ```
-不带宽窄筛选（overworld 单选、无 variations）  123 / 247 / 331 / 339 / 411 / 606 ms
-带 variations / without                        3185 / 3218 / 3271 / 3345 / 3523 / 4115 ms
+无参数基线（唯一那一次无参数查询）              606 ms
+带 `overworld=` 单选（无 variations）           123 / 247 / 331 / 339 / 411 ms
+带 variations / without                         3185 / 3218 / 3271 / 3345 / 3523 / 4115 ms
                                                （completion 只有一次预热期读数 1022ms —— 有意不归类）
 同一查询重复三次（静默 20 秒后，快慢交替）      快: 411 / 339 / 331ms   慢: 3271 / 3185 / 3218ms
-连打 24 条时观察到的峰值                        5347 / 6973 / 7586 / 7811 ms
+连打 24 条时观察到的峰值                        5347 / 6973 / 7589 / 7811 ms
 ```
+
+⚠️ **这一节的两组读数来自两份探针输出，逐行都能对上**（2026-09-16 订正时补的锚点）：
+`.cache/seeds-probe.out.txt` —— `606ms` 是 ①无参数、`247ms` 是 ㉑沙漠神殿、
+峰值那四个是 ⑧/⑫/⑭/⑮；`.cache/seeds-timing.out.txt` —— `123ms` 是 快②buried_treasure、
+`331 / 339 / 411` 与 `3271 / 3185 / 3218` 是 快①/慢① 的三轮，另三个慢读数
+（3345 / 3523 / 4115）在 慢②/慢③/慢④。
+
+⚠️ **原先第一行的括注写错了**：它把 `606ms` 也归进"`overworld=` 单选"，而那是
+**无参数基线**（探针 ①）。峰值那一格原写 **7586**，实测是 **7589**（同文件第 28 行
+`200 7589ms ⑭要塞生物群系`）—— 这个错数被抄进了 `docs/seeds-picker-plan.md` 与
+`services/api/src/seeds/upstream.ts:71` 三处，三处已一起订正（Task 8 Step 2b）。
 
 ⇒ **是查询本身的性质，不是探针的突发流量**（同一查询三次重复，快的一直 <0.5s，慢的一直 3.2s）。
 ⇒ 而 `services/api/src/seeds/upstream.ts` 的 `DEFAULT_TIMEOUT_MS = 5000`，
@@ -301,13 +313,35 @@ seedsPage.variation.stables.single1  = 'bastion:single:1'   ← 同一个标识�
 这一条有实据：实测 ⑩ 与 ⑪ 的同词条在两种类型下命中数不同（286125 / 320913），
 说明上游确实是两种东西。
 
-### 5.3 其余按**标识**分键
+### 5.3 主世界与 bastion 的变种一律**按上下文 + 标识**分键
 
-`chest:structure:diamond` 同时出现在 village / desert_temple / shipwreck，共用一个键。
-⚠️ 已知代价（写在这里免得下次有人再发现一遍）：如果用户之后想让它在三个上下文下**翻译成不同的词**，
-必须把那个键**拆开**；拆的时候改的是共享表里那一行的 `labelKey`，加一行词条即可。
+⚠️ **本节在 2026-09-16 被订正过**：原文写的是"`chest:structure:diamond` 同时出现在
+village / desert_temple / shipwreck，**共用一个键**"，而 §5.1 的规则、§5.4 的清单、
+以及"47 条键"那个总数说的都是**每格一个键**。**两份自相矛盾**，而 Task 3 的实现者
+照着 §5.1/§5.4 做了并把它写进了断言，还把这个矛盾报了上来。
 
-### 5.4 完整的键清单（47 条变种 + 10 条群系 = 见下）
+**裁决：按 §5.1/§5.4 的走 —— 一律按上下文分键。** 理由：
+
+- 规则**没有例外**好记也好查：`seedsPage.variation.<上下文>.<短名>`。
+  留一个"这个键是共用的"特例，下一个人就必须先判断"这个标识算不算跨上下文的那一类"。
+- 用户接下来要**手工**翻这 47 条。真到某天想让沉船里的钻石箱和村庄里的说法不同时，
+  分键的写法**不用动表**；共用键的写法要先改表再补词条。
+- 群系那两行本来就是分开的（`biome:bastion:*` 与 `biome:fortress:*` 是两串不同的标识），
+  所以"按上下文分键"在主世界/bastion/群系三类上是同一个规则。
+
+**代价（写在明面上）**：今天 `chest:structure:diamond` 会在
+`village.diamond` / `desertTemple.diamond` / `shipwreck.diamond` **三个键里各存一份同样的英文**。
+用户翻译时如果三处说法相同，他要改三处；**只改了一处**的表现是同一个意思在三种结构下
+两种语言混着显示。⇒ 真要合并时，改法是"把三行的 `labelKey` 指向同一个键"，
+改动只在表里、词条不用动。
+
+### 5.4 完整的键清单（37 条变种 + 10 条群系 = **47 条键**）
+
+⚠️ **标题在 2026-09-16 订正过**：原文写的是"47 条变种 + 10 条群系"，把**总数**
+当成了变种数 —— 照它数下去会得到 57，而"键数断言"将来是拿这个数去对的。
+正文列的是：主世界 19 条（村庄 7 + 沙漠神殿 2 + 沉船 5 + 废弃传送门 5）
+＋ bastion 18 条（bridge 4 + housing 3 + stables 11）＝ **37 条变种**，
+再加 bastion / fortress 两份群系各 5 条 ＝ **47 条键**。
 
 ```
 主世界（按上下文分键；buried_treasure 没有变种，所以没有它的键）
@@ -360,22 +394,51 @@ fortress 生物群系 = seedsPage.variation.fortressBiome.{同上五个}
 从上到下，**每排按钮横向排布**：
 
 ```
-主世界结构        [村庄] [沙漠神殿] [沉船] [废弃传送门] [埋藏的宝藏]        ← 单选，可空
-  └ 选中村庄时，下面出现：
-    结构变种      [biome:structure:desert] [..:plains] [..:savanna] [..:snowy_tundra] [..:taiga]
-                  [chest:structure:diamond] [chest:structure:obsidian]      ← 三态；前五个互斥
+主世界结构                                          ← 组名**单独一行，在它那一排按钮上面**
+[村庄] [沙漠神殿] [沉船] [废弃传送门] [埋藏的宝藏]      ← 单选，可空
+结构变种                                            ← 选中村庄时出现；与上一排**同级，不缩进**
+[biome:structure:desert] [..:plains] [..:savanna] [..:snowy_tundra] [..:taiga]
+[chest:structure:diamond] [chest:structure:obsidian]  ← 三态；前五个互斥
 
-下界堡垒遗迹 · 生物群系   [bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空
-下界堡垒遗迹 · 类型       [桥] [藏宝室] [居住区] [疣猪兽棚]               ← 单选，可空
-  └ 选中桥时，下面出现：
-    堡垒变种      [bastion:single:1] [bastion:single:2] [bastion:triple:1] [bastion:triple:2]   ← 三态，不互斥
+下界堡垒遗迹 · 生物群系
+[bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空
+下界堡垒遗迹 · 类型
+[桥] [藏宝室] [居住区] [疣猪兽棚]                     ← 单选，可空
+堡垒变种                                            ← 选中桥时出现；同样不缩进
+[bastion:single:1] [bastion:single:2] [bastion:triple:1] [bastion:triple:2]   ← 三态，不互斥
 
-要塞 · 生物群系   [bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空
+要塞 · 生物群系
+[bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空
 
 完赛时间上限      [分:秒，例如 2:35]      ← **保留原样**
-                                    [抽一条]   ← 既有按钮，文案沿用
-三态图例          灰=不选 · 绿=要求（variations） · 红=排除（without）
+                                    [抽一条]   ← 既有按钮，文案沿用；它属于**页面**，但渲染在
+                                                 同一张卡里（`.seed__pickercard`，见下）
+三态图例          点一下＝要求（绿）· 点两下＝排除（红）· 点三下＝取消
+                 ⚠️ 这一句的**权威文本是计划里 Task 4 的新文案表**
+                 （`seedsPage.pickLegend` / `pickLegendNote`），本节的草稿
+                 （原先写的 `灰=不选 · 绿=要求（variations） · 红=排除（without）`）
+                 **不是**要上线的那句话：`variations` / `without` 是给开发者看的参数名，
+                 用户读不懂，而这一句要说的是**怎么点**。
 ```
+
+⚠️ **上面这张图在 2026-09-16 按实际做出来的界面订正过两处**（Task 5 的实现者发现、
+用户裁定"接受偏差、改文档"，Task 8 回填）：
+
+1. **组名在按钮上面一行，不在左边一列。** 原来的图把组名画成左栏
+   （`主世界结构        [村庄] …`）。做不出来不是排版偏好问题：每一排是一个
+   `<fieldset>` + `<legend>`，而 **`<legend>` 不能作为 flex 子项参与排版**
+   （它渲染在 fieldset 的边框区）。这个结构本仓**已经裁过三次**
+   （`CalendarFilters` / `CalendarList` / `MarksPanel`），理由逐字记在
+   `apps/web/src/styles.css` 的 `.grid-filters__row` 那一段与 `SeedPicker.tsx`
+   的 `TopRow` 上：**语义优先于对齐方式**。
+   用户的要求是"横向一排按钮选择"，而 `.seed__rowbtns` 确实是一行横向 flex ⇒ 不算破坏。
+2. **变种那一排不缩进**，它与拥有它的那一排是**同级的 `<fieldset>`**
+   （DOM 里紧跟在后面，没有包裹层、没有 `padding-left`）。
+   原来图里那个 `└` 的从属关系在代码里是**渲染条件**（`overworldRow.variations.length > 0`）
+   与**上下文**（`overworldContext(...)`），不是缩进。
+
+⇒ 下一轮谁再改这一页，请拿这份图与 `SeedPicker.tsx` 对一眼：**图现在描述的就是做出来的那一个**，
+不再是一个从未被建造的版本（`docs/progress.md §二十一` 记了这次订正的经过）。
 
 - **顶层的四个单选行**用**已有的中文标签**（`seedsPage.structure.VILLAGE` 等已经是
   村庄 / 沙漠神殿 / 沉船 / 废弃传送门 / 埋藏的宝藏 / 桥 / 藏宝室 / 居住区 / 疣猪兽棚）。

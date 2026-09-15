@@ -219,8 +219,8 @@ const daysSchema = z
  * ⚠️ 用正则而不是 `Number(raw)` 一把梭：`Number('')` 是 0、`Number(' ')` 也是 0、
  *    `Number('7.9')` 是 7.9 —— 三个都不该被当成"填好了一个天数"。
  *    （手法照 `packages/shared/src/seedPicker.ts` 的 `parseCompletionInput` ——
- *      那个函数原本住在 `apps/web/src/components/SeedFilters.tsx`，Task 6 删掉那个
- *      面板时把它搬到了 shared，因为它才是"同一类坑"的正典写法。）
+ *      那个函数的**共享副本是 Task 3 建的**，Task 6 删掉的只是
+ *      `apps/web/src/components/SeedFilters.tsx` 里那份旧的；它才是"同一类坑"的正典写法。）
  */
 export function parseShareDays(raw: string): number | null {
   const value = raw.trim();

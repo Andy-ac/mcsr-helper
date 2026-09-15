@@ -4295,93 +4295,6 @@ textarea.mcsr-field__input {
   color: var(--fg-muted);
 }
 
-/* ---- 筛选面板 ---- */
-
-.seed__filters {
-  padding: 16px 18px;
-  margin: 12px 0 18px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-}
-
-.seed__variations {
-  margin-top: 8px;
-}
-.seed__variationshead {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.seed__count {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  color: var(--diamond);
-}
-
-/* 分组头。整行可点，因为它同时是"展开"和"这个分组里选了几条"的显示位。 */
-.seed__group {
-  border-top: 1px solid var(--line);
-}
-.seed__group:last-of-type {
-  border-bottom: 1px solid var(--line);
-}
-.seed__grouphead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 2px;
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  color: var(--fg-muted);
-  text-align: left;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-.seed__grouphead:hover {
-  color: var(--fg);
-}
-/* 展开标记固定宽度：不固定的话，"+"/"-" 宽度不同会让分组名左右抖动 */
-.seed__grouptoggle {
-  display: inline-block;
-  width: 12px;
-  color: var(--fg-faint);
-}
-
-.seed__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 2px 0 12px 20px;
-}
-
-/* 词条 chip。**按原文显示**（命名空间 id），所以用等宽字体：
-   比例字体下 `biome:structure:snowy_tundra` 里的下划线和冒号会糊在一起，
-   而用户要拿它和自己心里想的那一条逐字对比。 */
-.seed__chip {
-  padding: 4px 9px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--fg-muted);
-  background: var(--bg-deep);
-  border: 1px solid var(--line);
-  border-radius: var(--r-xs);
-  cursor: pointer;
-  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
-}
-.seed__chip:hover {
-  color: var(--fg);
-  border-color: var(--line-strong);
-}
-.seed__chip.is-on {
-  color: var(--grass-ink);
-  background: var(--grass);
-  border-color: transparent;
-}
-
 /* ---- 动作行 ---- */
 
 .seed__actions {
@@ -4587,16 +4500,14 @@ textarea.mcsr-field__input {
    排位赛种子的筛选面板（spec §6.2）：两个标签页 + 四排单选 + 三态按钮排
    ==================================================================
 
-   ⚠️ 旧面板那 9 个类名（.seed__filters / .seed__variations / .seed__variationshead /
-      .seed__count / .seed__group / .seed__grouphead / .seed__grouptoggle /
-      .seed__chips / .seed__chip）的规则**还留在上面**，而它们唯一的渲染点
-      （components/SeedFilters.tsx）已经随 Task 6 删掉了 —— 也就是说这套规则
-      现在是**死的**。Task 6 不删它们，理由两条，写在这里免得下一个人重新推一遍：
-      ① 派给 Task 6 的清理清单里只有"组件 + `groupVariations` + 死词条"，CSS 不在其中；
-      ② 删规则这件事**没有任何门禁兜得住**（`i18n-keys.test.ts` 那几条与 Task 7 的
-      类名守卫都只管"渲染了却没有规则"，反方向不管），所以它值得单独一趟、单独看一遍。
-      ⇒ 下一次有人碰这份样式表时把这一节一起收掉即可（那时 `git grep` 那九个类名
-      应当零命中）。
+   ⚠️ 旧面板那 9 个类名（`.seed__filters` / `.seed__variations` / `.seed__variationshead` /
+      `.seed__count` / `.seed__group` / `.seed__grouphead` / `.seed__grouptoggle` /
+      `.seed__chips` / `.seed__chip`）的规则**已经在 Task 8（2026-09-16）收掉了** ——
+      它们唯一的渲染点（`components/SeedFilters.tsx`）随 Task 6 删除之后，
+      这套规则就一直是**死的**（`git grep` 那九个类名：除本节这段说明之外零命中）。
+      Task 6 没删它们、Task 8 单独跑了一趟，理由只有一条：
+      **没有任何门禁能发现死 CSS** —— `i18n-keys.test.ts` 那几条与 Task 7 的类名守卫
+      都只管"渲染了却没有规则"这个**反方向**。⇒ 以后删组件时，CSS 要单独记一笔。
 
    ⚠️ 三态（灰 / 绿 / 红）**只靠颜色**表达，所以颜色在这里是功能而不是装饰：
       · 绿 = 要求（进 variations）、红 = 排除（进 without）、灰 = 没点过。
@@ -4694,10 +4605,16 @@ textarea.mcsr-field__input {
 /* ⚠️ 卡片里的提示文字用 --fg-muted，不是全局的 --fg-faint。
    实测：`--fg-faint` 在浅色主题下只有 **3.23:1**（深色 3.59:1），低于 AA 的 4.5:1；
    `--fg-muted` 是 **6.54:1**（同一块里的 .seed__rowlabel 用的就是它）。
-   这一条**只**作用于面板卡片内部 —— 站里别处的提示照旧，那是另一笔账。
-   覆盖的是两句：完成时间那格的 hint，以及面板最下面那句「要等 3–4 秒」
-   （后者尤其不能淡：它是唯一一句说明"慢是正常的"的话）。 */
-.seed__picker .mcsr-field__hint {
+   ⚠️ 选择器是 **`.seed__pickercard`（整张卡）**，不是 `.seed__picker`（面板那一半）：
+      Task 5 那一版只盖住了面板内部，而卡的下半截 `.seed__drawrow` 里有两句
+      **同族的**提示完全没被覆盖 —— 其中 `pickHint`（「选好之后点下面的按钮抽一条」，
+      即告诉用户去点哪颗按钮的那一句）与 `filterNote` 都还是 3.23:1。
+      卡片 = 面板 + 抽数行（Task 6 的 `.seed__pickercard`），而这三句都住在这张卡里，
+      所以判据按**卡**划，不按面板划。
+   ⇒ 覆盖的是四句：完成时间那格的 hint、`pickVariations` 那一排下面的「要等 3–4 秒」、
+       `pickHint`、`filterNote`（最后两句尤其不能淡）。
+   ⚠️ 只作用于这张卡内部 —— 站里别处的提示照旧，那是另一笔账。 */
+.seed__pickercard .mcsr-field__hint {
   color: var(--fg-muted);
 }
 
@@ -4733,8 +4650,8 @@ textarea.mcsr-field__input {
 }
 /* 变种那一排的按钮用**等宽字体**：按钮上是上游的标识原文
    （`biome:structure:snowy_tundra`），而用户是拿它和自己心里那条**逐字符**比对的
-   —— 比例字体下冒号与下划线会糊在一起。旧面板对同一批标识就是这么做的
-   （见上面 .seed__chip 的说明），这一轮照旧。
+   —— 比例字体下冒号与下划线会糊在一起。旧面板对同一批标识用的也是等宽
+   （那条规则已随 `SeedFilters.tsx` 一起删掉，理由不变），这一轮照旧。
    ⚠️ 只给变种排、**不**给顶部那四排：那些按钮上是中文词（村庄 / 桥 / …），
       中文没有"等宽更容易比对"这回事。 */
 .seed__rowbtns--variations .seed__pickbtn {
@@ -4794,7 +4711,8 @@ textarea.mcsr-field__input {
    ⚠️ 这里**不切字体**（原来写的是 --font-mono）：本仓那条规矩是"等宽只给代码块"，
       而它所在的那颗按钮**自己**已经是等宽了（.seed__rowbtns--variations），
       切一次是多余的、还会与那条规矩相冲。
-   ⚠️ 固定 `width: 12px` 照 `.seed__grouptoggle` 的既有做法：`+` 与 `-` 宽度不同，
+   ⚠️ 固定 `width: 12px` 照旧面板那个展开标记的写法（`inline-block; width: 12px`；
+      那条规则已随 `SeedFilters.tsx` 一同删除，形状与理由不变）：`+` 与 `-` 宽度不同，
       不固定的话每点一下按钮上的字会左右抖一下，而"抖一下"比颜色变化还显眼。 */
 .seed__pickmark {
   display: inline-block;

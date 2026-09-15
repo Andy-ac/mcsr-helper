@@ -2221,38 +2221,7 @@ export const en: TranslationSchema = {
     rngWhy:
       'It would filter for the random-number things (zero-cycle towers, before/after dragon and so on), and upstream has no endpoint for that yet.',
 
-    // ---- Group and structure names ----
-    /**
-     * ⚠️ This group is now **dead** (recorded by Task 6, left in place on purpose).
-     *
-     * It used to be a **lookup table**, not a list of the legal groups: the real list
-     * came from `groupVariations()` grouping the entries we actually had, so an
-     * upstream addition showed up on its own — merely without a translated name, and
-     * falling back to the raw group id.
-     *
-     * ⇒ That statement **no longer holds** (both halves changed):
-     *   1) the new panel's button set comes from the upstream documentation table
-     *      (`packages/shared/src/seedPicker.ts`), one button per concrete variation,
-     *      with **no "group" layer at all**;
-     *   2) `groupVariations()` itself is gone with that whole "learn from what we see"
-     *      machinery (see shared/seed.ts).
-     *    So these five entries have no consumer left — their only one was
-     *    `GROUP_LABEL_KEYS` inside the deleted SeedFilters.tsx.
-     *
-     * ⚠️ Why they stay: the dead-entry audit Task 6 was handed **does not name** these
-     *    five, and a dead key renders nothing (its symptom is "never appears", not
-     *    "prints a bare key") — the cost of deleting one wrongly and the cost of
-     *    keeping it are not symmetric, so the call is "leave it and record it".
-     *    To collect them later: delete these five plus this whole comment; git grep
-     *    should come back empty.
-     */
-    group: {
-      biome: 'Biome',
-      chest: 'Chest loot',
-      type: 'Structure shape',
-      bastion: 'Bastion',
-      end_tower: 'End tower',
-    },
+    // ---- Structure names ----
     /**
      * Structure names — the values are **upper-case** (both the owner's own database
      * and upstream's `seedinfo` use upper case; only the outbound filter parameters
