@@ -762,7 +762,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | 周数显示 | `displayWeekNo(-1) = 0`，`≥1` 一一对应；**显示用响应里的 `data.id`** |
 | 翻页 | `prevWeekId(-1) = null`、`prevWeekId(1) = -1`、`nextWeekId(-1, latest) = 1`、`nextWeekId(latest, latest) = null`；**永不产出 0** |
 | 直播嵌入白名单 | `twitch` / `youtube` / `bilibili`（CSP 允许的三个）；其余给外链；**点击才加载** |
-| 兜底码 | 404 `not_found`（周不存在）、400 `invalid_input`、429 `rate_limited`、503 `ranked_busy`、503 `upstream_unavailable`、502 `upstream_bad_response` |
+| 兜底码 | **我们那一个端点**：429 `rate_limited` / 503 `ranked_busy` / 503 `upstream_unavailable` / 502 `upstream_bad_response`。**浏览器直连那三处不走拒绝码**：`RankedDirectError` 的四种原因（`network` / `http` / `not_found` / `bad_response`）由 `lib/rankedErrors.ts` 映射成界面文案（"这一周不存在"那一档来自上游的 400） |
 | 时间单位 | 上游 `Date` = **秒**（赛季起止、心跳、周赛 endsAt）；`Time` = **毫秒**（对局时间、周赛成绩） |
 | CSP | `connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com`（**只改这一处**）；`frame-src` 不动 |
 | 渲染自检 | `apps/web/scripts/rankedrender.tsx` → `check:ranked`，进 `check:all` |
