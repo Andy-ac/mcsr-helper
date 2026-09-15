@@ -27,7 +27,7 @@ export const en: TranslationSchema = {
     expand: 'Expand',
     resources: 'Resources',
     calendar: 'Calendar',
-    seeds: 'Seeds',
+    seeds: 'Ranked seeds',
     /*
      * ⚠️ This key points at the `/videos` section, whose name is "Videos".
      * The key keeps the name `videos` because the route is still `/videos`;
@@ -321,7 +321,7 @@ export const en: TranslationSchema = {
     capTypeCalendar: 'Calendar',
     capTypeVideo: 'Videos',
     capTypeLive: 'Live list',
-    capTypeSeed: 'Seeds',
+    capTypeSeed: 'Ranked seeds',
     capTypeUser: 'Account management',
     capTypeAudit: 'Audit log',
     // ⚠️ `content.*`'s "type" half is not a content type: it is a cross-cutting
@@ -367,7 +367,7 @@ export const en: TranslationSchema = {
     capDescCalendarReview: 'Review calendar content',
     capDescVideoSubmit: 'Submit video links',
     capDescSeedSubmit: 'Share world seeds',
-    capDescSeedReview: 'Review seed submissions',
+    capDescSeedReview: 'Review ranked seed submissions',
     capDescUserModerate: 'Manage accounts and roles',
     capDescAuditRead: 'Read the audit log',
     logoutAction: 'Sign out',
@@ -410,7 +410,7 @@ export const en: TranslationSchema = {
   },
   download: {
     title: 'Desktop app',
-    desc: 'The resource library, calendar and seed sharing in one window you can leave open. Windows 10 / 11, 64-bit.',
+    desc: 'The resource library, calendar and ranked seeds in one window you can leave open. Windows 10 / 11, 64-bit.',
     action: 'Download',
     smartScreenSummary: 'Windows says "Unknown publisher" — what now?',
     smartScreenBody:

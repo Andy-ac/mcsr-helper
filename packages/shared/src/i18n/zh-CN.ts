@@ -27,7 +27,7 @@ export const zhCN = {
     expand: '展开',
     resources: '资源库',
     calendar: '日历',
-    seeds: '种子分享',
+    seeds: '排位赛种子',
     /*
      * ⚠️ 这个 key 指的是 `/videos` 那个板块，名字是「视频」。
      *    保留 `videos` 这个名字是因为路径还是 `/videos`；
@@ -81,15 +81,15 @@ export const zhCN = {
      *    这里只有**每个栏目是干什么的**一句话。名字写两份的后果是改一处、
      *    另一处变成旧名字，而本仓为这件事刚踩过一次（「娱乐视频」/「视频」）。
      */
-    sectionsTitle: '这个站里有什么',
-    sectionsHint: '左边那几栏就是全部，点名字进去；下面一句话说明每栏是干什么的。',
+    sectionsTitle: '你能在这里找到什么',
+    sectionsHint: '详见左边的栏目，下面简要说明每一栏的内容',
     desc: {
-      resources: '社区整理的网站、工具、教学视频 —— 都能点开就用，按类型和标签筛。',
-      calendar: '赛事、社区活动、排位赛季的时间表。能按标签、专业程度、参与范围和门槛筛。',
-      videos: '大家贴的 B站 / YouTube 视频（教程、集锦、比赛录像）。贴了就可见，不审核。',
-      live: '一份编辑维护的 MCSR 主播名单，变动很慢 —— 和上面那个"随手贴"的板块分工不同。',
-      seeds: '搜世界种子，看别人分享的种子和成绩。',
-      profile: '你的账号：登录状态、邮箱验证、你贴过的东西和收藏。',
+      resources: '社区整理的网站、工具、教学视频 —— 可以按类型和标签筛选',
+      calendar: '赛事、社区活动、排位赛季的时间表 —— 可以按标签、专业程度、参与范围和参赛门槛筛选',
+      videos: '大家自己随手贴的 B站 / YouTube 视频',
+      live: '一份编辑维护的 MCSR 主播的名单',
+      seeds: '定向筛选 MCSR Ranked 种子',
+      profile: '你的账号：登录状态、邮箱验证、你贴过的东西和收藏夹',
     },
 
     /*
@@ -106,24 +106,24 @@ export const zhCN = {
      *      一个手动重试就够了，而自动重试会让"连不上"这件事被悄悄抹掉。
      */
     statusTitle: '连通性',
-    statusHint: '右边这一列是**当着你的面**测出来的，不是写死的状态。',
+    statusHint: '以下为**现测**的服务器连接情况',
     statusWeb: '网页',
     statusApi: '接口',
     statusOk: '正常',
     statusFail: '连不上',
     statusChecking: '检查中…',
     /** 「网页」那一行的数值：首屏耗时。`{{ms}}` 是毫秒。 */
-    webLoaded: '首屏 {{ms}} ms',
+    webLoaded: '延迟 {{ms}} ms',
     /**
      * ⚠️ 那句"能读到这行字就说明页面是好的"要写出来 —— 否则用户会以为
      *    "网页：正常"是服务端告诉我们的，而它其实只是这一页已经渲染了。
      */
-    webNote: '能读到这一行，就说明页面本身已经加载出来了。',
+    webNote: '网页连接结果',
     /** 「接口」那一行的数值：接口版本 + 这次请求的往返毫秒。 */
     apiVersion: '{{version}}',
-    apiRoundTrip: '往返 {{ms}} ms',
+    apiRoundTrip: '延迟 {{ms}} ms',
     apiEndpoint: 'GET /api/health',
-    apiNote: '这一次是浏览器刚刚真的请求了后端。',
+    apiNote: '种子数据库的 API',
   },
   status: {
     draft: '草稿',
@@ -334,7 +334,7 @@ export const zhCN = {
     capTypeCalendar: '日历',
     capTypeVideo: '视频',
     capTypeLive: '直播清单',
-    capTypeSeed: '种子分享',
+    capTypeSeed: '排位赛种子',
     capTypeUser: '账号管理',
     capTypeAudit: '审计日志',
     /**
@@ -379,7 +379,7 @@ export const zhCN = {
     capDescCalendarReview: '审核日历内容',
     capDescVideoSubmit: '提交视频链接',
     capDescSeedSubmit: '分享世界种子',
-    capDescSeedReview: '审核种子分享',
+    capDescSeedReview: '审核排位赛种子',
     capDescUserModerate: '管理账号与角色',
     capDescAuditRead: '查看审计日志',
     logoutAction: '退出登录',
@@ -444,7 +444,7 @@ export const zhCN = {
    */
   download: {
     title: '桌面客户端',
-    desc: '把资源库、日历和种子分享装进一个窗口，可以一直开着。Windows 10 / 11，64 位。',
+    desc: '把资源库、日历和排位赛种子装进一个窗口，可以一直开着。Windows 10 / 11，64 位。',
     action: '下载',
     smartScreenSummary: '安装时 Windows 提示「未知发布者」怎么办？',
     smartScreenBody:
@@ -1926,9 +1926,8 @@ export const zhCN = {
      * 它在撒谎（某个频道明明没开播，我们却没有任何反应）。
      * 说清"记的是频道"，那句话就永远是真的。
      */
-    recordsChannels: '这里记录的是 MCSR 相关的**直播频道**，暂时没有检测直播状态的功能。',
-    relationToVideos:
-      '和「视频」板块的分工：「视频」板块是大家随手贴的录像，这边是一份基本固定的直播列表。',
+    recordsChannels: '这里记录的是 MCSR 相关的**直播频道**。',
+    relationToVideos: '「视频」板块是大家随手贴的视频，这边是一份基本固定的直播列表。',
 
     gotoChannel: '去原频道看',
 
