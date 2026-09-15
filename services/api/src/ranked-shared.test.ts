@@ -23,7 +23,12 @@ const {
   RANKED_FETCH_HEADERS,
 } = await import('@mcsr/shared/ranked');
 
-/** 四个场次，覆盖：正常 / timeline 为 null / 一人未定级 / 没有直播 / 认不出的平台。 */
+/**
+ * `GET /live` 的五场，覆盖：正常 / timeline 为 null / 一人未定级 / 没有直播 / 认不出的平台，
+ * 外加 spec §11.2 点名要的第五场 —— **平均 elo 最高，但其中一人 `null`**。
+ * ⚠️ 第五场是**排序判据**，不是装饰：把 `null` 当 0 算的实现会让它的平均掉到 1250，
+ *    于是**顺序**变了（不再排第一），而不只是某一个数字不对。
+ */
 const LIVE_FIXTURE = {
   status: 'success',
   data: {
@@ -114,6 +119,28 @@ const LIVE_FIXTURE = {
         ],
         data: { ggg: { liveUrl: null, timeline: null }, hhh: { liveUrl: null, timeline: null } },
       },
+      {
+        /*
+         * ★★ 第五场（spec §11.2 明写："夹具含 `avgElo` 最高但一人 null"）：
+         *    一人 2500、一人未定级 ⇒ 平均 **2500**（只对非 null 的值取平均）。
+         *    ⚠️ 它是**全夹具平均最高**的那一场，所以"把 null 当 0 算"的实现会把它算成 1250，
+         *       直接掉到 1657 后面 ⇒ **排序结果变了**。这正是这一场存在的理由：
+         *       否则"null 当 0"只会让某一格数字不对（而排序看起来完全正常），没有断言钉得住它。
+         */
+        currentTime: 9_000,
+        players: [
+          { uuid: 'iii', nickname: 'Peak', roleType: 1, eloRate: 2500, eloRank: 1, country: 'us' },
+          {
+            uuid: 'jjj',
+            nickname: 'Qualifier',
+            roleType: 0,
+            eloRate: null,
+            eloRank: null,
+            country: null,
+          },
+        ],
+        data: { iii: { liveUrl: null, timeline: null }, jjj: { liveUrl: null, timeline: null } },
+      },
     ],
   },
 };
@@ -144,7 +171,7 @@ describe('parseLive：宽容解析 + 派生', () => {
     const d = parseLive(LIVE_FIXTURE);
     assert.ok(d);
     assert.equal(d.players, 1257);
-    assert.equal(d.matches.length, 4);
+    assert.equal(d.matches.length, 5);
   });
 
   it('★ 两人 elo 的平均：一人 null 时用另一个人的值；两人都 null 时是 null', () => {
@@ -152,6 +179,7 @@ describe('parseLive：宽容解析 + 派生', () => {
     assert.ok(d);
     assert.equal(d.matches[1]?.avgElo, 2000, '一人 null ⇒ 取另一个人的');
     assert.equal(d.matches[3]?.avgElo, null, '两人都 null ⇒ null');
+    assert.equal(d.matches[4]?.avgElo, 2500, '一人 2500、一人 null ⇒ 2500（不是 1250）');
   });
 
   it('★ 玩家顺序固定为 elo 高的在左（null 排后），而不是照上游数组顺序', () => {
@@ -211,15 +239,65 @@ describe('parseLive：宽容解析 + 派生', () => {
   });
 });
 
+describe('RankedLiveMatch.key：卡片的身份（spec §4.3 / §6.3）', () => {
+  it('★ 两个 uuid **排序后**拼起来 —— 与玩家的左右顺序无关', () => {
+    // spec §4.3：上游没有 match id ⇒ 卡片的 key 只能是"两个 uuid 排序后拼起来"。
+    assert.equal(parseLive(LIVE_FIXTURE)?.matches[0]?.key, 'aaa|bbb');
+    /*
+     * ⚠️ 第二行才是**真正钉住"排序"**的那一条：match[1] 的两人是"ccc 未定级 + ddd 2000"，
+     *    而左右顺序被固定成"elo 高的在左" ⇒ 解析后**左边是 ddd**。
+     *    于是"按左右顺序拼 key"的实现会给出 `'ddd|ccc'`（错），只有**排序后**拼才是 `'ccc|ddd'`。
+     *    （match[0] 上两种情况恰好同形 —— 只用 match[0] 的话，这条断言看不出区别。）
+     */
+    assert.equal(parseLive(LIVE_FIXTURE)?.matches[1]?.key, 'ccc|ddd', '不是玩家左右顺序');
+
+    /*
+     * ⚠️ 为什么必须**排序**：左右顺序是按 elo 固定的（上面那条），而 elo 会变 ——
+     *    同一场对局在两次刷新之间可能左右互换，key 若是按左右拼的，
+     *    React 会把这张卡片当成**新的一张**重建（用户展开的直播框塌掉）。
+     * ⚠️ 反向夹具用**克隆**：这条断言自己不许改动 LIVE_FIXTURE
+     *    （下面那条"原始响应一字未改"的测试就是钉这个的）。
+     */
+    const swapped = structuredClone(LIVE_FIXTURE);
+    const first = swapped.data.liveMatches[0];
+    assert.ok(first, '夹具第一场必须在');
+    first.players.reverse();
+    assert.equal(parseLive(swapped)?.matches[0]?.key, 'aaa|bbb', '左右互换后 key 必须一字不差');
+  });
+
+  it('★★ 两行都读不出 uuid ⇒ 位置兜底 `#0` / `#1`，不会撞成同一个 key', () => {
+    /*
+     * ⚠️ 这一条防的是**静默的渲染错乱**，不是"上游一定会发这种响应"：上游实测恒发对象，
+     *    但这一层是**宽容**层，而旧写法（空位拼空串）会让两行都拿到 `'|'` ——
+     *    重复的 React key 只会让 React 在控制台嘟一句，然后把两张卡片的状态串在一起，
+     *    界面上看起来"只是有点怪"，没有任何门禁会发现。
+     * 兜底用**位置**：它在"同一份响应内"是稳定的，而 key 需要的**只是**这个。
+     */
+    const d = parseLive({
+      status: 'success',
+      data: { players: 1, liveMatches: [null, { players: [{ nickname: 'no uuid' }] }] },
+    });
+    assert.ok(d, '两行都读不出 ⇒ 也**不是**整份 null（坏一格不毁一份）');
+    assert.equal(d.matches.length, 2);
+    assert.equal(d.matches[1]?.players[0]?.nickname, 'no uuid', '读不出 uuid 的那一行照常保留');
+    assert.deepEqual(
+      d.matches.map((m) => m.key),
+      ['#0', '#1'],
+    );
+  });
+});
+
 describe('sortLiveMatches / topLiveMatches', () => {
   it('★★ 按平均 elo 降序，两人都 null 的排最后', () => {
     const d = parseLive(LIVE_FIXTURE);
     assert.ok(d);
     const sorted = sortLiveMatches(d.matches);
-    // 四场的平均 elo 分别是 1657 / 2000（一人 null）/ 2278.5 / null（两人都 null）
+    // 五场的平均 elo 分别是 1657 / 2000（一人 null）/ 2278.5 / null（两人都 null）/ 2500（一人 null）
+    // ⚠️ 那个 2500 是**排序判据**，不只是个数字：把 null 当 0 算的实现会把它算成 1250，
+    //    于是整串变成 [2278.5, 2000, 1657, 1250, null] —— 顺序变了，这条断言当场红。
     assert.deepEqual(
       sorted.map((m) => m.avgElo),
-      [2278.5, 2000, 1657, null],
+      [2500, 2278.5, 2000, 1657, null],
     );
   });
 
@@ -242,7 +320,7 @@ describe('sortLiveMatches / topLiveMatches', () => {
     assert.ok(d);
     assert.equal(RANKED_LIVE_TOP, 10);
     const before = d.matches.map((m) => m.key);
-    assert.equal(topLiveMatches(d).length, 4, '不足 10 场就全给');
+    assert.equal(topLiveMatches(d).length, 5, '不足 10 场就全给');
     assert.deepEqual(
       d.matches.map((m) => m.key),
       before,
@@ -251,66 +329,82 @@ describe('sortLiveMatches / topLiveMatches', () => {
   });
 });
 
-describe('parseLeaderboard：并列与跳号', () => {
-  const FIXTURE = {
-    status: 'success',
-    data: {
-      season: { number: 12, startsAt: 1789430400, endsAt: 1798588800 },
-      users: [
-        {
-          uuid: 'a',
-          nickname: 'edcr',
-          roleType: 1,
+/**
+ * `GET /leaderboard` 的那一段并列 + 跳号：`1, 3, 3, 5`（spec §11.2 明写 `…,3,3,5,…`）。
+ * ⚠️ 第 3、4 行都**没有** `highest`（上游那格不在必填表里）：两处都必须印「—」，
+ *    不是 `0`、不是 `undefined`（`0` 会印成"历史最高 0"，看起来像一个真数）。
+ */
+const LEADERBOARD_FIXTURE = {
+  status: 'success',
+  data: {
+    season: { number: 12, startsAt: 1789430400, endsAt: 1798588800 },
+    users: [
+      {
+        uuid: 'a',
+        nickname: 'edcr',
+        roleType: 1,
+        eloRate: 2349,
+        eloRank: 1,
+        country: 'gb',
+        seasonResult: {
           eloRate: 2349,
           eloRank: 1,
-          country: 'gb',
-          seasonResult: {
-            eloRate: 2349,
-            eloRank: 1,
-            phasePoint: 0,
-            highest: 2385,
-            phaseHighest: 2385,
-          },
+          phasePoint: 0,
+          highest: 2385,
+          phaseHighest: 2385,
         },
-        {
-          uuid: 'b',
-          nickname: 'A',
-          roleType: 1,
-          eloRate: 2000,
-          eloRank: 3,
-          country: 'us',
-          seasonResult: { eloRate: 2000, eloRank: 3, phasePoint: 10, highest: 2010 },
-        },
-        {
-          uuid: 'c',
-          nickname: 'B',
-          roleType: 1,
-          eloRate: 2000,
-          eloRank: 3,
-          country: 'us',
-          seasonResult: { eloRate: 2000, eloRank: 3, phasePoint: 10 },
-        }, // 缺 highest
-      ],
-    },
-  };
+      },
+      {
+        uuid: 'b',
+        nickname: 'A',
+        roleType: 1,
+        eloRate: 2000,
+        eloRank: 3,
+        country: 'us',
+        seasonResult: { eloRate: 2000, eloRank: 3, phasePoint: 10, highest: 2010 },
+      },
+      {
+        uuid: 'c',
+        nickname: 'B',
+        roleType: 1,
+        eloRate: 2000,
+        eloRank: 3,
+        country: 'us',
+        seasonResult: { eloRate: 2000, eloRank: 3, phasePoint: 10 },
+      }, // 缺 highest
+      {
+        // ★ 并列之后**跳号**：3, 3 ⇒ 5（spec §11.2 明写 `…,3,3,5,…`）。这一行也缺 highest。
+        uuid: 'd',
+        nickname: 'C',
+        roleType: 1,
+        eloRate: 1990,
+        eloRank: 5,
+        country: 'us',
+        seasonResult: { eloRate: 1990, eloRank: 5, phasePoint: 3 },
+      }, // 缺 highest
+    ],
+  },
+};
 
-  it('★ 排名取上游的 eloRank（并列照原样重复），不是下标 + 1', () => {
-    const d = parseLeaderboard(FIXTURE);
+describe('parseLeaderboard：并列与跳号', () => {
+  it('★ 排名取上游的 eloRank（并列照原样重复、并列之后跳号），不是下标 + 1', () => {
+    const d = parseLeaderboard(LEADERBOARD_FIXTURE);
     assert.ok(d);
     assert.deepEqual(
       d.users.map((u) => u.rank),
-      [1, 3, 3],
+      [1, 3, 3, 5],
     );
   });
 
-  it('★ highest 缺了就 null（不是 undefined、不是 0）', () => {
-    const d = parseLeaderboard(FIXTURE);
+  it('★ highest 缺了就 null（不是 undefined、不是 0）—— 并列那行与跳号那行各一处', () => {
+    const d = parseLeaderboard(LEADERBOARD_FIXTURE);
     assert.equal(d?.users[0]?.highest, 2385);
-    assert.equal(d?.users[2]?.highest, null);
+    assert.equal(d?.users[2]?.highest, null, 'rank 3（并列的那一行）');
+    assert.equal(d?.users[3]?.highest, null, 'rank 5（跳号的那一行）');
   });
 
   it('赛季起止与号数照抄（秒）', () => {
-    const d = parseLeaderboard(FIXTURE);
+    const d = parseLeaderboard(LEADERBOARD_FIXTURE);
     assert.deepEqual(d?.season, { number: 12, startsAt: 1789430400, endsAt: 1798588800 });
   });
 
@@ -337,52 +431,53 @@ describe('parseLeaderboard：并列与跳号', () => {
   });
 });
 
-describe('parseWeekly：id 用响应里的那个', () => {
-  const FIXTURE = {
-    status: 'success',
-    data: {
-      id: 103,
-      endsAt: 1789948800,
-      seed: {
-        overworld: '146271395966650388',
-        nether: '146271395966650388',
-        theEnd: '146271395966650388',
-        rng: '146271395966650388',
-        flags: 207,
-      },
-      leaderboard: [
-        {
-          rank: 1,
-          player: {
-            uuid: 'a',
-            nickname: 'xiamoys',
-            roleType: 0,
-            eloRate: null,
-            eloRank: null,
-            country: 'cn',
-          },
-          time: 244241,
-          replayExist: true,
-        },
-        {
-          rank: 2,
-          player: {
-            uuid: 'b',
-            nickname: 'b',
-            roleType: 1,
-            eloRate: 1800,
-            eloRank: 50,
-            country: 'us',
-          },
-          time: 250000,
-          replayExist: false,
-        },
-      ],
+/** `GET /weekly-race` 的一份响应（`flags` 我们不解析：新周是 207、老周是 `null`）。 */
+const WEEKLY_FIXTURE = {
+  status: 'success',
+  data: {
+    id: 103,
+    endsAt: 1789948800,
+    seed: {
+      overworld: '146271395966650388',
+      nether: '146271395966650388',
+      theEnd: '146271395966650388',
+      rng: '146271395966650388',
+      flags: 207,
     },
-  };
+    leaderboard: [
+      {
+        rank: 1,
+        player: {
+          uuid: 'a',
+          nickname: 'xiamoys',
+          roleType: 0,
+          eloRate: null,
+          eloRank: null,
+          country: 'cn',
+        },
+        time: 244241,
+        replayExist: true,
+      },
+      {
+        rank: 2,
+        player: {
+          uuid: 'b',
+          nickname: 'b',
+          roleType: 1,
+          eloRate: 1800,
+          eloRank: 50,
+          country: 'us',
+        },
+        time: 250000,
+        replayExist: false,
+      },
+    ],
+  },
+};
 
+describe('parseWeekly：id 用响应里的那个', () => {
   it('周数、截止、四个种子、条目逐格', () => {
-    const d = parseWeekly(FIXTURE);
+    const d = parseWeekly(WEEKLY_FIXTURE);
     assert.ok(d);
     assert.equal(d.id, 103);
     assert.equal(d.endsAt, 1789948800);
@@ -400,7 +495,7 @@ describe('parseWeekly：id 用响应里的那个', () => {
     const noFlags = {
       status: 'success',
       data: {
-        ...FIXTURE.data,
+        ...WEEKLY_FIXTURE.data,
         seed: { overworld: '1', nether: '2', theEnd: '3', rng: '4', flags: null },
       },
     };
@@ -412,19 +507,20 @@ describe('parseWeekly：id 用响应里的那个', () => {
   });
 });
 
-describe('parseHeartbeat：取最后一条心跳', () => {
-  const FIXTURE = {
-    heartbeatList: {
-      2: [
-        { status: 0, time: '2026-09-15 13:35:27', msg: '', ping: null },
-        { status: 1, time: '2026-09-15 13:36:27', msg: '', ping: 380 },
-      ],
-    },
-    uptimeList: { '2_24': 0.999, '3_24': 1 },
-  };
+/** 状态主机的两格：`heartbeatList` 里 monitor 2 的两条（旧→新）+ `uptimeList` 的 24 小时可用率。 */
+const HEARTBEAT_FIXTURE = {
+  heartbeatList: {
+    2: [
+      { status: 0, time: '2026-09-15 13:35:27', msg: '', ping: null },
+      { status: 1, time: '2026-09-15 13:36:27', msg: '', ping: 380 },
+    ],
+  },
+  uptimeList: { '2_24': 0.999, '3_24': 1 },
+};
 
+describe('parseHeartbeat：取最后一条心跳', () => {
   it('★ 取 monitor 2 的**最后一条**（数组是旧→新）', () => {
-    assert.deepEqual(parseHeartbeat(FIXTURE), {
+    assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), {
       state: 1,
       checkedAt: '2026-09-15 13:36:27',
       ping: 380,
@@ -442,7 +538,7 @@ describe('parseHeartbeat：取最后一条心跳', () => {
      * ⇒ 我们**原样带着这串字符**（界面上也原样显示「最后心跳 13:36:27」），
      *   不做任何时间戳换算。省掉的是一整类"时间显示得不对"的 bug。
      */
-    const m = parseHeartbeat(FIXTURE);
+    const m = parseHeartbeat(HEARTBEAT_FIXTURE);
     assert.equal(m?.checkedAt, '2026-09-15 13:36:27');
     assert.notEqual(m?.checkedAt, undefined);
   });
@@ -537,5 +633,56 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
     // 光有主机名、没有标识的那一段
     assert.equal(rankedLiveChannel('https://twitch.tv/'), null);
     assert.equal(rankedLiveChannel('https://live.bilibili.com/'), null);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * 跨**四条**解析函数的判据（spec §11.2 第 1 条）
+ * ------------------------------------------------------------------------- */
+
+describe('解析是纯函数（spec §11.2 第一条）', () => {
+  it('★ 同一份响应解析两次，结果逐字段相同', () => {
+    // ⚠️ 先钉"真的解析出了东西"：四个入口都返回 null 的话，下面四条 deepEqual 是**空过**的。
+    assert.ok(parseLive(LIVE_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parseLeaderboard(LEADERBOARD_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parseWeekly(WEEKLY_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parseHeartbeat(HEARTBEAT_FIXTURE), '这个夹具必须解析得出来');
+
+    assert.deepEqual(parseLive(LIVE_FIXTURE), parseLive(LIVE_FIXTURE));
+    assert.deepEqual(parseLeaderboard(LEADERBOARD_FIXTURE), parseLeaderboard(LEADERBOARD_FIXTURE));
+    assert.deepEqual(parseWeekly(WEEKLY_FIXTURE), parseWeekly(WEEKLY_FIXTURE));
+    assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), parseHeartbeat(HEARTBEAT_FIXTURE));
+  });
+
+  it('★★ 解析与排序都不改上游那份原始响应（不改入参、不就地排序）', () => {
+    /*
+     * ⚠️ 为什么这一条值得单独钉：`parseLive` 里有一处 `slots.sort()`（固定左右顺序），
+     *    写在**调用方**那份数组上（而不是我们新建的那个）是很容易犯的错 ——
+     *    而它不会抛错、不会变慢、界面看起来也正常，只是上游那份响应的顺序被悄悄改了。
+     *    这一层刻意不读时钟（`fetchedAt` 由容器记，spec §4.4），所以"不碰入参"是同一类要求。
+     */
+    const before = structuredClone(LIVE_FIXTURE);
+    const parsed = parseLive(LIVE_FIXTURE);
+    assert.ok(parsed);
+    const orderBefore = parsed.matches.map((m) => m.key);
+    sortLiveMatches(parsed.matches);
+    topLiveMatches(parsed);
+    assert.deepEqual(
+      parsed.matches.map((m) => m.key),
+      orderBefore,
+      'sortLiveMatches / topLiveMatches 不许就地排掉调用方那份 matches',
+    );
+    assert.deepEqual(LIVE_FIXTURE, before, '上游那份原始响应必须一字未改');
+
+    // 另外三个入口同一类缺陷，一起钉：克隆在前、解析在后，逐个比对。
+    const lbBefore = structuredClone(LEADERBOARD_FIXTURE);
+    const weekBefore = structuredClone(WEEKLY_FIXTURE);
+    const beatBefore = structuredClone(HEARTBEAT_FIXTURE);
+    parseLeaderboard(LEADERBOARD_FIXTURE);
+    parseWeekly(WEEKLY_FIXTURE);
+    parseHeartbeat(HEARTBEAT_FIXTURE);
+    assert.deepEqual(LEADERBOARD_FIXTURE, lbBefore, '排行榜那份原始响应必须一字未改');
+    assert.deepEqual(WEEKLY_FIXTURE, weekBefore, '周赛那份原始响应必须一字未改');
+    assert.deepEqual(HEARTBEAT_FIXTURE, beatBefore, '心跳那份原始响应必须一字未改');
   });
 });

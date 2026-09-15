@@ -122,8 +122,10 @@ function emptyPlayer(): RankedLivePlayer {
  *    —— 这两件事的形状不一样（spec §2.3 第 3 条），而字段名还都是驼峰（`liveUrl`）。
  *    配对**必须按 uuid 查表**：按"第几个"去配会在上游换个顺序时把 A 的直播间放到 B 的卡片上，
  *    而且一声不响 —— TS 管不到这里，因为整份响应对我们就是 `unknown`。
+ *
+ * ⚠️ `index` 是这一行在 `liveMatches[]` 里的位置，**只**用于"读不出 uuid"时的 key 兜底（见 key 那段）。
  */
-function parseMatch(row: unknown): RankedLiveMatch {
+function parseMatch(row: unknown, index: number): RankedLiveMatch {
   const m = rec(row);
   const blocks = m ? rec(m.data) : null;
 
@@ -156,17 +158,36 @@ function parseMatch(row: unknown): RankedLiveMatch {
     right?.player ?? emptyPlayer(),
   ];
 
+  /*
+   * ★ React 的 key：两个 uuid **排序后**再拼（不是按玩家左右顺序）。
+   *   为什么要按排序拼：左右顺序会随 elo 变（上面刚固定过），而 key 用左右顺序拼的话，
+   *   一次 elo 变化就会让 React 把整张卡片当成新的一张重建（用户展开的直播框会塌掉）。
+   *
+   * ⚠️ 为什么"一个 uuid 都读不出来"时要退回**位置**（`#index`），而不是拼出空串
+   *   （旧写法：空位用空串占位 ⇒ 两行都读不出来时都得到 `'|'`）：**重复的 React key 是
+   *   静默的渲染错乱** —— React 只往控制台丢一句警告，然后把两张卡片的状态串在一起，
+   *   而界面上看起来"只是有点怪"，没有任何门禁会发现它。
+   *   位置兜底在**同一份响应内**是稳定的，而 key 需要的**只是**这个（spec §6.3：卡片身份在一次会话内不跳）。
+   *   否决了"退回随机数/时间戳"：那会让 React 每次刷新都重建卡片 —— 正是上面那条要防的事。
+   *   否决了"读不出 uuid 就丢掉这一行"：那一场是真在打的（两人、有 elo），
+   *   为一个 key 删掉一张卡片，是拿一件确定的事去换一件不确定的事。
+   */
+  const uuids = slots
+    .map((s) => s.uuid)
+    .filter((u): u is string => u !== null)
+    .sort();
+
   return {
+    key: uuids.length > 0 ? uuids.join('|') : `#${String(index)}`,
     /*
-     * ⚠️ 两个 uuid **排序后**再拼（不是按玩家左右顺序）：左右顺序会随 elo 变，
-     *    而它是 React 的 key —— 用左右顺序拼的话，一次 elo 变化就会让 React
-     *    把整张卡片当成新的一张重建（展开的直播框塌掉）。空位用空串占位。
+     * ⚠️ `?? 0` 是**防御**分支：上游的 `currentTime` 在上游 schema 的必填表里（实测每次都给），
+     *    所以这里走不到；走到了只可能是"上游改了自己的形状"。
+     *    兜底取 `0`，因为 `0` 是时长唯一的**下界**，它不编造任何一个具体信息。
+     *    否决了"丢掉这一行"：那一场是真在打的，为了一个进度数字删掉整张卡片，
+     *    是拿一件确定的事去换一件不确定的事。
+     * ⚠️ 但**别声称这个异常"看得出来"**：一场已经打了 12 分钟的对局被印成 `0:00`，
+     *    与一场刚开的对局**完全一样**（所以界面上的时间不能当作"这一场刚开始"的证据）。
      */
-    key: slots
-      .map((s) => s.uuid ?? '')
-      .sort()
-      .join('|'),
-    // 上游没给就是 0：界面会说「已进行 0:00.000」——这是**可见的**异常，比整卡片消失好。
     currentTime: num(m?.currentTime) ?? 0,
     avgElo: averageElo(players),
     players,
@@ -238,7 +259,11 @@ export function parseLive(raw: unknown): RankedLiveData | null {
    *    界面上印「—」+「人数暂时读不到」（**与 `0` 是两句话**，spec §6.2）。
    */
   if (!Array.isArray(data.liveMatches)) return null;
-  return { players: num(data.players), matches: data.liveMatches.map(parseMatch) };
+  // ⚠️ 下标**必须**传进去：`parseMatch` 用它做 key 的位置兜底（读不出 uuid 的行之间不许撞 key）。
+  return {
+    players: num(data.players),
+    matches: data.liveMatches.map((row, index) => parseMatch(row, index)),
+  };
 }
 
 /*

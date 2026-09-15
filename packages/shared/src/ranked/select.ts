@@ -10,6 +10,23 @@ import { RANKED_ELO_TOP, RANKED_LIVE_TOP } from './const';
 import type { RankedEloEntry, RankedLiveData, RankedLiveMatch } from './types';
 
 /**
+ * 相同 `avgElo` 时的第二判据：`key` **升序**。
+ *
+ * ⚠️ **相等必须返回 `0`**，不能返回 `1`（`a.key < b.key ? -1 : 1` 那种写法）：
+ *    `1` 等于在说"a 排在 b 之后"，于是同一个比较器对同一对数**两边都说"在后面"** ——
+ *    比较函数不再是反对称的，`Array.prototype.sort` 的契约被破坏（规范里那是未定义行为，
+ *    实际结果随引擎、随数组长度变）。⚠️ 它不会抛错、不会印出 NaN，只会让并列那几场的顺序
+ *    在某次刷新里换一下 —— 又一次"界面看着正常"的错，所以这里不能省。
+ *
+ * 否决了"相等时也返回 `1`（靠 sort 的稳定性兜底）"：稳定性保证的是"**不比较**的相等元素保持原顺序"，
+ * 而返回 `1` 是在**主动**声明一个错误的顺序，两者不是一回事。
+ */
+function byKey(a: RankedLiveMatch, b: RankedLiveMatch): number {
+  if (a.key === b.key) return 0;
+  return a.key < b.key ? -1 : 1;
+}
+
+/**
  * 按**平均 elo 降序**排，取前 10 前先排。
  *
  * 三条口径（spec §6.3 冻结）：
@@ -21,11 +38,11 @@ import type { RankedEloEntry, RankedLiveData, RankedLiveMatch } from './types';
  */
 export function sortLiveMatches(matches: RankedLiveMatch[]): RankedLiveMatch[] {
   return [...matches].sort((a, b) => {
-    if (a.avgElo === null && b.avgElo === null) return a.key < b.key ? -1 : 1;
+    if (a.avgElo === null && b.avgElo === null) return byKey(a, b);
     if (a.avgElo === null) return 1;
     if (b.avgElo === null) return -1;
     if (a.avgElo !== b.avgElo) return b.avgElo - a.avgElo;
-    return a.key < b.key ? -1 : 1;
+    return byKey(a, b);
   });
 }
 
