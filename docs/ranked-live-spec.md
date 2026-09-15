@@ -580,7 +580,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.statusCheckedAt` | 「最后心跳 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-15 13:36:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按本机时区解释 ⇒ 显示值会随部署机器漂，而测试也会变成"看机器运气"） |
 | `ranked.statusUptime` | 「24 小时可用率 {{pct}}%」 |
 | `ranked.players` / `playersUnknown` / `playersZero` | 「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
-| `ranked.liveTitle` / `liveEmpty` | 「正在直播的高分对局」/「现在没有直播中的对局。」 |
+| `ranked.liveTitle` / `liveEmpty` | 「现在正在打的对局（按平均 elo 排前 10）」/「现在没有直播中的对局。」—— ⚠️ `liveTitle` 早先写的是「正在直播的高分对局」（**2026-09-16 终审改掉**，英文同句改成 "Matches playing right now (top 10 by average elo)"）：一张卡片**可以完全没有直播**（"谁在直播"由每张卡片自己的 `liveExpand` 承载，夹具里榜首那张甚至就叫 `Nostream`），而"高分"也不是判据（判据是**平均** elo 的排序，未定级是常态 ⇒ §10 第 6 条）⇒ 标题只能说这一栏**真正在选择的东西**，排序口径由下面那行 `liveFrom` 说全 |
 | `ranked.liveFrom` | 「{{total}} 场里按平均 elo 取前 10」 |
 | `ranked.liveExpand` | 「展开直播（{{n}} 个）」—— ⚠️ **没有 `liveCollapse`**：展开态用的是原生 `<details>`/`<summary>`，收起由浏览器负责；为一个不存在的标签配一条词条＝一条**没有消费者的 key**（本仓为这种事删过 `shares.moderateHideReason`） |
 | `ranked.liveExternal` | 「**这条链接**不能内嵌，在新窗口打开」—— ⚠️ 措辞刻意**不说"这个平台不支持"**：`livePlatform === null` 有两类来源（认不出的平台如 kick；以及"平台其实支持、只是这条地址里没有可嵌的视频"，例如 `youtube.com/@handle` 的频道页 ⇒ 见 `embed.ts` 的注释），说"平台不支持"对后者是**错话**。⚠️ **也没有 `liveNoStream`**：一场对局两个人都没在直播时，卡片**没有**展开入口 —— 一颗按下去什么都不发生的按钮比没有按钮更坏 |
@@ -598,7 +598,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.updatedAgo` | 「{{secs}} 秒前更新」 |
 | `ranked.refreshFailed` | 「上次刷新失败了，下面是 {{secs}} 秒前的数据。」 |
 | `ranked.loadFailed` | 「读不到数据。」 |
-| `ranked.errBusy` / `errUnavailable` / `errBadResponse` | 「上游有点忙，稍后再试。」/「上游暂时读不到，稍后再试。」/「上游返回的数据看不懂，已经记下来了。」 |
+| `ranked.errBusy` / `errUnavailable` / `errBadResponse` | 「上游有点忙，稍后再试。」/「上游暂时读不到，稍后再试。」/「上游返回的数据看不懂。」—— ⚠️ `errBadResponse` 早先写的是「上游返回的数据看不懂，**已经记下来了**」（**2026-09-16 终审改掉**，英文那半句 "we have noted it" 同句删除）：它**与 §10 第 8 条矛盾** —— 那一节明写浏览器侧**不记日志**（Task 1 的评审判定"访客的控制台没有读者"，那条 `console.warn` 是装饰），而直连那一条路我们这一侧一个字都看不到 ⇒ 那句话是在说一件我们从来没做过的事（用户可能因此以为"有人会去看"，于是不再反馈）。现在说的只有我们确实知道的那件事 |
 | `ranked.errNetwork` / `errHttp` / `errNotFound` | 「连不上上游，可能是网络或浏览器扩展拦了。」/「上游回了一个错误（HTTP {{status}}）。」/「没有这一周。」—— 这三条**直连**那三块面板时才有；`errNotFound` 对应上游对"不存在的周"回的 400（§6.5） |
 | `ranked.errRateLimited` | 「请求有点频繁，过一会儿再试。」—— ⚠️ 与全站的 `rate_limited` 文案**分开**：这里被限的是**访客自己**打到上游的请求数（每 IP 500 次/10 分钟），不是我们服务器的限流，两句话说的不是一件事 |
 | `ranked.unknown` | 「—」（占位符也要有词条：组件里写死 `—` 会让两种语言再也没法分开调） |

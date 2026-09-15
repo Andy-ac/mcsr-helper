@@ -35,14 +35,17 @@
  *   等于每秒重建一次定时器，而且**表现与上面那种错一模一样**。
  *
  * ===========================================================================
- * ⚠️★ 旧数据只在**换 tab / 翻页**那一刻清（规则 6 的另一半）
+ * ★★ 旧数据**一个字都不清**（规则 6 的两半现在都在这里）
  * ===========================================================================
- * 失败时一个字都不清（旧数据 + 一句话 + 重试，spec §6.6 第 4 行）；
- * 而换页时**允许清空**：换了一周/一个面板，旧数据不属于新页面。
- * 判据有两处，缺一不可：
- *   · `Loaded.key`（数据自己带着"我是哪一页的"）⇒ 渲染时只认相符的那一份；
- *   · 换页那一刻的清空 effect ⇒ 回到一个**看过**的标签页时也从头开始
- *     （`key` 那时是相符的，光靠它挡不住"几分钟前那一份被当成刚取到的"）。
+ * 失败时不清（旧数据 + 一句话 + 重试，spec §6.6 第 4 行）；
+ * 换 tab / 翻页时也**不清** —— 2026-09-16 的终审改过一次（原先有一个"换页就清"的 effect）：
+ *   · 判据是 `Loaded.key`（数据自己带着"我是哪一页的"，`mine()` 只认**相符**的那一份）
+ *     ⇒ 换页那一瞬间旧数据**画不出来**（新页面拿到的是 `null` ⇒ 「加载中」），
+ *     "几分钟前那一份被当成刚取到的"这种串台在结构上就不可能发生；
+ *   · 于是那个 effect 只剩**副作用**：回到一个刚刚看过的标签页时，把手上那份好数据扔掉
+ *     ⇒ 闪一下「加载中」；而如果这一次刷新又失败，用户看到的是"失败 + 没有旧数据"，
+ *     **与 §6.6 的「绝不清空」正好相反**（那份好数据本来还在手上）。
+ *   ⇒ 它被删掉了（不是"忘了写"）：不清空这件事现在**只有** `key` 一条判据。
  */
 
 import {
@@ -52,6 +55,7 @@ import {
   type RankedStatusResponse,
   type RankedTab,
   type RankedWeeklyData,
+  secondsAgo,
 } from '@mcsr/shared/ranked';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -186,8 +190,8 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   /**
    * 这一页的标识（`tab`，周赛再带上周号）。
    *
-   * ⚠️★ 全文件**只算这一个**：`load` 用它给每一份数据盖章、渲染用它挑出"属于这一页"的那几份、
-   *    换页那个 effect 用它判断有没有换页。三处各写一遍 `pageKey(...)` 的话，
+   * ⚠️★ 全文件**只算这一个**：`load` 用它给每一份数据盖章、渲染用它挑出"属于这一页"的那几份。
+   *    两处各写一遍 `pageKey(...)` 的话，
    *    改 key 的形状（比如某天给 ③ 也带上赛季号）时只会改到一处，
    *    而漏掉的那处的表现是"数据永远被判成不属于这一页"—— 面板**永远停在加载中**。
    */
@@ -224,10 +228,18 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
      *    它不会有任何报错，只会让用户在刷新失败时看到一屏空白。
      * ⚠️ `put` 拿到的是**完整的 `Loaded`**（带着 page 与 atMs），所以调用点只需要关心
      *    "把哪一格放进去"；① 的人数要在里面换一格（`data.players`），也在调用点做掉。
+     * ⚠️★ 第三个参数 `fatal`（默认 `true`）区分**这一路失败算不算这一轮的失败**：
+     *    容器里有一路请求是**辅助**的（带 id 进来时补问一次"最新是第几周"，见下面那个调用点）
+     *    —— 它的结果只影响"要不要轮询"，一个字节都不进界面。
+     *    它失败时若照旧记进 `failure`，屏幕上会出现**三句互相矛盾的话**：
+     *    「读不到数据。连不上上游…」+「上次刷新失败了，下面是 0 秒前的数据」，
+     *    而那整整一周的表格**就在下面画着** —— 三句话里两句是假的
+     *    （表格能画出来，说明这一页的数据取到了）。⇒ 辅助那一路走 `{ fatal: false }`。
      */
     const pull = async <T,>(
       run: (signal: AbortSignal) => Promise<T>,
       put: (loaded: Loaded<T>) => void,
+      { fatal = true }: { fatal?: boolean } = {},
     ): Promise<void> => {
       try {
         const data = await run(controller.signal);
@@ -241,6 +253,11 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
           cancelled = true;
           return;
         }
+        /*
+         * ⚠️★ 取消与"辅助那一路失败"都**先于** `failure` 判掉，而且顺序不许换：
+         *    取消不是失败（换了页），辅助那一路的失败是**故意静默**的（它不是这一页的话）。
+         */
+        if (!fatal) return;
         if (!failed) {
           failed = true;
           failure = err;
@@ -289,11 +306,21 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
          * ⚠️ 代价写在明面上（2026-09-16 手工跑 dev 数过）：这一页**第一次**打开一共三发
          *    上游请求 —— 那一周、最新的、以及学到最新周号之后重跑的那一轮；
          *    之后**一发都不再打**。换掉的是"开着两小时就白烧 120 发"。
+         *
+         * ⚠️★ `{ fatal: false }`：这一发是**辅助**的，它的失败**故意一声不响**
+         *    （理由写在 `pull` 的 `fatal` 那一段）—— 那一周的数据已经取到了、表格就在下面
+         *    画着，而一句「读不到数据。连不上上游…」+「上次刷新失败了，下面是 0 秒前的数据」
+         *    会把一次**成功**的刷新说成失败（终审的 Critical：这条 URL 还是**我们自己发出去**的）。
+         *    ⚠️ 它的**第二阶效应**已经写在上面了、这里再说一遍免得被"顺手修好"：
+         *    既然失败不落地，`latestIdRef` 就还是 `null` ⇒ 这一页**继续按"本周"轮询**，
+         *    直到某一轮辅助请求真的成功为止 —— 那是**有意**的（少轮询一次远远不如
+         *    "说一句假话"糟），而它同时意味着这段时间里多烧几次访客的额度。
          */
         if (weekId !== undefined && latestIdRef.current === null) {
           await pull(
             (signal) => fetchRankedWeekly(null, signal),
             (loaded) => rememberLatest(loaded.data.id),
+            { fatal: false },
           );
         }
       }
@@ -322,37 +349,18 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   }, [errorText, page, rememberLatest, t, tab, weekId]);
 
   /*
-   * 换 tab / 翻页 ⇒ 手上的数据属于**上一个页面**：回到"加载中"（规则 6 的另一半）。
+   * ★★ 这里**没有**"换页就清空"那个 effect（终审删掉的，理由见文件头那一节）。
    *
-   * ⚠️★ 不能并进下面那个取数 effect：那个 effect 还会在"学到最新周号"那一刻重跑一次
-   *    （见 `frozenWeek`），合并的话刚取回来的数据会被自己清掉，面板闪回"加载中"。
-   * ⚠️ 它**不碰 `latestId`**：那是"上游最新是第几周"这个**事实**，不属于任何一页，
-   *    留着它，翻到历史周时才不会白轮询（正是规则 4 要的）。
-   *
-   * ⚠️★ 为什么这里有一个 `loadedPage` ref，而不是直接写 `}, [page])`
-   *   （那段看起来更短、也更像"依赖变了就清空"）：
-   *   · **linter 判据**：`switch` 的那个写法里 effect 的**函数体一个字都没读** `page`
-   *     ⇒ biome 的 `useExhaustiveDependencies` 报"more dependencies than necessary"，
-   *     而它是本仓门禁里的一条 error（`pnpm lint` 会红，不是 warning）。
-   *   · **语义判据**（这条更实在）：`[page]` 表达的是"`page` 变了就跑"，
-   *     而这里要的是"**换页**这个事件"—— 两条依赖相同的两个写法在"依赖列表里再加一格"
-   *     的那一天会分道扬镳（新加的那一格一变，短的那个写法会顺手把数据清掉，
-   *     而"换页才清"这件事就静默地不再成立了）。
-   *   ⇒ 判据写在函数体里（`previous === page`），一眼能看出"只处理换页"。
+   * ⚠️★ 为什么删掉是**安全**的（不是"忘了一件事"，这一句就是判据）：
+   *   · 串台由 `key` 挡着：每一份数据都盖着 `page`（`load` 里那一次 `put`），
+   *     渲染时 `mine(x, page)` 只认**相符**的那一份 ⇒ 刚换到的那一页拿到的是 `null`，
+   *     界面说「加载中」—— 与"清空"长得**一模一样**，而**旧数据还在手上**；
+   *   · 删掉它的收益是那一份旧数据：回到一个刚看过的标签页时，上面已经画着的东西
+   *     **不会被自己抹掉**；而如果这次刷新失败，用户看到的是"旧数据 + 一句话 + 重试"
+   *     （spec §6.6 第 4 行），而不是"失败 + 空屏"。
+   * ⚠️ 它**不碰 `latestId` / `latestIdRef`**：那是"上游最新是第几周"这个**事实**，
+   *    不属于任何一页，留着它，翻到历史周时才不会白轮询（正是规则 4 要的）。
    */
-  const loadedPage = useRef(page);
-  useEffect(() => {
-    const previous = loadedPage.current;
-    loadedPage.current = page;
-    // 同一页（首次挂载也是这一支）：手上的数据仍然属于它，**一个字都不动**
-    if (previous === page) return;
-    setHeartbeat(null);
-    setPlayers(null);
-    setLive(null);
-    setElo(null);
-    setWeekly(null);
-    setError(null);
-  }, [page]);
 
   /**
    * ★★ "这一页的数据不会再变" —— 历史周。
@@ -460,14 +468,17 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   const lastAtMs = shownAtMs.length === 0 ? null : Math.min(...shownAtMs);
   /*
    * ★★ 「N 秒前更新」与「上次刷新失败了，下面是 N 秒前的数据」里的那个 N ——
-   * **同一个算式得到的同一个数**（`components/ShareCard.tsx` 里那两处也是同一个算式）。
+   * **同一个数**（`components/ShareCard.tsx` 里那两处也是同一个数）。
    * 两句话会同屏出现，数字不同就是自相矛盾；而这个数**取最旧的那一份**：
    * ① 那一页只有一路失败时，屏幕上**确实**有一格是 60 秒前的，说"0 秒前更新"
    * 会把那句"下面是 60 秒前的数据"当场推翻。
-   * ⚠️ `Math.max(0, …)` 防的是系统校时把差值变成负数（同 ShareBoard）。
+   * ⚠️★ 算式本身住在 `@mcsr/shared/ranked` 的 `secondsAgo()` 里（终审从这一行提上去的）：
+   *    它原来内联在这里，而 `routes/ShareBoard.tsx` 有一份逐字相同的副本 ⇒ **两份都没有门禁**
+   *    （`apps/web` 没有测试运行器），spec §6.6 那两句冻结文案里的数字因此没人守着。
+   *    纯函数住在 shared 才断得了：`services/api/src/ranked-shared.test.ts` 是这一层的测试文件。
+   * ⚠️ `Math.max(0, …)` 在函数里（防系统校时把差值变成负数），这一行一个算式都不留。
    */
-  const updatedAgoSecs =
-    lastAtMs === null ? null : Math.max(0, Math.floor((nowMs - lastAtMs) / 1000));
+  const updatedAgoSecs = secondsAgo(nowMs, lastAtMs);
   /* `staleSecs` 与它是**同一个数**：外壳只在**失败**时读它（有旧数据 ⇒ 换一句话）。 */
   const staleSecs = updatedAgoSecs;
 

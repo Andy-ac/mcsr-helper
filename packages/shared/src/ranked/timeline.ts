@@ -12,7 +12,17 @@
  *    两种语言里都有（与「实时分享」的 `FROZEN_KEYS` 同一手法）：漏一条就会印出裸 key。
  */
 
-/** 上游 `timeline.type` → 我们的词条 key。今天实测出现过的都在这里，**上游加了新值 ⇒ 回落到原样显示**。 */
+/**
+ * 上游 `timeline.type` → 我们的词条 key。
+ *
+ * ⚠️★ 这几条**不是**"今天实测出来的完整清单"（这里早先那么写，2026-09-16 终审量到它不成立）：
+ *    它是"**我们见过的那一批**（用户在界面上读到的、评审里贴过的）＋ 早期游戏里那几个
+ *    众所周知的节点（`find_fortress` / `blind_travel` 之类）"，而其中**四条并不在 spec 的实测
+ *    名单里、一条来自我们自己的夹具**（`nether.find_bastion`）。
+ *    ⇒ 所以别把这张表当成"上游只发这些"的证据：它的用途只有一个 —— 见过的那些**有个中文出口**。
+ * ⚠️ 表里没有的（上游加了新值、或有我们没见过的）**回落到原样显示**：这是本节的核心，
+ *    而"回落到什么"由 `timelineLabel()` 决定，不由这张表决定。
+ */
 export const TIMELINE_LABEL_KEYS: Record<string, string> = {
   'story.root': 'ranked.timeline.root',
   'story.enter_the_nether': 'ranked.timeline.enterTheNether',

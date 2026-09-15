@@ -854,34 +854,42 @@ export function RankedEloView(props: RankedEloViewProps) {
       {users.length === 0 ? (
         <p className="ranked__empty">{t('ranked.eloEmpty')}</p>
       ) : (
-        <table className="ranked__table">
-          <thead>
-            <tr>
-              <th>{t('ranked.colRank')}</th>
-              <th>{t('ranked.colNickname')}</th>
-              <th>{t('ranked.colElo')}</th>
-              <th>{t('ranked.colHighest')}</th>
-              <th>{t('ranked.colPhasePoint')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((user) => (
-              /*
-               * ⚠️ key 不取下标：`eloRank` 会**并列**（同一名次两行），所以名次自己
-               * 也唯一不了 —— 加上昵称之后才唯一（同一份榜单里一个玩家只出现一次）。
-               * ⚠️ `highest` / `phasePoint` 在赛季刚开时是 0 或 `null`：
-               *    `null` 印占位符，`0` 是**真的值**（spec §10 第 7 条）。
-               */
-              <tr key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
-                <td>{user.rank ?? dash}</td>
-                <td>{user.nickname ?? dash}</td>
-                <td>{user.eloRate ?? dash}</td>
-                <td>{user.highest ?? dash}</td>
-                <td>{user.phasePoint ?? dash}</td>
+        /*
+         * ⚠️★ 外面这一层是**窄屏兜底**（2026-09-16 终审）：五列 + 每格 12px 的左右内边距
+         *    在 ~320px 上装不下，一个长昵称就够把**整页**顶出一条横向滚动条。
+         *    规则写在 `styles.css` 的 `.ranked__tablescroll` 上（本仓样式是全局的，
+         *    渲染了一个没有规则的类名不会有任何报错 —— 本栏目的渲染自检 ⑧ 逐个断言）。
+         */
+        <div className="ranked__tablescroll">
+          <table className="ranked__table">
+            <thead>
+              <tr>
+                <th>{t('ranked.colRank')}</th>
+                <th>{t('ranked.colNickname')}</th>
+                <th>{t('ranked.colElo')}</th>
+                <th>{t('ranked.colHighest')}</th>
+                <th>{t('ranked.colPhasePoint')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                /*
+                 * ⚠️ key 不取下标：`eloRank` 会**并列**（同一名次两行），所以名次自己
+                 * 也唯一不了 —— 加上昵称之后才唯一（同一份榜单里一个玩家只出现一次）。
+                 * ⚠️ `highest` / `phasePoint` 在赛季刚开时是 0 或 `null`：
+                 *    `null` 印占位符，`0` 是**真的值**（spec §10 第 7 条）。
+                 */
+                <tr key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
+                  <td>{user.rank ?? dash}</td>
+                  <td>{user.nickname ?? dash}</td>
+                  <td>{user.eloRate ?? dash}</td>
+                  <td>{user.highest ?? dash}</td>
+                  <td>{user.phasePoint ?? dash}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </RankedChrome>
   );
@@ -981,34 +989,37 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
       {weekly.entries.length === 0 ? (
         <p className="ranked__empty">{t('ranked.weeklyEmpty')}</p>
       ) : (
-        <table className="ranked__table">
-          <thead>
-            <tr>
-              <th>{t('ranked.colRank')}</th>
-              <th>{t('ranked.colNickname')}</th>
-              <th>{t('ranked.colTime')}</th>
-              <th>{t('ranked.colElo')}</th>
-              <th>{t('ranked.colEloRank')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {weekly.entries.map((entry) => (
-              /*
-               * ⚠️ 时间走 `formatRaceTime`（`4:04.241`）：周赛成绩是**毫秒级**的
-               *    名次之争，少了那三位就分不出先后（对局已进行的时间用
-               *    `formatClock`，它到秒就够了 —— 两个函数各自钉在 `time.ts` 里）。
-               * ⚠️ `eloRate` / `eloRank` 为 `null`（未定级）⇒ 占位符，不删列。
-               */
-              <tr key={`${String(entry.rank)}:${entry.nickname ?? ''}`}>
-                <td>{entry.rank}</td>
-                <td>{entry.nickname ?? dash}</td>
-                <td>{formatRaceTime(entry.timeMs)}</td>
-                <td>{entry.eloRate ?? dash}</td>
-                <td>{entry.eloRank ?? dash}</td>
+        /* ⚠️★ 与 ③ 同一层窄屏兜底（`.ranked__tablescroll`），理由见那一处 */
+        <div className="ranked__tablescroll">
+          <table className="ranked__table">
+            <thead>
+              <tr>
+                <th>{t('ranked.colRank')}</th>
+                <th>{t('ranked.colNickname')}</th>
+                <th>{t('ranked.colTime')}</th>
+                <th>{t('ranked.colElo')}</th>
+                <th>{t('ranked.colEloRank')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {weekly.entries.map((entry) => (
+                /*
+                 * ⚠️ 时间走 `formatRaceTime`（`4:04.241`）：周赛成绩是**毫秒级**的
+                 *    名次之争，少了那三位就分不出先后（对局已进行的时间用
+                 *    `formatClock`，它到秒就够了 —— 两个函数各自钉在 `time.ts` 里）。
+                 * ⚠️ `eloRate` / `eloRank` 为 `null`（未定级）⇒ 占位符，不删列。
+                 */
+                <tr key={`${String(entry.rank)}:${entry.nickname ?? ''}`}>
+                  <td>{entry.rank}</td>
+                  <td>{entry.nickname ?? dash}</td>
+                  <td>{formatRaceTime(entry.timeMs)}</td>
+                  <td>{entry.eloRate ?? dash}</td>
+                  <td>{entry.eloRank ?? dash}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {/*
         ⚠️ 翻页是**真链接**（`/ranked/weekly/102`，不是查询串）：可刷新、可分享、

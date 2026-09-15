@@ -55,6 +55,7 @@
  * + 重试，就是那一屏的全部（§7.5 第 4 行的原话是"绝不清空"）。
  */
 import type { ShareKind, ShareListResponse } from '@mcsr/shared';
+import { secondsAgo } from '@mcsr/shared/ranked';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShareBoardView } from '@/components/ShareCard';
@@ -405,12 +406,15 @@ export function ShareBoard({ kind }: { kind: ShareKind }) {
   const lastUpdatedAtMs = loaded !== null && loaded.kind === kind ? loaded.atMs : null;
   /*
    * 「下面是 N 秒前的数据」里的那个 N。
-   * ⚠️ 它与视图里 `updatedAgoSecs` 是**同一个算式**（`nowMs` 与 `lastUpdatedAtMs`
+   * ⚠️ 它与视图里 `updatedAgoSecs` 是**同一个数**（`nowMs` 与 `lastUpdatedAtMs`
    *    两个**本地**读数相减，钳到 0 防系统校时把差值变成负数），而且必须一致：
    *    两句话会在同一次渲染里同时出现，数字不同就是自相矛盾。
+   * ⚠️★ 算式本身搬到了 `@mcsr/shared/ranked` 的 `secondsAgo()` 里（2026-09-16 终审）：
+   *    ranked 那一栏有一份**逐字相同**的内联副本，而两份都没有门禁 ——
+   *    `apps/web` 没有测试运行器，于是 §6.6 那两句冻结文案里的数字谁都断言不到。
+   *    纯函数住在 shared 才断得了（`services/api/src/ranked-shared.test.ts`）。
    */
-  const staleSecs =
-    lastUpdatedAtMs === null ? null : Math.max(0, Math.floor((nowMs - lastUpdatedAtMs) / 1000));
+  const staleSecs = secondsAgo(nowMs, lastUpdatedAtMs);
 
   return (
     <ShareBoardView

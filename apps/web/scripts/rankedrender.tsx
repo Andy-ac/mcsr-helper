@@ -150,6 +150,14 @@ const ok = (m: string): void => {
 const t = (key: string, opts?: Record<string, unknown>): string => i18n.t(key, opts) as string;
 const noop = (): void => undefined;
 
+/**
+ * 「这条词条在两种语言里都在吗」的**唯一**一份语言清单。
+ *
+ * ⚠️ ⑥b（失败那七格）与 ⑨（进度词条表）各要逐格查两种语言，两处共用这一个数组 ——
+ *    各写一份的话，加第三种语言那天只会改到一处，而另一处的表现是"某个 key 只在一种语言里查过"。
+ */
+const LANGUAGES = ['zh-CN', 'en'] as const;
+
 // ---------------------------------------------------------------------------
 // 文本归一化与提取器（与 `sharerender.tsx` 同形、同一条纪律）
 // ---------------------------------------------------------------------------
@@ -1323,6 +1331,11 @@ for (const [i, row] of eloRows.entries()) {
 /*
  * ★★ 排名列印的是上游的 `eloRank`，**不是下标 + 1**：夹具是 `3,3,5`，而"下标 + 1"
  *    会印成 `3,4,5` —— 看起来更"正常"，却是**错的**（第 4 名不存在）。
+ * ⚠️★ 这里**没有**"再断言一次它不等于 `['3','4','5']`"那种探针（2026-09-16 终审删掉）：
+ *    它被上面那条 `deepEqual` **蕴含**（整串都相等 ⇒ 后三格当然不等于另一串），
+ *    所以它**不可能红** —— 一条不可能红的守卫比没有守卫更坏（`docs/pending.md §5.63`）。
+ *    "错法是 `index + 1`"这件事现在由**这条注释**承载（也就是上面那句消息里已经写着的），
+ *    探针那一份是白占一行。
  */
 assert.deepEqual(
   eloRows.map((row) => row[0]),
@@ -1333,11 +1346,6 @@ assert.deepEqual(
   eloRows.slice(2).map((row) => row[0]),
   ['3', '3', '5'],
   '★★ 并列那三行就是 `3,3,5`（`index + 1` 会印成 `3,4,5`）',
-);
-assert.notDeepEqual(
-  eloRows.slice(2).map((row) => row[0]),
-  ['3', '4', '5'],
-  '★ 探针：把"下标 + 1"那个错法写在旁边（否则上面那条可能只是碰巧）',
 );
 /*
  * ⚠️ 日期按**本地时区 + 界面语言**印（`toLocaleDateString(i18n.language)`），
@@ -1941,7 +1949,41 @@ assert.notEqual(
   errorSay('ranked.errNotFound'),
   '★ 探针：记录器本身能区分两个 key（否则上面那些"两句不同"是空跑）',
 );
-ok('失败码：七格表逐格 + 派发真的查表 + 503 两档分得开 + 认不出来不编话');
+/*
+ * ★★ 七条 key 的**存在性**：逐格 × 两种语言。
+ *
+ * ⚠️★ 这一圈是 2026-09-16 终审补上的，因为 `lib/rankedErrors.ts` 那条注释**声称**它已经有了，
+ *    而实测没有（当时脚本只断言了这张表的**值**、并用记录器走了一遍派发）。
+ * ⚠️ 为什么那种"空"极难发现，非要说清楚（下一个人才知道它为什么不能删）：
+ *    · 上面那些断言证明的是"派发查表、查的就是这张表"，与"表里的 key **有没有词条**"是两件事；
+ *    · 记录器 `errorSay` 把 key **原样返回** ⇒ 就算某一条词条两份字典里都没有，本节照样全绿；
+ *    · 七条里**绝大多数在任何产物上都不会出现**（失败那句话在界面上是一件已经翻好的字符串），
+ *      ⇒ ⑩ 的裸 key 扫描看不见它们；
+ *    · 而"两份字典**都**少掉同一条"对全仓的语言对齐测试同样是隐形的（两边都没有 ⇒ 对齐）。
+ *    ⇒ 少了这一圈，唯一的发现路径是"用户看到裸 key 那天"。
+ * ⚠️ 形状与 ⑨ 的 `TIMELINE_LABEL_KEYS` 那一圈**逐字相同**（存在性 + 真值 + 非空），
+ *    连理由都同一条：这两张表里的数据都**不再是 `t('…')` 调用点**，任何字面量扫描都够不着。
+ */
+for (const [source, key] of Object.entries(RANKED_ERROR_KEYS)) {
+  for (const lng of LANGUAGES) {
+    assert.ok(
+      i18n.exists(key, { lng }),
+      `★★ 失败词条 ${key} 在【${lng}】里不存在（\`${source}\` 会印出裸 key）`,
+    );
+    const value = i18n.t(key, { lng }) as string;
+    assert.notEqual(
+      value,
+      key,
+      `★★ 失败词条 ${key} 在【${lng}】里没有真值（i18next 会原样返回 key）`,
+    );
+    assert.notEqual(
+      flat(value),
+      '',
+      `★★ 失败词条 ${key} 在【${lng}】里是空的（空格子看起来像渲染坏了）`,
+    );
+  }
+}
+ok('失败码：七格表逐格 + 派发真的查表 + 七条词条两种语言都在 + 503 两档分得开 + 认不出来不编话');
 
 // ---------------------------------------------------------------------------
 console.log('⑦ ★ 直连请求的选项 + 兜底那一次（整节不碰真实网络）');
@@ -2032,7 +2074,15 @@ try {
       ['cache', 'credentials', 'headers', 'referrerPolicy', 'signal'],
       `★★ 第 ${String(i + 1)} 次：init 上没有多余的东西（多一项就是多一份没人验过的行为）`,
     );
-    assert.equal(init.signal, undefined, '★ 没传 signal 的那几个调用点（容器会给）');
+    /*
+     * ⚠️★ 这里原本还有一条 `assert.equal(init.signal, undefined, '没传 signal 的那几个调用点')`
+     *    —— 2026-09-16 终审删掉了：三个 fetcher 都是**不带参数**调用的，
+     *    那个值由构造方式决定（`signal` 这个键必须有、值只能是 `undefined`），
+     *    而"这个键在不在"已经由上面那条 `Object.keys(init).sort()` 钉着 ⇒ 它不可能红。
+     *    ⚠️ 没有它**不是**少了一件事：`signal` 真的传错了是**运行时**判据 ——
+     *    容器那一条（换页/卸载时取消）走的是 `rankedDirect` 的 abort 判据，
+     *    而"取消不是失败"那一格由 ⑥b 的 `isAbort` 与容器的过滤共同保证。
+     */
   }
   /* 冻结常量与"实际发出去的"必须一致（常量那一份单独钉，免得它漂走没人知道）。 */
   assert.deepEqual(
@@ -2129,16 +2179,21 @@ try {
   setUpstreamFetchForTests(null);
   globalThis.fetch = realFetch;
 }
-assert.equal(
-  globalThis.fetch,
-  realFetch,
-  '★★ 收尾：`globalThis.fetch` 必须换回原来那一个（本节唯一的"副作用"）',
-);
+/*
+ * ⚠️★ 这里原本还有一条"收尾：`globalThis.fetch` 必须换回原来那一个"的**同一性读回**
+ *    —— 2026-09-16 终审删掉了，判断写在明面上（免得下一个人又"补"回来）：
+ *    它断言的是**本脚本自己的脚手架**（那几个 `globalThis.fetch = …` 有没有换回来），
+ *    不是这一栏的行为；而这一栏真正要守的"一次真实网络请求都不许发出去"由下面那条
+ *    `leaked === 0` 与节内那条哨兵断言管着（哨兵一被走到就会抛出并计数）。
+ *    ⚠️ 也不是全无线索：复位**真的生效**这件事由节内那条断言证着
+ *    （`setUpstreamFetchForTests(null)` 之后那一次必须打到 `globalThis.fetch` 上，
+ *    见上面"复位**真的**生效"那一条）—— 那一条能红，这一条不能。
+ */
 assert.equal(leaked, 0, '★★ 收尾：一次真实网络请求都不许发出去');
 ok('直连：三个选项 + 只有一个头 + 兜底那一次 + 500 不重试 + 无真实网络');
 
 // ---------------------------------------------------------------------------
-console.log('⑧ ★ 类名 ↔ CSS：产物里每一个 `ranked*` 类名都要有规则');
+console.log('⑧ ★ 类名 ↔ CSS：产物里每一个 `ranked*` 类名都要有规则（本体在 ⑨ 之后跑，见那段）');
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ `docs/pending.md §5.70`：本仓样式是全局的、没有 CSS Modules 兜底，而"渲染了一个
@@ -2173,15 +2228,19 @@ assert.equal(
   '★ 探针：真实那份 `styles.css` 里确实有 `.ranked__side`（证明文件读对了）',
 );
 
-const allClasses = products.flatMap((html) =>
-  [...html.matchAll(/\bclass="([^"]*)"/g)].flatMap((m) => (m[1] ?? '').split(/\s+/)),
-);
-const rankedClasses = [...new Set(allClasses.filter((cls) => cls.startsWith('ranked')))].sort();
-assert.ok(
-  rankedClasses.length > 0,
-  '★★ 探针：产物里确实收集到了 `ranked*` 类名（否则下面那个循环一次都不跑）',
-);
 /*
+ * ★★ 收集 + 门禁本体写成**一个函数**，调用点在 ⑨ 之后（这一节末尾写着为什么）。
+ *
+ * ⚠️★ 为什么不能就地收集（2026-09-16 终审量到）：`products` 是**边渲染边长**的数组，
+ *    而 ⑨ 里还会再渲染两份产物（未知标识那一份、原型链那一份）。
+ *    就地收集 ⇒ "只有这两份里才出现"的类名**根本不进清单**，于是类名↔规则这道门禁
+ *    对它们**是空的** —— 而这道门禁存在的理由正是"渲染了一个没有规则的类名不会有任何报错"。
+ *    ⇒ 收集必须发生在**最后一次渲染之后**（`products` 那时才是完整的）。
+ *    ⚠️ 实测（2026-09-16）：把 `products` 截到 ⑧ 那一刻是 **36** 个类名，完整收集**也是** 36 个
+ *      —— 也就是说**今天**没有一个类名**只**出现在 ⑨ 那两份产物里，那个洞是**潜在**的
+ *      （判据仍然是"收集必须发生在最后一次渲染之后"：它防的是"下一个只在 ⑨ 的夹具里
+ *      出现的新类名"，而那正是这道门禁存在的理由）。
+ * ⚠️ `ok()` 因此也落在 ⑨ 之后：组的**数量**一格没变（⑧ 还是那一组），只是打印顺序挪了。
  * ⚠️ 这张清单是**手抄的**（本仓惯例）：它防的是"整块界面被摘掉"——
  *    比如某个面板的 `<table>` 没了、或 "不可点"那一档的类名不再渲染。
  *    它**不**防"新加了一个类名"（那种情况只需要它在 `styles.css` 里有规则，
@@ -2219,21 +2278,41 @@ const MUST_RENDER = [
   'ranked__stream',
   'ranked__external',
   'ranked__table',
+  'ranked__tablescroll',
   'ranked__seeds',
   'ranked__weeknav',
   'ranked__navbtn',
   'ranked__navbtn--off',
 ] as const;
-for (const cls of MUST_RENDER) {
-  assert.ok(rankedClasses.includes(cls), `★★ 产物里应当出现 \`.${cls}\`（这一格的界面被摘掉了？）`);
-}
-for (const cls of rankedClasses) {
-  assert.ok(
-    hasCssRule(CSS, cls),
-    `★★★ \`.${cls}\` 在 \`apps/web/src/styles.css\` 里没有规则 —— 这是一个**渲染得出来、但什么都不生效**的类名（§5.70）`,
+/*
+ * ★★ ⑧ 的本体：调用点在 ⑨ 结束处（`assertRankedClassesHaveRules()`）——
+ *    收集必须发生在**最后一次渲染之后**，理由写在上面那段。
+ */
+const assertRankedClassesHaveRules = (): void => {
+  const allClasses = products.flatMap((html) =>
+    [...html.matchAll(/\bclass="([^"]*)"/g)].flatMap((m) => (m[1] ?? '').split(/\s+/)),
   );
-}
-ok(`类名↔CSS：${String(rankedClasses.length)} 个 \`ranked*\` 类名逐个在 styles.css 里有规则`);
+  const rankedClasses = [...new Set(allClasses.filter((cls) => cls.startsWith('ranked')))].sort();
+  assert.ok(
+    rankedClasses.length > 0,
+    '★★ 探针：产物里确实收集到了 `ranked*` 类名（否则下面那个循环一次都不跑）',
+  );
+  for (const cls of MUST_RENDER) {
+    assert.ok(
+      rankedClasses.includes(cls),
+      `★★ 产物里应当出现 \`.${cls}\`（这一格的界面被摘掉了？）`,
+    );
+  }
+  for (const cls of rankedClasses) {
+    assert.ok(
+      hasCssRule(CSS, cls),
+      `★★★ \`.${cls}\` 在 \`apps/web/src/styles.css\` 里没有规则 —— 这是一个**渲染得出来、但什么都不生效**的类名（§5.70）`,
+    );
+  }
+  ok(
+    `⑧ 类名↔CSS：${String(rankedClasses.length)} 个 \`ranked*\` 类名逐个在 styles.css 里有规则（收集自 ${String(products.length)} 份产物）`,
+  );
+};
 
 // ---------------------------------------------------------------------------
 console.log('⑨ ★ 进度词条表：逐条两种语言 + 未知标识回落');
@@ -2246,7 +2325,6 @@ console.log('⑨ ★ 进度词条表：逐条两种语言 + 未知标识回落')
  *    （它扫的是字面量 `t('…')`）⇒ 只有这里能发现。
  * ⚠️ 那个 9 是**手抄的**（本仓惯例）：它防的是"为了让红的变绿，把某一行从表里删掉"。
  */
-const LANGUAGES = ['zh-CN', 'en'] as const;
 assert.equal(
   Object.keys(TIMELINE_LABEL_KEYS).length,
   9,
@@ -2312,10 +2390,19 @@ assert.equal(
  *    `Object.prototype.constructor`（一个函数），最后把
  *    `function Object() { [native code] }` 印到界面上。上游只要发一个叫 `constructor`
  *    的节点就会命中，而这一层存在的理由正是"上游随时会加新值"。
- * ⚠️★ 它是本节**唯一**能把"查表回落"与"无条件 `t(type)`"分开的断言：对未知标识来说
- *    两者印出来的字**一模一样**（i18next 查不到 key 时原样返回 key，而那个 key 恰好就是
- *    标识本身）⇒ 上面那条"产物里出现的是那个标识"仍然要有（它守的是"别去拼
- *    `ranked.timeline.xxx` 这种 key"），但它**不是**"回落真的走了查表"的证据。
+ * ⚠️★ 但**别高估它**（2026-09-16 终审实测修正了这里原来的一句话）：
+ *    它**不能**把"查表回落"与"无条件 `t(type)`"分开 —— 对未知标识来说两者印出来的字
+ *    **一模一样**（i18next 查不到 key 时原样返回 key，而那个 key 恰好就是标识本身），
+ *    `constructor` / `toString` / `future.brand_new_node` 三个名字在这一点上完全一样。
+ *    它**能**分开的是**另一对**：`Object.hasOwn` 与 `in` / `!== undefined` 那种沿原型链的查法
+ *    （后者会拿到 `Object.prototype.constructor` 那个函数 ⇒ 产物里出现 `[native code]`）——
+ *    也就是 `timeline.ts` 里"为什么不用 `in`"那句话的判据。
+ * ⚠️ 那"`t(type)` 与查表分不开"这件事本身**有**一条门禁，只是不在这个脚本里：
+ *    `services/api/src/ranked-shared.test.ts` 的桩 `t = (key) => \`[${key}]\``
+ *    会把未知标识印成 `[future.brand_new_node]` ⇒ 那条路当场红
+ *    （`docs/progress.md` 的 mutation 那一节记着这次实测）。
+ * ⚠️ 上面那条"产物里出现的是那个标识"仍然要有（它守的是"别去拼 `ranked.timeline.xxx` 这种 key"），
+ *    但它**不是**"回落真的走了查表"的证据。
  */
 const PROTOTYPE_TYPE = 'constructor';
 const prototypeHtml = renderLive(
@@ -2369,6 +2456,13 @@ assert.equal(
 ok(
   `进度词条表：${String(Object.keys(TIMELINE_LABEL_KEYS).length)} 条 × 两种语言 + 未知回落 + 原型链（\`constructor\`）+ 表内那条走词条`,
 );
+/*
+ * ★★ ⑧ 的本体在这里跑（不是它那一段之后）：类名清单必须收集**最后一次渲染之后**的产物，
+ *    而上面的 `unknownHtml` / `prototypeHtml` 是最后两份 —— 就地在 ⑧ 那一段收集的话，
+ *    "只有这两份里才出现"的类名会**漏出**那道门禁（终审量到的那个洞）。
+ *    ⚠️ 组的数量没变：⑧ 还是那**一组**，只是它的 `ok()` 落在这里。
+ */
+assertRankedClassesHaveRules();
 
 // ---------------------------------------------------------------------------
 console.log('⑩ 裸 key 泄漏 + 字面的 `**`（含反面控制探针）');
@@ -2380,10 +2474,13 @@ const allRaw = rawText(everyProduct);
  * ⚠️ 裸 key 扫描（含**属性**里的值）：`aria-label` / `data-*` 里漏了词条、别处印出 key ——
  *    这些都只有扫原文才看得见（`textOf` 会把属性整段吃掉）。
  * ⚠️ 扫描器本身必须能命中（否则它是恒真的空跑）。
+ * ⚠️★ 命名空间清单是**手抄的**，而且它必须覆盖**本栏目产物里真会出现的每一族 key**：
+ *    漏一族 ⇒ 那一族的裸 key 从这道扫描里**漏出去**（2026-09-16 终审量到：`videos` 不在里面，
+ *    而本脚本的嵌入门面渲染的正是 `videos.play`）。加一族就在这里加一个。
  * ⚠️ 这里**不放行任何东西**：本栏目产物里合法出现的只有类名（`ranked__row` 不含 `.`）、
  *    路径（`/ranked/weekly/102` 不含 `.`）与上游给的直播地址。
  */
-const BARE_KEY = /(?:ranked|nav|common|home|auth|shares)\.[A-Za-z][A-Za-z0-9.]*/g;
+const BARE_KEY = /(?:ranked|nav|common|home|auth|shares|videos)\.[A-Za-z][A-Za-z0-9.]*/g;
 assert.notEqual(
   [...'ranked.doesNotExist nav.nope'.matchAll(BARE_KEY)].length,
   0,
@@ -2447,7 +2544,12 @@ console.log('   · **轮询**（15s / 10s / 60s / 60s）、**页面不可见时�
 console.log(
   '     它们全是 effect，纯 SSR 下一次都不跑（`RANKED_POLL_MS` 的值由类型与 spec 钉着）。',
 );
-console.log('   · **失败绝不清空**的另一半：容器**换 tab / 翻页**时会清空（那是另一条规矩）；');
+console.log(
+  '   · **失败绝不清空**的另一半：容器**换 tab / 翻页**时**也不清**（2026-09-16 终审删掉了',
+);
+console.log(
+  '     那个"换页就清空"的 effect）—— 那件事由 `key` / `mine()` 挡着，本脚本一次都不跑；',
+);
 console.log('     本脚本钉的是"视图拿到旧数据 + 一句错误时**照样把旧数据画出来**"。');
 console.log('   · **点击的结果**：SSR 的产物里没有事件处理器，一颗接好线的按钮与一颗 `onClick` 是');
 console.log(

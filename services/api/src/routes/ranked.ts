@@ -179,8 +179,12 @@ rankedRoute.get('/status', async (c) => {
   if (!limited.ok) {
     /*
      * ⚠️ 429 在**打上游之前**：限流的意义就是不让被拒的请求占用上游额度。
-     *    `Retry-After` 是 HTTP 标准字段，界面据此说"请 N 秒后再试"，
-     *    而不是干巴巴一句"请求过于频繁"（同 routes/seeds.ts 的做法）。
+     * ⚠️★ `Retry-After` 是给**别的**客户端（脚本 / 以后可能有的读者）的标准字段，
+     *    **不是**界面在等的东西：这一栏界面那句是 `ranked.errRateLimited`
+     *    （「请求有点频繁，过一会儿再试。」），它**不收数字** —— `apps/web` 这一条路上
+     *    没有任何一处读 `retryAfterSec` 或这个头（body 里那个字段是**契约**的一部分，
+     *    spec §4.2；把数字印进句子的那一套在"实时分享"那一栏，走的是它自己的码）。
+     * ⚠️ 早先这里的注释写的是"界面据此说『请 N 秒后再试』"，那句**不成立**（2026-09-16 终审量到）。
      */
     c.header('Retry-After', String(limited.retryAfterSec));
     return c.json({ error: 'rate_limited', retryAfterSec: limited.retryAfterSec }, 429);

@@ -216,13 +216,13 @@ const SERVER_ERROR_HINT =
  * 读走这一层的一次 GET（写走下面的 `sendJson` / `uploadImage`）。
  *
  * ⚠️★ 它的签名**只有三个参数，而且不许再长**：全部既有调用点"行为不变"的保证就挂在这上面 ——
- *    多出来的那一个行为由下面 `requestCore()` 的一件**模块私有的票据**表达，
- *    公共签名里连"能传错的那个参数"都不存在（那段注释写了为什么不是可选参数）。
+ *    多出来的那一个行为由下面 `requestCore()` 的一个**模块私有**参数表达，
+ *    而那个函数**自己也不是 export** ⇒ 公共签名里连"能传错的那个参数"都不存在。
  * ⚠️ 函数体是**一行转发**：两条读路径共用 `requestCore()` 这一份实现，不是两份逐字重复的副本
  *    （评审重要 2：副本的失效方式是"改了一处、另一处静默不动"，而且没有任何东西断言两者一致）。
  */
 async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCache): Promise<T> {
-  return requestCore<T>(path, signal, cache, undefined);
+  return requestCore<T>(path, signal, cache, false);
 }
 
 /*
@@ -253,22 +253,25 @@ async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCac
  *    错误构造、JSON 返回各一份）—— 那正是"改了一处、另一处静默不动"的形状，
  *    而且没有任何东西断言两者一致（评审重要 2，本轮修掉）。
  *
- * ⚠️★ 那个参数**不是 boolean，是一张只有本模块拿得到的票据**（`READ_ERROR_CODE`）：
- *    · 公共的 `request()` 签名**一个参数都没多**（还是那三个）⇒ 约三十个既有调用点
- *      **连一个能传错的参数都不存在** —— 这是**结构性**的事实，而不是"每个调用点都别传它"；
- *    · 想打开这个行为，只有本模块内写得出 `READ_ERROR_CODE` 这个名字：别处既 import 不到它
- *      （没有 export），也伪造不出同一个值（`Symbol()` 每次都是新的，而且符号不参与结构类型，
- *      传任何一个别的 symbol 都是类型错误）。
- *    否决了 `request(..., withErrorCode = false)` 那种可选参数：默认值一旦被翻转，
- *    全站约三十条 GET 的错误形状会**静默**一起变（`ApiError.code` 从恒为 `undefined` 变成真码），
- *    而按 `code` 选文案的下游不止这一栏（`useApiErrorText` / `lib/shareErrors.ts` /
- *    `lib/seedErrors.ts`）—— 那需要它自己的一次评审，没有门禁看得见这次翻转。
+ * ⚠️★ 那个参数就是 `requestCore()` 上的一个 **boolean**（`readErrorCode`），而它照样传不出去 ——
+ *    理由是**结构性**的，不是"大家说好别传"：
+ *    · 公共的 `request()` 签名**一个参数都没多**（还是那三个），而 `requestCore()` **自己也不是
+ *      export** ⇒ 模块外连"能传错的那个参数"都不存在（约三十个既有调用点只看得到 `request()`）；
+ *    · 想打开这个行为，只有本模块内写得出 `requestCore(…, true)` —— 而这样的调用今天**只有一处**
+ *      （`requestWithErrorCode()`，它下面那个注释写着"只有一个调用点"这件事）。
+ *    ⚠️ 这里**换过一版**（2026-09-16 终审）：原先那个参数是一张模块私有的 `Symbol` 票据
+ *      （`READ_ERROR_CODE`），而它的两条理由**都站不住** ——
+ *      ① "只有拿得到票据才打得开"是假的：`requestCore()` 本身就是模块私有的，
+ *         一个 boolean 在模块外的可达性与那张票据**一模一样**（都是 0）；
+ *      ② "公共的 `request()` 签名没多参数"是**包装器**的性质，与票据无关
+ *         （`request()` 转发时本来就没有多传一个位置参数）。
+ *      ⇒ 那张票据没有换来任何东西，只是一层间接，本条改回 boolean（**行为一个字节不变**）。
+ *    ⚠️★ 真正要守的是同一件事（票据与 boolean 一样要守）：打开它的调用点**只有那一处**。
+ *      谁把 `requestCore(…, true)` 抄到第二条读路径上，全站约三十条 GET 的错误形状会**静默**一起变
+ *      （`ApiError.code` 从恒为 `undefined` 变成真码），而按 `code` 选文案的下游不止这一栏
+ *      （`useApiErrorText` / `lib/shareErrors.ts` / `lib/seedErrors.ts`）—— 那需要它自己的一次评审，
+ *      没有门禁看得见这次翻转。
  */
-
-/**
- * 「这一次要不要读响应体」的票据。**模块私有**，且刻意不是 boolean —— 理由见上面那段。
- */
-const READ_ERROR_CODE = Symbol('readErrorCode');
 
 /**
  * ★★ 两条读路径（`request()` / `requestWithErrorCode()`）**唯一的一份实现**。
@@ -276,12 +279,15 @@ const READ_ERROR_CODE = Symbol('readErrorCode');
  * 除了"读不读错误体"这一件事，两条路的每一行都是**同一行**：同一个 `accept`、
  * 同一份 `cache` / `signal` 传递、同一个 abort 原样抛出、同一句"连不上 API"（`status` 也是 0）、
  * 同一句 `API 返回 HTTP …` 与同一个 5xx 猜测。差别只有下面那个三元表达式。
+ * ⚠️★ `readErrorCode` **没有默认值**（是必填参数）：默认值一被翻转，上面那条约三十条 GET
+ *    的错误形状就会静默一起变 —— 必填的意思是**两个调用点都必须自己写出来**，
+ *    而"多了一条读路径"这件事在类型检查那一刻就会露出来。
  */
 async function requestCore<T>(
   path: string,
   signal: AbortSignal | undefined,
   cache: RequestCache | undefined,
-  readErrorCode: typeof READ_ERROR_CODE | undefined,
+  readErrorCode: boolean,
 ): Promise<T> {
   let res: Response;
   try {
@@ -296,8 +302,8 @@ async function requestCore<T>(
     // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
     // 直接把这个猜测写进错误里，省得每次都要重新推一遍。
     const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
-    // ★ 唯一的差额。没拿票据时**连读体的调用都不发生**（不是"读了但不用"）。
-    const code = readErrorCode === READ_ERROR_CODE ? await readRefusalCode(res) : undefined;
+    // ★ 唯一的差额。不读体的那一路**连读体的调用都不发生**（不是"读了但不用"）。
+    const code = readErrorCode ? await readRefusalCode(res) : undefined;
     throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status, code);
   }
 
@@ -333,16 +339,18 @@ async function readRefusalCode(res: Response): Promise<string | undefined> {
 /**
  * `requestCore()` 的**第二种模式**：非 2xx 时多读一样东西 —— 响应体里的错误码。
  *
- * ⚠️★ 它**只有一个调用点**（`fetchRankedStatus`，`git grep` 可核），而这个"薄壳 + 票据"的形状
- *    是刻意的：票据只在这一处被交出去，所以"哪个调用点打开了这个行为"在任何时候都一眼可见 ——
- *    直接在核心上多传一个 `true` 的话，那件事就散在三十几个调用点里了。
+ * ⚠️★ 这层薄壳（而不是让调用点直接写 `requestCore(…, true)`）是为了让"哪一处打开了这个行为"
+ *    **一眼可见、且只有一处要改**：`true` 只在下一行出现，而 `request()` 那一侧写的是 `false`。
+ *    ⚠️ 它与 `request()` 一样**不 export** ⇒ 模块外根本拿不到 `requestCore`，
+ *    所以"薄壳"不是权限机制（那件事由"核心私有"保证），它只是**可读性**与**唯一入口**。
+ * ⚠️ 它**只有一个调用点**（`fetchRankedStatus`，`git grep` 可核）。
  */
 async function requestWithErrorCode<T>(
   path: string,
   signal?: AbortSignal,
   cache?: RequestCache,
 ): Promise<T> {
-  return requestCore<T>(path, signal, cache, READ_ERROR_CODE);
+  return requestCore<T>(path, signal, cache, true);
 }
 
 export function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {

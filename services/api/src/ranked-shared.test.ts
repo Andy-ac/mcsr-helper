@@ -22,6 +22,7 @@ const {
   weekPath,
   formatRaceTime,
   formatClock,
+  secondsAgo,
   TIMELINE_LABEL_KEYS,
   timelineLabel,
   RANKED_LIVE_TOP,
@@ -810,6 +811,26 @@ describe('时间格式', () => {
       formatClock(750_913),
       '12:30',
       '夹具里另一格：750913 ms 就是 spec §6.3 草图上的 12:30',
+    );
+  });
+
+  it('★★ 新鲜度（`secondsAgo`）：向下取整、钳到 0、没有数据回 `null`', () => {
+    /*
+     * ⚠️★ 这一条守的是 spec §6.6 那**两句冻结文案**里的数字（「{{secs}} 秒前更新」与
+     *    「上次刷新失败了，下面是 {{secs}} 秒前的数据」）：两句话会在同一次渲染里同时出现，
+     *    而它们的 N 来自**同一次调用**（两个容器里都是 `staleSecs = updatedAgoSecs`）。
+     *    算式从容器里提进 shared 就是为了让这一条写得出（`apps/web` 没有测试运行器）。
+     * ⚠️ 四栏各自都要有判据，缺一格就是"某个方向错了但没人发现"：
+     *    取整方向（1.999 秒）／钳位（时钟往回跳）／`null`（这一行根本不该出现）。
+     */
+    assert.equal(secondsAgo(1_000_000, 940_000), 60, '60 秒整');
+    assert.equal(secondsAgo(1_999, 0), 1, '★ 向下取整：1.999 秒 ⇒ 1（四舍五入会说"2 秒前"）');
+    assert.equal(secondsAgo(1_000_000, 999_500), 0, '半秒 ⇒ 0（那一秒还没过去）');
+    assert.equal(secondsAgo(1_000_000, 1_000_400), 0, '★★ 时钟往回跳 ⇒ 钳到 0（不是「-0 秒前」）');
+    assert.equal(
+      secondsAgo(1_000_000, null),
+      null,
+      '★★ 手上没有属于这一页的数据 ⇒ `null`（0 会让界面印一句「0 秒前更新」）',
     );
   });
 });

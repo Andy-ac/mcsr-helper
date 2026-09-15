@@ -2811,7 +2811,17 @@ export const en: TranslationSchema = {
     statusStale: 'The server is serving a stale fallback copy of this data.',
 
     // ---- (2) Live top matches (`RankedLiveView`, spec §6.3) ----
-    liveTitle: 'Top matches streaming right now',
+    /*
+     * ⚠️★ The title names what this panel actually selects: matches being played **right now**,
+     *    top 10 **by average elo**. It used to read "Top matches streaming right now" (changed
+     *    2026-09-16), which overstated two things: a card may have **no stream at all** (the
+     *    upstream field is empty; the render fixture's top card is even named `Nostream`) --
+     *    streaming is carried by each card's own "Show streams (N)" -- and "top" is an
+     *    **average** elo ordering in which an unrated player (`eloRate: null`) is normal
+     *    (spec §10 item 6), so the leading card is not necessarily a high-elo one.
+     *    The ordering itself is spelled out by `liveFrom` right below.
+     */
+    liveTitle: 'Matches playing right now (top 10 by average elo)',
     liveEmpty: 'There is no live match right now.',
     liveFrom: 'Top 10 of {{total}} by average elo',
     liveExpand: 'Show streams ({{n}})',
@@ -2906,7 +2916,16 @@ export const en: TranslationSchema = {
      */
     errBusy: 'The upstream is busy — try again in a moment.',
     errUnavailable: 'The upstream cannot be reached right now — try again later.',
-    errBadResponse: 'The upstream returned data we cannot read; we have noted it.',
+    /*
+     * ⚠️★ This used to read "..; we have noted it" (changed 2026-09-16). **We note nothing.**
+     *    The direct path is visitor browser -> upstream, so our side never sees the failure
+     *    (spec §10 item 8: the browser side deliberately does **not** log -- that was the
+     *    decision in Task 1's review), and this sentence is everything the reader learns about
+     *    what happened. Claiming an action we never take is worse than saying less: they may
+     *    assume someone will look into it and stop reporting it.
+     *    What is left is only what we actually know: the upstream sent something we cannot read.
+     */
+    errBadResponse: 'The upstream returned data we cannot read.',
     errNetwork:
       'Could not reach the upstream — a network issue or a browser extension may be blocking it.',
     /** ⚠️ `{{status}}` lives only in this one; with no number the caller uses its fallback. */
