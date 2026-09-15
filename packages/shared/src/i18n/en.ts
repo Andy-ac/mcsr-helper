@@ -125,6 +125,19 @@ export const en: TranslationSchema = {
       shares:
         'Room codes and world seeds people put up for a few minutes — they vanish on their own, and you have to log in to see inside.',
       seeds: 'Search world seeds, and see the ones people shared along with their times.',
+      /*
+       * ⚠️ This entry and the sidebar row (`lib/nav.ts`, `block: 'ranked'`) have to
+       *    land in the same commit: `check:home` checks the correspondence in both
+       *    directions -- without this line the home page prints a raw key, and
+       *    with this line but no nav row it is equally red (measured earlier:
+       *    dictionary-only, `check:home` exits 1).
+       * ⚠️ The wording follows the section's four tabs (status and count / live
+       *    matches / leaderboard / weekly race) rather than "an intro to MCSR
+       *    Ranked": this section answers what is happening right now, and a
+       *    blurb that reads like an explainer points at a page that does not exist.
+       */
+      ranked:
+        'Who is playing right now: live matches, online count, leaderboards and the weekly race.',
       profile:
         'Your account: sign-in state, email verification, what you posted and what you saved.',
     },

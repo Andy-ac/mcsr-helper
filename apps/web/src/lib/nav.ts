@@ -64,6 +64,16 @@ export const NAV_SECTIONS = [
    */
   { to: '/shares', labelKey: 'nav.shares', block: 'shares', milestone: '' },
   { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: '' },
+  /*
+   * 「Ranked 实时信息」（2026-09-16）—— 紧挨着「排位赛种子」（都是 MCSR Ranked 的消息），
+   * 而这一栏讲的是"现在正在发生什么"，所以放在它**下面**。
+   *
+   * ⚠️ 短名 `ranked` 同时连着四样东西（改它等于同时改四处）：侧栏小方块的 CSS
+   *    （`.sidebar__block--ranked`）、首页那一句说明（`home.desc.ranked` ——
+   *    少了首页会印裸 key，check:home 会红）、词条命名空间（`ranked.*`）、
+   *    以及 `/ranked` 路由（App.tsx 里必须真有，homerender 有一条守卫）。
+   */
+  { to: '/ranked', labelKey: 'nav.ranked', block: 'ranked', milestone: '' },
   // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
   // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。
   { to: '/me', labelKey: 'nav.profile', block: 'profile', milestone: '' },
