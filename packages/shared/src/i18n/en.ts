@@ -2198,8 +2198,20 @@ export const en: TranslationSchema = {
      * ⚠️ `pickLegend` for the same reason is not polish: the three states are carried by
      *    **colour alone** (green / red / grey), which says nothing to a colour-blind user,
      *    so the visible legend is part of that design.
-     * ⚠️ The four top rows **reuse** `seedsPage.structure.*` (Village / Desert temple / …),
-     *    so there are no entries for them here — do **not** copy them a second time.
+     * ⚠️ Which pieces borrow entries from **elsewhere** (spelled out: the owner is about to
+     *    hand-translate this block, and the old sentence would have sent them after the
+     *    wrong entries):
+     *      · the **5 option buttons of the overworld row** and the **4 of the bastion-type
+     *        row** reuse `seedsPage.structure.*` (Village / Bridge / …) — they take the
+     *        structure table's `labelKey`, so there are no entries for them here; do **not**
+     *        copy them a second time;
+     *      · the two **biome** rows (bastion / fortress) use `seedsPage.variation.*` (above);
+     *      · the four row **labels** are neither here nor above — they are the new keys
+     *        right below (`pickOverworld` / `pickBastionBiome` / `pickBastionType` /
+     *        `pickFortressBiome`).
+     *    ⚠️ This sentence used to read "the four top rows **reuse** `seedsPage.structure.*`"
+     *      and then cite the **five buttons** — **both halves were wrong** (caught in the
+     *      final review).
      */
     tabWorld: 'World seeds',
     tabRng: 'RNG seeds',

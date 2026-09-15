@@ -176,7 +176,19 @@ export function SeedResultCard({
 }: {
   record: SeedRecord;
   infoAction?: ReactNode;
-  /** "结构与变种"面板 —— 由页面挂在这里，因为它要负责去重和记住见过的词条。 */
+  /**
+   * 「结构与变种」面板 —— 由**页面**挂在这一格（`Seeds.tsx` 的 `infoSlotFor()`）。
+   *
+   * ⚠️ 只有页面知道"**哪一张卡片**上那一条展开了"：`infoOwner` / `infoMatchId` /
+   *    `infoState` 三个状态都住在页面里，而同一个 matchId 可能同时出现在"检索结果"
+   *    与"按 ID 查"两块里 —— 卡片自己渲染的话，那两处会同时展开（看起来像渲染重复）。
+   * ⚠️ 面板内部的事一件都不在这一格：取数、以及**去重**都在 `SeedInfoPanel` 里
+   *    （上游自己会给重复词条，实测 `biome:structure:plains` 出现过两次；去重就是
+   *    它那句 `[...new Set(info.variations)]` —— 显示层只有这一份实现）。
+   * ⚠️ **别**再用"卡片要负责**记住见过的词条**"来解释这一格：那套机制
+   *    （旧的 `observedVariations` / `harvest`）已经整块删除（spec §8.4），
+   *    现在按钮集是固定的。这句话曾经写在这里，而它从那时起就是一句假事实。
+   */
   children?: ReactNode;
 }) {
   const { t } = useTranslation();

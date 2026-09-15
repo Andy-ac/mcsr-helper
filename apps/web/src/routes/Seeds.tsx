@@ -319,6 +319,13 @@ export function Seeds() {
    *   两边都是 `string` ⇒ 忘了翻译照样编译通过，然后在按钮排下面印出一串
    *   `seedsPage.errFilterTooLong` —— 而且词条存在性那三条静态守卫都抓不到它
    *   （它们只认 `t('字面量')`，这里传进去的是**变量**）。
+   *
+   * ⚠️★ 而 `searchFailure.fieldErrors` 这个槽有**两个生产者、两种形状**，
+   *    所以别根据面板那句"props 是已翻译文本"的文档把这一行 `t()` "优化"掉：
+   *      · `runSearch()` 放进去的是 `builtPicker.errors` —— **词条 key**（客户端先拦一遍）；
+   *      · `describeSeedQueryError()` 放进去的是**已经翻译好的句子**（它在自己内部
+   *        就 `t()` 过了：`filter_too_long` → `variations` 槽、`bad_completion` → `completion` 槽）。
+   *    `t()` 对前者是翻译、对后者是原样返回 —— 两种形状今天都到得了这里，一行代码两用。
    */
   const pickerFieldErrors: Partial<Record<'variations' | 'completion', string>> = {};
   if (searchFieldErrors.variations) {
