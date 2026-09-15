@@ -586,6 +586,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.liveExternal` | 「**这条链接**不能内嵌，在新窗口打开」—— ⚠️ 措辞刻意**不说"这个平台不支持"**：`livePlatform === null` 有两类来源（认不出的平台如 kick；以及"平台其实支持、只是这条地址里没有可嵌的视频"，例如 `youtube.com/@handle` 的频道页 ⇒ 见 `embed.ts` 的注释），说"平台不支持"对后者是**错话**。⚠️ **也没有 `liveNoStream`**：一场对局两个人都没在直播时，卡片**没有**展开入口 —— 一颗按下去什么都不发生的按钮比没有按钮更坏 |
 | `ranked.seedOverworld` / `seedNether` / `seedEnd` / `seedRng` | 「主世界」/「下界」/「末地」/「RNG」—— ⚠️ **不复用 `shares.formOverworld` 那四条**：那是"实时分享"那一栏自己的词条，跨栏目复用意味着改一栏的文案会**顺手改掉**另一栏；而这四格说的是**周赛的种子**，是另一个语境 |
 | `ranked.statusStale` | 「服务端这份数据是兜底的旧数据。」—— ⚠️ 它对应响应里的 `stale: true`，与「上次刷新失败了」**不是**一件事：这一次**我们的**刷新是成功的，是**服务端**拿了兜底（上游那一刻读不到）。两者混成一句会让用户以为是自己网络的问题 |
+| `ranked.statusTitle` | 「服务状况」—— ① 那一栏的小标题。⚠️ 它**不是** `nav.ranked`：标签页那一行已经用了栏目名，这里再写一遍就是同一句话在同一个屏幕上出现两次；而 ②③④ 各自都有自己的 `<h2>`，① 没有的话它就成了唯一一个没有标题的面板 |
 | `ranked.matchTime` | 「已进行 {{time}}」 |
 | `ranked.eloTitle` / `season` / `seasonRange` | 「Elo 排行榜」/「赛季 {{n}}」/「{{from}} → {{to}}」 |
 | `ranked.colRank/Nickname/Elo/Highest/PhasePoint` | 「排名」/「昵称」/「elo」/「最高」/「阶段分」 |
