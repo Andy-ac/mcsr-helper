@@ -494,4 +494,48 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
     assert.equal(rankedLiveChannel(null), null);
     assert.equal(rankedLiveChannel('not a url'), null);
   });
+
+  it('★ 余下的分支各有一条期望（每个分支都算一个判据）', () => {
+    // youtu.be 短链：就是"某一场"，handle 按 live.ts 的约定是空串
+    assert.deepEqual(rankedLiveChannel('https://youtu.be/abcdefghijk'), {
+      platform: 'youtube',
+      handle: '',
+      liveVideoId: 'abcdefghijk',
+    });
+    // youtube.com/live/<id> 与 /embed/<id>：与 watch?v= 同形
+    assert.deepEqual(rankedLiveChannel('https://www.youtube.com/live/abcdefghijk'), {
+      platform: 'youtube',
+      handle: '',
+      liveVideoId: 'abcdefghijk',
+    });
+    assert.deepEqual(rankedLiveChannel('https://www.youtube.com/embed/abcdefghijk'), {
+      platform: 'youtube',
+      handle: '',
+      liveVideoId: 'abcdefghijk',
+    });
+    // m.youtube.com 是**另一个主机名**，必须单独认（不是 www. 前缀那一条能覆盖的）
+    assert.deepEqual(rankedLiveChannel('https://m.youtube.com/watch?v=abcdefghijk'), {
+      platform: 'youtube',
+      handle: '',
+      liveVideoId: 'abcdefghijk',
+    });
+    // 频道页：只标出"这是频道页 + 频道级嵌入开着"，能不能嵌仍由 liveEmbedDecision 判
+    assert.deepEqual(
+      rankedLiveChannel('https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv'),
+      {
+        platform: 'youtube',
+        handle: 'UCabcdefghijklmnopqrstuv',
+        liveVideoId: null,
+        embedChannel: true,
+      },
+    );
+    // @handle 形式的频道页 ⇒ null（频道级嵌入只认 UC 频道 ID；外链那一档不需要我们判平台）
+    assert.equal(rankedLiveChannel('https://www.youtube.com/@someone'), null);
+    // 协议白名单：javascript: / data: 既不是我们的链接，将来还会被放进 src/href
+    assert.equal(rankedLiveChannel('javascript:alert(1)'), null);
+    assert.equal(rankedLiveChannel('data:text/html,<b>x</b>'), null);
+    // 光有主机名、没有标识的那一段
+    assert.equal(rankedLiveChannel('https://twitch.tv/'), null);
+    assert.equal(rankedLiveChannel('https://live.bilibili.com/'), null);
+  });
 });
