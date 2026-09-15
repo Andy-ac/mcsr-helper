@@ -469,6 +469,7 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
     assert.deepEqual(rankedLiveChannel('https://twitch.tv/hufterl'), {
       platform: 'twitch',
       handle: 'hufterl',
+      liveVideoId: null,
     });
     assert.deepEqual(rankedLiveChannel('https://www.youtube.com/watch?v=abcdefghijk'), {
       platform: 'youtube',
@@ -478,6 +479,7 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
     assert.deepEqual(rankedLiveChannel('https://live.bilibili.com/31288037'), {
       platform: 'bilibili',
       handle: '31288037',
+      liveVideoId: null,
     });
   });
 

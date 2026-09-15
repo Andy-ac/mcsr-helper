@@ -28,27 +28,36 @@
 import type { LiveEmbedChannel } from '../live';
 
 /**
- * 我们认出来的「平台 + 标识」。
- *
- * ⚠️ 它与 `live.ts` 的 `LiveEmbedChannel` **只差一格**：`liveVideoId` 在这里是**可选**的。
- *    理由是这条链接**给不出那一格**：Twitch 的地址里只有频道名，B站 的只有房间号
- *    —— 「某一场视频」这个维度**只有 YouTube 才有**（`watch?v=` / `youtu.be/`）。
- *    ⇒ 那两档**不产出这个键**（缺省，不是 `null`）：`null` 是"我们知道有一个视频 ID，
- *      但它是空的"这种话，而我们并不知道这件事；写成 `null` 是一种**编出来的确定性**
- *      （界面/下游完全可能据此说一句"这一场没法播"）。
- *    ⚠️ 代价写在明面上：这个返回值**不能**直接喂给 `liveEmbedDecision()`
- *      （它要 `LiveEmbedChannel`，那里 `liveVideoId` 是必填的）。
- *      补一格即可，且只有这一处：
- *        `liveEmbedDecision({ ...chan, liveVideoId: chan.liveVideoId ?? null }, location.hostname)`
- */
-type RankedLiveChannel = Omit<LiveEmbedChannel, 'liveVideoId'> & { liveVideoId?: string | null };
-
-/**
  * 这条链接是哪个平台的谁；认不出就是 `null`。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 视频那一格**每个平台都带**（`liveVideoId: null` 就是"这个平台没有视频这一维"）
+ * ---------------------------------------------------------------------------
+ * 返回类型就是 `live.ts` 的 `LiveEmbedChannel`，那里 `liveVideoId` 是**必填**的
+ * （`string | null`）⇒ 没有视频可言的几档（Twitch 频道页、YouTube 频道页、B站直播间）
+ * 都要**显式写出这个键**，而不是让它缺省 —— 有视频的那几档带的是抽出来的那个 ID。
+ *
+ * ⚠️ 为什么写 `null`：这是**这个仓库既有的约定**，不是这里新定的。`live.ts` 的
+ *    `parseLiveLink` 面对同一种输入形状时给的就是它 —— Twitch 频道页（`live.ts:256`）、
+ *    YouTube 频道页（`:273` / `:277`）、B站直播间（`:294`）四条分支**全都**是
+ *    `liveVideoId: null`。也就是说它在这份代码里的含义是
+ *    「**这个平台没有视频维度，所以这一格是空的**」，而不是
+ *    「我们知道有一个视频 ID，但它是空的」—— 这里要表达的正是前一句。
+ *
+ * ★ 收益：这个返回值**能原样喂给** `liveEmbedDecision(channel, location.hostname)`
+ *   —— 那正是本文件存在的唯一目的（见文件头），而它的参数类型就要这个键。
+ *   ⇒ 否决的替代方案：把返回类型收成
+ *     `Omit<LiveEmbedChannel, 'liveVideoId'> & { liveVideoId?: string | null }`、
+ *     让那几档**不产出这个键**。代价是把"补一格"推给**每一个**调用方 ——
+ *     每个调用点都得写 `{ ...chan, liveVideoId: chan.liveVideoId ?? null }`，
+ *     而计划里 Task 5 的用法就是**朴素的那一句**
+ *     `liveEmbedDecision(rankedLiveChannel(url), location.hostname)`：照那个签名，
+ *     这一句**编译不过**（缺必填键），等于把一个类型上已经确定的事
+ *     变成"每个调用方都得记得补"。
  *
  * @param liveUrl 上游 `data.<uuid>.liveUrl`（**可以是 `null`**，实测约一半的玩家块没有它）。
  */
-export function rankedLiveChannel(liveUrl: string | null): RankedLiveChannel | null {
+export function rankedLiveChannel(liveUrl: string | null): LiveEmbedChannel | null {
   // ① 没有链接（或空串）—— 这是**最常见**的一档，实测 20 个玩家块里 8 个是它。
   if (!liveUrl) return null;
 
@@ -80,7 +89,7 @@ export function rankedLiveChannel(liveUrl: string | null): RankedLiveChannel | n
     // 但那是"这条链接指向别的东西"，不是"我们认错了平台"—— 取到的那一段仍然是个标识，
     // 而 `liveEmbedDecision` 自己会挡住无法成形的标识（它只对空/带空格的名字说不）。
     const name = seg(0);
-    return name ? { platform: 'twitch', handle: name } : null;
+    return name ? { platform: 'twitch', handle: name, liveVideoId: null } : null;
   }
 
   if (host === 'youtu.be') {
@@ -101,9 +110,13 @@ export function rankedLiveChannel(liveUrl: string | null): RankedLiveChannel | n
      *    ⚠️ 我们只**标出**"这是一个频道页 + 这个开关开着"，能不能嵌仍然由
      *       `liveEmbedDecision` 判定（它会自己检查那个标识是不是 `UC…` 开头）。
      *       在这里替它下结论就等于把那一条规则抄了第二份。
+     *    ⚠️ 视频那一格是 `null`：这一条链接指向的是**频道**（`handle` 才是承重的那个），
+     *       没有"某一场视频"这个维度 —— 与 `live.ts:277` 对同一个 `UC…` 地址的写法一致。
      */
     const channel = /^\/channel\/(UC[\w-]{10,})/.exec(url.pathname)?.[1] ?? null;
-    if (channel) return { platform: 'youtube', handle: channel, embedChannel: true };
+    if (channel) {
+      return { platform: 'youtube', handle: channel, liveVideoId: null, embedChannel: true };
+    }
     /*
      * ④ 剩下的 YouTube 地址（典型是 `youtube.com/@handle` 的频道页）⇒ `null`。
      *    这一栏要的只有两件事：**嵌一个播放器**，或者**给一条外链**。
@@ -120,7 +133,7 @@ export function rankedLiveChannel(liveUrl: string | null): RankedLiveChannel | n
   if (host === 'live.bilibili.com') {
     // 直播间号：`live.bilibili.com/<房间号>`。**纯数字**这一条由 `liveEmbedDecision` 把关。
     const room = seg(0);
-    return room ? { platform: 'bilibili', handle: room } : null;
+    return room ? { platform: 'bilibili', handle: room, liveVideoId: null } : null;
   }
 
   return null;
