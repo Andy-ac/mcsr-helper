@@ -41,6 +41,7 @@ import type {
   UserLiveLinkPatch,
 } from '@mcsr/shared/live';
 import type { UserRole } from '@mcsr/shared/permissions';
+import type { RankedStatusResponse } from '@mcsr/shared/ranked';
 import type {
   EditableResource,
   FavoriteItem,
@@ -1669,4 +1670,27 @@ export function setShareVisibility(id: string, visible: boolean): Promise<{ item
  */
 export function deleteShare(id: string): Promise<{ ok: true; id: string }> {
   return sendJson<{ ok: true; id: string }>('DELETE', `/api/shares/${encodeURIComponent(id)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Ranked 实时信息（2026-09-16）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一栏**只有这一个端点走我们的服务器**（`GET /api/ranked/status`，服务心跳）。
+ *
+ * 原因不是取舍而是物理限制：那个上游主机**不发 `access-control-allow-origin`**
+ * （spec §2.5 实测），浏览器读不到它的响应体 —— 这不是"配置问题"，是对方没打算让浏览器直连。
+ * 另外三份数据（高分对局 / Elo 排行榜 / 周赛榜单）由**访客自己的浏览器直连**上游，
+ * 不走这里、也不经过我们的服务器：花的是访客自己 IP 的额度，我们那个出口 IP
+ * 只被心跳用掉一点点（spec §3 是那次裁决的全文，请求选项见 `lib/rankedDirect.ts` 的文件头）。
+ * ⛔ 也**没有**"直连失败时回退到这个端点"的路 —— 那等于把被否决的代理方案又建一遍（spec §3 代价 3）。
+ *
+ * ⚠️ `no-store` 与 `fetchShareBoard` 是同一条理由：服务端自己写了 `no-store`
+ *    （心跳最多缓存 30 秒），但**缓存这一层不由服务端说了算** ——
+ *    浏览器手里只要有一份旧响应，状态面板就会把"上游已经恢复了"继续显示成故障，
+ *    而服务端日志里一切正常（同一个坑在 `fetchLiveChannelsFresh` 上真实发生过，那里有实测证据）。
+ *    这一栏的面板每 15 秒要一次心跳，`no-store` 是它"看得到恢复"的前提。
+ */
+export function fetchRankedStatus(signal?: AbortSignal): Promise<RankedStatusResponse> {
+  return request<RankedStatusResponse>('/api/ranked/status', signal, 'no-store');
 }
