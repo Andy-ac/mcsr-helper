@@ -583,7 +583,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.liveTitle` / `liveEmpty` | 「正在直播的高分对局」/「现在没有直播中的对局。」 |
 | `ranked.liveFrom` | 「{{total}} 场里按平均 elo 取前 10」 |
 | `ranked.liveExpand` / `liveCollapse` | 「展开直播（{{n}} 个）」/「收起直播」 |
-| `ranked.liveNoStream` / `liveExternal` | 「这一场没有人在直播」/「这个平台不能内嵌，在新窗口打开」 |
+| `ranked.liveNoStream` / `liveExternal` | 「这一场没有人在直播」/「**这条链接**不能内嵌，在新窗口打开」—— ⚠️ 措辞刻意**不说"这个平台不支持"**：`livePlatform === null` 有两类来源（认不出的平台如 kick；以及"平台其实支持、只是这条地址里没有可嵌的视频"，例如 `youtube.com/@handle` 的频道页 ⇒ 见 `embed.ts` 的注释），说"平台不支持"对后者是**错话** |
 | `ranked.matchTime` | 「已进行 {{time}}」 |
 | `ranked.eloTitle` / `season` / `seasonRange` | 「Elo 排行榜」/「赛季 {{n}}」/「{{from}} → {{to}}」 |
 | `ranked.colRank/Nickname/Elo/Highest/PhasePoint` | 「排名」/「昵称」/「elo」/「最高」/「阶段分」 |
@@ -646,7 +646,12 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 5. **`liveMatches` 没有 id** ⇒ 卡片没有外链、key 用 uuid 对；玩家顺序按 elo 固定，但**卡片顺序会随 elo 变**。
 6. **未定级（`eloRate: null`）是常态不是异常**。
 7. **赛季刚开时 `phasePoint` 全是 0**：不是字段坏了。
-8. **上游字段可能悄悄改**（`highest` 就不在文档里）⇒ 解析层逐格兜底 + 记一条日志（浏览器侧记 `console.warn`）。
+8. **上游字段可能悄悄改**（`highest` 就不在文档里）⇒ 解析层**逐格兜底**（缺的那一格是 `—`，
+   整份数据不会因此消失）。⚠️ **浏览器侧不记日志**：spec 早先写着"记一条 `console.warn`"，
+   2026-09-16 在 Task 1 的评审里判定**去掉**这一条 —— 访客的浏览器控制台**没有读者**，
+   那条日志是装饰；真正能被我们看到的只有服务端那一侧（心跳端点在形状不对时回 502 并记下是哪一格，
+   见 §4.2）。**代价写在明面上**：上游改字段名之后，我们能看到的只有"某一格变成 `—`"，
+   而不是一条日志；发现它的路径是用户反馈，不是我们自己的监控。
 9. **访客的 IP 会到达第三方**（这是用户为了避开服务器限流而选的代价）；我们只做
    `credentials: 'omit'` + `referrerPolicy: 'no-referrer'` 这两件能少给就少给的事。
 10. 本栏目**不产生任何内容**（只读）⇒ 没有审核、没有权限、没有审计。
@@ -739,7 +744,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | **上游哪天撤掉 CORS** | 三个面板同时失效 | 界面上有明确错误 + 重试；真发生就做一次独立改动（加服务端兜底） |
 | **浏览器扩展拦第三方请求** | 个别用户永远"读不到" | 错误里说明"可能是网络或扩展拦了"；手上有旧数据就留着 |
 | **访客 IP 到达第三方** | 隐私 | 用户明确选了这个代价；只做 `omit` + `no-referrer` 两件事 |
-| 上游字段悄悄改名 | 界面上出现 `—` 一片 | 逐格兜底 + `console.warn`；心跳那条在我们的日志里 |
+| 上游字段悄悄改名 | 界面上出现 `—` 一片 | 逐格兜底；**浏览器侧不记日志**（没有读者，见 §10 第 8 条），能被我们看到的只有心跳那一条的 502 + 服务端日志 |
 | 一个访客开多个标签页 | 烧他自己的额度（可能 429） | 只有当前标签页轮询、不可见时停、历史周不刷新 |
 | 直播框把浏览器打满 | 卡顿 | 点击才加载；一屏最多 20 个 |
 | 心跳那一处把服务器 IP 的额度花掉 | 每分钟 ≤2 次（4%） | TTL 30 秒 + single-flight；不做预算表（多一份没人走的状态） |
