@@ -34,6 +34,7 @@ import { m015LiveTagsAndSchedule } from './migrations/015_live_tags_and_schedule
 import { m016LiveDedupeKey } from './migrations/016_live_dedupe_key';
 import { m017SlotsAndDimensions } from './migrations/017_slots_and_dimensions';
 import { m018ContentContributors } from './migrations/018_content_contributors';
+import { m019LiveShares } from './migrations/019_live_shares';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -134,6 +135,19 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    落点在 `resources.ts` 的两条硬删除路径上，有测试守着。
    */
   { name: '018_content_contributors', sql: m018ContentContributors },
+  /*
+   * 019：实时分享（`live_shares`）—— 一块"到点自己消失"的看板。
+   *
+   * ⚠️ 与 009/013/014/018 同一个性质：**纯建表 + 建索引**，不重建任何表 ⇒
+   *    **留在事务里**（不加 noTransaction），失败即整体回滚。
+   *    这里没有任何一句需要 `PRAGMA foreign_keys`（理由见 019 的文件头二）。
+   *
+   * ⚠️ 这张表里有一个**部分唯一索引**（`idx_live_shares_room_one`，谓词
+   *    `kind='room' AND status='active'`），它的谓词**不看过期** ⇒ 发布 room 时
+   *    "先把我自己 active 的行置 replaced"是必需步骤，不是清理。落点在
+   *    `live-shares.ts` 的 `createShare`，有两条测试钉着（spec §3.4）。
+   */
+  { name: '019_live_shares', sql: m019LiveShares },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
