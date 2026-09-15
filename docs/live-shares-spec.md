@@ -682,7 +682,12 @@ seed = `主世界种子`（必填）+ `下界种子` / `末地种子` / `RNG 种
 
 ## 11. 验收与验证清单（给 verifier / reviewer 用）
 
-### 11.1 服务端：`services/api/src/shares.test.ts`（真打 HTTP）
+### 11.1 服务端：`services/api/src/live-shares.test.ts`（真打 HTTP）
+
+> ⚠️ 2026-09-15 订正：这里原先写的是 `shares.test.ts`，而**那个文件不存在** ——
+> 服务端的表结构测试与 HTTP 测试**同一个文件**（`live-shares.test.ts`，Task 2 建数据层那一半、
+> Task 3 追加 HTTP 那一半）。Task 3 的评审为此报了"按 spec 的名字去找会找不到任何东西"。
+> ⇒ **口径**：本栏目服务端只有**一个**测试文件，别照名字去找第二个。
 
 **权限**
 - [ ] 匿名 `GET /api/shares/room` → **401**（不是空列表）
