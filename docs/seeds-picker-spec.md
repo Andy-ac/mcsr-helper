@@ -109,8 +109,9 @@
 
 ⚠️ **原先第一行的括注写错了**：它把 `606ms` 也归进"`overworld=` 单选"，而那是
 **无参数基线**（探针 ①）。峰值那一格原写 **7586**，实测是 **7589**（同文件第 28 行
-`200 7589ms ⑭要塞生物群系`）—— 这个错数被抄进了 `docs/seeds-picker-plan.md` 与
-`services/api/src/seeds/upstream.ts:71` 三处，三处已一起订正（Task 8 Step 2b）。
+`200 7589ms ⑭要塞生物群系`）—— 这个错数一共出现在**三处**（本文件这一段、
+`docs/seeds-picker-plan.md` 的 T2 代码块、`services/api/src/seeds/upstream.ts` 的注释），
+三处已一起订正（Task 8 Step 2b）。
 
 ⇒ **是查询本身的性质，不是探针的突发流量**（同一查询三次重复，快的一直 <0.5s，慢的一直 3.2s）。
 ⇒ 而 `services/api/src/seeds/upstream.ts` 的 `DEFAULT_TIMEOUT_MS = 5000`，
