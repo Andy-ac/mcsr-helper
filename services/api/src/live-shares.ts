@@ -119,8 +119,12 @@ const FROM_LIVE_SHARES = `
  * ⚠️ `JSON.parse` 也要包起来：`payload` 那一列只有 `NOT NULL`，没有 JSON 约束 ——
  *    一次手改库完全可能留下半截 JSON，而那时候抛出来的异常会让**整条看板查询**挂掉，
  *    表现是"看板整个读不出来"，比"少一条"严重得多。
- * ⚠️ 这里**不记日志**：跳过由调用方决定（列表跳过并记一条，单行那条路直接拒绝），
- *    否则同一个坏行会被记两遍。
+ * ⚠️ 这里**不记日志**：跳过由调用方决定 —— 列表在哪一步跳过就在哪一步记一条（`toItems`），
+ *    单行那条路直接拒绝（`buildItem`）。在这里记的话，一次列表读会给同一个坏行**两条**日志
+ *    （解析一次、跳过一次），而它们说的是同一件事。
+ * ⚠️ 顺带写明一个**不是** bug 的重复：同一次请求里，一个坏行如果既在看板上、又是查看者自己的，
+ *    会被 `listBoard` 与 `listMine` 各记一条 —— 那是**两次读**，各记各的。为它去加去重状态
+ *    得不偿失（日志里 id 相同，一眼能看出是同一条）。
  */
 function parsePayloadOf(row: LiveShareRow): SharePayload | null {
   let raw: unknown;
@@ -476,8 +480,11 @@ export function createShare(input: {
  * | `not_active` | 下架一条已经不在展示的行（hidden / replaced） | 409 `invalid_state` |
  * | `not_hidden` | 恢复一条本来就没被下架的行（active / replaced） | 409 `invalid_state` |
  * | `expired` | 到点了：两种动作都没有意义了 | 409 `invalid_state` + reason `expired` |
- * | `at_limit` | 恢复 room / seed 时手上已经满了（§4.3） | 409 **`at_limit`**（不是 `invalid_state`）|
+ * | `at_limit` | 恢复时"已经有另一条"：room 看板上还有一条 / seed 已满 20 条（§4.3） | 409 **`at_limit`**（不是 `invalid_state`）|
  *
+ * ⚠️ room 那一格的"已经有另一条"**只算在看板上的**（`status='active' AND expires_at > now`）：
+ *    一条 `status='active'` 但已过期的兄弟行不算，恢复会把它顶掉 —— 见 `setShareVisible`
+ *    里那段 ★ 注释（判据取字面读法会让「恢复」几乎永久按不动）。
  * ⚠️ `at_limit` 那一行要**单独分支**：spec §4.2 / §13 把它定成一个独立的拒绝码，
  *    所以路由层不能在"其它失败一律 `invalid_state`"那条兜底里顺手带上它。
  * ⚠️ `not_active` / `not_hidden` 是"状态不对"这一格的两种说法：它们的区别就是**用户
@@ -554,6 +561,12 @@ export function setShareHidden(id: string, now: number): SetVisibilityResult {
  * ⇒ 选拒绝：前者是一次"**你没按、但东西被顶掉了**"，而恢复按钮上写的是"恢复这条"，
  *   谁也不会预期它顺手杀掉另一条。代价是多一步，而那一步只在"下架过、又发过、
  *   又想恢复"这个少见的组合里出现。
+ *
+ * ⚠️★ 但"另一条 active"指的**只是"在看板上的"那一条**（spec §4.3 的补记，2026-09-15；
+ *    这一条是评审实测挖出来的一个可达 500）。一条 `status='active'` 但**已过期**的
+ *    兄弟行不在看板上、自己也恢复不了，还迟早被回收任务删掉 —— 顶掉它不会让任何人
+ *    看到的东西消失，所以恢复**放行**，并在**同一个事务里**先把它置 `replaced`
+ *    （与发布路径同一个手法，见下面那段注释）。seed 那一支不受影响：它没有唯一索引。
  */
 export function setShareVisible(id: string, now: number, actorId: string): SetVisibilityResult {
   const db = getDb();
@@ -580,14 +593,34 @@ export function setShareVisible(id: string, now: number, actorId: string): SetVi
     }
 
     /*
-     * ★ 额度判据与 `liveCount` / seed 发布**完全相同**（同一个 `countLive`）。
-     *   正在被恢复的这一行是 hidden，所以它自己不在计数里 —— 数到的正是"手上还有
-     *   几条在展示"，也就是部分唯一索引接下来会不会报错的那个数。
+     * ★ 额度判据与 `liveCount` / seed 发布**完全相同**（同一个 `countLive`）：
+     *   正在被恢复的这一行是 hidden，所以它自己不在计数里 —— 数到的正是"看板上还有几条"。
+     *   ⇒ 拒的是**在看板上**的兄弟行：它看得见、有人可能正在用，顶掉它正是 §4.3 要防的那件事。
      */
     const live = countLive(row.kind, row.user_id, now);
     if (live >= SHARE_LIMITS[row.kind]) {
       db.exec('ROLLBACK');
       return { ok: false, reason: 'at_limit' };
+    }
+
+    if (row.kind === 'room') {
+      /*
+       * ⚠️★★ 这一步**不是**可选的，而且它正是 `countLive` 在这里不够用的原因：
+       *    上面那一句带 `expires_at > now`，而 **idx_live_shares_room_one 的谓词不看过期** ——
+       *    缝里藏着一个**可达的 500**：我有一条刚过期、还没被回收的 active room 行
+       *    （回收任务只删 `expires_at < now - 24h` 的行 ⇒ 这个状态最长存在约 24 小时），
+       *    上面那句数出来就是 0 ⇒ 恢复放行 ⇒ 紧接着的 UPDATE 撞上索引 ⇒ SQLite 抛错 ⇒ 路由 500。
+       *    而按钮正好在界面上：要恢复的那条是 hidden 且没过期，它就在 `mine` 里。
+       *    ⇒ 先把我自己所有 active 的 room 行（此刻只可能是那条过期未回收的）置 `replaced`，
+       *      再激活目标行 —— 与发布路径（§3.4）**同一个手法**，也是索引能成立的必需步骤。
+       *    ⚠️ 顺序不能颠倒：先置 replaced 再数额度的话，一条**在看板上**的兄弟行会被顶掉，
+       *      而那正是 §4.3 上半节要拒绝的事。
+       *    ⚠️ 只有 room 走这一步：seed 没有唯一索引，恢复一条只会在看板上多加一行，
+       *      而 `countLive` 算的正是那一行。
+       */
+      db.prepare(
+        "UPDATE live_shares SET status = 'replaced' WHERE user_id = ? AND kind = 'room' AND status = 'active'",
+      ).run(row.user_id);
     }
 
     db.prepare("UPDATE live_shares SET status = 'active', hidden_at = NULL WHERE id = ?").run(id);

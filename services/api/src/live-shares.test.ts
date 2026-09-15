@@ -619,6 +619,11 @@ describe('下架 / 恢复', () => {
     assert.deepEqual(res, { ok: false, reason: 'at_limit' });
     assert.equal(statusOf(second.share.id), 'active', '★ 新的那条必须原封不动');
     assert.equal(
+      hiddenAtOf(second.share.id),
+      null,
+      '★ 而且一个字段都没被动过 —— 被拒的恢复不能顺手改写兄弟行',
+    );
+    assert.equal(
       statusOf(first.share.id),
       'hidden',
       '★ 旧的那条也必须是 hidden，不能被偷偷改成别的',
@@ -628,6 +633,79 @@ describe('下架 / 恢复', () => {
       true,
       '恢复失败之后看板照旧',
     );
+  });
+
+  it('★ room：兄弟行**已过期**时恢复放行，并在同一个事务里把它置 replaced（spec §4.3）', () => {
+    /*
+     * ⚠️★ 这一条守的是一个**可达的 500** —— spec §4.3 的补记（2026-09-15）把它定死了；
+     *    而上面那条 ★（兄弟行**没过期** ⇒ 仍然 at_limit）是它的另一半。
+     *
+     *    判据若用 `countLive`（带 `expires_at > now`），这里会认为"我一条在展示的 room 都没有"，
+     *    于是放行恢复 —— 而紧接着的 UPDATE 撞上 `idx_live_shares_room_one`
+     *    （它的谓词**不看过期**）⇒ SQLite 抛错 ⇒ 路由 500。
+     *    界面给的正好是这个按钮：H 是 hidden、**没过期**，它就出现在 `mine` 里。
+     *    ⚠️ 那条过期未回收的兄弟行最长能存在约 24 小时（回收任务只删 `expires_at < now - 24h`），
+     *      而"把它清掉"的**唯一**办法就是发布或恢复时顺手置 replaced。
+     *
+     * ⚠️ 时间线**不靠 mock 时钟**摆出来：`now` 本来就是这一层的入参。
+     *    H 挂 20 分钟，R 挂 5 分钟，恢复发生在 R 到点之后、H 到点之前。
+     */
+    const t0 = now;
+    const h = ok(
+      createShare({
+        kind: 'room',
+        userId: defaultUser,
+        payload: { code: 'HOLD' },
+        note: '',
+        minutes: 20,
+        now: t0,
+      }),
+    );
+    ok(setShareHidden(h.share.id, t0 + 1000));
+    const r = ok(
+      createShare({
+        kind: 'room',
+        userId: defaultUser,
+        payload: { code: 'RGONE' },
+        note: '',
+        minutes: 5,
+        now: t0 + 60_000,
+      }),
+    );
+
+    const t1 = t0 + 10 * 60_000;
+    // 前提：R 已经到点（看板上没有它），但它**仍然是 active** —— 到点不是一次状态变更
+    assert.equal(statusOf(r.share.id), 'active', '前提：到点什么都没做');
+    assert.equal(listBoard('room', t1, defaultUser).length, 0, '前提：此刻看板是空的');
+    assert.equal(countLive('room', defaultUser, t1), 0, '前提：按看板判据数，我一条都没在展示');
+
+    const restored = ok(setShareVisible(h.share.id, t1, defaultUser));
+
+    assert.equal(restored.share.status, 'active');
+    assert.equal(statusOf(h.share.id), 'active');
+    assert.equal(
+      statusOf(r.share.id),
+      'replaced',
+      '★ 那条过期未回收的兄弟行必须在这里被置 replaced —— 否则索引挡着，恢复根本发不出去',
+    );
+    assert.deepEqual(
+      listBoard('room', t1, defaultUser).map((s) => s.id),
+      [h.share.id],
+      '恢复之后看板上是 H，而且只有它',
+    );
+    assert.deepEqual(
+      listMine('room', defaultUser, t1).map((s) => s.id),
+      [h.share.id],
+      '被顶掉的那条不再出现在 mine 里（replaced 是回不来的那一格）',
+    );
+  });
+
+  it('不存在的 id：两个 setter 都回 not_found（而不是静默成功）', () => {
+    assert.deepEqual(setShareHidden('ls-no-such-row', now), { ok: false, reason: 'not_found' });
+    assert.deepEqual(setShareVisible('ls-no-such-row', now, defaultUser), {
+      ok: false,
+      reason: 'not_found',
+    });
   });
 
   it('到点后恢复 → invalid_state/expired', () => {
