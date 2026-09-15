@@ -105,6 +105,7 @@ describe('权限矩阵的完整性', () => {
     assert.equal(can(verified('user'), 'resource.review'), false);
     assert.equal(can(verified('user'), 'user.moderate'), false);
     assert.equal(can(verified('user'), 'audit.read'), false);
+    assert.equal(can(verified('user'), 'share.moderate'), false);
   });
 
   it('★ 审核员**不能**改别人的角色', () => {

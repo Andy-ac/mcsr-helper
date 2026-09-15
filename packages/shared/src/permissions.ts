@@ -113,6 +113,15 @@ export const CAPABILITIES = [
    * 驳回是针对**待审版本**的，而线上那一版早就批准过了。
    */
   'resource.moderate',
+  /**
+   * 下架**任何人**的一条实时分享。
+   *
+   * ⚠️ 它只管"拿下来"，**不管"放回去"** —— 恢复一条别人的分享一律 403
+   *    （见 `routes/shares.ts`）。理由：管理动作是单向的，"放回去"要么是作者的判断，
+   *    要么不该由第三方代劳。这与 `resource.moderate` 是同一个档位（内容治理），
+   *    但**不能复用**它：本仓的能力名是 `<内容类型>.<动作>`，分享不是资源。
+   */
+  'share.moderate',
 
   /**
    * **直接写"线上那一行"** —— 增（新建即上架）、改（任何条目，含未上架的草稿）、
@@ -263,6 +272,8 @@ const EDITOR_CAPS: readonly Capability[] = [
   'resource.feature',
   'resource.moderate',
   'resource.editUnpublished',
+  // 实时分享的下架（只能下架，不能替别人恢复 —— 见 CAPABILITIES 里 share.moderate 的说明）
+  'share.moderate',
   /*
    * ② 的直编权。
    *
