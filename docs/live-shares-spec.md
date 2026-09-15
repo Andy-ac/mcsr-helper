@@ -635,7 +635,20 @@ seed = `主世界种子`（必填）+ `下界种子` / `末地种子` / `RNG 种
 | `shares.errSeedLength` | 「种子最多 32 个字符。」 |
 | `shares.errSeedSpace` | 「种子里不能有空格。」 |
 | `shares.errNoteTooLong` | 「说明太长了（最多 {{max}} 个字位，一个汉字算 2）。」 |
+| `shares.errExpired` | 「这一条已经到点了，不能再改了。」 |
+| `shares.errNotActive` | 「这一条现在不在展示中。」 |
+| `shares.errNotHidden` | 「这一条本来就没有下架。」 |
 | `shares.moderateHideReason` | 「（管理员下架）」 |
+
+⚠️★ **最后新增的三条是 2026-09-15 补的，补的是一个真空白**：本表原先给
+`invalid_state` 的三种 `reason`（`expired` / `not_active` / `not_hidden`）**没有对应的话**，
+而 Task 5 的实现者按"本任务不加词条"的约束只能把它们临时映射到状态句
+（`mineNone` / `mineHidden` / `mineActive`）—— 那三句**语法上说得通、语义上不对**：
+一个手上还有别的条目的人点了某个刚过期的行，会看到「你现在没有挂东西。」，
+而那句话是**假的**。⇒ 三条专用话进冻结清单，Task 7 接线时补上。
+
+⚠️ 它们**只在竞态里可达**（视图本地就会把到点的行去掉），所以措辞不必精致 ——
+但**必须不失真**：本仓的立场是"为什么不行"要分开说，而不是拿一句相近的话糊过去。
 
 ⚠️ `shares.hideHint` 里有一对 `**` ⇒ 必须走 `em()`；`services/api/src/i18n-keys.test.ts` 的
 `EXPECTED_SITES` 要登记这一处（那一条守卫按**紧贴调用点的形状**判定，漏登记会当场红）。
