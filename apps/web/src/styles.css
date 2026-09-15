@@ -7088,6 +7088,561 @@ html[data-theme='light'] {
   margin: 14px 0 0;
 }
 
+/* ==================================================================
+   Ranked 实时信息 · 侧栏小方块的颜色（2026-09-16，`.sidebar__block--ranked`）
+
+   ★ 这一格是「Ranked 实时信息」在侧栏里的识别色。现有分区色已经用掉了
+     土棕（资源库）/ 草绿（日历）/ 赭红（视频）/ 钻青（直播）/ 亮青（排位赛种子）/
+     紫（我的）/ 品红（实时分享），而这一栏在侧栏里**紧挨着「排位赛种子」（亮青）
+     与「我的」（紫）**—— 所以取的是色相环上离那两个最远的**橄榄黄**（`#c9a227`）：
+     三行并排时不用读字就能分开。
+   ⚠️ 也不是金色 `--gold`（`#ffaa00`）：那一档是**全站的状态色**（未验证邮箱的标记、
+     阶段徽章…），用在这里会让侧栏出现一个"看起来像警告"的方块。
+     橄榄黄与它色相相近，但明度低得多，同一个屏幕上不会混。
+     （登录 / 注册那两颗中性灰不是分区色，见上面 `.sidebar__block--login` 的说明。）
+
+   ⚠️ 为什么整块写在文件**末尾**，而不是插进上面那组 `.sidebar__block--*`：
+      本仓的约定是**每个任务只往末尾追加自己那一块**，谁都不去动别人的块
+      （`.sidebar__block--shares` 那一段与「2026-09-14 第三轮追加区」写着同一条理由）
+      —— 并行编辑同一个文件时，"动到别人的块"正是两边改动互相覆盖的方式。
+      级联上也没有差别：这些规则特异性相同，而它只设一个 `background`。
+   ================================================================== */
+
+.sidebar__block--ranked {
+  background: #c9a227;
+}
+
+/* ==================================================================
+   Ranked 实时信息 · `/ranked` 的四个面板（2026-09-16，`.ranked*`）
+
+   ★ 这一栏是**公开**的，四页共用一套外壳：页面标题 + 四个真链接的标签页，
+   下面是"当前这一页"的那个面板。
+
+   ⚠️★ 类名 = 组件（`components/RankedPanels.tsx`）与样式之间的**接口**：
+      本仓的样式是全局的、没有 CSS Modules 兜着，而"渲染了一个不存在的类名"
+      全仓没有任何门禁发现得了（`docs/pending.md §5.70`；`ShareForm` 里那个
+      `.mcsr-input` 笔误就是这个形状）。⇒ 组件里出现的每一个 `ranked*` 类名
+      在这里**都必须有规则**，Task 8 的渲染自检会逐类名核对。
+
+   ⚠️ 为什么整块写在文件**末尾**：见上面那一段（每个任务只追加自己那一块）。
+
+   ⚠️ 字号只用文件末尾那几档（像素字体只在 12 / 18 / 24 / 30 清晰）：
+      页面标题 `--fs-title-page`、面板标题 `--fs-title-item`、其余 `--fs-px-sm`（12px）
+      或 13px 的正文。这里没有一处新造字号。
+
+   ⚠️ 颜色一律走变量（`--surface*` / `--line*` / `--fg*` 与游戏调色板那几个）：
+      白天与黑夜两套主题都要能读 —— 写死的十六进制在另一套主题里就是"看不清"
+      （`html[data-theme='light']` 只覆盖了少数几个变量）。
+   ================================================================== */
+
+/* ---- 页头与四个标签页 ---- */
+
+/*
+ * ⚠️ 这一层只包着页头：面板是它的**兄弟**，不是子元素 —— 容器按 T6 的契约渲染
+ *    `<RankedTabBar/>` 与视图两个并列节点（`RankedTabBar` 的注释写着这件事）。
+ *    所以这里不许写任何"面板在里面"的假设（比如 `> .ranked__panel` 那种选择器），
+ *    它只负责把页头与下面的面板分开。
+ */
+.ranked {
+  margin-bottom: 18px;
+}
+
+/* 标题一行、四个标签页一行（窄屏上换行的是标签页，标题不被压扁）。 */
+.ranked__head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/*
+ * ⚠️★ 同一个 `.ranked__title` 用在**两处**：页头那个 `<h1>`（这一页的名字）与每个面板
+ *    自己那个 `<h2>`（区域标题）。只写一条字号规则的话，一页里会出现两个 30px 的标题
+ *    —— 那就看不出哪个是这一页的名字了。⇒ 字号按**所在的那一块**分，
+ *    其余属性（字体 / 字重 / 行高）共用一份，不重复三遍。
+ */
+.ranked__title {
+  font-family: var(--font-pixel);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 0;
+}
+.ranked__head .ranked__title {
+  font-size: var(--fs-title-page);
+  line-height: 1.35;
+  letter-spacing: 0.5px;
+}
+.ranked__panel .ranked__title {
+  font-size: var(--fs-title-item);
+}
+
+/* 四个标签页排成一行，窄屏换行。 */
+.ranked__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+/*
+ * ★ 单个标签页。⚠️ 它是**真链接**（四个真路由，spec §6.1），所以长得像 tab，
+ *    而不像正文里的链接。形状与 `.share__tab` 一套（同一栏目的上一轮）：
+ *    全站的标签页只有这一种外形，不在这里另立一套。
+ * ⚠️ 选中态挂在 **`aria-current="page"`** 上，不是再加一个 `is-active` 类：
+ *    视图给的就是那个属性，而"屏幕上哪个是当前页"与"读屏软件知道哪个是当前页"
+ *    必须是**同一份判据**（`.share__tab` 那一块写着同一条理由）。
+ */
+.ranked__tab {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  /* 全局 `a:hover` 会给下划线，而一个带背景的 tab 加下划线看起来像排版事故 */
+  text-decoration: none;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.ranked__tab:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+  text-decoration: none;
+}
+.ranked__tab[aria-current='page'] {
+  color: var(--fg);
+  background: var(--surface-3);
+}
+
+/* ---- 四个面板共用的外壳（四种整体画面都在这一层里）---- */
+
+/*
+ * ⚠️ 竖排 flex + `gap`：这一块里东西的**件数随画面而变**（失败那一屏会多出提示条与
+ *    重试两件），用外边距排的话每一种组合都要各自试一遍间距；`gap` 让"有几件"
+ *    变成一件无关的事。⚠️ 也正因为如此，下面那些规则里的 `margin` 一律写 0
+ *    —— 间距只有一处定义（这里），不会出现"提示条下面 14px、标题下面 10px"的漂移。
+ */
+.ranked__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ① 的服务状态徽章。
+   ⚠️ `align-self: flex-start`：面板是竖排 flex，不写的话这一格会被拉成整行宽的色带。 */
+.ranked__badge {
+  align-self: flex-start;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  line-height: 1.6;
+  margin: 0;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--fg-muted);
+}
+
+/* 四态四种颜色（与 `STATUS_KEYS` 同键、同穷尽 —— 组件里那两张表各自回答一件事）。 */
+.ranked__badge--up {
+  color: var(--grass-bright);
+  border-color: rgba(127, 178, 56, 0.42);
+  background: rgba(127, 178, 56, 0.12);
+}
+.ranked__badge--down {
+  color: var(--redstone);
+  border-color: rgba(232, 86, 74, 0.42);
+  background: rgba(232, 86, 74, 0.12);
+}
+/* 「等待」用金色、「维护」用钻青：这两档都**不是**故障，所以都不用红石色 ——
+   红石色会让"上游还没回话"和"计划内的维护"看起来像我们挂了。 */
+.ranked__badge--pending {
+  color: var(--gold);
+  border-color: rgba(255, 170, 0, 0.42);
+  background: rgba(255, 170, 0, 0.12);
+}
+.ranked__badge--maintenance {
+  color: var(--diamond);
+  border-color: rgba(74, 237, 217, 0.32);
+  background: rgba(74, 237, 217, 0.08);
+}
+
+/* ① 的在线人数。⚠️ `--fs-px-lg`（24px = 2 倍设计尺寸）：这是这一页唯一一个"一眼要读到"
+   的数，而像素字体在这一档才清晰（半步字号在 1 倍屏上会发灰）。 */
+.ranked__big {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-lg);
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0;
+}
+/* 读不到时那个占位符：它**不是一个数**，所以不许跟数字一样重（一样重会被看成"0 人"）。 */
+.ranked__big--unknown {
+  color: var(--fg-faint);
+}
+
+/*
+ * 一行读数（延迟 / 最后心跳 / 可用率 / 赛季与起止 / 截止 / 以及失败那一屏的重试那一行）。
+ * ⚠️ `flex` + `gap`：有几行是**两格**（赛季号 + 起止、周数 + 截止），而它们之间那个
+ *    分隔符是**排版**不是文案 —— 间隙就是分隔符，词条里不必再拼一个（§7.3 的清单里
+ *    也没有那么一条）。
+ */
+.ranked__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/* 「{{secs}} 秒前更新」—— 常显的新鲜度，比正文弱一档（它是**读数**，不是内容）。
+   ⚠️ 它由组件决定渲不渲染（还没成功过就整行不渲染），CSS 这一层不管这件事。 */
+.ranked__updated {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0;
+}
+
+/* 空集合（"现在没有对局" ≠ "加载中" ≠ "出错了"）：虚框 + 一句说明，与 `.share__empty` 同形
+   —— 全站的空态只有这一种外形。 */
+.ranked__empty {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  max-width: 70ch;
+}
+
+/* ---- ② 实时高分对局 ---- */
+
+/* 卡片列表：一列，卡片之间 10px（与 `.share__board` 同一档）。 */
+.ranked__live {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/*
+ * ★ 一张对局卡片：左半边 / 中间"已进行" / 右半边，三列一行。
+ * ⚠️ 三列 grid，而不是"两个半宽的 flex 盒子 + 中间夹一句"：中间那一格要**真的在中间**
+ *    （它是这场比赛的时间，不属于任何一侧），而两侧的宽度会随名字长短变化
+ *    —— `minmax(0, 1fr)` 让两侧等宽、又能被压窄，长名字挤不走中间的读数。
+ * ⚠️ `align-items: start`：两侧的行数可能不一样（一边有进度、另一边是占位符），
+ *    居中对齐会让两个名字不在同一条线上。
+ */
+.ranked__match {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 6px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+/*
+ * 一侧的五个字段：**名字 / elo / #排名 / 进度 / 时间**（用户原话的顺序，spec §6.3）。
+ * ⚠️★ DOM 顺序两侧**完全一样**（镜像靠摆列，不靠换顺序）：读屏软件与渲染自检读到的
+ *    都是"名字在前"；换了顺序，右半边在产物里就变成"从时间读到名字"，那是另一句话。
+ * ⚠️ 用 grid 的 `grid-area` 摆（第几行第几列），而不是两行 flex：字段顺序是固定的，
+ *    摆列写成坐标之后，某个字段换位置只需要改它自己那一条。
+ * ⚠️ 前三个字段在第一行、后两个在第二行 —— 与 spec §6.3 那张草图上的一致。
+ */
+.ranked__side {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+/* 名字：这一侧的主字段（像素字体 + 加粗）。
+   ⚠️ `min-width: 0` + `overflow-wrap: anywhere`：超长的昵称要能在格子里断行，
+   而不是把旁边那两格挤出去。 */
+.ranked__name {
+  grid-area: 1 / 1;
+  min-width: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/* elo 与 #排名：读数（等宽体，上下两行之间对得齐）。 */
+.ranked__elo {
+  grid-area: 1 / 2;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.ranked__rank {
+  grid-area: 1 / 3;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* 当前进度：`timelineType` 的**原样**标识（`nether.find_bastion`）——
+   等宽体读这种带点的串最清楚，而且它长度不固定（最长的那条 29 个字符）。 */
+.ranked__progress {
+  grid-area: 2 / 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 那个节点的时间（`m:ss`，到秒就够了 —— 节点时间不是名次之争，`formatClock` 的取舍）。 */
+.ranked__mtime {
+  grid-area: 2 / 2;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/*
+ * ★ 右半边是**镜像**：同一组字段、名字与 #排名 贴最外侧（列序反向）。
+ * ⚠️ 只改摆列与对齐，**不改 DOM 顺序** —— 产物里的文字顺序两侧必须一样
+ *    （理由写在 `.ranked__side` 那一段）。
+ */
+.ranked__side--right {
+  grid-template-columns: auto auto minmax(0, 1fr);
+}
+.ranked__side--right .ranked__name {
+  grid-area: 1 / 3;
+  text-align: right;
+}
+.ranked__side--right .ranked__elo {
+  grid-area: 1 / 2;
+  text-align: right;
+}
+.ranked__side--right .ranked__rank {
+  grid-area: 1 / 1;
+}
+.ranked__side--right .ranked__progress {
+  grid-area: 2 / 3;
+  text-align: right;
+}
+.ranked__side--right .ranked__mtime {
+  grid-area: 2 / 2;
+  text-align: right;
+}
+
+/* 中间那一格：「已进行 15:18」。
+   ⚠️ `align-self: center`：两侧各是两行，而这一格在**两行之间**（它是那道分隔上的读数），
+   顶对齐会让它看起来属于左半边。⚠️ `nowrap`：它是三列里那一列的全部内容，
+   断行会让"15:18"分成两行，而那看起来像别的东西。 */
+.ranked__mid {
+  align-self: center;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0;
+  white-space: nowrap;
+}
+
+/* ---- ② 展开直播 ---- */
+
+/*
+ * ★ 折叠区。⚠️ 用原生 `<details>`：闭合时内容**仍然在 DOM 里**（纯 SSR 的渲染自检
+ *    看得见那几侧的门面 / 外链），而**展开态**（`open`）不在初始产物里。
+ * ⚠️ `grid-column: 1 / -1`：它横跨卡片的三列（它不属于任何一侧）。
+ * ⚠️ 三角**用边框画，不用字符**：`▸` 不在自托管像素字体的子集里，
+ *    `check-font-coverage.mjs` 会让构建直接失败（`.share__postform` 那一块记着
+ *    这次事故的完整经过），所以这里一个字符都不写。
+ */
+.ranked__expand {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+/* 折叠标题必须**看起来可点**（`cursor: pointer` + hover 变色），否则它像一句普通说明，
+   没人会去点 —— 那等于把播放器藏起来。 */
+.ranked__expand > summary {
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+  /* 去掉浏览器默认的三角，自己画一个（两个浏览器才一致） */
+  list-style: none;
+}
+.ranked__expand > summary::-webkit-details-marker {
+  display: none;
+}
+.ranked__expand > summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  /* 指向右：左边框着色，上下透明 */
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid currentColor;
+  transition: transform 120ms ease;
+}
+.ranked__expand[open] > summary::before {
+  transform: rotate(90deg);
+}
+.ranked__expand > summary:hover {
+  color: var(--grass-bright);
+}
+
+/* 展开区里那几侧：一行摆下、窄屏换行（**左在前** —— 与卡片上两侧同序，
+   几个播放器长得一样，顺序是读者唯一对得上"这个是左边那个人的"的线索）。 */
+.ranked__streams {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.ranked__stream {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+/*
+ * 不能内嵌那一档：**一句说明 + 一条外链**（spec §6.3）。
+ * ⚠️ 那句话说的是「**这条链接**不能内嵌」，它**不许**说成"这个平台不支持"：
+ *    `livePlatform === null` 里混着认不出的平台（kick）与"平台其实支持、只是这条地址里
+ *    没有可嵌的视频"（`youtube.com/@handle`）两类，对后者那句话是**错话**
+ *    （`ranked/embed.ts` 第 ④ 条分支写着这个理由）。文案由词条给，这里只管外形。
+ */
+.ranked__external {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+}
+.ranked__external a {
+  color: var(--fg);
+}
+
+/* ---- ③④ 两张表 ---- */
+
+/*
+ * 五列、`border-collapse`，表头像素字体、正文系统字体 —— 与 `.admintable` 同一套
+ * （全站的表格只有这一种形状，不新造）。
+ * ⚠️ 没有 `@media` 那一档的"窄屏改成块"：这里的五列都是短内容（数字与昵称），
+ *    压窄之后仍然读得下去，而两块表格各自一套窄屏规则会多出两条没人维护的分支。
+ */
+.ranked__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ranked__table th {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 400;
+  color: var(--fg-faint);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.ranked__table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  /* 名次与 elo 都是数字：等宽数字让两列上下对得齐（差一位不会看起来一样长） */
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- ④ 四个种子 ---- */
+
+/*
+ * ⚠️ 语义上用 `<dl>`（标签 + 值成对）而不是四个 `<div>`：这一行讲的正是"哪一格是哪个种子"。
+ *    样式照 `.infotable` 那一套写 —— 全站的"标签 + 值"是同一个形状。
+ * ⚠️ 一个 `<div>` 包一对 `dt`/`dd`（HTML 规范里 `<dl>` 允许这种 wrapper）：不包的话
+ *    四个标签会排成一行、四个值排成另一行，而它们是一一对应的四对。
+ * ⚠️ 值一定允许任意断行：种子是 19 位数字，不许在窄屏上把整行撑出一条横向滚动条
+ *    （`.share__seedvalue` 写着同一条）。
+ */
+.ranked__seeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+}
+.ranked__seeds > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+}
+.ranked__seeds dt {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+.ranked__seeds dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/* ---- ④ 翻页 ---- */
+
+/* 上一周 / 下一周摆成一行。 */
+.ranked__weeknav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/*
+ * ★ 它们是**真链接**（`/ranked/weekly/102`，spec §6.5）：可刷新、可分享、前进后退都落在
+ *    同一屏上 —— 所以长得像一颗按钮，而不是像正文里的链接。
+ * ⚠️ 到头那一档渲染的是 `<span>`（**不是**一条禁用的 `<a>`）：`aria-disabled` 的链接
+ *    仍然会被读屏软件念成"链接"，而它点了什么都不会发生 —— 那是在骗人。
+ */
+.ranked__navbtn {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  text-decoration: none;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.ranked__navbtn:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+/* 「到头了」那一格：最弱的一档灰 + 虚框 —— 它**不是一个坏掉的按钮**，是一件说明。 */
+.ranked__navbtn--off {
+  color: var(--fg-faint);
+  border-style: dashed;
+  border-color: var(--line);
+  background: transparent;
+}
+
 
 
 
