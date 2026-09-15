@@ -21,6 +21,7 @@ import { desktopRoute } from './routes/desktop';
 import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
 import { moderationRoute } from './routes/moderation';
+import { rankedRoute } from './routes/ranked';
 import { resourcesRoute } from './routes/resources';
 import { reviewRoute } from './routes/review';
 import { seedsRoute } from './routes/seeds';
@@ -196,6 +197,19 @@ app.route('/api/ranked-seeds', seedsRoute);
  *    （Hono 按注册顺序匹配）—— 理由写在那个文件里，别把两条 GET 调换顺序。
  */
 app.route('/api/shares', sharesRoute);
+
+/*
+ * Ranked 实时信息（2026-09-16）。这一栏**只有这一个端点**：其余数据（在线人数、
+ * 高分对局、排行榜、周赛）由访客浏览器直连上游，用访客自己的 IP —— 而这个端点存在
+ * 是因为上游状态页那个主机**不发 CORS 头**（spec §2.5 实测；那个地址只在
+ * `packages/shared/src/ranked/const.ts` 里写一次，这里连注释都不写它），
+ * 浏览器读不到它。它不是设计偏好，是架构上被迫的例外（见 routes/ranked.ts 的文件头）。
+ *
+ * ⚠️ 挂载点写全（/api/ranked），因为 route 文件里用的是相对路径（/status）——
+ *    与 routes/shares.ts 同形，与 videosRoute 那种"自带前缀"的写法**相反**。
+ *    两种写法不能混：混了的症状是整组路由一起 404，而不是某个端点 404。
+ */
+app.route('/api/ranked', rankedRoute);
 
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。

@@ -119,6 +119,20 @@ const KNOWN_CODES: readonly string[] = [
    *    而它落不进任何一条文案分支 —— 用户看到的就是兜底那句。
    */
   'at_limit',
+  // ---- Ranked 实时信息（唯一走服务器的端点：服务心跳）----
+  /**
+   * 上游抖了 / 网络不通 / 超时 / 5xx。
+   *
+   * ⚠️ spec §4.2 只把 `ranked_busy` 与 `upstream_bad_response` 点名为新码，但实测
+   *    （本文件第一条断言）**这个是第三个**：`seed_service_unavailable` 与它长得像、
+   *    含义也像，但那是另一个端点的码，字符串不同 ⇒ 不登记就当场红。
+   *    这条码的意义是"等一下再来"，与上面那条的"我们得改"是两句话。
+   */
+  'upstream_unavailable',
+  /** 上游在限我们的流（429）—— "等一下就好"，与"上游挂了"是两码事 */
+  'ranked_busy',
+  /** 上游回了不成形状的东西（我们读不出那一格）—— **我们的适配层要改** */
+  'upstream_bad_response',
 ];
 
 /**
@@ -271,6 +285,22 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
    */
   at_limit:
     '界面用的是这个栏目自己的词条（shares.atLimitSeeds / shares.atLimitRestore），不走通用映射',
+  /*
+   * ---- Ranked 实时信息（2026-09-16）----
+   *
+   * ⚠️ 这三条与 `at_limit` 是同一个处境：界面用的是**这个栏目自己**的映射
+   *    （`apps/web/src/lib/rankedErrors.ts` 的 `RANKED_ERROR_KEYS`），
+   *    而上面那个扫描器只看 submissionErrors.ts 与 auth.tsx 的 apiErrorText
+   *    ⇒ 看不见它。登记在这里**不是**"还没有文案"，而是"文案在别处"
+   *    （词条冻结在 spec §7.3：`ranked.errBusy` / `errUnavailable` / `errBadResponse`）。
+   *    ⚠️ 话本身也不能通用："上游有点忙，稍后再试"、"上游暂时读不到"与
+   *    "上游返回的数据看不懂"对用户的下一步是不同的（等一会儿 vs 报给我们）。
+   * ⚠️ `upstream_unavailable` 是 spec §4.2 没点名的那**第三个**新码（见 KNOWN_CODES
+   *    里那一段）：它同样只出现在这一个端点上，同样走这个栏目自己的词条。
+   */
+  ranked_busy: '界面用的是这个栏目自己的词条（ranked.errBusy），不走通用映射',
+  upstream_unavailable: '界面用的是这个栏目自己的词条（ranked.errUnavailable），不走通用映射',
+  upstream_bad_response: '界面用的是这个栏目自己的词条（ranked.errBadResponse），不走通用映射',
 };
 
 function walk(dir: string, out: string[] = []): string[] {
