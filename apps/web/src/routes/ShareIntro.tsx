@@ -9,8 +9,8 @@
  * 这个页面**自己取数**，而 `renderToStaticMarkup` **不跑 effect**（也不点击、不发请求）
  * ⇒ 整页在渲染自检里**永远停在"加载中"**，写在它里面的任何一块都**断言不到**
  * ——那是一条不可能红的守卫（`docs/pending.md §5.63`）。
- * ⇒ 这里只有四件事：`useAuth()`、一次 `fetchShareSummary`（**游客不发**）、
- *    "失败了就再跑一次"的那个计数器、`<ShareIntroView authed={…} summary={…}
+ * ⇒ 这里只有四件事：`useAuth()`、一份取数逻辑 `load`（**游客不发**；挂载时跑一次，
+ *    之后只由「重试」再跑）、失败那一格状态、`<ShareIntroView authed={…} summary={…}
  *    summaryFailed={…} onRetry={…} />`（Task 8 渲染的正是那个纯视图）。
  *    属性少传、传错都会被 **typecheck** 抓住（`src/**` 在 tsconfig 的 include 里）
  *    —— 这也是那两格新 prop 敢写成**必填**的原因。
