@@ -62,11 +62,16 @@
  * `apps/web/src/styles.css` 末尾那一块里有规则，Task 8 的渲染自检会逐类名核对。
  *
  * ===========================================================================
- * ⚠️ 词条：这里出现的每一个 key 都在 spec §7.3 的冻结清单里（由 Task 7 落地）
+ * ⚠️ 词条：这里出现的每一个 key 都在 spec §7 的冻结清单里（跟着视图一起落地）
  * ===========================================================================
  * ⛔ **不要在这个文件里写死任何可见文字**，包括那个占位符：它是 `ranked.unknown`。
  * 写死之后两种语言再也没法分开调，而渲染自检的"裸 key 泄漏"扫描**只看得到 key**
  * —— 一个写死的字面量它一个字都不会说（`roleguide.tsx` 那条恒真守卫就是这个形状）。
+ * ⚠️★ 两份字典**看不见**这件事：`services/api/src/i18n-keys.test.ts` 只扫**字面量**
+ *    `t('…')` 调用，而这个文件里有一批 key 是从表里取的（标签页那一张、
+ *    `STATUS_KEYS`、`WEEKLY_SEED_LABEL_KEYS`、`timeline.ts` 那一张）——
+ *    表里少一条，界面上会直接印出裸 key 而门禁全绿（2026-09-16 评审量到的正是这个）。
+ *    ⇒ 只有渲染自检（Task 8）看得见它，在那之前得靠人。
  */
 import { liveEmbedDecision } from '@mcsr/shared/live';
 import {
@@ -119,6 +124,13 @@ const RANKED_TAB_PATHS: Record<RankedTab, string> = {
  *
  * ⚠️ 表里存的是**词条 key**，不是译文：`t()` 在渲染点调用，切语言才跟得上
  * （与 `ShareCard.tsx` 里那三张 `SHARE_*_KEYS` 表同一条理由）。
+ * ⚠️★ 表里的四条**不在** `services/api/src/i18n-keys.test.ts` 那条守卫的覆盖范围里：
+ *    它扫的是源码里的**字面量** `t('…')` 调用，而这里唯一的调用点是
+ *    `t(RANKED_TAB_LABEL_KEYS[each])` —— 表里少一条，四个标签页会**一起**印出
+ *    `ranked.tabStatus` … 而 `pnpm -w check` 全绿（2026-09-16 评审就是这样逐格量到的：
+ *    四条 key 两份字典里一条都没有）。⇒ 同一个缺陷在 `STATUS_KEYS` /
+ *    `WEEKLY_SEED_LABEL_KEYS` 上都成立，三张表都得逐条对 spec §7 的清单核一遍，
+ *    而这件事今天只能靠人（T8 的裸 key 扫描只看得见**渲染出来**的 key）。
  */
 const RANKED_TAB_LABEL_KEYS: Record<RankedTab, string> = {
   status: 'ranked.tabStatus',
@@ -172,21 +184,44 @@ const BADGE: Record<0 | 1 | 2 | 3, string> = {
 // ④ 周赛的四个种子
 // ---------------------------------------------------------------------------
 
+/** 形状里的四个种子字段（`keyof RankedWeeklyData['seed']`，不是手抄的字面量联合）。 */
+type WeeklySeedField = keyof RankedWeeklyData['seed'];
+
 /**
  * 四个种子的**固定顺序**：主世界 / 下界 / 末地 / RNG（用户原话的顺序）。
  *
  * ⚠️ 顺序写成数组，不靠对象键序：键序是"谁先写"的副产品，而"这四格每次都以同一个
  * 顺序出现"是这一栏的固有顺序（`ShareContent` 里那四格种子同一条做法）——
  * 顺序一旦漂了，没人会注意到，只会觉得"这次看起来不太一样"。
- * ⚠️ 类型取 `keyof RankedWeeklyData['seed']`（不是手抄的字面量联合）：
- *    形状里加一格种子时这里跟着编译报错。
+ * ⚠️★ `satisfies` 与下面那个类型**各管一半**（2026-09-16 评审指出：上一版的注释声称
+ *    这一行会为"形状里加一格种子"编译报错，而它其实不会）：
+ *    · `satisfies readonly WeeklySeedField[]` 管的是"写进来的每个名字都是形状里真的字段"
+ *      —— 写错一个字、或形状里改了名，这里立刻编译报错；
+ *    · 它**不管**"形状里每一格都写进来了"：形状加第五格种子时它一声不响，
+ *      而后果是**静默的** —— 新种子在 `WEEKLY_SEED_LABEL_KEYS`（穷尽 `Record`）里
+ *      拿到自己的标签，却在界面上**永远不渲染**（每一格都合法，没有门禁看得见）。
+ *    ⇒ 穷尽那半由 `OrderedWeeklySeedFields` 与视图里
+ *      `const order: OrderedWeeklySeedFields = WEEKLY_SEED_ORDER;` 一起钉死。
  */
-const WEEKLY_SEED_ORDER: (keyof RankedWeeklyData['seed'])[] = [
+const WEEKLY_SEED_ORDER = [
   'overworld',
   'nether',
   'theEnd',
   'rng',
-];
+] as const satisfies readonly WeeklySeedField[];
+
+/**
+ * ★ 顺序数组的**穷尽断言**（类型层，不是文档）：`WEEKLY_SEED_ORDER` 没覆盖到的字段
+ *   一旦不是空集，这个类型就塌成 `never` ⇒ 视图里那一行赋值编译报错，
+ *   而修法只有一个：把新字段写进顺序数组（顺序是这一栏的产品决定，不能靠键序兜）。
+ * ⚠️ 被否决的替代方案（评审的另一个建议）：从 `WEEKLY_SEED_LABEL_KEYS` 的键序派生顺序
+ *    —— 那等于让"这四个格子以什么顺序出现"变成"谁先在对象字面量里动手写"的副产品，
+ *    而顺序漂了是**没人会注意到**的错（上面第一条 ⚠️ 就是为它写的）。
+ */
+type OrderedWeeklySeedFields =
+  Exclude<WeeklySeedField, (typeof WEEKLY_SEED_ORDER)[number]> extends never
+    ? readonly WeeklySeedField[]
+    : never;
 
 /**
  * 四个种子的标签 → **这一栏自己的四条词条**（`ranked.seedOverworld` 等）。
@@ -208,26 +243,35 @@ const WEEKLY_SEED_LABEL_KEYS: Record<keyof RankedWeeklyData['seed'], string> = {
 };
 
 // ---------------------------------------------------------------------------
-// 两个"上游给秒、界面按本地时区印"的小工具
+// 两个"上游给秒、界面按本地时区与界面语言印"的小工具
 // ---------------------------------------------------------------------------
 
 /*
  * ⚠️ 上游的 `Date` 一律是**秒**（赛季起止、周赛 endsAt —— spec §13 的时间单位表），
  *    而 `new Date()` 要的是毫秒 ⇒ 乘 1000 这一步在**调用点**显式做，
  *    与 `time.ts` 文件头那条"单位搞混不会报错，只会显示成一个荒谬的数字"同一条纪律。
- * ⚠️ 用 `toLocaleDateString()` / `toLocaleString()` 而不是自己拼 `YYYY-MM-DD`：
- *    本仓其它日期都是这么显示的（`ResourceDetail` / `VideoCard` / `AdminUsers` …），
- *    自己拼就是**第二套时区口径**，而它只会和第一套漂开。
+ * ⚠️ 用 `toLocaleDateString(locale)` / `toLocaleString(locale)` 而不是自己拼 `YYYY-MM-DD`：
+ *    本仓凡与语言有关的日期都走 `Intl`（`CalendarMonthNav` / `CalendarGrid` /
+ *    `CalendarDayPanel` 传的正是 `i18n.language`），自己拼就是**第二套时区口径**，
+ *    而它只会和第一套漂开。
+ * ⚠️★ `locale` 是**必填**参数，由调用点传 `i18n.language`：不传时 `toLocaleDateString()`
+ *    跟的是**宿主机器**的 locale ⇒ 中文系统上的英文界面会印出中文日期，而两种语言各渲染
+ *    一遍的渲染自检**都看不出来**（两遍都在同一台机器上跑，看到的是同一个错误）。
+ * ⚠️★ 它们住在这个视图里，**不**搬去 `packages/shared/src/ranked/time.ts`：那边两个函数
+ *    （`formatClock` / `formatRaceTime`）把一个数变成**语言无关**的时钟串（`2:21`），
+ *    与 `Intl`、与任何全局变量都不沾；而"哪一天"这两个带着**语言**与**时区**两个口径，
+ *    只有界面知道该拿哪一个。搬过去就得给那个纯数字模块加一个"当前语言"参数 ——
+ *    那是把一个两行的显示格式问题升级成共享层的接口问题（T2 的测试也要跟着改）。
  */
 
-/** `2026-09-15`（按**访客本地时区**）—— 赛季起止这种"哪一天"的东西用它。 */
-function localDate(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleDateString();
+/** 赛季起止这种"哪一天"的东西 —— 形状由**当前语言**决定（`2026/9/15` 对 `9/15/2026`）。 */
+function localDate(seconds: number, locale: string): string {
+  return new Date(seconds * 1000).toLocaleDateString(locale);
 }
 
 /** 带时刻的那一档（周赛截止）—— 截止是一个**瞬间**，只有日期不够用。 */
-function localDateTime(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleString();
+function localDateTime(seconds: number, locale: string): string {
+  return new Date(seconds * 1000).toLocaleString(locale);
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +466,16 @@ export function RankedStatusView(props: RankedStatusViewProps) {
 
   return (
     <RankedChrome {...c}>
+      {/*
+        ★★ ① 的区域标题（2026-09-16 评审补的一道）：②③④ 各自都从
+        `<h2 className="ranked__title">` 开始，而 ① 原本是一颗徽章顶在最前面 ——
+        一页里三个面板有标题、一个没有：读屏软件按标题跳转时会**跳过** ①，
+        而那正是这一页第一件要说的事（服务是不是正常）。
+        ⚠️★ 用**这一格自己的** `ranked.statusTitle`（「服务状况」），不借标签页那一格
+        `ranked.tabStatus`（「状况」）：前者回答"这一块讲的是什么"，后者回答"点它去哪一页"，
+        两者的读者与用途都不同 —— 借一次就把两个会各自被改的词绑成了一条。
+      */}
+      <h2 className="ranked__title">{t('ranked.statusTitle')}</h2>
       <p className={`ranked__badge ranked__badge--${BADGE[status.monitor.state]}`}>
         {t(STATUS_KEYS[status.monitor.state])}
       </p>
@@ -762,7 +816,7 @@ export type RankedEloViewProps = RankedChromeProps & {
  *    所以它连我们的形状都没进（那条数据在 `parse.ts` 就被丢掉了）。
  */
 export function RankedEloView(props: RankedEloViewProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { elo, ...c } = props;
 
   if (elo === null) {
@@ -788,8 +842,12 @@ export function RankedEloView(props: RankedEloViewProps) {
         <span>{t('ranked.season', { n: elo.season.number })}</span>
         <span>
           {t('ranked.seasonRange', {
-            from: localDate(elo.season.startsAt),
-            to: localDate(elo.season.endsAt),
+            /*
+             * ⚠️★ `i18n.language` 一路传进 `localDate`：日期的**语言**必须跟着界面走，
+             *    不能跟宿主机器（见函数上方那段）。
+             */
+            from: localDate(elo.season.startsAt, i18n.language),
+            to: localDate(elo.season.endsAt, i18n.language),
           })}
         </span>
       </p>
@@ -854,7 +912,7 @@ export type RankedWeeklyViewProps = RankedChromeProps & {
  *    （不是一条会 400 的链接）。
  */
 export function RankedWeeklyView(props: RankedWeeklyViewProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { weekly, latestId, ...c } = props;
 
   if (weekly === null) {
@@ -875,13 +933,25 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
    *    代价写在明面上：latestId 到货之前，本该可点的「下一周」会短暂灰着。
    */
   const next = nextWeekId(weekly.id, latestId ?? weekly.id);
+  /*
+   * ⚠️★ 这一行不是多余的临时变量：它的**类型**就是"顺序数组覆盖了形状里每一格种子"
+   *    那条编译期断言（见 `OrderedWeeklySeedFields`）—— 形状里加第五格种子、
+   *    而 `WEEKLY_SEED_ORDER` 没跟上时，这一行是从 `readonly WeeklySeedField[]`
+   *    塌成 `never` 的地方，报错也就落在这里。
+   */
+  const order: OrderedWeeklySeedFields = WEEKLY_SEED_ORDER;
 
   return (
     <RankedChrome {...c}>
       <h2 className="ranked__title">{t('ranked.weeklyTitle')}</h2>
       <p className="ranked__meta">
         <span>{t('ranked.weeklyNumber', { n: displayWeekNo(weekly.id) })}</span>
-        <span>{t('ranked.weeklyEndsAt', { when: localDateTime(weekly.endsAt) })}</span>
+        {/*
+         * ⚠️★ 截止时刻的**语言**跟着界面走（`i18n.language`），不跟宿主机器。
+         */}
+        <span>
+          {t('ranked.weeklyEndsAt', { when: localDateTime(weekly.endsAt, i18n.language) })}
+        </span>
       </p>
       {/*
         ★ 四个种子：一个 `<dl>`（标签 + 值成对）—— 复用 `.infotable` 那一套
@@ -889,9 +959,17 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
         ⚠️ 值走**原样**：种子是 64 位整数（19 位数字），`Number()` 会静默改值
         （`components/SeedResultCard.tsx` 的文件头记着这件事），
         而这里它本来就是字符串 —— 从解析层到界面一个字都没被转换过。
+        ⚠️★ 上面那一行是这个四格的**总称**（`ranked.weeklySeed` =「种子」）：
+        上一行的 `weeklyNumber` / `weeklyEndsAt` 说的是"哪一周、什么时候截止"，
+        下面四格是"这一周用的是哪几个种子"，它们需要一个标题；而 `<dl>` 里**没有**
+        放标题的元素（HTML 只允许 `dt` / `dd` / `div`）⇒ 它是 `<dl>` 的兄弟、
+        紧贴在它上面（`.ranked__meta` 那一行的度量正好比种子标签弱一档）。
+        ⚠️ 这条词条在 2026-09-16 的评审里差点因为"没有渲染点"被删（与 `liveCollapse`
+        同一条口径）—— 现在它有消费者了，**不许**再留着它不用。
       */}
+      <p className="ranked__meta">{t('ranked.weeklySeed')}</p>
       <dl className="ranked__seeds">
-        {WEEKLY_SEED_ORDER.map((field) => (
+        {order.map((field) => (
           /* ⚠️ 一个 `<div>` 包一对 `dt`/`dd`（`<dl>` 允许这种 wrapper）：
              不包的话四个标签排成一行、四个值排成另一行，而它们是一一对应的四对。 */
           <div key={field}>

@@ -2723,7 +2723,38 @@ export const en: TranslationSchema = {
    * ⚠️ Nothing outside this section moves: it is appended whole, after `shares`.
    */
   ranked: {
+    // ---- The four tabs (`RankedTabBar`, spec §7.1) ----
+    /*
+     * ⚠️★ These four live **only** inside a `Record<RankedTab, string>`
+     *    (`RANKED_TAB_LABEL_KEYS`) and are rendered by
+     *    `t(RANKED_TAB_LABEL_KEYS[each])` -- the source holds **no** literal
+     *    `t('ranked.tabStatus')` call site, so `i18n-keys.test.ts`'s "every
+     *    literal key must exist" guard **cannot see them** (it scans literal
+     *    call sites; a table value is a value, not a call).
+     *    A 2026-09-16 review measured exactly that: none of the four existed in
+     *    either dictionary, so all four tabs printed `ranked.tabStatus` ... in
+     *    both languages while every gate stayed green.
+     * ⚠️ The English values are spec §7.1's **frozen** column: `tabLive` must
+     *    **not** read "Live" -- the sidebar's 直播 section already owns "Live"
+     *    (this repo already spent a round on two Lives in one sidebar);
+     *    "Top matches" is safe inside a tab strip.
+     */
+    tabStatus: 'Status',
+    tabLive: 'Top matches',
+    tabElo: 'Leaderboard',
+    tabWeekly: 'Weekly race',
+
     // ---- (1) Status and player count (`RankedStatusView`, spec §6.2) ----
+    /*
+     * ★ The region heading for panel (1) (added after the 2026-09-16 review):
+     *    (2)(3)(4) each open with `<h2 className="ranked__title">` while (1)
+     *    started straight at a badge -- a screen reader jumping by heading
+     *    **skipped** the first thing this page has to say.
+     * ⚠️ It is a **separate** key from `tabStatus` ("Status"): that word answers
+     *    "where does this take me", this one answers "what is this block".
+     *    Folding them together means editing one silently edits the other.
+     */
+    statusTitle: 'Service status',
     statusUp: 'Up',
     /*
      * ⚠️ Four states, four sentences (`STATUS_KEYS` is an exhaustive
@@ -2815,6 +2846,11 @@ export const en: TranslationSchema = {
      *    other, and those four belong to "I am sharing a seed set" while these
      *    four say "this week's race was drawn from these".
      *    ⚠️ They sit alongside `weeklySeed` ("Seed"), which names the group.
+     *    ⚠️★ The 2026-09-16 review measured that `weeklySeed` had **no consumer**
+     *      at all back then (a frozen key with no rendering site would have been
+     *      deleted under this repo's "no consumer, no key" rule); the ruling was
+     *      to give it one -- it is now the caption line
+     *      (`<p class="ranked__meta">`) sitting directly above `<dl class="ranked__seeds">`.
      */
     seedOverworld: 'Overworld',
     seedNether: 'Nether',

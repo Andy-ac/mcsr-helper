@@ -2512,7 +2512,33 @@ export const zhCN = {
    * ⚠️ 与这一栏无关的区块一个字都不许动 —— 本块是**整块追加**在 `shares` 之后的。
    */
   ranked: {
+    // ---- 标签页四格（`RankedTabBar` / spec §7.1）----
+    /*
+     * ⚠️★ 这四条**只**出现在一张 `Record<RankedTab, string>`（`RANKED_TAB_LABEL_KEYS`）里，
+     *    渲染点是 `t(RANKED_TAB_LABEL_KEYS[each])` —— 源码里**没有**
+     *    `t('ranked.tabStatus')` 这样的字面量调用点，所以
+     *    `services/api/src/i18n-keys.test.ts` 那条"字面量键必须存在"的守卫
+     *    **看不见它们**（它扫的是字面量调用点，而表里的值是表的值）。
+     *    2026-09-16 的评审就是这样逐格量到的：四条在两份字典里一条都没有，
+     *    四个标签页在两种语言里**一起**印出 `ranked.tabStatus` … 而门禁全绿。
+     * ⚠️ 英文值取 spec §7.1 的**冻结**列：`tabLive` **不许**写 "Live" ——
+     *    侧栏「直播」已经是 "Live"，本仓为"侧栏出现两个 Live"花过一轮
+     *    （"Top matches" 在标签页里是安全的）。
+     */
+    tabStatus: '状况',
+    tabLive: '高分对局',
+    tabElo: '排行榜',
+    tabWeekly: '周赛',
+
     // ---- ① 状况与人数（`RankedStatusView` / spec §6.2）----
+    /*
+     * ★ ① 那一格的区域标题（2026-09-16 评审补的一道）：②③④ 各自都有一个
+     *    `<h2 className="ranked__title">`，只有 ① 是一颗徽章顶在最前面 ——
+     *    读屏软件按标题跳转时会**跳过**这一页第一件要说的事。
+     * ⚠️ 它与 `tabStatus`（「状况」）是**两条**：那个词说的是"点它去哪一页"，
+     *    这一条说的是"这一块讲的是什么"，绑成一条会让改一处顺手改掉另一处。
+     */
+    statusTitle: '服务状况',
     statusUp: '正常',
     /*
      * ⚠️ 四态各有各的话（`STATUS_KEYS` 是穷尽的 `Record<0|1|2|3, string>`）：
@@ -2593,6 +2619,10 @@ export const zhCN = {
      *    改一栏的文案会**顺手改掉**另一栏，而那四条的语境是"我要分享一组种子"，
      *    这四格说的是"这一周的比赛用的是这几个种子"。
      *    ⚠️ 它们与 `weeklySeed`（「种子」）并存：后者是这一组的总称。
+     *    ⚠️★ 2026-09-16 的评审量到它当时**没有任何消费者**（那一版 `weeklySeed`
+     *      还只是一条没有渲染点的冻结词条，按本仓"没有消费者的 key 不留"的口径差点被删）；
+     *      裁决是"给它一个渲染点"—— 现在它是面板里那一行
+     *      `<p class="ranked__meta">种子</p>`（紧贴在 `<dl class="ranked__seeds">` 上面）。
      */
     seedOverworld: '主世界',
     seedNether: '下界',
