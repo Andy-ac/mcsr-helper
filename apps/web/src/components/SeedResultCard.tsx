@@ -1,7 +1,7 @@
 import type { SeedInfo, SeedRecord, SeedString } from '@mcsr/shared/seed';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { structureLabel } from '@/components/SeedFilters';
+import { structureLabel } from '@/lib/seedLabels';
 
 /**
  * 一条种子的展示卡片 + 它的"结构与变种"面板。

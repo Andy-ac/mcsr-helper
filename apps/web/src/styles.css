@@ -4584,6 +4584,211 @@ textarea.mcsr-field__input {
 }
 
 /* ==================================================================
+   排位赛种子的**新**筛选面板（spec §6.2）：两个标签页 + 四排单选 + 三态按钮排
+   ==================================================================
+
+   旧的 .seed__filters 那一套还在（旧面板要到 Task 6 才删），这一轮**只加不删**。
+
+   ⚠️ 三态（灰 / 绿 / 红）**只靠颜色**表达，所以颜色在这里是功能而不是装饰：
+      · 绿 = 要求（进 variations）、红 = 排除（进 without）、灰 = 没点过。
+      · 色值一律走主题变量。写死的话浅色主题下绿底上的字会看不清 ——
+        `--grass-ink` 是这一套里唯一一个在**两种主题 × 两种底色**上都读得清的字色
+        （白字在浅色主题那颗草绿上是 2.5:1，等于看不见）。
+      · 但那还不够：色盲用户看到的是三颗一样的按钮。所以每颗按下的按钮前面
+        多一个 `+` / `-` 形状记号（.seed__pickmark），绿用实心、红用虚线描边，
+        页面底部还有一句可见图例 —— 三条**不依赖颜色**的通道。
+
+   ⚠️ 下面还带着 .seed__tabs / .seed__tab / .seed__soon 三条，而渲染它们的是
+      Task 6 的 routes/Seeds.tsx（两个标签页 + 「随机数种子」那一栏的空状态）。
+      规则落在**这一轮**是有意的：本轮负责 styles.css，而 Task 7 要补一条
+      "渲染出来的 seed__* 类名必须在 styles.css 里有规则"的守卫 ——
+      把规则和它的消费方分成两个提交的话，中间那棵树正好撞在那条守卫上。
+   ================================================================== */
+
+/* 顶部两个标签页（世界种子 / 随机数种子）。
+   ⚠️ 刻意**不复用** .tabs / .tabs__item：那一套的核心是一条由 JS 量出位置的
+      滑动指示器（.tabs__indicator，见 ResourceList.tsx），而这里只有两个标签页、
+      是本地状态、不换路由 —— 为它拉一套测量逻辑不划算（同 .resvis 那一堆的裁决）。 */
+.seed__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 14px;
+}
+.seed__tab {
+  padding: 8px 18px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.seed__tab:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+/* 当前那个标签页。用和 .seed__pickbtn.is-on 同一套"实心草绿"：
+   全站"这个生效了"是一个意思，两处长得不一样会让人以为是两种状态。
+   （读屏那一侧由 aria-pressed 承担，见 routes/Seeds.tsx。） */
+.seed__tab.is-on {
+  color: var(--grass-ink);
+  background: var(--grass);
+  border-color: transparent;
+}
+
+.seed__picker {
+  padding: 16px 18px;
+  margin: 12px 0 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+/* 一排：**组名在按钮上面一行**，不是左边一列。
+   ⚠️ 这一条不是排版偏好，是被 `<legend>` 逼出来的：legend 渲染在 fieldset 的
+      边框区、**不能**作为 flex 子项参与排版，所以"左边一列标签 + 右边一排按钮"
+      在 fieldset 里做不到。本仓选了语义（见 SeedPicker.tsx 里 TopRow 的说明），
+      代价就是这个上下排 —— 与 `.grid-filters__row` 是同一套写法。
+   ⚠️ fieldset 默认有边框与内边距，这里只是借它的语义，样式上要清掉；
+      `min-width: 0` 是必须的：它的默认值是 `min-content`，会让这一排
+      在窄屏上顶破容器（一排长按钮撑出横向滚动条）。 */
+.seed__row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.seed__rowlabel {
+  /* legend 的默认样式（有内边距、可能吃掉一个字宽）在这里清掉 */
+  padding: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+}
+.seed__rowbtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 打底 = 灰（没点过）。
+   ⚠️ 三个状态的边框宽度必须都是 1px：否则点一下按钮会跳 1–2px，
+      一排按钮里跳一下比颜色变化还显眼。 */
+.seed__pickbtn {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.seed__pickbtn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+/* 顶层四排的**单选**选中态（is-on，可空：再点一次就是取消）。
+   与变种那一排的绿同一个意思 —— "这个条件生效了"。 */
+.seed__pickbtn.is-on {
+  color: var(--grass-ink);
+  background: var(--grass);
+  border-color: transparent;
+}
+/* 绿 = 要求（进 variations）。实心 + 加粗 + 前面的 `+`。 */
+.seed__pickbtn.is-with {
+  color: var(--grass-ink);
+  background: var(--grass);
+  border-color: transparent;
+  font-weight: 600;
+}
+/* 红 = 排除（进 without）。
+   ⚠️ 画法与绿**刻意不同**（虚线描边 + 前面的 `-`，不是"另一颗实心按钮"）：
+      黑白色下、以及色盲用户眼里，"实心=要求 / 描边=排除"这条对照仍然成立。
+      —— 三态只有颜色这一条通道的话，等于对一部分用户没有状态。 */
+.seed__pickbtn.is-without {
+  color: var(--grass-ink);
+  background: var(--redstone);
+  border: 1px dashed var(--grass-ink);
+  font-weight: 600;
+}
+
+/* 三态的形状记号（SeedPicker.tsx 的文件头写了它为什么存在）。
+   ⚠️ 用 `+` / `-` 而不是 ✔ / ✕：后两个字符**不在自托管像素字体的子集里**，
+      而 `check-font-coverage` 会因为这个让构建失败 ——
+      .livemanage__advanced 那个三角当初就是这么被拦下来的。
+      ASCII 这两个字符永远在。 */
+.seed__pickmark {
+  margin-right: 4px;
+  font-family: var(--font-mono);
+}
+
+/* 三态图例。三颗点按**绿 → 红 → 灰**排，与下面那句话里的顺序
+   （点一下 / 点两下 / 点三下）一一对应，位置本身就是那条对应关系。 */
+.seed__legend {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.seed__legenditem {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.seed__legenddot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+}
+.seed__legenddot--with {
+  background: var(--grass);
+}
+.seed__legenddot--without {
+  background: var(--redstone);
+}
+/* 灰那一颗要**看得见**：底色与按钮的打底一致，靠一圈描边站住 ——
+   不给它描边的话，浅色主题下它就是一块几乎和背景同色的方块，
+   而"灰 = 没有条件"恰恰是用户最先要认出来的那一颗。 */
+.seed__legenddot--none {
+  background: var(--bg-deep);
+  border-color: var(--line-strong);
+}
+
+/* 「这一栏还没有做」的空状态（Task 6 的「随机数种子」标签页）。
+   虚线 + 降透明度是本仓"存在但未启用"的既有写法（见 .seed__block--soon），
+   照抄它 —— 同一个意思在站里长出三种样子，用户会以为是三种状态。 */
+.seed__soon {
+  padding: 16px 18px;
+  margin: 12px 0;
+  color: var(--fg-muted);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  opacity: 0.72;
+}
+
+/* ==================================================================
    月历表（/calendar 的网格视图）—— 样式从下面这个锚点往下追加。
    类名一律用 grid__ / grid- 前缀；本仓的样式是全局的，没有 CSS Modules 兜着。
    写完把锚点注释删掉。

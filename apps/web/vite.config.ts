@@ -59,6 +59,25 @@ export default defineConfig({
        *    类型检查**永远**证明不了它能在浏览器里加载。
        */
       '@mcsr/shared/ranked': resolvePath('../../packages/shared/src/ranked/index.ts'),
+      /*
+       * ⚠️ 这一条是「排位赛种子」选择器（2026-09-16）加的。
+       *    上面那两段注释说的坑**第三次**发生了 —— 但这次是在写界面之前就补上的：
+       *    Task 3 已经把 `packages/shared/src/seedPicker.ts` 与它的 `exports` 子路径
+       *    都建好了，而**当时那份文件清单里没有这个文件**，所以它没动这里。
+       *
+       *    不做这一步的表现与上面那次逐字相同：`@mcsr/shared/seedPicker` 被裸包名
+       *    那条吃成 `.../src/index.ts/seedPicker`，
+       *      Failed to resolve import "@mcsr/shared/seedPicker" from "src/routes/Seeds.tsx"
+       *    整个筛选面板（连同那一页）在浏览器里一个字节都渲染不出来。
+       *
+       * ⚠️★ 而**两端门禁一个都不会响**：`pnpm -w check` 的 typecheck 走的是
+       *    `packages/shared/package.json` 的 `exports`（moduleResolution: bundler），
+       *    渲染自检则用 tsx 直接跑 TS，**根本不经过 Vite**。⇒ 别名这一层
+       *    **没有门禁**，只能靠人记得。
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       */
+      '@mcsr/shared/seedPicker': resolvePath('../../packages/shared/src/seedPicker.ts'),
       '@mcsr/shared/seed': resolvePath('../../packages/shared/src/seed.ts'),
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
       '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
