@@ -1736,24 +1736,22 @@ export const zhCN = {
      */
     filterNote: '没有选任何条件时走上游的「随机一条」，选了条件之后自动改用检索接口。',
 
-    filterOverworld: '主世界结构',
-    filterNether: '下界堡垒遗迹',
-    filterAny: '不限',
-
-    variations: '结构变种',
-    variationsHint: '先选一组，再在里面勾具体词条。多选表示「同时满足」。',
-    variationsExpand: '展开',
-    variationsCollapse: '收起',
-    variationsClear: '清空变种',
-    variationsSelected: '已选 {{count}} 条',
-    /**
-     * ⚠️ 词条表的**来源**要对用户说实话。
+    /*
+     * ⚠️ 这里原来有十条给**旧面板**（两个下拉 + 折叠 chip 墙）用的词条，
+     *    Task 6 删掉那个面板时一并删了：
+     *      filterOverworld / filterNether / filterAny / variations /
+     *      variationsHint / variationsExpand / variationsCollapse /
+     *      variationsClear / variationsSelected（带 {{count}}）/ variationsSource。
      *
-     * 上游没有「列出全部词条」的接口，所以这份表 = 上游文档里那棵树
-     * + 我们真的在结果里见过的词条。两句话都要说，否则用户会以为
-     * 这个列表是完整的（它不是，上游随时会加新的）。
+     *    判据是本仓既有的那一条：**词条存在 ⇔ 有一个真实状态需要它**
+     *    （`progress.md` §十五 c）。这十条的唯一引用点就是被删掉的
+     *    `apps/web/src/components/SeedFilters.tsx`（`git grep` 逐条验过）。
+     *
+     *    ⚠️ 它们的替代品是 `pickOverworld` / `pickVariations` / `pickBastionBiome` /
+     *       `pickBastionType` / `pickBastionVariations` / `pickFortressBiome` /
+     *       `pickLegend` / `pickSlow` 那一组（Task 4 加的）—— 别把旧名字又加回来：
+     *       两个名字同时存在，下一个改文案的人会改错那一个，而界面上什么都不会变。
      */
-    variationsSource: '词条来自上游文档的分类树，并会自动补上我们在结果里实际见过的词条。',
 
     completion: '完赛时间上限',
     completionPlaceholder: '分:秒，例如 2:35',
@@ -2091,12 +2089,23 @@ export const zhCN = {
 
     // ---- 分组名与结构名 ----
     /**
-     * ⚠️ 分组名是一张**映射表**，不是一份分组清单。
+     * ⚠️ 这一组现在**是死的**（Task 6 记账，故意留着没删）。
      *
-     * 真清单来自 `groupVariations()` 对实际词条的分组（见 shared/seed.ts）——
-     * 上游加了新分组，它会自己冒出来，只是没有中文名，于是回退显示原始
-     * 分组名。**不要**在这里补一个「全部合法分组」的数组：
-     * 那样上游加分组时，它会静默地从界面上消失。
+     * 它原本是一张**翻译表**，不是分组清单：真清单来自 `groupVariations()` 把
+     * 实际见到的词条按第一段分组 —— 上游加了分组它会自己冒出来，只是没有中文名，
+     * 于是回退显示原始分组名。
+     *
+     * ⇒ 那条说明**今天不成立了**（两件事都变了）：
+     *   ① 新面板的按钮集来自上游文档那张表（`packages/shared/src/seedPicker.ts`），
+     *      每颗按钮对应表里一个具体变种，**没有"分组"这一层**；
+     *   ② `groupVariations()` 本身已随那套"自动学习"一起删掉（见 shared/seed.ts）。
+     *   于是这五条没有消费方了（唯一的那个是已删除的 SeedFilters.tsx 里那张
+     *   `GROUP_LABEL_KEYS`）。
+     *
+     * ⚠️ 为什么留着：派给 Task 6 的死词条审计**点名的那一批**里没有这五条，
+     *    而它们在界面上不显示任何东西（死词条的症状是"永不出现"，不是"印出裸 key"）
+     *    —— 删错了的代价与"留着"的代价不对称，所以按"不确定就留着并记账"处置。
+     *    真要收掉时：这五条 + 这一整段注释一起删，`git grep` 应当零命中。
      */
     group: {
       biome: '生物群系',

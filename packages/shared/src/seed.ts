@@ -170,39 +170,34 @@ export interface SeedCreateInput {
 }
 
 /**
- * 一条变种词条的两级联动形状（Q17）。
- *
- * ⚠️ 词条长这样：`biome:structure:plains`、`bastion:triple:1`、
- *    `end_tower:caged:front_center`。第一段是**分组**（结构），
- *    界面先让用户选分组、再出该分组下的词条（分组折叠 + 多选 chip）。
- *
- * ⚠️ 分组**不在 shared 里写死**：上游会加新分组，写死的话新分组在我们的
- *    界面上直接消失（用户看不出少了什么，只会觉得"选项不全"）。
- *    这个函数只是把上游回来的词条按第一段分个组。
- */
-export function groupVariations(variations: readonly string[]): Array<{
-  group: string;
-  items: string[];
-}> {
-  const groups = new Map<string, string[]>();
-  for (const raw of variations) {
-    const value = raw.trim();
-    if (!value) continue;
-    const group = value.split(':')[0] ?? value;
-    const bucket = groups.get(group);
-    if (bucket) bucket.push(value);
-    else groups.set(group, [value]);
-  }
-  return [...groups.entries()].map(([group, items]) => ({ group, items }));
-}
-
-/**
  * `end_spawn:*` 词条 —— **上游有 bug，界面上不许出现**（Q17）。
  *
  * ⚠️ 只过滤**筛选**，不过滤结果：这些词条真的存在于上游的种子数据里
  *    （实测 `end_spawn:buried:56`），所以一条种子的 variations 里出现它是**事实**，
  *    把它抹掉等于对用户撒谎。见 `routes/seeds.ts` 的 `end_spawn_unsupported`。
+ *
+ * ⚠️（Task 6）**只**剩这一条了：`end_spawn:*` 不许作为筛选出现，是服务端
+ *    也在守的同一条规则，所以它必须留着。原来的邻居 `groupVariations()` 已经删掉
+ *    —— 见下面那段说明。
  */
 export function isUnsupportedVariationFilter(variation: string): boolean {
   return variation.startsWith('end_spawn');
 }
+
+/*
+ * ⚠️ 这里原来有一个 `groupVariations(variations)`（把词条按第一段 `:` 分组，
+ *    给旧筛选面板的"折叠 chip 墙"用）。**Task 6 删掉了它**，理由记在这里：
+ *
+ *   · 它唯一的消费方就是 `apps/web/src/components/SeedFilters.tsx`，而那个文件
+ *     随本轮一起删了（`git grep groupVariations` 现在只剩注释里的提及）；
+ *   · 新面板的按钮集是**手写死的**（`packages/shared/src/seedPicker.ts` 那张表，
+ *     spec §8.4），不再"从实际见过的词条里学习"—— 也就是这个函数存在的**理由**
+ *     本身没了。
+ *
+ * ⚠️ 代价写在明面上（spec §8.4）：上游加一个新分组/新变种时，我们这边不会自己
+ *    长出来，要有人去改那张表和两份词条。换来的是按钮排不在两次查询之间变形。
+ * ⚠️ 结果里的原始词条照旧原样显示（`SeedInfoPanel` 不动），所以"上游到底给了什么"
+ *    在界面上仍然看得见。
+ * ⚠️ 上面那个 `isUnsupportedVariationFilter` **不删**：`routes/seeds.ts` 还在用它
+ *    拒绝 `end_spawn:*` 的筛选参数。
+ */

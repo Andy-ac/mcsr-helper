@@ -334,7 +334,9 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
   const [minutes, setMinutes] = useState<ShareMinutes>(DEFAULT_SHARE_MINUTES);
   /*
    * ★ 天数存的是**用户输入的原文**（字符串），不是解析后的数字。
-   * ⚠️ 与 `components/SeedFilters.tsx` 的 `completion` 存字符串同一条理由：
+   * ⚠️ 与 `packages/shared/src/seedPicker.ts` 的 `SeedPickerState.completion` 存字符串
+   *    同一条理由（那一位原来是 `components/SeedFilters.tsx` 的，Task 6 把它迁到了
+   *    shared；写法没变）：
    *    解析失败时那个值必须**留在输入框里**（被清空的话用户不知道自己哪里填错了），
    *    而"填错了"正是它最常见的状态。
    * ⚠️ 初值是 `String(DEFAULT_SHARE_DAYS)`（= `'7'`）：SSR 产物里输入框的 `value`

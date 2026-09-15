@@ -157,7 +157,13 @@ function VariationRow({
   return (
     <fieldset className="seed__row">
       <legend className="seed__rowlabel">{label}</legend>
-      <div className="seed__rowbtns">
+      {/*
+        ⚠️ `--variations` 这个修饰类只干一件事：给**这一排**的按钮换成等宽字体
+           （见 styles.css）。理由与旧面板对同一批标识用等宽逐字相同 ——
+           `biome:structure:snowy_tundra` 是要**逐字符**比对的串，比例字体下
+           下划线和冒号会糊在一起。顶行那四排**不加**：它们是中文词。
+      */}
+      <div className="seed__rowbtns seed__rowbtns--variations">
         {variations.map((variation) => {
           const mark = markOf(state, context, variation.id);
           /*
@@ -174,11 +180,15 @@ function VariationRow({
                 mark === 'without' ? ' is-without' : ''
               }`}
               /*
-               * ⚠️ `aria-pressed` 只有两态，而这里有三个（灰/绿/红）：`without` 也算"按下"
-               *    （它确实生效了 —— 红 = 排除），否则读屏用户会以为那颗按钮没反应。
-               *    三态本身靠图例那句话与 `+` / `-` 两个记号表达。
+               * ★ `aria-pressed` 在这里是**三态**的，不是布尔的（Task 5 评审改的那一条）。
+               *
+               * ⚠️ 原来的写法是 `mark !== 'none'`，于是**红按钮对读屏用户也说成"已按下"**，
+               *    与绿按钮**一模一样** —— 而绿红产出的是**两个不同的查询参数**
+               *    （`variations` 是"要求"、`without` 是"排除"），用户听到的却是同一句话。
+               *    `'mixed'` 正是 WAI-ARIA 给三态按钮留的取值（React 的 `AriaAttributes`
+               *    接受它），读屏会念成"部分按下" —— 它表达的就是这里的第三态。
                */
-              aria-pressed={mark !== 'none'}
+              aria-pressed={mark === 'with' ? true : mark === 'without' ? 'mixed' : false}
               title={text}
               onClick={() => onChange(tapVariation(state, context, variation, variations))}
             >
@@ -334,11 +344,26 @@ export function SeedPickerPanel({
         与它一一对应 —— 位置本身就是那条对应关系，所以这里**不**去切分
         `pickLegend` 那句话：切分等于把那句话拆成三个片段写在组件里，
         而它的权威文本在词条表里（Task 4），改一次文案要改两处。
+
+        ⚠️ 每颗点后面还跟着**它对应的形状记号**（绿 `+` / 红 `-`，灰没有），
+           用的是按钮上那一个 `MARK_GLYPH` 表 —— 于是"哪颗点对应哪颗按钮"这件事
+           不再只靠颜色对号入座（三颗点**本来就只靠颜色区分**，而那正是问题本身）。
+           Task 5 评审点名的就是这一条。
+        ⚠️ 记号复用 `.seed__pickmark`（同一个形状、同一条规则）：为它单开一个类
+           等于把同一条 `inline-block; width:12px` 抄第二份，两份迟早只改一份。
+        ⚠️ 三个记号都 `aria-hidden`：读屏念的是 `pickLegend` 那句话，中间插几个
+           "加号 / 减号"只会把句子割碎。
       */}
       <div className="seed__legend">
         <span className="seed__legenditem">
           <span className="seed__legenddot seed__legenddot--with" aria-hidden="true" />
+          <span className="seed__pickmark" aria-hidden="true">
+            {MARK_GLYPH.with}
+          </span>
           <span className="seed__legenddot seed__legenddot--without" aria-hidden="true" />
+          <span className="seed__pickmark" aria-hidden="true">
+            {MARK_GLYPH.without}
+          </span>
           <span className="seed__legenddot seed__legenddot--none" aria-hidden="true" />
           {t('seedsPage.pickLegend')}
         </span>

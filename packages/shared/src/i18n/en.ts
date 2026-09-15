@@ -1827,27 +1827,24 @@ export const en: TranslationSchema = {
     filterNote:
       'With no filters this uses upstream\'s "random" endpoint; as soon as you pick a filter it switches to the search endpoint.',
 
-    filterOverworld: 'Overworld structure',
-    filterNether: 'Nether bastion',
-    filterAny: 'Any',
-
-    variations: 'Variations',
-    variationsHint:
-      'Pick a group first, then tick the entries inside it. Several ticks mean "all of these".',
-    variationsExpand: 'Expand',
-    variationsCollapse: 'Collapse',
-    variationsClear: 'Clear variations',
-    variationsSelected: '{{count}} selected',
-    /**
-     * ⚠️ Be honest about where the vocabulary **comes from**.
+    /*
+     * ⚠️ Ten entries used by the **old** panel (two selects + a collapsed chip wall)
+     *    were deleted here together with that panel (Task 6):
+     *      filterOverworld / filterNether / filterAny / variations /
+     *      variationsHint / variationsExpand / variationsCollapse /
+     *      variationsClear / variationsSelected (with {{count}}) / variationsSource.
      *
-     * Upstream has no "list every variation" endpoint, so this list is the tree
-     * from their docs PLUS everything we have actually seen in live results.
-     * Both halves have to be said, otherwise people will assume the list is complete
-     * (it is not, and upstream keeps adding entries).
+     *    The rule is this repo's existing one: **a key exists if and only if a real
+     *    state needs it** (`progress.md` §十五 c). Their only reference site was the
+     *    deleted `apps/web/src/components/SeedFilters.tsx` (checked key by key with
+     *    git grep).
+     *
+     *    ⚠️ Their replacements are pickOverworld / pickVariations / pickBastionBiome /
+     *       pickBastionType / pickBastionVariations / pickFortressBiome / pickLegend /
+     *       pickSlow (added by Task 4). Do not add the old names back: with both
+     *       present, the next person editing copy will edit the one that is not
+     *       rendered, and nothing on screen will change.
      */
-    variationsSource:
-      'Entries come from the upstream documentation tree, plus anything we have actually seen in live results.',
 
     completion: 'Completion time, at most',
     completionPlaceholder: 'm:ss, e.g. 2:35',
@@ -2226,13 +2223,28 @@ export const en: TranslationSchema = {
 
     // ---- Group and structure names ----
     /**
-     * ⚠️ Group names are a **lookup table**, not a list of the legal groups.
+     * ⚠️ This group is now **dead** (recorded by Task 6, left in place on purpose).
      *
-     * The real list comes from `groupVariations()` grouping the entries we actually
-     * have (see shared/seed.ts) — when upstream adds a group it shows up on its own,
-     * merely without a translated name, and falls back to the raw group id.
-     * Do **not** add an array of "all legal groups" here: upstream's next group would
-     * then silently disappear from the UI.
+     * It used to be a **lookup table**, not a list of the legal groups: the real list
+     * came from `groupVariations()` grouping the entries we actually had, so an
+     * upstream addition showed up on its own — merely without a translated name, and
+     * falling back to the raw group id.
+     *
+     * ⇒ That statement **no longer holds** (both halves changed):
+     *   1) the new panel's button set comes from the upstream documentation table
+     *      (`packages/shared/src/seedPicker.ts`), one button per concrete variation,
+     *      with **no "group" layer at all**;
+     *   2) `groupVariations()` itself is gone with that whole "learn from what we see"
+     *      machinery (see shared/seed.ts).
+     *    So these five entries have no consumer left — their only one was
+     *    `GROUP_LABEL_KEYS` inside the deleted SeedFilters.tsx.
+     *
+     * ⚠️ Why they stay: the dead-entry audit Task 6 was handed **does not name** these
+     *    five, and a dead key renders nothing (its symptom is "never appears", not
+     *    "prints a bare key") — the cost of deleting one wrongly and the cost of
+     *    keeping it are not symmetric, so the call is "leave it and record it".
+     *    To collect them later: delete these five plus this whole comment; git grep
+     *    should come back empty.
      */
     group: {
       biome: 'Biome',

@@ -4584,10 +4584,19 @@ textarea.mcsr-field__input {
 }
 
 /* ==================================================================
-   排位赛种子的**新**筛选面板（spec §6.2）：两个标签页 + 四排单选 + 三态按钮排
+   排位赛种子的筛选面板（spec §6.2）：两个标签页 + 四排单选 + 三态按钮排
    ==================================================================
 
-   旧的 .seed__filters 那一套还在（旧面板要到 Task 6 才删），这一轮**只加不删**。
+   ⚠️ 旧面板那 9 个类名（.seed__filters / .seed__variations / .seed__variationshead /
+      .seed__count / .seed__group / .seed__grouphead / .seed__grouptoggle /
+      .seed__chips / .seed__chip）的规则**还留在上面**，而它们唯一的渲染点
+      （components/SeedFilters.tsx）已经随 Task 6 删掉了 —— 也就是说这套规则
+      现在是**死的**。Task 6 不删它们，理由两条，写在这里免得下一个人重新推一遍：
+      ① 派给 Task 6 的清理清单里只有"组件 + `groupVariations` + 死词条"，CSS 不在其中；
+      ② 删规则这件事**没有任何门禁兜得住**（`i18n-keys.test.ts` 那几条与 Task 7 的
+      类名守卫都只管"渲染了却没有规则"，反方向不管），所以它值得单独一趟、单独看一遍。
+      ⇒ 下一次有人碰这份样式表时把这一节一起收掉即可（那时 `git grep` 那九个类名
+      应当零命中）。
 
    ⚠️ 三态（灰 / 绿 / 红）**只靠颜色**表达，所以颜色在这里是功能而不是装饰：
       · 绿 = 要求（进 variations）、红 = 排除（进 without）、灰 = 没点过。
@@ -4596,13 +4605,14 @@ textarea.mcsr-field__input {
         （白字在浅色主题那颗草绿上是 2.5:1，等于看不见）。
       · 但那还不够：色盲用户看到的是三颗一样的按钮。所以每颗按下的按钮前面
         多一个 `+` / `-` 形状记号（.seed__pickmark），绿用实心、红用虚线描边，
-        页面底部还有一句可见图例 —— 三条**不依赖颜色**的通道。
+        页面底部还有一句可见图例，而且图例那三颗点后面跟着**同样的**两个记号
+        （绿 `+` / 红 `-` / 灰没有）—— 四条**不依赖颜色**的通道。
 
-   ⚠️ 下面还带着 .seed__tabs / .seed__tab / .seed__soon 三条，而渲染它们的是
-      Task 6 的 routes/Seeds.tsx（两个标签页 + 「随机数种子」那一栏的空状态）。
-      规则落在**这一轮**是有意的：本轮负责 styles.css，而 Task 7 要补一条
-      "渲染出来的 seed__* 类名必须在 styles.css 里有规则"的守卫 ——
-      把规则和它的消费方分成两个提交的话，中间那棵树正好撞在那条守卫上。
+   ⚠️ .seed__tabs / .seed__tab / .seed__soon 三条的渲染点现在是
+      routes/Seeds.tsx 的两个标签页与「随机数种子」那一栏的空状态（Task 6 接上）。
+      规则先落在 Task 5 是有意的：Task 7 要补一条"渲染出来的 seed__* 类名必须在
+      styles.css 里有规则"的守卫 —— 把规则和它的消费方分成两个提交的话，
+      中间那棵树正好撞在那条守卫上。
    ================================================================== */
 
 /* 顶部两个标签页（世界种子 / 随机数种子）。
@@ -4650,6 +4660,47 @@ textarea.mcsr-field__input {
   border-radius: var(--r-md);
 }
 
+/* ★ 面板与「抽一条」按钮是**同一张卡**（spec §6.2 那张图）。
+   ⚠️ 为什么需要这一层：按钮属于**页面**（面板的 props 里没有抽数回调），
+      而图把它画在面板那一块里。分开画的结果是"卡片 + 12px 的缝 + 一颗按钮"
+      —— 看起来像两个不相干的东西，而它们讲的其实是同一件事（选条件 → 抽）。
+   ⚠️ 卡的下边界从面板**挪到**按钮行上：面板自己的规则一个字都不动
+      （它是纯视图，别处也可能用），这里只在"被 .seed__pickercard 包住"时
+      把它的下边框、下圆角、下外边距让给 .seed__drawrow。 */
+.seed__pickercard {
+  margin: 12px 0 18px;
+}
+.seed__pickercard .seed__picker {
+  margin-bottom: 0;
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* 卡片的下半截 —— 提示语 + 按钮行。它与上面那半块共用同一个背景与左右边框，
+   只在最底下收口（圆角 + 下边框），所以两者看起来是一张卡。 */
+.seed__drawrow {
+  padding: 0 18px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+/* `.seed__actions` 的上下 12px 是给"卡片外面"的行准备的：这里它紧跟在提示语
+   后面，所以只留上面那一点，别让卡片底部空出一大块。 */
+.seed__drawrow .seed__actions {
+  margin: 8px 0 0;
+}
+
+/* ⚠️ 卡片里的提示文字用 --fg-muted，不是全局的 --fg-faint。
+   实测：`--fg-faint` 在浅色主题下只有 **3.23:1**（深色 3.59:1），低于 AA 的 4.5:1；
+   `--fg-muted` 是 **6.54:1**（同一块里的 .seed__rowlabel 用的就是它）。
+   这一条**只**作用于面板卡片内部 —— 站里别处的提示照旧，那是另一笔账。
+   覆盖的是两句：完成时间那格的 hint，以及面板最下面那句「要等 3–4 秒」
+   （后者尤其不能淡：它是唯一一句说明"慢是正常的"的话）。 */
+.seed__picker .mcsr-field__hint {
+  color: var(--fg-muted);
+}
+
 /* 一排：**组名在按钮上面一行**，不是左边一列。
    ⚠️ 这一条不是排版偏好，是被 `<legend>` 逼出来的：legend 渲染在 fieldset 的
       边框区、**不能**作为 flex 子项参与排版，所以"左边一列标签 + 右边一排按钮"
@@ -4679,6 +4730,15 @@ textarea.mcsr-field__input {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+/* 变种那一排的按钮用**等宽字体**：按钮上是上游的标识原文
+   （`biome:structure:snowy_tundra`），而用户是拿它和自己心里那条**逐字符**比对的
+   —— 比例字体下冒号与下划线会糊在一起。旧面板对同一批标识就是这么做的
+   （见上面 .seed__chip 的说明），这一轮照旧。
+   ⚠️ 只给变种排、**不**给顶部那四排：那些按钮上是中文词（村庄 / 桥 / …），
+      中文没有"等宽更容易比对"这回事。 */
+.seed__rowbtns--variations .seed__pickbtn {
+  font-family: var(--font-mono);
 }
 
 /* 打底 = 灰（没点过）。
@@ -4730,19 +4790,31 @@ textarea.mcsr-field__input {
    ⚠️ 用 `+` / `-` 而不是 ✔ / ✕：后两个字符**不在自托管像素字体的子集里**，
       而 `check-font-coverage` 会因为这个让构建失败 ——
       .livemanage__advanced 那个三角当初就是这么被拦下来的。
-      ASCII 这两个字符永远在。 */
+      ASCII 这两个字符永远在。
+   ⚠️ 这里**不切字体**（原来写的是 --font-mono）：本仓那条规矩是"等宽只给代码块"，
+      而它所在的那颗按钮**自己**已经是等宽了（.seed__rowbtns--variations），
+      切一次是多余的、还会与那条规矩相冲。
+   ⚠️ 固定 `width: 12px` 照 `.seed__grouptoggle` 的既有做法：`+` 与 `-` 宽度不同，
+      不固定的话每点一下按钮上的字会左右抖一下，而"抖一下"比颜色变化还显眼。 */
 .seed__pickmark {
+  display: inline-block;
+  width: 12px;
   margin-right: 4px;
-  font-family: var(--font-mono);
 }
 
 /* 三态图例。三颗点按**绿 → 红 → 灰**排，与下面那句话里的顺序
-   （点一下 / 点两下 / 点三下）一一对应，位置本身就是那条对应关系。 */
+   （点一下 / 点两下 / 点三下）一一对应，位置本身就是那条对应关系。
+   ⚠️ 每颗点后面还跟着它对应的形状记号（绿 `+` / 红 `-`，灰没有），
+      用的就是上面那个 .seed__pickmark —— 于是"哪颗点对应哪颗按钮"不必只靠
+      颜色对号入座。 */
 .seed__legend {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* ⚠️ 下面那句「要等 3–4 秒」是 .mcsr-field__hint（margin: 0）：
+     不给这里留一点下边距的话，两行 12px 的淡字会贴成一段。 */
   margin-top: 14px;
+  margin-bottom: 10px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
@@ -4752,7 +4824,10 @@ textarea.mcsr-field__input {
   flex-wrap: wrap;
   gap: 6px;
   font-size: 12px;
-  color: var(--fg-faint);
+  /* ⚠️ --fg-muted 而不是 --fg-faint：后者在浅色主题下只有 3.23:1、
+     深色 3.59:1，低于 AA 的 4.5:1 —— 而这条图例是**三态唯一的文字说明**，
+     它是功能，不是装饰。--fg-muted 是 6.54:1（同块里的 .seed__rowlabel 就用它）。 */
+  color: var(--fg-muted);
 }
 .seed__legenddot {
   display: inline-block;
@@ -4769,11 +4844,14 @@ textarea.mcsr-field__input {
   background: var(--redstone);
 }
 /* 灰那一颗要**看得见**：底色与按钮的打底一致，靠一圈描边站住 ——
-   不给它描边的话，浅色主题下它就是一块几乎和背景同色的方块，
-   而"灰 = 没有条件"恰恰是用户最先要认出来的那一颗。 */
+   不给它描边的话，浅色主题下它就是一块和背景几乎同色的方块。
+   ⚠️ 描边色从 --line-strong 换成 --fg-faint（Task 5 评审实测）：
+      --line-strong 配 --bg-deep 只有约 **1.09:1**，那颗点在浅色主题下基本看不见，
+      而"灰 = 没有条件"恰恰是用户最先要认出来的那一颗。
+      --fg-faint 是这一组里唯一一个"够亮、又不是正文字色"的选择。 */
 .seed__legenddot--none {
   background: var(--bg-deep);
-  border-color: var(--line-strong);
+  border-color: var(--fg-faint);
 }
 
 /* 「这一栏还没有做」的空状态（Task 6 的「随机数种子」标签页）。
