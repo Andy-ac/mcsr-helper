@@ -274,8 +274,13 @@ interface RankedStatusResponse {
   monitor: {
     /** 0 down / 1 up / 2 pending / 3 maintenance —— 原样给前端，映射在界面那一层。 */
     state: 0 | 1 | 2 | 3;
-    /** 上游那一条心跳的时间戳（秒）。 */
-    checkedAt: number;
+    /**
+     * ★ 上游那一条心跳的时间，**原样一串文本**（`2026-09-15 13:36:27`），不是时间戳。
+     * ⚠️ 那串字符**没有时区**，`new Date()` 会按**本机时区**解释 ⇒ 同一份数据在不同机器上
+     *    会算出不同的时刻，显示值也会随部署机器漂。我们只把它当**文本**显示
+     *    （「最后心跳 13:36:27」），一个时间戳都不换算。
+     */
+    checkedAt: string;
     ping: number | null;
     /** 24 小时可用率 0–1。 */
     uptime24: number | null;
@@ -572,6 +577,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 |---|---|
 | `ranked.statusUp/Down/Pending/Maintenance` | 「正常」/「故障」/「等待」/「维护」 |
 | `ranked.statusPing` / `statusPingUnknown` | 「延迟 {{ms}} ms」/「延迟未知」 |
+| `ranked.statusCheckedAt` | 「最后心跳 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-15 13:36:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按本机时区解释 ⇒ 显示值会随部署机器漂，而测试也会变成"看机器运气"） |
 | `ranked.statusUptime` | 「24 小时可用率 {{pct}}%」 |
 | `ranked.players` / `playersUnknown` / `playersZero` | 「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
 | `ranked.liveTitle` / `liveEmpty` | 「正在直播的高分对局」/「现在没有直播中的对局。」 |
