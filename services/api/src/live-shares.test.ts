@@ -1917,6 +1917,53 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
     const summary = await call('GET', '/api/shares/summary', { cookie: author.cookie });
     assert.equal(summary.status, 200, summary.text);
   });
+
+  it('★★ 单行路径（PATCH）拿到同一行坏行 ⇒ 404，不是 500', async (t) => {
+    const author = await signUp();
+    // 与上面那条同一条规矩：跳过/拒绝都要记日志，而这条用例故意造出来的坏行不该打进测试输出
+    t.mock.method(console, 'warn', () => {});
+
+    /*
+     * ★★ 这一条补的是上面那条**没覆盖到**的那一半（spec §11.1 的"手改行不 500"）。
+     *    `buildItem` 的 throw 有一句前提 ——"列表查询已经把它们跳过了" ——
+     *    而 `routes/shares.ts` 的 PATCH **本身就是前提之外的调用方**：它先用
+     *    `getShareForEdit` 拿**未过滤**的原始行去判 404/403，再把同一个行对象交给
+     *    `buildItem` 回读（下架与恢复两次回读都要过它）⇒ 一行坏数据把 PATCH 变成 500。
+     *    而那条路径上挂着**界面上的按钮**：作者点了「下架」，拿到的是 500。
+     * ⚠️ 判据是"非 500 且是 404"，不是"没抛异常"：抛异常被谁在哪一层吃掉，
+     *    下一次改动就可能换个位置 —— 而这里要钉的是**用户看到什么**。
+     */
+    const created = await postShare('seed', seedBody(), author.cookie);
+    assert.equal(created.status, 201, created.text);
+    const id = itemOf(created).id;
+    getDb().prepare("UPDATE live_shares SET payload = '{ half JSON' WHERE id = ?").run(id);
+
+    // 正面控制：同一个人、同一时刻的**好**行照常下架（否则"坏行 404"可能只是整条路由坏了）
+    const good = await postShare('seed', seedBody({ overworld: '9999' }), author.cookie);
+    assert.equal(good.status, 201, good.text);
+    const goodId = itemOf(good).id;
+
+    for (const visible of [false, true] as const) {
+      const res = await setVisible(id, visible, author.cookie);
+      assert.equal(res.status, 404, `visible=${String(visible)}：${res.text}`);
+      assert.deepEqual(res.body, { error: 'not_found' });
+    }
+    // 坏行**一个字都没被改**：它不是被"顺手下架"了，而是压根没被当成一条分享
+    assert.equal(statusOf(id), 'active');
+    assert.equal(hiddenAtOf(id), null);
+
+    const goodRes = await setVisible(goodId, false, author.cookie);
+    assert.equal(goodRes.status, 200, goodRes.text);
+
+    /*
+     * ⚠️ 读路径的行为**照旧不变**（跳过 + 不 500）—— 它由上面那条用例守着，
+     *    这里再钉一次是因为本次改的是**同一个文件里另一个调用方**：
+     *    "顺手把过滤挪进数据层"会同时改掉这一条的行为，而它不该被改。
+     */
+    const list = await board('seed', author.cookie);
+    assert.equal(list.status, 200, list.text);
+    assert.equal(idsOf(itemsOf(list)).includes(id), false, '坏行仍然不出现在任何响应里');
+  });
 });
 
 // ---------------------------------------------------------------------------

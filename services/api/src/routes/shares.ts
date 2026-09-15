@@ -56,6 +56,7 @@ import {
   buildListResponse,
   createShare,
   getShareForEdit,
+  isRenderableShareRow,
   setShareHidden,
   setShareVisible,
   summarize,
@@ -221,6 +222,24 @@ sharesRoute.patch('/:id/visibility', requireAuth, async (c) => {
   const id = c.req.param('id');
   const row = getShareForEdit(id);
   if (!row) return c.json({ error: 'not_found' }, 404);
+
+  /*
+   * ★★ 单行这条路**没有**列表查询那道"坏行跳过"的过滤（`getShareForEdit` 读的是原始行），
+   *    而下面两次回读都要经过 `buildItem` —— 它对坏行是 **throw** ⇒
+   *    一行手改过 / 半截 JSON 的数据会把这条 PATCH 变成 **500**（spec §11.1 只说到了读路径）。
+   *    ⇒ 在这里就按"没有这一条"处置：它既不是一条能展示的分享，也不该把一个
+   *      "这一行存坏了"的运维问题变成**用户按钮上的 500**。
+   *    ⚠️ 判在归属 / 权限之前：不存在的 id 也是 404，所以这个回答不多泄露一个字，
+   *      而"坏行是谁的"本来也不是这一条要回答的问题。
+   *    ⚠️ 日志照打（读路径"跳过并记日志"是纪律 ③）：不打的话，这次 404 与
+   *      "真的没有这一条"在日志里长得一模一样，坏行就再没有地方能被发现。
+   */
+  if (!isRenderableShareRow(row)) {
+    console.warn(
+      `[shares] 分享行 ${id} 的 payload 与 kind=${row.kind} 对不上，单行路径按 not_found 处理`,
+    );
+    return c.json({ error: 'not_found' }, 404);
+  }
 
   const now = Date.now();
   const isOwner = row.user_id === user.id;

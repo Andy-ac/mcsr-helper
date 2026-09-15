@@ -172,6 +172,11 @@ function toItem(row: LiveShareRow, payload: SharePayload, viewerId: string): Liv
  * ⚠️ 坏行在这里是 **throw**，不是"回一个空壳"：列表查询已经把它们跳过了，
  *    所以走到这里说明调用方绕过了那道过滤 —— 而把一个半个形状的对象发出去，
  *    正是整件事要避免的（spec §3.2）。
+ * ⚠️★ "绕过那道过滤"今天有**两个**调用方，处置方式**不同**：
+ *    · 读路径（`toItems`）—— 跳过 + 记日志，坏行不出现在任何响应里；
+ *    · 单行路径（`routes/shares.ts` 的 PATCH）—— 先用 `isRenderableShareRow` 问一次，
+ *      坏行按 `404` 处置。**别在路由里 try/catch 这个 throw**：那会让"坏行"与
+ *      "写库炸了"变成同一条控制流，而它们该有不同的日志与不同的处置。
  */
 export function buildItem(row: LiveShareRow, viewerId: string, _now: number): LiveShare {
   const payload = parsePayloadOf(row);
@@ -196,6 +201,24 @@ function toItems(rows: LiveShareRow[], viewerId: string): LiveShare[] {
     items.push(toItem(row, payload, viewerId));
   }
   return items;
+}
+
+/**
+ * 这一行**现在**渲染得出来吗 —— 给"单行那条路"用的判据（`buildItem` 对坏行是 **throw**）。
+ *
+ * ⚠️★ 它为什么必须存在（spec §11.1 那句"手改过的行不导致 500"原先只覆盖读路径）：
+ *    `buildItem` 的 throw 有一句成立的前提 ——"列表查询已经把它们跳过了"。而
+ *    `routes/shares.ts` 的 PATCH **本身就是那个前提之外的调用方**：它先用
+ *    `getShareForEdit` 拿**未经过滤**的原始行去判 404/403，再把**同一个行对象**交给
+ *    `buildItem` 回读 ⇒ 一行手改/半截 JSON 会把 PATCH 变成 **500**，
+ *    而界面上就挂着那颗按钮（下架 / 恢复）。
+ * ⚠️ 判据是"解析得出来"，不是"抛不抛"：抛异常在这里是一条控制流，而调用方要的是一个
+ *    **能读的结论**（坏行该被当成"没有这一条"，见路由那一侧的注释）。
+ * ⚠️ 它**不记日志**：与 `parsePayloadOf` 同一条规矩 —— 在哪一步处置就在哪一步记，
+ *    而处置的是调用方。
+ */
+export function isRenderableShareRow(row: LiveShareRow): boolean {
+  return parsePayloadOf(row) !== null;
 }
 
 /**
