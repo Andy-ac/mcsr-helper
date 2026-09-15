@@ -73,17 +73,6 @@ export function seedToBigInt(seed: SeedString): bigint {
   return BigInt(seed);
 }
 
-/**
- * 展示用格式化：给长数字加千位分隔符，方便肉眼核对。
- * 返回的仍然是字符串，不是数字。
- */
-export function formatSeedForDisplay(seed: SeedString): string {
-  const negative = seed.startsWith('-');
-  const digits = negative ? seed.slice(1) : seed;
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return negative ? `-${grouped}` : grouped;
-}
-
 // ---------------------------------------------------------------------------
 // Ranked Seeds 代理的对外形状 —— 服务端归一化之后、前端消费的那一层
 // ---------------------------------------------------------------------------
@@ -112,7 +101,8 @@ export function formatSeedForDisplay(seed: SeedString): string {
  *    `Number('7304888896886165976')` 不报错，只是静默地给出一个错的种子。
  *    见本文件开头的铁律。
  *
- * 界面渲染时用 `formatSeedForDisplay` 加千位分隔符 —— 单位是字符串，
+ * 界面**原样渲染**它（用户 2026-09-16：不要千位分隔符 —— 手动选中复制时
+ * 那些逗号会一起被复制走，而带逗号的种子粘不进 Minecraft）。单位仍然是字符串，
  * 不是数字，这一条从数据库一直贯到 DOM。
  */
 export interface SeedRecord {

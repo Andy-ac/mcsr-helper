@@ -1,5 +1,4 @@
 import type { SeedInfo, SeedRecord, SeedString } from '@mcsr/shared/seed';
-import { formatSeedForDisplay } from '@mcsr/shared/seed';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { structureLabel } from '@/components/SeedFilters';
@@ -20,8 +19,8 @@ import { structureLabel } from '@/components/SeedFilters';
  * 他拿去开世界生成不出预期的地形，而且无从排查是哪一层截断的。
  *
  * 所以：
- *   · 显示用 `formatSeedForDisplay`（加千位分隔符，**返回的仍然是字符串**）
- *   · 复制用**原始字符串**，不是格式化过的那个（带逗号的种子粘不进 Minecraft）
+ *   · 显示用**原始字符串**（不加千位分隔符 —— 手动复制时逗号会一起被带走）
+ *   · 复制也用**原始字符串**，和显示的是同一个（带逗号的种子粘不进 Minecraft）
  *   · 输入框用 `inputMode="text"`，**不是** `type="number"`（见 SeedSaveForm）
  */
 
@@ -123,11 +122,12 @@ export function SeedValue({
       <span className="seed__valuelabel">{label}</span>
       <code className="seed__digits" title={value}>
         {/*
-          ⚠️ 显示用千位分隔符，方便肉眼核对位数；**复制走的是原始值**。
-          两者混用是这一块最容易犯的错：把逗号带进 Minecraft 会直接失败，
-          用户只会觉得"这个种子不能用"。
+          ⚠️ **原样输出，不加千位分隔符**（用户 2026-09-16）：分组虽然方便肉眼核对位数，
+          但手动选中复制时逗号会一起被带走，而带逗号的种子粘不进 Minecraft ——
+          那种"看着没问题、粘进去用不了"的错，比看不清位数难查得多。
+          复制按钮走的也是**同一个**原始值，显示与复制不再有第二个版本。
         */}
-        {formatSeedForDisplay(value)}
+        {value}
       </code>
       <button type="button" className="ghostbtn seed__copy" onClick={copy}>
         {state === 'ok' ? t('seedsPage.copied') : t('seedsPage.copy')}

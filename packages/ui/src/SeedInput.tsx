@@ -1,4 +1,4 @@
-import { formatSeedForDisplay, isSeedString, normalizeSeedInput } from '@mcsr/shared/seed';
+import { isSeedString, normalizeSeedInput } from '@mcsr/shared/seed';
 import { useId, useState } from 'react';
 
 export interface SeedInputProps {
@@ -83,8 +83,8 @@ export function SeedInput({
         ) : null
       ) : (
         <p className="mcsr-field__hint">
-          {/* 回显分组后的数字，方便肉眼核对有没有被截断 */}
-          {formatSeedForDisplay(value.trim())}
+          {/* 回显**原样**的数字，方便肉眼核对有没有被截断（不加千位分隔符，见 shared/seed.ts） */}
+          {value.trim()}
         </p>
       )}
     </div>
