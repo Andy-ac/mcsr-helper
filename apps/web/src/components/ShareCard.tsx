@@ -11,8 +11,8 @@
  * ⇒ 界面全部搬到这里，页面只做取数；渲染自检渲染的是：
  *     · `ShareIntroView`（介绍页：`summary === null` 就是"还没取到/游客"）
  *     · `ShareBoardView`（看板页：四种画面都在它的 props 里）
- *   这与 `components/ContributorPanel.tsx` 的 `ContributorPanel` + `ContributorPanelView`
- *   是同一个形状、同一条理由（那个文件头记着事故的来历）。
+ *   这与 `components/` 里那个贡献者面板是同一个形状、同一条理由（那个文件头记着
+ *   事故的来历，它也正是本仓"容器 + 纯视图"这对名字的先例）。
  *
  * ⚠️★ 名字是 **`ShareBoardRow`**，不是 `ShareRow`：数据层（Task 2）里"库里的那一行"
  *    叫 `LiveShareRow`。两个都叫 `ShareRow` 会让读代码的人分不清手里拿的到底是
@@ -220,7 +220,7 @@ function ShareContent({ item, onCopy }: { item: LiveShare; onCopy?: (text: strin
  *    纯组件在 SSR 下因此也渲染得出来（`renderToStaticMarkup` 里没有点击这件事）。
  *
  * ⚠️ `aria-label` 里带上要复制的那个值：一屏可能有二十几个一模一样的「复制」，
- *    读屏软件念出来全是同一个词，根本分不清是哪一个（`ContributorPanelView`
+ *    读屏软件念出来全是同一个词，根本分不清是哪一个（`components/` 里那个贡献者面板
  *    的「移除」按钮带着名字与 id，是同一条理由）。
  */
 function ShareCopyButton({ text, onCopy }: { text: string; onCopy: (text: string) => void }) {

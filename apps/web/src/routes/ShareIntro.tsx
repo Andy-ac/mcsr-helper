@@ -5,7 +5,7 @@
  * ⚠️★ 这个文件里**没有界面**，只有取数
  * ===========================================================================
  * 界面（标题 / 导语 / 两块入口卡片 / 条数那一行）**全在** `components/ShareCard.tsx`
- * 的 `ShareIntroView` 里。理由与 `ContributorPanel` / `ContributorPanelView` 是同一个：
+ * 的 `ShareIntroView` 里。理由与 `components/` 里那个贡献者面板的同一处拆分是同一个：
  * 这个页面**自己取数**，而 `renderToStaticMarkup` **不跑 effect**（也不点击、不发请求）
  * ⇒ 整页在渲染自检里**永远停在"加载中"**，写在它里面的任何一块都**断言不到**
  * ——那是一条不可能红的守卫（`docs/pending.md §5.63`）。
