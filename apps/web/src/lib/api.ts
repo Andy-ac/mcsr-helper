@@ -13,7 +13,18 @@
 // ⚠️ 贡献者的共享类型也**从根导入**：`@mcsr/shared` 的 exports 里没有
 //    "./contributors" 这一条子路径（index.ts 里 `export * from './contributors'`），
 //    写 `@mcsr/shared/contributors` 会在类型检查与打包时都找不到模块。
-import type { Contributor, ContributorList, VideoPlatform } from '@mcsr/shared';
+// ⚠️ 实时分享的类型也**从根导入**（`LiveShare` / `ShareKind` / `ShareListResponse` /
+//    `ShareSummary`）：`packages/shared/package.json` 的 exports 里没有
+//    "./liveShares" 这一条子路径（index.ts 里 `export * from './liveShares'`）。
+import type {
+  Contributor,
+  ContributorList,
+  LiveShare,
+  ShareKind,
+  ShareListResponse,
+  ShareSummary,
+  VideoPlatform,
+} from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
 import type {
   CalendarEvent,
@@ -1558,4 +1569,88 @@ export function updateMyLiveLink(
 /** 删自己那一行。别人的行同样是 **404**（理由同上）。 */
 export function deleteMyLiveLink(id: string): Promise<{ ok: true; id: string }> {
   return sendJson('DELETE', `/api/live/mine/${encodeURIComponent(id)}`);
+}
+
+// ---------------------------------------------------------------------------
+// 实时分享（2026-09-15）
+// ---------------------------------------------------------------------------
+/*
+ * 四个端点，两种读法 + 两种写法。形状与上面几节一致（读走 `request`、写走
+ * `sendJson`），只有三处需要说清"为什么这个参数是这个值"：
+ *
+ * ⚠️★ 两个读接口都显式要 `no-store`。服务端自己就在响应头里写了 `no-store`
+ *    （§5.1：这是"只给登录用户的管理态数据 + 20 秒一变"），但**缓存这一层不由
+ *    服务端说了算**：只要浏览器手里有一份旧响应，看板就会拿它去渲染。
+ *    后果不是"慢一点"，而是：`expires_at` 已经过去的行**还在画面上**，
+ *    点下去 409；而 `staleSecs` 那句"下面是 N 秒前的数据"也就成了假话。
+ *    （同一个坑在 `fetchLiveChannelsFresh` 上真实发生过一次，那段注释里有实测证据。）
+ *
+ * ⚠️ 摘要接口也要求登录（§5.2）。介绍页对游客**根本不发**这一次请求
+ *    （`routes/ShareIntro.tsx` 里先看 `useAuth()`）—— 不是"发了再吃 401"：
+ *    那会在服务端留下一条"有人在试着读"的噪音，而游客看到的闪烁是
+ *    "先加载、再变成登录后可见"。
+ *
+ * ⚠️ 这一节没有"编辑已有条目"的端点，因为**这一栏不支持编辑**（spec §9）：
+ *    改内容 = 下架 + 重发。所以"条目内容不可变"是一条可以依赖的性质。
+ */
+
+/**
+ * 看板：`GET /api/shares/:kind`。要求登录（游客 401，不是空列表 —— 空列表会让人
+ * 以为"这里没人分享"）。
+ *
+ * ⚠️★ `items` 与 `mine` 是**两个不同的集合**，别混用：
+ *   · `items` —— 现在**在看板上**的行（含我自己那条）⇒ 看板那一列渲染的是它；
+ *   · `mine`  —— 我自己**所有未过期**的行，**含已下架的**。
+ *     已下架的那条**不在** `items` 里（它不在看板上），但它必须能被恢复
+ *     ⇒ 「你的一条」那一块渲染的是 `mine` —— 恢复入口也只可能长在它上面。
+ */
+export function fetchShareBoard(kind: ShareKind, signal?: AbortSignal): Promise<ShareListResponse> {
+  return request<ShareListResponse>(`/api/shares/${kind}`, signal, 'no-store');
+}
+
+/**
+ * 介绍页的条数：`GET /api/shares/summary`。
+ *
+ * ⚠️ 这里的 `live` 是**全站**在展示的条数（不是"我的"），游客拿不到它 ——
+ *    那正是"内容不给游客看"的一部分，所以介绍页对游客显示的是另一句话
+ *    （`shares.introGuestCount`），而不是一个 0。
+ */
+export function fetchShareSummary(signal?: AbortSignal): Promise<ShareSummary> {
+  return request<ShareSummary>('/api/shares/summary', signal, 'no-store');
+}
+
+/**
+ * 发一条：`POST /api/shares/:kind`（要求登录 **+ 邮箱已验证**）。
+ *
+ * ⚠️ body **按 kind 分叉**（两种形状零重叠，见 `shared/liveShares.ts` 的
+ *    `RoomPostSchema` / `SeedPostSchema`），而校验只有一份实现（`parseSharePost`）
+ *    ⇒ 这里**刻意不写第二份形状**：`body` 就是 `unknown`，由调用方（`ShareForm`）
+ *    按 kind 拼好。在这里再声明一遍联合类型，等于让规则多一个会漂移的地方。
+ *
+ * ⚠️ 201 回的是 `{ item }` —— **库里现在的那一行**，不是"我以为写进去的那一行"：
+ *    room 的第二次发布是**替换**（事务里把旧行置 `replaced`），只有服务端知道
+ *    最终是哪一行。界面应当拿它回读，而不是拿自己发出去的那份。
+ */
+export function postShare(kind: ShareKind, body: unknown): Promise<{ item: LiveShare }> {
+  return sendJson<{ item: LiveShare }>('POST', `/api/shares/${kind}`, body);
+}
+
+/**
+ * 下架 / 恢复：`PATCH /api/shares/:id/visibility`。
+ *
+ * ⚠️ 传的是**想要的结果**（`visible`），不是"翻一下那个状态"：后者在重试或者
+ *    连点两次时会得到相反的结果（与 `setResourceVisibility` 同一条规矩）。
+ * ⚠️ 字段名是 `visible` 而不是 `published`：`published` 是资源的概念，
+ *    这一栏没有"草稿"（§5.4）。
+ * ⚠️★ **恢复只有本人能做**（`visible: true` 那一支，§4.2）：管理员走到这里一律 403。
+ *    管理动作是**单向**的 —— 能拿下来是因为他代表站点，而"放回去"要么是作者的判断、
+ *    要么不该由第三方代劳（否则一条被下架的内容可以绕过作者被悄悄复活）。
+ *    ⇒ 界面**不要**给治理者做一个"帮他恢复"的入口：那个入口点下去必然是 403。
+ */
+export function setShareVisibility(id: string, visible: boolean): Promise<{ item: LiveShare }> {
+  return sendJson<{ item: LiveShare }>(
+    'PATCH',
+    `/api/shares/${encodeURIComponent(id)}/visibility`,
+    { visible },
+  );
 }
