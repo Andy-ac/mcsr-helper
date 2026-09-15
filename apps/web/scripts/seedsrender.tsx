@@ -41,16 +41,27 @@
  *   **在本脚本里不会有任何编译错误** —— 只有运行时守卫会拦住它。
  *
  * ===========================================================================
- * ★★ 六：47 个 `labelKey` 是**全仓唯一**的一道守卫（这一条最要紧）
+ * ★★ 六：那 47 条 `labelKey` 的**词条存在性 + 值**（这一条最要紧）
  * ===========================================================================
  * 那 47 个键（37 个变种 + 10 个群系）只在**一处**被引用：`packages/shared/src/seedPicker.ts`
  * 的表的 `labelKey` 字段（界面是 `t(variation.labelKey)`，传进去的是**变量**）。
- * 而本仓的静态扫描（`services/api/src/i18n-keys.test.ts` 的守卫三）只扫
- * `apps/web/src` 与 `services/api/src` 两个目录 —— `packages/shared/src` **不在里面**；
- * 它那条"两份字典键集合相等"的守卫也只能抓到"只加了一边"。
- * ⇒ **打错一个键名不会有任何门禁发现**，表现是按钮上直接印出
- *   `seedsPage.variation.village.snowyTundra`（i18next 对未知 key 原样返回 key）。
- *   本脚本 ⑥ 逐条 × **两种语言**把它钉住（与当前跑的是哪一遍无关）。
+ *
+ * ⚠️★ 先划清**不是**什么 —— 这条理由的第一版写错了（评审抓的），别再照它推理：
+ *    本仓**已经**有守卫能抓"表里的键名打错一个字"：
+ *    `services/api/src/seeds-picker-shared.test.ts:899` 拿表里的 47 条键与**手抄的**
+ *    `SPEC_LABEL_KEYS`（同文件 `:778`，抄自 spec §5.4）逐条比对 —— 键名写错 ⇒ `pnpm -w check` 当场红。
+ *    （Task 4 报告 §8.4 当时也是这么记的：那份对照是"表内部自洽"的守卫。）
+ * ⇒ ⑥ 真正**独有**的是另外两件，两件都**没有**第二道守卫：
+ *    ① **两份字典里各有没有这条键**：键在**字典那一侧**被改坏时（表没动、字典少一条或写错），
+ *       上面那条比的是**表**、看不见；`services/api/src/i18n-keys.test.ts` 那几条静态扫描
+ *       只走 `apps/web/src` 与 `services/api/src`（`packages/shared/src` **不在**扫描根里，
+ *       而界面传进去的是**变量**、不是字面量），它那条"两份字典键集合相等"也只能抓到"只加了一边"。
+ *    ② **值等于它自己那个上游标识**：值抄错行时键存在、不是裸 key、两种语言还一致 ⇒ 其余判据全绿。
+ *    ⇒ 表现是按钮上直接印出 `seedsPage.variation.village.snowyTundra`
+ *      （i18next 对未知 key 原样返回 key），或者印出**别人**的名字。
+ *    本脚本 ⑥ 逐条 × **两种语言**把这两件钉住（与当前跑的是哪一遍无关）。
+ * ⚠️★ 所以**不要**因为"那条测试也能抓键名"就把 ⑥ 当成重复删掉：它比这条注释
+ *    原来写的理由**更强**（原来那句把它的独有性吹大了），不是更弱。
  * ⚠️ 所以 ⑥ 遍历的是**表**，不是"这一张渲染出来的那一排"：只查渲染出来的那几个，
  *    剩下 40 条照样没有任何门禁 —— 而它们迟早会被渲染出来。
  *
@@ -181,6 +192,23 @@ const VOID_TAGS = new Set([
 ]);
 
 /**
+ * `class` 属性的读取模式 —— **全文件唯一一份**（`elementsWithClass` / `classOf` / ⑪ 的收集都用它）。
+ *
+ * ⚠️★ 边界写 `(?<![\w-])`，**不是** `\b`：`-` 是**非单词字符**（`\b` 在它与 `c` 之间成立），
+ *    所以 `\bclass="` 会被 `data-class="…"` **满足** —— 于是那个 `data-*` 属性的值
+ *    会被当成**类名**。两种下场都不轻：
+ *    · 对 ⑪ 是**假红**（`data-class="seed__x"` ⇒ 报一个根本没挂在元素上的类名）；
+ *    · 对 `elementsWithClass` 更糟 —— 它会被当成"这个元素有这一格 class"，
+ *      于是"某一排里有 / 没有 X"整组断言作用在**错误的片段**上（`§5.63` 那一族）。
+ *    面板今天一个 `data-*` 属性都不渲染，所以这是**给将来**的边界（代价是一个字符）。
+ */
+const CLASS_ATTR = /(?<![\w-])class="([^"]*)"/;
+
+/** 一段产物里**所有** `class` 属性的值，按空白拆成一个个类名（⑪ 的收集用）。 */
+const classNamesIn = (html: string): string[] =>
+  [...html.matchAll(new RegExp(CLASS_ATTR.source, 'g'))].flatMap((m) => (m[1] ?? '').split(/\s+/));
+
+/**
  * 取出所有带这个 class 的元素的**外层 HTML**（自带简化的配对扫描）。
  *
  * ⚠️ 不用"非贪婪匹配到最近的 `</tag>`"：`<fieldset class="seed__row">` 里还嵌着
@@ -191,7 +219,7 @@ function elementsWithClass(html: string, cls: string): string[] {
   const out: string[] = [];
   for (const m of html.matchAll(/<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g)) {
     const open = m[0];
-    const classes = (/\bclass="([^"]*)"/.exec(open)?.[1] ?? '').split(/\s+/);
+    const classes = (CLASS_ATTR.exec(open)?.[1] ?? '').split(/\s+/);
     if (!classes.includes(cls)) continue;
     const name = m[1] ?? '';
     if (VOID_TAGS.has(name)) {
@@ -250,15 +278,46 @@ assert.equal(
   'a',
   '★ 探针：同一个产物里按另一个 class 取也要取对',
 );
+/*
+ * ⚠️★ `data-class="…"` 那一格（判据是 `\b` 时会被它满足）：收集器会把 `data-*` 的值
+ *    当成类名收进 ⑪ 的清单 ⇒ 报一个根本没挂在元素上的类名（假红）。
+ */
+assert.equal(
+  elementsWithClass('<i data-class="seed__row" class="seed__real">x</i>', 'seed__row').length,
+  0,
+  '★★ 探针：`data-class="…"` **不算** `class`（`-` 是非单词字符，`\\b` 在那里成立）',
+);
+assert.deepEqual(
+  classNamesIn('<i data-class="seed__decoy" class="seed__real seed__pickmark">x</i>'),
+  ['seed__real', 'seed__pickmark'],
+  '★★ 探针：类名收集器读的是 `class`，不是 `data-class`（否则 ⑪ 会去找一个不存在的类名的规则）',
+);
+assert.deepEqual(
+  classNamesIn('<b class="seed__rowbtns"></b>'),
+  ['seed__rowbtns'],
+  '★ 探针：收集器本身能命中（否则上面那条会以"什么都没收集到"的方式通过）',
+);
 
-/** 某个属性值（还原实体）。 */
+/**
+ * 某个属性值（还原实体）。
+ *
+ * ⚠️ 边界与 `CLASS_ATTR` 同一份理由（`\b` 会被 `-` 满足）：写成 `\b${name}=` 的话，
+ *    `attrOf(tag, 'class')` —— 也就是 `classOf` —— 会被 `data-class="…"` 满足，
+ *    而 `classOf` 是**下面每一条 class 断言的地基**。
+ */
 const attrOf = (tag: string, name: string): string | null => {
-  const m = new RegExp(`\\b${name}="([^"]*)"`).exec(tag);
+  const m = new RegExp(`(?<![\\w-])${name}="([^"]*)"`).exec(tag);
   return m === null ? null : decode(m[1] ?? '');
 };
 
 /** 某个元素的 `class` 属性（没有就回空串）。 */
 const classOf = (tag: string): string => attrOf(tag, 'class') ?? '';
+
+assert.equal(
+  classOf('<i data-class="seed__decoy" class="seed__real">x</i>'),
+  'seed__real',
+  '★★ 探针：`classOf` 读的是 `class`，不是 `data-class`（它下面每一条 class 断言都建在它上面）',
+);
 
 /**
  * 一个元素上有没有这一格 class。
@@ -784,7 +843,11 @@ console.log(
 );
 // ---------------------------------------------------------------------------
 /*
- * ★★ 这一条验的是"容器会把状态机的输出交给视图、视图照着它画"这条**链路**。
+ * ★★ 这一条验的是**状态机算出来的东西、视图照着画对了吗**这半截。
+ * ⚠️★ 它**不是**在验"容器会把状态机的输出交给视图"：本脚本**就是**那个容器 ——
+ *    `S_EXCLUSIVE` 是在**这里**算出来、直接交给 `SeedPickerPanel` 的，
+ *    面板自己的 `onClick` 里传了什么（尤其 `siblings`）在 SSR 里**看不见**。
+ *    文件末尾那段覆盖边界说的就是这件事，两处必须是同一个口径。
  *
  * ⚠️⚠️ **不能**手工造一个"两颗都绿"的 state 传进去再期望视图只画一颗：
  *    视图是 state 的**纯函数**，它**就该**照 state 画两颗 —— 那样写出来的断言
@@ -928,9 +991,12 @@ ok(
 console.log('⑥ 断言 5：表里全部 47 个 labelKey 逐条 × 两种语言');
 // ---------------------------------------------------------------------------
 /*
- * ★★ 这是本文件最要紧的一组，理由写在文件头（那 47 个键**只**从
- *    `packages/shared/src/seedPicker.ts` 引用，而静态扫描只扫另外两个目录）：
- *    **打错一个键名不会有任何门禁发现**，界面上直接印出那一串 key 本身。
+ * ★★ 这是本文件最要紧的一组；完整理由在文件头，这里只留最容易记错的那一句：
+ *    **"打错键名不会有任何门禁发现"是假的** —— `services/api/src/seeds-picker-shared.test.ts:899`
+ *    拿表里的键与手抄的 `SPEC_LABEL_KEYS` 比对，键名写错当场红。
+ *    ⑥ 独有的是**另外两件**：两份字典里各有没有这条键（两种语言都要查）、
+ *    以及**值等于它自己那个上游标识**。界面上印出那一串 key 本身，
+ *    就是"字典那一侧少了或改了"的表现 —— 那种改法别的门禁看不见。
  * ⚠️ 遍历的是**表**，不是"这一张渲染出来的那一排"：只查渲染出来的那几个，
  *    剩下 40 条照样没有任何门禁 —— 而它们迟早会被渲染出来。
  * ⚠️ **两种语言都要查**，与这一遍跑的是 `--en` 还是默认无关（`LANGUAGES`）：
@@ -1195,11 +1261,26 @@ console.log('⑪ 断言 6：类名 ↔ CSS —— 产物里每一个 `seed*` 类
  *    这一条把它在**本页之内**关掉。
  * ⚠️ 判据是"整条选择器里有这个类名"，所以边界处必须写死 `(?![A-Za-z0-9_-])`：
  *    `css.includes('.seed__legend')` 会被 `.seed__legenddot` **满足**，
- *    于是一条不存在的规则看起来"有" —— 下面三条探针把这件事钉下来。
+ *    于是一条不存在的规则看起来"有" —— 下面几条探针把这件事钉下来。
+ * ⚠️ 另一端也要有边界：**收集**用的是 `classNamesIn`（模式 `CLASS_ATTR`，边界 `(?<![\w-])`）。
+ *    写成 `\bclass="` 的话会被 `data-class="…"` 满足 ⇒ 把一个 `data-*` 的值
+ *    当成类名去查规则，报一个根本没挂在元素上的类名（**假红**；`data-*` 是合法的属性，
+ *    将来很可能有人往组件上加一个）。
+ * ⚠️⚠️ **匹配之前必须先把注释整段摘掉**（`stripCssComments`）。这不是洁癖，
+ *    是一个**实测出来的假绿**：`styles.css` 里这一页那段规则的**上方注释**把好几个
+ *    类名写成了散文（`:4607` 的 `.seed__pickmark`、`:4646` 的 `.seed__pickbtn.is-on`、
+ *    `:4696` 与 `:4829` 的 `.seed__rowlabel` …）。于是**把那个类名的规则删掉**之后，
+ *    裸正则照样在**注释里**找到它 ⇒ 这一条依然全绿 ——
+ *    对这三格（含 `STATE_SELECTORS` 里的一颗钉子）这道门禁**不可能红**，
+ *    而它存在的全部理由就是"渲染了类名却没有规则"（`§5.63` 那一族：守卫看起来在守、
+ *    实际守不住它声称守的东西）。摘掉注释，它才真的是在查**规则**。
  */
 const CSS = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+const stripCssComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
 const hasCssRule = (css: string, cls: string): boolean =>
-  new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(css);
+  new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(
+    stripCssComments(css),
+  );
 
 assert.equal(
   hasCssRule('.seed__legend{}', 'seed__legend'),
@@ -1210,6 +1291,16 @@ assert.equal(
   hasCssRule('.seed__legenddot{}', 'seed__legend'),
   false,
   '★★ 探针：`.seed__legenddot` **不能**满足 `.seed__legend`（前缀关系 —— §5.70 那一类的坑）',
+);
+assert.equal(
+  hasCssRule('/* .seed__probe */', 'seed__probe'),
+  false,
+  '★★★ 探针：**只在注释里出现过**的类名不算"有规则" —— `styles.css` 的注释里就写着好几个类名（`.seed__pickmark` / `.seed__pickbtn.is-on` / `.seed__rowlabel`），裸正则对它们恒绿，于是把那些规则删掉这道门禁也照样绿',
+);
+assert.equal(
+  hasCssRule('/* 上面那段注释不算 */ .seed__realrule{}', 'seed__realrule'),
+  true,
+  '★ 探针：摘注释**不能**把真正的规则一起摘掉（否则上一条会以"什么都匹配不上"的方式通过）',
 );
 assert.equal(
   hasCssRule(CSS, 'seed__nosuchclass'),
@@ -1264,9 +1355,7 @@ const MUST_RENDER = [
  *    "渲染了一个没有规则的类名不会有任何报错"（`rankedrender.tsx` 的 ⑧ 记着同一件事）。
  *    ⇒ 这一节排在全文件**最后**，`ok()` 的落点也跟着挪到最后（组的**数量**没变）。
  */
-const allClasses = products.flatMap((html) =>
-  [...html.matchAll(/\bclass="([^"]*)"/g)].flatMap((m) => (m[1] ?? '').split(/\s+/)),
-);
+const allClasses = products.flatMap(classNamesIn);
 const seedsClasses = [...new Set(allClasses.filter((cls) => cls.startsWith('seed')))].sort();
 assert.ok(
   seedsClasses.length > 0,
