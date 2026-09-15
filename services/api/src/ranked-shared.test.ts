@@ -16,6 +16,14 @@ const {
   topLiveMatches,
   topEloEntries,
   rankedLiveChannel,
+  displayWeekNo,
+  prevWeekId,
+  nextWeekId,
+  weekPath,
+  formatRaceTime,
+  formatClock,
+  TIMELINE_LABEL_KEYS,
+  timelineLabel,
   RANKED_LIVE_TOP,
   RANKED_ELO_TOP,
   RANKED_POLL_MS,
@@ -706,5 +714,140 @@ describe('解析是纯函数（spec §11.2 第一条）', () => {
     assert.deepEqual(LEADERBOARD_FIXTURE, lbBefore, '排行榜那份原始响应必须一字未改');
     assert.deepEqual(WEEKLY_FIXTURE, weekBefore, '周赛那份原始响应必须一字未改');
     assert.deepEqual(HEARTBEAT_FIXTURE, beatBefore, '心跳那份原始响应必须一字未改');
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * 纯函数层的三张小表（spec §6.5 / §7.2）—— 全是**值**的断言，不打网络
+ * ------------------------------------------------------------------------- */
+
+describe('周数：-1 显示成第 0 周，1 起一一对应', () => {
+  it('★ 显示映射', () => {
+    assert.equal(displayWeekNo(-1), 0);
+    assert.equal(displayWeekNo(1), 1);
+    assert.equal(displayWeekNo(103), 103);
+  });
+
+  it('★★ 翻页是跨过 0 的阶梯函数：0 是"本周"的别名，永远不能请求它', () => {
+    assert.equal(prevWeekId(103), 102);
+    assert.equal(prevWeekId(2), 1);
+    assert.equal(prevWeekId(1), -1, '第 1 周的上一页是第 -1 周（显示为第 0 周）');
+    assert.equal(prevWeekId(-1), null, '第 0 周是最早的一页（-2/-3 实测不存在）');
+    assert.equal(nextWeekId(-1, 103), 1, '第 0 周的下一页是第 1 周');
+    assert.equal(nextWeekId(1, 103), 2);
+    assert.equal(nextWeekId(103, 103), null);
+  });
+
+  it('★★ 两个函数都**永不**产出 0（这一条是本节的要点）', () => {
+    /*
+     * ⚠️ 为什么"永不产出 0"值得单独一条：上游把 `id = 0` 当成**"本周"的别名**，
+     *    请求它会返回**另一周**的数据 ⇒ 界面闪一下然后跳到本周，而 URL 里写着 0。
+     *    两个函数都是**结构上**跨过 0 的阶梯（不是 `id ± 1`），这一条就是那个形状的判据：
+     *    把它们改回 `id ± 1`（mutation ③）会让 `prevWeekId(1)` / `nextWeekId(-1, 103)` 当场变 0。
+     */
+    const ids = [-1, 1, 2, 3, 50, 102, 103];
+    for (const id of ids) {
+      assert.notEqual(prevWeekId(id), 0, `prevWeekId(${id})`);
+      assert.notEqual(nextWeekId(id, 103), 0, `nextWeekId(${id})`);
+    }
+  });
+
+  it('链接形状', () => {
+    assert.equal(weekPath(102), '/ranked/weekly/102');
+  });
+});
+
+describe('时间格式', () => {
+  it('★ 周赛成绩带毫秒；不足一小时不带小时位', () => {
+    assert.equal(formatRaceTime(244241), '4:04.241');
+    assert.equal(formatRaceTime(59_999), '0:59.999');
+    assert.equal(formatRaceTime(0), '0:00.000');
+    assert.equal(formatRaceTime(3_600_000), '1:00:00.000');
+    assert.equal(formatRaceTime(3_661_001), '1:01:01.001');
+  });
+
+  it('★ 对局时间不带毫秒', () => {
+    assert.equal(formatClock(918454), '15:18');
+    assert.equal(formatClock(141_000), '2:21');
+    assert.equal(formatClock(3_600_000), '1:00:00');
+    assert.equal(formatClock(0), '0:00');
+  });
+
+  it('毫秒补零到三位（不是两位）', () => {
+    assert.equal(formatRaceTime(1004), '0:01.004');
+    assert.equal(formatRaceTime(1040), '0:01.040');
+  });
+
+  it('★ 进位边界：秒以下是**向下取整**，显示的时间不许跑到真实时间前面', () => {
+    /*
+     * ⚠️ 这两个数是"取整"与"四舍五入"唯一分得开的地方：
+     *    四舍五入的实现会把 59_999 ms 印成 `1:00`、把 3_599_999 ms 印成 `1:00:00` ——
+     *    也就是**显示一个还没到的时间**（对局已进行的时间、节点时间都是同一类）。
+     *    四舍五入在这里不会抛错、也不会被别处发现，只会让人看到"刚刚明明还没到 1 分钟"。
+     */
+    assert.equal(formatClock(59_999), '0:59');
+    assert.equal(formatClock(3_599_999), '59:59');
+  });
+
+  it('★ 负数是 0（钳位）：宁可显示 0:00 也不显示 "-1:-1.-1"', () => {
+    // ⚠️ 上游理论上不会给负数。这一条钉的是"钳位是**有意**写的" ——
+    //    去掉 `Math.max(0, …)` 的话，负毫秒会渲染成 `-1:-1.-1` 这种没有任何读者能解释的字符串。
+    assert.equal(formatRaceTime(-1), '0:00.000');
+    assert.equal(formatClock(-1), '0:00');
+  });
+
+  it('★★ 两个函数只收**毫秒**（上游 Date 是秒，换算在调用点做）', () => {
+    /*
+     * ⚠️ 上游 `Date` 一律是**秒**（赛季起止、心跳、周赛 endsAt），`Time` 一律是**毫秒**
+     *    （对局时间、周赛成绩、节点时间）。单位搞混**不会抛错**，只会印出一个荒谬的时长
+     *    （"0:04" 或 "4074:31"），而画面上看起来只是"这个数有点怪"。
+     * ⇒ 这一层**不做**任何单位猜测（猜就可能猜错，代价是调用点必须自己乘 1000）：
+     *    两个函数收到的数一律当毫秒。下面两个数就是**夹具里真实的毫秒**，
+     *    所以"有人偷偷按秒解释"的话，它们会当场变成 `3:41` / `15:18` 之外的另一个值。
+     */
+    assert.equal(formatRaceTime(221_649), '3:41.649', '夹具里 timeline.time 那格（毫秒）');
+    assert.equal(
+      formatClock(750_913),
+      '12:30',
+      '夹具里另一格：750913 ms 就是 spec §6.3 草图上的 12:30',
+    );
+  });
+});
+
+describe('进度标识：表 + 未知回落', () => {
+  const t = (key: string): string => `[${key}]`;
+
+  it('★ 表里的标识走词条；不在表里的**原样**返回（不返回 key）', () => {
+    assert.equal(timelineLabel('nether.find_bastion', t), '[ranked.timeline.findBastion]');
+    assert.equal(
+      timelineLabel('projectelo.timeline.blind_travel', t),
+      '[ranked.timeline.blindTravel]',
+    );
+    assert.equal(timelineLabel('nether.find_ruined_portal', t), 'nether.find_ruined_portal');
+  });
+
+  it('★ null / 空串 ⇒ 占位符词条（不是空串、不是 key 本身）', () => {
+    assert.equal(timelineLabel(null, t), '[ranked.unknown]');
+    assert.equal(timelineLabel('', t), '[ranked.unknown]');
+  });
+
+  it('★ 表里每一条的 key 都是 `ranked.timeline.` 前缀且不重复（防止手抄时串行）', () => {
+    const keys = Object.values(TIMELINE_LABEL_KEYS);
+    assert.equal(new Set(keys).size, keys.length, '词条 key 不许重复');
+    for (const k of keys) assert.ok(k.startsWith('ranked.timeline.'), k);
+  });
+
+  it('★★ 原型链上的名字不是表里的名字（`in` 会在这里骗过去）', () => {
+    /*
+     * ⚠️ 判据必须是"**这个 type 在不在表里**"，而 `type in TIMELINE_LABEL_KEYS` 问的是
+     *    "在不在原型链上" —— `'constructor' in TIMELINE_LABEL_KEYS` 是 **true**，
+     *    于是查表拿到 `Object.prototype.constructor`（一个函数），最后 `t(函数)` 把
+     *    `function Object() { [native code] }` 印到界面上。上游只要发一个叫 `constructor`
+     *    的节点就会命中，而这一层正是为了"上游随时会加新值"才存在的。
+     *    ⇒ 用 `Object.hasOwn`；这一条就是它与 `in` / `!== undefined` 之间的判据。
+     */
+    assert.equal(timelineLabel('constructor', t), 'constructor');
+    assert.equal(timelineLabel('toString', t), 'toString');
+    assert.equal(timelineLabel('hasOwnProperty', t), 'hasOwnProperty');
   });
 });
