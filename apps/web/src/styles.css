@@ -6410,6 +6410,121 @@ html[data-theme='light'] {
   background: #cf5f9b;
 }
 
+/* ==================================================================
+   实时分享 · 介绍页 `/shares`（2026-09-15，`.shareIntro*`）
+
+   ★ 这一页是**公开**的（§1.1）：它是全站第一个"内容游客看不到"的栏目的门面，
+     而它的读者多半是**游客** —— 所以它得自己站得住：导语说清"会自己消失"与
+     "内容要登录"两件事，两块卡片各自说清自己是什么，最后才是那条附注性质的条数。
+
+   ⚠️ 类名一律 `shareIntro` 前缀（**不是** `share`）：本仓的样式是**全局**的，
+      没有 CSS Modules 兜着，而看板那一块（`.share*`）是**另一个任务**追加的
+      —— 两组前缀分开，谁都不会不小心改到对方那一块
+      （`components/ShareCard.tsx` 的文件头把这件事写成两个文件之间的接口）。
+
+   ⚠️ 刻意**不**在这里复制 `.sidebar__block--shares` 那个品红：那个颜色属于侧栏
+      那一格（`lib/nav.ts` 的注释里写着短名 `block` 已经连着哪三样东西），
+      在这里再写一遍就是**第四份**会漂移的副本。这一页只用全站的中性表面色。
+   ================================================================== */
+
+.shareIntro {
+  max-width: 720px;
+}
+
+/* 页面标题（`h1` 那一层）—— 与 `.pagehead__title` 用**同一个变量**：
+   ⚠️ 不新造字号。像素字体只在文件末尾那一块列出的那几档清晰。 */
+.shareIntro__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-page);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.5px;
+  margin: 0 0 10px;
+}
+
+/* 导语：**成段的正文**，所以不指定字体（继承 `body` 的系统字体 ——
+   像素字体读长句很累，见文件头的分工）。⚠️ 宽度压到 62ch：一行太长的话，
+   第二句"只有登录用户能看到"会被读丢，而它正是这一页要说的两件事之一。 */
+.shareIntro__lead {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--fg-muted);
+  margin: 0 0 22px;
+  max-width: 62ch;
+}
+
+/* 两块入口卡片：窄屏一列、宽屏两列 —— 与 `.cards` 同一套做法（auto-fit + 280px）。 */
+.shareIntro__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+/*
+ * ★ **整块可点**（§7.2）：卡片本身就是一个 `<a>`，不是"卡片 + 里面一个小按钮"
+ *   ⇒ 所以要长得像链接（悬停抬起），而不是像容器。
+ * ⚠️ 形状照抄 `.calendar-card` / `.rescard` 那一套（1px 细线 + 圆角 + 悬停 translateY），
+ *    不自己发明一套：全站卡片是同一套形状语言。
+ * ⚠️ 键盘焦点环**不在这里写**：上面那条全站规则
+ *    `:where(a, button, input, select, [tabindex]):focus-visible` 已经给了它
+ *    （`--grass-bright` 的 2px 描边）。这里再写一条只会是多一份会漂移的口径。
+ */
+.shareIntro__card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px 20px;
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--sh-1);
+  transition:
+    transform var(--t) var(--ease),
+    box-shadow var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    background var(--t) var(--ease);
+}
+.shareIntro__card:hover {
+  text-decoration: none;
+  transform: translateY(-2px);
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  box-shadow: var(--sh-3);
+}
+
+/* 卡片名字：**条目标题**那一档（18px）—— 与 `.rescard__title` 同一个变量。 */
+.shareIntro__cardtitle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* 卡片说明：一句话，同样不指定字体（与导语一致）。 */
+.shareIntro__carddesc {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/*
+ * 条数那一行：「N 条在展示」/「登录后可见」/「加载中」三句话共用这一条规则。
+ * ⚠️★ `margin-top: auto`：它是卡片的**脚**。两张卡片的说明一行、两行不一样长时，
+ *    没有这一句两条脚就不在同一水平线上 —— 看起来像其中一张矮了半截。
+ * ⚠️ 它是**读数**不是动作：灰、小、不加框（与 `.contrib__state` 同款）。
+ */
+.shareIntro__count {
+  margin: auto 0 0;
+  padding-top: 4px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
 
 
 

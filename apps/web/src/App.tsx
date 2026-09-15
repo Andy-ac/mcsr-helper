@@ -96,6 +96,20 @@ const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.
 const LivePage = lazy(() => import('@/routes/Live').then((m) => ({ default: m.Live })));
 
 /**
+ * 「实时分享」（2026-09-15）—— 介绍页 `/shares`。
+ *
+ * ⚠️★ 这一页**公开**，而且它是这一栏里唯一公开的东西（两个看板要登录，§7.1）
+ *    —— 游客在这里读到的是"这个栏目在干什么"，而不是一堵墙（§1.1）。
+ *    懒加载的理由和别的次级页面一样：它不是首屏，而它自己**不取数**时也照样
+ *    要看得到（游客那一支一个请求都不发，见 `routes/ShareIntro.tsx` 的文件头）。
+ *
+ * ⚠️ `/shares/room` 与 `/shares/seed` 由 Task 7 挂在下面（3 个路由分两处落地）。
+ */
+const ShareIntroPage = lazy(() =>
+  import('@/routes/ShareIntro').then((m) => ({ default: m.ShareIntro })),
+);
+
+/**
  * 认证相关的页面也懒得拆 —— 它们比详情页小得多，而且
  * 登录/注册是**直达链接**（邮件、书签、别人发的地址）。
  * 懒加载会让这些路径多一次"先加载再渲染"的往返，得不偿失。
@@ -306,6 +320,24 @@ export default function App() {
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <SeedsPage />
+              </Suspense>
+            }
+          />
+          {/*
+            `/shares` —— **公开的介绍页**（§7.1）。它是这一栏的门面：
+            游客在这里读到的是这个栏目在干什么，而不是一个 404、也不是一堵登录墙。
+            ⚠️★ 路径必须与 `lib/nav.ts` 里那一行的 `to` **逐字相同**（`/shares`）——
+              侧栏那一行是可点的，而 `check:home` 读的正是这个文件里有没有
+              `path="/shares"`（它是"可点栏目必须真的有路由"的唯一守卫）。
+            ⚠️ `/shares/room`、`/shares/seed` 由 Task 7 追加在这条下面；
+              与 `/resources/submit` 那条注释同理，静态段比参数段更具体，
+              顺序不影响匹配结果。
+          */}
+          <Route
+            path="/shares"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <ShareIntroPage />
               </Suspense>
             }
           />
