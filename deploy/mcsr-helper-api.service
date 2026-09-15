@@ -62,7 +62,7 @@ EnvironmentFile=-/etc/mcsr-helper/mail.env
 #
 # 三个变量都**有代码内的默认值**，所以一个都不设也能正常工作：
 #   MCSR_SEED_API_BASE       默认 http://198.51.100.20:8001/api/v2
-#   MCSR_SEED_TIMEOUT_MS     默认 5000
+#   MCSR_SEED_TIMEOUT_MS     默认 15000
 #   MCSR_SEED_WRITE_DISABLED 默认关闭（也就是**允许**补录）
 #
 # ⚠️ 上游是**明文 HTTP** 上的一个公网 IP —— 这正是我们做后端代理的原因：
