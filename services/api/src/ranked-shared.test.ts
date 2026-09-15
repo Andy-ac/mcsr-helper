@@ -315,6 +315,28 @@ describe('sortLiveMatches / topLiveMatches', () => {
     );
   });
 
+  it('★ 完全相同的 key 与平均 elo ⇒ 保持输入顺序（相等那一支不许把人往前挪）', () => {
+    /*
+     * 两项 key 与 avgElo 都相同 ⇒ 比较器必然走到"相等"那一支。它们在契约上**等价**，
+     * 所以谁在前只由**输入顺序**决定（spec §6.3 / §11.2 第 2 条："并列按 `key` 升序（稳定排序）"）。
+     * ⚠️ `currentTime` 是这两项之间唯一能看出"有没有被换位"的字段 —— 别处它们一模一样。
+     * ⚠️ 两个方向都要断言：只调一次的话，某一次比较里的返回值有可能不影响结果。
+     * ⚠️ 实测（修复报告 §11）：V8 的 `sort` **分不出** `0` 与 `1`（两者都把相等的元素留在原地），
+     *    所以这条断言真正钉住的是"**相等不许返回负数**"（返回 -1 会当场把这两项对调），
+     *    它**不能**证明实现恰好返回 `0`。写下这句是为了下一个人不要以为它守住了那个细节。
+     */
+    const a = { key: 'same', currentTime: 1, avgElo: 100, players: [] as never };
+    const b = { key: 'same', currentTime: 2, avgElo: 100, players: [] as never };
+    assert.deepEqual(
+      sortLiveMatches([a, b]).map((m) => m.currentTime),
+      [1, 2],
+    );
+    assert.deepEqual(
+      sortLiveMatches([b, a]).map((m) => m.currentTime),
+      [2, 1],
+    );
+  });
+
   it('★ 取前 10（`RANKED_LIVE_TOP`），且不修改入参', () => {
     const d = parseLive(LIVE_FIXTURE);
     assert.ok(d);
