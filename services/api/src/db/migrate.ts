@@ -33,6 +33,7 @@ import { m014UserLiveLinks } from './migrations/014_user_live_links';
 import { m015LiveTagsAndSchedule } from './migrations/015_live_tags_and_schedule';
 import { m016LiveDedupeKey } from './migrations/016_live_dedupe_key';
 import { m017SlotsAndDimensions } from './migrations/017_slots_and_dimensions';
+import { m018ContentContributors } from './migrations/018_content_contributors';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -120,6 +121,19 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    线上同一个 Node 运行时，所以同一个 SQLite。
    */
   { name: '017_slots_and_dimensions', sql: m017SlotsAndDimensions },
+  /*
+   * 018：内容贡献者（`content_contributors`）。
+   *
+   * ⚠️ 与 009/013/014 同一个性质：**纯建表 + 建索引**，不重建任何表 ⇒
+   *    **留在事务里**（不加 noTransaction），失败即整体回滚。
+   *    别看到"加一张通用表"就想给它关外键 —— 那个 PRAGMA 在事务里无效，
+   *    而这条迁移一个字都不需要它（理由见 018 的文件头）。
+   *
+   * ⚠️ 这张表的 `(entity_type, entity_id)` **没有外键**（SQLite 表达不了
+   *    "指向好几张表里的那一张"）⇒ 删内容时必须自己清贡献者行。
+   *    落点在 `resources.ts` 的两条硬删除路径上，有测试守着。
+   */
+  { name: '018_content_contributors', sql: m018ContentContributors },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

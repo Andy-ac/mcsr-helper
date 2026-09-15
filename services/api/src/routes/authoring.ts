@@ -70,6 +70,7 @@ import {
   getEventRow,
   submitEventDirect,
 } from '../calendar/events';
+import { isContributor } from '../contributors';
 import {
   deleteResourceDirect,
   findResourceByUrl,
@@ -152,61 +153,148 @@ authoringRoute.post('/resources', requireCapability('content.author'), async (c)
   );
 });
 
-/** 直编已存在的条目。审计：`resource.directEdit`。 */
-authoringRoute.patch('/resources/:id', requireCapability('content.author'), async (c) => {
-  const user = c.get('user');
-  if (!user) return c.json({ error: 'unauthorized' }, 401);
+/**
+ * 直编已存在的条目。审计：`resource.directEdit`。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 两种人能调（2026-09-14 起）：`content.author` **或**这一条的**贡献者**
+ * ---------------------------------------------------------------------------
+ * 用户原话：「贡献者可以不经过审核直接修改/下架其拥有的资源（不实际删除）」。
+ * 所以这条**改已有条目**的路径放宽了判据，而**新建那条（POST）没有** ——
+ * 理由很直接：新建的时候还没有"这一条"这个实体，也就谈不上谁是它的贡献者。
+ *
+ * ⚠️ 为什么落在**这一条**上，而不是再开一条 `/api/resources/:id/direct`：
+ *    贡献者走的是**同一套机制**（同一个端点、同一个数据层函数 `applyDirectRevision`、
+ *    同一条审计动作），只是"谁被允许"多了一档。再开一条端点的话，
+ *    "直接写线上那一行"这件事就有两个入口，而 routes/authoring.ts 的文件头
+ *    正是为了"哪些端点会绕过审核"能一眼看完才存在。
+ *
+ * ⚠️⚠️ **两条路的判据来源不同**，这是这段中间件存在的全部理由：
+ *   · `content.author` —— **角色型**（能力矩阵里的一行，editor 及以上）；
+ *   · 贡献者 —— **数据型**（"你是不是**这一条**的贡献者"），
+ *     与 `requireCapability` 那种路由级中间件抓不到上下文的形式对不上，
+ *     所以这里手写两段判断（与 routes/resources.ts 的 PATCH `/:id` 同一个形状）。
+ *
+ * ⚠️★ **贡献者也不查邮箱验证**（2026-09-14 改过一次，两次的理由都要留着）：
+ *
+ *   第一版这里**单独**给贡献者加了一道 `email_verified_at` 检查，理由是
+ *   "他的权力来自**别的用户**把这条内容交给他，不是来自管理员的任命，
+ *    所以他仍然要过验证那一关"。
+ *   ⚠️ 那个前提**在同一天就被推翻了**：改名单的判据最终定成 `user.moderate`
+ *      （admin / owner），也就是**只有管理员能任命贡献者** ——
+ *      与 `content.author` 由管理员授予**完全同形**。
+ *   ⇒ 于是 permissions.ts 里那条理由（"编辑身份是管理员已经核实过才授予的，
+ *      再加一道验证不增加任何保证，却会在换邮箱/邮件投递出问题时把能干活的
+ *      人挡在门外"）**逐字适用**于贡献者，所以这一支**不再单独查验证**。
+ *
+ *   ⚠️ 还有一条**硬理由**（比上面那条更不容含糊）：服务端自己在
+ *      `GET /api/resources/:id/edit` 里算出 `canDirectEdit` 送给前端，
+ *      而那个布尔量**只看"是不是编辑或贡献者"、不看验证状态**。
+ *      这一支若再要求验证，就会出现"服务端说能改、同一个服务端回 403"——
+ *      前端照着它渲染按钮，用户点了失败，而两边都是我们写的。
+ *      ⇒ **同一个判断只能有一处**：要么这里不查，要么 `canDirectEdit` 一起查。
+ *        选了前者，因为后者会把"验证状态"这一维漏进一个本该只回答
+ *        "你是谁"的字段里。
+ */
+authoringRoute.patch(
+  '/resources/:id',
+  async (c, next) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
 
-  const id = c.req.param('id');
-  if (!resourceExists(id)) return c.json({ error: 'not_found' }, 404);
+    const role = user.role as UserRole;
+    if (can({ role, emailVerified: user.email_verified_at !== null }, 'content.author')) {
+      // 原路，一个字都没变（POST 与 DELETE 也仍然是这一档，见文件头）
+      return next();
+    }
 
-  const body = await c.req.json().catch(() => null);
-  const parsed = ResourceSubmissionSchema.safeParse(body ?? {});
-  if (!parsed.success) {
-    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
-  }
-
-  const now = Date.now();
-  const result = applyDirectRevision({
-    resourceId: id,
-    submission: parsed.data,
-    actorId: user.id,
-    now,
-  });
-
-  if ('error' in result) {
     /*
-     * ⚠️ `already_pending` 是 409 而不是 400/500：请求本身没问题，
-     *    是**状态**不允许（有一条待审改动正在等着被批准/驳回）。
-     *    照这个形状给，前端可以直接复用提交路径上已有的那句文案。
+     * 贡献者那条路：**只判"你是不是这一条的贡献者"**，不查邮箱验证
+     * （理由见上面那段：改名单的是管理员，而且 `canDirectEdit` 也不看验证状态）。
+     *
+     * ⚠️ 判身份这一步**必须在**：少了它，任何登录用户都能直编任何一条内容。
+     *    这与"不查验证"是两件事，别把两者一起删掉。
      */
-    if (result.error === 'already_pending') return c.json({ error: 'already_pending' }, 409);
-    return c.json({ error: 'not_found' }, 404);
-  }
+    if (!isContributor('resource', c.req.param('id'), user.id)) {
+      // 既不是 content.author、也不是这一条的贡献者 —— 与原来 requireCapability
+      // 给出的码完全一致（403 `forbidden`，不是 404：不泄漏"这条存不存在"）
+      return c.json({ error: 'forbidden' }, 403);
+    }
 
-  writeAudit({
-    actorId: user.id,
-    action: 'resource.directEdit',
-    entityType: 'resource',
-    entityId: id,
-    reason: `直编（未走审核） revision ${String(result.revision)}`,
-    ip: c.req.header('x-real-ip') ?? null,
-    now,
-  });
+    return next();
+  },
+  async (c) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
 
-  /*
-   * ⚠️ `status` 返回**真实**状态，不是写死 'published'：
-   *    下架过的条目直编之后仍然是 `hidden`（见 applyDirectRevision 的注释）。
-   *    写死的话前端会说"已生效、线上可见"，而它其实还在下架状态里 —— 那是对用户撒谎。
-   */
-  return c.json({
-    ok: true,
-    id,
-    revision: result.revision,
-    status: result.status,
-    liveRevisionUnchanged: false,
-  });
-});
+    const id = c.req.param('id');
+    if (!resourceExists(id)) return c.json({ error: 'not_found' }, 404);
+
+    /*
+     * 这次直编是"以什么身份"进来的 —— 审计里要能分辨。
+     *
+     * ⚠️ 不额外查一次库：上面那个中间件保证了"到得了这里、又没有 `content.author`
+     *    的人**必然**是这条的贡献者"，所以这一句就是那个判断的**等价形式**，
+     *    而不是第二份判据。
+     * ⚠️ 它必须进审计：快照表**分不出**直编与"编辑自批"（D2.5），
+     *    "怎么来的"只在 reason 里。而贡献者是**另一个物种**（他没有角色、
+     *    权力来自这条内容本身），事后追查时"这一下是谁按的"必须能分辨。
+     */
+    const viaContributor = !can(
+      { role: user.role as UserRole, emailVerified: user.email_verified_at !== null },
+      'content.author',
+    );
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = ResourceSubmissionSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+    }
+
+    const now = Date.now();
+    const result = applyDirectRevision({
+      resourceId: id,
+      submission: parsed.data,
+      actorId: user.id,
+      now,
+    });
+
+    if ('error' in result) {
+      /*
+       * ⚠️ `already_pending` 是 409 而不是 400/500：请求本身没问题，
+       *    是**状态**不允许（有一条待审改动正在等着被批准/驳回）。
+       *    照这个形状给，前端可以直接复用提交路径上已有的那句文案。
+       */
+      if (result.error === 'already_pending') return c.json({ error: 'already_pending' }, 409);
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    writeAudit({
+      actorId: user.id,
+      action: 'resource.directEdit',
+      entityType: 'resource',
+      entityId: id,
+      // ⚠️ 前缀「直编（未走审核）」一个字都不改（既有断言与审计历史都认它），
+      //    身份信息**追加**在后面：贡献者那条路必须能在审计里认出来
+      reason: `直编（未走审核） revision ${String(result.revision)}${viaContributor ? '（贡献者，非 content.author）' : ''}`,
+      ip: c.req.header('x-real-ip') ?? null,
+      now,
+    });
+
+    /*
+     * ⚠️ `status` 返回**真实**状态，不是写死 'published'：
+     *    下架过的条目直编之后仍然是 `hidden`（见 applyDirectRevision 的注释）。
+     *    写死的话前端会说"已生效、线上可见"，而它其实还在下架状态里 —— 那是对用户撒谎。
+     */
+    return c.json({
+      ok: true,
+      id,
+      revision: result.revision,
+      status: result.status,
+      liveRevisionUnchanged: false,
+    });
+  },
+);
 
 /**
  * 删除一条资源 —— **两档**（用户的原始需求：② 的"修改/添加/删除"给 editor 及以上，

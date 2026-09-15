@@ -832,6 +832,23 @@ console.log(`\n【${LANG}】词条：漏 key 会以原始 key 的形式出现在
  * ⚠️ `label` / `busyLabel` 用**字面串**：它们只是页面上的一句文案，而我们要抓的是
  *    **原始 key**（`authoring.directHint`）。用 `t('authoring.directSave')` 反而会把
  *    译文塞进产物、让扫描看起来更"干净" —— 那是反效果。
+ *
+ * ⚠️★ 但 `title` **必须**给，而且必须给**真译文**（2026-09-14 改）：
+ *    `secondaryAction.title` 现在由**调用方页面**提供（编辑页按身份在
+ *    `authoring.directHint` 与 `resourceContrib.directEdit` 之间挑一句 ——
+ *    贡献者也会看到这个按钮，而"你是内容编辑"对他是一句假话）。
+ *    ⇒ 表单不再自己 `t(...)`，所以 fixture 不给 `title` 的话，
+ *      `authoring.directHint` **一个字符都不进 HTML**，下面 `coverage` 表里
+ *      那一行会指名道姓地红（这正是它红过的样子，见 `pending.md` 的记账）。
+ *    ⚠️ 这一处是靠**门禁**发现的，不是靠类型：`scripts/**` 不在
+ *      `apps/web/tsconfig.json` 的 include 里（`pending.md §5.50`），
+ *      所以"少传一个必填字段"在这里**编译不报错**。
+ *    ⚠️ 它现在证明的东西比原来弱一点，说清楚：原来它证明"**组件**自己解析了这个 key"，
+ *      现在证明"**这个 prop 被渲染进了 `title` 属性**"。key 能不能解析由下面
+ *      `for (const key of [...])` 那一条单独守；而"编辑页挑对了哪一句"由
+ *      `services/api/src/i18n-keys.test.ts` 的 `EXPECTED_SITES`
+ *      守（两句话在 `EditResource.tsx` 里各有一处 `emText` 调用点，
+ *      少任何一处那张清单就对不上）。
  */
 const authoringForm = html(
   <ResourceForm
@@ -851,7 +868,12 @@ const authoringForm = html(
     busy={false}
     serverError={null}
     onSubmit={() => undefined}
-    secondaryAction={{ label: '直接保存', busyLabel: '保存中', onSubmit: () => undefined }}
+    secondaryAction={{
+      label: '直接保存',
+      busyLabel: '保存中',
+      title: emText(i18n.t('authoring.directHint')),
+      onSubmit: () => undefined,
+    }}
   />,
 );
 

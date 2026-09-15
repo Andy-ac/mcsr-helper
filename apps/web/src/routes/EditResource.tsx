@@ -2,7 +2,12 @@ import type { EditableResource, ResourceDetail } from '@mcsr/shared/resources';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
-import { em } from '@/components/Emphasis';
+import {
+  ContributorDirectNote,
+  ContributorPanel,
+  ContributorVisibilityBar,
+} from '@/components/ContributorPanel';
+import { em, emText } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import { draftFromResource, ResourceForm } from '@/components/ResourceForm';
 import {
@@ -10,8 +15,10 @@ import {
   deleteResourceDirect,
   fetchResource,
   fetchResourceForEdit,
+  type ResourceWriteAccess,
   type SubmissionResult,
   saveResourceDirect,
+  setResourceVisibility,
   updateResource,
 } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
@@ -48,6 +55,11 @@ export function EditResource() {
    * 需求②：只有 `content.author`（editor / admin / owner）才给「直接保存」。
    * ⚠️ 能力名从矩阵读，**不在页面里写"谁是编辑"** —— 那样服务端放宽/收紧时
    *    界面不会跟着动，而漂移的两个方向都有害（详见 permissions.ts 的头注释）。
+   *
+   * ⚠️★ 2026-09-14：它**不再**是「直接保存」那个按钮的判据（见下面 `access` 那一段）。
+   *    今天它只剩一个用处：**危险区那一档**（`canHardDeleteNow || canAuthor`），
+   *    而那一条判据一个字都没动（用户明确：贡献者**不实际删除**）。
+   *    ⚠️ 别把 `canAuthor` 删掉 —— 删了就没人能走 editor 那一档删除了。
    */
   const canAuthor = useCan('content.author');
   /*
@@ -58,8 +70,45 @@ export function EditResource() {
    *    而那样"只有 owner"会静默失效、测试还全绿。见 permissions.ts 的长注释。
    */
   const canHardDeleteNow = useCanHardDelete();
+  /*
+   * 「贡献者」名单面板只有**管理员**（admin / owner）看得到。
+   *
+   * ⚠️★ 判据是 **`user.moderate`**，不是 `resource.moderate` —— 这两个能力差一档，
+   *    而判据选错的后果是**编辑能给自己或别人发免审直编权**：
+   *      · `resource.moderate` 属于 `EDITOR_CAPS`（**editor 及以上都有**），
+   *        它管的是**内容动作**："把这一条下架"（编辑本来就干得了 ——
+   *        那是下面 `access.canHide` 那一档，服务端也是按 `resource.moderate` 算的）；
+   *      · `user.moderate` 只有 admin / owner 有（`permissions.ts` 的注释里点明了
+   *        「editor 没有 user.moderate」，`Layout.tsx` 的账号管理入口用的就是它）——
+   *        它管的是**授权动作**："谁可以动这条内容"。
+   *    用户的口径是**更严**的那一个：编辑看不到、也改不了这份名单。
+   *    ⇒ 用 `resource.moderate` 会把"授权"混进"内容治理"，那不是同一个问题。
+   *
+   * ⚠️ 能力判断在**这一层**（本仓约定），组件只吃一个布尔量；
+   *    而"是不是就别渲染"的守卫在组件里（`ContributorPanel`）——
+   *    它必须在**取任何数之前**返回 null，否则每个访客打开编辑页都会多一次
+   *    注定 403 的 `GET …/contributors`。
+   */
+  const canManageContributors = useCan('user.moderate');
 
   const [draft, setDraft] = useState<ReturnType<typeof draftFromResource> | null>(null);
+  /**
+   * ★ 服务端给的「我对**这一条**能直接做什么」（2026-09-14，贡献者那条功能）。
+   *
+   * ⚠️ 这两个布尔量**只读不重算**：贡献者不是 `content.author`
+   *    （用户明确「贡献者不单独作为一个身份组」），所以 `useCan('content.author')`
+   *    对他是假的 —— 前端自己拼判据的两种写法（读名单接口 / 用 `useCan`）
+   *    都会给出**错的**答案，而错了的表现是"他直接被引到「待审修改」那条路上"。
+   *    理由与契约写在 `lib/api.ts` 的 `ResourceWriteAccess` 上。
+   * ⚠️ 初值是空对象 = 两个都是 `undefined` = 一律按 false：取数回来之前
+   *    不给任何"你能直接改"的提示，比反过来（先给按钮、再收回去）安全。
+   */
+  const [access, setAccess] = useState<ResourceWriteAccess>({});
+  /** 这一条现在的状态 —— 「下架 / 恢复上架」按钮按它决定显示哪一个。 */
+  const [status, setStatus] = useState<string>('published');
+  /** 下架 / 恢复的行内状态（与表单的 `busy` 分开：两者可以同时发生）。 */
+  const [visibilityBusy, setVisibilityBusy] = useState(false);
+  const [visibilityError, setVisibilityError] = useState<string | null>(null);
   /** 现在这一条有没有别人提的、还在等审核的改动 */
   const [pendingRevision, setPendingRevision] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,14 +140,33 @@ export function EditResource() {
         /*
          * ⚠️ 两个接口返回的**不是同一个类型**：编辑接口多一个 pendingRevision。
          *    写成一个联合类型即可 —— 后面只用到共同字段，外加那个可选的待审版本号。
+         *
+         * ⚠️★ 2026-09-14 又多了两个**可选**字段（`canDirectEdit` / `canHide`）：
+         *    它们只跟编辑接口一起下发（公开接口那一支没有），所以并进这个
+         *    联合类型时它们仍是可选的 —— 见下面 `=== true` 那几句。
          */
-        type Editable = EditableResource | ResourceDetail;
+        type Editable = (EditableResource | ResourceDetail) & ResourceWriteAccess;
         const editable: Editable | null = await fetchResourceForEdit(id, controller.signal).catch(
           () => null,
         );
         const resource = editable ?? (await fetchResource(id, controller.signal));
         if (!active) return;
         setDraft(draftFromResource(resource));
+        /*
+         * ★ 服务端算好的那两个布尔量（贡献者那条功能）。
+         *
+         * ⚠️ 它们**只从编辑接口读**（`editable`），不从 `resource` 读：
+         *    走**公开接口**那一支时它们根本不存在 —— 公开详情不该告诉任何人
+         *    "谁能直接改这一条"。从 `editable` 读让这件事是**结构上**成立的，
+         *    而不是靠一句"记得判空"。
+         * ⚠️ 再用 `=== true` 收敛成布尔：`undefined`（没拿到）与 `false`
+         *    （没有这个权限）在这里必须落到同一个结果 —— 什么都不能直接做。
+         *    不收敛的话，将来任何一处 `!== false` 的写法都会把每个人都变成贡献者。         */
+        setAccess({
+          canDirectEdit: editable?.canDirectEdit === true,
+          canHide: editable?.canHide === true,
+        });
+        setStatus(resource.status);
         /*
          * ⚠️ 待审状态必须在**打开页面时**就知道。
          *
@@ -200,6 +268,36 @@ export function EditResource() {
     }
   }
 
+  /**
+   * 下架 / 恢复上架 —— `PATCH /api/resources/:id/visibility`（2026-09-14）。
+   *
+   * ⚠️ 它**不是**"翻一下标志位"：传的是**想要的结果**（`published`）。
+   *    前者在重试或连点两次时会得到相反的结果，而"下架"这件事会被用户
+   *    当成"点了没反应"来理解（页面还在、内容还在显示）。
+   * ⚠️ 显示哪一个按钮由 `status` 决定，而 `status` 是**服务端给的**（取数时那一份，
+   *    以及这次请求回的那一个）。前端不猜。
+   * ⚠️ 失败必须看得见：读不到 `status` 时**不改**本地状态，并把原因显示出来 ——
+   *    静默失败会让用户以为已经下架了（而它还在公开页面上）。
+   */
+  async function toggleVisibility() {
+    const next = status !== 'published';
+    setVisibilityBusy(true);
+    setVisibilityError(null);
+    try {
+      const res = await setResourceVisibility(id, next);
+      /*
+       * ⚠️ 以服务端回的 `status` 为准（那是权威值）。服务端没回这个字段时
+       *    回退到"我请求的那个状态" —— 请求说的就是"我要它变成这样"，
+       *    而 `published: true/false` 这一对是幂等的（见 api.ts 的注释）。
+       */
+      setStatus(typeof res.status === 'string' ? res.status : next ? 'published' : 'hidden');
+    } catch (err) {
+      setVisibilityError(errorText(err));
+    } finally {
+      setVisibilityBusy(false);
+    }
+  }
+
   /*
    * ★ 有人已经提了一份改动在等审核 —— **不要让他填表**。
    *
@@ -242,6 +340,17 @@ export function EditResource() {
             {t('mine.openItem')}
           </Link>
         </p>
+
+        {/*
+          ★ 管理者在这一页照样能看到并改贡献者名单（2026-09-14）。
+          ⚠️ 为什么这一支也要挂：待审的那一份改的是**内容**，而名单管的是
+             "**谁**能改这一条"—— 两件事互不阻塞。不挂的话，一条恰好有人在改的
+             资源就**没有别的地方**能改名单了（这个面板全站只有这一处），
+             而那正是"管理者可以在每个资源里面随意修改贡献者"要覆盖的情形。
+          ⚠️ 对非管理员它渲染 `null`（守卫在组件里，且在取数之前）——
+             这一支是"有人在等审核"的画面，不该多出任何名单的痕迹。
+        */}
+        <ContributorPanel resourceId={id} canManage={canManageContributors} />
       </>
     );
   }
@@ -323,6 +432,19 @@ export function EditResource() {
         </Notice>
       ) : null}
 
+      {/*
+        ★「你是这一条的贡献者：改动直接生效，不进审核队列。」（2026-09-14）
+
+        ⚠️ 位置必须在**表单上方**：它要拦的是"他按了那个错误的主按钮"，
+           而主按钮在十四行正文框下面 —— 放在那儿等于没有。
+        ⚠️ 判据是服务端给的 `canDirectEdit`，**不是** `canAuthor`：
+           贡献者没有 `content.author`（用户明确「贡献者不单独作为一个身份组」），
+           而这个组件自己一个判据都不重算（理由写在组件里）。
+        ⚠️ 它与上面那句 `edit.liveUnchanged` 说的是**两个不同的按钮**，
+           两句都要在：主按钮「提交修改」仍然过审核，贡献者多的那条是「直接保存」。
+      */}
+      <ContributorDirectNote canDirectEdit={access.canDirectEdit === true} />
+
       <ResourceForm
         initial={draft!}
         actionLabel={t('edit.action')}
@@ -331,21 +453,65 @@ export function EditResource() {
         serverError={null}
         onSubmit={onSubmit}
         /*
-         * 「直接保存」**只对 `content.author` 传下去**（需求②）。
+         * 「直接保存」按**服务端给的 `canDirectEdit`** 传下去（2026-09-14）。
+         *
+         * ⚠️ 在这之前判据是 `canAuthor`（`useCan('content.author')`）——
+         *    那对**贡献者**永远是假的：他不是编辑，能力矩阵里没有他
+         *    （「不单独作为一个身份组」）。结果是他虽然被授权了直编，
+         *    界面上却看不到那条路，还会被引去提"待审修改"。
+         * ⚠️ **不要**写成 `access.canDirectEdit || canAuthor`：那是在前端
+         *    拼第二份判据，而两份判据必然漂移。服务端那个值已经
+         *    把"有 content.author"算进去了（见 routes/resources.ts 的注释）。
          * ⚠️ 定义成 `undefined` 而不是"传一个 disabled 的按钮"：
          *    看不见比看得见点不动好，这是本仓一贯的立场（见 Layout.tsx 的注释）。
+         *
+         * ⚠️★ `title` 按身份在两句话之间挑，**这里挑是对的**（表单不判身份）：
+         *    `canDirectEdit` 有两种来路 —— 全站身份（`content.author`）与
+         *    **逐条的数据**（这一条的贡献者）。挑错的代价是那张 tooltip 对
+         *    贡献者说「你是内容编辑」，而他不是 —— 那正好踩在
+         *    「不单独作为一个身份组」要防的误解上。
+         *    先判 `canAuthor`：两种身份都有的取更宽的那个（对编辑而言
+         *    "你是内容编辑"始终为真，而"你是这一条的贡献者"只是他此刻的处境）。
          */
         secondaryAction={
-          canAuthor
+          access.canDirectEdit === true
             ? {
                 label: t('authoring.directSave'),
                 // 复用既有词条：不为一个忙碌态新造 key（§7.6 是最小集合）
                 busyLabel: t('edit.submitting'),
+                title: canAuthor
+                  ? emText(t('authoring.directHint'))
+                  : emText(t('resourceContrib.directEdit')),
                 onSubmit: (s) => void onSubmitDirect(s),
               }
             : undefined
         }
       />
+
+      {/*
+        ★ 下架 / 恢复上架（2026-09-14）—— 贡献者与管理员都看得到。
+        ⚠️ 位置在表单**下方**：它与下面的名单面板、"删除"危险区是同一类
+           管理动作，页面上按严重程度排（下架可逆 → 名单授权 → 删除不可逆）。
+        ⚠️ 判据是服务端给的 `canHide`。⚠️ 这里**没有任何删除入口** ——
+           用户明确要求贡献者"不实际删除"，而删除那条路的显示条件
+           （下面危险区的 `canHardDeleteNow || canAuthor`）一个字都没放宽。
+      */}
+      <ContributorVisibilityBar
+        canHide={access.canHide === true}
+        hidden={status === 'hidden'}
+        busy={visibilityBusy}
+        failureText={visibilityError}
+        onToggle={() => void toggleVisibility()}
+      />
+
+      {/*
+        ★ 贡献者名单（只有管理者看得到）—— "管理者可以在资源库中看到贡献者"
+        那句话的落地。
+        ⚠️ 挂**编辑页**而不是公开详情页：用户明确要求"不直接展示在资源库中"，
+           而这份名单全站只有这一处渲染点，且它自己会在非管理员那里返回 `null`
+           （连请求都不发）。
+      */}
+      <ContributorPanel resourceId={id} canManage={canManageContributors} />
 
       {/*
         ======================================================================

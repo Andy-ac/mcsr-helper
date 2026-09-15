@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
+import { emText } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
 import { emptyDraft, ResourceForm } from '@/components/ResourceForm';
 import { createResourceDirect, type SubmissionResult, submitResource } from '@/lib/api';
@@ -194,12 +195,17 @@ export function SubmitResource() {
          *    "（不审核）"，而且 `title` 用的是 `authoring.directHint`（把后果说全）。
          *    普通用户拿到的 `secondaryAction` 是 `undefined` ⇒ 按钮**根本不存在**，
          *    不是一个灰掉的按钮。
+         * ⚠️ 这个页面上的判据就是 `content.author` 本身（新建内容还没有"这条的贡献者"
+         *    可言 —— 贡献者是**逐条**的数据，得先有那一条），所以这里给
+         *    `authoring.directHint` 是无条件正确的；编辑页那两句话之间要挑，
+         *    因为它那里的按钮对贡献者也会出现。
          */
         secondaryAction={
           canAuthor
             ? {
                 label: t('authoring.directPublish'),
                 busyLabel: t('submit.submitting'),
+                title: emText(t('authoring.directHint')),
                 onSubmit: (s) => void onSubmitDirect(s),
               }
             : undefined

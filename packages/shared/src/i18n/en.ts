@@ -213,6 +213,48 @@ export const en: TranslationSchema = {
     related: 'More with this tag',
     openSite: 'Visit site',
   },
+  /*
+   * Contributor list for the resource library (2026-09-14, user request).
+   *
+   * "Record contributors in the backend (they are **not shown in the resource
+   *  library itself**); a contributor may edit or take down the resources they
+   *  own **without review** (**without deleting**); **managers can see the
+   *  contributors in the library** and add or remove them per resource; a
+   *  resource may have no contributors."
+   *
+   * ⚠️ These strings only ever appear in the admin-facing panel. The public list
+   *    and detail pages must not use any of them; a render check watches that
+   *    boundary.
+   * ⚠️ Two things the wording has to keep straight, or it points people at the
+   *    wrong action: skipping review is a per-resource thing (a contributor is
+   *    NOT a site-wide editor), and the destructive-looking one is reversible
+   *    (hide), unlike delete.
+   */
+  resourceContrib: {
+    title: 'Contributors',
+    hint: 'These people may edit or take this entry down without review.',
+    empty: 'No contributors yet — only editors can change this one right now.',
+    add: 'Add a contributor',
+    remove: 'Remove',
+    none: 'Nobody left to add.',
+    save: 'Save the list',
+    saving: 'Saving…',
+    saved: 'List saved',
+    failed: 'Could not save it. Try again.',
+    searchPlaceholder: 'Find someone by name or email',
+    noPublic: 'This list never appears on the public pages.',
+    /** "Added by X" — `{{name}}` may be the unknown-account fallback below. */
+    removedBy: 'Added by {{name}}',
+    /** ⚠️ An account with no display name must fall back to this, never to blank. */
+    unknownUser: 'Unknown account',
+    max: '{{max}} people at most',
+    directEdit:
+      'You are a contributor here: your changes take effect **immediately**, without review.',
+    hide: 'Take it down',
+    restore: 'Put it back up',
+    hideHint:
+      'Taken down, it disappears from the public pages — the content and its revision history stay, and it can come back at any time.',
+  },
   auth: {
     // Sign in
     loginTitle: 'Sign in',

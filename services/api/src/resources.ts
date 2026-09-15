@@ -16,6 +16,7 @@ import {
   type ResourceListResponse,
   type ResourceQuery,
 } from '@mcsr/shared/resources';
+import { deleteContributors } from './contributors';
 import { getDb } from './db';
 import { EMPTY_RATING, favoriteCountOf, favoritesFor, ratingOf, ratingsFor } from './marks';
 
@@ -423,7 +424,17 @@ export function deleteImportedNotIn(ids: string[]): string[] {
   const stmt = db.prepare("DELETE FROM resources WHERE id = ? AND source = 'import'");
   db.exec('BEGIN');
   try {
-    for (const id of doomed) stmt.run(id);
+    for (const id of doomed) {
+      /*
+       * ⚠️ 这也是**硬删除**，所以同样要清贡献者行 —— 理由与
+       *    `deleteResourceDirect` 里那段一样（那张表没有指向内容的外键）。
+       *    它比那条更阴：这里是**部署时**按 JSON 对齐删的，没有人盯着界面看，
+       *    而孤儿行会随每次部署**累积**。导入的条目同样可以被加贡献者
+       *    （author_id 是 NULL 不碍事：名单是按资源 id 记的）。
+       */
+      deleteContributors('resource', id);
+      stmt.run(id);
+    }
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -591,6 +602,17 @@ export function uniqueResourceId(url: string): string {
  *   · `resource_marks` —— **所有人**（不只是作者）的收藏、私人备注、评分。
  * 私人备注是**别人写的东西**，而且没有备份。
  *
+ * ⚠️⚠️ 但它**不会**连带删掉 `content_contributors` —— 那张表是按
+ *    `(entity_type, entity_id)` 两段式指向内容的，**SQLite 建不了这种外键**
+ *    （一张表的外键只能指向一张表）。所以这里必须**自己清**（下一句）。
+ *    漏了它不会有任何报错：只是留下几行指向已删内容的贡献者行，
+ *    而它们不违反任何约束、也不会出现在任何一条查询里 ——
+ *    只会在"某人被列为某条已删内容的贡献者"这种地方安静地误导人。
+ *    ⇒ 有一条测试钉着这件事（删掉一条有贡献者的资源之后，那几行必须为 0），
+ *      而不是靠"下次记得写那行代码"。
+ *    ⚠️ 清理放在 `DELETE FROM resources` **之前**：两条语句都在同一个同步调用里、
+ *       没有中间态能被别人看到，但先删子行读起来就是"先清指向它的东西，再删它"。
+ *
  * ⚠️ 权限**不在这里判**：判定在路由层（`routes/authoring.ts` 的 `DELETE` 处理里，
  *    owner 走 shared 的 `canHardDelete(role)` 谓词，editor/admin 走 `content.author`），
  *    数据层只回答**这一步能不能删** —— "谁能删"只有一处定义，不在这里再写一遍。
@@ -622,6 +644,8 @@ export function deleteResourceDirect(
     return { ok: false, reason: 'must_hide_first' };
   }
 
+  // 见上面那段：这张表没有外键，不清就是孤儿行（唯一的落点就在这里）
+  deleteContributors('resource', id);
   getDb().prepare('DELETE FROM resources WHERE id = ?').run(id);
   return { ok: true };
 }

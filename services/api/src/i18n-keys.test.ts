@@ -523,6 +523,21 @@ describe('★ 词条 key 的存在性', () => {
         kind: 'auto',
       },
       {
+        /*
+         * 贡献者面板里那句「你是这一条的贡献者：改动**直接生效**」（2026-09-14）。
+         *
+         * ⚠️ 它加进来时这条守卫**当场就红了**（那时调用点还不存在），报的是
+         * "既没有字面量调用点、也不在任何白名单里" —— 这正是它该有的行为：
+         * 词条先加、界面后接的那段时间里，守卫逼着人要么把它接上、要么显式登记。
+         * 这里登记的是**已经接好**的那一处（`em(...)`），不是豁免。
+         */
+        file: 'apps/web/src/components/ContributorPanel.tsx',
+        key: 'resourceContrib.directEdit',
+        shape: 'em',
+        count: 1,
+        kind: 'auto',
+      },
+      {
         file: 'apps/web/src/components/RoleGuide.tsx',
         key: 'auth.roleGuideIntro',
         shape: 'em',
@@ -614,7 +629,34 @@ describe('★ 词条 key 的存在性', () => {
         kind: 'auto',
       },
       {
-        file: 'apps/web/src/components/ResourceForm.tsx',
+        /*
+         * 「直接保存 / 直接发布」那个按钮的 tooltip 现在**按身份**给（2026-09-14）：
+         * 编辑读 `authoring.directHint`（"你是内容编辑…"），**贡献者**读
+         * `resourceContrib.directEdit`（"你是**这一条**的贡献者…"）。
+         *
+         * ⚠️ 之前剥标记的是 `ResourceForm`（它自己 `emText(t('authoring.directHint'))`），
+         *    而那一处**必须**搬到调用点：贡献者也会看到这个按钮之后，tooltip 变成
+         *    了两句里挑一句（`title: canAuthor ? … : …`），表单不可能再自己挑 ——
+         *    而裸 `t()` 传给一个 prop 在**源码形状**上是 `unsafe`。
+         *    ⇒ 三个调用点各自写 `emText(...)`，于是它们都落进 `emText` 这个**自动**形状，
+         *      一分白名单都不用加。⚠️ 这也正是"允许形状"那张表要的形态：
+         *      能自动判的，就不要写成豁免（豁免会漂移，形状不会）。
+         */
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'authoring.directHint',
+        shape: 'emText',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/EditResource.tsx',
+        key: 'resourceContrib.directEdit',
+        shape: 'emText',
+        count: 1,
+        kind: 'auto',
+      },
+      {
+        file: 'apps/web/src/routes/SubmitResource.tsx',
         key: 'authoring.directHint',
         shape: 'emText',
         count: 1,

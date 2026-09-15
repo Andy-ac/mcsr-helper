@@ -6130,6 +6130,267 @@ html[data-theme='light'] {
   color: var(--fg-faint);
 }
 
+/* ==================================================================
+   资源库 · 贡献者（2026-09-14，用户要求）
+
+   —— 这一块只服务**编辑页**上的两处：
+      · 管理员的贡献者名单面板（`components/ContributorPanel.tsx`）
+        ⇒ `.contrib__*`
+      · 贡献者（或管理员）的「下架 / 恢复上架」与那句直编提示
+        ⇒ `.resvis__*` / `.contribnote`
+
+   ⚠️ 公开面（资源库列表页 / 详情页 / 卡片 / 主页）上**一个类名都不该出现** ——
+      用户明确要求贡献者「不直接展示在资源库中」。那条边界由
+      `scripts/resourcerender.tsx` 的第 ⑥ 节守着（它同时扫**产物**与**源码**）。
+
+   ⚠️ 为什么整块写在文件**末尾**，而不是插到上面那些同类规则旁边：
+      这一轮有并行的任务在改同一个文件（见上面「2026-09-14 第三轮追加区」那段），
+      每个任务只在自己那一块里写。**上面已有的区块一行都没动。**
+
+   ⚠️ 字号与字重沿用文件里那条跨组件的排版口径：标题档 = `--fs-title-item` + `700`。
+      像素字体**只有 400 与 700 两档真字形**，写 500/600 会被浏览器合成（看起来发灰）。
+      ⚠️ 这里刻意**没有**去改上面那份标题选择器清单（那是别人的块），
+         而是自己写一遍那三行 —— 重复的是三行属性，不是一条会漂移的规则。
+   ================================================================== */
+
+.contrib {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.contrib__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 0 0 8px;
+}
+
+/* 一句话说清这些人多了什么权限。正文级可读性，不是脚注 ——
+   它是管理员判断"要不要把这个人加进来"的依据。 */
+.contrib__hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 4px;
+  max-width: 70ch;
+}
+/* 「这份名单不会出现在公开页面上」—— 比上一句更弱一档：
+   它是**保证**，不是要读进去的信息，但少了它管理员不知道这条名单的可见范围。 */
+.contrib__nopublic {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+  margin: 0 0 14px;
+  max-width: 70ch;
+}
+
+/*
+ * ★ 空名单。
+ *
+ * ⚠️ 它必须是"一句陈述"，**不能像出错**：用户原话「资源可以没有贡献者」，
+ *    空是这一栏的**常态**（新条目一条贡献者都没有）。所以：不用红石色、
+ *    不用 `notice--bad`，只用一圈**虚线**说"这一格现在是空的" ——
+ *    与色板上「不上色」那一格的虚线是同一种语义。
+ */
+.contrib__empty {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  max-width: 70ch;
+}
+
+.contrib__list,
+.contrib__candidates {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 一行 = 一个人：名字 +（没有名字时的 id）+「由 X 添加」+「移除」。
+   `flex-wrap: wrap` 让窄屏上「移除」掉到下一行，而不是把名字压成一字一行。 */
+.contrib__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.contrib__name {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+}
+/* 没有显示名时补在名字旁边的**裸 id**：等宽 + 变暗，与审核页那格"原始值"同一套做法。
+   ⚠️ 它不是装饰：管理员面前可能是两行「未知账号」，而他要决定移除哪一个。 */
+.contrib__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.contrib__by {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+/* 「移除」推到最右边：它是这一行的**动作**，不是这一行的读数 ——
+   与 `.homeconn__retry` 同一条理由。 */
+.contrib__remove {
+  margin-left: auto;
+}
+
+/* ---- 加人：搜索 + 候选人 ---- */
+
+.contrib__picker {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+/* ⚠️ 真 `<label>` 而不是把提示写在 placeholder 里：placeholder 一输入就没了，
+   而且很多读屏软件根本不读它（`liveManage` 的表单里是同一条做法）。 */
+.contrib__pickerlabel {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+.contrib__search {
+  max-width: 320px;
+}
+/* 「最多 N 人」与「没有可选的人了」同款：都是这一格的**说明**，不是结果也不是错误。
+   ⚠️ 尤其后者：搜不到人与"所有人都已经在名单里"是同一句话覆盖的两种正常情况。 */
+.contrib__max,
+.contrib__none {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+  margin: 6px 0 10px;
+}
+
+/* 一个候选人（整行可点）：名字 + 邮箱。
+   ⚠️ `width: 100%` + 左对齐：它是一条列表行，不是一颗按钮 ——
+      按钮尺寸由文字决定的话，这一列会参差不齐，看起来像排版坏了。 */
+.contrib__candidate {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+}
+.contrib__candname {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+.contrib__candmail {
+  font-size: 12px;
+  color: var(--fg-faint);
+  /* 长邮箱在窄屏上必须能断在任意位置，不能把整行撑出一条横向滚动条 */
+  overflow-wrap: anywhere;
+}
+
+/* ---- 保存 ---- */
+
+.contrib__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+/*
+ * 「名单已保存」—— 它**只**在名单没变时出现，作用是解释「保存名单」为什么是灰的
+ * （禁用的控件必须说明为什么，见 `admin` 那组词条的注释）。
+ * ⚠️ 所以它长得像一句**状态**：灰字、无框、无颜色 —— 既不是成功提示也不是错误。
+ */
+.contrib__state {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+/*
+ * ★ 直编提示：「你是这一条的贡献者：改动直接生效，不进审核队列。」
+ *
+ * ⚠️ 它与 `.submitnote`（"提交这个修改**不会**立刻改变页面上的内容"）**并排出现**，
+ *    而两句话说的是**两个不同的按钮**。所以两者必须长得**明显不同** ——
+ *    同款的话，用户会把它们读成同一件事（"到底会不会立刻生效？"）。
+ *    这里沿用与 `.submitnote` 相同的形状，只把左边那道竖条换成 `--gold`
+ *    （全站统一的"你额外有的那个权限/选中"的颜色），而不是草绿。
+ */
+.contribnote {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--gold);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  margin: 0 0 20px;
+  line-height: 1.8;
+  max-width: 720px;
+}
+
+/* ---- 下架 / 恢复上架（贡献者或管理员）---- */
+
+.resvis {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 24px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+/* 「已下架」—— 下架之后的**状态**。红石色与那颗"下架"按钮同源：
+   两者说的是同一件事（这一条现在不在公开页面上）。 */
+.resvis__state {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--redstone);
+}
+/*
+ * 下架的**知情同意**（"东西都还在、随时能恢复"）。
+ *
+ * ⚠️ 独占一行（`flex-basis: 100%` 在可换行的 flex 行里等于强制换行）：
+ *    它说的是"下架是什么意思"，不是某个按钮的注解 ——
+ *    跟在按钮后面会被读成那个按钮的补充说明。与 `.homeconn__note` 同一条做法。
+ */
+.resvis__hint {
+  flex: 1 1 100%;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  max-width: 70ch;
+}
+/*
+ * 失败那一句（`.fielderr` 是全局类，这里只调它在**这一行**里的排布）。
+ * ⚠️ 同样独占一行：它说的是"这一次没成"，而旁边那个按钮已经回到可点状态 ——
+ *    挤在同一行会看起来像按钮的标签。
+ */
+.resvis .fielderr {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
 
 
 

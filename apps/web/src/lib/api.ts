@@ -10,7 +10,10 @@
 
 // ⚠️ VideoPlatform 从根导入：`@mcsr/shared/videos` 用它但**没有重新导出**它
 //    （它住在 constants.ts），而 package.json 的 exports 里没有 "./constants"。
-import type { VideoPlatform } from '@mcsr/shared';
+// ⚠️ 贡献者的共享类型也**从根导入**：`@mcsr/shared` 的 exports 里没有
+//    "./contributors" 这一条子路径（index.ts 里 `export * from './contributors'`），
+//    写 `@mcsr/shared/contributors` 会在类型检查与打包时都找不到模块。
+import type { Contributor, ContributorList, VideoPlatform } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
 import type {
   CalendarEvent,
@@ -28,6 +31,7 @@ import type {
 } from '@mcsr/shared/live';
 import type { UserRole } from '@mcsr/shared/permissions';
 import type {
+  EditableResource,
   FavoriteItem,
   MarksInput,
   MySubmission,
@@ -465,15 +469,52 @@ export function fetchMySubmissions(signal?: AbortSignal): Promise<{ items: MySub
 /**
  * 读一条条目**用来编辑**的完整内容（含还没上架 / 被驳回的）。
  *
- * 权限在服务端判：作者本人、或者有 `resource.editUnpublished` 的人
- * （editor / admin）能拿到；其它人 404。
+ * 权限在服务端判：作者本人、**这一条的贡献者**、或者有 `resource.editUnpublished`
+ * 的人（editor / admin）能拿到；其它人 404。
+ * （贡献者那一条是 2026-09-14 加的 —— 不给他读这一条，下面那两个布尔量
+ *   就永远送不到他手里，而"给了权限界面上却没反应"正是这个功能最容易出现的假故障。）
  *
  * ⚠️ 编辑页**先试它、再退回公开接口**：
  *    · 作者自己的草稿 → 只有这个接口拿得到；
  *    · 别人已上架的条目（wiki 式编辑）→ 这个接口 404，公开接口拿得到。
+ *    ⚠️ 走公开接口那一支**没有** `canDirectEdit` / `canHide`
+ *       （公开详情本来就不该告诉任何人"谁能直接改这一条"），
+ *       所以前端读到 `undefined` 时要按 **false** 处理 —— 见 `ResourceWriteAccess`。
  */
-export function fetchResourceForEdit(id: string, signal?: AbortSignal): Promise<ResourceDetail> {
-  return request<ResourceDetail>(`/api/resources/${encodeURIComponent(id)}/edit`, signal);
+export function fetchResourceForEdit(
+  id: string,
+  signal?: AbortSignal,
+): Promise<EditableResource & ResourceWriteAccess> {
+  return request<EditableResource & ResourceWriteAccess>(
+    `/api/resources/${encodeURIComponent(id)}/edit`,
+    signal,
+  );
+}
+
+/**
+ * 「**我**对**这一条**能直接做什么」—— 服务端在取编辑页数据时一起下发的两个布尔量。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么必须由服务端给（前端一个字都不重算）
+ * ---------------------------------------------------------------------------
+ * 贡献者**不是** `content.author`：用户明确要求「贡献者不单独作为一个身份组」，
+ * 所以 `permissions.ts` 里没有、也不该有 `contributor` 这个角色或能力 ——
+ * 判据是**数据**（"你是不是这一条的贡献者"），而数据只有服务端有。
+ * ⇒ `useCan('content.author')` 对贡献者永远是假的。前端如果自己拼：
+ *   要么多读一次名单接口（还得自己知道"怎么算"），要么就只能靠 `useCan`
+ *   —— 而那样贡献者会被引导去走"待审修改"那条错的路，
+ *   明明可以直接改却表现为"这个功能没做"。
+ *
+ * ⚠️ 两个字段是**可选的**，这不是随手加的：
+ *   · 公开的 `GET /api/resources/:id`（编辑页的第二条取数路径）**不返回**它们；
+ *   · 于是"拿不到"= 什么都不能直接做 ⇒ 一律按 `false` 处理。
+ *   把"拿不到"当成 `true` 会让每个人都看到直编按钮、点下去 403。
+ */
+export interface ResourceWriteAccess {
+  /** 能走 `/api/authoring/resources/:id` 直编（有 `content.author`**或**是这一条的贡献者）。 */
+  canDirectEdit?: boolean;
+  /** 能走 `PATCH /api/resources/:id/visibility`（是这一条的贡献者**或**有 `resource.moderate`）。 */
+  canHide?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +570,95 @@ export function updateResourceVisibility(
   return sendJson('PATCH', `/api/admin/resources/${encodeURIComponent(id)}/visibility`, {
     published,
   });
+}
+
+// ---------------------------------------------------------------------------
+// 贡献者（2026-09-14，用户要求）
+//
+// 三个端点，两种人：
+//   · `GET/PUT /api/resources/:id/contributors` —— **只给 `user.moderate`**
+//     （admin / owner）。名单的读与改都只有管理员做得了；403/404 由服务端负责，
+//     这里不判（前端判权只能决定"按钮显不显示"，拦不住任何人）。
+//     ⚠️ 是 `user.moderate`，**不是** `resource.moderate`：后者属于 `EDITOR_CAPS`
+//        （editor 及以上都有），而"改名单"是**授权动作**（名单上的人可以不经过
+//        审核直接改这一条）—— 拿它当判据等于让每个编辑都能给自己发免审直编权。
+//   · `PATCH /api/resources/:id/visibility` —— **这一条的贡献者或管理员**。
+//     ⚠️ 它与上面那条 `/api/admin/resources/:id/visibility` **不是同一个端点**：
+//        后者要 `resource.moderate`，前者对"这一条的贡献者"放行。
+//        贡献者**不能**真删（用户明确「不实际删除」），他能做的只有这一对
+//        可逆动作：`published ⇄ hidden`。
+//     ⚠️⚠️ 这一档**刻意**留在 `resource.moderate`（editor 也在内）：下架是
+//        **内容动作**，editor 本来就干得了，那是既有行为 ——
+//        别跟着名单那一档一起改（改了两处含义不同的事就混成了一件）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 读一条资源的贡献者名单。
+ *
+ * ⚠️ `no-store` 不是顺手加的：这份列表是"**整份替换**"的编辑对象
+ *    （后写的赢，见 `shared/contributors.ts` 里 `ContributorsInputSchema` 的注释），
+ *    界面上那张名单必须是**当前值**。浏览器缓存里那一份可能是被别的管理员
+ *    改过之前的，用它去保存 = 把对方刚加的人静默删掉。
+ */
+export function fetchResourceContributors(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ContributorList> {
+  return request<ContributorList>(
+    `/api/resources/${encodeURIComponent(id)}/contributors`,
+    signal,
+    'no-store',
+  );
+}
+
+/** `PUT …/contributors` 的响应：替换之后的**完整**名单 + 这次动了什么。 */
+export interface ContributorsReplaceResult {
+  ok: true;
+  /** 被改的那条内容的 id（回显，便于调用方确认没发错对象）。 */
+  id: string;
+  /** 替换之后服务端存着的名单 —— 界面**回读这一份**，而不是自己发出去的那份。 */
+  items: Contributor[];
+  total: number;
+  /** 这一次真的加了几个人（已经在名单里的不算）。 */
+  added: number;
+  /** 这一次真的移除了几个人。 */
+  removed: number;
+}
+
+/**
+ * **整份替换**一条资源的贡献者名单（幂等）。
+ *
+ * ⚠️ 传的是**替换之后的完整名单**，不是"加一个/删一个"：同一个请求发两次结果一样
+ *    （这是"保存键被点两下"最省事的答案）。代价是两个管理员同时改时后写的赢 ——
+ *    所以界面那张名单每次打开都**现取**（`ContributorPanel`）。
+ * ⚠️ 空数组是**合法**的：资源可以没有贡献者（用户原话），那不是错误状态。
+ */
+export function replaceResourceContributors(
+  id: string,
+  userIds: string[],
+): Promise<ContributorsReplaceResult> {
+  return sendJson<ContributorsReplaceResult>(
+    'PUT',
+    `/api/resources/${encodeURIComponent(id)}/contributors`,
+    { userIds },
+  );
+}
+
+/**
+ * 下架 / 恢复（**这一条的贡献者或管理员**）—— `PATCH /api/resources/:id/visibility`。
+ *
+ * ⚠️ 传的是**想要的结果**（`published`），不是"翻一下那个标志位"：后者在重试或
+ *    连点两次时会得到相反的结果（与 `updateResourceVisibility` 同一条规矩）。
+ *
+ * ⚠️ 响应里的 `status` 是**可选的**：服务端答得出就以它为准（那是权威值），
+ *    答不出时调用方按"我请求的那个状态"处理 —— 请求本身说的就是"我要它变成这样"。
+ *    写成必填的话，服务端哪天改成只回 `{ ok: true }` 会静默让类型撒谎。
+ */
+export function setResourceVisibility(
+  id: string,
+  published: boolean,
+): Promise<{ ok: true; status?: string }> {
+  return sendJson('PATCH', `/api/resources/${encodeURIComponent(id)}/visibility`, { published });
 }
 
 /**

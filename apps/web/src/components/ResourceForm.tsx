@@ -8,7 +8,6 @@ import {
 } from '@mcsr/shared/resources';
 import { type ChangeEvent, type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { emText } from '@/components/Emphasis';
 import { Field } from '@/components/Form';
 import { Markdown } from '@/components/Markdown';
 import { ApiError, fetchTags, uploadImage } from '@/lib/api';
@@ -299,14 +298,43 @@ export function ResourceForm({
   serverError: string | null;
   onSubmit: (submission: ResourceSubmission) => void;
   /**
-   * 「直接保存」/「直接发布」（需求②）—— **只有有 `content.author` 的页面会传**。
+   * 「直接保存」/「直接发布」（需求②）—— 只有**有 `content.author` 的人**、
+   * 或者**这一条的贡献者**看得到（页面按服务端给的 `canDirectEdit` 决定传不传）。
    *
    * ⚠️ 做成一个可选 action 而不是两个平级 prop：调用方要么整块给、要么整块不给，
    *    不会出现"传了 label 忘了传 onSubmit"这种半截状态。
    * ⚠️ 它的存在与否**由页面按能力决定**，表单自己不判断角色 —— 表单里写一份
    *    "谁是编辑"就是第二份规则（见 `permissions.ts` 的头注释）。
+   *
+   * ⚠️★ `title` **必填**，理由是这个按钮现在对**两种人**出现，而他们该读到的话不一样：
+   *    · `content.author`（editor / admin / owner）—— 那是**全站身份**，
+   *      `authoring.directHint`（"你是内容编辑…"）说的是实话；
+   *    · **这一条的贡献者** —— 他不是编辑（用户明确「贡献者不单独作为一个身份组」），
+   *      `resourceContrib.directEdit`（"你是**这一条**的贡献者…"）才是实话。
+   *
+   *    这里原来写死 `t('authoring.directHint')`（那时只有编辑看得到这个按钮）。
+   *    判据改成 `canDirectEdit` 之后，贡献者也会看到它 —— 而他会读到
+   *    「**你是内容编辑**」，也就是这**唯一**解释"为什么我点了就生效"的地方
+   *    在对他撒谎，且恰好撒在"别让他以为自己对全站有直编权"这个要害上。
+   *    ⇒ 写成必填之后，将来多一个调用方就会**编译报错**，逼他回答"这是哪种人"。
    */
-  secondaryAction?: { label: string; busyLabel: string; onSubmit: (s: ResourceSubmission) => void };
+  secondaryAction?: {
+    label: string;
+    busyLabel: string;
+    /**
+     * 按钮上的原生 tooltip —— **已经剥好 `**` 标记**的纯字符串。
+     *
+     * ⚠️ 剥标记这一步在**调用方**（页面里写 `emText(t('…'))`），不在这里：
+     *    这里剥的话，调用点源码里看到的就是一个**裸** `t('带星号的键')`，
+     *    而 `services/api/src/i18n-keys.test.ts` 那条守卫按**紧贴调用点的形状**判定
+     *    ⇒ 它会把这三处报成 `unsafe`，逼人去写三条"其实安全"的豁免。
+     *    在调用点剥，它们就是 `emText` 形状，守卫**自动**认，一分白名单都不用加
+     *    （`emText` 的签名本来也是"给字符串上下文用"，见 `Emphasis.tsx` 的文件头）。
+     *    ⚠️ 忘了剥不会静默：守卫当场报一个新的 `unsafe` 调用点。
+     */
+    title: string;
+    onSubmit: (s: ResourceSubmission) => void;
+  };
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<ResourceDraft>(initial);
@@ -594,14 +622,13 @@ export function ResourceForm({
             disabled={busy}
             onClick={submitDirect}
             /*
-             * ⚠️ `emText(...)` —— 这里是**字符串上下文**，不是渲染点：
-             *    `title` 的内容是浏览器的原生 tooltip，HTML 里**没有粗体 tooltip**。
-             *    所以这一处是**剥掉** `**` 标记，而不是把它渲染成 `<strong>`
-             *    （词条 `authoring.directHint` 的 zh 值里就有一对星号；
-             *     用 `em()` 的话类型也不对 —— 它返回 ReactNode，`title` 要 string）。
-             *    分工见 `components/Emphasis.tsx` 的文件头。
+             * ⚠️ 这里是**字符串上下文**（原生 tooltip 里没有粗体），所以整条路上
+             *    用的是 `emText()` 而不是 `em()`。
+             * ⚠️ 但**剥标记那一步在调用方**（`secondaryAction.title` 的注释里写了
+             *    为什么）：这里再剥一遍是空操作，而把它唯一化在这里会让调用点在
+             *    源码层面看起来像"裸 `t()`"、被守卫误判 —— 那才是真正的代价。
              */
-            title={emText(t('authoring.directHint'))}
+            title={secondaryAction.title}
           >
             {busy ? secondaryAction.busyLabel : secondaryAction.label}
           </button>
