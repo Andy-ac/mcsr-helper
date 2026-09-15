@@ -2080,6 +2080,150 @@ export const en: TranslationSchema = {
     communityNote:
       'This is not broken, it is not built yet. Browse and submit entries will appear here when it ships.',
 
+    // ---- The variation vocabulary (spec §5) ----
+    /**
+     * ★ The variation vocabulary — **the block the owner will edit** (spec §5).
+     *
+     * ⚠️ The values are the **raw upstream identifiers**, and both languages carry the
+     *    **same** English string (R6 / spec §5.1). Nothing here is translated on purpose:
+     *    the owner said "show the upstream text for now, I will change it later".
+     *    A second reason, word for word the same as `ranked/timeline.ts`: when the value
+     *    *is* the identifier, "in the table" and "not in the table" cannot look like two
+     *    different things. Both sentences matter — filling in English here breaks nothing,
+     *    it is just not what today wants.
+     *
+     * ⚠️ The key rule has **no exceptions**: `seedsPage.variation.<context>.<shortName>`.
+     *    So `chest:structure:diamond` is **three keys** under village / desertTemple /
+     *    shipwreck, each holding the same English today — the ruling in spec §5.3, and the
+     *    **duplication is deliberate**. The cost is on the record: a reword means three
+     *    edits; to merge them later, point those three `labelKey`s at one key in
+     *    `seedPicker.ts` and this block does not change at all.
+     *
+     * ⚠️ Bastion subtypes are **keyed separately** (spec §5.2, the owner asked for it):
+     *    `bastion:single:1` is **two keys** under bridge and stables. In the upstream docs
+     *    stables' `single:1/2/3` are double-chest towers and `small_single:1/2/3` are
+     *    single-chest towers — a shared key would show one word for two different things,
+     *    and nothing would report it (probes ⑩/⑪: the same entry yields different match
+     *    counts under the two types, so they really are two things).
+     *
+     * ⚠️ Every key here is copied from the `labelKey` field of the table in
+     *    `packages/shared/src/seedPicker.ts`. **A missing one reports nothing** — i18next
+     *    returns the key itself for an unknown key, so the page prints
+     *    `seedsPage.variation.village.snowyTundra`. Change that table, change this block.
+     */
+    variation: {
+      // Overworld · village (upstream overworld=village)
+      village: {
+        desert: 'biome:structure:desert',
+        plains: 'biome:structure:plains',
+        savanna: 'biome:structure:savanna',
+        snowyTundra: 'biome:structure:snowy_tundra',
+        taiga: 'biome:structure:taiga',
+        diamond: 'chest:structure:diamond',
+        obsidian: 'chest:structure:obsidian',
+      },
+      // Overworld · desertTemple (upstream overworld=desert_temple)
+      desertTemple: {
+        diamond: 'chest:structure:diamond',
+        egap: 'chest:structure:egap',
+      },
+      // Overworld · shipwreck (upstream overworld=shipwreck)
+      shipwreck: {
+        carrot: 'chest:structure:carrot',
+        diamond: 'chest:structure:diamond',
+        normal: 'type:structure:normal',
+        sideways: 'type:structure:sideways',
+        upsidedown: 'type:structure:upsidedown',
+      },
+      // Overworld · ruinedPortal (upstream overworld=ruined_portal)
+      ruinedPortal: {
+        egap: 'chest:structure:egap',
+        goldenCarrot: 'chest:structure:golden_carrot',
+        lootingSword: 'chest:structure:looting_sword',
+        completable: 'type:structure:completable',
+        lava: 'type:structure:lava',
+      },
+      // Bastion · bridge (upstream nether=bridge)
+      bridge: {
+        single1: 'bastion:single:1',
+        single2: 'bastion:single:2',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+      },
+      // Bastion · housing (upstream nether=housing)
+      housing: {
+        single1: 'bastion:single:1',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+      },
+      // Bastion · stables (upstream nether=stables)
+      stables: {
+        goodGap1: 'bastion:good_gap:1',
+        goodGap2: 'bastion:good_gap:2',
+        single1: 'bastion:single:1',
+        single2: 'bastion:single:2',
+        single3: 'bastion:single:3',
+        smallSingle1: 'bastion:small_single:1',
+        smallSingle2: 'bastion:small_single:2',
+        smallSingle3: 'bastion:small_single:3',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+        triple3: 'bastion:triple:3',
+      },
+      // bastion biomes — one top-row choice, the whole id goes into upstream variations= (spec §4.2)
+      bastionBiome: {
+        basaltDeltas: 'biome:bastion:basalt_deltas',
+        crimsonForest: 'biome:bastion:crimson_forest',
+        netherWastes: 'biome:bastion:nether_wastes',
+        soulSandValley: 'biome:bastion:soul_sand_valley',
+        warpedForest: 'biome:bastion:warped_forest',
+      },
+      // fortress biomes — same shape, the ids are biome:fortress:*
+      fortressBiome: {
+        basaltDeltas: 'biome:fortress:basalt_deltas',
+        crimsonForest: 'biome:fortress:crimson_forest',
+        netherWastes: 'biome:fortress:nether_wastes',
+        soulSandValley: 'biome:fortress:soul_sand_valley',
+        warpedForest: 'biome:fortress:warped_forest',
+      },
+    },
+
+    // ---- The new picker panel and its two tabs (spec §6.1 / §6.2) ----
+    /**
+     * These are **real prose** (not upstream identifiers), so every new sentence has to
+     * re-run the font coverage check: `pnpm -F @mcsr/web check:font` (adding glyphs is a
+     * manual step, not something a string here can fix).
+     *
+     * ⚠️ `pickSlow` is not decoration (spec §3.3): a query with variations / without
+     *    measured 3.2–4.1 seconds. Without that sentence people start clicking again at
+     *    second two, and every click is another query against the upstream single-core box
+     *    — on a quota of 20 per IP per minute.
+     * ⚠️ `pickLegend` for the same reason is not polish: the three states are carried by
+     *    **colour alone** (green / red / grey), which says nothing to a colour-blind user,
+     *    so the visible legend is part of that design.
+     * ⚠️ The four top rows **reuse** `seedsPage.structure.*` (Village / Desert temple / …),
+     *    so there are no entries for them here — do **not** copy them a second time.
+     */
+    tabWorld: 'World seeds',
+    tabRng: 'RNG seeds',
+    tabHint: 'Switch between the two sections with the tabs above.',
+    pickOverworld: 'Overworld structure',
+    pickVariations: 'Structure variations',
+    pickBastionBiome: 'Nether bastion · Biome',
+    pickBastionType: 'Nether bastion · Type',
+    pickBastionVariations: 'Bastion variations',
+    pickFortressBiome: 'Fortress · Biome',
+    pickLegend: 'One click = require (green) · two = exclude (red) · three = clear',
+    pickLegendNote:
+      'Only one "require" per exclusive group; "exclude" is not exclusive, so it can sit next to a "require".',
+    pickHint: 'Set what you want, then press the button below to draw one.',
+    pickSlow:
+      'A search with variations or exclusions takes 3–4 seconds. Upstream is slow to work it out; it is not stuck.',
+    rngTitle: 'RNG seeds',
+    rngBody: 'This section is not built yet.',
+    rngWhy:
+      'It would filter for the random-number things (zero-cycle towers, before/after dragon and so on), and upstream has no endpoint for that yet.',
+
     // ---- Group and structure names ----
     /**
      * ⚠️ Group names are a **lookup table**, not a list of the legal groups.

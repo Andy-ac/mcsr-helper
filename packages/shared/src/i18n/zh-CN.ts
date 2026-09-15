@@ -1957,6 +1957,138 @@ export const zhCN = {
       '这一版先把「按条件检索上游已有的排位种子」做扎实 —— 它背后是约 300 万条真实数据。社区分享是另一套东西：要自己存内容、自己审、自己负责长期有效。',
     communityNote: '这里不是坏了，是还没做。上线时这块会出现浏览与提交入口。',
 
+    // ---- 结构变种词汇表（spec §5）----
+    /**
+     * ★ 变种词汇表 —— **用户之后要改的就是这一块**（spec §5，"写在词汇表 ts 文件里"）。
+     *
+     * ⚠️ 值 = **上游标识原文**，两种语言写**同一串**英文（R6 / spec §5.1）。这一轮**故意不翻译**：
+     *    用户原话是"暂时用英文原文展示，之后我会修改"。
+     *    第二个理由与 `ranked/timeline.ts` 那张表逐字相同：值就是标识本身，
+     *    于是"表里有"与"表里没有"不会显示成两种不同的东西。
+     *    这两句是要说明：在这里填中文**不违反**任何东西，只是今天不该填。
+     *
+     * ⚠️ 键名规则**没有例外**：`seedsPage.variation.<上下文>.<短名>`。所以
+     *    `chest:structure:diamond` 在 village / desertTemple / shipwreck 下是**三个键**、
+     *    今天各存一份同样的英文 —— spec §5.3 的裁决，**这个重复是有意的**。
+     *    代价写在明面上：将来要改说法就得改三处；真要合并时改的是
+     *    `seedPicker.ts` 表里那三行的 `labelKey`，这一块一个字都不用动。
+     *
+     * ⚠️ bastion 的子类型**分开分键**（spec §5.2，用户明确要求）：`bastion:single:1`
+     *    在 bridge 与 stables 下是**两个键**。上游文档里 stables 的 `single:1/2/3` 是双箱塔、
+     *    `small_single:1/2/3` 是单箱塔 —— 共用键的表现是"两个不同的东西显示同一个词"，
+     *    而且不会报错（实测 ⑩/⑪：同一个词条在两种类型下命中数不同，是两样东西）。
+     *
+     * ⚠️ 键名逐字取自 `packages/shared/src/seedPicker.ts` 的表的 `labelKey` 字段。
+     *    **少一条不会报错** —— i18next 对未知 key 原样返回 key，
+     *    界面上就印出 `seedsPage.variation.village.snowyTundra`。改那张表时这里要跟着改。
+     */
+    variation: {
+      // 主世界 · village（上游 overworld=village）
+      village: {
+        desert: 'biome:structure:desert',
+        plains: 'biome:structure:plains',
+        savanna: 'biome:structure:savanna',
+        snowyTundra: 'biome:structure:snowy_tundra',
+        taiga: 'biome:structure:taiga',
+        diamond: 'chest:structure:diamond',
+        obsidian: 'chest:structure:obsidian',
+      },
+      // 主世界 · desertTemple（上游 overworld=desert_temple）
+      desertTemple: {
+        diamond: 'chest:structure:diamond',
+        egap: 'chest:structure:egap',
+      },
+      // 主世界 · shipwreck（上游 overworld=shipwreck）
+      shipwreck: {
+        carrot: 'chest:structure:carrot',
+        diamond: 'chest:structure:diamond',
+        normal: 'type:structure:normal',
+        sideways: 'type:structure:sideways',
+        upsidedown: 'type:structure:upsidedown',
+      },
+      // 主世界 · ruinedPortal（上游 overworld=ruined_portal）
+      ruinedPortal: {
+        egap: 'chest:structure:egap',
+        goldenCarrot: 'chest:structure:golden_carrot',
+        lootingSword: 'chest:structure:looting_sword',
+        completable: 'type:structure:completable',
+        lava: 'type:structure:lava',
+      },
+      // bastion · bridge（上游 nether=bridge）
+      bridge: {
+        single1: 'bastion:single:1',
+        single2: 'bastion:single:2',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+      },
+      // bastion · housing（上游 nether=housing）
+      housing: {
+        single1: 'bastion:single:1',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+      },
+      // bastion · stables（上游 nether=stables）
+      stables: {
+        goodGap1: 'bastion:good_gap:1',
+        goodGap2: 'bastion:good_gap:2',
+        single1: 'bastion:single:1',
+        single2: 'bastion:single:2',
+        single3: 'bastion:single:3',
+        smallSingle1: 'bastion:small_single:1',
+        smallSingle2: 'bastion:small_single:2',
+        smallSingle3: 'bastion:small_single:3',
+        triple1: 'bastion:triple:1',
+        triple2: 'bastion:triple:2',
+        triple3: 'bastion:triple:3',
+      },
+      // bastion 生物群系 —— 顶行单选，整条标识进上游的 variations=（spec §4.2）
+      bastionBiome: {
+        basaltDeltas: 'biome:bastion:basalt_deltas',
+        crimsonForest: 'biome:bastion:crimson_forest',
+        netherWastes: 'biome:bastion:nether_wastes',
+        soulSandValley: 'biome:bastion:soul_sand_valley',
+        warpedForest: 'biome:bastion:warped_forest',
+      },
+      // fortress 生物群系 —— 同上，标识是 biome:fortress:*
+      fortressBiome: {
+        basaltDeltas: 'biome:fortress:basalt_deltas',
+        crimsonForest: 'biome:fortress:crimson_forest',
+        netherWastes: 'biome:fortress:nether_wastes',
+        soulSandValley: 'biome:fortress:soul_sand_valley',
+        warpedForest: 'biome:fortress:warped_forest',
+      },
+    },
+
+    // ---- 新筛选面板与两个标签页（spec §6.1 / §6.2）----
+    /**
+     * 这一组是**真中文**（不是上游标识），所以每加一句都要重跑字体覆盖检查：
+     * `pnpm -F @mcsr/web check:font`（要补字的话那是一条手工流程，不是改这里就行）。
+     *
+     * ⚠️ `pickSlow` 不是装饰（spec §3.3）：带 variations / without 的查询实测要 3.2–4.1 秒。
+     *    不说清的话用户会在第二秒开始反复点，而每一下都是上游那台单核机器上的一次查询，
+     *    配额还只有每 IP 每分钟 20 次。
+     * ⚠️ `pickLegend` 同理不是美化：三态**只靠颜色**表达（绿/红/灰），
+     *    对色盲用户等于没有状态，所以这句可见图例是这条设计的一部分。
+     * ⚠️ 界面这一侧的四个顶行标签**复用** `seedsPage.structure.*` 那几条
+     *    （村庄 / 沙漠神殿 / …），所以这里没有它们的词条，**不要**再抄一份。
+     */
+    tabWorld: '世界种子',
+    tabRng: '随机数种子',
+    tabHint: '两个栏目用上面的标签切换。',
+    pickOverworld: '主世界结构',
+    pickVariations: '结构变种',
+    pickBastionBiome: '下界堡垒遗迹 · 生物群系',
+    pickBastionType: '下界堡垒遗迹 · 类型',
+    pickBastionVariations: '堡垒变种',
+    pickFortressBiome: '要塞 · 生物群系',
+    pickLegend: '点一下＝要求（绿）· 点两下＝排除（红）· 点三下＝取消',
+    pickLegendNote: '同一个互斥组里只能有一个"要求"；"排除"不参与互斥，可以和"要求"同时存在。',
+    pickHint: '选好之后点下面的按钮抽一条。',
+    pickSlow: '带变种或排除条件的查询要等 3–4 秒，这是上游算得慢，不是卡住了。',
+    rngTitle: '随机数种子',
+    rngBody: '这一栏还没有做。',
+    rngWhy: '它要筛的是和随机数有关的那些东西（零循环塔、前后龙之类），上游目前还没有对应的接口。',
+
     // ---- 分组名与结构名 ----
     /**
      * ⚠️ 分组名是一张**映射表**，不是一份分组清单。
