@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { UPSTREAM_NETHER_FILTERS, UPSTREAM_OVERWORLD_FILTERS } from '@mcsr/shared';
 import {
   activeMarks,
   bastionContext,
@@ -834,6 +835,52 @@ describe('表本身（spec §4.2 / §5.4 / §10 冻结表）', () => {
     assert.deepEqual(
       SEED_PICKER_BASTION_TYPES.map((row) => row.value),
       ['bridge', 'treasure', 'housing', 'stables'],
+    );
+  });
+
+  it('★★ 两排顶行的取值与顺序**就是上游词表本身**（`UPSTREAM_*_FILTERS`，不是手抄的副本）', () => {
+    /*
+     * ★★ 这一条是**整支分支的终审之后补的**，补的是一个**跨任务**的缺口 ——
+     *    任何单个任务的评审都看不见它：`packages/shared/src/seedPicker.ts` 在
+     *    `SEED_PICKER_OVERWORLD`（`:99`）与 `SEED_PICKER_BASTION_TYPES`（`:204`）
+     *    的注释里声称"顺序 = `UPSTREAM_OVERWORLD_FILTERS` / `UPSTREAM_NETHER_FILTERS`"，
+     *    而**没有任何门禁核过这句话**：上面那条 `it` 比的是**手抄的字面量**，
+     *    于是上游词表那一侧（`packages/shared/src/constants.ts`）改名或换序时，
+     *    两份"真相"各自漂开而本文件照样全绿 —— 界面那一排按钮的顺序、
+     *    以及序列化后用来判断"这条种子还是不是当前条件的"那个参数串（spec §6.4），
+     *    都跟着表的顺序走。
+     *    ⚠️ 两份表**不能**合并成一份：大小写与成员都刻意不同（自有库/上游的投影关系
+     *      写在 `constants.ts` 的那一段说明里，`constants.test.ts` 守着它）。
+     *      所以这里能做的就是"把这句话变成断言"。
+     *    ⚠️ 判据用 `assert.deepEqual` 而**不是**集合比较：改名与**换序**都要红
+     *      （"顺序"正是注释声称的那件事；只比集合的话换序照样绿）。
+     */
+    assert.deepEqual(
+      SEED_PICKER_OVERWORLD.map((row) => row.value),
+      [...UPSTREAM_OVERWORLD_FILTERS],
+      '主世界那一排的 `value` 逐字且**按序**等于 `UPSTREAM_OVERWORLD_FILTERS`',
+    );
+    assert.deepEqual(
+      SEED_PICKER_BASTION_TYPES.map((row) => row.value),
+      [...UPSTREAM_NETHER_FILTERS],
+      'bastion 类型那一排的 `value` 逐字且**按序**等于 `UPSTREAM_NETHER_FILTERS`',
+    );
+    /*
+     * ⚠️ 两条探针：上面那两条判据必须对"两边都空"之外的两种改法敏感 ——
+     *    只写"集合相等"的那种写法在这两种改法下都会绿，而它们正是这条断言存在的理由。
+     *    （`[...x].reverse()` 先复制再翻，不会动到那两个常量本身。）
+     */
+    assert.equal(UPSTREAM_OVERWORLD_FILTERS.length, 5, '★ 探针：上游主世界词表确实是 5 条');
+    assert.equal(UPSTREAM_NETHER_FILTERS.length, 4, '★ 探针：上游下界词表确实是 4 条');
+    assert.notDeepEqual(
+      [...UPSTREAM_OVERWORLD_FILTERS].reverse(),
+      [...UPSTREAM_OVERWORLD_FILTERS],
+      '★ 探针：**换序**必须被判成不等（否则"顺序也核过了"是假的）',
+    );
+    assert.notDeepEqual(
+      UPSTREAM_OVERWORLD_FILTERS.map((value) => `${value}_renamed`),
+      [...UPSTREAM_OVERWORLD_FILTERS],
+      '★ 探针：**改名**必须被判成不等（否则"取值也核过了"是假的）',
     );
   });
 

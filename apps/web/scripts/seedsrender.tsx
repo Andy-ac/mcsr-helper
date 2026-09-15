@@ -23,6 +23,9 @@
  * 任何一块都断言不到；而**不可能红**的守卫比没有守卫更坏（`docs/pending.md §5.63`）。
  * ⇒ 这一栏的界面住在 `components/SeedPicker.tsx` 的 `SeedPickerPanel` 里（**只吃 props**，
  *   不取数、不读 `window`、没有 effect），本脚本渲染它。
+ * ⚠️ 另外还渲染了**结果卡片** `components/SeedResultCard.tsx`（同样只吃 props，一个
+ *   `record`）—— 那是「种子数字不再三位一断」（用户第 5 条）唯一能被断言到的地方，
+ *   见下面那一组（组数因此是 zh 11 / en 12）。
  * ⚠️ 页面那一侧（两个标签页、「抽一条」按钮、`resultKey` / `resultStale`、
  *   `/random` 与 `/search` 的分支、整块「按比赛 ID 查」）**本脚本一个字都证明不了** ——
  *   那是这一页已知的覆盖边界，写在文件末尾，不在这条自检的职责里。
@@ -85,6 +88,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en, zhCN } from '@mcsr/shared/i18n';
+import type { SeedRecord, SeedString } from '@mcsr/shared/seed';
 import {
   bastionContext,
   EMPTY_SEED_PICKER,
@@ -109,6 +113,7 @@ import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
 import { emText } from '@/components/Emphasis';
 import { SeedPickerPanel } from '@/components/SeedPicker';
+import { SeedResultCard } from '@/components/SeedResultCard';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -1188,6 +1193,115 @@ for (const text of [ERR_VARS, ERR_COMPLETION]) {
 ok('红字：两个槽各渲染自己那一句（顺序对），没有错误时一块都没有');
 
 // ---------------------------------------------------------------------------
+console.log('★ 新增组（用户第 5 条）：种子数字不再三位一断 —— 渲染**结果卡片**本体');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一组是**整支分支的终审之后补的**，理由不是"再加固一点"，而是当时**零覆盖**：
+ *    用户第 5 条（"所有展示的种子不要三位一断，包括'按条件随机抽一条'"）的实现是
+ *    Task 1 删掉 `formatSeedForDisplay` + 两个消费点改成渲染原值 —— 而**没有任何门禁**
+ *    看得见"分组哪天又回来了"。本脚本此前只渲染 `SeedPickerPanel`，那里面
+ *    **一个种子数字都没有**（它的第 1 条断言是 `buried_treasure` 的空排）。
+ *    ⚠️ 更糟的是记录里写着相反的：`docs/seeds-picker-plan.md` 当时说"markup 里不再有逗号
+ *    这一条由 seeds 渲染自检的第 1 条断言钉住" —— 五条用户要求里有一条零覆盖、
+ *    而账本说它被覆盖了，所以这一组是**新增**的（组数因此从 zh 10 / en 11 变成
+ *    zh 11 / en 12，见文件末尾那个探针）。
+ *    ⚠️ 因此下面几条断言的措辞都必须**指名道姓**（把原值与分组形态都印出来）：
+ *       这一组的全部价值就是"分组回来的那一天，红的那条说得清红在哪"。
+ *
+ * ⚠️ 为什么渲染 `SeedResultCard` 而不是 `routes/Seeds.tsx`：与文件头那条理由**同一条**
+ *    （页面自己取数、有 `useState` / effect，纯 SSR 下停在"还没抽过"那一屏 ——
+ *    写在那里的断言不可能红）。卡片**只吃一个 prop**（`record`），静态渲染得出来，
+ *    而它正是那三行种子数字的家（主世界 / 下界 / 末地）。
+ *    ⚠️ 页面那一侧的接线（哪个标签页、结果卡片和按钮行）仍然一个字都没证明，
+ *       边界照旧写在文件末尾。
+ * ⚠️ 19 位这个值不是随便挑的：它就是本仓注释里一直在用的那个
+ *    （`packages/shared/src/seed.ts` 与 `SeedResultCard.tsx` 的文件头，
+ *    "`Number('7304888896886165976')` 会静默变成 7304888896886166000"）。
+ *    用一个**已知会被分组**的值当夹具，读的人不必再核对一遍位数。
+ */
+const LONG_SEED: SeedString = '7304888896886165976';
+
+/**
+ * 被删掉的那个 `formatSeedForDisplay`（`8b35b09` 的 diff，逐字）所做的事：**按字符串**
+ * 每三位插一个逗号。⚠️ 它当年刻意**不走 `Number`** —— 走了就会把种子静默改掉。
+ *
+ * ⚠️★ 这一段**只用来算反面读数**，不参与渲染。把它写成函数、而不是在断言里手写那个
+ *    带逗号的字面量，是为了让"分组长什么样"这件事**有出处**：手写的风险是
+ *    "某天有人用另一种写法把分组加回来" ⇒ 手抄的那串对不上 ⇒ 断言照样绿。
+ */
+const groupLikeTheDeletedFormatter = (seed: string): string =>
+  seed.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/** 分组形态：`7,304,888,896,886,165,976`。 */
+const GROUPED_SEED = groupLikeTheDeletedFormatter(LONG_SEED);
+assert.equal(
+  GROUPED_SEED,
+  '7,304,888,896,886,165,976',
+  '★ 探针：反面读数就是"每三位一个逗号"（19 位 ⇒ 6 个逗号）—— 它必须与被删掉的那个格式化器的算法一致，否则下面扫的是一串没人会产出的东西',
+);
+assert.notEqual(
+  LONG_SEED,
+  GROUPED_SEED,
+  '★★ 探针：原值与分组形态不是同一个串（否则"产物里没有分组"恒真）',
+);
+assert.equal(
+  rawText(`<code title="${GROUPED_SEED}">${GROUPED_SEED}</code>`).includes(GROUPED_SEED),
+  true,
+  '★★ 探针：这个读取器能在一个带逗号的串上命中（否则下面那条是空跑）',
+);
+
+/** 一条真实的记录形状：三行种子都给**同**一个 19 位的值，`matchDate` 给 null（上游真的会给 null）。 */
+const CARD_RECORD: SeedRecord = {
+  matchId: 3650001,
+  matchDate: null,
+  overworldSeed: LONG_SEED,
+  netherSeed: LONG_SEED,
+  theEndSeed: LONG_SEED,
+};
+const CARD_HTML = render(createElement(SeedResultCard, { record: CARD_RECORD }));
+const digitEls = elementsWithClass(CARD_HTML, 'seed__digits');
+assert.equal(
+  digitEls.length,
+  3,
+  `★ 正面读数：三行种子数字都渲染出来了（实测 ${String(digitEls.length)} 个 \`.seed__digits\`）—— 一个都没渲染的话，下面"没有逗号"会因为整张卡片是空的而成立`,
+);
+for (const el of digitEls) {
+  assert.equal(
+    textOf(el),
+    LONG_SEED,
+    `★★ 显示的就是那 19 位**原文**（实读「${textOf(el)}」）—— 实读值一旦带上逗号就是用户第 5 条被破坏的样子（分组形态＝「${GROUPED_SEED}」）`,
+  );
+  /*
+   * ⚠️ `title` 单独断言，不并进上面那条：显示原值、而 `title` 是被分组的，
+   *    表现是"鼠标一停就冒出一串带逗号的数字，照着它复制就粘不进 Minecraft"
+   *    —— 而那正是用户要改掉的那个坑（**必须**是同一个原值）。
+   */
+  assert.equal(
+    attrOf(el, 'title'),
+    LONG_SEED,
+    `★★ 悬停的 \`title\` 也是**同一个原值**（实读「${attrOf(el, 'title') ?? ''}」）—— 显示原值而 title 被分组，等于把逗号藏在鼠标底下`,
+  );
+}
+assert.equal(
+  rawText(CARD_HTML).includes(LONG_SEED),
+  true,
+  '★ 探针：原值确实在产物里（否则"没有分组"那一条可以因为整张卡片没渲染出来而成立）',
+);
+assert.equal(
+  rawText(CARD_HTML).includes(GROUPED_SEED),
+  false,
+  `★★ 产物里**任何位置**都不许出现分组形态的种子（扫的是原文 ${String(rawText(CARD_HTML).length)} 字符，含 \`title\` 与 \`aria-*\`；分组形态＝「${GROUPED_SEED}」）`,
+);
+assert.deepEqual(
+  [...rawText(CARD_HTML).matchAll(/\d{1,3}(?:,\d{3})+/g)].map((m) => m[0]),
+  [],
+  '★★ 产物里一个"三位一断"形态的数字都不许有（不限于那一个值 —— 别的字段将来被分组时同样红）',
+);
+ok(
+  `种子数字：19 位原样渲染 × ${String(digitEls.length)} 处、\`title\` 也是原值、产物里没有「${GROUPED_SEED}」`,
+);
+
+// ---------------------------------------------------------------------------
 console.log('⑨ 裸 key 泄漏 + 字面的 `**`（本页产物的原文扫描）');
 // ---------------------------------------------------------------------------
 /*
@@ -1405,10 +1519,12 @@ console.log('   · **尺寸、配色与字体**：⑪ 只看类名在不在 `sty
 /*
  * ⚠️ 组数是**手抄的**（本仓惯例）：它防的是"把某一段摘掉" —— 删掉一整组断言之后
  *    脚本照样绿、照样打印"通过 N 项"，只有这个数字会变。改脚本就要一起改这里。
+ *    （终审的修复轮加了一组「种子数字不再三位一断」，所以这两个数各 +1：
+ *      zh 10 → 11、en 11 → 12。）
  * ⚠️ en 比 zh 多一组，是因为 ⑩ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`，见上面）；两个数差 1 是**正常的**，别把它抹平。
  */
-const expectedGroups = LANG === 'en' ? 11 : 10;
+const expectedGroups = LANG === 'en' ? 12 : 11;
 assert.equal(
   pass,
   expectedGroups,
