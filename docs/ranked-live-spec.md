@@ -596,9 +596,14 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.refreshFailed` | 「上次刷新失败了，下面是 {{secs}} 秒前的数据。」 |
 | `ranked.loadFailed` | 「读不到数据。」 |
 | `ranked.errBusy` / `errUnavailable` / `errBadResponse` | 「上游有点忙，稍后再试。」/「上游暂时读不到，稍后再试。」/「上游返回的数据看不懂，已经记下来了。」 |
+| `ranked.errNetwork` / `errHttp` / `errNotFound` | 「连不上上游，可能是网络或浏览器扩展拦了。」/「上游回了一个错误（HTTP {{status}}）。」/「没有这一周。」—— 这三条**直连**那三块面板时才有；`errNotFound` 对应上游对"不存在的周"回的 400（§6.5） |
+| `ranked.errRateLimited` | 「请求有点频繁，过一会儿再试。」—— ⚠️ 与全站的 `rate_limited` 文案**分开**：这里被限的是**访客自己**打到上游的请求数（每 IP 500 次/10 分钟），不是我们服务器的限流，两句话说的不是一件事 |
 | `ranked.unknown` | 「—」（占位符也要有词条：组件里写死 `—` 会让两种语言再也没法分开调） |
 
-⚠️ 重试复用 `common.retry`，限流复用全站的 `rate_limited` 文案 —— 不新写。
+⚠️ 重试复用 `common.retry`（不新写）。
+⚠️ 限流**不复用**全站的 `rate_limited` 文案（上一版这里写错了，2026-09-16 由 Task 4 的实现者指出）：
+全站那句说的是"**我们对你的**请求限流"，而这一栏的限流是"**上游对你自己**的请求限流"
+（每 IP 500 次/10 分钟，访客自己打出去的）—— 两句话对用户的下一步不同，所以 `ranked.errRateLimited` 是独立一条。
 
 ---
 
