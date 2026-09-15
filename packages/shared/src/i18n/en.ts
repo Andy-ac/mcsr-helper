@@ -2580,7 +2580,19 @@ export const en: TranslationSchema = {
      *   makes it meaningful; `{{secs}}` is recomputed every second locally.
      */
     refreshFailed: 'The last refresh failed — what you see is {{secs}} seconds old.',
-    updatedAgo: 'Updated {{secs}} seconds ago',
+    /*
+     * ★ A wording that does **not** depend on the number.
+     *
+     * ⚠️ The previous value was `'Updated {{secs}} seconds ago'`, which printed
+     *    "Updated 1 seconds ago" every time the count hit 1. That line had **no
+     *    render site** until this round, so the defect was never visible; now it
+     *    is on screen once per second.
+     * ⚠️ Deliberately **not** an i18next `_one` / `_other` pair: this repo has no
+     *    plural precedent (`resultCount: '{{count}} entries'` is a single key),
+     *    and introducing one here would add two key pairs to both dictionaries
+     *    that the Chinese side does not need.
+     */
+    updatedAgo: 'Updated {{secs}}s ago',
     loadFailed: 'Could not load the board.',
     /** ⚠️ The board stops at 200 rows and **says so** instead of truncating quietly. */
     truncated: 'Only part of the board is shown.',
@@ -2592,6 +2604,29 @@ export const en: TranslationSchema = {
     errSeedLength: 'A seed can be at most 32 characters.',
     errSeedSpace: 'A seed cannot contain spaces.',
     errNoteTooLong: 'That note is too long (at most {{max}} units; a wide character counts as 2).',
+
+    /*
+     * ★★ Three "why this cannot be done" strings (2026-09-15, frozen list §8).
+     *
+     * ⚠️ They fill a **real gap**: the server's `invalid_state` carries one of
+     *    three reasons (`expired` / `not_active` / `not_hidden`) and the frozen
+     *    list had **no strings for them**, so Task 5 — which was not allowed to
+     *    add copy — mapped them onto status sentences (`mineNone` / `mineHidden`
+     *    / `mineActive`). Those sentences are grammatical but **false**: someone
+     *    with other entries still up who clicks a just-expired row is told
+     *    "You are not sharing anything right now."
+     * ⚠️ Do not treat them as unreachable (spec §8 corrected that once already):
+     *    what keeps an expired row on screen is the gap between a response and
+     *    the next one-second tick, plus background-tab timer throttling — a tab
+     *    left in the background comes back with a row of long-expired entries.
+     *    ⇒ These three **do** get read.
+     * ⚠️ They are deliberately plain: they are only reachable in that window,
+     *    but they must not be **untrue** — this repo's stance is that "why it
+     *    failed" gets its own sentence instead of the nearest one.
+     */
+    errExpired: 'This one has expired — it cannot be changed any more.',
+    errNotActive: 'This one is not on the board right now.',
+    errNotHidden: 'This one was never taken down.',
 
     /**
      * ★ Written into the **audit** `reason` when a moderator takes down someone

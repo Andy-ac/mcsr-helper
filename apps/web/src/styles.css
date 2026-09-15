@@ -6525,6 +6525,547 @@ html[data-theme='light'] {
   color: var(--fg-faint);
 }
 
+/* ==================================================================
+   实时分享 · 两个看板页 `/shares/room` 与 `/shares/seed`
+   （2026-09-15，`.share` / `.share__*`）
+
+   ★ 这一块服务的是 `components/ShareCard.tsx` 里那一整套界面：
+     `ShareBoardView`（看板页的**纯视图**）+ 它渲染的每一块
+     —— 看板行 / 「你的一条」/ 发布表单 / 游客与"未验证邮箱"那两屏。
+     ⚠️ 那两个页面（`routes/ShareBoard.tsx`）自己**没有界面**：它们取数、
+     刷新、计时，界面全在这里的类名上（理由写在那个文件头）。
+
+   ⚠️★ 类名前缀与上面 `.shareIntro*` 那一块**刻意分开**（这里一律 `share__`，
+      两个下划线）：本仓的样式是**全局**的、没有 CSS Modules 兜着 ——
+      介绍页那一块归 `/shares`，这一块归两个看板，改谁都不会碰到对方
+      （这是 `ShareCard.tsx` 文件头写下的"两个文件之间的接口"）。
+
+   ⚠️ 字号只用文件末尾那几档（像素字体只在 12 / 18 / 24 / 30 清晰）：
+      · 页面标题 = `--fs-title-page`（与 `.shareIntro__title` 同一个变量）；
+      · 区域标题、看板行的**内容** = `--fs-title-item`；
+        ⚠️★ 房间号**放大**用的就是**这一档**（spec §7.4 的原话："用现成的
+           `--fs-title-item` 档（18px）+ 中等字重，**不新造字号**"）——
+           所以这里既没有 `font-size: 20px` 也没有第二个"房间号专用"变量；
+      · 其余一律 12px（`--fs-px-sm`）或 13px 的正文。
+
+   ⚠️ 为什么整块写在文件**末尾**：这一轮每个任务只往末尾追加自己那一块
+      （T4 追加 `.sidebar__block--shares`、T6 追加 `.shareIntro*`、这里是 T7），
+      上面已有的区块**一行都没动** —— 并行编辑同一个文件时，"动到别人的块"
+      正是两边改动互相覆盖的方式。级联上也没有差别：这些选择器与上面
+      没有一条交集（`.shareIntro*` 与 `.share__*` 不是同一个词）。
+   ================================================================== */
+
+.share {
+  /* 与 `.shareIntro` 同宽：同一栏的两页左右边界必须对齐，否则点进来看板
+     会像"跳到了另一个站"（标签页、回介绍页那条路都在同一列上）。 */
+  max-width: 720px;
+}
+
+/* ---- 页头：标题 + 两个标签页 + 回介绍页的路 ---- */
+
+.share__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin-bottom: 18px;
+}
+
+/* 页面标题：与 `.shareIntro__title` / `.pagehead__title` 用**同一个变量**
+   （一页的名字就是这一档），三行属性照那两处写一遍 —— 重复的是属性，
+   不是一条会漂移的规则。 */
+.share__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-page);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+
+/*
+ * 两个标签页（`Private rooms` / `World seeds`，§7.3 第 1 行）。
+ *
+ * ⚠️★ 它们是**真链接**（§7.1：两个路由各是一个 URL），所以这里长得像 tab，
+ *    而不是"标题后面跟着两个词" —— 分享出去的地址、前进后退、刷新都要
+ *    落在同一屏上，而这件事只有真 `<a>` 说得清。
+ * ⚠️ 刻意**不复用**上面的 `.tabs` / `.tabs__item`：那一套的核心是一条**由 JS
+ *    量出来**位置的滑动指示器（`.tabs__indicator`，见 `ResourceList.tsx`），
+ *    而这里永远只有两个静态链接 —— 引进来就是为一个不存在的指示器维护一次测量。
+ * ⚠️ 选中态挂在 **`aria-current="page"`** 上，不是再加一个 `is-active` 类：
+ *    视图给的就是那个属性（`ShareBoardView` 里 `aria-current={…}`），
+ *    而"屏幕上哪个是当前页"与"读屏软件知道哪个是当前页"必须是**同一份判据**。
+ */
+.share__tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.share__tab {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  /* 全局 `a:hover` 会给下划线，而一个带背景的 tab 加下划线看起来像排版事故 */
+  text-decoration: none;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+
+.share__tab:hover {
+  color: var(--fg);
+  background: var(--surface-2);
+  text-decoration: none;
+}
+
+.share__tab[aria-current='page'] {
+  color: var(--fg);
+  background: var(--surface-3);
+}
+
+/*
+ * 「← 这一栏是干什么的」（回介绍页）。
+ * ⚠️ `margin-left: auto` 把它推到**最右**：它是这一页的**出口**，与标题、
+ *    标签页不是同一类东西 —— 标题答的是"我在哪"，它答的是"怎么离开"。
+ *    挤在标签页旁边会让它看起来像第三个 tab（点下去却离开这一栏）。
+ */
+.share__back {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+.share__back:hover {
+  color: var(--fg);
+}
+
+/* ---- 「你的一条」（§7.3 第 2 行那四个形态共用这一块）---- */
+
+/*
+ * ⚠️ 它是**一块**（有边框、有背景），不是几行裸文字：这一块里的按钮
+ *    （下架 / 恢复 / 展开表单）是**我的**东西上的动作，而下面那块看板是
+ *    所有人的 —— 两者视觉上分开，用户才不会以为「下架」会动别人的行。
+ */
+.share__mine {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/* 状态句（「你现在没有挂东西。」「你正在展示这一条。」「你在展示 3 / 20 条」…）
+   —— 一行的读数，不是标题：12px + 像素字体，与 `.shareIntro__count` 同一档。 */
+.share__minestate {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/* 我自己的每一行：内容 + 剩余 + 「下架 / 恢复」。
+   ⚠️ `flex-wrap: wrap`：窄屏上那颗按钮掉到下一行，而不是把房间号压成一字一行。 */
+.share__minelist {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.share__minerow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  /* 比 `.share__mine` 的底再深一档：这一块是"卡片里的行"（同 `.contrib__row`）。 */
+  background: var(--surface-2);
+}
+
+/*
+ * 「下架之后看板上就没有了，随时可以恢复。**到点**之后就不能恢复了。」
+ * ⚠️ 它是这一块的**脚注**：12px、最弱的一档灰。它要说的是可逆性的**边界**，
+ *    所以必须紧贴着那两颗按钮（视图里它就渲染在列表下面）。
+ */
+.share__hidehint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+  margin: 10px 0 0;
+  max-width: 70ch;
+}
+
+/* ---- 发布表单：一个折叠区 + 一张表单 ---- */
+
+/*
+ * ★ 展开表单的 `<details>` 与它那颗 `<summary>`（「挂一条 / 换一条 / 再加一条」）。
+ * ⚠️ 三角**用边框画，不用字符**：`content: '▸'` 那个字符**不在自托管像素字体的
+ *    子集里**，`check-font-coverage.mjs` 会让构建直接失败（`.livemanage__advanced`
+ *    那一块记着这次事故的完整经过）。用边框画就永远不会掉字体。
+ * ⚠️ 折叠标题必须**看起来可点**（内边距 + hover 变色 + `cursor: pointer`）：
+ *    否则它像一句普通说明，没人会去点 —— 那等于把整个发布功能藏起来。
+ */
+.share__postform {
+  margin: 12px 0 0;
+}
+
+.share__postbtn {
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+  /* 去掉浏览器默认的三角，自己画一个（两个浏览器才一致） */
+  list-style: none;
+}
+
+.share__postbtn::-webkit-details-marker {
+  display: none;
+}
+
+.share__postbtn::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  /* 指向右：左边框着色，上下透明 */
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.share__postform[open] > .share__postbtn::before {
+  transform: rotate(90deg);
+}
+
+.share__postbtn:hover {
+  color: var(--grass-bright);
+}
+
+.share__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* 「只有主世界是必填的，其余留空就行。」—— 它是四个种子格之间的**说明**，
+   所以贴着主世界那一格、并往上收一点间距（那 12px 的 gap 是给"两个字段"的）。 */
+.share__formhint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+  margin: -6px 0 0;
+}
+
+/* 四档时长（5 / 10 / 15 / 20）。⚠️ 一整排横着放：它们是**同一个选择**的四个取值，
+   竖排会看起来像四件要做的事。 */
+.share__minutes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.share__minuteslegend {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  padding: 0;
+  /* `margin-right` 与上面那个 `gap` 叠在一起：fieldset 的 legend 在多数浏览器里
+     不吃 flex 的 gap（它是特殊盒子），靠这一行保证它不与第一个选项贴住 */
+  margin-right: 6px;
+}
+
+.share__minute {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+/* 提交键：主操作，靠左、不拉满整行 —— `.cta` 的宽度由文字决定（全站一致）。 */
+.share__submit {
+  align-self: flex-start;
+}
+
+/* 到额度那句话（「你在展示 20 条了，先下架一些再加。」）。
+   ⚠️ 它是**禁用提交键的解释**，所以紧跟在那颗按钮下面、并说清为什么（§7.3 最后一行）。
+   ⚠️ 用红石色：它不是错误，但它也不是普通说明 —— 这句话出现时，用户**做不了**
+      他想做的那件事，而原因不在他身上（额度满了）。全站只有这一档语义色。 */
+.share__limit {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--redstone);
+  margin: 0;
+  max-width: 70ch;
+}
+
+/* ---- 看板本体 ---- */
+
+/* 「正在展示的」—— 区域标题那一档（18px），与 `.shareIntro__cardtitle` 同一个变量。 */
+.share__boardtitle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 24px 0 4px;
+}
+
+/*
+ * ★ 「{{secs}} 秒前更新」（§7.6 第 5 条）。
+ *
+ * ⚠️★ 这一条规则是**这一轮才补上的**：`ShareBoardView` 一直在渲染这个类名
+ *    （`ShareCard.tsx`），而全仓没有一条 `.share__updated` —— 不写的话，那一行会
+ *    以**浏览器默认的正文**（16px、正常字重、全黑）贴在 18px 的标题下面，
+ *    看起来像标题的一部分或者一句正文，而不是"这份数据有多新"的读数。
+ * ⚠️ 所以它长得像**读数**：12px、最弱的一档灰、不占标题那一档字号。
+ *    它与下面「上次刷新失败了，下面是 N 秒前的数据」在同一屏里出现，两句都是
+ *    "多旧"的读数 ⇒ 同一档字号，不抢看板的注意力。
+ */
+.share__updated {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  margin: 0 0 12px;
+}
+
+/* 「只显示了一部分。」（看板被 200 行封顶时，§5.1：**不许安静截断**）
+   —— 它是一句**常态说明**，不是错误：所以不用红石色，用说明那一档。 */
+.share__truncated {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 12px;
+  padding: 6px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  max-width: 70ch;
+}
+
+/* 「现在没有人在分享。」—— 空看板是**常态**（这一栏的东西 20 分钟就没了），
+   所以它必须像一句陈述，不能像出错：**不给红石色**，只用一圈虚线说明"这一格是空的"
+   （与 `.contrib__empty` 同一种语义）。 */
+.share__empty {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  max-width: 70ch;
+}
+
+.share__board {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 看板上的一行：内容 → 说明 → 谁发的 + 还剩 N 分钟（§7.4）。
+   ⚠️ 它是**列表行**不是卡片：看板可能有十几行，每行都加阴影与悬停抬起
+      会让整页看起来像一堆可点卡片 —— 而这些行本身点不了（只有里面的「复制」能点）。 */
+.share__row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.share__rowhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+/*
+ * 「你」标记 —— **服务端**算的（`item.mine`），前端一个字都不重算。
+ * ⚠️ 它是这一行唯一的"人"的标记：谁发的在下面那行（`boardBy`），
+ *    而"是不是我"要在**第一眼**看到（我自己的行才有「下架」，而别人的行没有 ——
+ *    那件事在视图里是结构性的）。
+ * ⚠️★ 它**刻意长得不像按钮**：形状借 `.tagchip` 那一套（胶囊 + 细描边），
+ *    但**不做草绿填充**（那一档是 `.cta` 主操作的样子），也不给它 `cursor`/
+ *    `transition` —— 它只是一个读数，点不动。看起来能点而点不动，
+ *    比少一个标记更坏。
+ * ⚠️ 字号是 `--fs-px-sm`（12px），不是 11px：像素字体只有 12 / 18 / 24 / 30 清晰
+ *    （`.tagchip` 那条注释记着同一件事的来历）。
+ */
+.share__you {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--grass-bright);
+  border: 1px solid var(--grass);
+  border-radius: var(--r-pill);
+  padding: 1px 9px;
+}
+
+/* 说明：一句话，人的语言 —— 不指定字体（像素字体读长句很累，与 `.shareIntro__lead`
+   同一条分工）。⚠️ 它由**作者**写，可能很长，所以允许在任意位置断行。 */
+.share__note {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.share__rowfoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+/* 谁发的。⚠️ 12px / 最弱那一档：它是这一行的**脚注**，名字不该比内容更显眼。 */
+.share__by {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+/* 还剩 N 分钟。⚠️ `margin-left: auto`：它与"谁发的"在同一行，但说的是另一件事
+   （名字是"这是谁的"，剩余时间是"还有多久"）—— 分开摆才不会读成"某某还剩 3 分钟"。
+   ⚠️ 用等宽字体：这一行每秒都在变，等宽让数字不跳（与倒计时同理）。 */
+.share__remain {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---- 一行里的内容（房间号 / 种子）---- */
+
+/*
+ * 房间号：**放大**显示（§7.4）。
+ * ⚠️★ 用的是**现成的** `--fs-title-item` 档（18px）+ **700**：
+ *    "不新造字号"是 §7.4 的原话，而像素字体只有 400 与 700 两档真字形 ——
+ *    写 500/600 会被浏览器合成（看起来发灰）。这里与 `.rescard__title`
+ *    这一类"条目标题"是同一档，所以房间号读起来就是"这条东西的名字"。
+ */
+.share__code {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.share__codevalue {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  /* 房间号是**要被照抄进游戏**的一串字符，所以用等宽体区分 0/O、1/l */
+  letter-spacing: 1px;
+}
+
+/* 种子：**只渲染填了的那几格**，各带标签（§7.4：空的格子不渲染，
+   而不是渲染成一排破折号 —— 那看起来像"这里本来该有东西，丢了"）。 */
+.share__seeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.share__seed {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.share__seedlabel {
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg-muted);
+}
+
+/* 种子的值：等宽 + 允许在任意位置断行（64 位整数是**一长串数字**，
+   ⚠️ 不能在窄屏上把整行撑出一条横向滚动条）。 */
+.share__seedvalue {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 「复制」—— ★ **每一行都有**（§7.4）：复制是给**看的人**用的
+ * （他要把别人的房间号/种子拷进游戏），不是只给作者用的。
+ * ⚠️ 所以它必须是**安静的**：14px 的内边距 × 二十几行会把看板变成一堵按钮墙。
+ *    这里**只压内边距**，形状、字号与颜色继续走 `.ghostbtn` ——
+ *    在这里再写一遍那几行属性就是第二个会漂移的口径
+ *    （`.moderatebar .tagchip` 当初就是因为重复而被删掉的）。
+ */
+.share__copy {
+  padding: 3px 10px;
+}
+
+/* ---- 游客 / 未验证邮箱那两屏 ---- */
+
+/*
+ * 游客那一屏：一句"要登录" + 登录入口。
+ * ⚠️ 它**只有这两样**（§7.5 第 1 行）：这一屏上不许出现任何分享的内容 ——
+ *    那些块在视图里是结构性地不渲染，而这里也不给它们留位置。
+ */
+.share__guest,
+.share__verify {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/* 两句话都是**正文**（要读进去的），所以 13px、走系统字体；宽度压到 62ch 一行太长的话
+   后半句会被读丢（与 `.shareIntro__lead` 同一条理由）。 */
+.share__guesttext,
+.share__verifytext {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--fg-muted);
+  margin: 0;
+  max-width: 62ch;
+}
+
+/* 登录入口（`.cta`）在这里不许被拉满整行：它是一颗按钮，不是一个横条。 */
+.share__guestlogin {
+  align-self: flex-start;
+}
+
+/* 「重试」那一颗（失败屏上）。⚠️ `margin: 0` —— 它是一段里的**唯一**内容，
+   浏览器默认的 `1em` 上下外边距会让它与上面那条提示离得太远。 */
+.share__actions {
+  margin: 10px 0 0;
+}
+
+
 
 
 

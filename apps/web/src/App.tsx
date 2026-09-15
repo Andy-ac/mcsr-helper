@@ -96,17 +96,21 @@ const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.
 const LivePage = lazy(() => import('@/routes/Live').then((m) => ({ default: m.Live })));
 
 /**
- * 「实时分享」（2026-09-15）—— 介绍页 `/shares`。
+ * 「实时分享」（2026-09-15）—— 介绍页 `/shares` **与两个看板**。
  *
- * ⚠️★ 这一页**公开**，而且它是这一栏里唯一公开的东西（两个看板要登录，§7.1）
- *    —— 游客在这里读到的是"这个栏目在干什么"，而不是一堵墙（§1.1）。
- *    懒加载的理由和别的次级页面一样：它不是首屏，而它自己**不取数**时也照样
- *    要看得到（游客那一支一个请求都不发，见 `routes/ShareIntro.tsx` 的文件头）。
+ * ⚠️★ 介绍页**公开**，而两个看板要登录（§7.1）—— 那是这一栏唯一的一条线。
+ *    游客在介绍页读到的是"这个栏目在干什么"，而不是一堵墙（§1.1）。
+ *    懒加载的理由和别的次级页面一样：它们都不是首屏。
  *
- * ⚠️ `/shares/room` 与 `/shares/seed` 由 Task 7 挂在下面（3 个路由分两处落地）。
+ * ⚠️★ 看板那两条路由**共用同一个组件**（`ShareBoard`，两边只差一个 `kind`）：
+ *    写成两个页面的话，"保留旧列表 / 20 秒刷新 / 到点即消失"这三条会各写一遍，
+ *    然后各自漂移 —— 而它们必须逐字一样。
  */
 const ShareIntroPage = lazy(() =>
   import('@/routes/ShareIntro').then((m) => ({ default: m.ShareIntro })),
+);
+const ShareBoardPage = lazy(() =>
+  import('@/routes/ShareBoard').then((m) => ({ default: m.ShareBoard })),
 );
 
 /**
@@ -329,15 +333,37 @@ export default function App() {
             ⚠️★ 路径必须与 `lib/nav.ts` 里那一行的 `to` **逐字相同**（`/shares`）——
               侧栏那一行是可点的，而 `check:home` 读的正是这个文件里有没有
               `path="/shares"`（它是"可点栏目必须真的有路由"的唯一守卫）。
-            ⚠️ `/shares/room`、`/shares/seed` 由 Task 7 追加在这条下面；
-              与 `/resources/submit` 那条注释同理，静态段比参数段更具体，
-              顺序不影响匹配结果。
           */}
           <Route
             path="/shares"
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <ShareIntroPage />
+              </Suspense>
+            }
+          />
+          {/*
+            ★★ 两个看板（§7.1）：`/shares/room` 与 `/shares/seed`。
+            ⚠️ 两条路由**共用 `ShareBoardPage`**，只差一个 `kind` —— 那两个路径
+               必须与 `lib/nav.ts` / 介绍页两块卡片拼出来的 `/shares/${kind}` 逐字相同
+               （介绍页的卡片就是按 kind 拼的，拼错只会 404，没有任何门禁会红）。
+            ⚠️ 顺序不影响匹配：这三条都是**精确路径**（`/shares`、`/shares/room`、
+               `/shares/seed`），谁在前都只匹配自己那一条；写成 `/shares` 之后
+               只是为了读起来顺。
+          */}
+          <Route
+            path="/shares/room"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <ShareBoardPage kind="room" />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/shares/seed"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <ShareBoardPage kind="seed" />
               </Suspense>
             }
           />

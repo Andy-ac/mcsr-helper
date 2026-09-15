@@ -259,10 +259,10 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
   /*
    * ---- 实时分享（live shares）----
    *
-   * ⚠️ 它与上面 Ranked Seeds 当初那四条是同一个处境：**更好的说法还没实现**。
-   *    分享看板页（`/shares/room`、`/shares/seed`）还没做，所以现在没有任何前端
-   *    映射能处理它 —— 登记在这里是有意的妥协，契约测试至少会逼着下一个人看见它，
-   *    而不是让服务端静静地返回一个谁都不认识的码。
+   * ⚠️ 它与上面 Ranked Seeds 当初那四条是同一个处境 —— 但**已经有界面了**
+   *    （2026-09-15 Task 7 落地了看板页 `/shares/room` 与 `/shares/seed`），
+   *    所以这里说的**不是**"待办"：界面用的是这个栏目**自己**的词条，
+   *    而这个码本来就不该有通用文案（理由见下）。
    *
    * ⚠️ 它**不能**走 `apiErrorText`：这个码要说的是"你在展示的已经满了，先下架一条"，
    *    与通用的"操作失败了"是两回事，而词条已经冻结（spec §8 的
@@ -270,7 +270,7 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
    *    自己渲染，因为它才拿得到 `limit` 与"我发的那几条"（通用映射两样都没有）。
    */
   at_limit:
-    '看板页自己处理（spec §8 的 shares.atLimitSeeds / shares.atLimitRestore），该页尚未实现',
+    '界面用的是这个栏目自己的词条（shares.atLimitSeeds / shares.atLimitRestore），不走通用映射',
 };
 
 function walk(dir: string, out: string[] = []): string[] {

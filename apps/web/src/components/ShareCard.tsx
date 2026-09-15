@@ -408,9 +408,19 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
     <form className="share__form" onSubmit={submit}>
       {kind === 'room' ? (
         <Field id="share-code" label={t('shares.formRoomCode')} hint={t('shares.formRoomCodeHint')}>
+          {/*
+            ⚠️★ 输入框的类名是设计系统里那一个 —— `.mcsr-field__input`（`styles.css`），
+              而**不是**这里原先写的 `mcsr-input`：**全仓没有任何 `.mcsr-input` 规则**，
+              所以那六个控件（房间号 / 四个种子 / 说明）一直以**浏览器默认样式**渲染在
+              一个有样式的 `.share__form` 里，而这是这一栏唯一的上帖入口。
+            ⚠️ 这个笔误在 Task 5 的两轮评审与 Task 6 的评审里都活着 —— 因为**全仓没有
+              任何门禁会发现"组件渲染了一个不存在的类名"**：渲染自检只看文字内容、
+              字体覆盖只看码点、词条守卫只看字符串。改这里之前先确认 `styles.css` 里
+              真的有那一条规则，别把它"简化"回一个更短的名字。
+          */}
           <input
             id="share-code"
-            className="mcsr-input"
+            className="mcsr-field__input"
             type="text"
             value={code}
             onChange={(event) => setCode(event.target.value)}
@@ -425,7 +435,7 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
                 `components/SeedResultCard.tsx` 的文件头）。 */}
             <input
               id="share-overworld"
-              className="mcsr-input"
+              className="mcsr-field__input"
               type="text"
               inputMode="text"
               value={overworld}
@@ -437,7 +447,7 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
           <Field id="share-nether" label={t('shares.formNether')}>
             <input
               id="share-nether"
-              className="mcsr-input"
+              className="mcsr-field__input"
               type="text"
               inputMode="text"
               value={nether}
@@ -448,7 +458,7 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
           <Field id="share-end" label={t('shares.formEnd')}>
             <input
               id="share-end"
-              className="mcsr-input"
+              className="mcsr-field__input"
               type="text"
               inputMode="text"
               value={end}
@@ -459,7 +469,7 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
           <Field id="share-rng" label={t('shares.formRng')}>
             <input
               id="share-rng"
-              className="mcsr-input"
+              className="mcsr-field__input"
               type="text"
               inputMode="text"
               value={rng}
@@ -473,7 +483,7 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
       <Field id="share-note" label={t('shares.formNote')} hint={t('shares.formNoteHint')}>
         <textarea
           id="share-note"
-          className="mcsr-input"
+          className="mcsr-field__input"
           rows={2}
           value={note}
           onChange={(event) => setNote(event.target.value)}

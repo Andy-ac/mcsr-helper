@@ -45,27 +45,21 @@
  * | `not_active` | 下架时它已经不是 `active`（已下架 / 已被替换） | 它已经不在展示中了 |
  * | `not_hidden` | 恢复时它不是 `hidden`（还在展示 / 已被替换） | 它还在展示中 |
  *
- * ⚠️★ **这三句用的是词条里现成的"状态句"**（`shares.mineNone` / `mineHidden` /
- *    `mineActive`），而不是三句专门为我写的拒绝话 —— 因为**词条已经冻结**
- *    （spec §8 是这一次的冻结清单，本轮**不许新增词条**），而那张清单里
- *    恰好**没有**为这三个 reason 写话。可选的处置只有三种：
- *      ① 借用现成的状态句（本文件的写法）；
- *      ② 全部掉进通用兜底 —— 那正是本节开头要避免的"揉成一句操作失败"；
- *      ③ 新增词条 —— 超出本轮的范围。
- *    ① 至少满足了两条硬要求：三句**互不相同**、而且都是**真人话**；
- *    它们也正是「你的一条」那一块对同一种状态用的句子 ⇒ 用户在两处看到同一套词汇。
- *    ⚠️ 代价写在明面上：`expired` 那一句（"你现在没有挂东西。"）在"我另外还挂着几条
- *       别的"时并不精确。
- *    ⚠️★ **而它并不是"到不了"的分支**（2026-09-15 订正）：一行还挂在画面上、而它已经
- *       到点，这两件事之间隔着**本地计时与容器下一次刷新这两道节奏** —— 那段时间的宽度
- *       由页面自己的刷新间隔决定，不是"亚秒级的竞态"。所以这一句会被人看到。
- *    ⇒ 本轮**不改这三行映射**（任务范围如此），但 spec §8 已经为此冻结了三句专用话
- *      （`shares.errExpired` / `errNotActive` / `errNotHidden`，字典条目与接线都在 Task 7）
- *      —— 那一轮把这张表换成它们，并把这段注释删掉。
+ * ⚠️★ **这三句各有专门的话**（`shares.errExpired` / `errNotActive` / `errNotHidden`，
+ *    2026-09-15 Task 7 接线）。在它们进冻结清单之前，这里只能借用「你的一条」
+ *    那几句**状态句**（`mineNone` / `mineHidden` / `mineActive`）—— 那三句
+ *    **语法上说得通、语义上是假的**：一个手上还有别的条目的人点了一个刚过期的行，
+ *    会看到「你现在没有挂东西。」，而那句话是假的。
+ *    ⇒ 现在三种 reason 各说各的下一句话，谁也不借谁的。
  *
- * ⚠️ 调用方在收到 `invalid_state` 时**应当顺手刷新一次看板**：这三个 reason 说的都是
- *    "你看的那份数据已经旧了"，刷新之后界面与这句话就一致了。（刷新在容器里做 ——
- *    这个文件是纯函数，不碰任何状态。）
+ * ⚠️ 也别以为这三句"到不了"：让一行**还挂在屏幕上**的窗口，是响应与每秒 tick
+ *    之间的延迟，加上后台标签页的定时器节流（spec §8 的订正里点明了这一条）
+ *    —— 一个挂着不管的标签页切回来时，屏幕上可以有一排早就过期的行。
+ *
+ * ⚠️ 调用方在收到 `invalid_state` 时**应当顺手刷新一次看板**（`routes/ShareBoard.tsx`
+ *    的实现里就是这么做的）：这三个 reason 说的都是"你看的那份数据已经旧了"，
+ *    刷新之后界面与这句话就一致了。（刷新在容器里做 —— 这个文件是纯函数，
+ *    不碰任何状态。）
  *
  * ===========================================================================
  * ⚠️ `invalid_input` 走兜底，**不自己编一句**
@@ -107,7 +101,7 @@ export function describeShareError(
           t('shares.atLimitSeeds', { max: SHARE_LIMITS.seed });
 
     /*
-     * ★ 三种 reason，三句话 —— 见文件头那张表（以及它记下的那个妥协）。
+     * ★ 三种 reason，三句话 —— 见文件头那张表。
      * ⚠️ 直接比 `error.reason`（服务端给的是**字符串**，不是联合类型）：
      *    写成一张 `Record<联合, string>` 反而要加一个断言，而那个联合是**手抄**的、
      *    服务端加了第四种它也不会报错 —— 那样只是把"认不出"从 `default` 挪到了断言里。
@@ -115,11 +109,11 @@ export function describeShareError(
     case 'invalid_state': {
       switch (error.reason) {
         case 'expired':
-          return t('shares.mineNone');
+          return t('shares.errExpired');
         case 'not_active':
-          return t('shares.mineHidden');
+          return t('shares.errNotActive');
         case 'not_hidden':
-          return t('shares.mineActive');
+          return t('shares.errNotHidden');
         default:
           // 认不出的 reason（服务端加了第四种）→ 兜底，不假装知道它是什么意思
           return fallback(error);
