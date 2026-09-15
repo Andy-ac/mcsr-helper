@@ -1,11 +1,12 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Route, Routes } from 'react-router';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { Layout } from '@/components/Layout';
 import { Account } from '@/routes/Account';
 import { Home } from '@/routes/Home';
 import { Login } from '@/routes/Login';
 import { NotFound } from '@/routes/NotFound';
 import { PasswordReset } from '@/routes/PasswordReset';
+import { Ranked, RankedWeekPage } from '@/routes/Ranked';
 import { Register } from '@/routes/Register';
 import { ResourceList } from '@/routes/ResourceList';
 import { VerifyEmail } from '@/routes/VerifyEmail';
@@ -367,6 +368,29 @@ export default function App() {
               </Suspense>
             }
           />
+          {/* ================================================================
+              Ranked 实时信息（2026-09-16）—— 四个标签页 + 一条重定向
+              ================================================================
+              ⚠️★ `/ranked` 是**重定向**，它必须真的是一条路由：侧栏那一行指着它，
+                 而 `apps/web/scripts/homerender.tsx` 有一条"可点的栏目必须在
+                 `App.tsx` 里真的有路由"的守卫（它读的就是这个文件里的 `path="/ranked"`）。
+                 ⛔ 别用 `milestone` 规避 —— 那会留下一个灰着的栏目，而且**没有任何
+                 门禁会提醒**当初为什么灰（`lib/nav.ts` 上写着同一条）。
+              ⚠️★ 四个标签页各是**真路由**（不是一个组件里的本地 state）：分享出去的 URL、
+                 刷新、前进后退都要落在**同一屏**上。做成 state 切换的话，四个地址
+                 长得一模一样但永远只会打开状况面板，而那种错**没有任何门禁看得见**。
+              ⚠️ `/ranked/weekly/:id` 那一条自己校验参数（不合法渲染 `NotFound`：
+                 上游把 `0` 当"本周"的别名，放它进来会出现"URL 写着 0、界面显示第 103 周"），
+                 理由写在 `routes/Ranked.tsx` 的 `RankedWeekPage` 上。
+              ⚠️ 顺序不影响匹配（react-router 按"具体段优先"），`/ranked/*` 之外
+                 仍然是最后那条 `path="*"` 兜底 ⇒ `/ranked/其它` 是 404（spec §6.1）。
+          */}
+          <Route path="/ranked" element={<Navigate to="/ranked/status" replace />} />
+          <Route path="/ranked/status" element={<Ranked tab="status" />} />
+          <Route path="/ranked/live" element={<Ranked tab="live" />} />
+          <Route path="/ranked/elo" element={<Ranked tab="elo" />} />
+          <Route path="/ranked/weekly" element={<Ranked tab="weekly" />} />
+          <Route path="/ranked/weekly/:id" element={<RankedWeekPage />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
