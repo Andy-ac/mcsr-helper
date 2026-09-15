@@ -22,25 +22,29 @@
  *   表对了但派发不查表，同样是一个缺陷（表在那里摆着、没人用它）。
  *
  * ===========================================================================
- * ⚠️⚠️ 我们那个端点的**码，现在读不到** —— 下面两段就是为此写的
+ * ⚠️⚠️ 我们那个端点的**码，今天读得到了** —— 但状态码兜底**仍然**要留着
  * ===========================================================================
  * 服务端回的是 `{ error: 'ranked_busy' }` 这样的码（`services/api/src/routes/ranked.ts`：
- * 429 `rate_limited` / 502 `upstream_bad_response` / 503 `ranked_busy` / 503 `upstream_unavailable`），
- * 但 `fetchRankedStatus` 走的是 `lib/api.ts` 的 `request()`，而那个 **GET 助手只读状态码、
- * 不读响应体**（`api.ts` 的 `if (!res.ok)` 那一段）⇒ `ApiError.code` 在**每一条 GET** 上
- * 都是 `undefined`。这个事实是**读出来的**，不是推断的（`lib/seedErrors.ts` 的文件头
- * 记着同一处断链，那里损失更大：它连 reason 都拿不到）。
- * ⇒ 于是这一层做两件事：
- *   1. **按码分派的那一支写满**（四个码都在）：`request()` 开始读响应体的那一天，
- *      它会**自动生效**，不需要再动这个文件；
- *   2. 今天真正起作用的是**状态码兜底**：429 / 502 / 503 是这一栏端点的契约
- *      （spec §13 的"兜底码"那一行 + `routes/ranked.ts`），而状态码现在读得到。
- *      ⚠️ 503 有**两档**（`ranked_busy` = 上游在限我们的流；`upstream_unavailable` = 上游挂了），
- *      码读不到时它们**在客户端长得一模一样** ⇒ 只能取其中**不会说错**的那一档：
- *      `unavailable`（"上游暂时读不到"）。反过来取 `busy` 会把一次**上游整个挂掉**说轻，
- *      而那会让用户以为"再等等就好"、实际上要等的是上游修好。
- *      代价（若取反了会好一些的话）：上游限我们流时，我们说的是"暂时读不到"，
- *      比真相模糊一档 —— 但它不会把人引到错的方向上。
+ * 429 `rate_limited` / 502 `upstream_bad_response` / 503 `ranked_busy` / 503 `upstream_unavailable`）。
+ * **评审修复轮 1 之前**这一层读不到它们：`fetchRankedStatus` 走的是 `lib/api.ts` 的 `request()`，
+ * 而那个 GET 助手**只读状态码、不读响应体** ⇒ `ApiError.code` 恒为 `undefined`，
+ * 于是 503 的两档在客户端长得一模一样，`busy` 那一格**永远走不到**。
+ * ⇒ 现在这一个端点走 `request()` 的兄弟 `requestWithErrorCode()`（`api.ts`，**全仓只有它一处调用**）：
+ *   非 2xx 时读响应体，把 `error` 当 `ApiError.code` 交下来 —— 503 的两档从此分得开。
+ *   ⚠️ `request()` 本身**一个字节没动**（改它会换掉全站约三十条 GET 的错误形状），
+ *      所以别的读端点上 `code` 仍是 `undefined`：**别从这里推"全站都有码了"**
+ *      （`lib/seedErrors.ts` 的文件头记着同一处断链，那里今天仍然损失更大 —— 它连 reason 都拿不到；
+ *      本轮**没有**顺带修它，那是它自己的一次改动）。
+ * ⚠️★ 状态码兜底（`apiStatusSource`）**不是**死代码，三条理由都真实存在：
+ *   1. 502 常常来自**反代**（Vite 的代理 / Caddy），那时 body 是空的 ⇒ 没有码，只剩状态码；
+ *   2. 服务端哪天回一个这里没登记的码（`apiCodeSource` 认不出来就回 `null`），
+ *      兜底至少还说得出"哪一档"；
+ *   3. 429 与 502 这两档本来就不需要码：状态码给出的结论与码完全一致。
+ * 顺序是**码优先、状态码兜底**（写在 `rankedErrorSource` 里）：两者冲突时以**码**为准，
+ * 因为码是服务端**特意为了区分 503 那两档**才写进 body 的。
+ * 历史（它解释了 `apiStatusSource` 为什么给 503 选 `unavailable`）：码读不到的那一天，
+ * 503 只能取**不会说错**的那一档 —— 反过来取 `busy` 会把"上游整个挂掉"说轻，
+ * 而那会让用户以为"再等等就好"、实际上要等的是上游修好。
  *
  * ===========================================================================
  * ⚠️ 认不出来的失败**不编一句话**（`rankedErrorSource` 因此回 `null`）
@@ -66,7 +70,10 @@ export type Translate = (key: string, options?: Record<string, unknown>) => stri
  * 这一栏**全部**的失败来源 —— 七个，一个不多一个不少。
  *
  * 前四个来自**直连**（`RankedDirectError` 的四种原因），后三个来自**我们自己的端点**
- * （`GET /api/ranked/status` 的四个码，其中 503 的两个码在客户端分不开、由状态码兜底取舍）。
+ * （`GET /api/ranked/status` 的四个码：429 `rate_limited` / 502 `upstream_bad_response` /
+ * 503 `ranked_busy` / 503 `upstream_unavailable`）。
+ * ⚠️ **码是权威判据**（`apiCodeSource`），状态码只在码读不到或认不出来时兜底
+ *    （`apiStatusSource`）—— 503 那两档**只有响应体分得开**（见文件头）。
  * ⚠️ 类型是**手抄**的联合（上游给过来的是字符串）：服务端哪天加一个码，这里不会有编译错误
  *    —— 那一支由 `rankedErrorSource` 的兜底挡住、走调用方的 `fallback`，
  *    而不是在这里假装认识它（`shareErrors.ts` 里那条 `isShareStateReason` 是同一条规矩）。
@@ -102,12 +109,13 @@ export const RANKED_ERROR_KEYS: Record<RankedErrorSource, string> = {
 };
 
 /**
- * 我们那个端点回的码 → source。**认不出来的码回 `null`**（交给调用方的兜底）。
+ * 我们那个端点回的码 → source。**认不出来的码回 `null`**（交给状态码兜底）。
  *
- * ⚠️ 这一段今天**走不到**（`ApiError.code` 在 GET 上恒为 `undefined`，见文件头），
- *    但它是**完整**的：`request()` 开始读响应体的那一天它就生效。
- *    否决了"只按状态码写、不留这一段"：那样等码接通的那天，503 的两档就**永远**分不开了，
- *    而那一天没有人会记得回来补这一段。
+ * ⚠️ 这一段是**唯一能分开 503 两档**的地方（`ranked_busy` / `upstream_unavailable`），
+ *    而它今天真的会被走到：`fetchRankedStatus` 走的是 `requestWithErrorCode()`，
+ *    会把 body 里的 `error` 当 `ApiError.code` 交下来（评审修复轮 1，见文件头）。
+ * ⚠️ 认不出来就回 `null`、**不猜**：服务端哪天多一个码，这里是唯一会"假装认识它"的地方 ——
+ *    而假装认识的代价是给用户一句**方向可能错了**的话，那比一句笼统的兜底差得多。
  */
 function apiCodeSource(code: string | undefined): RankedErrorSource | null {
   switch (code) {
@@ -125,10 +133,13 @@ function apiCodeSource(code: string | undefined): RankedErrorSource | null {
 }
 
 /**
- * 码读不到时的**状态码兜底**（今天真正起作用的那一支，见文件头第 2 条）。
+ * 码读不到（或认不出来）时的**状态码兜底** —— 今天仍然会走到（无 body 的 502、没登记的码）。
  *
  * ⚠️ 只列**端点契约里钉死**的三个状态（`routes/ranked.ts`）：429 只可能是我们自己的限流、
- *    502 只可能是 `upstream_bad_response`、503 是那两档之一（取不会说错的那一档）。
+ *    502 只可能是 `upstream_bad_response`、503 是那两档之一。
+ *    ⚠️ 503 在这里**只能**取 `unavailable`：只有状态码时那两档长得一模一样，取"不会说错"的
+ *    那一档 —— 把"上游整个挂掉"说轻（"有点忙，再等等"）等于给用户一个**错的方向**，
+ *    而把"上游在限我们的流"说成"暂时读不到"只是模糊一档。**有码时根本不看这里。**
  *    其余的（0 / 404 / 500 / …）一律回 `null` ⇒ 调用方的 `fallback`，
  *    因为"我们服务器 500"与"上游 500"是两件完全不同的事，这里没有判据能分开它们，
  *    编一句"上游"只会把排查方向带偏。

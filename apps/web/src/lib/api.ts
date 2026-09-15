@@ -186,6 +186,22 @@ export interface ApiExtra {
 }
 
 /*
+ * 「连不上 API」这一族话**只写一份**，由 `request()` 与下面的 `requestWithErrorCode()` 共用。
+ *
+ * ⚠️ 它们不是"文案"而是**内部错误的判据**：同一种故障（后端没起来）在这两条路径上必须给出
+ *    一模一样的一句话。分成两份的那天，改了其中一处的改动者看不见另一处，
+ *    于是同一个故障有两种说法 —— 而**没有任何门禁看得见**它（它是 `ApiError` 的 message，
+ *    不是词条，两个字符串都不是 `t('…')` 那样的调用点）。
+ * ⚠️ `sendJson` / `uploadImage` 里那两句是**既有的、文案本来就不一样**（`uploadImage` 少一句
+ *    "用 pnpm dev"），本次**不动**它们 —— 那是另一处独立的不一致，不属于这一轮的修复。
+ */
+const UNREACHABLE_API_MESSAGE =
+  '连不上 API —— 本地开发时后端可能没启动。用 pnpm dev 或 pnpm dev:web';
+/** 5xx 时追加的那句猜测（同上，共用一份）。 */
+const SERVER_ERROR_HINT =
+  ' —— 本地开发时后端没启动？用 pnpm dev 或 pnpm dev:web，它们会一起启动 API';
+
+/*
  * `cache` 的来历（只在**编辑自己**那条路上会传值，匿名访客一律走默认）：
  *
  *   几个公开列表端点带 `public, max-age=60, stale-while-revalidate=300`
@@ -203,17 +219,80 @@ async function request<T>(path: string, signal?: AbortSignal, cache?: RequestCac
   } catch (error) {
     // abort 是我方主动取消，不应该显示成错误
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new ApiError('连不上 API —— 本地开发时后端可能没启动。用 pnpm dev 或 pnpm dev:web', 0);
+    throw new ApiError(UNREACHABLE_API_MESSAGE, 0);
   }
 
   if (!res.ok) {
     // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
     // 直接把这个猜测写进错误里，省得每次都要重新推一遍。
-    const hint =
-      res.status >= 500
-        ? ' —— 本地开发时后端没启动？用 pnpm dev 或 pnpm dev:web，它们会一起启动 API'
-        : '';
+    const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
     throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status);
+  }
+
+  return (await res.json()) as T;
+}
+
+/**
+ * 和 `request()` **逐字同形**的一次读，只多一件事：**非 2xx 时把响应体里的错误码读出来**。
+ *
+ * ===========================================================================
+ * ★★ 为什么需要它：这个端点的两个回绝码**共用 503**
+ * ===========================================================================
+ * `GET /api/ranked/status` 失败时回的都是 `{ error }`（`services/api/src/routes/ranked.ts`）：
+ *   429 `rate_limited` / 502 `upstream_bad_response` / **503 `ranked_busy`** /
+ *   **503 `upstream_unavailable`**
+ * ——`ranked_busy`（上游在限我们的流，"等一下就好"）与 `upstream_unavailable`（上游挂了，
+ * "要等它修"）**共用 503**，而这两档要给用户两句**方向不同**的话（`lib/rankedErrors.ts`
+ * 的 `ranked.errBusy` 与 `ranked.errUnavailable`）。**状态码分不开它们 ⇒ 响应体是唯一的判据。**
+ * 这是本仓第一条"错误码必须被界面区分"的**读**接口（实时分享看板的 401 光靠状态码就说清了，
+ * 所以它不需要这条路）。
+ *
+ * ⚠️★ **否决了"让 `request()` 对所有读端点都读响应体"**：那会让全站约三十条 GET 的错误形状
+ *    一起变（`ApiError.code` 从恒为 `undefined` 变成真码），而按 `code` 选文案的下游不止这一栏
+ *    （`useApiErrorText` / `lib/shareErrors.ts` / `lib/seedErrors.ts`）—— 它们的文案分支会跟着变。
+ *    那是一次**跨切面的行为改动 + 它自己的一次评审**，不属于这个功能。
+ *    所以 `request()` 的行为一个字节没动，**只有这一个端点**走下面这条路（`git grep` 得到的
+ *    调用点只有 `fetchRankedStatus` 一处）。
+ * ⚠️ 也否决了"让 `fetchRankedStatus` 自己 fetch、自己读体"（绕开本文件）：那要把 `ApiError`
+ *    的构造与"状态码 + 码 + 那句提示"整份复制第二遍 —— 本文件 M4 那一节写着
+ *    `request` / `sendJson` 为什么是模块私有，正是为了不让人复制它们。
+ *
+ * 除了"读错误体"这一件事，行为**必须与 `request()` 完全一致**：同一个 `accept`、
+ * 同一份 `cache` / `signal` 传递、同一个 abort 原样抛出、同一句"连不上 API"（`status` 也是 0）。
+ * ⚠️ 写成**另一个函数**而不是给 `request()` 加第四个可选参数：这样"既有调用点行为不变"是一条
+ *    **结构性**的事实 —— 没有任何一个参数是既有调用点可能传错的；可选参数版本靠的是
+ *    "每个调用点都别传它、默认值永远别翻转"，而默认值一旦翻转，全站约三十条 GET 的错误形状
+ *    会**静默**换掉（没有门禁看得见）。
+ */
+async function requestWithErrorCode<T>(
+  path: string,
+  signal?: AbortSignal,
+  cache?: RequestCache,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: { accept: 'application/json' }, signal, cache });
+  } catch (error) {
+    // abort 是我方主动取消，不应该显示成错误（与 request() 逐字一致）
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new ApiError(UNREACHABLE_API_MESSAGE, 0);
+  }
+
+  if (!res.ok) {
+    /*
+     * ⚠️ 解析**必须带守卫**（照 `sendJson` 那个写法）：错误响应并不保证有 JSON 体 ——
+     *    502 常常来自反代（Vite 的代理 / Caddy），那时 body 是空的，`res.json()` 会抛。
+     *    少了这道守卫，"后端没起来"会变成一个**读体的**错误，比原来的状态码难查得多。
+     * ⚠️ 只取 `error` 这一个键，不复用 `sendJson` 那个 `ErrorPayload`：那个形状里还有
+     *    `reason` / `issues` / `existing*`，而它们属于**写路径**的契约；从这里一并传给
+     *    `ApiError` 等于替读接口声明了一组它并不提供的字段（`ApiError.reason` 会被填上
+     *    一个永远是 undefined 的值 —— 那种"看起来可读、其实恒空"的字段比不写更坏）。
+     */
+    const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+    // 502/500 在本地开发里几乎总是"API 进程没起来"：Vite 的代理转发失败就是这个状态码。
+    // 直接把这个猜测写进错误里，省得每次都要重新推一遍。（与 request() 同一句，共用一份常量）
+    const hint = res.status >= 500 ? SERVER_ERROR_HINT : '';
+    throw new ApiError(`API 返回 HTTP ${res.status}${hint}`, res.status, payload?.error);
   }
 
   return (await res.json()) as T;
@@ -1690,7 +1769,22 @@ export function deleteShare(id: string): Promise<{ ok: true; id: string }> {
  *    浏览器手里只要有一份旧响应，状态面板就会把"上游已经恢复了"继续显示成故障，
  *    而服务端日志里一切正常（同一个坑在 `fetchLiveChannelsFresh` 上真实发生过，那里有实测证据）。
  *    这一栏的面板每 15 秒要一次心跳，`no-store` 是它"看得到恢复"的前提。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 它是本文件里**唯一**不走 `request()` 的读：走的是 `requestWithErrorCode()`
+ * ---------------------------------------------------------------------------
+ * 不是随手换的：这个端点的回绝码里**有两个共用 503**（`ranked_busy` = 上游在限我们的流；
+ * `upstream_unavailable` = 上游挂了），而它们要给用户两句**方向不同**的话
+ * （「上游有点忙，等一下」vs「上游挂了，等它修」）—— 状态码分不开它们，
+ * **响应体里的 `error` 是唯一的判据**，而 `request()` 只读状态码、不读体。
+ * 不读体的后果不是"少一点细节"：503 的两档在客户端长得一模一样 ⇒ 界面只能永远说
+ * "上游暂时读不到"，`ranked.errBusy` 变成一格**永远走不到**的词条（评审修复轮 1 修的正是它）。
+ * ⚠️ 别为了"这一节和其它读接口长得整齐"把它改回 `request(...)`：改回去**不会有任何报错**，
+ *    只会让 `ranked.busy` 那一档静默失效 —— 而这正是这一轮修掉的那个缺陷。
+ *    第三个参数 `'no-store'` 的语义原样保留（理由见上一段，两条路都把它交给浏览器）。
+ * ⚠️ 也别顺手把 `request()` 改成"对所有读端点都读响应体"：那是全站约三十条 GET 的错误形状
+ *    一起变，需要它自己的一次评审（完整理由写在 `requestWithErrorCode()` 上面）。
  */
 export function fetchRankedStatus(signal?: AbortSignal): Promise<RankedStatusResponse> {
-  return request<RankedStatusResponse>('/api/ranked/status', signal, 'no-store');
+  return requestWithErrorCode<RankedStatusResponse>('/api/ranked/status', signal, 'no-store');
 }
