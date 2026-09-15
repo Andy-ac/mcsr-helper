@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./seed": "./src/seed.ts",
+    "./seedPicker": "./src/seedPicker.ts",
     "./resources": "./src/resources.ts",
     "./auth": "./src/auth.ts",
     "./permissions": "./src/permissions.ts",
