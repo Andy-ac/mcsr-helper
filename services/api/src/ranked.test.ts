@@ -177,9 +177,19 @@ function captureErrors(t: TestContext): string[] {
  * ⚠️ "只有一条"是它也钉的一半：一个失败打两行日志，等于在排障时把一个问题看成两个。
  */
 function assertLoggedFailure(errors: string[], kind: string): void {
-  const lines = errors.filter((line) => line.includes('[ranked]'));
+  const lines = rankedLogLines(errors);
   assert.equal(lines.length, 1, `这次失败应该有且只有一条日志：${errors.join(' | ')}`);
   assert.ok(lines[0]?.includes(kind), `日志要带上 kind（${kind}）：${lines[0] ?? '(空)'}`);
+}
+
+/**
+ * 本次用例里打出来的 `[ranked]` 日志行。
+ *
+ * ⚠️ 日志的**条数**是判据的一半：一次**尝试**一行 —— 一个请求一行日志，
+ *    等于把一次上游故障看成 N 次（排障时最误导人的那种形状）。
+ */
+function rankedLogLines(errors: string[]): string[] {
+  return errors.filter((line) => line.includes('[ranked]'));
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +273,29 @@ async function call(options: { ip?: string; cookie?: string } = {}): Promise<Res
     body: (await response.json().catch(() => ({}))) as Record<string, unknown>,
     cacheControl: response.headers.get('cache-control'),
   };
+}
+
+/**
+ * 等到条件成立（最多若干轮事件循环）。
+ *
+ * ⚠️ 不用 `sleep`：`app.request` 那条链上**没有真正的 I/O**（更好的做法是等条件，而不是
+ *    猜一个足够长的毫秒数）—— 猜短了是偶发红，猜长了是给每条用例加一段白等。
+ *    等不到就**当场失败**，而不是让后面那条断言用一个莫名其妙的方式红。
+ */
+async function waitFor(condition: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`等不到：${what}`);
+}
+
+/**
+ * 让那条链跑到底（固定轮数），用于证明一件**没有**发生的事
+ * （"它没有再去打一次上游"这种断言没法用 `waitFor` 等 —— 等不到的正是它）。
+ */
+async function drain(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 /** 读响应里的 `monitor`；不是一个对象就当场失败，而不是让后面每条断言都变成 undefined 比较。 */
@@ -400,6 +433,62 @@ describe('★ 心跳端点：缓存与 single-flight', () => {
       assert.equal(res.cacheControl, 'no-store');
       assert.deepEqual(monitorOf(res.body), MONITOR, '十个响应必须是同一份心跳');
     }
+  });
+
+  it('★★ 先结算的那一次不许清掉**后来那一次**在飞的 promise（否则会并发打第二次上游）', async (t) => {
+    /*
+     * ⚠️ `MCSR_RANKED_STATUS_TTL_MS=0`：让第三次请求**必然走到 `load()`**。
+     *    用默认 TTL 的话，第二次请求成功后会留下一份"新鲜"的缓存，
+     *    第三次请求直接从缓存回答、根本碰不到 `load()` —— 那样这条用例就测不到它要测的东西
+     *    （它在有缺陷的实现上也会绿，而这种"看着在测、其实没测"的用例比没有更糟）。
+     */
+    process.env.MCSR_RANKED_STATUS_TTL_MS = '0';
+    const errors = captureErrors(t);
+    // 上游"挂了不返回"：什么时候结算由用例决定，这样"在飞"是一个可以摆出来的状态
+    const pending: Array<(response: Response) => void> = [];
+    const fetchMock = mockUpstream(
+      t,
+      () =>
+        new Promise<Response>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+
+    const first = call({ ip: '10.9.9.40' });
+    await waitFor(() => pending.length === 1, '第一次请求到达上游');
+
+    /*
+     * ★ 这一句是这条用例的起因：`resetRankedStatusCache()` 会在**有请求还在飞**的时候
+     *    清掉那份记录（它是测试用的接缝，两个用例之间要互不串味）。清完之后来的第二个请求
+     *    会**新起**一个 promise（#2）。
+     * ⚠️ 于是 #1 结算时那个 `finally` 只准清掉**它自己**（`inflight === 那个 promise`）——
+     *    否则它把 #2 的槽位清空，第三个请求就会以为"没有人在飞"而再打一次上游：
+     *    同一时刻两个上游调用，而那正是 single-flight 存在的理由
+     *    （spec §5.3：这一处每分钟最多 2 次真实调用，多出来的每一次都在烧服务器 IP 的额度）。
+     */
+    resetRankedStatusCache();
+    const second = call({ ip: '10.9.9.40' });
+    await waitFor(() => pending.length === 2, '第二次请求到达上游');
+
+    pending[0]?.(jsonResponse(heartbeatPayload()));
+    const firstRes = await first;
+    assert.equal(firstRes.status, 200);
+
+    // ★ 此刻在飞的是 #2：第三次请求必须搭上它
+    const third = call({ ip: '10.9.9.40' });
+    await drain();
+    // 无论它有没有再打一次上游，都把挂着的都放开：否则这条用例会因为"上游永不返回"挂到框架超时
+    for (const resolve of pending) resolve(jsonResponse(heartbeatPayload()));
+    const [secondRes, thirdRes] = await Promise.all([second, third]);
+
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      2,
+      '★ 第三次请求该搭上 #2 那一次；变成了 3 就说明 #1 的 finally 把 #2 的槽位清掉了',
+    );
+    assert.equal(secondRes.status, 200);
+    assert.equal(thirdRes.status, 200);
+    assert.deepEqual(errors, [], '这条路径上没有失败，不该有日志');
   });
 });
 
@@ -707,6 +796,13 @@ describe('★ 心跳端点：每 IP 限流', () => {
 
     const limited = await call({ ip }); // 第 61 次
     assert.equal(limited.status, 429);
+    /*
+     * ★ 429 也要 `no-store`：`no-store` 是**这个 handler 每一条响应**的性质
+     *   （200 / 429 / 502 / 503 都是"此刻"的答案），不是"成功那条才有的"。
+     *   实测过它曾经挂在限流判断**之后** ⇒ 被限流的响应没有这个头，
+     *   而 429 恰好是最容易被中间层留住的那一种（"稍后再试"被缓存下来就再也不试了）。
+     */
+    assert.equal(limited.cacheControl, 'no-store', '429 也要 no-store');
     assert.equal(limited.body.error, 'rate_limited');
     assert.ok(
       typeof limited.body.retryAfterSec === 'number' && limited.body.retryAfterSec > 0,
@@ -729,5 +825,163 @@ describe('★ 心跳端点：每 IP 限流', () => {
     const other = await call({ ip: '10.9.9.31' });
     assert.equal(other.status, 200, '限流是按 IP 的，不是全局闸门（否则一个人能关掉整栏）');
     assert.deepEqual(errors, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑤ 两个时刻：`fetchedAt`（数据多旧）与 `lastAttemptAt`（上次尝试打上游是什么时候）
+// ---------------------------------------------------------------------------
+
+/**
+ * ★★ 这一组用例来自一次评审实测的缺陷。
+ *
+ * 判据只看 `fetchedAt` 时，**失败之后"该不该再打上游"这个判断永远为真**：
+ * 失败不更新 `fetchedAt`（数据确实还是旧的）⇒ 每个请求都打一次上游、每个请求都记一条日志，
+ * 而上游越慢/越挂，我们打得越狠 —— 正是 spec §5.3 那句"这一处每分钟最多 2 次真实上游调用"
+ * 声称不可能发生的那个反馈环。
+ * ⇒ 所以这两条用例的判据全是**桩的调用次数**（响应体在这个状态下看不出差别：
+ *   有缺陷的实现回的是**另一次失败**，看起来一样是 503）。
+ */
+describe('★ 心跳端点：失败也要节流（两个时刻）', () => {
+  it('★★ 连着两次失败（同一个 TTL 内）⇒ 上游只被打一次，第二次回的是**同一份**回答', async (t) => {
+    const errors = captureErrors(t);
+    let attempt = 0;
+    const fetchMock = mockUpstream(t, () => {
+      attempt += 1;
+      /*
+       * ⚠️ 第二次失败**故意换一种**（429 ⇒ 那一档本该是 502/`ranked_busy`）：
+       *    这样"第二次到底有没有再去问上游"在**响应体**里也看得见，
+       *    不必只靠桩计数 —— 只靠计数的话，一个"打了上游但把结果丢掉"的实现会被蒙对。
+       */
+      return attempt === 1
+        ? jsonResponse({ detail: 'boom' }, 500)
+        : jsonResponse({ detail: 'slow down' }, 429);
+    });
+
+    const first = await call();
+    const second = await call();
+
+    assert.equal(first.status, 503);
+    assert.deepEqual(first.body, { error: 'upstream_unavailable' });
+
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      1,
+      '★ 失败的那一次也要计入节流：一个 TTL 内最多打一次上游（否则上游一挂就变成"每个请求都打一次"）',
+    );
+    assert.equal(second.status, first.status, '第二次与第一次是**同一份**回答，不是重新问出来的');
+    assert.deepEqual(
+      second.body,
+      first.body,
+      '第二次不该变成 ranked_busy —— 变了就说明它又去打了一次上游',
+    );
+    // ★ 一次**尝试**一行日志：一个请求一行，等于把一次故障看成 60 次
+    assertLoggedFailure(errors, 'unavailable');
+  });
+
+  it('★★ 上游挂着 + 有旧数据：同一个 TTL 内**换个人来**也不打上游（节流不是按 IP 的）', async (t) => {
+    const errors = captureErrors(t);
+    /*
+     * ⚠️ 时间用 `t.mock.timers` 控制（同"旧数据超过 10 分钟"那条）：TTL 与兜底窗口都是
+     *    "过了多久"的判断，而等待换不来任何多一点的证据。
+     */
+    t.mock.timers.enable({ apis: ['Date'] });
+    const base = 1_800_000_000_000;
+    t.mock.timers.setTime(base);
+
+    let failing = false;
+    const fetchMock = mockUpstream(t, () =>
+      failing ? jsonResponse({ detail: 'boom' }, 500) : jsonResponse(heartbeatPayload()),
+    );
+
+    const first = await call({ ip: '10.9.9.50' }); // t0：成功，手上有一份数据了
+    assert.equal(first.body.stale, false);
+
+    failing = true;
+    t.mock.timers.setTime(base + 31_000); // 过了 TTL ⇒ 这一次该真的打上游
+    const second = await call({ ip: '10.9.9.51' });
+    assert.equal(second.status, 200);
+    assert.equal(second.body.stale, true);
+    assert.equal(upstreamCallCount(fetchMock), 2);
+
+    // ★★ 缺陷的那一面就在这里：**另一个 IP 的人**在同一个 TTL 里来了
+    t.mock.timers.setTime(base + 40_000);
+    const third = await call({ ip: '10.9.9.52' });
+    assert.equal(third.status, 200);
+    assert.equal(third.body.stale, true);
+    assert.deepEqual(monitorOf(third.body), MONITOR, '还是那份旧数据');
+    assert.equal(numField(third.body, 'fetchedAt'), base, 'fetchedAt 是那份**数据**的年龄');
+    assert.equal(numField(third.body, 'serverNow'), base + 40_000, 'serverNow 才是"现在"');
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      2,
+      '★ 上一次**失败**的尝试也要计入节流（按 fetchedAt 判的话这里会是 3）',
+    );
+
+    // 失败之后**再过**一个 TTL 才轮到下一次尝试
+    t.mock.timers.setTime(base + 61_000);
+    const fourth = await call({ ip: '10.9.9.53' });
+    assert.equal(fourth.status, 200);
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      3,
+      '过了 TTL 还是要再试：它是"上游好了没有"的唯一探针',
+    );
+    // ★ 真的打了上游的失败恰好两次 ⇒ 恰好两行日志（第三、四次请求没有再打，就不该多出日志）
+    assert.equal(rankedLogLines(errors).length, 2, `日志条数不对：${errors.join(' | ')}`);
+  });
+
+  it('★ 过了 TTL，失败也允许再打一次（桩计数 2）—— 节流不是"失败之后就放弃"', async (t) => {
+    const errors = captureErrors(t);
+    const fetchMock = mockUpstream(t, () => jsonResponse({ detail: 'boom' }, 500));
+
+    const first = await call();
+    // ⚠️ TTL=0 与"时间推过 30 秒"走的是**同一支**判断（`now - lastAttemptAt >= ttlMs()`）
+    process.env.MCSR_RANKED_STATUS_TTL_MS = '0';
+    const second = await call();
+
+    assert.equal(first.status, 503);
+    assert.equal(second.status, 503);
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      2,
+      '★ 过了 TTL 就要再试一次：手上有旧数据时，这条请求是我们唯一能发现"上游好了"的机会',
+    );
+    assert.equal(rankedLogLines(errors).length, 2, '两次真的打了上游的失败 ⇒ 两行日志');
+  });
+
+  it('★ TTL 被夹在 10 分钟上界：超窗的旧数据不能带着 stale:false 回给访客', async (t) => {
+    const errors = captureErrors(t);
+    t.mock.timers.enable({ apis: ['Date'] });
+    const base = 1_800_000_000_000;
+    t.mock.timers.setTime(base);
+    /*
+     * ★ 20 分钟 > 兜底窗口（10 分钟）。不夹的话，11 分钟前那份数据会被判成"新鲜"
+     *   ⇒ 带着 `stale:false` 回给访客，也就是**面板上写着"实时"、数据却是十一分钟前的**
+     *   —— 那是 spec §5.3 唯一明令不许出现的那种展示（数据是真的、时间是假的）。
+     *   ⚠️ 否决了"只把默认值写对、不管覆盖值"：这个环境变量是**运维也能设**的接缝。
+     */
+    process.env.MCSR_RANKED_STATUS_TTL_MS = String(20 * 60_000);
+
+    let failing = false;
+    const fetchMock = mockUpstream(t, () =>
+      failing ? jsonResponse({ detail: 'boom' }, 500) : jsonResponse(heartbeatPayload()),
+    );
+
+    const good = await call();
+    assert.equal(numField(good.body, 'fetchedAt'), base);
+
+    failing = true;
+    t.mock.timers.setTime(base + 11 * 60_000); // 比兜底窗口多一分钟，但比那个没夹的 TTL 少
+    const res = await call();
+
+    assert.equal(res.status, 503, '★ 十一分钟前的心跳不是"实时"，宁可不给');
+    assert.deepEqual(res.body, { error: 'upstream_unavailable' });
+    assert.equal(
+      upstreamCallCount(fetchMock),
+      2,
+      '它必须真的去重取一次（而不是拿十一分钟前那份当"新鲜"直接回）',
+    );
+    assertLoggedFailure(errors, 'unavailable');
   });
 });
