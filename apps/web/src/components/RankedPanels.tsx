@@ -34,7 +34,11 @@
  * ===========================================================================
  * ★ 嵌入：判定与播放器都用**现成的**，这里一个播放地址都不拼
  * ===========================================================================
- * `liveEmbedDecision(rankedLiveChannel(url), location.hostname)`。
+ * `liveEmbedDecision(rankedLiveChannel(url), origin)` —— ⚠️★ `origin` 是 **props**
+ * （由容器传 `window.location.hostname`），**不是**在这里读 `location`：
+ * 视图里读全局变量有两个后果 —— 渲染自检（跑在 Node 里，那儿没有 `location`）
+ * **永远**只能看到 `no_origin` 那一支，于是"Twitch 必须带对 `parent`"这条
+ * **唯一静默失败**的规则就再也断言不到了。理由的全文写在 `RankedLiveViewProps.origin` 上。
  * 它编码的是三条**实测**出来的平台规则，而它们只住在 `live.ts` 里：
  *   · Twitch 的 `parent` 必须等于嵌入页面的 host（传错是**静默**拒播，看起来像网络问题）；
  *   · B站直播间要走 `www.bilibili.com` 的活动播放器（房间页带 `X-Frame-Options`，嵌进去是黑框）；
@@ -185,27 +189,22 @@ const WEEKLY_SEED_ORDER: (keyof RankedWeeklyData['seed'])[] = [
 ];
 
 /**
- * 四个种子的标签 → **复用现成的那四条词条**（`shares.form*`：「主世界种子」…「RNG 种子」）。
+ * 四个种子的标签 → **这一栏自己的四条词条**（`ranked.seedOverworld` 等）。
  *
- * ⚠️★ 这一处是 **Task 5 实现时发现的一处计划空白**，选择写在明面上，不要当成漏项：
- *    spec §6.5 要求顶部有 **4 个种子**（主世界 / 下界 / 末地 / RNG），而 §7.3 那张
- *    冻结词条表里给周赛的**只有一条** `ranked.weeklySeed`（「种子」）——四个格子
- *    全印同一个词，那一行就没有信息了。⇒ 只能复用已有的词条，而候选只有两组：
- *      · `seedsPage.overworldSeed / netherSeed / theEndSeed`（「主世界 / 下界 / 末地」）
- *        —— **缺 RNG 那一条**（全仓搜过：`RNG` 只出现在 `shares.*` 里），
- *        凑不齐一组，混两个命名空间的标签比复用更糟；
- *      · `shares.form*`（「主世界种子 / 下界种子 / 末地种子 / RNG 种子」）
- *        —— 一组四条、同一个命名空间，而且讲的**正是同一种东西**
- *        （那个表单的导语就是「分享一组世界种子：主世界、下界、末地、RNG。」）。
- *    ⇒ 取后者。⚠️ **代价写在明面上**：ranked 面板的四格标签从此与「实时分享」
- *    那个表单的文案绑在一起，改那边会同时改这里。真要解开就是给 `ranked.*`
- *    加四条新词条（T7 的清单里没有 ⇒ 那是一次计划变更），本任务不动它。
+ * ⚠️★ 这四条是 **2026-09-16 加进 spec §7.3 的**（本文件实现时报出了这处空白之后）：
+ *    上一版复用的是「实时分享」那一栏的 `shares.formOverworld / formNether / formEnd /
+ *    formRng` —— 当时 §7.3 给周赛的只有一条 `ranked.weeklySeed`（「种子」），四个格子
+ *    印同一句话等于没有标签。裁决是**不许跨栏目复用**：那意味着改「实时分享」的文案会
+ *    **顺手改掉**这一栏，而这四格本来就不是同一个语境（那边是"我要分享一组种子"，
+ *    这边是"这一周的比赛用的是这几个种子"）。
+ * ⚠️ `seedsPage.overworldSeed / netherSeed / theEndSeed` 那组仍然不是候选：
+ *    它**缺 RNG 那一条**（全仓搜过，`RNG` 只出现在 `shares.*` 里），凑不齐一组。
  */
 const WEEKLY_SEED_LABEL_KEYS: Record<keyof RankedWeeklyData['seed'], string> = {
-  overworld: 'shares.formOverworld',
-  nether: 'shares.formNether',
-  theEnd: 'shares.formEnd',
-  rng: 'shares.formRng',
+  overworld: 'ranked.seedOverworld',
+  nether: 'ranked.seedNether',
+  theEnd: 'ranked.seedEnd',
+  rng: 'ranked.seedRng',
 };
 
 // ---------------------------------------------------------------------------
@@ -329,20 +328,17 @@ function RankedChrome({ children, ...c }: RankedChromeProps & { children: ReactN
         </Notice>
       ) : null}
       {/*
-        ★★ 只要失败了就给一次重试 —— 这是与计划骨架**有意的偏差**，理由写全在这里
-        （2026-09-16，Task 5 实现时发现）。
+        ★★ 判据是"**失败过就给一次重试**"（`errorText !== null`），而 `staleSecs` 只管
+        那句话用 `info` 还是 `bad`（有旧数据就不许打断读屏）。
 
-        骨架写的是 `{c.staleSecs !== null && c.errorText !== null ? <RankedRetry … /> : null}`，
-        而那个条件让**"失败·没有旧数据"**（第一次就没读到）这一档**没有任何重试入口**：
-        屏幕上是一句具体的失败说明，用户能做的只剩刷新整页。
-        可是 spec §6.6 那一行写的是「一句**具体**的话 + **可点**的重试」，
-        §11.3 又要求"四种整体画面各自的产物"逐档断言 —— 按骨架写，这条断言
-        在 Task 8 一定会红。⚠️ 同栏目上一轮的 `ShareBoardView` 在两档失败里
-        **都**渲染了重试（`board === null && loadError` 与 `board !== null && loadError`），
-        那正是这条纪律的先例。
-        ⇒ 判据改成"失败了就重试"（`errorText !== null`），`staleSecs` 只管那句话
-          用 `info` 还是 `bad`（有旧数据就不许打断读屏）。
-        ⚠️ 这不是"顺手多给一颗按钮"：`ShareRetry` 的注释写着"一颗按下去什么都不会发生的
+        ⚠️★ 被否决的替代方案（2026-09-16 之前计划骨架上的写法，那一版已经改掉了）：
+          `{c.staleSecs !== null && c.errorText !== null ? <RankedRetry … /> : null}`
+        —— 那个条件让**"失败·没有旧数据"**（第一次就没读到，spec §6.6 第 3 行）这一档
+        **一颗重试都没有**，而那一格恰恰最需要它：用户手上什么都没有，能做的只剩刷新整页。
+        §11.3 又要求"四种整体画面各自的产物"逐档断言 ⇒ 按那个条件写，Task 8 那一条必红。
+        ⚠️ 同栏目上一轮的 `ShareBoardView` 在两档失败里**都**渲染了重试
+        （`board === null && loadError` 与 `board !== null && loadError`），这是先例。
+        ⚠️ 也不是"顺手多给一颗按钮"：`ShareRetry` 的注释写着"一颗按下去什么都不会发生的
         按钮比没有按钮更坏"，而它的反面同样成立 —— 一句失败说明配不上任何动作，
         比少一句话更让人卡住（他没有第二次机会）。
       */}
@@ -391,22 +387,15 @@ export type RankedStatusViewProps = RankedChromeProps & {
   status: RankedStatusResponse | null;
   /** 直连 `/live` 拿到的人数 —— ★ **与 `0` 是两句话**（spec §6.2）：`null` 说"读不到"。 */
   players: number | null;
-  /**
-   * 人数那一格是什么时候读到的（本地时钟）。
-   *
-   * ⚠️★ 这个面板**不读它**，而这不是漏项 —— 它今天**没有渲染点**，理由有三条，都写在这：
-   *   1. 它答的问题是"人数这个数有多旧"，而这一栏唯一那句话是 `ranked.updatedAgo`
-   *      （「{{secs}} 秒前更新」），由外壳**只渲染一次**、由容器给的那一个秒数驱动
-   *      （T6 的契约里 `updatedAgoSecs` 就是"最后一次成功"）；
-   *      再写一行就会在同一屏出现两个意思不同的"N 秒前"，而它们会互相打架。
-   *   2. "人数读不到"那一档已经由 `players === null` 说清了（`ranked.playersUnknown`），
-   *      "刷新失败但有旧数据"那一档由 `staleSecs` 说清了 —— 剩下的情形里
-   *      "旧多少秒"不影响任何决定。
-   *   3. 要给它一句自己的话就得**新加词条**，而 §7.3 的清单里没有那一条
-   *      （Task 7 加的词条是冻结的，本任务不许自己发明 key）。
-   * ⇒ 它是 T6/T8 的**接线凭证**（渲染自检逐格显式传值，少一个就红），保留原样。
+  /*
+   * ⚠️ 这里曾经有一格 `playersAtMs: number | null`（"人数是什么时候读到的"）。
+   *    2026-09-16 的裁决把它**从 spec 与计划里一起删掉**了，代码跟着删。
+   *    理由：这一栏的"新鲜度"是**一行**（外壳的 `updatedAgoSecs`，失败时那句换
+   *    `staleSecs`），不是每个数据源一行 —— 同一屏出现两个意思不同的"N 秒前"，
+   *    它们迟早会互相打架（一个是"这份数据多旧"，一个是"人数那一格多旧"）。
+   *    ⚠️ 不要因为"容器确实有两次请求（心跳 + 人数）"把它加回来：容器的取数是一回事，
+   *    界面回答"这份东西有多旧"是另一回事，而后者只需要一个答案。
    */
-  playersAtMs: number | null;
 };
 
 /**
@@ -436,6 +425,21 @@ export function RankedStatusView(props: RankedStatusViewProps) {
       <p className={`ranked__badge ranked__badge--${BADGE[status.monitor.state]}`}>
         {t(STATUS_KEYS[status.monitor.state])}
       </p>
+      {/*
+        ★★ 响应里的 `stale: true` —— **服务端**拿了兜底（上游那一刻读不到 ⇒ 回上一次的
+        成功心跳），而**我们这一次**的请求是**成功**的（200，不是失败）。
+        ⚠️★ 它与外壳那句 `ranked.refreshFailed`（「上次刷新失败了，下面是 N 秒前的数据」）
+        **不是**一件事：混成一句会让用户去查一个没发生过的网络问题（他以为是自己的网断了），
+        而真相是服务端替我们兜了底。
+        ⚠️ 没有它的话，一次兜底的心跳与一次新鲜的心跳在界面上长得**一模一样**：
+        徽章是绿的、`checkedAt` 是上游那串旧文本，而「N 秒前更新」说的是**我们这次请求**的年龄
+        —— 三处都在说"没问题"，而这份数据最老可以到 10 分钟前。
+        ⚠️ 位置紧贴在徽章下面（不是放到面板末尾）：徽章说的是「正常」，而这一句限定的正是
+        **那句断言的依据**（这份"正常"是旧的）—— 隔着一整个面板它就变成一句脚注了。
+        ⚠️ `info` 而不是 `bad`：这一次没有任何东西失败，也没有要用户做的事
+        （`bad` 那一档是 `role="alert"`，会打断读屏）。
+      */}
+      {status.stale ? <Notice kind="info">{t('ranked.statusStale')}</Notice> : null}
       <p className="ranked__meta">
         {status.monitor.ping === null
           ? t('ranked.statusPingUnknown')
@@ -511,20 +515,32 @@ function streamedSides(
 /**
  * 展开区里的**一侧**：能嵌就是"点一下才加载"的播放器，不能嵌就是一条外链。
  *
- * ⚠️ 页面自己的 host 就是 Twitch 的 `parent`（传错是**静默**拒播），所以它必须是
- *    **运行时的** `location.hostname`：开发时是 localhost、线上是真实域名，
- *    而写死任何一个都会有一半的运行形态被平台拒掉。
- * ⚠️ `location` 在 SSR / 渲染脚本里**不存在** ⇒ 走 `?.`：否则这一层会因为一个
- *    与它要验的东西毫不相干的原因崩掉（`ClickToPlayEmbed` 里写着同一件事；
- *    那时 Twitch 那一档会拿到 `no_origin` 而落到外链，这正是我们想要的结果）。
+ * ⚠️★ `origin` 是 **prop**（一路从 `RankedLiveView` 传下来，容器给的是
+ *    `window.location.hostname`）—— 这一层**不许**读 `location`：
+ *    · 它对 Twitch 是**承重**的 `parent`（传错是**静默**拒播：黑框，看起来像网络问题），
+ *      所以它确实必须是**运行时**的值（开发时 localhost、线上是真实域名，
+ *      写死任何一个都会有一半的运行形态被平台拒掉）；
+ *    · 但读全局变量的代价是**这条规则永远验不到**：渲染自检跑在 Node 里、`location`
+ *      不存在 ⇒ 每一个 Twitch 夹具都落到 `no_origin` 那一支，而一条**不可能红**的守卫
+ *      比没有守卫更坏（`docs/pending.md §5.63`）。变成 prop 之后脚本能喂
+ *      `'mcsrhelper.com'`，"内嵌地址带对 `parent`"与"传错时不内嵌"两件都断言得动。
+ *    ⚠️ 否决了"在这里读 `location` 并用 `?.` 兜底"（本文件上一版的写法）：
+ *      那行 `?.` 换来的正是上面第二条 —— 一个永远绿色的分叉。
  * ⚠️ `title` 是**播放器的可访问名字**，说的是"播谁的"：门面自己会画平台徽章
  *    （那一条 key 在 `ClickToPlayEmbed` 里），所以这里只补上人是谁。
  *    昵称在形状里可以是 `null` ⇒ 落到 `ranked.unknown`，绝不渲染一个空的
  *    `title`（读屏软件那时只会念出一串控件类型，用户分不出这是哪一个）。
  */
-function RankedStream({ liveUrl, nickname }: { liveUrl: string; nickname: string | null }) {
+function RankedStream({
+  liveUrl,
+  nickname,
+  origin,
+}: {
+  liveUrl: string;
+  nickname: string | null;
+  origin: string;
+}) {
   const { t } = useTranslation();
-  const origin = globalThis.location?.hostname ?? '';
   const channel = rankedLiveChannel(liveUrl);
   const decision = channel === null ? null : liveEmbedDecision(channel, origin);
 
@@ -618,7 +634,7 @@ function RankedSide({ player, right }: { player: RankedLivePlayer; right: boolea
  *    而**展开态**（`open` 属性）不在初始产物里 —— 自检断言的正是"初始不展开"。
  *    ⚠️ iframe 本身由 `ClickToPlayEmbed` 的 `useState` 挡着，SSR 里永远不会挂上去。
  */
-function RankedMatch({ match }: { match: RankedLiveMatch }) {
+function RankedMatch({ match, origin }: { match: RankedLiveMatch; origin: string }) {
   const { t } = useTranslation();
   const [left, right] = match.players;
   const streams = streamedSides(match);
@@ -639,7 +655,12 @@ function RankedMatch({ match }: { match: RankedLiveMatch }) {
           */}
           <div className="ranked__streams">
             {streams.map((entry) => (
-              <RankedStream key={entry.side} liveUrl={entry.liveUrl} nickname={entry.nickname} />
+              <RankedStream
+                key={entry.side}
+                liveUrl={entry.liveUrl}
+                nickname={entry.nickname}
+                origin={origin}
+              />
             ))}
           </div>
         </details>
@@ -651,6 +672,21 @@ function RankedMatch({ match }: { match: RankedLiveMatch }) {
 export type RankedLiveViewProps = RankedChromeProps & {
   /** 直连 `/live` 的解析结果（对局 + 人数）。`null` = 还没取到。 */
   live: RankedLiveData | null;
+  /**
+   * ★★ 嵌入页面的 host（容器传 `window.location.hostname`）—— Twitch 的 `parent`。
+   *
+   * ⚠️★ 它**必填**（`string`，不是 `string | null`、也不给缺省值），形状与理由跟
+   *    `RankedChromeProps.onRetry` 那一条相同：忘接线时兜底值 `''` 会让 Twitch
+   *    **静默**降级成外链（`liveEmbedDecision` 回 `no_origin`），而**所有门禁照样绿**
+   *    —— 渲染自检断言的是"那儿有个外链"，它看不出那本该是个播放器。
+   *    必填之后忘了传是**编译错误**。
+   * ⚠️★ 为什么不在视图里读 `location`：渲染自检（Node）里没有 `location`
+   *    ⇒ 每一个 Twitch 夹具都落到 `no_origin`，而"Twitch 必须带对 `parent`"这条
+   *    **唯一静默失败**的规则（传错是拒播，不是报错）就永远没有被验证过。
+   *    ⚠️ `apps/web/scripts/**` 不在 tsconfig 的 include 里 ⇒ 渲染脚本那一侧不受
+   *    类型检查，它还要自己写一道运行时守卫（Task 8），两件事缺一不可。
+   */
+  origin: string;
 };
 
 /**
@@ -664,7 +700,7 @@ export type RankedLiveViewProps = RankedChromeProps & {
  */
 export function RankedLiveView(props: RankedLiveViewProps) {
   const { t } = useTranslation();
-  const { live, ...c } = props;
+  const { live, origin, ...c } = props;
 
   if (live === null) {
     return (
@@ -696,7 +732,7 @@ export function RankedLiveView(props: RankedLiveViewProps) {
                * 必须排序）：上游没有 match id，而左右两侧的 elo 一变就可能互换 ——
                * 不排序的话 React 会把同一场比赛当成新的一场重建（展开的框会跟着塌掉）。
                */
-              <RankedMatch key={match.key} match={match} />
+              <RankedMatch key={match.key} match={match} origin={origin} />
             ))}
           </ul>
         </>

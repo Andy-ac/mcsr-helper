@@ -52,6 +52,18 @@ export const zhCN = {
      *      就是为这件事特意选的：不能让侧栏出现两个 Live。
      */
     shares: '实时分享',
+    /*
+     * ★ 「Ranked 实时信息」（2026-09-16）—— 侧栏的**那一行**由 T7 落地（它必须排在
+     *   `/ranked` 路由之后：`homerender.tsx` 有一条"可点的栏目必须在 `App.tsx` 里
+     *   有真路由"的守卫）。
+     * ⚠️★ 但**这条词条**必须现在就有：`components/RankedPanels.tsx` 的页标题就是
+     *   `t('nav.ranked')`，而 `services/api/src/i18n-keys.test.ts` 会扫源码里的字面量调用、
+     *   断言 key 在**本文件**里存在 ⇒ 晚一步落地，`pnpm -w check` 就会在 T5 与 T7 之间
+     *   一直**红着**（那不是"以后会绿"，是一条守卫在报警）。
+     * ⚠️ 英文**不能**叫 "Ranked live" / "Live"：侧栏「直播」已经是 "Live"，
+     *   本仓为"侧栏出现两个 Live"花过一轮（`nav.shares` 那条注释里也记着同一件事）。
+     */
+    ranked: 'Ranked 实时信息',
     profile: '我的',
     admin: '管理',
     submit: '提交',
@@ -2484,6 +2496,177 @@ export const zhCN = {
     errExpired: '这一条已经到点了，不能再改了。',
     errNotActive: '这一条现在不在展示中。',
     errNotHidden: '这一条本来就没有下架。',
+  },
+
+  /*
+   * ===========================================================================
+   * 「Ranked 实时信息」（`/ranked`）—— spec §7 的冻结清单（7.1 / 7.2 / 7.3）
+   * ===========================================================================
+   * ⚠️★ 这一块是跟着 T5 的四个视图**一起**落地的（2026-09-16 的计划调整）：
+   *    那四个视图里有 43 处字面量 `t('ranked.x')`，而
+   *    `services/api/src/i18n-keys.test.ts` 会扫源码里的字面量调用、断言 key 在
+   *    **本文件**里存在 ⇒"视图先落地、词条后落地"会让 `pnpm -w check` 在 T5 与 T7
+   *    之间**红着**，而那正是本计划明令避免的形状
+   *    （同一个错误的另一个版本在 T3 的 error-code 契约上刚出现过）。
+   * ⚠️ 值**不许**留空、不许写 `TBD`；英文那一侧**零汉字**（渲染自检有一条扫描守着）。
+   * ⚠️ 与这一栏无关的区块一个字都不许动 —— 本块是**整块追加**在 `shares` 之后的。
+   */
+  ranked: {
+    // ---- ① 状况与人数（`RankedStatusView` / spec §6.2）----
+    statusUp: '正常',
+    /*
+     * ⚠️ 四态各有各的话（`STATUS_KEYS` 是穷尽的 `Record<0|1|2|3, string>`）：
+     *    把「等待」「维护」塌进「故障」，用户会在一个**计划内**的维护窗口里
+     *    到处找自己的问题 —— 上游真的会回这两档。
+     */
+    statusDown: '故障',
+    statusPending: '等待',
+    statusMaintenance: '维护',
+    statusPing: '延迟 {{ms}} ms',
+    /** ⚠️「延迟未知」与「延迟 0 ms」是两件事：后者读起来像一个好得不可能的服务。 */
+    statusPingUnknown: '延迟未知',
+    /*
+     * ⚠️ `{{time}}` 是上游那串 `2026-09-15 13:36:27` 的**原样**文本，**不做时区换算**：
+     *    那串字符不带时区，`new Date()` 会按**本机**时区解释 ⇒ 显示值随部署机器漂，
+     *    而测试也会变成"看机器运气"。它存在的意义是回答"**这条心跳自己**有多新"。
+     */
+    statusCheckedAt: '最后心跳 {{time}}',
+    statusUptime: '24 小时可用率 {{pct}}%',
+    players: '{{n}} 人正在玩 Ranked',
+    /*
+     * ⚠️★ 它与 `playersZero`（「现在没有人在玩 Ranked」）是**两句不同**的话：
+     *    这一句说"读不到"，那一句说"真的没人"。合成一句会让"读不到"看起来像
+     *    一个事实陈述 —— 而那恰好是我们不知道的那件事。
+     */
+    playersUnknown: '人数暂时读不到',
+    playersZero: '现在没有人在玩 Ranked',
+    /*
+     * ★★ 对应响应里的 `stale: true`（2026-09-16 加的一条）：
+     *    **服务端**拿了兜底（上游那一刻读不到 ⇒ 回上一次的成功心跳），而**我们这一次**
+     *    的刷新是**成功**的 —— 它与 `refreshFailed`（「上次刷新失败了」）不是一件事。
+     *    两者混成一句会让用户去查一个没发生过的网络问题。
+     *    ⚠️ 没有这一句时，一次兜底的心跳在界面上与一次新鲜的心跳**长得一模一样**。
+     */
+    statusStale: '服务端这份数据是兜底的旧数据。',
+
+    // ---- ② 实时高分对局（`RankedLiveView` / spec §6.3）----
+    liveTitle: '正在直播的高分对局',
+    liveEmpty: '现在没有直播中的对局。',
+    liveFrom: '{{total}} 场里按平均 elo 取前 10',
+    liveExpand: '展开直播（{{n}} 个）',
+    /*
+     * ⚠️★ 措辞说的是「**这条链接**不能内嵌」，**不是**"这个平台不支持"：
+     *    `livePlatform === null` 里混着**两类** —— 认不出的平台（如 kick），
+     *    以及"平台其实支持、只是这条地址里没有可嵌的视频"（`youtube.com/@handle`）。
+     *    对后者"平台不支持"是**错话**，而用户会照着那句错话得出错误的结论。
+     * ⚠️ 本仓**没有** `liveCollapse` / `liveNoStream`：收起由原生 `<details>` 负责，
+     *    而"这一场两个人都没在直播"的卡片**没有**展开入口 —— 没有消费者的 key 不留
+     *    （本仓为这种事删过 `shares.moderateHideReason`）。
+     */
+    liveExternal: '这条链接不能内嵌，在新窗口打开',
+    /** 中间那一格：这一场**已经打了多久**（不是谁的节点时间，那两个在各自那半边）。 */
+    matchTime: '已进行 {{time}}',
+
+    // ---- ③ Elo 排行榜（`RankedEloView` / spec §6.4）----
+    eloTitle: 'Elo 排行榜',
+    season: '赛季 {{n}}',
+    /*
+     * ⚠️ 赛季起止的**秒 → 毫秒**换算在视图里做（`new Date(sec * 1000)`）：上游给的是秒，
+     *    单位搞混**不会报错**，只会印出一个荒谬的日期。
+     */
+    seasonRange: '{{from}} → {{to}}',
+    colRank: '排名',
+    colNickname: '昵称',
+    colElo: 'elo',
+    colHighest: '最高',
+    colPhasePoint: '阶段分',
+    eloEmpty: '这个赛季还没有人上榜。',
+
+    // ---- ④ 周赛榜单（`RankedWeeklyView` / spec §6.5）----
+    weeklyTitle: '周赛',
+    weeklyNumber: '第 {{n}} 周',
+    weeklyEndsAt: '截止 {{when}}',
+    weeklySeed: '种子',
+    /*
+     * ★★ 四个种子的标签是**这一栏自己的**四条（2026-09-16 加的）。
+     * ⚠️★ 不复用「实时分享」那边的 `shares.formOverworld` 那一组：跨栏目复用意味着
+     *    改一栏的文案会**顺手改掉**另一栏，而那四条的语境是"我要分享一组种子"，
+     *    这四格说的是"这一周的比赛用的是这几个种子"。
+     *    ⚠️ 它们与 `weeklySeed`（「种子」）并存：后者是这一组的总称。
+     */
+    seedOverworld: '主世界',
+    seedNether: '下界',
+    seedEnd: '末地',
+    seedRng: 'RNG',
+    weeklyPrev: '上一周',
+    weeklyNext: '下一周',
+    colTime: '时间',
+    colEloRank: 'elo 排名',
+    weeklyEmpty: '这一周还没有人完赛。',
+
+    // ---- 四个面板共用的外壳与失败（spec §6.6）----
+    /*
+     * ⚠️ 只有成功过一次才渲染这一行：写「0 秒前更新」是在撒谎 ——
+     *    那时候根本没有"上一次"，而这一行唯一的用途就是回答"这份数据有多旧"。
+     * ⚠️ 英文侧刻意不写 "1 seconds" 那种数法（与 `shares.updatedAgo` 同一条处置）。
+     */
+    updatedAgo: '{{secs}} 秒前更新',
+    /*
+     * ⚠️ 失败**不清空**旧数据（spec §6.6 第 2 行），所以这句话要说明"下面是旧的",
+     *    并带上那个"多旧"的数字：没有数字的"数据可能过期了"等于没说。
+     * ⚠️ 它与 `statusStale` **不是**一件事：这一条说"我们这次没读到"，
+     *    那一条说"我们读到了，但服务端给的是兜底"。
+     */
+    refreshFailed: '上次刷新失败了，下面是 {{secs}} 秒前的数据。',
+    loadFailed: '读不到数据。',
+
+    /*
+     * ---- 失败 → 一句话（`lib/rankedErrors.ts` 的七格表）----
+     * ⚠️ 七条分开的理由是"用户下一步做的事完全不同"（等上游 / 等我们 / 别再等了）：
+     *    ②③④ 三个面板由访客浏览器**直连**上游，失败在我们的日志里一个字都没有，
+     *    屏幕上那句话就是我们关于这次失败的全部信息。
+     * ⚠️★ `errRateLimited` **不**复用全站的 `rate_limited`：那句说的是"**我们对你**的
+     *    请求限流"，这一条说的是"**上游对你自己**的请求限流"（每 IP 500 次 / 10 分钟）。
+     */
+    errBusy: '上游有点忙，稍后再试。',
+    errUnavailable: '上游暂时读不到，稍后再试。',
+    errBadResponse: '上游返回的数据看不懂，已经记下来了。',
+    errNetwork: '连不上上游，可能是网络或浏览器扩展拦了。',
+    /** ⚠️ `{{status}}` 只在这一条里；说不出数字时调用方走兜底，不许印一个空括号。 */
+    errHttp: '上游回了一个错误（HTTP {{status}}）。',
+    /** 上游对"不存在的周"回 400 ⇒ 这一格说的是"没有这一周"，不是"读不到"。 */
+    errNotFound: '没有这一周。',
+    errRateLimited: '请求有点频繁，过一会儿再试。',
+
+    /*
+     * ⚠️ 占位符**也要有词条**（`eloRank` / `highest` / `phasePoint` / `timelineType`
+     *    为 null 时都是它）：组件里写死 `—` 会让两种语言再也没法分开调。
+     */
+    unknown: '—',
+
+    /*
+     * ===========================================================================
+     * 当前进度（`timeline.type`）—— **英文原样 + 词条表**（spec §7.2）
+     * ===========================================================================
+     * ★★ 值是**上游那串标识本身**，而且中英**两份都**写英文（用户稍后自行校准中文）。
+     * ⚠️★ 写中文（"找到要塞"）会与 `timelineLabel()` 的**未知回落**分叉：那一支原样返回
+     *    标识 ⇒ 同一个标识"表里有"与"表里没有"会显示成两种不同的东西，而这一层存在的
+     *    全部理由正是"上游随时会加新节点"。⇒ 值 = 标识，两种语言显示同一串。
+     * ⚠️ 行数与 `packages/shared/src/ranked/timeline.ts` 的 `TIMELINE_LABEL_KEYS`
+     *    **逐条对应**（今天 9 条，含 spec §7.2 那张草图里没出现过的 `story.root`）——
+     *    T8 的渲染自检读表逐行断言两种语言里都有，漏一条界面上就会印出裸 key。
+     */
+    timeline: {
+      root: 'story.root',
+      enterTheNether: 'story.enter_the_nether',
+      findFortress: 'nether.find_fortress',
+      findBastion: 'nether.find_bastion',
+      blindTravel: 'projectelo.timeline.blind_travel',
+      followEnderEye: 'story.follow_ender_eye',
+      enterTheEnd: 'story.enter_the_end',
+      enterEndPortal: 'end.enter_end_portal',
+      killDragon: 'end.kill_dragon',
+    },
   },
 };
 

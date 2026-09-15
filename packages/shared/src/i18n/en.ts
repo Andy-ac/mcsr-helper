@@ -53,6 +53,20 @@ export const en: TranslationSchema = {
      *   up for a few minutes.
      */
     shares: 'Now sharing',
+    /*
+     * ★ "Ranked now" (2026-09-16). The **sidebar row** lands in Task 7 (it has to
+     *   come after the `/ranked` route: `homerender.tsx` guards that a clickable
+     *   section has a real route in `App.tsx`).
+     * ⚠️★ The **string** has to exist now, though: `components/RankedPanels.tsx`
+     *   renders its page title with `t('nav.ranked')`, and
+     *   `services/api/src/i18n-keys.test.ts` scans source for literal call sites
+     *   and asserts the key exists in this dictionary -- landing it later leaves
+     *   `pnpm -w check` red between Task 5 and Task 7.
+     * ⚠️ Not "Ranked live" / "Live": the sidebar's Live row is already "Live",
+     *   and this repo spent a round on two Live rows meaning different sections
+     *   (the same note sits on `nav.shares`).
+     */
+    ranked: 'Ranked now',
     profile: 'Profile',
     admin: 'Admin',
     submit: 'Submit',
@@ -2691,5 +2705,202 @@ export const en: TranslationSchema = {
     errExpired: 'This one has expired — it cannot be changed any more.',
     errNotActive: 'This one is not on the board right now.',
     errNotHidden: 'This one was never taken down.',
+  },
+
+  /*
+   * ===========================================================================
+   * "Ranked now" (`/ranked`) — the frozen list from spec §7 (7.1 / 7.2 / 7.3)
+   * ===========================================================================
+   * ⚠️★ This block lands together with Task 5's four views (a 2026-09-16 plan
+   *    change): those views carry 43 literal `t('ranked.x')` call sites, and
+   *    `services/api/src/i18n-keys.test.ts` scans source for literal call sites
+   *    and asserts the key exists in **this** dictionary -- so landing the views
+   *    first leaves `pnpm -w check` red between Task 5 and Task 7, the exact
+   *    shape this plan legislates against (the same mistake had just shown up
+   *    on Task 3's error-code contract).
+   * ⚠️ No value may be empty or `TBD`, and this side must hold **zero CJK**
+   *    characters (a render-script scan enforces it).
+   * ⚠️ Nothing outside this section moves: it is appended whole, after `shares`.
+   */
+  ranked: {
+    // ---- (1) Status and player count (`RankedStatusView`, spec §6.2) ----
+    statusUp: 'Up',
+    /*
+     * ⚠️ Four states, four sentences (`STATUS_KEYS` is an exhaustive
+     *    `Record<0|1|2|3, string>`): folding "pending" and "maintenance" into
+     *    "down" sends people hunting for a problem of their own inside a
+     *    **planned** maintenance window.
+     */
+    statusDown: 'Down',
+    statusPending: 'Pending',
+    statusMaintenance: 'Maintenance',
+    statusPing: 'Ping {{ms}} ms',
+    /** ⚠️ "unknown" and "0 ms" are two different things; the latter reads impossibly good. */
+    statusPingUnknown: 'Ping unknown',
+    /*
+     * ⚠️ `{{time}}` is the upstream string (`2026-09-15 13:36:27`) **verbatim**,
+     *    with **no** zone conversion: it carries no zone, so `new Date()` would
+     *    read it in the machine's own zone -- the value would drift per server
+     *    and the test would turn into a lottery. It exists to answer "how fresh
+     *    is that heartbeat itself".
+     */
+    statusCheckedAt: 'Last heartbeat {{time}}',
+    statusUptime: '24h uptime {{pct}}%',
+    players: '{{n}} playing Ranked',
+    /*
+     * ⚠️★ A different sentence from `playersZero` ("Nobody is playing Ranked
+     *    right now"): this one says "we could not read it", that one states a
+     *    fact. Merging them makes "unreadable" look like a fact -- and that is
+     *    exactly the thing we do not know.
+     */
+    playersUnknown: 'Player count is unavailable right now',
+    playersZero: 'Nobody is playing Ranked right now',
+    /*
+     * ★★ The response's `stale: true` (added 2026-09-16): the **server** served a
+     *    fallback (the upstream was unreadable at that moment, so it handed back
+     *    the previous successful heartbeat) while **our own** refresh succeeded.
+     *    That is not the same event as `refreshFailed` ("the last refresh
+     *    failed"); merging them sends people to debug a network problem that
+     *    never happened. ⚠️ Without this sentence, a fallback heartbeat is
+     *    indistinguishable on screen from a fresh one.
+     */
+    statusStale: 'The server is serving a stale fallback copy of this data.',
+
+    // ---- (2) Live top matches (`RankedLiveView`, spec §6.3) ----
+    liveTitle: 'Top matches streaming right now',
+    liveEmpty: 'There is no live match right now.',
+    liveFrom: 'Top 10 of {{total}} by average elo',
+    liveExpand: 'Show streams ({{n}})',
+    /*
+     * ⚠️★ The wording is "**this link** cannot be embedded", NOT "this platform is
+     *    unsupported": `livePlatform === null` covers two cases -- an
+     *    unrecognised platform (kick), and a platform that does support embedding
+     *    but whose URL here has no embeddable video (`youtube.com/@handle`). For
+     *    the second case "the platform is unsupported" is **false**, and people
+     *    act on it.
+     * ⚠️ There is no `liveCollapse` / `liveNoStream`: native `<details>` owns
+     *    collapsing, and a match where neither player streams has **no** expand
+     *    control at all -- this repo deletes keys that have no consumer
+     *    (`shares.moderateHideReason` went the same way).
+     */
+    liveExternal: 'This link cannot be embedded — open it in a new window',
+    /** The middle cell: how long **this match** has run (not either player's milestone). */
+    matchTime: 'Running {{time}}',
+
+    // ---- (3) Elo leaderboard (`RankedEloView`, spec §6.4) ----
+    eloTitle: 'Elo leaderboard',
+    season: 'Season {{n}}',
+    /*
+     * ⚠️ The season range's **seconds to milliseconds** conversion happens in the
+     *    view (`new Date(sec * 1000)`): the upstream sends seconds, and a unit
+     *    mix-up does not throw here -- it prints an absurd date.
+     */
+    seasonRange: '{{from}} → {{to}}',
+    colRank: 'Rank',
+    colNickname: 'Nickname',
+    colElo: 'Elo',
+    colHighest: 'Highest',
+    colPhasePoint: 'Phase points',
+    eloEmpty: 'Nobody is on the board this season yet.',
+
+    // ---- (4) Weekly race (`RankedWeeklyView`, spec §6.5) ----
+    weeklyTitle: 'Weekly race',
+    weeklyNumber: 'Week {{n}}',
+    weeklyEndsAt: 'Ends {{when}}',
+    weeklySeed: 'Seed',
+    /*
+     * ★★ The four seed labels are **this section's own** four (added 2026-09-16).
+     * ⚠️★ They do not reuse the shares section's `shares.formOverworld` group:
+     *    cross-section reuse means editing one section's copy silently edits the
+     *    other, and those four belong to "I am sharing a seed set" while these
+     *    four say "this week's race was drawn from these".
+     *    ⚠️ They sit alongside `weeklySeed` ("Seed"), which names the group.
+     */
+    seedOverworld: 'Overworld',
+    seedNether: 'Nether',
+    seedEnd: 'The End',
+    seedRng: 'RNG',
+    weeklyPrev: 'Previous week',
+    weeklyNext: 'Next week',
+    colTime: 'Time',
+    colEloRank: 'Elo rank',
+    weeklyEmpty: 'Nobody has finished this week yet.',
+
+    // ---- The chrome all four panels share, and the failure copy (spec §6.6) ----
+    /*
+     * ⚠️ Rendered only once a load has succeeded: "Updated 0s ago" would be a lie
+     *    (there was no "last time"), and answering "how old is this data" is the
+     *    only job this line has.
+     * ⚠️ Worded so it never prints "1 seconds ago" (same handling as
+     *    `shares.updatedAgo`).
+     */
+    updatedAgo: 'Updated {{secs}}s ago',
+    /*
+     * ⚠️ A failed refresh **keeps** the old data (spec §6.6 row 2), so this says
+     *    "what you see is the old data" and carries the number that makes it
+     *    meaningful; without the number, "the data may be stale" says nothing.
+     * ⚠️ It is not `statusStale`: this one says "we failed to read it this time",
+     *    that one says "we read it, and the server handed us a fallback".
+     */
+    refreshFailed: 'The last refresh failed — what you see is {{secs}} seconds old.',
+    loadFailed: 'Could not load the data.',
+
+    /*
+     * ---- Failure to one sentence (`lib/rankedErrors.ts`'s seven cells) ----
+     * ⚠️ Seven sentences because the reader's next step differs (wait for the
+     *    upstream / wait for us / stop waiting): panels (2)(3)(4) talk to the
+     *    upstream **directly from the visitor's browser**, so nothing about a
+     *    failure reaches our logs -- the sentence on screen is all we ever learn.
+     * ⚠️★ `errRateLimited` deliberately does **not** reuse the site-wide
+     *    `rate_limited`: that one reads "we are rate limiting you", this one reads
+     *    "the upstream is rate limiting you" (500 requests / 10 minutes per IP).
+     */
+    errBusy: 'The upstream is busy — try again in a moment.',
+    errUnavailable: 'The upstream cannot be reached right now — try again later.',
+    errBadResponse: 'The upstream returned data we cannot read; we have noted it.',
+    errNetwork:
+      'Could not reach the upstream — a network issue or a browser extension may be blocking it.',
+    /** ⚠️ `{{status}}` lives only in this one; with no number the caller uses its fallback. */
+    errHttp: 'The upstream returned an error (HTTP {{status}}).',
+    /** The upstream answers 400 for a week that does not exist: "no such week", not "unreadable". */
+    errNotFound: 'There is no such week.',
+    errRateLimited: 'That is a lot of requests — try again in a little while.',
+
+    /*
+     * ⚠️ The placeholder gets a key too (`eloRank` / `highest` / `phasePoint` /
+     *    `timelineType` are all null sometimes): hard-coding `—` inside a component
+     *    would mean the two languages can never be tuned apart.
+     */
+    unknown: '—',
+
+    /*
+     * ===========================================================================
+     * Current milestone (`timeline.type`) — **English as-is + key table** (§7.2)
+     * ===========================================================================
+     * ★★ The values are **the upstream identifier itself**, written in English on
+     *    **both** sides (the user will calibrate the Chinese later).
+     * ⚠️★ Writing anything else here ("Find fortress") would fork away from
+     *    `timelineLabel()`'s **unknown fallback**, which returns the identifier
+     *    verbatim -- the same identifier would then render two different ways
+     *    depending on whether the table happens to know it, and the whole reason
+     *    that layer exists is that the upstream adds nodes whenever it likes.
+     *    ⇒ value = identifier, and both languages show the same string.
+     * ⚠️ The row count matches `TIMELINE_LABEL_KEYS` in
+     *    `packages/shared/src/ranked/timeline.ts` **row for row** (9 today,
+     *    including `story.root`, which spec §7.2's sketch never listed). Task 8's
+     *    render check reads that table and asserts every row in both languages;
+     *    a missing row leaks a raw key onto the page.
+     */
+    timeline: {
+      root: 'story.root',
+      enterTheNether: 'story.enter_the_nether',
+      findFortress: 'nether.find_fortress',
+      findBastion: 'nether.find_bastion',
+      blindTravel: 'projectelo.timeline.blind_travel',
+      followEnderEye: 'story.follow_ender_eye',
+      enterTheEnd: 'story.enter_the_end',
+      enterEndPortal: 'end.enter_end_portal',
+      killDragon: 'end.kill_dragon',
+    },
   },
 };
