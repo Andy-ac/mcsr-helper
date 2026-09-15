@@ -9,9 +9,11 @@
  * 这个页面**自己取数**，而 `renderToStaticMarkup` **不跑 effect**（也不点击、不发请求）
  * ⇒ 整页在渲染自检里**永远停在"加载中"**，写在它里面的任何一块都**断言不到**
  * ——那是一条不可能红的守卫（`docs/pending.md §5.63`）。
- * ⇒ 这里只有三件事：`useAuth()`、一次 `fetchShareSummary`（**游客不发**）、
- *    `<ShareIntroView authed={…} summary={…} />`（Task 8 渲染的正是那个纯视图）。
- *    属性少传、传错都会被 **typecheck** 抓住（`src/**` 在 tsconfig 的 include 里）。
+ * ⇒ 这里只有四件事：`useAuth()`、一次 `fetchShareSummary`（**游客不发**）、
+ *    "失败了就再跑一次"的那个计数器、`<ShareIntroView authed={…} summary={…}
+ *    summaryFailed={…} onRetry={…} />`（Task 8 渲染的正是那个纯视图）。
+ *    属性少传、传错都会被 **typecheck** 抓住（`src/**` 在 tsconfig 的 include 里）
+ *    —— 这也是那两格新 prop 敢写成**必填**的原因。
  *
  * ===========================================================================
  * ⚠️★ 游客一个请求都不发（spec §7.2）
@@ -54,14 +56,15 @@
  * 介绍页本身照样公开 —— 游客在这里读到的是"这个栏目在干什么"（§7.2 的导语），
  * 而不是一堵墙。所以这里没有登录门，也不许因为"反正内容要登录"就把它挡住。
  *
- * ⚠️ 取数失败**没有专门的界面**：`summary` 留在 `null`，登录用户看到的是「加载中」
- *    （`ShareIntroViewProps` 里**没有**出错那一格，契约在 Task 5 就冻结了，
- *    而 Task 8 正是照着那一格渲染的 ⇒ 不在这一轮改它）。
- *    这是一个**记下来的取舍**：条数是附注性的，而这一页在公开路径上 ——
- *    为它在整页再引一个错误块，比它本身重。再试一次 = 刷新页面。
+ * ⚠️ 取数失败**有**专门的界面（2026-09-15 补的**计划空白**，原先这里只记着取舍）：
+ *    条数那一行说「没读到条数。」，并给一颗**就地重试**的按钮 —— 两格新的必填 prop
+ *    （`summaryFailed` / `onRetry`）。原先把失败留在 `null`、让界面说「加载中」的做法
+ *    是**在撒谎**：登录用户会一直等下去，既没有重试，也分不出"慢"和"挂了"。
+ *    ⚠️ 那句取舍仍然成立：这一页**没有整页的错误块**（条数是附注性质的，而它在
+ *    公开路径上，为它引一个整页错误态比它本身重）—— 只是不再用「加载中」顶替失败。
  */
 import type { ShareSummary } from '@mcsr/shared';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ShareIntroView } from '@/components/ShareCard';
 import { fetchShareSummary } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -72,6 +75,52 @@ export function ShareIntro() {
   /** `null` = 还没取到（或游客，压根不会去取）—— 与 `ShareIntroViewProps.summary` 同一件事。 */
   const [summary, setSummary] = useState<ShareSummary | null>(null);
 
+  /**
+   * ★★ 那一次取数**失败了**吗 —— 与 `summary` **两件事**（见 `ShareIntroViewProps`）：
+   *    `summary === null` 同时盖住"还在取"与"取失败了"，能分开它们的只有这一格。
+   *    ⚠️ 没有它的时候，一次失败的表现是「加载中」**永远**停在那里。
+   */
+  const [summaryFailed, setSummaryFailed] = useState(false);
+
+  /**
+   * ★★ 取数 —— **只有这一份**。挂载（登录着的人）与用户按「重试」走的都是它。
+   *
+   * ⚠️ 为什么不让「重试」自己也写一遍 `fetchShareSummary`：那就是两份"怎么取、
+   *    出错怎么办"的规则，而两份规则迟早不一致（这一栏的其它地方都以同一条理由
+   *    避免第二份实现）。
+   * ⚠️ 控制器存在 ref 上，而不是留在某一次 effect 的闭包里：按「重试」发出去的那一次
+   *    请求**不属于任何一次 effect 运行**，而它同样要在卸载 / 换人时被取消。
+   * ⚠️ 依赖是空的：它只读 ref 与 setState（两者身份稳定）——`userId` 的判读在下面
+   *    那个 effect 里做，因为"要不要发"是**每次渲染都会变**的条件，不是这个函数的属性。
+   */
+  const abortRef = useRef<AbortController | null>(null);
+  const load = useCallback(() => {
+    // 上一轮还在飞（连点重试 / 刚换了人）：先取消它，免得它的响应改掉新一轮的状态
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    /*
+     * ★ 这一轮请求开始 ⇒ 失败结论**先撤掉**：它说的是**上一次**请求，
+     *   而对这一次我们什么都还不知道 —— 那一刻界面说「加载中」是**真的**
+     *   （这正是"重试"该有的样子：按下之后回到"还不知道"）。
+     */
+    setSummaryFailed(false);
+
+    fetchShareSummary(controller.signal)
+      .then((data) => setSummary(data))
+      .catch((error: unknown) => {
+        // abort 是我方主动取消（卸载 / 换了人 / 连点重试），不当作失败来看
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        /*
+         * ⚠️ 失败：条数留 `null`，但**必须**把"失败了"这件事说出来（`summaryFailed`）——
+         *    只留 `null` 的话界面只能把它渲染成「加载中」，那正是本节要治的缺陷。
+         */
+        setSummary(null);
+        setSummaryFailed(true);
+      });
+  }, []);
+
   /*
    * ★ 发不发请求的**唯一**依据是"谁登录着"（`userId`），不是 `auth.loading`：
    *   · 游客 —— 含 `auth.loading` 那一段（那时 `user` 还是 `null`）⇒ 不发；
@@ -79,10 +128,11 @@ export function ShareIntro() {
    *     对象在 `refresh()` 重取同一个人的资料后会换一个新的，取对象会让这一页
    *     白发一次请求（与 `routes/CalendarDetail.tsx` 的 `[id, auth.loading, auth.user?.id]`
    *     同一条做法）。
+   *   · ★ 登录之后**不再**自动重取：这一页没有轮询，也刻意没有（§7.6）。
+   *     第二次取数只可能来自用户按「重试」——它调的是上面那个 `load`。
    *
    * ⚠️ 为什么不用 `lib/useAsync.ts`：它的 loader **一定会跑**（那是"游客不发"的反面），
-   *    而"条件发请求"这件事只能由调用方自己判。它的另一条特性（依赖一变就回到
-   *    "加载中"）这里也不需要 —— 这一页本来就只有一次取数。
+   *    而"条件发请求"这件事只能由调用方自己判。
    */
   const userId = auth.user?.id ?? null;
 
@@ -97,20 +147,15 @@ export function ShareIntro() {
      */
     if (userId === null) {
       setSummary(null);
+      // ⚠️ 失败那一格也要清：上一个人的失败结论不属于下一个访客（与 `setSummary(null)` 同一件事）
+      setSummaryFailed(false);
       return;
     }
 
-    const controller = new AbortController();
-    fetchShareSummary(controller.signal)
-      .then((data) => setSummary(data))
-      .catch((error: unknown) => {
-        // abort 是我方主动取消（卸载 / 换了人），不当作失败来看
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        // 失败：条数留 `null`（文件头写了为什么这里没有错误界面）
-        setSummary(null);
-      });
-    return () => controller.abort();
-  }, [userId]);
+    load();
+    // 卸载 / 换人：把「重试」按钮可能发出去的那一次也一起取消（它在 `abortRef` 里）
+    return () => abortRef.current?.abort();
+  }, [userId, load]);
 
   return (
     <ShareIntroView
@@ -120,6 +165,12 @@ export function ShareIntro() {
        */
       authed={auth.loading || auth.user !== null}
       summary={summary}
+      summaryFailed={summaryFailed}
+      /*
+       * ★ 重试直接调 `load`（它就是那**唯一**一份取数逻辑）。
+       * ⚠️ 游客手上没有请求可重试 —— 那种情况下视图也不渲染这颗按钮（它自己判 `authed`）。
+       */
+      onRetry={load}
     />
   );
 }

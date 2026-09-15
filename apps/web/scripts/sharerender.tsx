@@ -90,6 +90,8 @@ import {
   ShareIntroView,
   type ShareIntroViewProps,
 } from '@/components/ShareCard';
+import { ApiError } from '@/lib/api';
+import { describeShareError, SHARE_STATE_REASON_KEYS } from '@/lib/shareErrors';
 import { remainingMs, remainText, serverOffset, type Translate } from '@/lib/shareTime';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
@@ -500,8 +502,58 @@ const render = (node: ReactElement): string =>
     createElement(I18nextProvider, { i18n }, createElement(MemoryRouter, null, node)),
   );
 
-const renderIntro = (props: ShareIntroViewProps): string =>
-  render(createElement(ShareIntroView, props));
+/**
+ * 介绍页那一行的默认 props。**每一格都显式给**（含两格必填的），
+ * 理由与下面 `assertBoardPropsGiven` 逐字相同 —— `scripts/**` 不受类型检查。
+ */
+const INTRO_PROPS: ShareIntroViewProps = {
+  authed: true,
+  summary: SUMMARY,
+  summaryFailed: false,
+  onRetry: noop,
+};
+
+/**
+ * ★★ 介绍页的四格 prop 都给了吗 —— 与 `assertBoardPropsGiven` 同一条理由、同一个形状。
+ *
+ * ⚠️ 这一条是 2026-09-15 补的：`summaryFailed` / `onRetry` 是**新加的两格必填 prop**
+ *    （取数失败那一档原先在界面上**不存在**，见 ② 那一节），而"必填"这道保护
+ *    只罩得住**被类型检查的调用方**（`routes/ShareIntro.tsx`）—— **罩不到本脚本**。
+ *    少传一格的表现是"失败那一屏永远不渲染"，而产物里没有任何东西能反映这件事。
+ * ⚠️ 判据是 `undefined`，**不能**写成 falsy：`summaryFailed` 的 `false`
+ *    （"这一次没失败"）是合法值，写成 falsy 会让每一个正常夹具都红。
+ */
+const INTRO_PROPS_GIVEN = ['authed', 'summary', 'summaryFailed', 'onRetry'] as const;
+
+function assertIntroPropsGiven(props: ShareIntroViewProps, where: string): void {
+  for (const key of INTRO_PROPS_GIVEN) {
+    assert.notEqual(
+      (props as unknown as Record<string, unknown>)[key],
+      undefined,
+      `★★ ${where}：必填 prop \`${key}\` 没有传 —— 本脚本不受类型检查保护，产物里也看不出来`,
+    );
+  }
+  assert.equal(
+    typeof props.onRetry,
+    'function',
+    `★★ ${where}：\`onRetry\` 必须是函数（传了 undefined 就是一颗按不动的「重试」）`,
+  );
+}
+
+/* 探针：上面那个检查本身必须能命中 —— 否则"四格都传了"是一条永远不红的守卫。 */
+assert.throws(
+  () => {
+    assertIntroPropsGiven({ ...INTRO_PROPS, onRetry: undefined }, '探针');
+  },
+  /onRetry/,
+  '★★ 探针：介绍页缺 prop 的检查本身必须能命中（否则"四格都传了"这条是空跑）',
+);
+
+const renderIntro = (o: Partial<ShareIntroViewProps> = {}, where = '介绍页'): string => {
+  const props: ShareIntroViewProps = { ...INTRO_PROPS, ...o };
+  assertIntroPropsGiven(props, where);
+  return render(createElement(ShareIntroView, props));
+};
 
 /**
  * 看板视图那一行的默认 props。**每一格都显式给**（含三格必填的），
@@ -687,6 +739,129 @@ assert.equal(
 ok('偏移量真的被用在渲染路径上（skew 探针 + 显示 12 分钟）');
 
 // ---------------------------------------------------------------------------
+/*
+ * ⚠️ 编号写 `①b` 而不是把后面全体 +1：这一节与 ① 是**同一件事的另一半**
+ *    （`apps/web/src/lib/` 里那两个纯模块都没有测试运行器，只能被本脚本钉住），
+ *    插在 ① 后面就是它的位置；而"把 ②…⑮ 整体挪一位"要顺带改本文件里十几处
+ *    交叉引用（夹具注释里的 ⑦/⑩/⑪/⑫ …）—— 那是一次与本次改动无关的重编号。
+ */
+console.log('①b 失败码 → 用户那一句话（lib/shareErrors.ts）');
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一节补的是一个**全仓没有第二处**的空白：`describeShareError` 是纯函数
+ *    （`(code, reason, kind) → 一句话`），只有 `routes/ShareBoard.tsx` 三个调用点，
+ *    而**那三个调用点本身不在任何渲染自检的操作数里**（页面自己取数，SSR 只停在
+ *    "加载中"）。⇒ 在本次改动之前，这个函数里有两处**换掉之后完全无声**的对应关系：
+ *      · 三个 `invalid_state` 的 reason → 三句话：**对调两行**之后，界面照样渲染、
+ *        类型照样过（三格都是 `string`）、门禁一个都不看它，而用户读到的是另一段处境的话；
+ *      · `at_limit` 按 `kind` 分叉：room 那句说"先下架另一条"、seed 那句说"你已经在展示 N 条"。
+ *    这两处正是 spec §5.3 / §5.4 把它们**分开**的原因（`at_limit` 之所以独立成码，
+ *    就是为了让"恢复 room 被拒"和"发布 seed 超额度"各自拿到对的那一句），
+ *    所以两处各自都值得被钉住。
+ * ⚠️ 判据是**精确的 key**，不是"非空"：非空对"两句对调"完全免疫。
+ */
+/** 调用方给的兜底（`useApiErrorText()`）—— 用一个哨兵，好断言"确实走了兜底"这条路。 */
+const FALLBACK = 'FALLBACK';
+
+/** 记录器：把"用的是哪一个 key、插值进去了什么"钉下来（与 ① 的 `tRecorder` 同形）。 */
+const errorSay = (key: string, opts?: Record<string, unknown>): string =>
+  opts?.max === undefined ? key : `${key}|max=${String(opts.max)}`;
+
+/** 走一遍**真实**的 `describeShareError`（表对了但派发不查表，也是缺陷）。 */
+const sayOf = (error: unknown, kind: ShareKind): string =>
+  describeShareError(error, errorSay as Translate, () => FALLBACK, kind);
+
+/**
+ * 一个服务端拒绝。
+ *
+ * ⚠️ `ApiError` 的构造器有**十个位置参数**（它自己的注释里写了为什么会这样），
+ *    这里只用得到 `code` 与 `reason`（`status` 不是这一层读的东西），所以包一层 ——
+ *    免得每一行都要数九个 `undefined`。
+ */
+const rejectionOf = (code: string, reason?: string): ApiError =>
+  new ApiError(
+    `server refused: ${code}`,
+    409,
+    code,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    reason,
+  );
+
+/* ★ 逐格断言那张表：对调任意两行、改掉任意一个 key、或往里多塞一格，这里立刻红。 */
+assert.deepEqual(
+  SHARE_STATE_REASON_KEYS,
+  {
+    expired: 'shares.errExpired',
+    not_active: 'shares.errNotActive',
+    not_hidden: 'shares.errNotHidden',
+  },
+  '★★ `invalid_state` 的三个 reason → 三句话的映射表被改了（对调两行在界面上**看不出来**）',
+);
+
+/* ★ 表是唯一的映射来源：真实输出必须按它走（否则"表是对的"什么也证明不了）。 */
+assert.equal(
+  sayOf(rejectionOf('invalid_state', 'expired'), 'room'),
+  'shares.errExpired',
+  '★★ reason=expired ⇒ 说"到点了，不能再改了"',
+);
+assert.equal(
+  sayOf(rejectionOf('invalid_state', 'not_active'), 'room'),
+  'shares.errNotActive',
+  '★★ reason=not_active ⇒ 说"它现在不在展示中"',
+);
+assert.equal(
+  sayOf(rejectionOf('invalid_state', 'not_hidden'), 'room'),
+  'shares.errNotHidden',
+  '★★ reason=not_hidden ⇒ 说"它本来就没有下架"',
+);
+assert.equal(
+  sayOf(rejectionOf('invalid_state', 'ghost_state'), 'room'),
+  FALLBACK,
+  '★★ 认不出的第四种 reason ⇒ 走兜底，不假装知道它是什么意思（也不许崩）',
+);
+assert.equal(
+  sayOf(new Error('not an ApiError'), 'room'),
+  FALLBACK,
+  '★ 不是 `ApiError` 的一律走兜底（这一条本来就在，写在旁边免得上面几条被当成全貌）',
+);
+
+/*
+ * ★★ `at_limit` 的两条分支必须**按 kind 分叉**，而且 seed 那一句的 `{{max}}`
+ *    只能来自 `SHARE_LIMITS.seed`：恢复那条路的 409 里**没有 `limit` 字段**
+ *    （spec §5.4 的冻结形状，所以 room 与 seed 的 `at_limit` 在响应上长得一模一样）。
+ * ⚠️ 下面那个 `|max=7` 是**从常量拼出来的**：把 `max` 改成从响应拿（或干脆不传），
+ *    记录器拿到的就是 `undefined` ⇒ 红。
+ */
+const atLimitRoom = sayOf(rejectionOf('at_limit'), 'room');
+const atLimitSeed = sayOf(rejectionOf('at_limit'), 'seed');
+assert.equal(
+  atLimitRoom,
+  'shares.atLimitRestore',
+  '★★ 恢复 room 被拒 ⇒ 说"先把它下架，再恢复这条"',
+);
+assert.equal(
+  atLimitSeed,
+  `shares.atLimitSeeds|max=${String(SHARE_LIMITS.seed)}`,
+  '★★ 发布 seed 超额度 ⇒ 说"你在展示 N 条"，而那个 N 来自 `SHARE_LIMITS.seed`（响应里没有它）',
+);
+assert.notEqual(
+  atLimitRoom,
+  atLimitSeed,
+  '★★ 同一个码的两条路必须给出**不同**的话（这正是它独立成码的原因）',
+);
+assert.notEqual(
+  errorSay('shares.errExpired'),
+  errorSay('shares.errNotActive'),
+  '★ 探针：记录器本身能区分两个 key（否则上面那些"两句不同"的比较是空跑）',
+);
+ok('失败码：三个 reason 各说各的 + `at_limit` 按 kind 分叉（seed 的 max 来自常量）');
+
+// ---------------------------------------------------------------------------
 console.log('② 介绍页（§11.2 第 1 条）');
 // ---------------------------------------------------------------------------
 const introGuestNull = renderIntro({ authed: false, summary: null });
@@ -694,6 +869,16 @@ const introGuestNull = renderIntro({ authed: false, summary: null });
 const introGuestWithSummary = renderIntro({ authed: false, summary: SUMMARY });
 const introAuthed = renderIntro({ authed: true, summary: SUMMARY });
 const introAuthedLoading = renderIntro({ authed: true, summary: null });
+/*
+ * ★★ 取数**失败**那一档（2026-09-15 补的一块**计划空白**）。
+ * ⚠️ 它在本次改动之前**在界面上不存在**：失败只能把 `summary` 留在 `null`，
+ *    而视图只有"加载中"与"条数"两句 ⇒ 登录用户**一直**停在「加载中」，
+ *    既没有重试，也分不出"慢"和"挂了"。契约因此多了两格**必填** prop
+ *    （`summaryFailed` / `onRetry`）—— 这一档就是它们的靶子。
+ */
+const introAuthedFailed = renderIntro({ authed: true, summary: null, summaryFailed: true });
+/** ⚠️ 缺陷形状：游客**却拿到了"取数失败"**（他这一次请求压根没发，§7.2）。 */
+const introGuestFailed = renderIntro({ authed: false, summary: null, summaryFailed: true });
 
 assert.equal(
   textOf(elementsWithClass(introGuestNull, 'shareIntro__title')[0] ?? ''),
@@ -763,8 +948,9 @@ for (const [where, html] of [
   }
 }
 /*
- * ★ "三种情况是**三句话**"（§7.2）—— 光断言"各自显示什么"不够，
- *   还要断言**它们不互相串**：游客不该看到「加载中…」，登录未取到不该看到「登录后可见」。
+ * ★ "四种情况是**四句话**"（§7.2）—— 光断言"各自显示什么"不够，
+ *   还要断言**它们不互相串**：游客不该看到「加载中…」，登录未取到不该看到「登录后可见」，
+ *   而**取数失败**尤其不能借用「加载中…」（那正是本次要治的那个缺陷的形状）。
  */
 assert.equal(
   hasText(introGuestNull, t('common.loading')),
@@ -786,7 +972,90 @@ assert.ok(
     hasText(introGuestNull, t('shares.introSeedsDesc')),
   '★ 游客拿到的两块卡片连说明都在（不是只剩标题的空壳）',
 );
-ok('介绍页：标题 + 导语 + 两块卡片；游客（含缺陷形状）无条数无内容，且三种说法不互串');
+
+/*
+ * ★★ 取数失败那一档 —— 本次改动**新加**的唯一一条界面状态（原先它不存在，
+ *    失败被渲染成「加载中」，见上面夹具那一段）。判据分三块：
+ *      ① 那一行说的是「没读到条数。」，**两张卡片都换**（它们共用同一次请求）；
+ *      ② 产物里**没有**「加载中…」（失败不许长得像加载中，那是这次要治的缺陷）；
+ *      ③ 有一颗**可点的**「重试」（读 `disabled` 属性，而不是"按钮在不在"）。
+ * ⚠️ 正面对照就在同一节里：`introAuthed`（成功）与 `introAuthedLoading`（还在取）
+ *    都**不许**出现这句话、也不许出现那颗按钮 —— 否则上面三条可能是空跑。
+ */
+assert.equal(
+  textOf(elementsWithClass(introAuthedFailed, 'shareIntro__count')[0] ?? ''),
+  flat(t('shares.countFailed')),
+  '★ 取数失败 ⇒ 那一行说「没读到条数。」',
+);
+assert.equal(
+  elementsWithClass(introAuthedFailed, 'shareIntro__count').length,
+  2,
+  '★ 两张卡片那一行都换成了失败句（不是只有其中一张）',
+);
+assert.equal(
+  hasText(introAuthedFailed, t('common.loading')),
+  false,
+  '★★ 取数失败**不许**渲染成「加载中…」—— 那会让人一直等下去（这一档原先的缺陷就是这个）',
+);
+/*
+ * ⚠️ 结构先于可点：下面两条（"整块只有一个" + "不许落在卡片里面"）必须在
+ *    `assertClickable` **之前** —— 反过来写的话，"重试被塞进卡片里"那种改法会先撞上
+ *    "找不到**唯一**的入口"（卡片里那颗 + 卡片外那颗 ⇒ 实测 3 颗），
+ *    而那两条结构断言就永远没机会说话（mutation 实测过）。
+ */
+const failActions = elementsWithClass(introAuthedFailed, 'shareIntro__actions');
+assert.equal(
+  failActions.length,
+  1,
+  `★ 「重试」整块只有一个（两张卡片共用同一次请求，找到 ${String(failActions.length)} 块）`,
+);
+assert.equal(
+  elementsWithClass(introAuthedFailed, 'shareIntro__card').some((card) =>
+    card.includes(failActions[0] ?? ''),
+  ),
+  false,
+  '★★ 那颗「重试」不许落在卡片**里面** —— 卡片整块是一个 `<a>`，而"可点元素套可点元素"是两个浏览器行为不一致的写法',
+);
+assertClickable(introAuthedFailed, t('common.retry'), '介绍页取数失败');
+/* ⚠️ 「可点」这条没有反面探针（这一屏没有 `busy` 之类会禁用的状态）——
+   同一支 `isDisabled` 读取器在 ④ 与 ⑤ 各有一条"`busy` ⇒ 必须 disabled"的反面控制。 */
+assert.equal(
+  hasText(introAuthed, t('shares.countFailed')),
+  false,
+  '★ 正面对照：取到了条数 ⇒ 不说失败那一句',
+);
+assert.equal(
+  hasText(introAuthedLoading, t('shares.countFailed')),
+  false,
+  '★ 正面对照：还在取 ⇒ 也不说失败那一句（"慢"与"挂了"必须分得开）',
+);
+assert.equal(
+  elementsWithClass(introAuthed, 'shareIntro__actions').length +
+    elementsWithClass(introAuthedLoading, 'shareIntro__actions').length,
+  0,
+  '★ 正面对照：没失败时那颗「重试」不渲染（否则"失败时它必须在"是恒真的）',
+);
+/*
+ * ★★ 游客那一支要**压过**"失败"（与 `introGuestWithSummary` 同一个形状的缺陷探针）：
+ *    他这一次请求压根没发（§7.2），所以既不该看到失败句，也不该看到一颗按下去
+ *    什么都不会发生的「重试」。
+ */
+assert.equal(
+  hasText(introGuestFailed, t('shares.introGuestCount')),
+  true,
+  '★ 游客即使拿到"取数失败"也读「登录后可见」',
+);
+assert.equal(
+  hasText(introGuestFailed, t('shares.countFailed')),
+  false,
+  '★★ 游客不该看到失败句 —— 他没有请求可失败',
+);
+assert.deepEqual(
+  elementsWithClass(introGuestFailed, 'shareIntro__actions'),
+  [],
+  '★★ 游客也不该看到那颗「重试」（点了什么都不会发生）',
+);
+ok('介绍页：标题 + 导语 + 两块卡片；四种说法不互串（含"取数失败"那一档与它的正面对照）');
 
 // ---------------------------------------------------------------------------
 console.log('③ 看板·游客（§11.2 第 2 条）');
@@ -1445,6 +1714,10 @@ console.log('⑬ 词条：本栏目这两个视图用到的 key 都在，而且�
  * ⚠️ i18next 查不到 key 时**原样返回 key**（不报错）⇒ 打错一个字母的表现是
  *    界面上印出一串 `shares.xxyy`，而它既不会被类型检查发现（`t` 的入参是 string），
  *    也不会被别的门禁发现。下面这张表是**本栏目界面用到的那一批**，逐条查。
+ * ⚠️★ 表里还有 `shareErrors.ts` 交给 `t()` 的四条（`atLimitRestore` 与三条 `err*`）：
+ *    那是这一栏**唯一**一条"先有词条、后有调用点、而且调用点是**拼出来的**"的路
+ *    （`t(SHARE_STATE_REASON_KEYS[reason])`）⇒ `services/api/src/i18n-keys.test.ts`
+ *    的"字面量 `t()`"扫描**看不见它们**，能证明它们存在的只有这里。
  * ⚠️ 那个数字是**手抄的**（本仓惯例，见 `resourcerender.tsx`）：它防的是
  *    "为了让红的变绿，把某一行从表里删掉"。
  */
@@ -1460,6 +1733,7 @@ const FROZEN_KEYS = [
   'shares.introSeedsDesc',
   'shares.introCount',
   'shares.introGuestCount',
+  'shares.countFailed',
   'shares.tabRoom',
   'shares.tabSeed',
   'shares.backToIntro',
@@ -1500,18 +1774,22 @@ const FROZEN_KEYS = [
   'shares.restore',
   'shares.hideHint',
   'shares.atLimitSeeds',
+  'shares.atLimitRestore',
+  'shares.errExpired',
+  'shares.errNotActive',
+  'shares.errNotHidden',
   'shares.refreshFailed',
   'shares.updatedAgo',
   'shares.loadFailed',
   'shares.truncated',
 ] as const;
-assert.equal(FROZEN_KEYS.length, 55, '探针：冻结的清单就是 55 条');
+assert.equal(FROZEN_KEYS.length, 60, '探针：冻结的清单就是 60 条');
 assert.equal(new Set(FROZEN_KEYS).size, FROZEN_KEYS.length, '探针：清单里没有重复');
 for (const key of FROZEN_KEYS) {
   assert.ok(i18n.exists(key), `★ 词条 ${key} 在【${LANG}】里不存在（界面上会原样印出这个 key）`);
   assert.notEqual(t(key), key, `★ 词条 ${key} 在【${LANG}】里没有真值`);
 }
-ok(`55 个 key 在【${LANG}】里都存在且有真值`);
+ok(`60 个 key 在【${LANG}】里都存在且有真值`);
 
 /** 取词条并压平（比对用）—— 集中一处，免得每处都写一遍 `flat(t(...))`。 */
 function fresh(key: string, opts?: Record<string, unknown>): string {
@@ -1526,6 +1804,8 @@ const everyProduct = [
   introGuestWithSummary,
   introAuthed,
   introAuthedLoading,
+  introAuthedFailed,
+  introGuestFailed,
   guestFullBoard,
   guestNoBoard,
   authedRoomBoard,
@@ -1649,9 +1929,11 @@ console.log('     新的组件实例，拿不到"第二次渲染"。⇒ "倒计�
 console.log('   同样证明不了的还有：');
 console.log('   · **点击的结果**：SSR 的产物里没有事件处理器，一颗接好线的按钮与一颗 `onClick` 是');
 console.log(
-  '     `undefined` 的按钮**长得一模一样** —— 本脚本用的是两道运行时守卫（`assertBoardPropsGiven`',
+  '     `undefined` 的按钮**长得一模一样** —— 本脚本用的是三道运行时守卫（`assertBoardPropsGiven`、',
 );
-console.log('     与"入口不能是 disabled"），而"prop 忘了传"在**页面**那一侧是编译错误；');
+console.log(
+  '     `assertIntroPropsGiven` 与"入口不能是 disabled"），而"prop 忘了传"在**页面**那一侧是编译错误；',
+);
 console.log(
   '   · **真的复制到剪贴板**（`navigator.clipboard`，§7.4 的失败提示）、真的发帖/下架/恢复；',
 );
@@ -1665,7 +1947,7 @@ console.log(
  * ⚠️ 组数是**手抄的**（本仓惯例）：它防的是"把某一段摘掉" —— 删掉一整组断言之后
  *    脚本照样绿、照样打印"通过 N 项"，只有这个数字会变。改脚本就要一起改这里。
  */
-const expectedGroups = LANG === 'en' ? 16 : 15;
+const expectedGroups = LANG === 'en' ? 17 : 16;
 assert.equal(
   pass,
   expectedGroups,

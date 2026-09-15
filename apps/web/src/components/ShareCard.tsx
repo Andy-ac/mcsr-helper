@@ -9,7 +9,8 @@
  * 永远停在"加载中"那一屏，写在页面里的任何一块都**断言不到**。
  * 那样的自检是一条**不可能红的守卫**（`docs/pending.md §5.63`：恒真的断言比没有断言更坏）。
  * ⇒ 界面全部搬到这里，页面只做取数；渲染自检渲染的是：
- *     · `ShareIntroView`（介绍页：`summary === null` 就是"还没取到/游客"）
+ *     · `ShareIntroView`（介绍页：`summary === null` 是"还没取到/游客"，
+ *       而"取数**失败**"是另一格 `summaryFailed` —— 见那个 props 的注释）
  *     · `ShareBoardView`（看板页：四种画面都在它的 props 里）
  *   这与 `components/` 里那个贡献者面板是同一个形状、同一条理由（那个文件头记着
  *   事故的来历，它也正是本仓"容器 + 纯视图"这对名字的先例）。
@@ -743,8 +744,28 @@ export interface ShareIntroViewProps {
    *
    * ⚠️ 用 `null` 而不是"两个 0"来区分这两件事：游客看到"0 条在展示"会以为
    *    这里现在没人分享，而事实是**内容不给游客看**（那是本栏目唯一的那条线）。
+   * ⚠️ "还在取"与"取失败了"**都是 `null`** —— 分开它们的是下面那一格，不是它。
    */
   summary: ShareSummary | null;
+  /**
+   * ★★ 那一次取数**失败了**（2026-09-15 补的：这是一个**计划空白**，不是实现疏漏）。
+   *
+   * ⚠️ 它为什么必须存在：原先这三格只有 `authed` 与 `summary`，而失败只能把
+   *    `summary` 留在 `null` ⇒ 视图把它渲染成 `common.loading`（「加载中」）⇒
+   *    **登录用户会一直等下去**，既没有重试，也分不出"慢"和"挂了"。
+   *    这一格让"读不到"变成一件**说得出来**的事，而不是让它长得像加载中。
+   * ⚠️★ 它是**必填**（不是可选）：可选 + 缺省当成"没失败"，会把"调用方忘了接线"
+   *    变成一件**所有门禁都绿**的静默失效 —— 本计划在 `onRetry` / `onResendVerify`
+   *    那两格上已经踩过一次（`ShareBoardViewProps` 的注释里记着那次教训）。
+   */
+  summaryFailed: boolean;
+  /**
+   * 失败了就再取一次（**必填**，理由同上）。
+   *
+   * ⚠️ 它**只在 `summaryFailed` 时**渲染出来：这一页不自动刷新（§7.6），
+   *    所以"重试"是用户唯一的第二次机会。
+   */
+  onRetry: () => void;
 }
 
 /**
@@ -757,12 +778,17 @@ export interface ShareIntroViewProps {
  * ⚠️ 介绍页**不自动刷新**（§7.6）：它是静态介绍 + 一个附注性质的条数，
  *    没有"实时"的要求 —— 别因为"同属一个栏目"就顺手给它加一个定时器。
  */
-export function ShareIntroView({ authed, summary }: ShareIntroViewProps) {
+export function ShareIntroView({ authed, summary, summaryFailed, onRetry }: ShareIntroViewProps) {
   const { t } = useTranslation();
 
-  /** 一块卡片上那一行条数。⚠️ 三种情况是**三句话**，不能合成一句。 */
+  /**
+   * 一块卡片上那一行条数。⚠️ 四种情况是**四句话**，不能合成一句
+   * （后两句尤其不能：让"读不到"长得像"加载中"正是这一格要治的缺陷）。
+   */
   function countText(cardKind: ShareKind): string {
+    // ⚠️ 游客这一支排在最前：他这一次请求压根没发（§7.2），所以"失败/加载中"都不属于他
     if (!authed) return t('shares.introGuestCount');
+    if (summaryFailed) return t('shares.countFailed');
     // 登录了但还没取到：说"加载中"，**不要**说"登录后可见"（他自己就是登录用户）
     if (summary === null) return t('common.loading');
     return t('shares.introCount', { n: summary[cardKind].live });
@@ -783,6 +809,21 @@ export function ShareIntroView({ authed, summary }: ShareIntroViewProps) {
           </Link>
         ))}
       </div>
+      {/*
+        ★ 取数失败时的「重试」—— **只在这一档渲染**，而且是**一颗**按钮而不是每张卡片一颗：
+          两张卡片的条数来自**同一次**请求（`GET /api/shares/summary` 一次给两栏）。
+        ⚠️ 位置在卡片**外面**：卡片整块是一个 `<Link>`（§7.2），把按钮塞进去就是
+          "一个可点元素套在另一个可点元素里" —— 点它到底算点链接还是点按钮，浏览器各说各话。
+        ⚠️ 游客即使拿到了 `summaryFailed` 也不渲染它（上面 `countText` 的第一支同一条理由）：
+          他没有请求可重试，一颗按下去什么都不会发生的按钮比没有按钮更坏。
+      */}
+      {authed && summaryFailed ? (
+        <p className="shareIntro__actions">
+          <button type="button" className="ghostbtn" onClick={onRetry}>
+            {t('common.retry')}
+          </button>
+        </p>
+      ) : null}
     </section>
   );
 }

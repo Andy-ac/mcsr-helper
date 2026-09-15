@@ -76,6 +76,43 @@ import { ApiError } from '@/lib/api';
 /** `t()` 的最小形状（与 `lib/shareTime.ts` 里那一个同形，各自独立、不互相 import）。 */
 export type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+/** `invalid_state` 的三种 `reason`（服务端 `SetVisibilityFailure` 那一支）。 */
+export type ShareStateReason = 'expired' | 'not_active' | 'not_hidden';
+
+/**
+ * ★★ 三个 `reason` → 它们各自那一句话 —— **本文件里唯一的一份映射**。
+ *
+ * ⚠️★ 它**导出**，唯一理由是：`apps/web` 没有测试运行器（见 `lib/shareTime.ts` 的文件头），
+ *    而这三格对应关系是全仓最容易被一次"看起来像整理"的改动**无声换掉**的东西 ——
+ *    两个 reason 对调之后：界面照样渲染、类型检查照样过（三格都是 `string`）、
+ *    门禁一个都不看它。⇒ `apps/web/scripts/sharerender.tsx` 的 ①b **逐格**断言这张表，
+ *    **并且**用记录器走一遍 `describeShareError` 的真实输出（表对了但派发不查表，也是缺陷）。
+ *
+ * ⚠️ 类型是**手抄**的联合（服务端给过来的是字符串）：服务端加第四种 reason 时这里
+ *    不会有编译错误 —— 那一支由下面 `isShareStateReason` 挡住、走调用方的兜底，
+ *    而不是在这里假装认识它。
+ *
+ * ⚠️ 这三条 key 不在 `services/api/src/i18n-keys.test.ts` 的"字面量 `t()`"扫描范围里了
+ *    （它们现在是**表里的数据**，不再是 `t('shares.errExpired')` 那样的调用点），
+ *    所以它们的**存在性**改由 `sharerender.tsx` 的 `FROZEN_KEYS` 那 ⑬ 条守着。
+ */
+export const SHARE_STATE_REASON_KEYS: Record<ShareStateReason, string> = {
+  expired: 'shares.errExpired',
+  not_active: 'shares.errNotActive',
+  not_hidden: 'shares.errNotHidden',
+};
+
+/**
+ * 服务端给的 `reason` 是不是表里认得的那三个之一 —— 顺带把它缩窄成联合类型，
+ * 于是查表**不需要任何类型断言**。
+ *
+ * ⚠️ 判据用 `Object.hasOwn`，不能用 `in`、也不能直接查表：`in` 会认原型链上的名字，
+ *    一句伪造的 `{"reason":"constructor"}` 就能把表对象的继承属性当成词条 key 交给 `t()`。
+ */
+function isShareStateReason(reason: unknown): reason is ShareStateReason {
+  return typeof reason === 'string' && Object.hasOwn(SHARE_STATE_REASON_KEYS, reason);
+}
+
 /**
  * 发布 / 下架 / 恢复失败时给用户的那一句话。
  *
@@ -101,24 +138,15 @@ export function describeShareError(
           t('shares.atLimitSeeds', { max: SHARE_LIMITS.seed });
 
     /*
-     * ★ 三种 reason，三句话 —— 见文件头那张表。
-     * ⚠️ 直接比 `error.reason`（服务端给的是**字符串**，不是联合类型）：
-     *    写成一张 `Record<联合, string>` 反而要加一个断言，而那个联合是**手抄**的、
-     *    服务端加了第四种它也不会报错 —— 那样只是把"认不出"从 `default` 挪到了断言里。
+     * ★ 三种 reason，三句话 —— 映射在 `SHARE_STATE_REASON_KEYS` 那张**导出**的表里，
+     *   这一段只负责查表（理由写在那张表自己的注释里：表被渲染自检逐格断言，
+     *   换掉两行的对应关系会当场红，而它以前是一条谁都看不见的 `switch`）。
+     * ⚠️ 认不出的 reason（服务端加了第四种）依旧走兜底，不假装知道它是什么意思。
      */
-    case 'invalid_state': {
-      switch (error.reason) {
-        case 'expired':
-          return t('shares.errExpired');
-        case 'not_active':
-          return t('shares.errNotActive');
-        case 'not_hidden':
-          return t('shares.errNotHidden');
-        default:
-          // 认不出的 reason（服务端加了第四种）→ 兜底，不假装知道它是什么意思
-          return fallback(error);
-      }
-    }
+    case 'invalid_state':
+      return isShareStateReason(error.reason)
+        ? t(SHARE_STATE_REASON_KEYS[error.reason])
+        : fallback(error);
 
     /*
      * 发布那条路要求邮箱已验证（`requireVerified`，§6.1）。这一条**必须**和 401 分开：

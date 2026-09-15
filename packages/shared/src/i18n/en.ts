@@ -2465,6 +2465,16 @@ export const en: TranslationSchema = {
     /** `{{n}}` is the site-wide count (not "yours"); guests get the other string. */
     introCount: '{{n}} on the board',
     introGuestCount: 'Visible once you sign in',
+    /*
+     * ★★ The fourth sentence (2026-09-15, a gap in the plan, not in the code):
+     *    the fetch failed.
+     *
+     * ⚠️ It has to say **not read**, so that a failure never looks like loading —
+     *    "looks like loading" is exactly what the old shape did (a failed fetch
+     *    left `summary` at `null`, the view rendered `common.loading`, and a
+     *    signed-in user waited forever with no way to retry).
+     */
+    countFailed: 'Could not read the counts.',
 
     // ---- Board pages (both kinds, real URLs, switchable tabs) ----
     /*
@@ -2554,11 +2564,13 @@ export const en: TranslationSchema = {
     hide: 'Take down',
     restore: 'Restore',
     /*
-     * ★ This string contains `**expires**` — a real emphasis pair — so its
-     *   render site must go through `em()`, and the key is registered in
-     *   `services/api/src/i18n-keys.test.ts`. ⚠️ It has **no call site yet**
-     *   (`ShareMineBar` arrives with Task 5), hence `UNWIRED_KEYS`; once that
-     *   component exists the key moves into `EXPECTED_SITES`.
+     * ★ This string contains `**expires**` — a real emphasis pair — so its render
+     *   site must go through `em()`, and the key is registered in
+     *   `services/api/src/i18n-keys.test.ts`'s `EXPECTED_SITES` (the call site is
+     *   `em(t('shares.hideHint'))` in `ShareCard.tsx`).
+     * ⚠️ It moved once: while the key existed but the component rendering it did
+     *   not, it sat in `UNWIRED_KEYS`; the component landed and it was registered
+     *   under its real shape in `EXPECTED_SITES` (that other table is empty now).
      * ⚠️ The sentence has to state where the reversibility **ends**: taking it
      *   down is undoable, expiring is not. "You can restore it" alone would make
      *   people expect an expired entry to come back.
@@ -2627,13 +2639,5 @@ export const en: TranslationSchema = {
     errExpired: 'This one has expired — it cannot be changed any more.',
     errNotActive: 'This one is not on the board right now.',
     errNotHidden: 'This one was never taken down.',
-
-    /**
-     * ★ Written into the **audit** `reason` when a moderator takes down someone
-     *   else's share (spec §6.3). It exists so that "who took it down" stays
-     *   readable later: the author's own takedown and a moderator's look
-     *   identical in the table, and only this phrase tells them apart.
-     */
-    moderateHideReason: '(taken down by a moderator)',
   },
 };

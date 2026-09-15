@@ -266,13 +266,8 @@ export function parseSharePost(
      * ⚠️★ 这两处**必须**和上面六处一样写显式类型断言 —— 因为 `sharePostSchema` 的返回类型是
      *    `z.ZodType`（见它自己的注释：两个 schema 形状不同，联合的 `.safeParse` 产出不可用），
      *    而 `z.ZodType` 的 `data` 就是 `unknown`。
-     *
-     *    ⚠️ 这一处是**上一处修出来的**：把 `sharePostSchema` 的返回类型从"两个 schema 的联合"
-     *       改成 `z.ZodType` 解决了联合的问题，同时把 `outer.data` 变成了 `unknown` ——
-     *       而我改完那一行**没有回头重读这个函数体**，于是漏掉了这两处（它们六行之上
-     *       就有同样的断言，所以看起来"照抄形状"就对了）。
-     *    ⇒ 判据：**改一个冻结代码块的某一行之后，要把整个块重读一遍**，
-     *      而不是只看改动的那一行。（这条已经在 Task 1 上真实发生过一次。）
+     *    ⇒ 判据：`outer.data` 的每一格都要**显式**写出它期望的形状，
+     *      改了 `sharePostSchema` 的返回类型就回来把这一整段重读一遍。
      */
     note: (outer.data as { note: string }).note,
     minutes: (outer.data as { minutes: number }).minutes as ShareMinutes,
