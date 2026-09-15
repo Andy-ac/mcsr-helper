@@ -67,8 +67,12 @@
  */
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_SHARE_DAYS,
   DEFAULT_SHARE_MINUTES,
   type LiveShare,
+  SHARE_DAY_MS,
+  SHARE_DAYS_MAX,
+  SHARE_DAYS_MIN,
   SHARE_KINDS,
   SHARE_LIMITS,
   SHARE_MINUTES,
@@ -572,6 +576,7 @@ const BOARD_PROPS: ShareBoardViewProps = {
   notice: null,
   onHide: noop,
   onRestore: noop,
+  onDelete: noop,
   onCopy: noop,
   onSubmit: noop,
   onRetry: noop,
@@ -593,6 +598,14 @@ const REQUIRED_BOARD_PROPS = ['onRetry', 'onResendVerify', 'lastUpdatedAtMs'] as
 const HANDLER_BOARD_PROPS = [
   'onHide',
   'onRestore',
+  /*
+   * ⚠️★ `onDelete` 是 2026-09-16 加的（"彻底删除"那颗按钮的落点）。
+   *    它必须进这张表：`ShareMineBar` 的 `onDelete` 是**必填** prop，
+   *    但必填只罩得住被类型检查的调用方（`routes/ShareBoard.tsx`）——
+   *    **罩不到本脚本**（文件头那一节）。少传一格的表现是产物里那颗
+   *    「确认彻底删除」的 `onClick` 是 `undefined`，而按钮**长得一模一样**。
+   */
+  'onDelete',
   'onCopy',
   'onSubmit',
   'onRetry',
@@ -693,14 +706,78 @@ assert.equal(
 assert.equal(remainText(60_000, t), t('shares.remainMinutes', { n: 1 }), '正好 1 分钟 ⇒ 还是分钟');
 assert.equal(remainText(59_999, t), t('shares.remainUnderOne'), '差 1 毫秒进最后一分钟');
 assert.equal(remainText(1, t), t('shares.remainUnderOne'), '还剩 1 毫秒');
-assert.equal(remainText(0, t), '', '★ 到点 ⇒ **空串**（分钟粒度不会印出「还剩 0 分钟」）');
+assert.equal(remainText(0, t), '', '★ 到点 ⇒ **空串**（那些档位不会印出「还剩 0 …」）');
 assert.equal(remainText(-1, t), '', '过了一毫秒也必须是空串');
 assert.notEqual(
   '',
   flat(t('shares.remainUnderOne')),
   '探针：空串不是任何一句真话，调用方据此摘掉那一行',
 );
-ok('三件套：偏移量、剩余毫秒、三档文案（含 0 与负数的空串）');
+
+/*
+ * ★★ 小时与天两档（2026-09-16 加的）：种子最长 30 天，只有分钟一档的话，
+ *    一条挂了 29 天的种子会印出「还剩 41760 分钟」。
+ * ⚠️ 边界那两条是本节的要点：换档判据用的是**取整之后**的数，
+ *    所以「60 分钟」「24 小时」这两句话**永远印不出来**（它们看起来像 bug）。
+ */
+assert.equal(
+  remainKeyOf(3_600_000),
+  'shares.remainHours|1',
+  '★ 正好 1 小时 ⇒ 走 `shares.remainHours`、插值 1（key 与数一起钉）',
+);
+assert.equal(
+  remainText(3_540_000, t),
+  t('shares.remainMinutes', { n: 59 }),
+  '★ 正好 59 分钟 ⇒ 还在分钟档',
+);
+assert.equal(
+  remainText(3_540_001, t),
+  t('shares.remainHours', { n: 1 }),
+  '★★ 59 分 00.001 秒 ⇒ 「1 小时」（**绝不**印「60 分钟」）',
+);
+assert.equal(remainText(3_600_001, t), t('shares.remainHours', { n: 2 }), '刚过 1 小时 ⇒ 2 小时');
+assert.equal(
+  remainText(82_800_000, t),
+  t('shares.remainHours', { n: 23 }),
+  '★ 正好 23 小时 ⇒ 还在小时档',
+);
+assert.equal(
+  remainText(82_800_001, t),
+  t('shares.remainDays', { n: 1 }),
+  '★★ 23 小时零 1 毫秒 ⇒ 「1 天」（**绝不**印「24 小时」）',
+);
+assert.equal(remainText(SHARE_DAY_MS, t), t('shares.remainDays', { n: 1 }), '★ 正好 1 天 ⇒ 天档');
+assert.equal(
+  remainKeyOf(7 * SHARE_DAY_MS),
+  'shares.remainDays|7',
+  '★★ 默认档 7 天 ⇒ 走 `shares.remainDays`、插值 7（这是种子的默认展示时长）',
+);
+assert.equal(
+  remainText(29 * SHARE_DAY_MS + 1, t),
+  t('shares.remainDays', { n: 30 }),
+  '★ 29 天多 1 毫秒 ⇒ 30 天（向上取整，也是这个栏目的上界）',
+);
+assert.equal(
+  remainText(SHARE_DAYS_MAX * SHARE_DAY_MS, t),
+  t('shares.remainDays', { n: SHARE_DAYS_MAX }),
+  '★ 上界 30 天要印得出来',
+);
+/*
+ * ⚠️★ 探针：三句"还剩…"必须**互不相同**。写错 key（比如把小时那句接到
+ *    `remainMinutes` 上）时，上面每一条都仍会通过 —— 因为它们比的都是
+ *    "函数输出 == 同一个 key 的输出"。这一条把那种错变成红。
+ */
+assert.notEqual(
+  flat(t('shares.remainHours', { n: 1 })),
+  flat(t('shares.remainMinutes', { n: 1 })),
+  '★★ 探针：小时与分钟**不是同一句话**（否则上面那一整组都测不出 key 写错）',
+);
+assert.notEqual(
+  flat(t('shares.remainDays', { n: 1 })),
+  flat(t('shares.remainHours', { n: 1 })),
+  '★★ 探针：天与小时**不是同一句话**',
+);
+ok('三件套：偏移量、剩余毫秒、四档文案（含 0 与负数、两个新边界与三条探针）');
 
 /*
  * ★★ 偏移量真的被**用上**了：本地钟**故意**慢 3 分钟（唯一的例外，见文件头 ②）。
@@ -1391,7 +1468,100 @@ assert.deepEqual(
 ok('正常：四档时长 + 默认 5 + 提交键文案（相等比较）+ 标签页/回程/新鲜度/截断');
 
 // ---------------------------------------------------------------------------
-console.log('⑦ 剩余时间三档（§11.2 第 5 条）');
+/*
+ * ⚠️ 编号写 `⑥b` 而不是把后面全体 +1：理由与 `①b` 逐字相同 —— 这一节是 ⑥ 的
+ *    **另一半**（同一个"展示时长"在另一个 kind 上），插在它后面就是它的位置；
+ *    整体重编号要顺带改本文件里十几处交叉引用，那是一次与本次改动无关的改动。
+ */
+console.log('⑥b 种子·展示天数：1–30 自填、默认 7（2026-09-16 用户改的口径）');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一节守的是用户那句「以天为单位，最多 30 天（自行填写）」。
+ * ⚠️ 它与 ⑥ 的关系是**并存**，不是替换：房间仍然是四档分钟（四个 radio），
+ *    种子的这一套是新的。两边都要有断言，否则"哪一边被误改成另一边"没人看得见。
+ */
+const seedFormHtml = renderBoard({ kind: 'seed', board: SEED_BOARD }, '种子板');
+
+/* 冻结值先钉常量（spec §13），再钉界面 —— 只钉界面的话，常量改了断言跟着走。 */
+assert.equal(SHARE_DAYS_MIN, 1, '★★ 冻结的天数下界（spec §13）');
+assert.equal(SHARE_DAYS_MAX, 30, '★★ 冻结的天数上界：最多 30 天');
+assert.equal(DEFAULT_SHARE_DAYS, 7, '★★ 冻结的默认天数就是 7（字面 7，不是"跟着常量走"）');
+
+/** 产物里所有 `<input>` 里 id 等于这个的那些（`radiosOf` 只按 `name` 找，不够用）。 */
+const inputsById = (html: string, id: string): string[] =>
+  [...html.matchAll(/<input\b[^>]*>/g)].map((m) => m[0]).filter((tag) => attrOf(tag, 'id') === id);
+
+const daysInputs = inputsById(seedFormHtml, 'share-days');
+assert.equal(
+  daysInputs.length,
+  1,
+  `★ 种子表单上恰好有一个天数输入框（找到 ${String(daysInputs.length)} 个）`,
+);
+assert.equal(
+  attrOf(daysInputs[0] ?? '', 'value'),
+  '7',
+  '★★ 默认预填 **7 天**（字面 7）—— 用户不动它时挂的就是一周',
+);
+/*
+ * ⚠️ 是 `text` 而**不是** `number`：`type="number"` 会把用户敲进去的乱码在
+ *    `value` 上吃掉（读出来是空串）⇒ "没填"与"填错了"分不出来，逐字段红字也就挂不上。
+ *    这一条钉的是那个决定，不是样式。
+ */
+assert.equal(
+  attrOf(daysInputs[0] ?? '', 'type'),
+  'text',
+  '★ 天数那一格是 text（不是 number —— 理由见 ShareForm 的注释）',
+);
+/*
+ * ⚠️ 属性名是 **`inputMode`**（驼峰），不是 HTML 里那个小写的 `inputmode`：
+ *    现读 `renderToStaticMarkup` 的产物，React 19 就写成这样
+ *    （同一份产物里那四格种子的 `inputMode="text"` 也是驼峰）。
+ *    HTML 的属性名不区分大小写，所以浏览器照样认；但**这里的正则区分大小写**
+ *    ⇒ 写成小写会得到 `null`，而症状只是"这条断言挂了"，看不出是大小写的锅。
+ */
+assert.equal(
+  attrOf(daysInputs[0] ?? '', 'inputMode'),
+  'numeric',
+  '★ 但手机上要弹数字键盘（`inputMode="numeric"`）',
+);
+
+/* 那一格要有标签与提示，而且说的是"天"这件事 —— 不然用户只看到一个孤零零的 7。 */
+const daysLabels = elementsWithClass(seedFormHtml, 'mcsr-field__label').filter(
+  (el) => attrOf(el, 'for') === 'share-days',
+);
+assert.equal(daysLabels.length, 1, '★ 天数那一格有 label（`for` 指向那个输入框）');
+assert.equal(
+  textOf(daysLabels[0] ?? ''),
+  flat(t('shares.formDays')),
+  '★ 标签就是「展示多少天」那一句',
+);
+assert.ok(hasText(seedFormHtml, t('shares.formDaysHint')), '★ 提示（1–30 天、自己填）要在');
+
+/*
+ * ★★ 反向两半：种子表单上**没有**那四个 radio / 那个 fieldset，
+ *    房间表单上**没有**天数输入框。两组控件是**结构性**分开的，
+ *    不是同一个控件换一套属性 —— 那样写的话"哪一边长什么样"要靠读 props 才知道。
+ */
+assert.equal(radiosOf(seedFormHtml, 'share-minutes-seed').length, 0, '★★ 种子表单上没有四档 radio');
+assert.equal(
+  elementsWithClass(seedFormHtml, 'share__minutes').length,
+  0,
+  '★★ 也没有那个 `share__minutes` fieldset（正反两半里的反面）',
+);
+assert.equal(
+  inputsById(authedRoomBoard, 'share-days').length,
+  0,
+  '★★ 房间表单上没有天数输入框（正向对照就是上面那个"恰好有一个"）',
+);
+assert.equal(
+  hasText(authedRoomBoard, t('shares.formDays')),
+  false,
+  '★★ 房间那一边不出现"天数"那句标签',
+);
+ok('种子：天数输入（默认 7、1–30、text + numeric）与房间那一套结构性分开');
+
+// ---------------------------------------------------------------------------
+console.log('⑦ 剩余时间的每一档（§11.2 第 5 条；2026-09-16 起四档）');
 // ---------------------------------------------------------------------------
 /*
  * ★★ 三档必须**一起**钉，而且"已经到点"那一档要靠**正向对照**才能成立：
@@ -1435,10 +1605,53 @@ assert.equal(
   false,
   '★ 一条都没有时当然也没有房间号',
 );
-ok('三档剩余时间（含正反对照与"只剩过期行"的整块画面）');
+
+/*
+ * ★★ 小时与天那两档在**产物里**也要真的印出来（① 钉的是纯函数，这里钉的是
+ *    "那个值确实从组件里流到了屏幕上"）—— 两条长时长的种子：一条还剩 7 天、
+ *    一条还剩 3 小时。种子的默认档就是 7 天，所以这是最常见的那个画面。
+ */
+const LONG_SEED_BOARD = seedBoard({
+  items: [
+    seedItem({
+      id: 's-long-7d',
+      overworld: 'LONG-7D',
+      note: '',
+      authorName: 'Anna',
+      mine: false,
+      remain: 7 * SHARE_DAY_MS,
+    }),
+    seedItem({
+      id: 's-long-3h',
+      overworld: 'LONG-3H',
+      note: '',
+      authorName: 'Bo',
+      mine: false,
+      remain: 3 * 3_600_000,
+    }),
+  ],
+  mine: [],
+});
+const longRows = elementsWithClass(
+  renderBoard({ kind: 'seed', board: LONG_SEED_BOARD }, '长时长的种子板'),
+  'share__row',
+);
+/* 探针：两条都渲染出来了 —— 空板子时下面两条 `textOf('')` 会**双双通过**。 */
+assert.equal(longRows.length, 2, '★ 探针：两条长时长的种子都渲染出来了');
+assert.equal(
+  textOf(elementsWithClass(longRows[0] ?? '', 'share__remain')[0] ?? ''),
+  flat(t('shares.remainDays', { n: 7 })),
+  '★ 还剩 7 天的那一行印的是「还剩 7 天」',
+);
+assert.equal(
+  textOf(elementsWithClass(longRows[1] ?? '', 'share__remain')[0] ?? ''),
+  flat(t('shares.remainHours', { n: 3 })),
+  '★ 还剩 3 小时的那一行印的是「还剩 3 小时」',
+);
+ok('每一档剩余时间都在产物里（含正反对照、只剩过期行，以及小时/天两档真的印出来）');
 
 // ---------------------------------------------------------------------------
-console.log('⑧ 「你」标记与「下架」按钮（§11.2 第 6 条）');
+console.log('⑧ 「你」标记与「下架 / 恢复 / 彻底删除」按钮（§11.2 第 6 条）');
 // ---------------------------------------------------------------------------
 const myRow = rows[0] ?? '';
 const otherRow = rows[1] ?? '';
@@ -1506,6 +1719,52 @@ assert.deepEqual(
   [],
   '★ 已下架的行上没有「下架」（正反配对）',
 );
+
+/*
+ * ===========================================================================
+ * ★★ 彻底删除（2026-09-16 用户要求：「下架之后拥有者允许删除（彻底删除）」）
+ * ===========================================================================
+ * ⚠️ 它在服务端是两步：先下架（`status='hidden'`）、再删。界面上**第二步**是
+ *    「彻底删除 → 确认彻底删除」，所以这一节能钉的正好是"初始态长什么样"：
+ *    第一步在、第二步**不在**（`renderToStaticMarkup` 不点击）。
+ * ⚠️★ 两步两句文案必须不同（下面的探针）—— 相同的话"用户分不出自己点的是第几下"，
+ *    而上面那两条"初始产物里没有第二步"也就变成空跑。
+ */
+assert.notEqual(
+  flat(t('shares.deleteShare')),
+  flat(t('shares.deleteConfirm')),
+  '★★ 探针：第一步与第二步是**两句不同**的话',
+);
+const deleteStepOne = buttons(hiddenMine).filter((b) => b.text === flat(t('shares.deleteShare')));
+assert.equal(
+  deleteStepOne.length,
+  1,
+  `★ 已下架的那一行上有「彻底删除」（找到 ${String(deleteStepOne.length)} 颗）`,
+);
+assert.equal(
+  isDisabled(deleteStepOne[0]?.attrs ?? ''),
+  false,
+  '★ 那颗「彻底删除」是**可点的**（不是一颗灰着的装饰 —— 那是本计划防过的静默失效）',
+);
+assert.deepEqual(
+  buttons(hiddenMine).filter((b) => b.text === flat(t('shares.deleteConfirm'))),
+  [],
+  '★★ 初始产物里**没有**「确认彻底删除」（第二步要用户点出来才有）',
+);
+assert.deepEqual(
+  buttons(hiddenMine).filter((b) => b.text === flat(t('common.cancel'))),
+  [],
+  '★★ 初始产物里也没有「取消」（它属于第二步那一对按钮）',
+);
+/*
+ * ★★ 反向那一半：**在展示中**的行没有删除入口 —— 服务端的判据同样是
+ *    `status='hidden'`，所以这一条与它逐条对应。正向对照是上面那几颗。
+ */
+assert.deepEqual(
+  buttons(authedRoomBoard).filter((b) => b.text === flat(t('shares.deleteShare'))),
+  [],
+  '★★ 我那条 active 的行上没有「彻底删除」（先下架才会出现它）',
+);
 assert.equal(
   textOf(elementsWithClass(authedRoomBoard, 'share__minestate')[0] ?? ''),
   flat(t('shares.mineActive')),
@@ -1521,7 +1780,7 @@ assert.equal(
   false,
   '★★ 没有我的行时不说那句（它说的是一个不存在的动作）—— 正向对照就是上一条',
 );
-ok('「你」标记 + 下架/恢复只在我自己的行上（正反两半）+ 四种状态句');
+ok('「你」标记 + 下架/恢复/彻底删除只在我自己的行上（正反两半）+ 四种状态句');
 
 // ---------------------------------------------------------------------------
 console.log('⑨ 每一行都有「复制」（§11.2 第 7 条）');
@@ -1726,6 +1985,12 @@ const FROZEN_KEYS = [
   'nav.login',
   'common.loading',
   'common.retry',
+  /*
+   * ⚠️ `common.cancel` 是 2026-09-16 跟着"彻底删除"那两步确认进来的：它是全站
+   *    已有的词条（`common` 那一块），但**本栏目**从这一轮起才用到它 ——
+   *    登记在这里是为了让"这个词条在两种语言里都有真值"这件事也被钉住。
+   */
+  'common.cancel',
   'shares.introLead',
   'shares.introRoomsTitle',
   'shares.introRoomsDesc',
@@ -1759,6 +2024,8 @@ const FROZEN_KEYS = [
   'shares.formNoteHint',
   'shares.formMinutes',
   'shares.minutes',
+  'shares.formDays',
+  'shares.formDaysHint',
   'shares.formSubmitRoom',
   'shares.formReplaceRoom',
   'shares.formSubmitSeed',
@@ -1769,27 +2036,33 @@ const FROZEN_KEYS = [
   'shares.boardBy',
   'shares.remainMinutes',
   'shares.remainUnderOne',
+  'shares.remainHours',
+  'shares.remainDays',
   'shares.copy',
   'shares.hide',
   'shares.restore',
+  'shares.deleteShare',
+  'shares.deleteConfirm',
   'shares.hideHint',
   'shares.atLimitSeeds',
   'shares.atLimitRestore',
   'shares.errExpired',
   'shares.errNotActive',
   'shares.errNotHidden',
+  'shares.errDays',
   'shares.refreshFailed',
   'shares.updatedAgo',
   'shares.loadFailed',
   'shares.truncated',
 ] as const;
-assert.equal(FROZEN_KEYS.length, 60, '探针：冻结的清单就是 60 条');
+/* ⚠️ 那个数字是**手抄的**（本仓惯例）：它防的是"为了让红的变绿，把某一行从表里删掉"。 */
+assert.equal(FROZEN_KEYS.length, 68, '探针：冻结的清单就是 68 条');
 assert.equal(new Set(FROZEN_KEYS).size, FROZEN_KEYS.length, '探针：清单里没有重复');
 for (const key of FROZEN_KEYS) {
   assert.ok(i18n.exists(key), `★ 词条 ${key} 在【${LANG}】里不存在（界面上会原样印出这个 key）`);
   assert.notEqual(t(key), key, `★ 词条 ${key} 在【${LANG}】里没有真值`);
 }
-ok(`60 个 key 在【${LANG}】里都存在且有真值`);
+ok(`68 个 key 在【${LANG}】里都存在且有真值`);
 
 /** 取词条并压平（比对用）—— 集中一处，免得每处都写一遍 `flat(t(...))`。 */
 function fresh(key: string, opts?: Record<string, unknown>): string {
@@ -1946,8 +2219,11 @@ console.log(
 /*
  * ⚠️ 组数是**手抄的**（本仓惯例）：它防的是"把某一段摘掉" —— 删掉一整组断言之后
  *    脚本照样绿、照样打印"通过 N 项"，只有这个数字会变。改脚本就要一起改这里。
+ * ⚠️ en 比 zh 多一组，是因为 ⑮ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
+ *    （`if (LANG === 'en')`，见上面）；两个数差 1 是**正常的**，别把它抹平。
+ * ⚠️ 2026-09-16 两个数各 +1：加了 ⑥b（种子的展示天数）那一组。
  */
-const expectedGroups = LANG === 'en' ? 17 : 16;
+const expectedGroups = LANG === 'en' ? 18 : 17;
 assert.equal(
   pass,
   expectedGroups,

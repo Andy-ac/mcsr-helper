@@ -5,9 +5,10 @@
  *   GET    /api/shares/summary       介绍页要的计数      —— 登录
  *   POST   /api/shares/:kind         发一条              —— 登录 + **邮箱已验证**
  *   PATCH  /api/shares/:id/visibility 下架 / 恢复
+ *   DELETE /api/shares/:id           彻底删除            —— 登录 + **只有作者** + 已下架
  *
  * ===========================================================================
- * ★ 权限的形状：**四种**，不是一种
+ * ★ 权限的形状：**五种**，不是一种
  * ===========================================================================
  * 这是本仓第一条"游客看不到"的线（spec §1.1），所以读接口也不能放开：
  *
@@ -20,6 +21,10 @@
  *   · 下架：作者本人 **或** `share.moderate`（内容治理，不是账号治理；editor 及以上）。
  *   · 恢复：**只有作者本人**。管理员恢复别人的一律 403 —— 管理动作是单向的，
  *     §4.2 与裁决 11 把这一条定死了（理由见下面那个分支上的注释）。
+ *   · 彻底删除：**只有作者本人**（2026-09-16 新增）。与恢复同一条理由，而且更强：
+ *     删除**不可逆**，管理员手上的下架已经足够让内容从看板上消失。
+ *     ⚠️ 判据同样在**数据层**再比对一遍 `user_id`（`deleteShare`）——
+ *       权限结论不该只存在于路由里。
  *
  * ===========================================================================
  * ⚠️★ 注册顺序是**行为**，不是风格：`/summary` 必须在 `/:kind` 之前
@@ -46,7 +51,7 @@
  * 它在数据层比对一遍）—— 这个文件只做"HTTP 面"：状态码、拒绝码的形状、审计。
  */
 import type { ShareKind, ShareListResponse, ShareSummary } from '@mcsr/shared';
-import { parseSharePost, SHARE_KINDS, ShareVisibilitySchema } from '@mcsr/shared';
+import { durationToMs, parseSharePost, SHARE_KINDS, ShareVisibilitySchema } from '@mcsr/shared';
 import type { UserRole } from '@mcsr/shared/permissions';
 import { checkPermission } from '@mcsr/shared/permissions';
 import { Hono } from 'hono';
@@ -55,6 +60,7 @@ import {
   buildItem,
   buildListResponse,
   createShare,
+  deleteShare,
   getShareForEdit,
   isRenderableShareRow,
   setShareHidden,
@@ -167,7 +173,9 @@ sharesRoute.post('/:kind', requireAuth, requireVerified, async (c) => {
     userId: user.id,
     payload: parsed.payload,
     note: parsed.note,
-    minutes: parsed.minutes,
+    // ⚠️ 单位在这里、也只在这里换算成毫秒（shared 的 `durationToMs`）——
+    //    数据层不需要知道"房间按分钟、种子按天"（`createShare` 的注释）。
+    durationMs: durationToMs(parsed.duration),
     now,
   });
 
@@ -186,9 +194,17 @@ sharesRoute.post('/:kind', requireAuth, requireVerified, async (c) => {
    *    事后按 `status='replaced'` 去数会把**历史上**被替换的行一起算进去。
    * ⛔ 被替换的那一行**不单独记一条审计**：它是同一次发布的后果，reason 里已经
    *    写明；两条记录会让"他发了几次"这个最简单的计数变成要人去重。
+   *
+   * ⚠️★ 时长要**连着单位**写（2026-09-16）：房间是「15 分钟」、种子是「30 天」。
+   *    只印数字的话，事后读审计的人分不出 `7` 是 7 分钟还是 7 天 —— 差 1440 倍。
+   *    单位由 `parsed.duration.unit` 给（**唯一**一处知道哪个 kind 用哪个单位的地方）。
    */
+  const shown =
+    parsed.duration.unit === 'minutes'
+      ? `${String(parsed.duration.value)} 分钟`
+      : `${String(parsed.duration.value)} 天`;
   const reason =
-    `发布分享（kind=${kind}，展示 ${String(parsed.minutes)} 分钟` +
+    `发布分享（kind=${kind}，展示 ${shown}` +
     (result.replaced > 0 ? `，替换掉 ${String(result.replaced)} 条` : '') +
     '）';
   writeAudit({
@@ -318,4 +334,75 @@ sharesRoute.patch('/:id/visibility', requireAuth, async (c) => {
     now,
   });
   return c.json({ item: buildItem(result.share, user.id, now) });
+});
+
+// ---------------------------------------------------------------------------
+// 彻底删除（2026-09-16）
+// ---------------------------------------------------------------------------
+
+/**
+ * 彻底删除一条 —— **只有作者本人**，而且**只有已下架的行**能删。
+ *
+ * ===========================================================================
+ * ★★ 为什么这里是 DELETE 而 PATCH 那两个动作不是
+ * ===========================================================================
+ * 下架 / 恢复改的是**同一行的一个字段**（`status` / `hidden_at`），行一直在，
+ * 所以它们是同一个资源上的两种"可见性"取值 ⇒ 一个 `PATCH …/visibility` 装得下。
+ * 删除**把那一行拿掉**，它不是"另一种可见性" —— 塞进同一个 PATCH 就要多一个
+ * `{ deleted: true }` 这种与 `visible` 互斥的开关，而那种开关的每一个非法组合
+ * （两个都为 true / 都不传）都得多写一段判断。
+ *
+ * ===========================================================================
+ * ⚠️★ 没有 `isRenderableShareRow` 那一步（与上面 PATCH 刻意不同）
+ * ===========================================================================
+ * PATCH 要先问一次是因为它最后要 `buildItem` 回读，而 `buildItem` 对坏行**throw**
+ * ⇒ 一行半截 JSON 的数据会把按钮变成 500。这里回的是 `{ ok, id }`，
+ * **一个字节的 payload 都不读** ⇒ 坏行不存在那条缝，而且坏行的作者反而能把它删掉
+ * （数据层那段注释写着，这是有意的）。⛔ 别为了"两个写接口形状一样"把它补上：
+ * 补上之后坏行就**再也删不掉了**（读路径看不见它、这里又拒它）。
+ *
+ * ===========================================================================
+ * 拒绝的形状与 PATCH 逐条对齐
+ * ===========================================================================
+ *   · `not_found`（行不在 / id 打错 / 已经删过）⇒ **404**
+ *   · `forbidden`（不是作者本人，**含管理员**）⇒ **403**
+ *   · `not_hidden`（还在展示 / 已被替换）⇒ **409 `invalid_state` + reason**
+ * ⚠️ `invalid_state` 的三种 reason 在 `lib/shareErrors.ts` 里各有专门的一句话，
+ *    `not_hidden` 那一句复用现有的 `shares.errNotHidden`（不为这条路另写一句：
+ *    多一句就要多一格 reason，而那张表是渲染自检**逐格**断言的）。
+ * ⚠️ 顺手刷新由**调用方**负责（`routes/ShareBoard.tsx` 收到 `invalid_state` 就重拉）：
+ *    这三种拒绝说的都是"你手上那份数据旧了"。
+ */
+sharesRoute.delete('/:id', requireAuth, (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  const now = Date.now();
+  const result = deleteShare(id, user.id);
+
+  if (!result.ok) {
+    if (result.reason === 'not_found') return c.json({ error: 'not_found' }, 404);
+    if (result.reason === 'forbidden') return c.json({ error: 'forbidden' }, 403);
+    return c.json({ error: 'invalid_state', reason: result.reason }, 409);
+  }
+
+  /*
+   * 审计：★ 这一条的 `entity_id` **指向一行已经不在的表记录** —— 这是刻意的，
+   *   也是 `audit_log` 不建外键的理由之一（`018` 与 `routes/admin.ts` 都记着同一条）。
+   * ⚠️ reason 里必须带上 kind：行没了之后，`entity_id` 谁也查不到，
+   *   而"删掉的到底是一条房间号还是一组种子"只能从这里读出来。
+   */
+  writeAudit({
+    actorId: user.id,
+    action: 'share.delete',
+    entityType: 'live_share',
+    entityId: id,
+    reason: `彻底删除（作者自己，kind=${result.kind}）`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  // 形状照 `DELETE /api/live/mine/:id`（同一个仓库里"删自己那一行"的回答）
+  return c.json({ ok: true, id });
 });

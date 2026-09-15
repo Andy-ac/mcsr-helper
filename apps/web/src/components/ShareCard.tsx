@@ -48,8 +48,10 @@
  * 偏移量冻在哪、为什么非冻不可，见 `useServerOffset`。
  */
 import {
+  DEFAULT_SHARE_DAYS,
   DEFAULT_SHARE_MINUTES,
   type LiveShare,
+  parseShareDays,
   type RoomPayload,
   type SeedPayload,
   SHARE_CODE_MAX,
@@ -306,18 +308,19 @@ export interface ShareFormProps {
 
 /**
  * 发布表单。room = 房间号 + 说明；seed = 四个种子（只有主世界必填）+ 说明；
- * 两者都带四档时长（**默认 5**，§13 的冻结值）。
+ * 展示时长**两种 kind 不一样**（2026-09-16）：room 是四档 radio（**默认 5 分钟**），
+ * seed 是**自己填的天数**（1–30，**默认 7 天**）。
  *
  * ⚠️ 值**两端 trim**（§7.3：`" A7K2P "` ⇒ `A7K2P`），中间的空白按字符集判
  *    （房间号含空格 = 非法、种子含空白 = 非法）。trim 之后**原样保存原样显示**：
  *    不折叠大小写、不做任何归一化。
  *
- * ⚠️ 字段级校验在这里做，用的是 shared 的**同一批常量**
+ * ⚠️ 字段级校验在这里做，用的是 shared 的**同一批常量与函数**
  *    （`SHARE_CODE_PATTERN` / `SHARE_CODE_MIN` / `SHARE_CODE_MAX` / `SHARE_SEED_MAX` /
- *    `SHARE_NOTE_UNITS` / `textWidth`）—— 规则只有一份定义，服务端与这里各执行一遍
- *    （与 `parseSharePost` 跑两遍 schema 是同一件事）。之所以要在客户端先判一次：
- *    逐字段的红字只有这里挂得上（`shares.err*` 那六条就是为这件事写的），
- *    而服务端的 400 只回 `issues` 的路径文本。
+ *    `SHARE_NOTE_UNITS` / `textWidth` / `parseShareDays`）——
+ *    规则只有一份定义，服务端与这里各执行一遍（与 `parseSharePost` 跑两遍 schema
+ *    是同一件事）。之所以要在客户端先判一次：逐字段的红字只有这里挂得上
+ *    （`shares.err*` 那七条就是为这件事写的），而服务端的 400 只回 `issues` 的路径文本。
  */
 export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormProps) {
   const { t } = useTranslation();
@@ -329,6 +332,15 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
   const [rng, setRng] = useState('');
   const [note, setNote] = useState('');
   const [minutes, setMinutes] = useState<ShareMinutes>(DEFAULT_SHARE_MINUTES);
+  /*
+   * ★ 天数存的是**用户输入的原文**（字符串），不是解析后的数字。
+   * ⚠️ 与 `components/SeedFilters.tsx` 的 `completion` 存字符串同一条理由：
+   *    解析失败时那个值必须**留在输入框里**（被清空的话用户不知道自己哪里填错了），
+   *    而"填错了"正是它最常见的状态。
+   * ⚠️ 初值是 `String(DEFAULT_SHARE_DAYS)`（= `'7'`）：SSR 产物里输入框的 `value`
+   *    就是这个字面量 `7` —— 渲染自检正是这么断言"默认 7 天"的。
+   */
+  const [days, setDays] = useState(String(DEFAULT_SHARE_DAYS));
   /** 逐字段的红字。key 就是下面那几个控件名，空对象 = 没有错。 */
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -373,6 +385,18 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
     }
 
     /*
+     * ★ 种子的展示天数是**自由填写**的（1–30 的整数），所以它和上面那几格一样
+     *   必须在客户端判一次。⚠️ 判据**不在这里**：它住在 shared 的 `parseShareDays`
+     *   （那里有"为什么不用 `Number(raw)`"以及"为什么它不写在组件里"两条理由）。
+     * ⚠️ room 不走这一支：它的时长是四个 radio，选不出非法值（§13 的枚举）。
+     */
+    let dayCount: number | null = null;
+    if (kind === 'seed') {
+      dayCount = parseShareDays(days);
+      if (dayCount === null) next.days = t('shares.errDays');
+    }
+
+    /*
      * 说明按**显示宽度**判（一个汉字算 2，`textWidth`）—— 所以那句文案必须把
      * "一个汉字算 2"说出来，否则写了 21 个汉字的用户会觉得上限是假的。
      */
@@ -388,6 +412,8 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
      * ⚠️ 选填的种子**只在填了的时候**才放进 body（空串一律不要）：
      *    "没填"与"填了空"在库里必须是同一件事（shared 的 `optionalSeed` 也会把
      *    空串变成 `undefined`），而少传一个键是最不容易读错的那种写法。
+     * ⚠️ 两个 kind 的时长键**名字不同**（`minutes` / `days`，见 `SeedPostSchema`）：
+     *    写成同一个名字会让"7 是 7 分钟还是 7 天"这个歧义从 body 一路带到库里。
      */
     onSubmit(
       kind === 'room'
@@ -398,7 +424,13 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
             end: seeds.end || undefined,
             rng: seeds.rng || undefined,
             note,
-            minutes,
+            /*
+             * ⚠️ `dayCount` 走到这里**一定不是 null**（上面 `next` 非空就 return 了）。
+             *    写成 `?? DEFAULT_SHARE_DAYS` 是给类型收窄用的，不是一个兜底逻辑：
+             *    真走到那一支说明有人在校验与提交之间插了一步，而那时发出去的是
+             *    **合法的默认值**，不是 `NaN`（`NaN` 会让服务端那条 `CHECK` 直接拒）。
+             */
+            days: dayCount ?? DEFAULT_SHARE_DAYS,
           },
     );
   }
@@ -493,27 +525,48 @@ export function ShareForm({ kind, hasLive, atLimit, busy, onSubmit }: ShareFormP
       </Field>
 
       {/*
-        ⚠️ 四档时长是**穷尽枚举**（`SHARE_MINUTES`），不是 1–20 的区间：
-           `minutes` 只接受这四个值（§13），所以界面上也就不该出现别的值。
-        ⚠️ 受控的 `checked`（而不是 `defaultChecked`）：默认那一档来自
+        ★ 展示时长**按 kind 分叉**（2026-09-16 用户要求：种子改成"以天为单位、
+          最多 30 天、自行填写"），而分叉是**结构上**的（两支各自渲染自己的控件），
+          不是同一个控件换一套属性 —— 两者的约束本来就不是一回事：
+          room 是**四档枚举**（`minutes` 只接受那四个值，§13），seed 是**区间**（1–30）。
+
+        ⚠️ room 那一支的受控 `checked`（不是 `defaultChecked`）：默认那一档来自
            `DEFAULT_SHARE_MINUTES`（= 5），SSR 产物里它就是那个带 `checked` 的 radio
            —— 渲染自检正是这么断言"默认选中 5 分钟"的。
+        ⚠️★ seed 那一支用 `<Field>`（标签 + 提示 + 红字），与房间里其它几格同形，
+           而**不用** `type="number"`：浏览器会把 `abc` 这种输入在 `value` 上**吃掉**
+           （读出来是空串）⇒ "没填"与"填错了"分不出来，红字也就挂不上。
+           与 `ShareForm` 里那六个输入框同一条做法（text + `inputMode`）。
       */}
-      <fieldset className="share__minutes">
-        <legend className="share__minuteslegend">{t('shares.formMinutes')}</legend>
-        {SHARE_MINUTES.map((value) => (
-          <label key={value} className="share__minute">
-            <input
-              type="radio"
-              name={`share-minutes-${kind}`}
-              value={value}
-              checked={minutes === value}
-              onChange={() => setMinutes(value)}
-            />
-            {t('shares.minutes', { n: value })}
-          </label>
-        ))}
-      </fieldset>
+      {kind === 'room' ? (
+        <fieldset className="share__minutes">
+          <legend className="share__minuteslegend">{t('shares.formMinutes')}</legend>
+          {SHARE_MINUTES.map((value) => (
+            <label key={value} className="share__minute">
+              <input
+                type="radio"
+                name={`share-minutes-${kind}`}
+                value={value}
+                checked={minutes === value}
+                onChange={() => setMinutes(value)}
+              />
+              {t('shares.minutes', { n: value })}
+            </label>
+          ))}
+        </fieldset>
+      ) : (
+        <Field id="share-days" label={t('shares.formDays')} hint={t('shares.formDaysHint')}>
+          <input
+            id="share-days"
+            className="mcsr-field__input"
+            type="text"
+            inputMode="numeric"
+            value={days}
+            onChange={(event) => setDays(event.target.value)}
+          />
+          {errors.days ? <p className="fielderr">{errors.days}</p> : null}
+        </Field>
+      )}
 
       {/*
         ⚠️ 到额度时**禁用**提交键（不是隐藏它）：用户要看得见"这里本来有个按钮，
@@ -547,6 +600,14 @@ export interface ShareMineBarProps {
   busy: boolean;
   onHide: (id: string) => void;
   onRestore: (id: string) => void;
+  /**
+   * ★ 「彻底删除」第二步的落点（2026-09-16 新增）。**必填** —— 与页面那三格
+   * （`onRetry` / `onResendVerify` / `lastUpdatedAtMs`）同一条理由：
+   * 可选 + 缺省时把按钮禁掉的话，"忘了接线"的表现是一颗**永远灰着的按钮**，
+   * 而**所有门禁都绿**（渲染自检断言的是"入口在不在"，禁用也算在）。
+   * 必填之后忘了传是**编译错误**，而"入口在不在"照样能被断言。
+   */
+  onDelete: (id: string) => void;
   onSubmit: (body: unknown) => void;
 }
 
@@ -560,14 +621,38 @@ export interface ShareMineBarProps {
  * | 已下架未过期 | 「你下架了这一条。」+「恢复」 | 混在上面那个列表里（那一行带「恢复」） |
  * | 到额度 | ——（room 到额度就是"正在展示"，该做的是替换） | 提交键禁用 + 那句话 |
  *
- * ⚠️ 两种 kind 共用**同一个列表**（每一行：内容 + 剩余 + 下架/恢复），而不是
+ * ⚠️ 两种 kind 共用**同一个列表**（每一行：内容 + 剩余 + 下架/恢复/删除），而不是
  *    room 一套、seed 一套：数据上 room 的 `mine` 也可能同时有一条 active 和一条
  *    hidden（下架过、又发过新的那种），给它写死"一条"的话第二种状态就渲染不出来。
  *    合并之后上面四格仍然是四种**不同的画面**（状态句 + 按钮 + 那个展开键都不同）。
+ *
+ * ===========================================================================
+ * ★★ 已下架那一行的两个动作，以及"删除为什么要两步"（2026-09-16）
+ * ===========================================================================
+ * | 那一行 | 按钮 |
+ * |---|---|
+ * | `active` | 「下架」（**可逆**，所以没有确认框） |
+ * | `hidden`，还没点过删除 | 「恢复」+「彻底删除」 |
+ * | `hidden`，点过「彻底删除」 | 「确认彻底删除」+「取消」（**其余两个都不渲染**） |
+ *
+ * ⚠️★ 用户明确要的是两步（2026-09-16）：`下架 → 删除` 是**服务端的**前提
+ *    （`deleteShare` 只对 `status='hidden'` 放行），而界面上的第二次点击是
+ *    防手滑的那一道 —— 硬删除没有回收站。
+ * ⚠️ 它与「下架」的区别正是本仓那条老规矩的应用：`shares.hideHint` 明说下架随时
+ *    能恢复（**到点**才不能），而删除连行都不剩 ⇒ 它是这一栏**唯一**一个需要
+ *    确认的动作。（另一处不可逆的动作是 room 的**替换**，那里用的是"把后果写在
+ *    按钮上"，因为它没有第二步可站 —— 见 `SHARE_FORM_SUBMIT_KEYS`。）
+ * ⚠️ 确认态是**一个 `id`**，不是每行一个布尔：同时只可能有一行在等确认
+ *    （点第二行的「彻底删除」会让第一行退回原状），于是不存在"两行同时举着确认"
+ *    那种要人去想"再点一下会删掉哪一条"的画面。
+ * ⚠️ 它住在这一层（`ShareMineBar`）而不是每一行里：行组件是纯展示的，
+ *    而这个状态要在**行之间**互斥。
  */
 export function ShareMineBar(props: ShareMineBarProps) {
   const { t } = useTranslation();
   const { kind, mine, liveCount, limit, nowMs, offset, busy } = props;
+  /** 正在等第二次确认的那一行（`null` = 没有）。见上面那段注释。 */
+  const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const hasLive = mine.some((row) => row.status === 'active');
   // ⚠️ 只有 seed 会因为额度禁用提交（room 的那一档是"替换"，见 `ShareFormProps.atLimit`）
@@ -586,7 +671,7 @@ export function ShareMineBar(props: ShareMineBarProps) {
       )}
 
       {/*
-        ★ 我自己的每一行 —— 这是全站**唯一**有「下架 / 恢复」的地方。
+        ★ 我自己的每一行 —— 这是全站**唯一**有「下架 / 恢复 / 彻底删除」的地方。
           ⚠️ 已下架的那一条**只在这里**出现（`items` 里没有它，它已经不在看板上），
              所以"恢复"这个动作也只有这里挂得上。
         ⚠️★ 这一块**没有「复制」**（`ShareContent` 不接 `onCopy`）。理由：§7.4 的复制
@@ -604,6 +689,12 @@ export function ShareMineBar(props: ShareMineBarProps) {
               <li key={row.id} className="share__minerow">
                 <ShareContent item={row} />
                 {remain ? <span className="share__remain">{remain}</span> : null}
+                {/*
+                  ⚠️★ 三个形态是**互斥**的，而且顺序有意义：先判 `active`（它只有一个
+                     动作），再判"这一行是不是正在等确认"，最后才是那两个动作。
+                     ⚠️ `replaced` 走不到这里（`listMine` 不含它，§5.1）—— 真到了就是
+                     走到了下面那一支，而 `hidden` 那一支的两个动作对它会各自 409。
+                */}
                 {row.status === 'active' ? (
                   <button
                     type="button"
@@ -613,15 +704,61 @@ export function ShareMineBar(props: ShareMineBarProps) {
                   >
                     {t('shares.hide')}
                   </button>
+                ) : confirmId === row.id ? (
+                  <>
+                    {/*
+                      ⚠️ 第二步的两颗按钮**替掉**了「恢复」与「彻底删除」，而不是加在
+                         它们旁边：再点一次「彻底删除」不该有任何效果，而一颗按下去
+                         什么都不做的按钮比没有按钮更坏（本仓老规矩）。
+                      ⚠️ `onDelete` 之前先 `setConfirmId(null)`：删除成功之后这一行会
+                         被回读掉，但这个 id 还留在 state 里 —— 不清的话，万一将来出现
+                         "同一个 id 又回来了"的画面，它会一上来就是确认态。
+                    */}
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      onClick={() => {
+                        setConfirmId(null);
+                        props.onDelete(row.id);
+                      }}
+                    >
+                      {t('shares.deleteConfirm')}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      onClick={() => setConfirmId(null)}
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </>
                 ) : (
-                  <button
-                    type="button"
-                    className="ghostbtn"
-                    disabled={busy}
-                    onClick={() => props.onRestore(row.id)}
-                  >
-                    {t('shares.restore')}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      onClick={() => props.onRestore(row.id)}
+                    >
+                      {t('shares.restore')}
+                    </button>
+                    {/*
+                      ★ 第一步。它只是把这一行切成确认态（不发请求）—— 硬删除是
+                         `shares.deleteConfirm` 那颗按钮的事。
+                      ⚠️ 文案不写「（不能恢复）」那种括号：第二步那一下才是终局，
+                         写在第一步上会让"点了之后什么都没发生"显得像没生效。
+                    */}
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      onClick={() => setConfirmId(row.id)}
+                    >
+                      {t('shares.deleteShare')}
+                    </button>
+                  </>
                 )}
               </li>
             );
@@ -881,6 +1018,15 @@ export interface ShareBoardViewProps {
   notice: { ok: boolean; text: string } | null;
   onHide: (id: string) => void;
   onRestore: (id: string) => void;
+  /**
+   * ★★ 「彻底删除」的落点（2026-09-16 新增）。**必填**，理由与上面三格完全相同
+   *    （可选 + 缺省时禁用 = 一颗永远灰着的按钮，而所有门禁都绿）。
+   *
+   * ⚠️ 它只在**已下架**的那一行上渲染，而且是**两步**里的第二步
+   *    （第一步只是把那一行切成确认态，不发请求）—— 硬删除没有回收站。
+   *    服务端的判据同样是 `status='hidden'`，所以界面这两步与它逐条对应。
+   */
+  onDelete: (id: string) => void;
   onCopy: (text: string) => void;
   onSubmit: (body: unknown) => void;
   /**
@@ -1034,6 +1180,7 @@ export function ShareBoardView(props: ShareBoardViewProps) {
                   busy={busy}
                   onHide={props.onHide}
                   onRestore={props.onRestore}
+                  onDelete={props.onDelete}
                   onSubmit={props.onSubmit}
                 />
               ) : (

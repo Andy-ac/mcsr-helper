@@ -1575,8 +1575,8 @@ export function deleteMyLiveLink(id: string): Promise<{ ok: true; id: string }> 
 // 实时分享（2026-09-15）
 // ---------------------------------------------------------------------------
 /*
- * 四个端点，两种读法 + 两种写法。形状与上面几节一致（读走 `request`、写走
- * `sendJson`），只有三处需要说清"为什么这个参数是这个值"：
+ * 五个端点（2026-09-16 加了"彻底删除"），两种读法 + 三种写法。形状与上面几节一致
+ * （读走 `request`、写走 `sendJson`），只有三处需要说清"为什么这个参数是这个值"：
  *
  * ⚠️★ 两个读接口都显式要 `no-store`。服务端自己就在响应头里写了 `no-store`
  *    （§5.1：这是"只给登录用户的管理态数据 + 20 秒一变"），但**缓存这一层不由
@@ -1653,4 +1653,20 @@ export function setShareVisibility(id: string, visible: boolean): Promise<{ item
     `/api/shares/${encodeURIComponent(id)}/visibility`,
     { visible },
   );
+}
+
+/**
+ * 彻底删除一条：`DELETE /api/shares/:id`（2026-09-16）。
+ *
+ * ⚠️★ **不可逆**：服务端把那一行从库里拿掉，没有"回收站"。所以它前面必须有
+ *    一次明确的"下架"（服务端只对 `status='hidden'` 的行放行），界面上再加一次
+ *    两步确认 —— 与 `setShareVisibility` 那种"可逆动作不需要确认框"的区别就在这里。
+ *
+ * ⚠️ 只有作者本人能调（**管理员也是 403**）：与"恢复只有本人"同一条，
+ *    而删除比恢复更强 —— 它连行都不剩了。
+ * ⚠️ 失败形状与 PATCH 逐条对齐：`not_found` 404 / `forbidden` 403 /
+ *    `invalid_state` + reason `not_hidden` 409（`lib/shareErrors.ts` 认那个 reason）。
+ */
+export function deleteShare(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson<{ ok: true; id: string }>('DELETE', `/api/shares/${encodeURIComponent(id)}`);
 }

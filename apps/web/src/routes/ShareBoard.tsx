@@ -60,6 +60,7 @@ import { useTranslation } from 'react-i18next';
 import { ShareBoardView } from '@/components/ShareCard';
 import {
   ApiError,
+  deleteShare,
   fetchShareBoard,
   postShare,
   sendVerifyEmail,
@@ -328,6 +329,34 @@ export function ShareBoard({ kind }: { kind: ShareKind }) {
   }
 
   /**
+   * 彻底删除我自己的那一条（2026-09-16）。
+   *
+   * ⚠️★ 它**不可逆**，而界面上的那一步是"两步确认"的第二步（`ShareMineBar`
+   *    的那颗「确认彻底删除」）—— 这个函数只负责发请求，**不在这里加确认框**：
+   *    `window.confirm` 在 SSR 里不跑、门禁看不见，还会让"两个 step 在组件里"
+   *    这件事变成两处状态。
+   * ⚠️ 服务端只对**已下架**的行放行，所以这条路上真会出现的失败是
+   *    `invalid_state` + `not_hidden`（"你手上那份数据旧了"）⇒ 与 `setVisible`
+   *    逐字一样地顺手刷新一次。
+   * ⚠️ 成功之后**不另发一句提示**：那一行从列表里消失就是反馈
+   *    （与 `publish` 同一条：失败必须有话说，成功不用再说一遍）。
+   */
+  async function remove(id: string): Promise<void> {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await deleteShare(id);
+      // 回读：删掉的那一行必须**马上**消失（否则要等 20 秒的轮询）
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: describeShareError(err, t, errorText, kind) });
+      if (err instanceof ApiError && err.code === 'invalid_state') await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
    * 「复制」—— 落点在**容器**里，因为 `navigator.clipboard` 是浏览器 API，
    * 而它失败**必须看得见**（§7.4 的"不许静默"）。
    *
@@ -410,6 +439,7 @@ export function ShareBoard({ kind }: { kind: ShareKind }) {
       notice={notice}
       onHide={(id) => void setVisible(id, false)}
       onRestore={(id) => void setVisible(id, true)}
+      onDelete={(id) => void remove(id)}
       onCopy={(text) => void copy(text)}
       onSubmit={(body) => void publish(body)}
       // ★ 必填的三格里的两格：重试 = 把取数再跑一遍；重发验证 = 那个端点

@@ -5,7 +5,8 @@
  * 的文件头；本层与它们的分工是：
  *   · **不解析请求 body**（那是 `parseSharePost` 与路由层的事）—— 这里收的是一份
  *     已经归一化好的 `SharePayload`；
- *   · **不判权限**（除了"恢复只有本人"这一条，spec §6.1 明确要求比对 `user_id`）；
+ *   · **不判权限**（除了两块：`setShareVisible` 的"恢复只有本人"、`deleteShare` 的
+ *     "删除只有本人" —— spec §6.1 / §6.2 明文要求数据层自己再比对一遍 `user_id`）；
  *   · **不看时钟**：`now` 一律由调用方传进来（路由层在一个请求里取一次，
  *     `serverNow` 与它同源 —— spec §5.1 那条"同一个 now"）。
  *
@@ -38,7 +39,6 @@ import type {
   LiveShare,
   ShareKind,
   ShareListResponse,
-  ShareMinutes,
   SharePayload,
   ShareStatus,
   ShareSummary,
@@ -408,21 +408,25 @@ export type CreateShareResult =
  * ⇒ 想在这里加一句"这个码已经有人挂过了"之前，先读 spec §5.3 与 §10 第 5 条。
  *
  * ---------------------------------------------------------------------------
- * `expires_at = now + minutes * 60_000`，`now` 是**服务端**取的
+ * `expires_at = now + durationMs`，`now` 是**服务端**取的
  * ---------------------------------------------------------------------------
  * 不接受客户端传时间 —— 那等于让人自己决定什么时候过期。所以这个函数的 `now`
  * 由路由层在请求开头取一次，而不是这里再取一次（§5.3）。
+ *
+ * ⚠️★ 收的是**毫秒**，不是"分钟"或"天数"：两个 kind 的单位不同（房间四档分钟、
+ *    种子 1–30 天，2026-09-16），而这个函数**不该知道**单位这回事 ——
+ *    换算只有一处（shared 的 `durationToMs`），路由层在那里换好再传进来。
  */
 export function createShare(input: {
   kind: ShareKind;
   userId: string;
   payload: SharePayload;
   note: string;
-  minutes: ShareMinutes;
+  durationMs: number;
   now: number;
 }): CreateShareResult {
   const db = getDb();
-  const expiresAt = input.now + input.minutes * 60_000;
+  const expiresAt = input.now + input.durationMs;
 
   db.exec('BEGIN');
   try {
@@ -653,6 +657,102 @@ export function setShareVisible(id: string, now: number, actorId: string): SetVi
 
     db.exec('COMMIT');
     return { ok: true, share: after };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 彻底删除
+// ---------------------------------------------------------------------------
+
+/**
+ * 彻底删除的失败原因 —— **比 `SetVisibilityFailure` 窄，而且必须窄**。
+ *
+ * ⚠️ 复用它那个六格的联合是错的：`expired` / `at_limit` / `not_active` 在这个动作里
+ *    没有意义，而路由层是照着"这个动作可能出现的失败"逐条分支的
+ *    （`at_limit` 要独立成码、别的走 `invalid_state`）。类型窄一格，
+ *    路由那边"忘了写某一支"的可能性就少一格。
+ */
+export type DeleteShareFailure =
+  | { ok: false; reason: 'not_found' }
+  | { ok: false; reason: 'forbidden' }
+  | { ok: false; reason: 'not_hidden' };
+
+/**
+ * 结果里为什么要回 `kind`：**行本身马上就没有了**，而审计那一句要写清删掉的是什么。
+ * 事后按 `entity_id` 去 `live_shares` 里查是查不到的（那正是"彻底"的意思）——
+ * 所以这里把 kind 带出去，让路由在**删之前**就把话说全。
+ */
+export type DeleteShareResult = { ok: true; kind: ShareKind } | DeleteShareFailure;
+
+/**
+ * 彻底删除一条（2026-09-16 用户要求：「下架之后拥有者允许删除（彻底删除）」）。
+ *
+ * ===========================================================================
+ * ★★ 判据只有三个，顺序是刻意的：行在不在 → 是谁的 → 状态对不对
+ * ===========================================================================
+ *   · `not_found`：那一行已经不在了（删过了、被回收了、id 打错）。
+ *   · `forbidden`：**不是作者本人**。⚠️ 这里**包括管理员**：管理动作是单向的
+ *     （spec §6.2 / 裁决 11）—— 管理员能"拿下来"是因为他代表站点，而**硬删除
+ *     不可逆**，他没有理由需要它；他手上的下架已经足够让内容从看板上消失。
+ *     ⇒ 与 `setShareVisible` 同一条规矩，而且这一条写在**数据层**：
+ *       权限结论不该只住在路由里（多一条调用路径就少一道门）。
+ *   · `not_hidden`：**没有下架就不能删**。用户的原话是"下架之后允许删除" ——
+ *     这不是一句顺口的措辞，而是这个动作的**前提**：下架是一次可以反悔的操作，
+ *     删除不是。两个按钮之间隔着一次明确的状态变化。
+ *
+ * ===========================================================================
+ * ⚠️★ 判据里**没有过期** —— 这不是漏了
+ * ===========================================================================
+ * `setShareHidden` / `setShareVisible` 都判 `expires_at`，因为它们改的是
+ * "在不在看板上"这件事，而到点之后那个问题没有意义了。删除不一样：
+ *   · 一条**已下架且已过期**的行，看板与 `mine` 里都看不到它（§5.1），
+ *     界面上因此**没有**按钮能调到这条路径 —— 但它最迟 24 小时后会被回收任务
+ *     物理删掉（`deleteExpiredShares`），删它跟不删它没有任何人能看见的差别。
+ *   · 而多判一条 `expires_at` 就多一个"按钮在、条件不满足"的死角
+ *     （`mine` 里那一行的剩余时间刚跨过 0 的那一秒）。
+ * ⇒ 判据只有 `status='hidden'`：**能删就删掉，这正是坏行的补救手段**。
+ *
+ * ===========================================================================
+ * ⚠️ 它**不看 payload 坏不坏**（与单行那条 PATCH 路径刻意不同）
+ * ===========================================================================
+ * PATCH 要先 `isRenderableShareRow` 是因为它最后要 `buildItem` 回读（坏行会 throw）。
+ * 这里回的是 `{ ok, id }`，一个字节的 payload 都不读 ⇒ 一行手改过 / 半截 JSON 的
+ * 脏数据，**作者反而能把它删掉**。这是有意的：那种行在界面上看不见（读路径会跳过
+ * 并记日志，§3.2），除了删掉它没有别的补救手段。
+ */
+export function deleteShare(id: string, actorId: string): DeleteShareResult {
+  const db = getDb();
+
+  /*
+   * ⚠️ 读—判—删在一个事务里，与 `setShareHidden` 同一个形状。
+   *    这个服务是单进程 + 同步驱动（`node:sqlite`），所以这三步中间本来插不进
+   *    别的请求；事务在这里的作用是"把这三步当成一件事"，将来驱动换成异步的也不会走样。
+   */
+  db.exec('BEGIN');
+  try {
+    const row = getShareForEdit(id);
+    if (!row) {
+      db.exec('ROLLBACK');
+      return { ok: false, reason: 'not_found' };
+    }
+    // ⚠️ 归属先于状态（与 `setShareVisible` 同一条）：别人的东西"状态不对"
+    //    也不该告诉他这条是什么状态。
+    if (row.user_id !== actorId) {
+      db.exec('ROLLBACK');
+      return { ok: false, reason: 'forbidden' };
+    }
+    if (row.status !== 'hidden') {
+      db.exec('ROLLBACK');
+      return { ok: false, reason: 'not_hidden' };
+    }
+
+    db.prepare('DELETE FROM live_shares WHERE id = ?').run(id);
+
+    db.exec('COMMIT');
+    return { ok: true, kind: row.kind };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;

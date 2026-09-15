@@ -1,8 +1,8 @@
 /**
  * 实时分享（live shares）—— **前后端共用的一份契约**。
  *
- * 全站唯一一份"分享一条短暂记录"的定义：两种 kind、四档时长、两种限额、
- * 说明的宽度预算、以及请求/响应两边的 zod schema。
+ * 全站唯一一份"分享一条短暂记录"的定义：两种 kind、两套展示时长（房间四档分钟 /
+ * 种子 1–30 天）、两种限额、说明的宽度预算、以及请求/响应两边的 zod schema。
  *
  * ===========================================================================
  * ⚠️ 为什么 payload 是 JSON 而不是平铺的列
@@ -23,13 +23,37 @@ export const SHARE_KINDS = ['room', 'seed'] as const;
 export type ShareKind = (typeof SHARE_KINDS)[number];
 
 /**
- * 展示时长的四档。**服务端只接受这四个值**（不是 1–20 的区间）：
+ * **私人房**的展示时长四档。**服务端只接受这四个值**（不是 1–20 的区间）：
  * 用户要的是"5 分钟一档"，而区间校验会放进来 7 分钟这种界面上根本选不到的值 ——
  * 那种值只能来自脚本，而它会让"所有时长都是 5 的倍数"这条性质悄悄失效。
  */
 export const SHARE_MINUTES = [5, 10, 15, 20] as const;
 export type ShareMinutes = (typeof SHARE_MINUTES)[number];
 export const DEFAULT_SHARE_MINUTES: ShareMinutes = 5;
+
+/**
+ * **种子**的展示时长：**天数，1–30，自己填**（2026-09-16 用户要求）。
+ *
+ * ===========================================================================
+ * ⚠️★ 为什么两个 kind 的单位**不一样**，而且不是"顺手统一一下"能改的
+ * ===========================================================================
+ * 两边的约束**性质不同**，这是用户分别指定过的两件事：
+ *   · 私人房的四档是**选项**（"5 分钟一档"）⇒ 枚举，界面上只有四个 radio；
+ *   · 种子的天数是**自由填写**（"最多 30 天（自行填写）"）⇒ 区间。
+ * 枚举换成区间会放进来界面上选不到的值（见上一条注释）；区间换成枚举则是把
+ * "自己填"这件事直接砍掉。⇒ 两份 schema，各自带各自的界，**不要合并**。
+ *
+ * ⚠️ 为什么种子要按天：一种子局的信息本来就能用很久（私房号不一样 ——
+ *    房散了那个号就作废了）。20 分钟的窗口对"暂时记录一下种子"来说太短。
+ * ⚠️ 它**不写进 payload**：时长只落在信封的 `expires_at` 上
+ *    （见文件头"payload 是 JSON"那一节）⇒ 这次把分钟改成天**没有存量数据问题**，
+ *    库里已有的行照样读得出来，只是它们的 `expires_at` 是当时按分钟算的。
+ */
+export const SHARE_DAYS_MIN = 1;
+export const SHARE_DAYS_MAX = 30;
+export const DEFAULT_SHARE_DAYS = 7;
+/** 一天的毫秒数。⚠️ 用它算 `expires_at`，别在别处再写一遍 `24 * 60 * 60 * 1000`。 */
+export const SHARE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * 每个 kind 同时能挂几条。
@@ -166,6 +190,44 @@ export function parseSharePayload(kind: ShareKind, raw: unknown): SharePayload |
 
 const minutesSchema = z.union([z.literal(5), z.literal(10), z.literal(15), z.literal(20)]);
 
+/**
+ * 种子那一栏的展示天数：**整数、1–30**。
+ *
+ * ⚠️ `.int()` 的缺省 message 是英文（本仓其它地方也一样，见 `live.ts` 的 `sortOrder`）——
+ *    这一格的 400 只可能是"前端漏了一格规则"，而**界面上先拦过一次**
+ *    （`shares.errDays`，中文）。所以不为止单独写一句中文 message。
+ * ⚠️ 非数字（`'7'` / `null`）与小数（`7.5`）都拒：`'7'` 在 JSON 里是字符串，
+ *    放行它等于认下两种"天数"，而分钟那一档同样是**只认数字**的。
+ */
+const daysSchema = z
+  .number()
+  .int()
+  .min(SHARE_DAYS_MIN, { message: `展示天数至少 ${String(SHARE_DAYS_MIN)} 天` })
+  .max(SHARE_DAYS_MAX, { message: `展示天数最多 ${String(SHARE_DAYS_MAX)} 天` });
+
+/**
+ * 把用户填进那一格的**原文**读成天数 —— `null` = 不合法。
+ *
+ * ⚠️★ 为什么它住在 shared，而不是 `ShareForm` 里那一段 `if`：
+ *    · `apps/web` **没有测试运行器**（见 `lib/shareTime.ts` 的文件头），写在组件里
+ *      这条规则就**只有人眼能验** —— 而它错了的表现是"填 30 被打回"，用户没有任何办法绕过；
+ *    · 放在这里，`services/api` 那套测试能逐条钉它（本仓惯例，见
+ *      `live-shares-schema.test.ts` 的文件头："共享模块的行为一律在这里被钉住"）。
+ * ⚠️ 它与 `daysSchema` 是**同一条规则的两种入参形状**（那边收 JSON 数字、这边收输入框的
+ *    字符串），界只有 `SHARE_DAYS_MIN` / `SHARE_DAYS_MAX` 一处。
+ *    测试里有一条**逐值对照**这两条路的结论必须一致 —— 界漂了会当场红。
+ * ⚠️ 用正则而不是 `Number(raw)` 一把梭：`Number('')` 是 0、`Number(' ')` 也是 0、
+ *    `Number('7.9')` 是 7.9 —— 三个都不该被当成"填好了一个天数"。
+ *    （手法照 `apps/web/src/components/SeedFilters.tsx` 的 `parseCompletionInput`。）
+ */
+export function parseShareDays(raw: string): number | null {
+  const value = raw.trim();
+  /* ⚠️ 只认 1–2 位纯数字：`+7` / `1e1` / `7.5` / `7 天` 在这里就出局了。 */
+  if (!/^\d{1,2}$/.test(value)) return null;
+  const days = Number(value);
+  return days >= SHARE_DAYS_MIN && days <= SHARE_DAYS_MAX ? days : null;
+}
+
 const noteSchema = (kind: ShareKind) =>
   z
     .string()
@@ -205,7 +267,13 @@ export const SeedPostSchema = z
     end: optionalSeed,
     rng: optionalSeed,
     note: noteSchema('seed'),
-    minutes: minutesSchema.default(DEFAULT_SHARE_MINUTES),
+    /*
+     * ⚠️★ 这一格叫 `days` 而**不叫** `minutes`：两个 kind 的时长单位不同
+     *    （房间 = 四档分钟、种子 = 1–30 天，见上面 `SHARE_DAYS_MIN` 那段理由）。
+     *    名字沿用 `minutes` 的话，库里那种"7 表示 7 分钟还是 7 天"的歧义会从
+     *    body 一路带到审计文案里，而看的人没有任何办法分辨。
+     */
+    days: daysSchema.default(DEFAULT_SHARE_DAYS),
   })
   .strict();
 
@@ -236,11 +304,34 @@ export function sharePostSchema(kind: ShareKind): z.ZodType {
  *    ⚠️ 规则本身只有一份定义（外层那几格就是 `.shape.*` 交出来的同一个实例），
  *      所以这里的"跑两遍"是**幂等**的，不是重复实现。
  */
+/**
+ * 一次发布的展示时长 —— **带着单位**（room 是分钟、seed 是天）。
+ *
+ * ⚠️★ 为什么返回值不能只是"一个毫秒数"：审计那一句要写「展示 30 天」还是
+ *    「展示 15 分钟」，而同一个数字在两种单位下差 1440 倍。只回毫秒的话，
+ *    路由层得拿 `kind` 再反推一次单位 —— 那就是**第二处**知道"哪个 kind 用哪个
+ *    单位"的地方，而它和这里迟早会漂移（加第三个 kind 时必然漏一处）。
+ */
+export type ShareDuration =
+  | { unit: 'minutes'; value: ShareMinutes }
+  | { unit: 'days'; value: number };
+
+/**
+ * 时长 → 毫秒（`expires_at = now + durationToMs(duration)`）。
+ *
+ * ⚠️ 它是"一分钟 / 一天各多少毫秒"的**唯一**一处实现：数据层的 `createShare`
+ *    只收毫秒（它不需要知道单位），所以这里是唯一能把单位与库里那一列对上的地方。
+ *    别在路由层再写一遍这段换算。
+ */
+export function durationToMs(duration: ShareDuration): number {
+  return duration.unit === 'minutes' ? duration.value * 60_000 : duration.value * SHARE_DAY_MS;
+}
+
 export function parseSharePost(
   kind: ShareKind,
   body: unknown,
 ):
-  | { ok: true; payload: SharePayload; note: string; minutes: ShareMinutes }
+  | { ok: true; payload: SharePayload; note: string; duration: ShareDuration }
   | { ok: false; error: z.ZodError } {
   const outer = sharePostSchema(kind).safeParse(body);
   if (!outer.success) return { ok: false, error: outer.error };
@@ -263,14 +354,23 @@ export function parseSharePost(
     ok: true,
     payload: inner.data,
     /*
-     * ⚠️★ 这两处**必须**和上面六处一样写显式类型断言 —— 因为 `sharePostSchema` 的返回类型是
-     *    `z.ZodType`（见它自己的注释：两个 schema 形状不同，联合的 `.safeParse` 产出不可用），
-     *    而 `z.ZodType` 的 `data` 就是 `unknown`。
+     * ⚠️★ 下面两处**必须**和上面那几处一样写显式类型断言 —— 因为 `sharePostSchema`
+     *    的返回类型是 `z.ZodType`（见它自己的注释：两个 schema 形状不同，联合的
+     *    `.safeParse` 产出不可用），而 `z.ZodType` 的 `data` 就是 `unknown`。
      *    ⇒ 判据：`outer.data` 的每一格都要**显式**写出它期望的形状，
      *      改了 `sharePostSchema` 的返回类型就回来把这一整段重读一遍。
      */
     note: (outer.data as { note: string }).note,
-    minutes: (outer.data as { minutes: number }).minutes as ShareMinutes,
+    /*
+     * ⚠️ 单位由 **kind** 决定，所以这里**分叉**，而不是"哪个键有就用哪个"：
+     *    room 的 body 里根本没有 `days`、seed 的没有 `minutes`（`.strict()` 会让多传的
+     *    那个键当场报错）⇒ 写成"有哪个用哪个"的话，一次 kind 笔误会变成一条
+     *    `value: undefined` 的时长，而它算出来的 `expires_at` 是 NaN。
+     */
+    duration:
+      kind === 'room'
+        ? { unit: 'minutes', value: (outer.data as { minutes: number }).minutes as ShareMinutes }
+        : { unit: 'days', value: (outer.data as { days: number }).days },
   };
 }
 

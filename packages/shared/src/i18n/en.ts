@@ -2529,6 +2529,18 @@ export const en: TranslationSchema = {
       'One line saying what this run is. A room is just a code; this is the line people read to decide whether to join.',
     formMinutes: 'Show it for',
     minutes: '{{n}} minutes',
+    /*
+     * ★ Seeds are entered in **days** (2026-09-16, the user's request: "in days,
+     *   30 at most, type it yourself"), so this is a **second** string rather
+     *   than a reuse of `formMinutes`: those four radios say "pick one", this
+     *   one says "type a number", and the units differ (minutes vs days).
+     *   One shared string means editing either side silently edits the other.
+     * ⚠️ The "it disappears on its own" half is the most counter-intuitive
+     *   property here (people expect a post to stay), and this is the only place
+     *   on the seed form that can say it.
+     */
+    formDays: 'Show it for how many days',
+    formDaysHint: '1–30 days, type it yourself. It disappears on its own after that.',
     formSubmitRoom: 'Post to the board',
     /*
      * ⚠️ With something already on the board, the room submit button **must**
@@ -2546,6 +2558,16 @@ export const en: TranslationSchema = {
     boardYou: 'You',
     boardBy: '{{name}}',
     remainMinutes: '{{n}} minutes left',
+    /*
+     * ★★ These two tiers arrived on 2026-09-16, when seeds went from "20 minutes
+     *   at most" to "30 days at most": with minutes as the only tier, a seed with
+     *   29 days to go would read "41760 minutes left".
+     * ⚠️ Which tier applies and where the boundaries sit is **not** decided here
+     *   — the single implementation is `remainText` in `lib/shareTime.ts` (that
+     *   file has the table and the reasoning for the boundaries).
+     */
+    remainHours: '{{n}} hours left',
+    remainDays: '{{n}} days left',
     /**
      * ★ That a row vanishes **at the very second it expires** is the local
      *   ticker's job, so with minute granularity "0 minutes left" never appears.
@@ -2563,6 +2585,26 @@ export const en: TranslationSchema = {
     copyFailed: 'Could not copy — select it by hand.',
     hide: 'Take down',
     restore: 'Restore',
+    /*
+     * ★★ "Delete permanently" is the only action in this section that needs a
+     *   **second confirmation** (2026-09-16, the user's request: "after taking it
+     *   down, the owner may delete it (delete for good)").
+     * Why two clicks here and one there: taking an entry down is reversible (the
+     *   `hideHint` sentence right below is exactly that promise), while deleting
+     *   leaves **no row at all** — the server removes it from the database, and
+     *   there is no recycle bin.
+     * ⚠️ The two strings are **two clicks**, not two ways of saying the same
+     *   thing: `deleteShare` is step one and only flips the row into its
+     *   confirming state (**it sends no request**); `deleteConfirm` is step two
+     *   and really deletes it.
+     * ⚠️ Step two has to make "this is the end of it" visible, which is why it
+     *   carries "Confirm" rather than repeating step one word for word — two
+     *   identical labels leave the user unable to tell which click they are on.
+     * ⚠️ Cancel reuses the site-wide `common.cancel` instead of a new string:
+     *   one action, one word, everywhere.
+     */
+    deleteShare: 'Delete permanently',
+    deleteConfirm: 'Confirm delete',
     /*
      * ★ This string contains `**expires**` — a real emphasis pair — so its render
      *   site must go through `em()`, and the key is registered in
@@ -2615,6 +2657,16 @@ export const en: TranslationSchema = {
     errSeedRequired: 'The overworld seed is required.',
     errSeedLength: 'A seed can be at most 32 characters.',
     errSeedSpace: 'A seed cannot contain spaces.',
+    /*
+     * ★ The days field's error (2026-09-16). The check lives in `ShareForm`
+     *   (`^\d{1,2}$` plus 1–30) and mirrors shared's `daysSchema` line for line,
+     *   which is why this sentence has to say **both** "whole number" and the
+     *   range: whoever typed `7.5` and whoever typed `31` each need to know what
+     *   to do next, and one sentence has to serve both.
+     * ⚠️ It sits with `errSeedSpace` / `errCodeLength` and is the same kind of
+     *   copy: a **client-side** per-field hint, not server 400 text.
+     */
+    errDays: 'Days has to be a whole number from 1 to 30.',
     errNoteTooLong: 'That note is too long (at most {{max}} units; a wide character counts as 2).',
 
     /*

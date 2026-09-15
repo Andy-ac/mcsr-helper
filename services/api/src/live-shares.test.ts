@@ -361,7 +361,7 @@ describe('room：一人一条靠数据库', () => {
         userId: defaultUser,
         payload: { code: 'OLD1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -371,7 +371,7 @@ describe('room：一人一条靠数据库', () => {
         userId: defaultUser,
         payload: { code: 'NEW1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: now + 1000,
       }),
     );
@@ -421,7 +421,7 @@ describe('room：一人一条靠数据库', () => {
         userId: defaultUser,
         payload: { code: 'NEW1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -483,7 +483,7 @@ describe('seed：额度在事务里数一遍', () => {
       userId: defaultUser,
       payload: { overworld: '21' },
       note: '',
-      minutes: 5,
+      durationMs: 5 * 60_000,
       now,
     });
     assert.deepEqual(rejected, { ok: false, reason: 'at_limit', limit: SHARE_LIMITS.seed });
@@ -504,7 +504,7 @@ describe('seed：额度在事务里数一遍', () => {
         userId: defaultUser,
         payload: { overworld: '22' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -531,7 +531,7 @@ describe('seed：额度在事务里数一遍', () => {
         userId: defaultUser,
         payload: { overworld: '99' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -561,7 +561,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { overworld: '42' },
         note: '一句话说清这是什么局',
-        minutes: 10,
+        durationMs: 10 * 60_000,
         now,
       }),
     );
@@ -594,7 +594,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { overworld: '7' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -634,7 +634,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { code: 'OLD1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -645,7 +645,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { code: 'NEW1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: now + 1000,
       }),
     );
@@ -692,7 +692,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { code: 'HOLD' },
         note: '',
-        minutes: 20,
+        durationMs: 20 * 60_000,
         now: t0,
       }),
     );
@@ -703,7 +703,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { code: 'RGONE' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: t0 + 60_000,
       }),
     );
@@ -775,7 +775,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { overworld: '5' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -805,7 +805,7 @@ describe('下架 / 恢复', () => {
         userId: defaultUser,
         payload: { overworld: '8' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -965,7 +965,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: defaultUser,
         payload: { overworld: '111' },
         note: '我的那条',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -975,7 +975,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: defaultUser,
         payload: { overworld: '222' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: now + 1,
       }),
     );
@@ -986,7 +986,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: other,
         payload: { overworld: '333' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: now + 3,
       }),
     );
@@ -1072,7 +1072,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: a,
         payload: { code: 'AAA1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -1082,7 +1082,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: a,
         payload: { overworld: '1' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -1092,7 +1092,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: b,
         payload: { overworld: '2' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now,
       }),
     );
@@ -1102,7 +1102,7 @@ describe('§5.1 的响应：一次拼好，时间只有一份', () => {
         userId: b,
         payload: { overworld: '3' },
         note: '',
-        minutes: 5,
+        durationMs: 5 * 60_000,
         now: now + 1,
       }),
     );
@@ -1236,9 +1236,9 @@ function roomBody(overrides: Record<string, unknown> = {}): Record<string, unkno
   return { code: 'A7K2P', minutes: 5, ...overrides };
 }
 
-/** seed 的 body（默认 10 分钟）。 */
+/** seed 的 body（默认 **7 天** —— 那也是 §13 冻结的默认档，2026-09-16 起按天）。 */
 function seedBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { overworld: '1234', minutes: 10, ...overrides };
+  return { overworld: '1234', days: 7, ...overrides };
 }
 
 function postShare(kind: ShareKind, body: Record<string, unknown>, cookie?: string): Promise<Res> {
@@ -1251,6 +1251,11 @@ function board(kind: ShareKind, cookie: string): Promise<Res> {
 
 function setVisible(id: string, visible: boolean, cookie: string): Promise<Res> {
   return call('PATCH', `/api/shares/${id}/visibility`, { json: { visible }, cookie });
+}
+
+/** 彻底删除（2026-09-16）。⚠️ 没有 body —— 这个动作不需要任何参数。 */
+function delShare(id: string, cookie: string): Promise<Res> {
+  return call('DELETE', `/api/shares/${id}`, { cookie });
 }
 
 /** 响应里的一条（§5.1 的形状）。 */
@@ -1550,6 +1555,229 @@ describe('HTTP：下架 / 恢复（spec §4.2）', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 彻底删除（2026-09-16 新增：`DELETE /api/shares/:id`）
+// ---------------------------------------------------------------------------
+
+/*
+ * ★★ 这一组是「下架之后拥有者允许删除（彻底删除）」那条要求的判据。
+ *
+ * ⚠️ 与"下架"那一组的分工：下架改一个字段（行还在），删除**把行拿掉**。
+ *    所以这一组里最关键的断言是 `countRows('live_shares', id) === 0` ——
+ *    "彻底"这两个字只能由它来证明（`status` 那一列在删除之后根本读不到，
+ *    因为 `statusOf` 会因为行不存在而 assert 失败）。
+ */
+describe('HTTP：彻底删除（DELETE /api/shares/:id）', () => {
+  it('作者删自己**已下架**的那条 ⇒ 200 `{ok,id}`，而且库里那一行真的没了', async () => {
+    const author = await signUp();
+    const created = await postShare('room', roomBody(), author.cookie);
+    const id = itemOf(created).id;
+    assert.equal((await setVisible(id, false, author.cookie)).status, 200);
+
+    const res = await delShare(id, author.cookie);
+    assert.equal(res.status, 200, res.text);
+    assert.deepEqual(res.body, { ok: true, id });
+
+    /*
+     * ★★ 「彻底」的唯一判据：**库里没有这一行了**。
+     *    写成"status 变成某个值"的话，那只是另一种下架。
+     */
+    assert.equal(countRows('live_shares', id), 0, '那一行必须从表里消失（不是软删除）');
+
+    // 看板与 mine 里都没有它 —— 而且 mine 这一半是"没有它"而不是"它被隐藏了"
+    const after = await board('room', author.cookie);
+    assert.deepEqual(itemsOf(after), [], '看板上没有它');
+    assert.deepEqual(mineOf(after), [], '「你的一条」里也没有它（这才是"没了"）');
+  });
+
+  it('★ 没下架就删 ⇒ 409 invalid_state + not_hidden，而且那一行**还在**（正反对照）', async () => {
+    const author = await signUp();
+    const created = await postShare('room', roomBody(), author.cookie);
+    const id = itemOf(created).id;
+
+    const refused = await delShare(id, author.cookie);
+    assert.equal(refused.status, 409, refused.text);
+    assert.deepEqual(refused.body, { error: 'invalid_state', reason: 'not_hidden' });
+    assert.equal(countRows('live_shares', id), 1, '被拒之后那一行必须原样留着');
+    assert.equal(statusOf(id), 'active', '也不能顺手把它改成别的状态');
+
+    // 正向对照：同一行先下架，再删就成功 —— 上面的 409 不是"这个 id 根本删不掉"
+    assert.equal((await setVisible(id, false, author.cookie)).status, 200);
+    assert.equal((await delShare(id, author.cookie)).status, 200);
+    assert.equal(countRows('live_shares', id), 0);
+  });
+
+  it('★ 别人的行 ⇒ 403（**归属先于状态**：行是 hidden 也一样 403，不是 200）', async () => {
+    const owner = await signUp();
+    const stranger = await signUp();
+    const created = await postShare('room', roomBody(), owner.cookie);
+    const id = itemOf(created).id;
+    assert.equal((await setVisible(id, false, owner.cookie)).status, 200);
+
+    const res = await delShare(id, stranger.cookie);
+    assert.equal(res.status, 403, res.text);
+    assert.deepEqual(res.body, { error: 'forbidden' });
+    assert.equal(countRows('live_shares', id), 1, '别人的东西一行都不能少');
+  });
+
+  it('★ 局外人对**还在展示**的行发删除 ⇒ 403（不是 409：归属先判，状态没轮到）', async () => {
+    const owner = await signUp();
+    const stranger = await signUp();
+    const created = await postShare('room', roomBody(), owner.cookie);
+    const id = itemOf(created).id;
+
+    /*
+     * ⚠️ 两条路的回答**必须不同**：这里如果是 409 `not_hidden`，那就等于
+     *    告诉一个局外人"这一条现在是 active" —— 而那是一条他本来不该知道的状态。
+     *    （`setShareVisible` 的注释把这条规矩写成"归属先于状态"。）
+     */
+    const res = await delShare(id, stranger.cookie);
+    assert.equal(res.status, 403, res.text);
+    assert.deepEqual(res.body, { error: 'forbidden' });
+  });
+
+  it('★★ 管理员删别人的行也 403（管理动作是单向的，与"恢复"同一条）', async () => {
+    const owner = await signUp();
+    // `signUp('admin')` 把 role 直接写成 admin；`share.moderate` 是 editor 及以上
+    const admin = await signUp('admin');
+    const created = await postShare('room', roomBody(), owner.cookie);
+    const id = itemOf(created).id;
+
+    /*
+     * 正向对照：同一个管理员**下架**别人的行是允许的（200）—— 所以下面那个 403
+     * 证明的是"删除这一格单独被关掉了"，而不是"这个管理员什么都做不了"。
+     */
+    assert.equal((await setVisible(id, false, admin.cookie)).status, 200, '治理者能下架');
+
+    const res = await delShare(id, admin.cookie);
+    assert.equal(res.status, 403, res.text);
+    assert.deepEqual(res.body, { error: 'forbidden' });
+    assert.equal(countRows('live_shares', id), 1, '管理员也删不掉别人的行');
+  });
+
+  it('不存在的 id ⇒ 404；删除之后**再删一次**也是 404（不是 200 的空操作）', async () => {
+    const author = await signUp();
+    assert.equal((await delShare('ls-does-not-exist', author.cookie)).status, 404);
+
+    const created = await postShare('room', roomBody(), author.cookie);
+    const id = itemOf(created).id;
+    assert.equal((await setVisible(id, false, author.cookie)).status, 200);
+    assert.equal((await delShare(id, author.cookie)).status, 200);
+    /*
+     * ⚠️ 第二次是 404 而不是 200：一个"删过了"的请求回 200 会让界面以为
+     *    它刚刚删掉了一条（而实际上一行都没动）。这一条也是"响应码要能当判据用"
+     *    的实例 —— 幂等在这里是**靠 404** 表达的。
+     */
+    assert.equal((await delShare(id, author.cookie)).status, 404);
+  });
+
+  it('★ 被 replaced 的行删不掉（409 not_hidden）—— 它不是 hidden', async () => {
+    const author = await signUp();
+    const first = await postShare('room', roomBody({ code: 'AAAA1' }), author.cookie);
+    const firstId = itemOf(first).id;
+    // 再发一条 ⇒ 上一条变 replaced（§3.4）
+    assert.equal((await postShare('room', roomBody({ code: 'BBBB2' }), author.cookie)).status, 201);
+    assert.equal(statusOf(firstId), 'replaced');
+
+    const res = await delShare(firstId, author.cookie);
+    assert.equal(res.status, 409, res.text);
+    assert.deepEqual(res.body, { error: 'invalid_state', reason: 'not_hidden' });
+  });
+
+  it('★ payload 坏掉的行，作者**反而删得掉**（这是坏行的补救手段，与 PATCH 刻意不同）', async () => {
+    const author = await signUp();
+    /*
+     * 一行"kind=seed 却存着 room 的 payload"的手改数据。读路径会跳过它（§3.2），
+     * 所以作者在自己的「你的一条」里**看不见**它 —— 删是这个 id 唯一的出路。
+     * ⚠️ PATCH 那条路对坏行是 404（它要 `buildItem` 回读，坏行会 throw）；
+     *    DELETE 一个字节的 payload 都不读 ⇒ 它必须**成功**。
+     *    谁把 `isRenderableShareRow` 顺手加到 DELETE 上，这一条就会红。
+     */
+    const bad = insertRawShare({
+      kind: 'seed',
+      userId: author.id,
+      payload: JSON.stringify({ code: 'AAA1' }),
+      status: 'hidden',
+      expiresAt: now + 60_000,
+    });
+    assert.equal(countRows('live_shares', bad), 1, '探针：坏行确实插进去了');
+
+    const res = await delShare(bad, author.cookie);
+    assert.equal(res.status, 200, `坏行必须删得掉：${res.text}`);
+    assert.equal(countRows('live_shares', bad), 0);
+  });
+
+  it('★ 审计：那一行没了，但 `share.delete` 那条痕迹在，而且 reason 里带 kind', async () => {
+    const author = await signUp();
+    const created = await postShare('seed', seedBody(), author.cookie);
+    const id = itemOf(created).id;
+    assert.equal((await setVisible(id, false, author.cookie)).status, 200);
+    assert.equal((await delShare(id, author.cookie)).status, 200);
+
+    /*
+     * ★★ 这一条钉的是"审计必须比被审计的那一行活得久"：`audit_log` 没有外键
+     *    （`018` 与 `routes/admin.ts` 都记着这条），所以硬删除之后审计行照样在。
+     *    少了它的话，"谁在什么时候把什么东西彻底删了"就**永远查不出来** ——
+     *    而那是删除这个动作唯一的追溯手段。
+     */
+    const audits = auditsOf(id);
+    assert.deepEqual(
+      audits.map((a) => a.action),
+      ['share.create', 'share.hide', 'share.delete'],
+      '三次动作各留一条，顺序就是发生顺序',
+    );
+    const del = audits[2];
+    assert.ok(del);
+    assert.equal(del.actor_id, author.id);
+    assert.equal(del.entity_type, 'live_share');
+    /*
+     * ⚠️ reason 里那个 kind 不是装饰：`entity_id` 指向的行已经没了，
+     *    "删掉的是一条房间号还是一组种子"只能从这一句里读出来。
+     */
+    assert.match(del.reason ?? '', /seed/, 'reason 里要有 kind');
+    assert.match(del.reason ?? '', /作者自己/, '要能分辨是谁下的手');
+    assert.equal(countRows('live_shares', id), 0);
+  });
+
+  it('★ 删掉已下架的那条之后，不影响我在展示的那条（两个动作互不牵连）', async () => {
+    const author = await signUp();
+    const older = await postShare('room', roomBody({ code: 'OLD11' }), author.cookie);
+    const olderId = itemOf(older).id;
+    // 下架旧的 ⇒ 再发一条新的（room 的第二条会把旧的置 replaced —— 所以先下架）
+    assert.equal((await setVisible(olderId, false, author.cookie)).status, 200);
+    const newer = await postShare('room', roomBody({ code: 'NEW22' }), author.cookie);
+    assert.equal(newer.status, 201, newer.text);
+    const newerId = itemOf(newer).id;
+
+    assert.equal((await delShare(olderId, author.cookie)).status, 200, '删旧的');
+
+    const after = await board('room', author.cookie);
+    assert.deepEqual(idsOf(itemsOf(after)), [newerId], '在展示的那条原样还在看板上');
+    assert.deepEqual(
+      mineOf(after).map((i) => i.id),
+      [newerId],
+      'mine 里只剩它',
+    );
+    assert.equal(countRows('live_shares', olderId), 0);
+    assert.equal(countRows('live_shares', newerId), 1);
+  });
+
+  it('游客 / 不认识的行都拿不到删除（401）', async () => {
+    const author = await signUp();
+    const created = await postShare('room', roomBody(), author.cookie);
+    const id = itemOf(created).id;
+    assert.equal((await setVisible(id, false, author.cookie)).status, 200);
+
+    /*
+     * ⚠️ `requireAuth` 在这一组的第一道 —— 一个没登录的人不该看到 403/404
+     *    那种"这一行存在与否"的差别。
+     */
+    assert.equal((await delShare(id, '')).status, 401);
+    assert.equal(countRows('live_shares', id), 1, '没登录动不了任何东西');
+    assert.equal((await delShare('ls-does-not-exist', '')).status, 401);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 恢复与额度的交互（§4.3）
 // ---------------------------------------------------------------------------
 
@@ -1768,7 +1996,7 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
     }
   });
 
-  it('minutes：只接受四档里的值，而且它真的决定 expires_at', async () => {
+  it('room 的 minutes：只接受四档里的值，而且它真的决定 expires_at', async () => {
     const author = await signUp();
 
     for (const minutes of [5, 10, 15, 20]) {
@@ -1783,6 +2011,63 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
       assert.equal(res.status, 400, `minutes=${JSON.stringify(minutes)} 应当被拒：${res.text}`);
       assert.equal(res.body.error, 'invalid_input');
     }
+  });
+
+  /*
+   * ★★ 种子那边是**另一套单位**（2026-09-16 用户要求：「以天为单位，最多 30 天
+   *    （自行填写）」）—— 所以这一条与上面那条**并存**，不是它的副本：
+   *    房间是四档枚举、种子是 1–30 的区间，两者的拒绝集完全不同。
+   * ⚠️ 这里每一条都要断言 `expiresAt - createdAt`：**只断言 201** 的话，
+   *    "天数被当成分钟存了"照样全绿（30 分钟与 30 天都回 201）。
+   */
+  it('seed 的 days：1–30 的整数、自己填；它真的决定 expires_at；不填就是默认的 7 天', async () => {
+    const author = await signUp();
+
+    for (const days of [1, 30, 7]) {
+      const res = await postShare(
+        'seed',
+        seedBody({ days, overworld: `OVW-${String(days)}` }),
+        author.cookie,
+      );
+      assert.equal(res.status, 201, `days=${String(days)} 应当通过：${res.text}`);
+      const item = itemOf(res);
+      assert.equal(
+        item.expiresAt - item.createdAt,
+        days * 86_400_000,
+        `days=${String(days)} 必须**按天**写进 expires_at（按分钟算的话这里是 ${String(days)} 分钟）`,
+      );
+    }
+
+    /* ★ 不传 `days` ⇒ 冻结的默认档 7 天（§13）。不钉的话，默认值改了没有任何门禁会红。 */
+    const dflt = await postShare('seed', { overworld: 'OVW-DEFAULT' }, author.cookie);
+    assert.equal(dflt.status, 201, dflt.text);
+    assert.equal(
+      itemOf(dflt).expiresAt - itemOf(dflt).createdAt,
+      7 * 86_400_000,
+      '不填 days 就是 7 天',
+    );
+
+    /*
+     * ⚠️ 区间之外 / 非整数 / 非数字一律拒：`0` 与 `31` 在区间外、`7.5` 是小数、
+     *    `'7'` 是**字符串**（JSON 里数字与字符串是两种东西）、`true` 更不是数字。
+     *    这些值界面上一格都选不出来 ⇒ 只可能来自脚本，而放行任何一个都会让
+     *    "演示时长只有两种单位里的合法取值"这条性质悄悄失效。
+     */
+    for (const days of [0, 31, -1, 1.5, '7', null, true]) {
+      const res = await postShare('seed', seedBody({ days }), author.cookie);
+      assert.equal(res.status, 400, `days=${JSON.stringify(days)} 应当被拒：${res.text}`);
+      assert.equal(res.body.error, 'invalid_input');
+    }
+
+    /*
+     * ★★ 用**旧的键名**（`minutes`）发种子必须当场 400，而不是被悄悄当成天数。
+     *    这是"改单位"那次改动明写在案的那条代价：一个跨部署没刷新的旧标签页
+     *    会吃到一次 400（`.strict()` 报"多了一个不认识的键"），而不是把
+     *    `minutes: 30` 当成 30 天存进库里 —— 后者用户永远发现不了。
+     */
+    const stale = await postShare('seed', { overworld: 'OVW-STALE', minutes: 30 }, author.cookie);
+    assert.equal(stale.status, 400, `旧的 minutes 键必须被拒：${stale.text}`);
+    assert.equal(stale.body.error, 'invalid_input');
   });
 
   it('说明的宽度预算（room 40）：正好 40 个 ASCII ✓ / 41 ✗ / 20 个汉字 ✓ / 21 ✗', async () => {
@@ -1815,11 +2100,11 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
   it('说明是选填的：不传 / 传空串都成功，而且库里存的是空串', async () => {
     const author = await signUp();
 
-    const missing = await postShare('seed', { overworld: '1', minutes: 5 }, author.cookie);
+    const missing = await postShare('seed', { overworld: '1', days: 7 }, author.cookie);
     assert.equal(missing.status, 201, missing.text);
     assert.equal(itemOf(missing).note, '');
 
-    const blank = await postShare('seed', { overworld: '2', minutes: 5, note: '' }, author.cookie);
+    const blank = await postShare('seed', { overworld: '2', days: 7, note: '' }, author.cookie);
     assert.equal(blank.status, 201, blank.text);
     assert.equal(itemOf(blank).note, '');
 
@@ -1839,7 +2124,7 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
   it('种子：只有主世界 ✓ / 四个都填 ✓ / 选填留空等于没填 ✓ / 主世界空 ✗ / 含空格 ✗ / 33 字符 ✗', async () => {
     const author = await signUp();
 
-    const only = await postShare('seed', { overworld: '1234', minutes: 5 }, author.cookie);
+    const only = await postShare('seed', { overworld: '1234', days: 7 }, author.cookie);
     assert.equal(only.status, 201, only.text);
     assert.deepEqual(
       itemOf(only).payload,
@@ -1849,7 +2134,7 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
 
     const all = await postShare(
       'seed',
-      { overworld: '1', nether: '2', end: '3', rng: '4', minutes: 5 },
+      { overworld: '1', nether: '2', end: '3', rng: '4', days: 7 },
       author.cookie,
     );
     assert.equal(all.status, 201, all.text);
@@ -1857,7 +2142,7 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
 
     const blankOptional = await postShare(
       'seed',
-      { overworld: '1', nether: '', end: '', rng: '', minutes: 5 },
+      { overworld: '1', nether: '', end: '', rng: '', days: 7 },
       author.cookie,
     );
     assert.equal(blankOptional.status, 201, blankOptional.text);
@@ -1873,7 +2158,7 @@ describe('HTTP：输入校验（400 invalid_input + issues）', () => {
       { overworld: 'a'.repeat(33) },
       { overworld: '1', nether: 'has space' },
     ]) {
-      const res = await postShare('seed', { ...bad, minutes: 5 }, author.cookie);
+      const res = await postShare('seed', { ...bad, days: 7 }, author.cookie);
       assert.equal(res.status, 400, `${JSON.stringify(bad)} 应当被拒：${res.text}`);
       assert.equal(res.body.error, 'invalid_input');
     }
