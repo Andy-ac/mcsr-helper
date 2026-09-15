@@ -40,6 +40,25 @@ export default defineConfig({
        *    要跑到 `vite build` / dev server 才炸。
        */
       '@mcsr/shared/live': resolvePath('../../packages/shared/src/live.ts'),
+      /*
+       * ⚠️ 这一条是「Ranked 实时信息」（2026-09-16）加的 —— 上面那段注释说的
+       *    "新增子路径导出时要记得在这里补一条"**又漏了一次**（T1 只改了
+       *    `packages/shared/package.json` 的 `exports`）。
+       *
+       * 实测（Task 6 的手工验证，dev server 真的报了 500）：
+       *   Failed to resolve import "@mcsr/shared/ranked" from "src/routes/Ranked.tsx"
+       *   Plugin: vite:import-analysis
+       * 而且它是**三个文件一起红**（`routes/Ranked.tsx` / `components/RankedPanels.tsx` /
+       * `lib/rankedDirect.ts`）⇒ 整个栏目在浏览器里一个字节都渲染不出来。
+       *
+       * ⚠️★ 为什么 `tsc` 与 `pnpm -w check` **全绿**却仍然是坏的：类型检查走的是
+       *    `packages/shared/package.json` 的 `exports`（moduleResolution: bundler），
+       *    而 Vite 先过自己的 alias 表 —— alias 是**前缀替换**，`@mcsr/shared` 那条
+       *    会把 `@mcsr/shared/ranked` 吃成 `.../src/index.ts/ranked`（那段注释里写的
+       *    `Could not load` 就是它）。⇒ 没有渲染脚本/手工跑过 dev 的模块，
+       *    类型检查**永远**证明不了它能在浏览器里加载。
+       */
+      '@mcsr/shared/ranked': resolvePath('../../packages/shared/src/ranked/index.ts'),
       '@mcsr/shared/seed': resolvePath('../../packages/shared/src/seed.ts'),
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
       '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
