@@ -22,6 +22,15 @@
  *   （`sleep` 也必须注入：那三条 10 秒退避会让测试真等 30 秒）。
  *
  * ===========================================================================
+ * ★ 「加一个博主」的请求预算是 3 个：2 次握手 + 1 次 `ps=1` 的 `arc/search`
+ * ===========================================================================
+ * `displayName` 不许是 `mid <id>` 占位（spec §5.1 的裁决，2026-09-16）⇒ 名字从
+ * `arc/search` 第一条的 `author` 里取，而那是**一次性**的（加一个博主一次，
+ * 不是每轮同步）。这条"多发一次请求"在这里是**数出来的**（`h.calls.length === 3`、
+ * `ps === '1'`），不是写在散文里的；回落（空 `vlist` / `author` 缺失或空白）
+ * 与失败分类（`-412` 重试、`-352` 不重试）各自也有断言。
+ *
+ * ===========================================================================
  * 那些"外部锚"是怎么来的（免得下一个人以为是抄自己的代码）
  * ===========================================================================
  * · `MIXIN_KEY` 那 32 个字符：由 `docs/platform-api-feasibility-notes.md:763-765` 里
@@ -817,14 +826,149 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
         assert.equal(ref.platform, 'bilibili', input);
         assert.equal(ref.externalId, MID, input);
       }
-      assert.equal(h.calls.length, 0, '这几种输入不需要联网 —— 一次请求都不该发');
+      /*
+       * ⚠️ 这一段原来断言的是 `h.calls.length === 0`（"这几种输入不需要联网"），
+       *   而那个断言钉的正是**被裁定推翻的那一条**（"不为了一个显示名去打接口"）。
+       *   现在的契约是：**解析**本身不联网（这几种输入里没有短链），但**取名字要**
+       *   —— 一次握手 + 一个 `ps=1` 的 `arc/search`。
+       */
+      assert.equal(h.listCalls().length, 5, '五次 resolveCreator ⇒ 五次取名字（每加一个博主一次）');
+      assert.equal(h.calls.length, 7, '2 次握手 + 5 次取名字：握手仍然只有一次');
     });
 
-    it('★ b23.tv 短链：跟重定向，再从**最终 URL** 里抠 mid', async () => {
+    it('★ 名字是 `arc/search` 第一条的 `author`（不是 `mid <id>` 占位）', async () => {
+      const h = harness(() => jsonResponse(listBody([{ ...ITEM, author: 'Someone' }], 124)));
+      const ref = await h.adapter.resolveCreator(MID);
+
+      assert.equal(
+        ref.displayName,
+        'Someone',
+        'spec §5.1（2026-09-16 裁决）：管理面板里要出现的是名字，不是 mid 703007996',
+      );
+      assert.equal(ref.externalId, MID);
+      assert.equal(ref.platform, 'bilibili');
+      assert.equal(ref.handle, MID, 'handle 还是 mid：它是能直接拼进空间页 URL 的那个可读标识');
+      assert.equal(
+        ref.avatarUrl,
+        null,
+        'acc/info 实测 -352，头像没有第二个来源 —— 这一次裁决只把名字拿回来',
+      );
+    });
+
+    it('★ 一次 resolveCreator = 2 个握手请求 + **正好一个** `ps=1` 的 arc/search', async () => {
+      const h = harness(() => jsonResponse(listBody([{ ...ITEM, author: 'Someone' }], 124)));
+      await h.adapter.resolveCreator(MID);
+
+      assert.equal(h.calls.length, 3, '2 次握手（finger/spi + nav）+ 1 次取名字');
+      assert.equal(h.listCalls().length, 1, '"多发一次请求"就是一次，不是一整页');
+      const lookup = h.listCalls()[0] as FetchCall;
+      const url = listParams(lookup);
+      assert.equal(url.searchParams.get('ps'), '1', 'spec §5.1 的裁决逐字写的是 ps=1');
+      assert.equal(url.searchParams.get('pn'), '1', 'pn=1：名字在最新一条投稿里，这一趟不翻页');
+      assert.equal(url.searchParams.get('mid'), MID);
+      // 与列表页**同一套**签名与风控参数（不是第二个请求构造器）。
+      const { query, wRid } = splitSignedQuery(lookup.url);
+      assert.equal(wRid, md5(query + MIXIN_KEY));
+      assert.equal(url.searchParams.get('dm_img_list'), '[]');
+      assert.equal(url.searchParams.get('dm_img_str'), 'V2ViR0wgMS');
+      assert.equal(url.searchParams.get('order'), 'pubdate');
+      assert.equal(url.searchParams.get('platform'), 'web');
+      assert.equal(url.searchParams.get('web_location'), '1550101');
+      assert.ok(url.searchParams.get('wts'), 'wts 在签名里，取名字这一次也一样');
+      assert.match(
+        new Headers(lookup.init?.headers).get('cookie') ?? '',
+        /^buvid3=/,
+        '取名字那一次带着握手换来的 cookie',
+      );
+
+      /*
+       * ★ 一次性（spec §5.1 裁决的代价写的就是"加一个博主时多一次"）：**不是每轮同步**。
+       *   同步那一页是它自己的请求，取名字没有再来一次，握手也没有。
+       */
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      assert.equal(h.listCalls().length, 2, '同步一页 ⇒ 只多一个列表请求');
+      assert.equal(h.calls.filter((call) => call.url.includes('/finger/spi')).length, 1);
+      assert.equal(h.calls.filter((call) => call.url.includes('/nav')).length, 1);
+    });
+
+    it('★ 空 vlist（这个 UP 一个投稿都没有）⇒ 回落到 `mid <id>` 占位', async () => {
+      const h = harness(() => jsonResponse(listBody([], 0)));
+      const ref = await h.adapter.resolveCreator(MID);
+
+      assert.equal(ref.displayName, `mid ${MID}`, 'spec §5.1 的裁决：没有投稿 ⇒ 占位');
+      assert.equal(h.listCalls().length, 1, '这一次请求还是要发的 —— 不发就分不清"没名字"与"没打"');
+    });
+
+    it('★ `author` 缺失 / 空串 / 全空白 ⇒ 回落到占位（不许把空白当名字）', async () => {
+      /*
+       * ⚠️ `author: undefined` 经 `JSON.stringify` 会**整个键消失** ⇒ 那才是真正的"缺失"，
+       *   而不是一个值为 undefined 的属性。
+       */
+      for (const first of [
+        { ...ITEM, author: undefined },
+        { ...ITEM, author: '' },
+        { ...ITEM, author: '   ' },
+      ]) {
+        const h = harness(() => jsonResponse(listBody([first], 124)));
+        const ref = await h.adapter.resolveCreator(MID);
+        assert.equal(
+          ref.displayName,
+          `mid ${MID}`,
+          `author=${JSON.stringify(first.author)} 不是一个名字`,
+        );
+      }
+    });
+
+    it('★ 取名字那一次也走**同一套**拒绝分类：`-352` 立刻抛、一次都不重试', async () => {
+      const h = harness(() => jsonResponse({ code: -352, message: '风控校验失败' }));
+
+      await assert.rejects(
+        () => h.adapter.resolveCreator(MID),
+        (error: unknown) => {
+          assert.ok(
+            error instanceof BilibiliRejectedError,
+            `-352 是"被拒"而不是"限流"，实际是 ${String(error)}`,
+          );
+          assert.equal(error.code, -352);
+          return true;
+        },
+      );
+      assert.equal(h.listCalls().length, 1);
+      assert.deepEqual(h.sleeps, [], '等 10 秒修不好它 —— 取名字这条路也一样');
+    });
+
+    it('★ 取名字那一次的 `-412` 也等 10 秒重试（同一套规则，不是另一条路）', async () => {
+      const h = harness((_call, index) =>
+        index === 0
+          ? jsonResponse({ code: -412, message: '请求被拦截' })
+          : jsonResponse(listBody([{ ...ITEM, author: 'Someone' }], 124)),
+      );
+
+      const ref = await h.adapter.resolveCreator(MID);
+      assert.equal(ref.displayName, 'Someone', '重试成功之后名字照样要拿到');
+      assert.equal(h.listCalls().length, 2, '首发 + 一次重试');
+      assert.deepEqual(h.sleeps, [10_000]);
+    });
+
+    it('★ b23.tv 短链：跟重定向，再从**最终 URL** 里抠 mid，然后取名字', async () => {
       const calls: string[] = [];
       const adapter = createBilibiliAdapter({
         fetchImpl: (async (input: string | URL | Request) => {
-          calls.push(typeof input === 'string' ? input : String(input));
+          const url = typeof input === 'string' ? input : String(input);
+          calls.push(url);
+          if (url.includes('/x/frontend/finger/spi')) {
+            return jsonResponse({ code: 0, message: 'ok', data: { b_3: BUVID3, b_4: BUVID4 } });
+          }
+          if (url.includes('/x/web-interface/nav')) {
+            return jsonResponse({
+              code: -101,
+              message: '账号未登录',
+              data: { wbi_img: { img_url: IMG_URL, sub_url: SUB_URL } },
+            });
+          }
+          if (url.includes('/arc/search')) {
+            return jsonResponse(listBody([{ ...ITEM, author: 'Someone' }], 124));
+          }
           return redirectedTo(`https://space.bilibili.com/${MID}?spm_id_from=444`);
         }) as typeof fetch,
         sleep: async () => {},
@@ -832,20 +976,29 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
 
       const ref = await adapter.resolveCreator('https://b23.tv/AbCdEf');
       assert.equal(ref.externalId, MID, 'mid 要从**跳转之后**的 URL 里来，不是从短链里');
-      assert.equal(calls.length, 1, '短链只发一次请求（它不需要 cookie，所以不先握手）');
-      assert.equal(calls[0], 'https://b23.tv/AbCdEf');
+      assert.equal(ref.displayName, 'Someone', '抠出 mid 之后照样取名字 —— 这条路也不留占位');
+      assert.equal(
+        calls[0],
+        'https://b23.tv/AbCdEf',
+        '短链是第一个请求：它不需要 cookie，所以不先握手',
+      );
+      assert.equal(calls.length, 4, '1 次短链跳转 + 2 次握手 + 1 次取名字（不是先握手再解析）');
     });
 
-    it('+ b23 跳到视频页（抠不到 mid）⇒ 认不出来，而不是瞎猜一个', async () => {
+    it('+ b23 跳到视频页（抠不到 mid）⇒ 认不出来，而不是瞎猜一个，也不白握手', async () => {
+      const calls: string[] = [];
       const adapter = createBilibiliAdapter({
-        fetchImpl: (async () =>
-          redirectedTo('https://www.bilibili.com/video/BV1wHtm6rEK3')) as typeof fetch,
+        fetchImpl: (async (input: string | URL | Request) => {
+          calls.push(typeof input === 'string' ? input : String(input));
+          return redirectedTo('https://www.bilibili.com/video/BV1wHtm6rEK3');
+        }) as typeof fetch,
         sleep: async () => {},
       });
       await assert.rejects(
         () => adapter.resolveCreator('https://b23.tv/AbCdEf'),
         InvalidCreatorInputError,
       );
+      assert.equal(calls.length, 1, '解析不出来就别接着握手：那两次请求同样在风控的账上');
     });
 
     it('+ 认不出来的输入 ⇒ InvalidCreatorInputError（路由把它变成 400）', async () => {
@@ -857,16 +1010,7 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
           `"${input}" 不该被认成一个博主`,
         );
       }
-      assert.equal(h.calls.length, 0);
-    });
-
-    it('+ 名字是**占位**（`mid 703007996`）：acc/info 实测 -352，这里不打它', async () => {
-      const h = harness();
-      const ref = await h.adapter.resolveCreator(MID);
-      assert.equal(ref.displayName, `mid ${MID}`);
-      assert.equal(ref.handle, MID);
-      assert.equal(ref.avatarUrl, null);
-      assert.equal(h.calls.length, 0, '不为了一个显示名去打一个大概率被拒的接口');
+      assert.equal(h.calls.length, 0, '认不出来就一个请求都不发（包括取名字那一次）');
     });
   });
 

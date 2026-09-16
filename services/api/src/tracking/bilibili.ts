@@ -54,6 +54,16 @@
  *    压低一截，而日志里看不出任何区别。
  *
  * ===========================================================================
+ * ★ 「加一个博主」也要打上游：一次握手 + 一个 `ps=1` 的 `arc/search`（spec §5.1 裁决）
+ * ===========================================================================
+ * `displayName` 不许是 `mid <id>` 占位（2026-09-16 由 T3 评审提出、规格裁定）。
+ * 真名在 `arc/search` 的 `vlist[].author` 里 —— 正是**这个适配器已经在打的**那个接口，
+ * 所以取名字这条路的成本是"每加一个博主多一个请求"（一次性，**不是**每轮同步），
+ * 换来管理面板里是一个名字。名字只在 `resolveCreator` 那条路上取，`fetchPage` 一个
+ * 请求都没多，`FetchedVideo` / `FetchPage` / `CreatorRef` 三个接口**一个字都没改**
+ * （它们按 spec §5 逐字冻结）。细节与代价见 `lookupDisplayName`。
+ *
+ * ===========================================================================
  * 依赖注入：`fetchImpl` 与 `sleep`
  * ===========================================================================
  * 测试**绝不打真网络**（本仓每一套测试都是离线的；一个"悄悄开始打 bilibili"的测试
@@ -90,6 +100,19 @@ const ARC_SEARCH_PATH = '/x/space/wbi/arc/search';
 
 /** 每页条数。spec §10 冻结表：`ps=50`（实测 ps=5/30/50 → 5/30/**50**，这就是上限）。 */
 export const BILIBILI_PAGE_SIZE = 50;
+
+/**
+ * ★ 取 UP 主真名那一次 `arc/search` 的 `ps` —— spec §5.1 的裁决逐字写的是 `ps=1`
+ * （2026-09-16 由 T3 评审提出、规格裁定；理由见 `lookupDisplayName`）。
+ *
+ * 1 与 50 在这一步没有任何区别：要的只是 `vlist[0].author`，多要 49 条只会把这一次请求
+ * 变大（`ps` 进签名，也进风控的账），而名字就在第一条里。
+ *
+ * ⚠️ 残余风险：spec §10 那张冻结表里**实测过**的 `ps` 只有 5/30/50，`ps=1` 是这条裁决
+ *    新引入的一格，本机（离线、不打真网络）无从验证。它要是被上游当脏值挡掉，
+ *    表现是"加博主"这一步失败（响亮、可重试），而**不是**面板上悄悄出现一串数字。
+ */
+const AUTHOR_LOOKUP_PAGE_SIZE = 1;
 
 /** `-412` 之后等多久。spec §2.3 实测：等 2s ❌ / 5s ❌ / **10s ✅**。 */
 const RATE_LIMIT_SLEEP_MS = 10_000;
@@ -554,6 +577,114 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     await sleep(RATE_LIMIT_SLEEP_MS);
   }
 
+  /**
+   * 一次 `arc/search` 的**完整签名 query** —— 列表页与"加博主时取名字"那一次**共用这一个**。
+   *
+   * ⚠️ 单独抽出来，是因为 spec §5.1 的裁决要求的是"**多发一次请求**"，不是"再写一个
+   *    请求构造器"：`dm_img_*` 三个空值、`order`/`platform`/`web_location` 那三个固定参数、
+   *    以及"参数全在签名里面"这条属性（本文件头有依据），两份拷贝会出现
+   *    "只改了一处"的版本 —— 而那一处的表现是**某一类请求永远回 `-352`**，
+   *    看起来和"上游今天风控严"一模一样。
+   */
+  function arcSearchSignedQuery(
+    mid: string,
+    pageSize: number,
+    page: number,
+    mixinKey: string,
+  ): { query: string; wRid: string } {
+    /*
+     * ⚠️ 参数顺序无所谓（下面要排序），但**放进来的键决定了签名**：
+     *    `dm_img_*` 三个必须在这份参数**里面**（依据见文件头），
+     *    `wts` 也在里面（spec §2.1 第 ③ 步："params + wts"）。
+     */
+    return signWbiQuery(
+      {
+        mid,
+        ps: pageSize,
+        pn: page,
+        order: ARC_SEARCH_ORDER,
+        platform: ARC_SEARCH_PLATFORM,
+        web_location: ARC_SEARCH_WEB_LOCATION,
+        dm_img_list: DM_IMG_LIST,
+        dm_img_str: DM_IMG_STR,
+        dm_img_inter: DM_IMG_INTER,
+        wts: Math.floor(Date.now() / 1000),
+      },
+      mixinKey,
+    );
+  }
+
+  /**
+   * ★ 取 UP 主真名：握手之后**多发一个 `ps=1` 的 `arc/search`**，读 `data.list.vlist[0].author`。
+   * 拿不到就回 `null`（调用方回落到 `mid <id>` 占位）。
+   *
+   * —— spec §5.1 的裁决（2026-09-16，T3 评审提出、规格裁定，原文见那里）：
+   *    `x/space/wbi/acc/info`（拿昵称/头像那个接口）实测回 `-352`，所以"官方的"那条路是堵的；
+   *    但 **`arc/search` 的每一条 `vlist` 里都带 `author`**（spec §2.1 的字段清单里就有），
+   *    而 `arc/search` 正是这个适配器**已经在打**的那个接口。⇒ 名字从这条已有的路上顺带取。
+   *    代价（写在这条裁决的明面上）：**每加一个博主多一次上游请求** ——
+   *    一次性，不是每轮同步（`resolveCreator` 只在管理面板"加博主"那条路上被调用）。
+   *    这就是它值的原因：换来的是管理面板里列出来的是**名字**，而不是一串 mid。
+   *
+   * ⇒ 为什么**不**改 `FetchedVideo`：它按 spec §5 逐字冻结（评审逐字核过），本来就没有
+   *    `author` 字段；名字是在 `resolveCreator` 这条路上单独拿的，`fetchPage` 与它无关。
+   *    所以 `fetchPage` 那条路**一个请求都没多**。
+   *
+   * ⚠️ 失败分类与文件里别处**完全一样**（这里不自己判，全部走 `requestJson`）：
+   *    · `-412` ⇒ 等 10 秒重试，最多 3 次，耗尽抛 `BilibiliRateLimitError`；
+   *    · `-352` ⇒ 立刻抛，**一次都不重试**；
+   *    · 握手失败 ⇒ `PlatformHandshakeError`（连一个列表请求都不发）。
+   *    ⇒ 于是**它是会抛的**：一次取名字失败 = "这一次加博主失败"，而**不是**静默把
+   *      `mid <id>` 放进管理面板。宁可抛也不回落到占位，因为占位恰恰是那条裁决判定
+   *      "必须修"的东西：一次明明白白的失败，管理员看得见、也可以立刻重试；
+   *      而"面板上看起来像名字的一串数字"没有任何东西会提醒任何人去看。
+   *
+   * ⚠️ 残余风险（写下来，别当它已经关死）：`data.list.vlist` **不是数组**时这里**抛**
+   *    （本文件的纪律：形状变了要响亮，`fetchPage` 对同一个字段也是这么办的 —— 见那里
+   *    的 `data.list.vlist 不是数组` 分支）。代价是"一个投稿都没有、且上游连 `list` 都
+   *    不发"的新 UP 会**加不进来**（而不是回落到占位）—— 那种情况第一次真跑就会看见，
+   *    修它是一行（把这一分支并进下面的 `null`）。取另一侧（并进 `null`）的代价是
+   *    "上游改了形状"与"这个 UP 没有投稿"从此**分不开**，而两者要做的处置不一样。
+   */
+  async function lookupDisplayName(mid: string): Promise<string | null> {
+    const { cookie, mixinKey } = await session();
+    const { query, wRid } = arcSearchSignedQuery(mid, AUTHOR_LOOKUP_PAGE_SIZE, 1, mixinKey);
+    const body = await requestJson(ARC_SEARCH_PATH, `${query}&w_rid=${wRid}`, cookie);
+
+    const envelope = asRecord(body);
+    const code = asNumber(envelope?.code);
+    if (code !== 0) {
+      /*
+       * ⚠️ 非零 code 照抛，**不**回落到占位。典型的是 `-404 啥都木有`：那不是"名字没拿到"，
+       *    而是"这个 mid 在 bilibili 那边不存在"。回落到占位就等于让一次**打错字的输入**
+       *    成功加进来一个空博主 —— 而它从第一轮同步起每一轮都会失败，
+       *    还要人去管理面板里对着一串数字猜是哪儿错了。
+       */
+      throw new BilibiliRejectedError(
+        `arc/search（取名字，ps=1）回 code=${code ?? '(没有 code)'} message=${asString(envelope?.message) ?? '(无)'}`,
+        code,
+      );
+    }
+
+    const vlist = asRecord(asRecord(envelope?.data)?.list)?.vlist;
+    if (!Array.isArray(vlist)) {
+      throw new BilibiliRejectedError(
+        'data.list.vlist 不是数组（上游的字段形状变了）—— 分不清"没有投稿"与"形状变了"，猜一边就会静默把占位放进管理面板',
+        null,
+      );
+    }
+
+    /*
+     * 「没有投稿」（空 `vlist`）与「`author` 缺失 / 空串 / 全空白」都在这里变成 `null`
+     * ⇒ 调用方回落到 `mid <id>` 占位（spec §5.1 的裁决逐字列的三个回落条件）。
+     * ⚠️ `trim()` 之后才判空：`author: '  '` 是一个**看起来有名字其实没有**的值，
+     *    原样存进 `display_name` 的话，管理面板上那一格会是**空白**——
+     *    既不是名字，也看不出是占位。
+     */
+    const author = asString(asRecord(vlist[0])?.author)?.trim();
+    return author ? author : null;
+  }
+
   async function resolveCreator(rawInput: string): Promise<CreatorRef> {
     const input = rawInput.trim();
     if (!input) {
@@ -561,28 +692,37 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     }
 
     const mid = MID_INPUT.test(input) ? input : await midFromInput(input);
+
     /*
-     * ⚠️ `displayName` 与 `avatarUrl` 是**这里唯一拿不到的东西**：能给出真实昵称与头像的
-     * `x/space/wbi/acc/info` 实测回 `-352`（`docs/tracking-scale-feasibility.md:152`：
-     * "同一套签名，arc/search 通而它不通 —— 说明风控是**按接口**打的"）。
-     * ⇒ 这里**不打**那个接口，也不用别的方式猜名字：
-     *   · 打它 = 每加一个博主多一个大概率被拒的请求，而且它失败了**不能**让"加博主"
-     *     这件事失败（那就成了"一个显示名挡住了一条功能"）；
-     *   · 猜一个名字（比如把链接当名字）= 管理面板上出现一个看起来像真名的东西。
-     * ⇒ 给一个**一眼看得出是占位**的名字（`mid 703007996`），管理面板可以把显示名改掉
-     *   （spec §6.1 的 PATCH），而列表页用的是管理员填的或平台给的名字。
-     *   `handle` 填 mid：对 bilibili 来说 mid 就是那个可读标识（能直接拼进空间页 URL）。
+     * ★ 名字：握手 + 一个 `ps=1` 的 `arc/search`（spec §5.1 的裁决，理由与代价见
+     * `lookupDisplayName` 的注释）。拿不到才回落到 `mid <id>` 占位。
+     *
+     * ⚠️ 顺序是**先解析 mid，再握手取名字**，b23 那条路也一样：管理员的输入完全可能
+     *    根本解析不出来（跳到视频页的短链、打错的链接），那种情况下
+     *    `midFromInput` 先抛，那两次握手请求就**白打了** —— 而它们同样在风控的账上。
+     *
+     * ⚠️ `avatarUrl` 仍然是 `null`：能给出头像的只有 `acc/info`，而它实测回 `-352`
+     *    （`docs/tracking-scale-feasibility.md:152`："同一套签名，arc/search 通而它不通
+     *    —— 说明风控是**按接口**打的"）。这一次裁决只把**名字**从 `author` 里拿回来，
+     *    头像没有第二个来源，所以它继续是 `null`（界面显示首字母/占位图那一路）。
+     *    `handle` 填 mid：对 bilibili 来说 mid 就是那个可读标识（能直接拼进空间页 URL）。
      */
+    const displayName = (await lookupDisplayName(mid)) ?? `mid ${mid}`;
+
     return {
       platform: 'bilibili',
       externalId: mid,
       handle: mid,
-      displayName: `mid ${mid}`,
+      displayName,
       avatarUrl: null,
     };
   }
 
-  /** 从链接里抠 mid。纯数字那条路不经过这里（所以它不联网）。 */
+  /**
+   * 从链接里抠 mid。纯数字那条路不经过这里（它的 mid 就是输入本身）。
+   *
+   * ⚠️ 这里只有 b23 那一条会联网；「取名字」那一次请求在 `resolveCreator` 里、在这之后。
+   */
   async function midFromInput(input: string): Promise<string> {
     let url: URL;
     try {
@@ -601,10 +741,11 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     if (B23_URL.test(`${url.host}${url.pathname}`)) {
       /*
        * ★ b23.tv 短链：**必须跟重定向**，再从**最终 URL** 里抠 mid（spec §5.1）。
-       * ⚠️ 这一条是 `resolveCreator` 里唯一一个网络请求，而它是**必需的**：
-       *    短链本身不含 mid。它不需要 cookie（短链服务就是转发），所以这里
-       *    **不**先握手 —— 握手要两个请求，而管理员的输入完全可能解析不出来，
-       *    那两次请求就白打了（它们同样在风控的账上）。
+       * ⚠️ 这一条是**解析阶段**唯一的网络请求，而它是**必需的**：短链本身不含 mid。
+       *    它不需要 cookie（短链服务就是转发），所以这里**不**先握手 —— 握手要两个请求，
+       *    而管理员的输入完全可能解析不出来，那两次请求就白打了（它们同样在风控的账上）。
+       *    「取名字」那一次请求在这之后（`resolveCreator` 里），所以抠不出 mid 时
+       *    一次上游请求都不多花。
        */
       const response = await fetchImpl(url.toString(), {
         headers: { ...BROWSER_HEADERS },
@@ -654,24 +795,11 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     const page = parsePageCursor(cursor);
     const { cookie, mixinKey } = await session();
 
-    /*
-     * ⚠️ 参数顺序无所谓（下面要排序），但**放进来的键决定了签名**：
-     *    `dm_img_*` 三个必须在这份参数**里面**（依据见文件头），
-     *    `wts` 也在里面（spec §2.1 第 ③ 步："params + wts"）。
-     */
-    const { query, wRid } = signWbiQuery(
-      {
-        mid: creator.externalId,
-        ps: BILIBILI_PAGE_SIZE,
-        pn: page,
-        order: ARC_SEARCH_ORDER,
-        platform: ARC_SEARCH_PLATFORM,
-        web_location: ARC_SEARCH_WEB_LOCATION,
-        dm_img_list: DM_IMG_LIST,
-        dm_img_str: DM_IMG_STR,
-        dm_img_inter: DM_IMG_INTER,
-        wts: Math.floor(Date.now() / 1000),
-      },
+    // ⚠️ 与"加博主时取名字"那一次**共用**这一个构造器（`arcSearchSignedQuery`）：见它的注释。
+    const { query, wRid } = arcSearchSignedQuery(
+      creator.externalId,
+      BILIBILI_PAGE_SIZE,
+      page,
       mixinKey,
     );
 
