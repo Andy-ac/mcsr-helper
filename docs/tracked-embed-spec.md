@@ -425,7 +425,9 @@ RunSummary.verifyErrors: Array<{ platform: TrackPlatform; error: string }>;  // 
 
 **界面（渲染自检 `apps/web/scripts/videorender.tsx`，中英各一遍）**
 
-13. 分区按钮四个（全部 + 三个平台），选中态跟着 `tplatform` 走；`全部` 时没有 chip 带 `--on`。
+13. 分区按钮四个（全部 + 三个平台），选中态跟着 `tplatform` 走；`全部` 选中时**只有它**带 `--on`
+    （与上面那面墙一致 —— T7 的实现者指出本行原来那句"`全部` 时没有 chip 带 `--on`"与 §5.2
+    和 §2.6 要照抄的行为矛盾，2026-09-16 改正）。
 14. 三张卡各自的 `data-embed-src` 形状：bilibili 含 `bvid=`、YouTube 含 `/embed/`、
     Twitch 含 `video=v` 与 `parent=`。
 15. 封面 `<img>`：`referrerpolicy="no-referrer"`、`loading="lazy"`、`alt=""`；
