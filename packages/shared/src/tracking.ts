@@ -33,6 +33,31 @@ export const TRACK_PLATFORMS = ['bilibili', 'youtube', 'twitch'] as const;
 export type TrackPlatform = (typeof TRACK_PLATFORMS)[number];
 
 /**
+ * 本栏目的时间戳是 Unix **秒**；界面渲染一律经这里转成毫秒。
+ *
+ * ⚠️ 它存在的理由（spec §4 那个 ★★ 块的裁决，2026-09-16 补的）：
+ *   `tracked_creators` / `tracked_videos` 两张表**整张**都用**秒** —— 因为上游
+ *   bilibili 的 `created` 就是秒（`docs/video-tracking-spec.md` §2.2），而我们自己的
+ *   记账列要是用毫秒，**同一行里就会同时存在两个单位**，那是这一整类 bug 里
+ *   最难查的一种（排序是对的、渲染是错的）。
+ *   代价就是本函数：本仓其它表与浏览器那一套（`new Date(ms)` / `Intl`）全是**毫秒**，
+ *   ⇒ 换算是必须的，而它必须只有**一个**地方可做、可忘。
+ *   ⚠️ 所以 §6.2 的界面里出现裸的 `new Date(row.publishedAt)`（或 `Date.now() - row.x`）
+ *   就是一条真缺陷：那个数少乘了 1000，显示出来是 1970 年，而类型检查拦不住它。
+ *
+ * ⚠️ `null` / `undefined` 一律**返回 `null`**，不返回 0、也不返回 `NaN`：本仓纪律是
+ *   "拿不到的字段就是 `null`，绝不许退化成 0"（见下面 `TrackedVideo` 那段 ★★ 注释
+ *   —— 0 毫秒是 1970-01-01，在界面上看起来像一条真实数据）。
+ * ⚠️ 反面同样不许：写成 `sec || null` 会把**真的 0 秒**当成"没有值"—— 0 是一个合法
+ *   的 Unix 时刻。所以判据只能是 `== null`（`=== null || === undefined`），
+ *   有测试同时钉住这两侧。
+ */
+export function toMillis(sec: number | null | undefined): number | null {
+  if (sec === null || sec === undefined) return null;
+  return sec * 1000;
+}
+
+/**
  * 一条追踪到的视频（公开列表 / 管理面板共用的形状）。
  *
  * ⚠️★ 五个计量字段（`publishedAt` / `durationSec` / `viewCount` / `commentCount` /

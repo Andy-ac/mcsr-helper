@@ -276,6 +276,11 @@ fi
 #    ⚠️ 单元文件改了要 \`daemon-reload\` 才会被 systemctl 看到 —— 而且 reload 之后
 #    systemd 会按新的 OnCalendar 重新排期，所以**不需要** restart 那个 timer
 #    （restart 只会把"下一次"的时间重新数一遍）。
+# ⚠️ 锁文件所在的 /run/mcsr-helper-track **不在这里建**：那是单元里的
+#    RuntimeDirectory= 由 systemd 在**每次启动单元时**建的（见 mcsr-helper-track.service）。
+#    在这里 install -d 一个也能跑起来，但 /run 是 tmpfs、**每次重启都会被清空**
+#    ⇒ 机器一重启这个功能就悄悄停了，直到下一次部署才复活；而 systemd 那份续得上。
+#    ⇒ 所以这一段**不需要**为锁文件加任何一行，只要把单元装上 + daemon-reload 就够。
 TRACK_UNITS_CHANGED=0
 for unit in mcsr-helper-track.service mcsr-helper-track.timer; do
   if [ -f "/tmp/\$unit" ]; then

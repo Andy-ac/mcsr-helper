@@ -10,10 +10,9 @@
 #    这个 service（`mcsr-helper-track.timer` → `mcsr-helper-track.service`）。
 #    改名的表现是"timer 装上了、时间到了什么都没发生"。
 #
-# ⚠️ 这里**故意没有**加固那一套（api 单元里的 ProtectSystem / ReadWritePaths…）：
-#    `ProtectSystem=strict` 会把整个文件系统挂成只读，而 ExecStart 上的 flock
-#    需要在 /run 下**建**一个锁文件 —— 加上加固就变成"每一轮都起不来"。
-#    要加固得先给这个单元一个 RuntimeDirectory，那是另一件事（见报告里的 concern）。
+# ⚠️ 这里**故意没有**加固那一套（api 单元里的 ProtectSystem / ReadWritePaths…）——
+#    那是一次独立的安全改动，不在这一轮里。要加的时候先看清下面 RuntimeDirectory
+#    那一段：锁文件必须落在一个**本单元可写**的目录里，而 /run 本身不是。
 
 [Unit]
 Description=MCSR Helper — tracked video sync (one shot)
@@ -54,8 +53,55 @@ EnvironmentFile=-/etc/mcsr-helper/track.env
 #    也就是说"上一轮还没跑完"在 `systemctl --failed` 里是红的。这是**有意**的：
 #    它同时也是"这一轮的活儿超过了 10 分钟"的信号（回填正在追赶），而那个信号
 #    平时看不到；要是改成静默跳过，名单会**越来越跟不上**而没人发现。
-ExecStart=/usr/bin/flock -n /run/mcsr-helper-track.lock /usr/bin/node /srv/mcsr-helper/api/track.js
+# ---- ★★ 锁文件为什么在 /run/mcsr-helper-track/ 里，而不是直接在 /run/ 下 ----
+#
+# ★ 原来那一版写的是 `/run/mcsr-helper-track.lock`，那个单元**一次都不会跑起来**：
+#   `flock` 不是"打开一个已有的锁文件"，它会**创建**它（`open(O_CREAT)`）；
+#   而 /run 是 systemd 挂的 tmpfs、`root:root` **0755**，部署脚本与 bootstrap
+#   都不去动它的属主 ⇒ 以 `mcsr` 运行的本单元**没有权限在这层目录里建文件**。
+#   症状是**最坏的那一种**：timer 每 10 分钟准点触发、部署脚本报成功、
+#   `systemctl list-timers` 一片健康，而 node **一次都没跑**、库里永远没有新视频。
+#   （好在它是响的，不是静的：见文件末尾那一段。但这属于"看起来绿的功能其实不动"。）
+#
+# ★ 修法用 systemd 自己的机制（`RuntimeDirectory=`），**不去 chmod /run**：
+#   它让 systemd 在 /run 下建一个**属于本单元服务用户**的目录，单元跑完随单元一起清掉。
+#   ⚠️ 被否掉的三种写法，都记在这里，免得下一个人再想一遍：
+#   · `chmod 1777 /run`（或把 mcsr 加进 root 组）：为了一个锁文件松开**整台机器**的
+#     运行时目录，代价与收益完全不成比例，而且下次重装/换机器就没了；
+#   · 换到 `/run/lock/`：Debian 上它是 `root:root 0775`（tmpfiles.d 设的），
+#     mcsr 不在 root 组里 ⇒ 照样建不出来，"换个目录"没有想象中那么简单；
+#   · 在 deploy.sh 里 `install -d -o mcsr /run/mcsr-helper-track`：**能跑**，但它把一个
+#     属于单元生命周期的东西放到了单元外面 —— /run 是 tmpfs，**每次重启都会被清空**，
+#     于是"部署完能用、机器重启后这个功能就悄悄停了"，直到下一次部署才复活。
+#     RuntimeDirectory 没有这个缺口：它是**每一次启动单元时**由 systemd 建的。
+#   ⚠️ RuntimeDirectoryMode=0750：锁只给同一个用户的两个进程争，不需要别的用户能进来。
+#      （tmpfs 上"谁能读得到目录"也是权限面的一部分，能小就小。）
+#   ⚠️ 这也顺带说明：**deploy.sh 不需要为这件事加任何一行** —— 目录是 systemd 按
+#      ExecStart 前一刻建的，deploy 那一段要做的只是"把单元装上 + daemon-reload"，
+#      而那两件事它本来就在做。
+RuntimeDirectory=mcsr-helper-track
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/flock -n /run/mcsr-helper-track/sync.lock /usr/bin/node /srv/mcsr-helper/api/track.js
 
 # 输出默认就进 journald（不写 StandardOutput= 时它就是 journal，与 api 单元显式写的那两行等价）
 # ⇒ 摘要与失败都在 `journalctl -u mcsr-helper-track` 里，而 spec §6.3 那份摘要的**全部意义**
 #   就是它必须能被人看到。
+#
+# ---- 万一上面那条路又坏了，人看到的是什么（"响"而不是"静"）----
+#
+# 上面那个锁换成了 RuntimeDirectory，但同类缺陷要能被认出来，所以把**症状**写在这里。
+# 权限不对时 `flock` 连锁都 open 不起来 ⇒ 它自己打一行 errno 原文
+# （`flock: cannot open lock file /run/mcsr-helper-track/sync.lock: Permission denied`）
+# 并以 1 退出 ⇒ systemd 把这一轮记成 `failed`。⇒ 人会看到这三样，**全都不是静默的**：
+#   · `systemctl status mcsr-helper-track.service` → `failed`、`status=1/FAILURE`，
+#     而且 journal 里每一次触发都有一段，10 分钟一轮、一轮不落；
+#   · `systemctl --failed` 一直挂着这个单元；
+#   · `journalctl -u mcsr-helper-track` 里**完全没有** `track:` 开头的那份摘要
+#     —— 那正是"node 根本没跑"的判据（跑起来了就一定会有摘要，哪怕一条视频都没同步）。
+# ⚠️ 反过来读这条：`systemctl list-timers mcsr-helper-track.timer` 是**看不出来**的
+#    （timer 自己一直是 active/waiting，"下一次触发时间"也照常往前滚）—— 别拿它当健康检查。
+# ⚠️ 还有一处**容易误读**：`flock -n` 拿不到锁时也退出 1、也是 failed。两者靠
+#    journal 里的文本分开：权限/路径问题有 `cannot open lock file …` 那一行，
+#    "上一轮还没跑完"则没有那一行（flock 在拿不到锁时不打印 errno 原文，
+#    要看到它得加 `-v`）。所以判据是：**有那行原文 = 锁本身坏了；
+#    没有那行、只是 failed = 上一轮超了 10 分钟。**

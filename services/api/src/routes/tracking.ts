@@ -145,6 +145,30 @@
  *     （没有任何断言看得见它）。现在有了一条：`tracking-routes.test.ts` 那一条同时喂两个头。
  * · 缓存：公开列表给 60 秒公开缓存（与视频墙、直播清单同一条）；两个 `live.manage`
  *   的端点一律 `no-store`（它们含只有编辑能看的采集状态，缓存住会漏给别人）。
+ *
+ * ===========================================================================
+ * 六、★★ 这个文件里有**两个**时钟单位，选错哪一个都是"看起来对"的 bug
+ * ===========================================================================
+ * spec §4 的 ★★ 块（2026-09-16 补写）裁决：`tracked_creators` / `tracked_videos`
+ * **整张表一律 Unix 秒**，理由是"上游给的就是秒"（bilibili 的 `created`），
+ * 而**同一行里两个单位**是这一整类 bug 里最难查的一种（排序对、渲染错）。
+ *
+ * ⚠️ 但本文件**不能**把 `Date.now()` 一律换成秒 —— 它同时喂两张单位不同的表：
+ *   · `tracked_creators.created_at / updated_at`（`createCreator` / `updateCreator`）
+ *     → **秒**。数据层拿它直接做 `now - INCREMENTAL_INTERVAL_SEC`（= 3600）的比较，
+ *     毫秒进来会让规格里的"一小时"变成 3.6 秒。
+ *   · `audit_log.created_at`（`writeAudit` 的 `now`）→ **毫秒**。那张表是全仓的：
+ *     `writeAudit` 一共 50 个调用点，除本文件这三处之外 **47 处全都传 `Date.now()`**
+ *     （或由它赋值的局部 `now`）—— 那是核过的，不是印象。管理页也按毫秒渲染，
+ *     这里给秒会让审计时间显示成 1970 年。
+ * ⇒ 所以是"同一个时刻、两种表示"：`const nowMs = Date.now()` 读一次，
+ *   `const nowSec = Math.floor(nowMs / 1000)` 由它换算（不取第二次 —— 见下）。
+ *   ⚠️ 上一版缺的正是下半句：三处都只取了毫秒，于是 `created_at` 是毫秒、
+ *   `last_synced_at`（T6 的 CLI 写）是秒，**同一行两个单位**。
+ *   ⚠️ 不取两次 `Date.now()`：一次请求只有一个时刻，取两次会在跨过整秒边界时
+ *   让同一件事的两条记录差一秒（`routes/calendar.ts:109` 是同一条纪律）。
+ *   ⚠️ 界面渲染这类秒值**必须**经 `toMillis()`（`@mcsr/shared` 的 `tracking.ts`）——
+ *   那里是这两张表唯一被允许跨单位的地方。裸的 `new Date(row.createdAt)` 就是一条真缺陷。
  */
 import { TrackedCreatorInputSchema, type TrackPlatform } from '@mcsr/shared';
 import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
@@ -584,8 +608,22 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
     const override = parsed.data.displayName;
     if (override) ref = { ...ref, displayName: override };
 
-    const now = Date.now();
-    const result = createCreator(ref, user.id, now);
+    /*
+     * ★★ 这个请求里有**两个**时钟单位 —— 两个都要，而且判据不同（spec §4 的 ★★ 裁决）：
+     *   · `nowSec` → 本栏目的**两张表**（`tracked_creators` / `tracked_videos`）：
+     *     一律 **Unix 秒**。上游 bilibili 的 `created` 就是秒，而 `tracked-videos.ts` 的
+     *     `INCREMENTAL_INTERVAL_SEC = 3600` 是**直接**与这个数相减的 ⇒ 这里给毫秒的话，
+     *     规格里那个"一小时"会变成 3.6 秒，整份名单每一轮都被判成"该增量了"。
+     *   · `nowMs` → `audit_log.created_at`：那是**全仓毫秒**的表（`users.ts` 的
+     *     `writeAudit` 只是把传进来的数原样写进去，而它的另外 47 个调用点给的都是
+     *     `Date.now()`，管理页也按毫秒渲染）。这里给秒的话，审计时间会变成 1970 年。
+     * ⇒ 两个都从**同一次** `Date.now()` 读出来换算，不取两次：一次请求只有一个时刻，
+     *   取两次会在跨过整秒边界时让同一件事的两条记录差一秒（同一条纪律见
+     *   `routes/calendar.ts:109`）。
+     */
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const result = createCreator(ref, user.id, nowSec);
     if (!result.ok) {
       /*
        * ★ 裁决 1：重复**是 400 + 机器可读的 reason**，不是 500。
@@ -609,7 +647,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityId: result.creator.id,
       reason: `${ref.platform} ${ref.externalId}`,
       ip: c.req.header('x-real-ip') ?? null,
-      now,
+      now: nowMs,
     });
 
     return c.json({ ok: true, creator: result.creator }, 201);
@@ -631,12 +669,14 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
     }
 
     const id = c.req.param('id');
-    const now = Date.now();
+    // ★★ 与 POST 同一条裁决：两张表吃**秒**、`audit_log` 吃**毫秒**（那段理由写在上面）
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
     /*
-     * ⚠️ `now` 由**这里**取一次再传进去（数据层不看时钟：那是 2026-09-16 的裁决，
+     * ⚠️ `nowSec` 由**这里**取一次再传进去（数据层不看时钟：那是 2026-09-16 的裁决，
      *    理由写在 `tracked-videos.ts` 的文件头第六节）。返回 `null` = 这一行不存在。
      */
-    const creator = updateCreator(id, parsed.data, now);
+    const creator = updateCreator(id, parsed.data, nowSec);
     if (!creator) return c.json({ error: 'not_found' }, 404);
 
     writeAudit({
@@ -646,7 +686,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityId: id,
       reason: patchReason(parsed.data),
       ip: c.req.header('x-real-ip') ?? null,
-      now,
+      now: nowMs,
     });
 
     return c.json({ ok: true, creator });
@@ -667,7 +707,12 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
     const existing = getCreator(id);
     if (!existing) return c.json({ error: 'not_found' }, 404);
 
-    const now = Date.now();
+    /*
+     * ⚠️ 这一条路上**只有毫秒**：`deleteCreator(id)` 一个时间列都不写
+     *    （`tracked-videos.ts` 的文件头第六节点名说过），所以这里没有"秒"的那一半，
+     *    `nowMs` 只喂 `audit_log`（那是全仓毫秒的表 —— 见 POST 那段）。
+     */
+    const nowMs = Date.now();
     // 预读到、删不到：只有并发（另一个编辑同时删了它）能走到这里 ⇒ 与"本来就没有"同一个回答
     if (!deleteCreator(id)) return c.json({ error: 'not_found' }, 404);
 
@@ -678,7 +723,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityId: id,
       reason: `${existing.platform} ${existing.externalId}`,
       ip: c.req.header('x-real-ip') ?? null,
-      now,
+      now: nowMs,
     });
 
     return c.json({ ok: true, id });

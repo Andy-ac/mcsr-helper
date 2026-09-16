@@ -88,7 +88,7 @@ const { loadUser, sameOriginOnly } = await import('./auth/middleware');
 const { closeDb, getDb } = await import('./db');
 const { resetAll } = await import('./auth/ratelimit');
 const { app: realApp } = await import('./index');
-const { SITE } = await import('@mcsr/shared');
+const { SITE, toMillis } = await import('@mcsr/shared');
 
 after(() => closeDb());
 
@@ -344,12 +344,14 @@ interface AuditRow {
   entity_id: string | null;
   reason: string | null;
   ip: string | null;
+  /** ⚠️ **毫秒**（全仓 `audit_log` 的口径）—— 与两张追踪表的秒**不是一个单位**，见下面那组用例。 */
+  created_at: number;
 }
 
 function auditsOf(entityId: string): AuditRow[] {
   return getDb()
     .prepare(
-      `SELECT action, actor_id, entity_type, entity_id, reason, ip FROM audit_log
+      `SELECT action, actor_id, entity_type, entity_id, reason, ip, created_at FROM audit_log
         WHERE entity_id = ? ORDER BY rowid`,
     )
     .all(entityId) as unknown as AuditRow[];
@@ -1150,6 +1152,103 @@ describe('HTTP：三条审计的 ip 取 x-real-ip', () => {
       );
       // 反向的那一半：把 x-forwarded-for 抄进审计（原来那三行的写法）必须**当场可见**
       assert.notEqual(audit.ip, forged);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★★ 时间戳的单位（spec §4 的 ★★ 裁决，2026-09-16）
+// ---------------------------------------------------------------------------
+
+describe('HTTP：★★ 两条写入路径的时间单位（秒 / 毫秒，一个都不能错）', () => {
+  /*
+   * 为什么这组用例单独存在：这两条路上的 `Date.now()` **长得一模一样**，
+   * 而它们喂的两张表单位不同 —— `tracked_creators` 是**秒**（spec §4 的 ★★ 裁决：
+   * 上游 bilibili 的 `created` 就是秒，`last_synced_at` 也是秒，同一行不许两个单位），
+   * `audit_log` 是**毫秒**（全仓那张表，另外 15 个调用方都给 `Date.now()`，管理页按毫秒渲染）。
+   * ⇒ 少了这组断言，把三处都改成秒（或都留着毫秒）**整套测试照样绿**，
+   *   而其中一个单位一定是错的：那正是"看起来绿的功能其实不动"。
+   */
+  it('★ POST：created_at / updated_at 是 **Unix 秒**（不是毫秒）', async () => {
+    const editor = await signUp('editor');
+    /* 用**秒**做边界，且把窗口读在请求两侧：时钟本身没被注入，只能这样夹。 */
+    const beforeSec = Math.floor(Date.now() / 1000);
+    const creator = await addCreator(editor.cookie, nextMid());
+    const afterSec = Math.floor(Date.now() / 1000);
+
+    const row = getDb()
+      .prepare('SELECT created_at, updated_at FROM tracked_creators WHERE id = ?')
+      .get(creator.id) as { created_at: number; updated_at: number };
+
+    assert.ok(
+      row.created_at >= beforeSec && row.created_at <= afterSec,
+      `tracked_creators.created_at 应当是 **Unix 秒**（${String(beforeSec)}…${String(afterSec)}），实际是 ${String(row.created_at)}` +
+        '（毫秒的话会大 1000 倍，`last_synced_at` 那一列就与它不是一个单位了）',
+    );
+    assert.equal(
+      row.updated_at,
+      row.created_at,
+      'POST 一次写入两个时间列，用的必须是同一个时刻（秒）',
+    );
+    /*
+     * ★ 界面上那一半：这两张表的值**必须**经 `toMillis()` 才能渲染。
+     *   下面这一条钉的是"少乘 1000 会显示成 1970"这件事本身 ——
+     *   类型上讲 `new Date(number)` 永远合法，编译器一个字都不会说。
+     */
+    const createdAtMs = toMillis(row.created_at);
+    assert.ok(createdAtMs !== null, 'created_at 是一个有值的秒数，换算不该返回 null');
+    assert.equal(
+      new Date(createdAtMs).getUTCFullYear(),
+      2026,
+      '经 toMillis 换算之后才是一个真实年份（1970 说明单位错了）',
+    );
+  });
+
+  it('★ PATCH：updated_at 同样是 **Unix 秒**', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    const beforeSec = Math.floor(Date.now() / 1000);
+    const res = await call('PATCH', `/api/tracking/creators/${creator.id}`, {
+      json: { enabled: false },
+      cookie: editor.cookie,
+    });
+    assert.equal(res.status, 200, res.text);
+    const afterSec = Math.floor(Date.now() / 1000);
+
+    const row = getDb()
+      .prepare('SELECT updated_at FROM tracked_creators WHERE id = ?')
+      .get(creator.id) as { updated_at: number };
+    assert.ok(
+      row.updated_at >= beforeSec && row.updated_at <= afterSec,
+      `PATCH 写进去的 updated_at 应当是 **Unix 秒**（${String(beforeSec)}…${String(afterSec)}），实际是 ${String(row.updated_at)}`,
+    );
+    // 反面控制：把毫秒写进这一列的话它一定落在窗口**右边**很远的地方，不会被"≥ before"漏过去
+    assert.ok(row.updated_at < 1e11, '1e12 量级 = 毫秒写进了秒列');
+  });
+
+  it('★ 审计三行记的是 **毫秒**（与上面两张表**不是**同一个单位，别顺手统一）', async () => {
+    const editor = await signUp('editor');
+    // ⚠️ 窗口从"加博主"**之前**开始取：POST 那条审计是 addCreator 里写的，
+    //    取晚一点它就会落在窗口外面，这条用例会红在一个与单位无关的理由上。
+    const beforeMs = Date.now();
+    const creator = await addCreator(editor.cookie, nextMid());
+    await call('PATCH', `/api/tracking/creators/${creator.id}`, {
+      json: { enabled: false },
+      cookie: editor.cookie,
+    });
+    await call('DELETE', `/api/tracking/creators/${creator.id}`, { cookie: editor.cookie });
+    const afterMs = Date.now();
+
+    const audits = auditsOf(creator.id);
+    assert.equal(audits.length, 3, '加 / 改 / 删各一条');
+    for (const audit of audits) {
+      assert.ok(
+        audit.created_at >= beforeMs && audit.created_at <= afterMs,
+        `audit_log.created_at 应当是**毫秒**（${String(beforeMs)}…${String(afterMs)}），实际是 ${String(audit.created_at)}` +
+          ' —— 写成秒的话管理页的审计时间会显示成 1970 年',
+      );
+      // 反向的那一半：这个数**不能**等于"同一时刻的秒"（那正是错的那一版）
+      assert.notEqual(audit.created_at, Math.floor(audit.created_at / 1000));
     }
   });
 });
