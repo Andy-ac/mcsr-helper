@@ -1,0 +1,610 @@
+/**
+ * 追踪的博主与他们全部视频 —— **HTTP 面**（spec §6.1 那五个端点）。
+ *
+ *   GET    /api/tracking/videos          **公开**      追踪到的视频（分页，published_at DESC）
+ *   GET    /api/tracking/creators        live.manage  名单（含采集状态）
+ *   POST   /api/tracking/creators        live.manage  加一个（入参是**一个链接或 @handle**）
+ *   PATCH  /api/tracking/creators/:id    live.manage  改显示名 / 停用启用 / 重新回填
+ *   DELETE /api/tracking/creators/:id    live.manage  删（视频靠外键级联跟着走）
+ *
+ * 挂载由 `index.ts` 做：`app.route('/api/tracking', trackingRoute)`。
+ * ⚠️ 路由文件里写的是**相对路径**（`/creators`，没有 `/api/tracking` 前缀）——
+ *    与 seeds / shares / ranked 三处同形，与 videosRoute 那种"自带前缀"的写法相反。
+ *    两种写法不能混：混了的症状是**整组路由一起 404**，而不是某一条 404
+ *    （index.ts 在每一处挂载点上都写了这句话）。
+ *
+ * ===========================================================================
+ * 一、适配器注册表是**注入**的，而且**必填**
+ * ===========================================================================
+ * `POST /creators` 是这五个端点里**唯一**会碰上游的那一个（`resolveCreator`
+ * 要握手、要跟短链），而测试里绝不许打真网络（brief 的 ⚠️）。
+ * ⇒ 注册表从参数进来（`createTrackingRoute({ adapters })`），`index.ts` 传真那一个
+ *   （`tracking/index.ts` 的 `adapterFor`），测试传假的。
+ *
+ * ⚠️ 被否掉的做法：在测试里**mock `globalThis.fetch`**（`seeds-proxy.test.ts` 是这样），
+ *    或者给 `adapters` 一个默认值。两条的代价是同一个：mock 只能挡住"我以为会走的那条路"，
+ *    而默认值让"忘了注入"这件事在生产上**看不出来**、在测试上**照样绿** ——
+ *    那时 `POST /creators` 打到的是真的 bilibili，而唯一的证据在日志里。
+ *    必填参数把这件事变成一次**编译错误**。
+ *
+ * ===========================================================================
+ * 二、★★ 适配器失败 → 状态码：**一张表**（裁决 2，2026-09-16）
+ * ===========================================================================
+ * 判据是一句话：**这是谁的问题**，而不是"谁抛的"。一律 500 的代价不是难看 ——
+ * 是"管理员贴错了一条链接"和"我们的适配层和上游脱节了"在日志与界面上长得一模一样，
+ * 而这两件事要的人、要的动作完全不同（重贴一次 vs 去看代码）。
+ *
+ * ```text
+ * 抛出来的东西                  状态码  谁的问题            响应体                          日志
+ * ----------------------------  ------  ------------------  ------------------------------  ----
+ * InvalidCreatorInputError      400     调用方（重贴一次）  invalid_input + reason          有
+ * NoCredentialsError            503     我们没配（不是崩）  platform_not_configured         有
+ * BilibiliRateLimitError        429     上游在限流我们      rate_limited                    有
+ * BilibiliRejectedError         502     我们的适配层要改    upstream_bad_response           有
+ * PlatformHandshakeError        502     同上                upstream_bad_response           有
+ * ```
+ *
+ * 五条各自的理由与**被否掉的替代方案**（每一条的代价都写在明处）：
+ *
+ *   · **400 / invalid_input + reason**：与 `routes/seeds.ts` 的 `invalidInput` 同形
+ *     （一个通用错误码 + 一个机器可读的 reason），而不是给"认不出的链接"新开一个错误码 ——
+ *     错误码那张表（`error-codes.test.ts`）是给"用户能看到的失败结果"用的，
+ *     字段级的问题全挤进去会变成一份没人看得完的清单。裁决 1 让**重复添加**也走这个形状。
+ *   · **503** 而不是 400：没凭据是**我们的配置**，不是调用方贴错了东西；也不是 500，
+ *     因为它不是崩溃（spec §9.1 ⑧：没凭据的平台要"跳过并说明原因"）。
+ *   · **429** 而不是 500：适配器内部那 3 次 10 秒重试**已经跑完了**（spec §5.1 的冻结口径），
+ *     所以走到这里的语义只剩"上游正在限我们的流，过一会儿再来"。
+ *     ⚠️ 它**不带 `Retry-After`**，也没有 `retryAfterSec`：我们**不知道** bilibili 的
+ *     风控什么时候松（spec §2.3 说它是概率性的），编一个数字等于承诺一件做不到的事
+ *     （`routes/seeds.ts` 的 `seed_write_disabled` 那条 503 写着同一条理由）。
+ *   · **502** 而不是 500：这两类都意味着**我们的适配层和上游脱节了**（上游改了字段、
+ *     形状变了、`-352` 风控挡住了签名），排查方向是"我们要改" —— 而 500 的排查方向
+ *     是"去查堆栈"。细节（上游的 code、原文）**只进日志**，一个字都不进响应体。
+ *     ⚠️ 认下的偏离：`BilibiliRejectedError` 也覆盖"这个 UP 不存在"（`-404`）这种
+ *     **上游说没有、而不是我们错了**的情况（`bilibili.ts` 的文件头把三个来源合并
+ *     成同一个类型，理由是"对调用方是同一件事：这一轮别指望这个频道了"）。
+ *     合并的好处是这里只有一行；代价是那种情况也会报 502，而它其实更像 404。
+ *
+ * ⚠️ **第六类（不是这五种的异常）绝不映射**：它是我们的 bug，必须走 `throw`
+ *    → `index.ts` 的 `onError`（500 + 堆栈在日志里）。把任意异常都归进上面某一行，
+ *    表现是我们自己的错被报成"上游在限流"或"管理员贴错了链接" —— 两种都会让人
+ *    往错的方向找，而代码里那个错永远不会被看见。
+ *
+ * ===========================================================================
+ * 三、★ 为什么要先判"这是哪个平台"（而不是挨个问适配器）
+ * ===========================================================================
+ * `resolveCreator` 是**每个平台各一个**的（spec §5.1–5.3 的输入形状也各不相同），
+ * 所以分发这件事必须有人做。这里用一个小的 host 表（`platformOfInput`）：
+ * 它只回答"交给谁"，**不抠 id、不联网**，抠 id 仍然是适配器的事。
+ *
+ * ⚠️ 被否掉的做法：**挨个问每个适配器**（"第一个能解析出来的就算"）。代价很具体，
+ *    而且两边的错都是**答错方向**：
+ *      · 管理员贴了一条**完全有效**的 YouTube 链接，而 youtube 今天没有适配器
+ *        （`NoCredentialsError`）—— 挨个问得到的答案是 400「认不出这是谁」，
+ *        于是他会一直重贴那条**本来就没问题**的链接，而真正要做的
+ *        （配 `MCSR_YOUTUBE_KEY`）没有人会去做；
+ *      · 反过来，管理员贴了一串乱码时，得到的是"youtube 没有配置"。
+ *    分发的代价写清楚：**这张表要在 T8 加平台时跟着改**，而漏了的表现是
+ *    "明明能解析的链接被 400" —— 那不是静默的（管理员当场看得见），
+ *    所以这个代价可以接受；换来的是一句**说对了是谁的问题**的回答。
+ *
+ * ===========================================================================
+ * 四、裁决 3：纯空白的 displayName 当"没填"
+ * ===========================================================================
+ * `TrackedCreatorInputSchema` 的注释写明：`'   '` 会被 `.trim()` 成 `''`，而
+ * `max(80)` 对空串是通的 ⇒ **空白是通过校验的**。不特判的话，库里会多一行
+ * **空白的显示名**（既不是名字，也看不出是"没填"），而且没有任何地方会报错。
+ * ⇒ 这里只认**非空**的覆盖值（`if (override)` 一行同时兜住 `''` / `null` / `undefined`）。
+ *
+ * ⚠️ PATCH 那一侧**不能**这么做：那里没有"平台给的名字"可以回落（`display_name`
+ *    这一列存的就是最终值），所以 `displayName: '   '` 是 **400**（`min(1)`）——
+ *    "把显示名清空"这件事本身没有意义，而静默忽略它等于让编辑以为自己改成功了。
+ *
+ * ===========================================================================
+ * 五、审计与缓存
+ * ===========================================================================
+ * ★ 加/改/删各写一条（spec §6.1 的 ★）：这是**对外可见的内容变更**，出问题时要知道是谁做的。
+ *   · `entityType` 一律 `tracked_creator`、`entityId` 是那一行的 id（照 live 的 `live_channel`）；
+ *   · `reason` **必须带上 platform + externalId**：删掉之后那一行就查不到了，
+ *     而"删的是谁"正是事后唯一想知道的东西（`routes/live.ts` 的 DELETE 为此预读了一次）；
+ *   · 被拒的请求（400 / 403 / 401 / 404）**一条审计都不写**：审计说的是"谁把什么改成了什么"，
+ *     记一条没有发生的改动比少记一条更糟。
+ * · 缓存：公开列表给 60 秒公开缓存（与视频墙、直播清单同一条）；两个 `live.manage`
+ *   的端点一律 `no-store`（它们含只有编辑能看的采集状态，缓存住会漏给别人）。
+ */
+import { TrackedCreatorInputSchema, type TrackPlatform } from '@mcsr/shared';
+import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
+import type { Context } from 'hono';
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { type AuthVariables, requireCapability } from '../auth/middleware';
+import { clientIp } from '../auth/ratelimit';
+import {
+  createCreator,
+  deleteCreator,
+  getCreator,
+  listCreators,
+  listTrackedVideos,
+  updateCreator,
+} from '../tracked-videos';
+import { adapterFor } from '../tracking';
+/*
+ * ⚠️ 五类错误**住在两个文件里**，这不是笔误，是 T3 定下的分工
+ * （`tracking/types.ts` 的文件头写着理由）：
+ *   · `NoCredentialsError` / `PlatformHandshakeError` / `InvalidCreatorInputError`
+ *     是**跨平台**的（注册表抛、三个适配器都抛），住在不依赖任何平台实现的 `types.ts`；
+ *   · `BilibiliRateLimitError` / `BilibiliRejectedError` 只有 bilibili 会抛，
+ *     就住在 `bilibili.ts` 里 —— 把它们搬进 `types.ts` 等于让"这个平台独有的
+ *     风控语义"变成一个所有适配器都要知道的类型。
+ * ⇒ 下面这张表因此从**两个**文件里取类型。那是"分类"本身的代价：
+ *   要给一个平台专属的错误一个专属的回答，就得认识那个错误。
+ */
+import { BilibiliRateLimitError, BilibiliRejectedError } from '../tracking/bilibili';
+import {
+  type CreatorRef,
+  InvalidCreatorInputError,
+  NoCredentialsError,
+  type PlatformAdapter,
+  PlatformHandshakeError,
+} from '../tracking/types';
+import { writeAudit } from '../users';
+
+type TrackingContext = Context<{ Variables: AuthVariables }>;
+
+/** 公开列表的缓存策略，与视频墙 / 直播清单保持一致。 */
+const PUBLIC_CACHE = 'public, max-age=60, stale-while-revalidate=300';
+
+// ---------------------------------------------------------------------------
+// 依赖注入
+// ---------------------------------------------------------------------------
+
+/** 平台 → 适配器。生产上传的是 `tracking/index.ts` 的 `adapterFor`。 */
+export type AdapterRegistry = (platform: TrackPlatform) => PlatformAdapter;
+
+export interface TrackingRouteDeps {
+  /**
+   * 适配器注册表。⚠️ **必填、没有默认值** —— 理由见文件头第一节：
+   * 默认值让"忘了注入"在生产上静默、在测试里全绿。
+   */
+  adapters: AdapterRegistry;
+}
+
+// ---------------------------------------------------------------------------
+// 入参（形状与既有路由一致）
+// ---------------------------------------------------------------------------
+
+/** 校验失败时把 Zod 的问题整理成人能读的形态（与 videos / live 两处逐字相同）。 */
+function formatIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }) {
+  return error.issues.map((i) => ({
+    field: i.path.map(String).join('.') || '(root)',
+    message: i.message,
+  }));
+}
+
+/**
+ * 公开列表的查询参数。
+ *
+ * ⚠️ `page` / `pageSize` 而不是 `limit` / `offset`：数据层那两个参数是**SQL 的形状**，
+ *    而这里是 HTTP 的形状。本仓的公开列表（资源库、视频墙）一律是 page/pageSize，
+ *    界面共用一套分页控件 —— 换一套参数名等于让前端写第二条分支，
+ *    而多出来的每条分支都是将来会漂移的一份规则（`routes/videos.ts` 里写着。
+ *    ⚠️ 那一段还写了"等前端也要按同一份规则拼参数时再把它搬进 shared" ——
+ *    T7 落地时如果两处真的一样，这里该跟着搬）。
+ * ⚠️ schema 留在路由层（不放进 `shared/tracking.ts`）：`z.coerce` 处理的是
+ *    "查询串里一切都是字符串"这件事，那是 HTTP 的性质，不是数据的性质。
+ */
+const TrackedVideoQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(DEFAULT_PAGE_SIZE),
+});
+
+/**
+ * 改一个博主的入参：**三个字段都可选，但至少要给一个**。
+ *
+ * ⚠️ `.strict()` + `refine` 与本仓既有的 PATCH schema 逐字同形
+ *    （`UserLiveLinkPatchSchema`）：多传一个不认识的键直接 400（不是被悄悄丢掉），
+ *    而一个字段都没给也 400 —— 后者防的是"界面算错了差分、发来一个空补丁"，
+ *    那种请求看着成功、实际什么都没改，而它连一条审计都不会留下。
+ * ⚠️ `displayName` 的 `min(1)` 是**裁决 3 在 PATCH 那一侧的对应物**：`.trim()` 之后
+ *    为空就是 400。理由见文件头第四节（这一侧没有"平台给的名字"可以回落）。
+ * ⚠️ 上限 80 与 `TrackedCreatorInputSchema` 里那个 80 是**两处**（那个 schema 在
+ *    `packages/shared/src/tracking.ts`，没有把数字导出成常量）。两者漂移的代价很小
+ *    （一个显示名多几个字），但知道它们是一对就好 —— 改一处记得看另一处。
+ */
+const CreatorPatchSchema = z
+  .object({
+    displayName: z
+      .string()
+      .trim()
+      .min(1, { message: '显示名不能是空白（要清空就把它留空并提交？那件事这里没有）' })
+      .max(80),
+    enabled: z.boolean(),
+    reBackfill: z.boolean(),
+  })
+  .partial()
+  .strict()
+  .refine(
+    (value) =>
+      value.displayName !== undefined ||
+      value.enabled !== undefined ||
+      value.reBackfill !== undefined,
+    { message: '至少要改一个字段（displayName / enabled / reBackfill）' },
+  );
+
+// ---------------------------------------------------------------------------
+// ★★ 五类适配器失败 → 状态码：唯一的映射表
+// ---------------------------------------------------------------------------
+
+/** 入参那一侧唯一的 reason（认不出链接 / 平台时用它，重复添加用它旁边那个）。 */
+const UNRESOLVABLE_INPUT = 'unresolvable_input';
+
+/**
+ * 400：管理员贴进来的东西我们解析不出一个博主。
+ *
+ * ⚠️ 两个来源共用**同一个**回答，而且只此一处（`InvalidCreatorInputError` 那一行
+ *    与"连平台都判不出来"那一条都调它）—— 分头写两份 body 的话，改了一处另一处
+ *    就静默不一样了，而前端是**按 reason 定位输入框**的。
+ */
+function unresolvable(c: TrackingContext) {
+  return c.json({ error: 'invalid_input', reason: UNRESOLVABLE_INPUT }, 400);
+}
+
+/**
+ * 分类表的一行。
+ *
+ * `body` 收 `unknown` 而不是某个具体错误类型：这张表要**混装**五个不同的类，
+ * 而 TypeScript 的逆变会让"每行只收自己那个类型"的写法根本组不成数组。
+ * 每一行自己的 `is` 就是判据，`body` 里要取字段就顺手再窄化一次（不用 `as`）。
+ */
+interface FailureRule {
+  /** 日志里的分类名（也是这张表的行名，出问题时能直接对上文件头那张表）。 */
+  kind: string;
+  is: (error: unknown) => boolean;
+  status: 400 | 429 | 502 | 503;
+  body: (error: unknown) => Record<string, unknown>;
+}
+
+/**
+ * ★★ **五类失败与它们的 HTTP 回答**（裁决 2）。理由与代价写在文件头第二节。
+ *
+ * ⚠️ 行**顺序即匹配顺序**，五个 `instanceof` 两两不重叠，所以顺序今天不影响结果；
+ *    但它是从"最具体"往"最泛"排的，将来万一加了有继承关系的错误类型，也仍然是对的。
+ * ⚠️ 这五类之外的异常**故意不在表里**：调用方拿 `null` 之后必须 `throw`（见下面的
+ *    `classifyAdapterFailure`），让它走 index.ts 的 onError。
+ */
+const ADAPTER_FAILURES: readonly FailureRule[] = [
+  {
+    kind: 'InvalidCreatorInputError',
+    is: (error) => error instanceof InvalidCreatorInputError,
+    status: 400,
+    // 详情（认不出的原因 + 管理员贴的原文）在 message 里，只进日志
+    body: () => ({ error: 'invalid_input', reason: UNRESOLVABLE_INPUT }),
+  },
+  {
+    kind: 'NoCredentialsError',
+    is: (error) => error instanceof NoCredentialsError,
+    status: 503,
+    body: (error) => ({
+      error: 'platform_not_configured',
+      // `is` 已经判过类型，这里再窄化一次只是为了让编译器看见（不用 `as`）
+      platform: error instanceof NoCredentialsError ? error.platform : null,
+    }),
+  },
+  {
+    kind: 'BilibiliRateLimitError',
+    is: (error) => error instanceof BilibiliRateLimitError,
+    status: 429,
+    // 不带 Retry-After / retryAfterSec：不知道风控什么时候松（文件头第二节那条）
+    body: () => ({ error: 'rate_limited' }),
+  },
+  {
+    kind: 'BilibiliRejectedError',
+    is: (error) => error instanceof BilibiliRejectedError,
+    status: 502,
+    body: () => ({ error: 'upstream_bad_response' }),
+  },
+  {
+    kind: 'PlatformHandshakeError',
+    is: (error) => error instanceof PlatformHandshakeError,
+    status: 502,
+    body: () => ({ error: 'upstream_bad_response' }),
+  },
+];
+
+/**
+ * 把这五类翻译成 HTTP 回答；**不是这五类就返回 `null`**（调用方必须重新抛）。
+ *
+ * ★ 五条都记一行日志，包括 400 那一条：这些动作都很罕见（管理员偶尔加一个博主），
+ *   而"这条链接为什么认不出"将来唯一的证据就是那行 message（里面有输入原文）。
+ *   ⚠️ 细节**只**在这行日志里 —— 响应体里永远没有上游的 code / 原文 / 平台内部状态。
+ */
+function classifyAdapterFailure(c: TrackingContext, error: unknown): Response | null {
+  const rule = ADAPTER_FAILURES.find((row) => row.is(error));
+  if (!rule) return null;
+
+  const detail = error instanceof Error ? error.message : String(error);
+  console.error(`[tracking] 加博主失败（${rule.kind}）：${detail}`);
+  return c.json(rule.body(error), rule.status);
+}
+
+// ---------------------------------------------------------------------------
+// 平台分发（只回答"交给谁"，见文件头第三节）
+// ---------------------------------------------------------------------------
+
+/** 纯数字的 mid（spec §5.1：bilibili 的 `resolveCreator` 直接收一串数字）。 */
+const BARE_MID = /^\d{1,20}$/;
+/** `@handle`（spec §5.2）。⚠️ 它的形状要**够具体**：光看首字符的话，`'@'` 也会被派给 youtube。 */
+const AT_HANDLE = /^@[A-Za-z0-9._-]{1,64}$/;
+
+/** host → 平台。⚠️ 认的是**主机名**，不是"包含某个词"（`evil.com/?x=bilibili.com` 必须是认不出）。 */
+const PLATFORM_HOSTS: ReadonlyArray<{ platform: TrackPlatform; hosts: readonly string[] }> = [
+  { platform: 'bilibili', hosts: ['space.bilibili.com', 'b23.tv', 'bilibili.com'] },
+  { platform: 'youtube', hosts: ['youtube.com', 'm.youtube.com', 'youtu.be'] },
+  { platform: 'twitch', hosts: ['twitch.tv', 'm.twitch.tv'] },
+];
+
+/**
+ * "这条输入是哪个平台的" —— **只分发，不解析**。
+ *
+ * 返回 `null` = 我们连它是哪个平台都判不出来 ⇒ 400（不问任何适配器，因为问了也没人认领）。
+ * ⚠️ 它认的是 spec §5.1–5.3 逐字写下的那三种输入形状（链接 / 纯数字 mid / `@handle`）。
+ */
+function platformOfInput(raw: string): TrackPlatform | null {
+  const input = raw.trim();
+  if (input === '') return null;
+  if (BARE_MID.test(input)) return 'bilibili';
+  if (AT_HANDLE.test(input)) return 'youtube';
+
+  let url: URL;
+  try {
+    /*
+     * 没有协议的（`space.bilibili.com/123`）补一个 https 再解析 —— 从地址栏复制出来的
+     * 东西通常没有协议（bilibili 的适配器里也写着同一条）。
+     */
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`);
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+  for (const entry of PLATFORM_HOSTS) {
+    if (entry.hosts.includes(host)) return entry.platform;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// 审计
+// ---------------------------------------------------------------------------
+
+/**
+ * PATCH 的审计里"改了什么"。
+ *
+ * ⚠️ 它列的是**调用方给了的字段**，不是"真的变了的字段"：路由手里没有 changed 标志
+ *    （`updateCreator` 不返回它），而"给了哪几个字段"就是这次请求本身。
+ *    代价写在明面上：把 `enabled` 改成它本来就有的值也会留下一条 update 审计 ——
+ *    与 `routes/live.ts` 的 PATCH 同一条（那条也是"成功即写审计"；
+ *    "空操作不写审计"那条纪律属于**有 changed 标志**的那类端点，比如 live 的 visibility）。
+ */
+function patchReason(patch: {
+  displayName?: string;
+  enabled?: boolean;
+  reBackfill?: boolean;
+}): string {
+  const parts: string[] = [];
+  if (patch.displayName !== undefined) parts.push(`displayName=${patch.displayName}`);
+  if (patch.enabled !== undefined) parts.push(`enabled=${String(patch.enabled)}`);
+  if (patch.reBackfill !== undefined) parts.push(`reBackfill=${String(patch.reBackfill)}`);
+  return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// 路由
+// ---------------------------------------------------------------------------
+
+export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: AuthVariables }> {
+  const trackingRoute = new Hono<{ Variables: AuthVariables }>();
+
+  // -------------------------------------------------------------------------
+  // 读：公开列表
+  // -------------------------------------------------------------------------
+
+  /**
+   * 追踪到的视频。**公开**（不挂任何鉴权中间件）—— 浏览不设门槛是访问模型
+   * （`docs/v1-plan.md §0.1`）的核心。
+   *
+   * ⚠️★ `status = 'visible'` 的过滤在**数据层**（`listTrackedVideos`），这里一个条件都不加、
+   *    也不给查询参数（裁决 4）：加第二道过滤或开一个 `?includeHidden=1`，
+   *    都会让"公开列表该显示什么"有两个答案，而两处一旦漂移，
+   *    表现是"编辑隐藏过的视频还挂在公开列表上"（spec §6.1 那一行就是为这件事写的）。
+   */
+  trackingRoute.get('/videos', (c) => {
+    const parsed = TrackedVideoQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_query', issues: formatIssues(parsed.error) }, 400);
+    }
+
+    const { page, pageSize } = parsed.data;
+    const { items, total } = listTrackedVideos({ limit: pageSize, offset: (page - 1) * pageSize });
+
+    c.header('Cache-Control', PUBLIC_CACHE);
+    // 形状与视频墙逐字一致（items / total / page / pageSize）：两个列表共用一套分页控件
+    return c.json({ items, total, page, pageSize });
+  });
+
+  /**
+   * 名单（管理面板那一份，含采集状态）。**必须 no-store**：它含只有编辑能看的东西
+   * （上次错误、连续失败次数），任何一层缓存住都会漏给别人
+   * （`routes/live.ts` 的 `/live/manage` 写着同一条）。
+   */
+  trackingRoute.get('/creators', requireCapability('live.manage'), (c) => {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ items: listCreators() });
+  });
+
+  // -------------------------------------------------------------------------
+  // 写：加一个博主
+  // -------------------------------------------------------------------------
+
+  /**
+   * 加一个博主。入参**只有 `input`**（一个链接或 `@handle`）—— 平台与 id 全由服务端
+   * 推导（spec §5.1 的裁决，与 `VideoInputSchema` 同一条：用户手里就是一条链接，
+   * 逼他拆成两个字段一定会有人把 mid 填进 platform 那一栏）。
+   */
+  trackingRoute.post('/creators', requireCapability('live.manage'), async (c) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = TrackedCreatorInputSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      // 形状问题走 issues（前端按字段渲染），语义问题才走 reason —— 两种形状各有各的读者
+      return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+    }
+
+    const input = parsed.data.input;
+    const platform = platformOfInput(input);
+    if (platform === null) {
+      // 连"交给谁"都判不出来 ⇒ 不问任何适配器（问了也没人认领，而 b23 那条路会联网）
+      console.error(`[tracking] 加博主失败（认不出平台）：${input.slice(0, 300)}`);
+      return unresolvable(c);
+    }
+
+    let ref: CreatorRef;
+    try {
+      ref = await deps.adapters(platform).resolveCreator(input);
+      /*
+       * ⚠️ 适配器回的平台必须与它自己所属的平台一致。它防的是**不会抛**的那一类错
+       * （同一个纪律见 `tracked-videos.ts` 的 `upsertVideos`）：某个适配器复制粘贴时
+       * 忘了改 `platform`，表现是这个博主的**全部视频**被记在另一个平台下，
+       * 而两张表各自都是合法的、数据库拦不住。代价是一个比较。
+       */
+      if (ref.platform !== platform) {
+        throw new Error(`适配器 ${platform} 回了一个 ${ref.platform} 的 CreatorRef`);
+      }
+    } catch (error) {
+      const classified = classifyAdapterFailure(c, error);
+      // 不是那五类 ⇒ 我们的 bug ⇒ 重新抛（index.ts 的 onError 会记 500 与堆栈）
+      if (!classified) throw error;
+      return classified;
+    }
+
+    /*
+     * ★ 裁决 3：`if (override)` 一行同时兜住 `''`（纯空白 trim 之后的形状）、
+     *   `null` 与 `undefined` —— 三种都是"没填"。理由见文件头第四节。
+     */
+    const override = parsed.data.displayName;
+    if (override) ref = { ...ref, displayName: override };
+
+    const now = Date.now();
+    const result = createCreator(ref, user.id, now);
+    if (!result.ok) {
+      /*
+       * ★ 裁决 1：重复**是 400 + 机器可读的 reason**，不是 500。
+       *   数据层返回的是一个**联合**（`{ok:false, reason:'duplicate', existingId}`），
+       *   因为它拒绝按 message 文本判"重复"（那段注释在 `tracked-videos.ts`）——
+       *   也就是说这个分支不认它的话，重复添加就只能变成一次内部错误。
+       * ⚠️ `existingId` 一起带上：加的人需要的是"去看那一条"，不是一句"出错了"
+       *   （与 `live_exists` / `video_exists` 同一条；这里用 reason 而不是新错误码，
+       *   因为 400 的读者是**输入框**，不是错误提示）。
+       */
+      return c.json(
+        { error: 'invalid_input', reason: 'duplicate', existingId: result.existingId },
+        400,
+      );
+    }
+
+    writeAudit({
+      actorId: user.id,
+      action: 'tracked_creator.create',
+      entityType: 'tracked_creator',
+      entityId: result.creator.id,
+      reason: `${ref.platform} ${ref.externalId}`,
+      ip: clientIp(c),
+      now,
+    });
+
+    return c.json({ ok: true, creator: result.creator }, 201);
+  });
+
+  // -------------------------------------------------------------------------
+  // 写：改 / 删
+  // -------------------------------------------------------------------------
+
+  /** 改显示名 / 停用启用 / 重新回填（spec §6.1）。不存在的 id ⇒ 404。 */
+  trackingRoute.patch('/creators/:id', requireCapability('live.manage'), async (c) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = CreatorPatchSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+    }
+
+    const id = c.req.param('id');
+    const now = Date.now();
+    /*
+     * ⚠️ `now` 由**这里**取一次再传进去（数据层不看时钟：那是 2026-09-16 的裁决，
+     *    理由写在 `tracked-videos.ts` 的文件头第六节）。返回 `null` = 这一行不存在。
+     */
+    const creator = updateCreator(id, parsed.data, now);
+    if (!creator) return c.json({ error: 'not_found' }, 404);
+
+    writeAudit({
+      actorId: user.id,
+      action: 'tracked_creator.update',
+      entityType: 'tracked_creator',
+      entityId: id,
+      reason: patchReason(parsed.data),
+      ip: clientIp(c),
+      now,
+    });
+
+    return c.json({ ok: true, creator });
+  });
+
+  /** 删一个博主。他的视频靠 `ON DELETE CASCADE` 跟着走（spec §4.2）。 */
+  trackingRoute.delete('/creators/:id', requireCapability('live.manage'), (c) => {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+    const id = c.req.param('id');
+    /*
+     * ★ 预读一次（`routes/live.ts` 的 DELETE 是同一条）：删掉之后那一行就查不到了，
+     *   而审计里的 `reason` 要留下"删的是哪个平台的谁" —— 那是事后唯一想知道的东西。
+     *   ⚠️ 不用"读整份名单再 find"来省一次导出：`listCreators` 带着
+     *   `LEFT JOIN tracked_videos` 的聚合，为了取一行而去数几万条视频不划算。
+     */
+    const existing = getCreator(id);
+    if (!existing) return c.json({ error: 'not_found' }, 404);
+
+    const now = Date.now();
+    // 预读到、删不到：只有并发（另一个编辑同时删了它）能走到这里 ⇒ 与"本来就没有"同一个回答
+    if (!deleteCreator(id)) return c.json({ error: 'not_found' }, 404);
+
+    writeAudit({
+      actorId: user.id,
+      action: 'tracked_creator.delete',
+      entityType: 'tracked_creator',
+      entityId: id,
+      reason: `${existing.platform} ${existing.externalId}`,
+      ip: clientIp(c),
+      now,
+    });
+
+    return c.json({ ok: true, id });
+  });
+
+  return trackingRoute;
+}
+
+/**
+ * 生产上挂的那一个（`index.ts` 用的就是这个）。
+ *
+ * ⚠️ 它传的是**真的**注册表（`adapterFor`）：youtube / twitch 今天会在这里抛
+ * `NoCredentialsError`（spec §2.7 实测生产上一个 key 都没有），而那条路正好被
+ * 上面那张表的第二行接住 ⇒ **503 "这个平台没有配置"**，不是崩、也不是 500。
+ * 这正是 spec §9.1 ⑧ 要的形状。
+ */
+export const trackingRoute = createTrackingRoute({ adapters: adapterFor });

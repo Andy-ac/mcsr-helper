@@ -455,8 +455,18 @@ export function listCreators(): TrackedCreator[] {
   return rows.map(toCreator);
 }
 
-/** 单个博主（对外形状）。不存在 ⇒ `null`。 */
-function getCreator(id: string): TrackedCreator | null {
+/**
+ * 单个博主（对外形状）。不存在 ⇒ `null`。
+ *
+ * ⚠️ **导出**是 T5 要的（2026-09-16）：`DELETE /api/tracking/creators/:id` 必须在删之前
+ * 先读一眼 —— 删掉之后 `platform` / `externalId` 就再也查不到了，而审计的 `reason`
+ * 要留下"删的是哪个平台的谁"（`routes/live.ts` 的 DELETE 为同一件事预读了一次）。
+ * 被否掉的替代做法是"读整份 `listCreators()` 再 find"：那条查询带着
+ * `LEFT JOIN tracked_videos` 的聚合，为了取一行而去数几万条视频不划算。
+ * ⚠️ 它**不是**给"公开读"用的（公开列表走 `listTrackedVideos`），也不判权限 ——
+ * 权限在路由层（本文件头第一节那条分工没变）。
+ */
+export function getCreator(id: string): TrackedCreator | null {
   const row = getDb()
     .prepare(`${CREATOR_SELECT} WHERE c.id = ? GROUP BY c.id`)
     .get(id) as unknown as CreatorRow | undefined;

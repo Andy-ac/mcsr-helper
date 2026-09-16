@@ -26,6 +26,7 @@ import { resourcesRoute } from './routes/resources';
 import { reviewRoute } from './routes/review';
 import { seedsRoute } from './routes/seeds';
 import { sharesRoute } from './routes/shares';
+import { trackingRoute } from './routes/tracking';
 import { uploadsRoute } from './routes/uploads';
 import { videosRoute } from './routes/videos';
 import { deleteExpiredSessions } from './users';
@@ -210,6 +211,22 @@ app.route('/api/shares', sharesRoute);
  *    两种写法不能混：混了的症状是整组路由一起 404，而不是某个端点 404。
  */
 app.route('/api/ranked', rankedRoute);
+
+/*
+ * 追踪的博主与他们全部视频（spec §6.1）。五个端点，**只有视频列表是公开的** ——
+ * 名单与三个写操作都要 `live.manage`（编辑及以上），因为那是一份编辑维护的名单
+ * （与 `liveRoute` 同一条权限形状，与视频墙恰好相反）。
+ *
+ * ⚠️ 挂载点写全（/api/tracking），因为 route 文件里用的是相对路径（/videos、/creators、
+ *    /creators/:id）—— 与上面 sharesRoute / rankedRoute 同形，与 videosRoute 那种
+ *    "自带前缀"的写法**相反**。两种写法不能混：混了的症状是整组路由一起 404，
+ *    而不是某个端点 404。
+ * ⚠️ 这里挂的是 `routes/tracking.ts` 里那个**默认实例**（它带着真的适配器注册表
+ *    `adapterFor`）。测试注入假注册表时用的是 `createTrackingRoute({ adapters })` ——
+ *    "忘了挂"或者"挂错了实例"不会有别的测试变红，所以 `tracking-routes.test.ts`
+ *    最后那一个 describe 打的就是**这个 app**。
+ */
+app.route('/api/tracking', trackingRoute);
 
 // ---------------------------------------------------------------------------
 // TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。

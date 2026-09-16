@@ -133,6 +133,19 @@ const KNOWN_CODES: readonly string[] = [
   'ranked_busy',
   /** 上游回了不成形状的东西（我们读不出那一格）—— **我们的适配层要改** */
   'upstream_bad_response',
+  // ---- 追踪的博主（video tracking，T5）----
+  /**
+   * 这个平台**在我们服务器上没有配凭据**（`MCSR_YOUTUBE_KEY` / `MCSR_TWITCH_ID`+`SECRET`）。
+   *
+   * ⚠️ 它是 503 而不是 400/500，而且**必须**是它自己的一条码（2026-09-16 的裁决）：
+   *    管理员贴了一条**完全正确**的 YouTube 链接，而今天一个 key 都没有（spec §2.7）——
+   *    报成 400「认不出这条链接」的话，他会一直重贴那条本来就没问题的链接，
+   *    而真正要做的（去配置凭据）没有人会去做；报成 500 则会被当成崩溃去查堆栈。
+   *    两者都是**答错了方向**，而这是三种里唯一一个"不是你的问题、也不是崩"的回答。
+   *    复用 `seed_write_disabled`（同是 503）不行：那个名字说的是"种子写入被关了"，
+   *    出现在这条路上等于让日志说一件没发生的事。
+   */
+  'platform_not_configured',
 ];
 
 /**
@@ -301,6 +314,21 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
   ranked_busy: '界面用的是这个栏目自己的词条（ranked.errBusy），不走通用映射',
   upstream_unavailable: '界面用的是这个栏目自己的词条（ranked.errUnavailable），不走通用映射',
   upstream_bad_response: '界面用的是这个栏目自己的词条（ranked.errBadResponse），不走通用映射',
+  /*
+   * ---- 追踪的博主（T5）----
+   *
+   * ⚠️ 这一条与上面三条的处境**不同**，别照着抄：上面那些是"文案在别处"，
+   *    而这一条是**界面还没有**（T7 才做 `/videos` 页上那块「追踪的博主」分区）。
+   *    登记在这里是**有意的妥协**（Ranked Seeds 那四条当初也是这么登记的，
+   *    页面落地时才移走）：不放它的话，这个 503 落进 `apiErrorText` 的兜底，
+   *    管理员看到的是「出错了，请稍后再试。」—— 而重试一万次也不会有用，
+   *    要做的是去服务器上配 key。
+   * ⇒ **T7 落地时必须把它从这里移走**，在那一栏自己的映射里给一句
+   *   「这个平台还没配置」之类的话（它比通用文案准确：说的是**我们**没配）。
+   *   ⚠️ 这也是它唯一的代价：在那之前，界面上的那句话是不准确的。
+   */
+  platform_not_configured:
+    '界面还没有（T7 的 TrackedVideos 分区）—— T7 落地时必须移到那一栏自己的映射里',
 };
 
 function walk(dir: string, out: string[] = []): string[] {
