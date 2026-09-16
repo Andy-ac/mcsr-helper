@@ -1,0 +1,559 @@
+import type { TrackedCreator, TrackedVideo, TrackPlatform } from '@mcsr/shared/tracking';
+import { toMillis } from '@mcsr/shared/tracking';
+import { formatTimecode } from '@mcsr/shared/videos';
+import { useTranslation } from 'react-i18next';
+import { Field, Notice } from '@/components/Form';
+import { watchUrl } from '@/components/VideoEmbed';
+
+/**
+ * 「追踪的博主」—— `/videos` 页上的那一块（**两个只吃 props 的纯视图**）。
+ *
+ * ===========================================================================
+ * 为什么是**两个纯视图**，而不是让 `routes/Videos.tsx` 自己写这几块界面
+ * ===========================================================================
+ * 本仓铁律（spec §6.2，`docs/pending.md` 反复记着）：`renderToStaticMarkup`
+ * **不跑 effect**、不点击、不发请求 —— 界面写在**页面**里就**断言不到**
+ * （页面永远停在 loading/空态，为它写的断言退化成恒真）。
+ * ⇒ 取数、分页、能力判断、两次点击之间的状态**全在页面那一层**；
+ *   这一层只回答"给我这些 props，画成什么样"，于是 `apps/web/scripts/videorender.tsx`
+ *   能把每一个状态都渲染一遍并逐条断言。
+ * ⚠️ 两个组件都**没有 `useState` / `useEffect` / 取数**：连"正在等确认的是哪一行"
+ *   和"输入框里现在是什么"都是 props（页面持有）—— 组件里存一份状态就意味着
+ *   那个状态**在静态渲染里永远不会变**，于是它对应的界面分支谁也断言不到。
+ *
+ * ===========================================================================
+ * ★★ 时间：两处都**必须**经 `toMillis`（spec §4 那个 ★★ 块的裁决）
+ * ===========================================================================
+ * `tracked_videos.published_at` 与 `tracked_creators.last_synced_at` 都是 **Unix 秒**
+ * （上游 bilibili 的 `created` 就是秒），而 `Date` / `Intl` 要的是**毫秒**。
+ * ⇒ 裸的 `new Date(v.publishedAt)`（或 `Date.now() - v.publishedAt`）**是一条真缺陷**：
+ *   少乘 1000，显示出来是 **1970 年**，而类型检查拦不住它（两边都是 `number`）。
+ *   `toMillis()` 是这两张表唯一被允许跨单位的地方（`packages/shared/src/tracking.ts`），
+ *   而**本文件是它的第一个生产调用者** ⇒ 下面那两个小函数是这一页唯一的转换点。
+ * ⚠️ `null` 一律显示成 `—`，**不显示成 0**：0 毫秒是 1970-01-01，看起来像一条真实数据。
+ *
+ * ===========================================================================
+ * ★★ 空的计量格显示 `—`，**绝不显示 0**（本仓既有纪律）
+ * ===========================================================================
+ * `publishedAt` / `durationSec` / `viewCount` / `commentCount` 四个字段**都可能是 null**
+ * （上游没给、或者这一轮没回这个字段）。把它们渲染成 `0` 是一个**看起来像数据的谎**：
+ * "这支视频没人看"与"这个平台这一轮没回播放量"在界面上一模一样，而后者是
+ * **接口悄悄变了**的信号（spec §4.2 那条"拿不到的字段一律 NULL，不许填 0"）。
+ * ⇒ 本文件里那几处都是"null ⇒ `—`"，而渲染自检的第一条断言正是这件事
+ *   （喂一个四个字段全 null 的夹具 ⇒ 页面上**一个 `0` 都不许出现**）。
+ *
+ * ===========================================================================
+ * 卡片上的六个字段（用户裁决 R4）
+ * ===========================================================================
+ * 标题 / 封面 / 发布时间 / 时长 / 播放量 / 评论数 —— 就是这六个，一个不多一个不少。
+ * ⚠️ 封面必须有 `loading="lazy"` 与固定宽高比（16:9，写在 CSS 里）：一屏几十张图
+ *   一起加载会把首屏拖慢，而比例不固定的图片到达时会让每一行重排。
+ * ⚠️ `thumbnailUrl` 为 null 时**不渲染 `<img>`**（而不是 `src=""`）：
+ *   `src=""` 会让浏览器去请求**当前页面**，一次请求换来一张碎图。
+ */
+
+/** 没有值的那一格 —— 全仓的约定（`CalendarDetail` / `SeedResultCard` 都是它）。 */
+const DASH = '—';
+
+/**
+ * 平台名 → 词条 key。**复用视频墙那同一批**（`videos.platform*`）—— 同一个平台不该有两个名字。
+ *
+ * ⚠️ 键的类型写成 `Record<TrackPlatform, string>` 而不是 `Record<string, string>`：
+ *    前者在加第四个平台时**当场编译失败**，后者会静默漏掉一格，而那一格的表现是
+ *    卡片上印出**裸 key**（`videos.platformXxx`）—— 只有那个平台真有视频时才看得见。
+ */
+const PLATFORM_KEYS: Record<TrackPlatform, string> = {
+  bilibili: 'videos.platformBilibili',
+  youtube: 'videos.platformYoutube',
+  twitch: 'videos.platformTwitch',
+};
+
+/**
+ * 三个标签 → 词条 key（spec §4.3 冻结的那三个）。
+ *
+ * ⚠️ 表里**没有**的标签按原样显示（见 `tagLabel`）：这一列由抓取那一侧派生，
+ *    哪天多派生一个，界面要**看得见它**而不是把它悄悄吞掉 —— 少一个标签没人会发现，
+ *    而"界面上少一格"与"数据里没有"在产物里长得一模一样。
+ */
+const TAG_KEYS: Record<string, string> = {
+  liveReplay: 'tracked.tagLiveReplay',
+  short: 'tracked.tagShort',
+  long: 'tracked.tagLong',
+};
+
+/** 标签 → 显示文字（认不出来的原样显示，理由见 `TAG_KEYS`）。 */
+function tagLabel(tag: string, t: (key: string) => string): string {
+  const key = TAG_KEYS[tag];
+  return key === undefined ? tag : t(key);
+}
+
+/**
+ * Unix **秒** → 本地日期串（**唯一的换算点**，见文件头）。
+ *
+ * ⚠️ 导出只为了一件本仓反复吃过亏的事：`apps/web` 没有测试运行器，
+ *    `apps/web/scripts/videorender.tsx` 是这一页唯一的断言执行者 ——
+ *    "0 秒是不是 1970 / null 是不是 `—`"这两条要能**直接**问它，
+ *    而不是只能靠产物里有没有 `1970` 去猜（`RANKED_ERROR_KEYS` 是同一处置）。
+ * ⚠️ `locale` 是**必填**参数（由调用点传 `i18n.language`）：不传时 `toLocaleDateString()`
+ *    跟的是**宿主机器**的 locale ⇒ 中文系统上的英文界面会印出中文日期，而两种语言
+ *    各渲染一遍的渲染自检**都看不出来**（两遍跑在同一台机器上，看到的是同一个错误）。
+ *    这一条是 `RankedPanels.tsx` 上那段注释的同一件事，那边为它写过完整的一段。
+ */
+export function localDate(sec: number | null, locale: string): string {
+  const ms = toMillis(sec);
+  return ms === null ? DASH : new Date(ms).toLocaleDateString(locale);
+}
+
+/** 同上，带时刻 —— 「上次同步」要看得到是哪天的几点（与 `localDate` 同一处换算）。 */
+export function localDateTime(sec: number | null, locale: string): string {
+  const ms = toMillis(sec);
+  return ms === null ? DASH : new Date(ms).toLocaleString(locale);
+}
+
+/**
+ * 公开分区。
+ *
+ * ⚠️ props 全部**必填**（`empty` / `error` / `loading` 都是）：
+ *    · `empty` 是**页面**给的那一句空态说明 —— 只有页面知道"为什么是空的"
+ *      （一条视频都还没抓到 / 名单上一个人都还没有）。写在组件里的话那一句话就没法
+ *      按处境换，而"空的时候说一句准话"正是 spec §6.2 的要求。
+ *    · `error` **必须**有：没有它，取数失败会渲染成"还没有追踪到视频" —— 一句**假话**
+ *      （列表不是空的，是没取到）。这与"空态不许是空白"是同一条纪律的两面。
+ *    · `loading` 同理：加载中显示空态也是一句假话。
+ * ⚠️ 少传一个 prop 在**这里看不出任何异常**（SSR 不渲染事件处理器，少一个 `onPage`
+ *    与接好线的产物逐字节相同）⇒ 渲染自检有一道**运行时**守卫
+ *    （`videorender.tsx` 的 `assertPropsGiven`），因为 `scripts/**` 不受类型检查。
+ */
+export interface TrackedVideosSectionProps {
+  items: TrackedVideo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** 空列表时显示的那一句话（页面给 —— 只有它知道为什么是空的）。 */
+  empty: string;
+  /** 正在取数。⚠️ 与"空列表"是两件事，**不许**合并。 */
+  loading: boolean;
+  /** 取数失败的那一句话；`null` = 没出错。 */
+  error: string | null;
+  /** 翻页。⚠️ 必填 —— 见上面那段（少传它 = 一个按不动的分页器）。 */
+  onPage: (page: number) => void;
+}
+
+/**
+ * 「追踪的博主」那一块（公开列表）。
+ *
+ * ⚠️ 这一块**在 `/videos` 页上**（用户裁决 R1），但它是**独立的一栏**：
+ *    它与上面那面"大家自己贴的视频"墙没有关系（spec §8.1：两张表、两条路），
+ *    所以它有自己的标题、自己的分页、自己的空态，字面上也不共用那面墙的词条。
+ */
+export function TrackedVideosSection({
+  items,
+  total,
+  page,
+  pageSize,
+  empty,
+  loading,
+  error,
+  onPage,
+}: TrackedVideosSectionProps) {
+  const { t, i18n } = useTranslation();
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+
+  return (
+    <section className="tracked" aria-labelledby="tracked-title">
+      <h2 className="tracked__title" id="tracked-title">
+        {t('tracked.title')}
+      </h2>
+      <p className="tracked__sub">{t('tracked.subtitle')}</p>
+
+      {loading ? <p className="state">{t('common.loading')}</p> : null}
+
+      {error === null ? null : (
+        <div className="state state--error">
+          <p>{error}</p>
+        </div>
+      )}
+
+      {!loading && error === null && items.length === 0 ? (
+        /*
+         * 空态是**一句陈述**，不是一块空白（本仓纪律：空白看起来像坏了）。
+         * ⚠️ 两句话：第一句由页面给（"还没有追踪到视频"），第二句是这一栏的说明
+         *    （这些视频由服务器定时抓、名单由编辑维护）—— 少了第二句，访客会以为
+         *    这一栏坏了，或者以为我们漏掉了他的视频。
+         */
+        <div className="tracked__empty">
+          <p className="tracked__emptytitle">{empty}</p>
+          <p className="tracked__emptyhint">{t('tracked.emptyHint')}</p>
+        </div>
+      ) : null}
+
+      {!loading && error === null && items.length > 0 ? (
+        <>
+          <p className="resultcount">{t('tracked.count', { count: total })}</p>
+
+          <ul className="tracked__grid">
+            {items.map((video) => (
+              <li className="tracked__card" key={video.id}>
+                <div
+                  className={`tracked__thumb${
+                    video.thumbnailUrl === null ? ' tracked__thumb--none' : ''
+                  }`}
+                >
+                  {video.thumbnailUrl === null ? null : (
+                    /*
+                     * ⚠️ `loading="lazy"` + 固定宽高比（CSS 的 `aspect-ratio`）：
+                     *    一屏几十张图一起请求会把首屏拖慢，而比例不固定的图片
+                     *    到达时会让每一行重排（用户正在读的东西突然跳走）。
+                     */
+                    <img
+                      className="tracked__img"
+                      src={video.thumbnailUrl}
+                      alt={t('tracked.thumbAlt', { title: video.title })}
+                      loading="lazy"
+                    />
+                  )}
+                </div>
+
+                <div className="tracked__body">
+                  <div className="tracked__head">
+                    <span className="badge badge--kind">{t(PLATFORM_KEYS[video.platform])}</span>
+                    {/*
+                      标签容器**只在有标签时渲染**（spec §5.2 的同类裁决）：渲染一个空的
+                      `<ul>` 会占一行高度，看起来像"这里本来该有东西、丢了"。
+                      ⚠️ "`durationSec` 为 null 时一个时长标签都不打"是抓取那一侧的事
+                      （`deriveTags`）；界面这一侧只管画它拿到的。
+                    */}
+                    {video.tags.length === 0 ? null : (
+                      <ul className="tracked__tags">
+                        {video.tags.map((tag) => (
+                          <li className="tracked__tag" key={tag}>
+                            {tagLabel(tag, t)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <h3 className="tracked__cardtitle">{video.title}</h3>
+
+                  <dl className="tracked__meta">
+                    <dt className="tracked__metalabel">{t('tracked.publishedAt')}</dt>
+                    <dd className="tracked__published">
+                      {localDate(video.publishedAt, i18n.language)}
+                    </dd>
+
+                    <dt className="tracked__metalabel">{t('tracked.duration')}</dt>
+                    <dd className="tracked__duration">
+                      {video.durationSec === null ? DASH : formatTimecode(video.durationSec)}
+                    </dd>
+
+                    <dt className="tracked__metalabel">{t('tracked.views')}</dt>
+                    <dd className="tracked__views">
+                      {video.viewCount === null ? DASH : String(video.viewCount)}
+                    </dd>
+
+                    <dt className="tracked__metalabel">{t('tracked.comments')}</dt>
+                    <dd className="tracked__comments">
+                      {video.commentCount === null ? DASH : String(video.commentCount)}
+                    </dd>
+                  </dl>
+
+                  {/*
+                    去原站的链接。⚠️ URL 形状复用视频墙那一个（`watchUrl`，`VideoEmbed.tsx`）：
+                    三个平台的地址形状已经在那边跑过一轮，**不在这里抄第二份** ——
+                    抄错的表现是一条 404 的链接，而它不会让任何门禁变红。
+                  */}
+                  <a
+                    className="tracked__out"
+                    href={watchUrl(video.platform, video.externalId)}
+                    target="_blank"
+                    rel="noopener noreferrer nofollow"
+                  >
+                    {t('videos.openOriginal')}
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          {totalPages > 1 ? (
+            /*
+             * 分页控件沿用本仓既有那一套（`.pager` / `.pager__pos`，与视频墙逐字同形）。
+             * ⚠️ 那三句文案也复用 `videos.*`（"第 X / Y 页" / 上一页 / 下一页）：
+             *    同一页上两个分页器说的是同一件事，各有各的句子只会漂成两种说法。
+             * ⚠️★ 但 `aria-label` **必须**分开（`tracked.pagerLabel`）：读屏软件靠它
+             *    分得清这一页上的两个 `<nav>`，两边都叫 "pagination" 时用户听到的是
+             *    两个同名导航（而这一页上确实有两个）。
+             */
+            <nav className="pager" aria-label={t('tracked.pagerLabel')}>
+              <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+                ← {t('videos.prevPage')}
+              </button>
+              <span className="pager__pos">{t('videos.page', { page, total: totalPages })}</span>
+              <button type="button" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>
+                {t('videos.nextPage')} →
+              </button>
+            </nav>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/** 加博主那一栏的红字槽。⚠️ 对象而不是一个字符串：见下面 props 的说明。 */
+export interface TrackedCreatorFieldErrors {
+  input?: string;
+}
+
+/**
+ * 管理面板（**只有 `live.manage` 看得到**）。
+ *
+ * ⚠️★ `canManage` 是**页面**算出来传进来的（`useCan('live.manage')`），组件里
+ *    **不判断能力** —— 与 `VideoCard` 的 `canAuthor` 同一条：`permissions.ts` 是
+ *    "谁是编辑"的唯一定义，组件里再写一份就是第二份真相。组件只决定**显不显示**：
+ *    为 false 时整块返回 `null`。
+ *    ⚠️ 为什么还留这一层（而不是让页面干脆不渲染它）：这样"没有能力时整块不渲染"
+ *    是一件**可断言**的事（渲染自检用两个 props 对照：true 有 / false 没有）；
+ *    页面那一侧同时**不发请求**（免得非编辑每次打开 `/videos` 都吃一个 403）。
+ */
+export interface TrackedCreatorsPanelProps {
+  canManage: boolean;
+  loading: boolean;
+  /** 有动作在飞（加 / 停用 / 重新回填 / 删）—— 期间所有控件都禁用。 */
+  busy: boolean;
+  creators: TrackedCreator[];
+  /** 加博主输入框里的**原文**（受控 —— 见文件头"纯视图"那一段）。 */
+  input: string;
+  /**
+   * 字段级红字。⚠️ 对象而不是一个 `string`：它是页面↔视图的**契约形状**，
+   * 与 `SeedPickerPanel.fieldErrors` 同形；将来多一个字段是加一个槽，
+   * 而不是改所有调用点（今天只有一个槽 —— 面板只有一栏输入）。
+   */
+  fieldErrors: TrackedCreatorFieldErrors;
+  /**
+   * 面板顶部的那一条（失败的原因 / 刚做完那件事的结果）；`null` = 没有要说的。
+   *
+   * ⚠️ 计划里这一格写的是 `error: string | null`。**这是一处有意的偏差**，理由两条：
+   *   ① 有的动作在界面上**看不出效果** —— 「重新回填」改的是库里的 `backfill_done`，
+   *      表格里没有这一列 ⇒ 不报一句"已排队、下一轮生效"的话，那颗按钮是**静默**的
+   *      （用户会连点三次，然后以为它坏了）；
+   *   ② 分成 `error` + `ok` 两个槽就多出一条"两个都有时谁说"的规则（而那条规则
+   *      没有任何门禁看得见）。⇒ 合成一格，用 `Notice` 自己的 `kind` 表达。
+   */
+  notice: { kind: 'ok' | 'bad' | 'info'; text: string } | null;
+  /** 正在等二次确认的那一行；`null` = 没有。⚠️ 由**页面**持有（组件无状态）。 */
+  confirmingId: string | null;
+  onInput: (next: string) => void;
+  /** 提交"加一个博主"。⚠️ 它会真的去上游解析（见 `lib/api.ts` 的说明）。 */
+  onAdd: () => void;
+  /** 停用 / 启用。 */
+  onToggle: (id: string, enabled: boolean) => void;
+  /** 重新回填（把 `backfill_done` 置 0 ⇒ 下一轮从第一页重走）。 */
+  onRebackfill: (id: string) => void;
+  /** 请求二次确认（传 `null` = 取消）。 */
+  onAskDelete: (id: string | null) => void;
+  /** 确认删除。⚠️ 他的视频**跟着一起没**（外键级联），所以这一步不可逆。 */
+  onDelete: (id: string) => void;
+}
+
+/**
+ * 名单 + 加博主 + 每行的三个动作（spec §6.2 第二段）。
+ *
+ * ⚠️★ 为什么"上次同步 / 上次错在什么"必须摆在表格里（spec §6.3）：
+ *    bilibili 的 `-412` 是**概率性**的 ⇒ "今天没有新视频"与"今天一条都没抓到"
+ *    在日志里**长得一模一样**。不把这两个读数摆到人眼前，这个功能会**静默**坏掉：
+ *    访客那边只是"这一栏很久没更新"，而没有任何人会去看。
+ */
+export function TrackedCreatorsPanel({
+  canManage,
+  loading,
+  busy,
+  creators,
+  input,
+  fieldErrors,
+  notice,
+  confirmingId,
+  onInput,
+  onAdd,
+  onToggle,
+  onRebackfill,
+  onAskDelete,
+  onDelete,
+}: TrackedCreatorsPanelProps) {
+  const { t, i18n } = useTranslation();
+
+  // 没有能力 ⇒ 整块不存在（判据在页面那一层算，见上面 `canManage` 的说明）
+  if (!canManage) return null;
+
+  return (
+    <section className="tracked__manage" aria-labelledby="tracked-manage-title">
+      <h2 className="tracked__title" id="tracked-manage-title">
+        {t('tracked.manageTitle')}
+      </h2>
+      <p className="tracked__sub">{t('tracked.manageSub')}</p>
+
+      {notice === null ? null : <Notice kind={notice.kind}>{notice.text}</Notice>}
+
+      <form
+        className="tracked__add"
+        onSubmit={(event) => {
+          /*
+           * ⚠️ 必须拦住默认提交：不拦的话浏览器会整页跳转
+           *    （地址变成 `?input=…`），而我们所有的状态都在这一页上 ——
+           *    表现是"点完『添加』页面白了一下，那个博主也没加进去"。
+           */
+          event.preventDefault();
+          onAdd();
+        }}
+      >
+        <Field id="tracked-add" label={t('tracked.addLabel')} hint={t('tracked.addHint')}>
+          <div className="tracked__addrow">
+            <input
+              id="tracked-add"
+              className="mcsr-field__input"
+              value={input}
+              placeholder={t('tracked.addPlaceholder')}
+              disabled={busy}
+              onChange={(event) => onInput(event.target.value)}
+            />
+            <button type="submit" className="cta tracked__addbtn" disabled={busy}>
+              {busy ? t('tracked.addBusy') : t('tracked.addAction')}
+            </button>
+          </div>
+          {fieldErrors.input === undefined ? null : <p className="fielderr">{fieldErrors.input}</p>}
+        </Field>
+      </form>
+
+      {loading ? <p className="state">{t('common.loading')}</p> : null}
+
+      {!loading && creators.length === 0 ? (
+        <p className="tracked__empty">{t('tracked.manageEmpty')}</p>
+      ) : null}
+
+      {!loading && creators.length > 0 ? (
+        /*
+         * ⚠️ 外面套一层 `.tracked__tablescroll`（横向滚动兜底）：七列在窄屏上装不下，
+         *    而"顶出一条**页面级**的横向滚动条"是整页在动，比表格自己滚一次糟得多
+         *    （`.ranked__tablescroll` 为同一件事写过完整的一段）。
+         * ⚠️ 表格形状复用 `.admintable`（全站唯一的表格形状，账号管理页在用）：
+         *    在这里再写一遍那几行属性就是第二份会漂移的口径。
+         */
+        <div className="tracked__tablescroll">
+          <table className="admintable tracked__table">
+            <thead>
+              <tr>
+                <th>{t('tracked.colPlatform')}</th>
+                <th>{t('tracked.colName')}</th>
+                <th>{t('tracked.colState')}</th>
+                <th>{t('tracked.colSynced')}</th>
+                <th>{t('tracked.colError')}</th>
+                <th>{t('tracked.colVideos')}</th>
+                <th>{t('tracked.colActions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {creators.map((creator) => (
+                <tr
+                  className={`tracked__row${creator.enabled ? '' : ' tracked__row--off'}`}
+                  key={creator.id}
+                >
+                  <td>
+                    <span className="badge badge--kind">{t(PLATFORM_KEYS[creator.platform])}</span>
+                  </td>
+                  <td className="tracked__name">
+                    {/*
+                      ⚠️ `display_name` 是 NOT NULL，但**可能是空串**（迁移 020 那一列的
+                      `DEFAULT ''`）—— 空串在这里显示成 `—`：一个空白的名字格看起来像
+                      界面坏了，而 `—` 说的正是"这一格没有值"。
+                    */}
+                    <span className="tracked__displayname">{creator.displayName || DASH}</span>
+                    {creator.handle === '' ? null : (
+                      <span className="tracked__handle">{creator.handle}</span>
+                    )}
+                  </td>
+                  <td className="tracked__state">
+                    {creator.enabled ? t('tracked.stateOn') : t('tracked.stateOff')}
+                  </td>
+                  <td className="tracked__synced">
+                    {/*
+                      ⚠️ **秒**的时间戳，必须经 `toMillis`；从没同步过是 `null` ⇒ `—`
+                      （**不是** 1970 —— 那是这一整类 bug 最容易漏的一格：
+                      `new Date(null)` 恰好也是 1970，所以"忘了判 null"与"忘了乘 1000"
+                      在这一格上长得一样，而两者都要靠这一条断言拦住）。
+                    */}
+                    {localDateTime(creator.lastSyncedAt, i18n.language)}
+                  </td>
+                  <td className="tracked__err">
+                    {creator.lastError === null ? DASH : creator.lastError}
+                    {creator.consecutiveFailures > 0 ? (
+                      <span className="tracked__streak">
+                        {t('tracked.failStreak', { count: creator.consecutiveFailures })}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="tracked__total">{String(creator.videoCount)}</td>
+                  <td className="tracked__actions">
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      onClick={() => onToggle(creator.id, !creator.enabled)}
+                    >
+                      {creator.enabled ? t('tracked.disable') : t('tracked.enable')}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghostbtn"
+                      disabled={busy}
+                      title={t('tracked.rebackfillHint')}
+                      onClick={() => onRebackfill(creator.id)}
+                    >
+                      {t('tracked.rebackfill')}
+                    </button>
+                    {/*
+                      删除走**行内两步确认**（照 `VideoCard` 的先例，不用 `window.confirm`：
+                      原生弹窗与整站样式无关，而且会阻塞渲染）。
+                      ⚠️ 为什么删一个博主值得确认、而停用不值得：删掉之后他的视频靠外键
+                      **一起没了**（spec §4.2），重建只能靠重新添加 + 重新回填一整轮。
+                    */}
+                    {confirmingId === creator.id ? (
+                      <>
+                        <span className="tracked__confirm">{t('tracked.confirmDelete')}</span>
+                        <button
+                          type="button"
+                          className="dangerbtn"
+                          disabled={busy}
+                          onClick={() => onDelete(creator.id)}
+                        >
+                          {t('common.confirm')}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghostbtn"
+                          disabled={busy}
+                          onClick={() => onAskDelete(null)}
+                        >
+                          {t('common.cancel')}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="dangerbtn"
+                        disabled={busy}
+                        onClick={() => onAskDelete(creator.id)}
+                      >
+                        {t('tracked.delete')}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  );
+}

@@ -315,20 +315,35 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
   upstream_unavailable: '界面用的是这个栏目自己的词条（ranked.errUnavailable），不走通用映射',
   upstream_bad_response: '界面用的是这个栏目自己的词条（ranked.errBadResponse），不走通用映射',
   /*
-   * ---- 追踪的博主（T5）----
+   * ---- 追踪的博主（T5 加码，T7 落地）----
    *
-   * ⚠️ 这一条与上面三条的处境**不同**，别照着抄：上面那些是"文案在别处"，
-   *    而这一条是**界面还没有**（T7 才做 `/videos` 页上那块「追踪的博主」分区）。
-   *    登记在这里是**有意的妥协**（Ranked Seeds 那四条当初也是这么登记的，
-   *    页面落地时才移走）：不放它的话，这个 503 落进 `apiErrorText` 的兜底，
-   *    管理员看到的是「出错了，请稍后再试。」—— 而重试一万次也不会有用，
-   *    要做的是去服务器上配 key。
-   * ⇒ **T7 落地时必须把它从这里移走**，在那一栏自己的映射里给一句
-   *   「这个平台还没配置」之类的话（它比通用文案准确：说的是**我们**没配）。
-   *   ⚠️ 这也是它唯一的代价：在那之前，界面上的那句话是不准确的。
+   * ⚠️ 这一行**改过一次含义**，两次都要看：
+   *   · T5 写的是「界面还没有（T7 的 TrackedVideos 分区）—— T7 落地时必须移到
+   *     那一栏自己的映射里」。那时它是对的：那段时间里这个 503 落进
+   *     `apiErrorText` 的兜底，管理员看到的是「出错了，请稍后再试。」，
+   *     而重试一万次也不会有用（要做的是去服务器上配 key）。
+   *   · **T7 落地了**（2026-09-16）：`/videos` 页上那一块管理面板有了自己的映射
+   *     （`apps/web/src/lib/trackedErrors.ts` 的 `TRACKED_ERRORS`），里面有一句
+   *     「这个平台在我们这边还没有配抓取凭据 —— 不是你的链接的问题，重贴也不会成功。」
+   *     ⇒ 它**不再走通用兜底**，这一行的理由因此跟着改了（下面这句）。
+   *
+   * ⚠️★ 为什么不是把这一行**删掉**（"移走"的字面读法），而是改写成"文案在别处"：
+   *    上面那个扫描器（`clientHandledCodes`）只认两个文件里的 `case '…':`
+   *    （`submissionErrors.ts` 整个文件 + `auth.tsx` 的 `apiErrorText`），
+   *    而这一栏的文案住在**按 reason 分派**的那个模块里 —— 删掉这一行会让
+   *    「每个 code 都有人处理」那条断言**当场变红**（`platform_not_configured`
+   *    会变成 orphan），而不是变成"更干净"。
+   *    ⚠️ 把 `trackedErrors.ts` 加进那个扫描器也不行：它是按 `code` + `reason`
+   *    两级分派的，扫描器会把它里面的 `case 'creator_not_found':` 当成**错误码**
+   *    抓走，于是「前端映射里的码都是真实存在的」那条断言反过来红
+   *    （那些是 `reason`，不是 `KNOWN_CODES` 里的码）。
+   *    ⇒ 与 `ranked_busy` / `upstream_unavailable` / `upstream_bad_response` 三行
+   *    **完全同一个处置**（那三行也是"文案在这个栏目自己的词条里，不走通用映射"）。
+   *    ⚠️ 这一栏的文案**存在性**因此由渲染自检逐格守着
+   *    （`apps/web/scripts/videorender.tsx` 第 ⑧ 组：八格 × 两种语言）。
    */
   platform_not_configured:
-    '界面还没有（T7 的 TrackedVideos 分区）—— T7 落地时必须移到那一栏自己的映射里',
+    '界面用的是这一栏自己的词条（tracked.errPlatformNotConfigured，见 apps/web/src/lib/trackedErrors.ts），不走通用映射',
 };
 
 function walk(dir: string, out: string[] = []): string[] {

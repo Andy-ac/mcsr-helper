@@ -7864,6 +7864,412 @@ html[data-theme='light'] {
   background: transparent;
 }
 
+/* ==================================================================
+   追踪的博主 · `/videos` 页上的那一块（2026-09-16，`.tracked*`）
+
+   ★ 这一块服务的是 `components/TrackedVideos.tsx` 里那两个**只吃 props 的纯视图**：
+     `TrackedVideosSection`（公开列表）+ `TrackedCreatorsPanel`（只有 live.manage 看得到）。
+     页面（`routes/Videos.tsx`）自己**没有界面** —— 它取数、分页、判断能力，
+     界面全在这里的类名上（理由写在那个组件文件头：`renderToStaticMarkup` 不跑 effect，
+     界面住在页面里就断言不到）。
+
+   ⚠️★ 类名 = 组件与样式之间的**接口**：本仓样式是全局的、没有 CSS Modules 兜着，而
+     "渲染了一个 `styles.css` 里没有的类名"**全仓没有任何门禁**发现得了
+     （`docs/pending.md §5.70`；`ShareForm` 里那个 `.mcsr-input` 笔误就是这么活过三轮评审的）。
+     ⇒ 本页的渲染自检（`apps/web/scripts/videorender.tsx` 的第 ⑩ 组）把产物里**每一个**
+     `tracked*` 类名收起来逐条断言这里有规则，而且**匹配前先剥掉 CSS 注释**
+     （`§5.82` 的教训：注释里写过的类名会让"删掉真规则"照样绿 —— 本文件里就到处是
+     在散文里提类名的注释，这一块自己也不例外）。
+
+   ⚠️ 为什么整块写在文件**末尾**：本仓的约定是每个任务只往末尾追加自己那一块，
+     谁都不去动别人的块（并行编辑同一个文件时，"动到别人的块"正是两边改动互相覆盖的方式）。
+     级联上也没有差别：这些选择器与上面没有任何一条交集（`.tracked` 不是别的类的后缀）。
+
+   ⚠️ 字号只用现成的那几档（像素字体只在 12 / 18 / 24 / 30 清晰，见文件头）：
+     区域标题 `--fs-title-item`（18px）、其余一律 `--fs-px-sm`（12px）或 13px 的正文。
+     这里没有一处新造字号。
+   ================================================================== */
+
+/* 公开分区。⚠️ `margin-top: 36px`：它紧跟在上面那面视频墙（含它的分页器）下面，
+   而两块是**两件事** —— 贴太近会读成"墙上的一部分"。 */
+.tracked {
+  margin-top: 36px;
+}
+
+/* 区域标题（`h2`）。⚠️ 18px 而不是页标题那一档 30px：这一页的 30px 是 `videos.title`，
+   两块 30px 的标题会分不清哪个是这一页的名字（`.ranked__title` 那条注释写着同一件事）。 */
+.tracked__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  margin: 0 0 4px;
+}
+
+/* 一句话说明（"服务器定时抓、名单由编辑维护"）。13px 走系统字体：它是**要读进去的正文**，
+   像素字体读长句很累（与 `.shareIntro__lead` 同一分工）。 */
+.tracked__sub {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0 0 16px;
+  max-width: 70ch;
+}
+
+/*
+ * ★ 空态（公开分区与面板共用一条规则）。
+ * ⚠️ 它必须像**一句陈述**，不能像出错：一条视频都没抓到是这一栏的**常态**
+ *   （刚加完博主、或者上一轮抓取失败）。所以不用红石色、不用 `notice--bad`，
+ *   只用一圈**虚线**说"这一格现在是空的" —— 与 `.contrib__empty` / `.share__empty`
+ *   是同一种语义（全站的空态只有这一种外形）。
+ */
+.tracked__empty {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  max-width: 70ch;
+}
+
+/* 空态的第一句（页面给的那一句）。⚠️ 用像素字体 + 正色：它是这一格的**主句**，
+   下面那句说明比它弱一档。 */
+.tracked__emptytitle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0;
+}
+
+/* 空态的第二句（"抓取每 10 分钟跑一轮"）。它比主句弱一档：**解释**，不是结论。 */
+.tracked__emptyhint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+  margin: 6px 0 0;
+}
+
+/* 卡片栅格：窄屏一列、宽屏自动多列（与 `.cards` / `.shareIntro__cards` 同一套做法）。 */
+.tracked__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+/* 一张卡片：封面在上、正文在下（竖排 flex）。
+   ⚠️ `overflow: hidden`：封面的两个上角要跟着卡片的圆角走，不然图片会顶出圆角。
+   ⚠️ 卡片本身**不是**链接（只有标题下面那条"去原站看"是）：整张卡可点会让
+      内部的链接变成嵌套链接，而"看起来能点、其实点不动"比少一个入口更坏。 */
+.tracked__card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: var(--sh-1);
+}
+
+/*
+ * ★ 封面框：**固定 16:9**。
+ * ⚠️★ 比例必须写死：图片是**异步**到达的，不写比例时每一张图到达都会把下面的
+ *   标题顶下去（一屏几十张 = 几十次重排，用户正在读的东西会跳走）。
+ *   同时它也是"没有封面"那一档的占位框（虚线说明这一格是空的）。
+ */
+.tracked__thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* 拿不到封面（上游没给）—— 仍然是同一个 16:9 的盒子，只把实线换成虚线：
+   ⚠️ 不写这一条的话"没有封面"与"封面还没加载出来"长得一模一样。 */
+.tracked__thumb--none {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--line-strong);
+  background: var(--surface);
+}
+
+/* 封面图：填满那个 16:9 的盒子，多余的裁掉（`object-fit: cover`）。
+   ⚠️ `display: block`：行内元素底下会多出几像素的基线空隙，那会让卡片height 抖动。 */
+.tracked__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 卡片正文：标题 / 四个读数 / 原站链接。竖排 + `gap`，与 `.ranked__panel` 同一条理由
+   （这一块里东西的件数会变：标签可能没有）。 */
+.tracked__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 14px;
+}
+
+/* 平台徽章 + 三个标签摆成一行，窄屏换行。 */
+.tracked__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+/* 标签排。⚠️ 它**只在有标签时**才渲染（组件那一侧决定）—— 一个空的 `<ul>`
+   会占一行高度，看起来像"这里本来该有东西、丢了"。 */
+.tracked__tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+/* 一个标签。形状借 `.tagchip` 那一套的胶囊外观，但**不做可点**的样子：
+   这一版的标签只是读数（筛选是 spec §7 的非目标）。 */
+.tracked__tag {
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  color: var(--fg-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+}
+
+/*
+ * 视频标题（卡片的主字段）：18px + 700，与 `.rescard__title` 同一档。
+ * ⚠️★ 最多三行、超出省略：标题是**上游给的**，可以是几百个字符 —— 不夹住的话
+ *   一张卡会被它撑到半屏高，而栅格里其他卡片的高度是照它排的。
+ *   ⚠️ 夹住的是**显示**，不是数据：产物里的文字仍然是完整的标题
+ *   （渲染自检断言的就是产物里的那一段）。
+ */
+.tracked__cardtitle {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-title-item);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 四个读数：`<dt>` 标签在左、`<dd>` 值在右（两列网格 → 四行自动成对）。
+   ⚠️ 用 `<dl>` 而不是八个 `<div>`：这一块讲的正是"哪一格是哪个读数"
+   （`.ranked__seeds` 那条注释写着同一条）。 */
+.tracked__meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  margin: 0;
+}
+
+/* 读数的名字（发布时间 / 时长 / 播放量 / 评论数）。 */
+.tracked__metalabel {
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
+/*
+ * 四个读数的**值**，共用一条规则。
+ * ⚠️★ 四个类名逐一点名（而不是只写 `.tracked__meta dd`）：本仓的类名↔CSS 守卫是
+ *   **按整个类名**去查规则的 —— 只写后代选择器的话，这四个类名会被判成
+ *   "渲染了出来、却没有任何规则点名它"（而那正是 §5.70 那个缺陷类）。
+ * ⚠️ 等宽 + `tabular-nums`：四行数字上下对得齐（差一位不会看起来一样长）。
+ * ⚠️ 拿不到值的那一格显示 `—`（组件那一侧决定），这里不管。
+ */
+.tracked__published,
+.tracked__duration,
+.tracked__views,
+.tracked__comments {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 「去原站看」。⚠️ `align-self: flex-start`：卡片正文是竖排 flex，不写的话它会被
+   拉成整行宽 —— 一条横贯卡片的链接看起来像一条分割线。 */
+.tracked__out {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* ---- 管理面板（只有 live.manage 看得到）---- */
+
+/*
+ * 面板与上面的公开分区**刻意分开**：一条上边框 + 更多上边距。
+ * ⚠️ 这一条不是装饰：面板里那几颗按钮（停用 / 删除）动的是**名单**，
+ *   而上面那一块是所有人都在看的列表 —— 两块贴在一起时，"删除"看起来像在删
+ *   某一个视频。`liveManage` 在 `/live` 页上是同一件事（那边是另一个页面，不需要这条）。
+ */
+.tracked__manage {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+/* 加博主：一栏输入 + 一颗按钮。⚠️ 宽度压到 640px：一个占满整行宽度的输入框
+   在宽屏上会让人以为要贴很长的东西进去。 */
+.tracked__add {
+  margin: 0 0 18px;
+  max-width: 640px;
+}
+
+/* 输入框与按钮同一行，窄屏换行。 */
+.tracked__addrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 输入框吃掉剩下的宽度（按钮的宽度由文字决定）。
+   ⚠️ `min-width: 0` + `flex-basis: 240px`：一条很长的频道链接不能在窄屏上
+   把整行顶出一条横向滚动条。 */
+.tracked__addrow .mcsr-field__input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* 「添加」那颗按钮：**不被拉长**（它是这一行的动作，不是这一行的内容）。
+   ⚠️ `align-self: center`：输入框比按钮高，不写的话按钮会贴着上沿。 */
+.tracked__addbtn {
+  align-self: center;
+}
+
+/*
+ * 七列在窄屏上装不下 ⇒ 横向滚动兜底放在**这一层**，不放在表格自己身上
+ * （`overflow-x` 与 `width: 100%` 落在同一个元素上时，浏览器会把"表格比容器宽"
+ * 变成"表格被压扁"，要绕过去得写 `min-width: max-content` —— `.ranked__tablescroll`
+ * 为同一件事写过完整的一段）。
+ * ⚠️ 兜底是"表格自己滚一次"，而不是"整页被顶出一条横向滚动条"。
+ */
+.tracked__tablescroll {
+  overflow-x: auto;
+}
+
+/* 表格本体：形状走 `.admintable`（全站唯一的表格形状），这里只补这一块需要的两条 ——
+   ⚠️ `min-width`：表格真正的大小是它的**最小内容宽度**，不给下界时七列会被压成
+   一字一行（那比横向滚一次难读得多）。 */
+.tracked__table {
+  min-width: 720px;
+}
+
+/* 一行。⚠️ 只补一条垂直对齐：`.admintable td` 是 `top`，而这一行的动作列里有按钮，
+   顶端对齐会让按钮悬在行的上沿。 */
+.tracked__row td {
+  vertical-align: middle;
+}
+
+/* 停用的博主（`enabled = 0`）：不再参与回填与增量，但**行与视频都留着**。
+   ⚠️ 整行变暗是必要的：不标出来的话，"这个人的视频为什么不更新了"要读到
+   "状态"那一列才发现，而那一列在最右边。 */
+.tracked__row--off {
+  color: var(--fg-faint);
+}
+
+/* 名字那一格：显示名在上、handle 在下（两行，不换行成两列）。 */
+.tracked__name {
+  min-width: 180px;
+}
+
+/* 显示名：像素字体 + 700（与 `.contrib__name` 同一档）。⚠️ 允许任意位置断行：
+   上游昵称可以很长，而它不能把"状态"那一列挤出去。 */
+.tracked__displayname {
+  display: block;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* 可读标识（`@handle` / mid）：等宽、最弱一档 —— 它是**排错用的**读数，
+   不是给人认人的名字（那是显示名）。`contrib__id` 是同一条做法。 */
+.tracked__handle {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow-wrap: anywhere;
+}
+
+/* 状态列：一句话，不换行（"启用中" / "已停用" 中间断开很难读）。 */
+.tracked__state {
+  white-space: nowrap;
+}
+
+/* 「上次同步」：一个时刻，等宽 + 不换行（与上面四个读数同一条理由）。 */
+.tracked__synced {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 「上次错误」：上游给的**原文**（可能是一整句 message）⇒ 允许任意位置断行，
+   并给它一个宽度上限，否则一行会把整张表顶宽。
+   ⚠️ 这一格是 spec §6.3 那套可观测性在界面上的那一半（见组件的说明）。 */
+.tracked__err {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 「连续失败 N 次」：与上一句同一格里，但**必须看得见**（红石色）。
+   它可以与"上次错误"合并成一句话，代价是读的人要自己从一段文字里挑出那个数 ——
+   而这个数正是"要不要放弃这个频道"的判据（spec §4.1）。 */
+.tracked__streak {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  color: var(--redstone);
+}
+
+/* 「条数」：`tabular-nums` 让这一列的数字上下对得齐。 */
+.tracked__total {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 动作列：三颗按钮（窄屏上换行）。
+   ⚠️ flex + `gap`，与全站那几处"一行按钮"同一形状。 */
+.tracked__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+/* 删除的二次确认那一句话（"删掉他，他的视频也一起没"）。
+   ⚠️ 红石色：它与那颗"确定删除"说的是同一件事（这一步不可逆）。
+   ⚠️ 宽度上限：它在动作列里，不夹住的话那句中文会把表格顶宽一整截。 */
+.tracked__confirm {
+  max-width: 200px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--redstone);
+}
+
+
 
 
 

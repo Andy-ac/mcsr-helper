@@ -45,9 +45,14 @@ export function VideoEmbed({ video }: { video: Video }) {
  *    错了**不报错** —— 页面里就是一个白框，看起来像网络问题。那种东西必须被
  *    单元测试盖住，所以它住在 shared/videos.ts。
  *    而这条只是一个普通的跳转链接：错了会 404，用户立刻看得见，不会静默失效。
- *    它也只出现在这一个文件里（不存在第二份要同步的副本）。
+ *
+ * ★ 2026-09-16（T7）：它**导出**了，因为「追踪的博主」那一栏的卡片也要"去原站看"
+ *   （`components/TrackedVideos.tsx`）。原来这里写的是"它只出现在这一个文件里
+ *   （不存在第二份要同步的副本）"—— 那份保证现在由**共用**来维持，而不是由"只有
+ *   一个调用点"维持：抄第二份的话，三条地址形状就有了两个会各自漂开的定义，
+ *   而漂开的表现是某一种来源的链接 404，且没有任何门禁看得见。
  */
-function watchUrl(platform: Video['platform'], videoId: string): string {
+export function watchUrl(platform: Video['platform'], videoId: string): string {
   const id = encodeURIComponent(videoId);
   switch (platform) {
     case 'bilibili':

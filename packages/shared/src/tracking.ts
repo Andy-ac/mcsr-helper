@@ -11,6 +11,12 @@
  *    的文件头写了这条惯例："共享模块的行为一律在这里被钉住"）。
  */
 import { z } from 'zod';
+/*
+ * ⚠️ `DEFAULT_PAGE_SIZE` 从 `resources.ts` 拿，**不在这里再写一个 24**：下面那个
+ *    `TrackedVideoQuerySchema` 的默认值必须与界面算总页数用的是**同一个数**
+ *    （`routes/tracking.ts` 当初也是从这一处 import 的，搬进 shared 时这一点没变）。
+ */
+import { DEFAULT_PAGE_SIZE } from './resources';
 
 /**
  * 能追踪的平台。取值与顺序都与迁移 020 那两条 `CHECK (platform IN (...))` 一致。
@@ -100,6 +106,38 @@ export interface TrackedVideo {
   /** 只有管理面板要，公开列表不填。 */
   creatorName?: string;
 }
+
+/**
+ * 公开列表（`GET /api/tracking/videos`）的查询参数 —— **前后端共用同一份**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 为什么它在 shared 而不是留在 `routes/tracking.ts` 里（T7 落地时搬过来的）
+ * ---------------------------------------------------------------------------
+ * T5 把它写在路由文件里，并在那里留了一句话：「schema 留在路由层（不放进
+ * `shared/tracking.ts`）：`z.coerce` 处理的是"查询串里一切都是字符串"这件事，
+ * 那是 HTTP 的性质，不是数据的性质」，还补了一句「T7 落地时如果两处真的一样，
+ * 这里该跟着搬」。
+ *
+ * ⇒ T7 落地时**确实一样了**：界面这一侧（`apps/web/src/lib/api.ts` 的
+ *   `fetchTrackedVideos`）要按**同一套规则**拼 `?page=&pageSize=`，而它同时需要
+ *   那两个数字（下界 1、上界 100、默认 24）来算总页数。留两处的话，改一处就等于
+ *   让界面与服务端**各说各的**，而症状是最难查的那种：翻到第 5 页拿到 400
+ *   （或更糟 —— 静默回落到第 1 页，看起来像"翻页按钮坏了"）。
+ *   本仓对这件事的先例就是 `resources.ts` 的 `ResourceQuerySchema`：它住在 shared、
+ *   路由 import 它、前端 import 它的类型与两个常量（`DEFAULT_PAGE_SIZE`）。
+ *   ⚠️ 代价（照实写）：`z.coerce` 的"HTTP 性质"现在跟着 schema 一起住进了 shared ——
+ *   于是这个文件里混进了一条**只对 HTTP 有意义**的规则。接受它的理由是上面那条：
+ *   一份会漂移的规则比一次分层上的不纯更贵。
+ *
+ * ⚠️ 参数名是 `page` / `pageSize`，**不是** `limit` / `offset`：数据层那两个参数是
+ *    SQL 的形状，而这里是 HTTP 的形状。本仓的公开列表（资源库、视频墙）一律是
+ *    page/pageSize，界面共用一套分页控件 —— 换一套名字等于让前端写第二条分支。
+ */
+export const TrackedVideoQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(DEFAULT_PAGE_SIZE),
+});
+export type TrackedVideoQuery = z.infer<typeof TrackedVideoQuerySchema>;
 
 /**
  * 名单上的一位博主（**管理面板**的形状，含采集状态）。

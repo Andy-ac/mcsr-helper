@@ -79,6 +79,29 @@ export default defineConfig({
        */
       '@mcsr/shared/seedPicker': resolvePath('../../packages/shared/src/seedPicker.ts'),
       '@mcsr/shared/seed': resolvePath('../../packages/shared/src/seed.ts'),
+      /*
+       * ⚠️★ 这一条是「追踪的博主」（video tracking，T7，2026-09-16）加的 ——
+       *    上面那三段注释说的坑**第四次**发生了，而这一次它**真的炸了构建**：
+       *
+       *      [UNLOADABLE_DEPENDENCY] Could not load ../../packages/shared/src/index.ts/tracking
+       *        src/components/TrackedVideos.tsx:1:26
+       *
+       *    `packages/shared/package.json` 的 `exports` 里 `./tracking` 是 T5 建的，
+       *    而这份 alias 表当时没跟上（那一段的"新增子路径导出时要记得在这里补一条"
+       *    就是为这件事写的）。⇒ `toMillis` 那个**值**导入被裸包名吃掉。
+       *
+       * ⚠️★ 为什么两个门禁**全绿**而页面在浏览器里根本加载不出来：
+       *    · `pnpm -w check` 的 typecheck 走 `exports`（moduleResolution: bundler）✅；
+       *    · 本页的渲染自检（`scripts/videorender.tsx`）由 **tsx** 直接跑 TS，
+       *      同样走 `exports`、**根本不经过 Vite** ✅；
+       *    · `vite build` 先过 alias 表（前缀替换）⇒ 只有它看得见这一条 ❌。
+       *    ⇒ 发现路径只有一条：**真的跑一次 `pnpm -F @mcsr/web build`**
+       *      （T7 就是这么发现的，`.cache` 里没有别的探针能替它）。
+       *
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       */
+      '@mcsr/shared/tracking': resolvePath('../../packages/shared/src/tracking.ts'),
       '@mcsr/shared/i18n': resolvePath('../../packages/shared/src/i18n/index.ts'),
       '@mcsr/shared/resources': resolvePath('../../packages/shared/src/resources.ts'),
       '@mcsr/shared/auth': resolvePath('../../packages/shared/src/auth.ts'),

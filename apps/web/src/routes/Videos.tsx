@@ -1,16 +1,30 @@
 import { VIDEO_PLATFORMS, type VideoPlatform } from '@mcsr/shared';
 import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
+import type { TrackedCreator } from '@mcsr/shared/tracking';
 import type { Video } from '@mcsr/shared/videos';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useSearchParams } from 'react-router';
 import { em } from '@/components/Emphasis';
 import { Notice } from '@/components/Form';
+import type { TrackedCreatorFieldErrors } from '@/components/TrackedVideos';
+import { TrackedCreatorsPanel, TrackedVideosSection } from '@/components/TrackedVideos';
 import { VideoCard } from '@/components/VideoCard';
 import { VideoForm } from '@/components/VideoForm';
-import { fetchMyVideos, fetchVideos, type VideoQuery } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
+import {
+  addTrackedCreator,
+  deleteTrackedCreator,
+  fetchMyVideos,
+  fetchTrackedCreators,
+  fetchTrackedVideos,
+  fetchVideos,
+  type TrackedVideoListResponse,
+  updateTrackedCreator,
+  type VideoQuery,
+} from '@/lib/api';
+import { useApiErrorText, useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
+import { describeTrackedError } from '@/lib/trackedErrors';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -133,6 +147,146 @@ export function Videos() {
       canModerate,
     ],
   );
+
+  // ---------------------------------------------------------------------------
+  // 追踪的博主（T7）—— 这一页上**独立的一栏**，与上面那面墙没有关系（spec §8.1）
+  // ---------------------------------------------------------------------------
+  /*
+   * 它有自己的页码、自己的刷新键、自己的取数 —— 上面那三样一个都不共用。
+   * ⚠️ 页面这一层**只做三件事**：取数、判断能力、把动作的结果翻译成一句人话；
+   *    界面全在 `components/TrackedVideos.tsx` 的两个纯视图里（理由见那个文件头：
+   *    `renderToStaticMarkup` 不跑 effect，界面住在这里就断言不到）。
+   */
+  const canManageTracked = useCan('live.manage');
+  const errorText = useApiErrorText();
+
+  /*
+   * 追踪那一栏的页码住在 URL 里（`?tpage=`），与上面那面墙**同一个理由**：
+   * 刷新不丢、能分享、后退键符合直觉。它**单独一个参数**，不是复用 `page` ——
+   * 两个列表各自翻页，共用一个页码的话翻上面那面墙会顺手把这一栏也翻走。
+   */
+  const trackedPage = Number(params.get('tpage') ?? '1') || 1;
+
+  const [trackedRefreshKey, setTrackedRefreshKey] = useState(0);
+  const [creatorsRefreshKey, setCreatorsRefreshKey] = useState(0);
+  const [addInput, setAddInput] = useState('');
+  const [panelBusy, setPanelBusy] = useState(false);
+  const [panelNotice, setPanelNotice] = useState<{
+    kind: 'ok' | 'bad' | 'info';
+    text: string;
+  } | null>(null);
+  const [panelFieldErrors, setPanelFieldErrors] = useState<TrackedCreatorFieldErrors>({});
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  const trackedState = useAsync<TrackedVideoListResponse>(
+    (signal) => fetchTrackedVideos(trackedPage, DEFAULT_PAGE_SIZE, signal),
+    [trackedPage, trackedRefreshKey],
+  );
+
+  /*
+   * 名单**只在有 live.manage 时才请求**：没有能力的人请求它只会拿到 403，
+   * 而 403 在页面上没有任何位置可以显示（那块面板对他根本不渲染）。
+   * ⚠️ 组件那一侧还有一道 `canManage`（整块不渲染）—— 两道都要有：
+   *    一道防"白白的 403 请求"，一道防"没有能力却画出了管理界面"。
+   */
+  const creatorsState = useAsync<{ items: TrackedCreator[] }>(
+    async (signal) => (canManageTracked ? await fetchTrackedCreators(signal) : { items: [] }),
+    [canManageTracked, creatorsRefreshKey],
+  );
+
+  /**
+   * 追踪那一栏的翻页。
+   *
+   * ⚠️★ 它**不能**走上面那个 `setParam`：那个函数为了"换筛选条件要回第一页"
+   *    会在 `key !== 'page'` 时顺手把 `page` 删掉 —— 拿它翻这一栏，会把上面那面墙
+   *    **悄悄弹回第 1 页**。两栏各自独立分页，而这一点只在两栏都被翻过时才看得出来
+   *    （所以它值得一条注释，而不是"看起来重复了一个函数"）。
+   */
+  function setTrackedPage(next: number) {
+    setParams((prev) => {
+      const p = new URLSearchParams(prev);
+      if (next > 1) p.set('tpage', String(next));
+      else p.delete('tpage');
+      return p;
+    });
+  }
+
+  /**
+   * 管理面板上那四个动作的**共同外壳**：忙碌标记、清掉上一次的结果、把失败翻成人话。
+   *
+   * ⚠️ 失败**必须**经 `describeTrackedError`（`lib/trackedErrors.ts`）：这一栏有
+   *    两种"通用兜底会说错方向"的失败 —— `platform_not_configured`（我们没配凭据，
+   *    重贴没用）与 `creator_not_found`（那条链接指向的人不存在，要改链接）。
+   *    它们要的话不同（一段面板提示 vs 一格输入框红字），所以那一个函数吐的是
+   *    `{ message, input }` 两格。
+   */
+  async function runPanelAction(action: () => Promise<string>): Promise<void> {
+    setPanelBusy(true);
+    setPanelNotice(null);
+    setPanelFieldErrors({});
+    try {
+      // 成功那句话由每个动作自己给（"已排队重新回填，下一轮生效"之类）——
+      // 它们说的是**下一轮会发生什么**，而那是这个外壳不知道的。
+      setPanelNotice({ kind: 'ok', text: await action() });
+    } catch (error) {
+      const described = describeTrackedError(error, t, errorText);
+      if (described.message !== null) setPanelNotice({ kind: 'bad', text: described.message });
+      if (described.input !== null) setPanelFieldErrors({ input: described.input });
+    } finally {
+      setPanelBusy(false);
+    }
+  }
+
+  async function handleAddCreator(): Promise<void> {
+    const value = addInput.trim();
+    /*
+     * 空输入在**本地**就拦下（与 `TrackedCreatorInputSchema` 的 `min(1)` 同一个判据）：
+     * 发出去只会拿一个必然 400，而那句话是服务端写的字段级说明，
+     * 用户看到的是"这个字段不合法"，不是"你要贴一条链接"。
+     */
+    if (value === '') {
+      setPanelFieldErrors({ input: t('tracked.errInputRequired') });
+      return;
+    }
+    await runPanelAction(async () => {
+      await addTrackedCreator({ input: value });
+      // 成功才清空输入框：失败时把用户贴的那条留在框里，否则他得再找一遍那条链接
+      //（`SeedPicker` 那句"存原文"是同一条纪律）。
+      setAddInput('');
+      setCreatorsRefreshKey((k) => k + 1);
+      return t('tracked.okAdded');
+    });
+  }
+
+  async function handleToggleCreator(id: string, enabled: boolean): Promise<void> {
+    await runPanelAction(async () => {
+      await updateTrackedCreator(id, { enabled });
+      setCreatorsRefreshKey((k) => k + 1);
+      return enabled ? t('tracked.okEnabled') : t('tracked.okDisabled');
+    });
+  }
+
+  async function handleRebackfillCreator(id: string): Promise<void> {
+    await runPanelAction(async () => {
+      await updateTrackedCreator(id, { reBackfill: true });
+      setCreatorsRefreshKey((k) => k + 1);
+      return t('tracked.okRebackfill');
+    });
+  }
+
+  async function handleDeleteCreator(id: string): Promise<void> {
+    // 先关掉确认态：那一行马上就要消失了，留着一个指向不存在那一行的确认态
+    // 会让下一次点"删除"看起来毫无反应。
+    setConfirmingId(null);
+    await runPanelAction(async () => {
+      await deleteTrackedCreator(id);
+      // ⚠️ 两个刷新键都要动：删博主会**级联删掉他的视频**（spec §4.2），
+      //    所以上面那一栏的列表也变了 —— 只刷名单的话，那些视频还挂在公开列表上。
+      setCreatorsRefreshKey((k) => k + 1);
+      setTrackedRefreshKey((k) => k + 1);
+      return t('tracked.okDeleted');
+    });
+  }
 
   const hasFilters = Boolean(platform || authorId);
   // 作者名从结果里取：接口收的是 authorId（UUID），而列表里的每一条都带着作者名。
@@ -408,6 +562,49 @@ export function Videos() {
           ) : null}
         </>
       )}
+
+      {/*
+        ★ 「追踪的博主」—— spec §6.2 的两块，**在现有的 `/videos` 页里**（用户裁决 R1）。
+        ⚠️★ 它们渲染在上面那个三元表达式**之外**，因为这一栏与那个视图切换无关：
+           `view=mine` 讲的是"我贴的视频"，而追踪的博主是另一个来源（spec §8.1 的两张表）——
+           把它塞进「我贴的」那个分支里，表现是"切到我的分享，追踪那一栏就没了"。
+        ⚠️ R3：上面那一块（自贴视频）**一个字都没动**，这一整段是**追加**的。
+      */}
+      <TrackedVideosSection
+        items={trackedState.status === 'ok' ? trackedState.data.items : []}
+        total={trackedState.status === 'ok' ? trackedState.data.total : 0}
+        page={trackedPage}
+        pageSize={DEFAULT_PAGE_SIZE}
+        empty={t('tracked.empty')}
+        /*
+         * ⚠️ 三个状态**分开传**，一个都不许合并：把 loading / error 折进"items 是空的"
+         *    会让取数失败渲染成"还没有追踪到视频" —— 一句假话（`empty` 那一条的说明）。
+         */
+        loading={trackedState.status === 'loading'}
+        error={trackedState.status === 'error' ? trackedState.error : null}
+        onPage={setTrackedPage}
+      />
+
+      <TrackedCreatorsPanel
+        /*
+         * ⚠️ 能力判据在**页面**这一层算（`useCan`）：`permissions.ts` 是"谁是编辑"的
+         *    唯一定义，组件那一侧只决定显不显示。
+         */
+        canManage={canManageTracked}
+        loading={creatorsState.status === 'loading'}
+        busy={panelBusy}
+        creators={creatorsState.status === 'ok' ? creatorsState.data.items : []}
+        input={addInput}
+        fieldErrors={panelFieldErrors}
+        notice={panelNotice}
+        confirmingId={confirmingId}
+        onInput={setAddInput}
+        onAdd={() => void handleAddCreator()}
+        onToggle={(id, enabled) => void handleToggleCreator(id, enabled)}
+        onRebackfill={(id) => void handleRebackfillCreator(id)}
+        onAskDelete={setConfirmingId}
+        onDelete={(id) => void handleDeleteCreator(id)}
+      />
     </>
   );
 }

@@ -1779,6 +1779,176 @@ export const en: TranslationSchema = {
     mineHiddenNote: 'Hidden videos are only visible to you here; the wall does not show them.',
   },
   /**
+   * Tracked creators (video tracking, T7) — the block added to the `/videos` page.
+   *
+   * It is a **different thing** from the `videos:` section above, hence a separate
+   * namespace (the repo's rule: one section, one namespace — see `live` / `liveManage` /
+   * `shares` / `ranked`):
+   *   · `videos.*`  = videos people post themselves (`videos` table, hand-written title,
+   *     no metadata fetched);
+   *   · `tracked.*` = videos a scheduled job pulls for a list of creators
+   *     (`tracked_videos` table, everything is fetched).
+   * spec §8.1 says the two paths coexist; ruling R3 says the user-submitted path is
+   * not touched at all.
+   *
+   * ⚠️ Two claims in this section must stay **true**; check the code before editing:
+   *   1. "the list is maintained by content editors" — only `live.manage` can write
+   *      `tracked_creators` (spec §7);
+   *   2. the two tag numbers (60 s / 20 min) are spec §4.3's frozen criteria
+   *      (`short` ≤ 60s, `long` ≥ 1200s), executed by `deriveTags` on the fetch side.
+   *
+   * ⚠️ This section deliberately uses **no** `**emphasis**`: the eight `tracked.err*`
+   *    entries are dispatched through the `TRACKED_ERRORS` table in
+   *    `lib/trackedErrors.ts` (not literal `t('…')` call sites), so a marker would need
+   *    an entry in `services/api/src/i18n-keys.test.ts`'s `DYNAMIC_KEYS` allowlist.
+   *    One pair of asterisks is not worth an exemption, so the whole section stays plain
+   *    (the render self-check scans the products for a literal `**`).
+   */
+  tracked: {
+    // ---- Public section (everyone sees it) ----
+    title: 'Tracked creators',
+    /*
+     * ★ This sentence has to say **it is not the wall above**: two video blocks on one
+     *   page that are not explained read as duplicates (`live.relationToVideos` exists
+     *   for the same reason).
+     * ⚠️ It also says who maintains the list — a visitor who cannot find their own post
+     *   here otherwise assumes it was lost.
+     */
+    subtitle:
+      'A scheduled job pulls these creators’ videos, newest first. The list is maintained by content editors — it is not the same thing as the wall above, which is what people post themselves.',
+    count: '{{count}} tracked',
+    empty: 'No tracked videos yet',
+    /*
+     * ⚠️ The second sentence is not decoration: fetching runs on a **10-minute** timer,
+     *   so "creators on the list but not one video yet" is a normal state (just added,
+     *   or the last round failed). Without it, visitors think the block is broken and
+     *   editors re-paste the same link.
+     */
+    emptyHint:
+      'Nothing has been fetched for the creators on the list yet — fetching runs every 10 minutes.',
+    thumbAlt: 'Thumbnail of {{title}}',
+    publishedAt: 'Published',
+    duration: 'Length',
+    views: 'Views',
+    comments: 'Comments',
+    /*
+     * ⚠️★ The three pager strings ("Page X / Y", Previous, Next) are **reused from
+     *  `videos.*`** — two pagers on one page describe the same thing, and a second set of
+     *  sentences would only drift. The `aria-label` must differ, though: it is how a
+     *  screen reader tells this page's two `<nav>` elements apart.
+     */
+    pagerLabel: 'Tracked videos pagination',
+    tagLiveReplay: 'Live replay',
+    /* ⚠️ The 60 s / 20 min numbers are the same fact as `deriveTags` (see above). */
+    tagShort: 'Short (60 s or less)',
+    tagLong: 'Long (20 min or more)',
+
+    // ---- Manage panel (only `live.manage` sees it) ----
+    manageTitle: 'Maintain the tracked list',
+    /*
+     * ⚠️ This says **who can see it** (the repo does this in `liveManage.subtitle` too):
+     *    an editor who is not told otherwise assumes visitors see this table, including
+     *    the "last error" column.
+     */
+    manageSub:
+      'Only content editors see this block. Every 10 minutes the server pulls the videos of the creators on the list.',
+    manageEmpty: 'The list is empty — paste a creator link above.',
+    addLabel: 'Add a creator',
+    addPlaceholder: 'https://space.bilibili.com/703007996',
+    /*
+     * ⚠️ The hint must say the **server** resolves the link, and that a failure will be
+     *    spelled out: this field is not where you type an ID, and the answer for an
+     *    unrecognised link (`tracked.errUnresolvable`) has to match this sentence.
+     */
+    addHint:
+      'Paste a profile / channel page link, or an @handle. The server resolves the platform and the id — if it cannot, it says so explicitly.',
+    addAction: 'Add',
+    addBusy: 'Resolving…',
+    /* ⚠️ An empty box is stopped **locally** (the same criterion as
+       `TrackedCreatorInputSchema`'s `min(1)`): sending it only earns a guaranteed 400 whose
+       message is a server-side field note — it cannot say what to paste. */
+    errInputRequired: 'Need a link or an @handle.',
+    colPlatform: 'Platform',
+    colName: 'Name',
+    colState: 'State',
+    colSynced: 'Last synced',
+    colError: 'Last error',
+    colVideos: 'Videos',
+    colActions: 'Actions',
+    stateOn: 'Enabled',
+    stateOff: 'Disabled',
+    /*
+     * ⚠️ "N failures in a row" has to be visible (spec §6.3): bilibili's risk control is
+     *    **probabilistic**, so "no new videos today" and "nothing was fetched today" look
+     *    identical in the logs.
+     */
+    failStreak: '{{count}} failures in a row',
+    disable: 'Disable',
+    enable: 'Enable',
+    rebackfill: 'Re-backfill',
+    rebackfillHint: 'Fetch this creator’s entire history again (takes effect next round)',
+    /*
+     * ⚠️ Deleting must say **the videos go too**: the foreign-key cascade (spec §4.2) is
+     *    not obvious, and it makes this step irreversible (rebuilding it means re-adding
+     *    the creator and waiting out a full backfill).
+     */
+    confirmDelete: 'This deletes the creator and their videos. Continue?',
+    delete: 'Delete',
+
+    /*
+     * ---- What the panel says after an action ----
+     * ⚠️ Each one has to say **what happens in the next round**: nothing on this panel
+     *    takes effect immediately (fetching is a background job on a 10-minute timer).
+     * ⚠️★ `okRebackfill` especially cannot be dropped: re-backfilling writes
+     *    `backfill_done`, and the table has **no column for it** ⇒ without this sentence
+     *    the button is **silent** (people click it three times and conclude it is broken).
+     */
+    okAdded: 'Added — the next round pulls their videos (a round runs every 10 minutes).',
+    okDisabled: 'Disabled — the server stops fetching them; videos already fetched are kept.',
+    okEnabled: 'Enabled — the next round starts fetching them again.',
+    okRebackfill: 'Queued for another backfill — the next round fetches their whole history again.',
+    okDeleted: 'Deleted — their videos are gone too.',
+
+    /*
+     * ---- Failure sentences (keyed by `TRACKED_ERRORS` in `lib/trackedErrors.ts`) ----
+     *
+     * ⚠️★ These eight are **not** called with a literal `t('…')` at the render site; they
+     *   are dispatched through that **exported** table (the reason is in the table's own
+     *   comment: the render self-check asserts every cell). So
+     *   `services/api/src/i18n-keys.test.ts`'s literal scan cannot see them — their
+     *   existence is pinned cell by cell in `apps/web/scripts/videorender.tsx`,
+     *   in both languages.
+     *
+     * ⚠️★ Every sentence has to point at the **right** thing; that is the whole point of
+     *   this batch (handed over from T5):
+     *   · `platform_not_configured` is **our** missing credential, not the editor's bad link;
+     *   · `creator_not_found` means "that link points at somebody who does not exist"
+     *     (fix the link);
+     *   · `rate_limited` **must not promise a number of seconds** (see below).
+     */
+    errPlatformNotConfigured:
+      'This platform has no fetching credential on our side — it is not your link, and re-pasting it will not help.',
+    errCreatorNotFound: 'Upstream says there is no such person — check the link for a typo.',
+    errUnresolvable:
+      'This link does not look like a creator on any platform we know — paste a profile / channel page link, or an @handle.',
+    errDuplicate: 'That creator is already on the list (see the table below).',
+    /*
+     * ⚠️★ This sentence **has no number**, unlike the site-wide `auth.rateLimited`
+     *    ("try again in {{seconds}} seconds"): that 60 comes from `Retry-After`, and this
+     *    endpoint **does not send that header** (see the header of `routes/tracking.ts`:
+     *    bilibili's risk control is probabilistic, nobody knows when it lifts). Inventing
+     *    a number promises something we cannot deliver — the user waits it out, gets 429
+     *    again, and concludes the feature is broken.
+     */
+    errRateLimited:
+      'Upstream is throttling us — try again later. We cannot say how long, so we do not print a number.',
+    errUpstreamBad:
+      'That round with upstream did not work out (a failed handshake, or a reply we could not read) — try again later; if it keeps happening, somebody needs to look at our code.',
+    errForbidden:
+      'Your editing permission seems to have changed — reload the page, or sign in again.',
+    errNotFound: 'That row is gone (another editor may have just deleted it) — reload to see.',
+  },
+  /**
    * Ranked Seeds search page (M4).
    *
    * ⚠️ Two numbers in this section must stay **true**:

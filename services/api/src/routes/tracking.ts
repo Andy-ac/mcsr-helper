@@ -170,8 +170,11 @@
  *   ⚠️ 界面渲染这类秒值**必须**经 `toMillis()`（`@mcsr/shared` 的 `tracking.ts`）——
  *   那里是这两张表唯一被允许跨单位的地方。裸的 `new Date(row.createdAt)` 就是一条真缺陷。
  */
-import { TrackedCreatorInputSchema, type TrackPlatform } from '@mcsr/shared';
-import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
+import {
+  TrackedCreatorInputSchema,
+  TrackedVideoQuerySchema,
+  type TrackPlatform,
+} from '@mcsr/shared';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -241,21 +244,15 @@ function formatIssues(error: { issues: Array<{ path: PropertyKey[]; message: str
 }
 
 /**
- * 公开列表的查询参数。
+ * 公开列表的查询参数 —— ★ T7 起它住在 `packages/shared/src/tracking.ts`，**只有一份**。
  *
- * ⚠️ `page` / `pageSize` 而不是 `limit` / `offset`：数据层那两个参数是**SQL 的形状**，
- *    而这里是 HTTP 的形状。本仓的公开列表（资源库、视频墙）一律是 page/pageSize，
- *    界面共用一套分页控件 —— 换一套参数名等于让前端写第二条分支，
- *    而多出来的每条分支都是将来会漂移的一份规则（`routes/videos.ts` 里写着。
- *    ⚠️ 那一段还写了"等前端也要按同一份规则拼参数时再把它搬进 shared" ——
- *    T7 落地时如果两处真的一样，这里该跟着搬）。
- * ⚠️ schema 留在路由层（不放进 `shared/tracking.ts`）：`z.coerce` 处理的是
- *    "查询串里一切都是字符串"这件事，那是 HTTP 的性质，不是数据的性质。
+ * ⚠️ 这里原来自己写着这一份，并附了一条"schema 留在路由层"的理由。T7 落地时那条理由
+ *    失效了（原话就写着"T7 落地时如果两处真的一样，这里该跟着搬"）：界面那一侧要按
+ *    同一套规则拼 `?page=&pageSize=`，还要用同两个数字算总页数 ⇒ 两处各写一份的话，
+ *    改一处就会让界面与服务端各说各的（表现是"翻到第 5 页 400"或"翻页静默回到第 1 页"）。
+ *    完整的理由与被认下的代价（`z.coerce` 那条"HTTP 性质"跟着搬进了 shared）
+ *    写在 shared 那份 schema 自己的注释里 —— 这里不再抄第二遍。
  */
-const TrackedVideoQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(DEFAULT_PAGE_SIZE),
-});
 
 /**
  * 改一个博主的入参：**三个字段都可选，但至少要给一个**。

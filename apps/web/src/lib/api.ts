@@ -23,6 +23,9 @@ import type {
   ShareKind,
   ShareListResponse,
   ShareSummary,
+  TrackedCreator,
+  TrackedCreatorInput,
+  TrackedVideo,
   VideoPlatform,
 } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
@@ -1493,6 +1496,104 @@ export function setVideoVisibility(
   status: 'visible' | 'hidden',
 ): Promise<{ ok: true; id: string; status: string; changed: boolean }> {
   return sendJson('PATCH', `/api/videos/${encodeURIComponent(id)}/visibility`, { status });
+}
+
+// ---------------------------------------------------------------------------
+// 追踪的博主（video tracking，T7 接线）
+// ---------------------------------------------------------------------------
+/*
+ * 五个端点，两种读者（spec §6.1）：
+ *   · 公开的那一个（`/videos`）：谁都能看，带 60 秒公共缓存；
+ *   · 四个 `live.manage` 的（名单 / 加 / 改 / 删）：只有编辑看得到的管理面板在用。
+ *
+ * ⚠️★ 分页参数是 `page` / `pageSize`，**不是** `limit` / `offset`：服务端收的是
+ *    前者（`TrackedVideoQuerySchema`，T7 起住在 `packages/shared/src/tracking.ts`），
+ *    而它与资源库、视频墙是同一套形状 —— 界面上因此共用同一套分页控件。
+ *    数据层那两个 `limit` / `offset` 是 SQL 的形状，路由负责换算，前端不该知道。
+ *
+ * ⚠️ 这一组**没有** `fresh` / `no-store` 那类开关（对比 `fetchVideos` 的第三个参数）：
+ *    追踪的视频没有"编辑在界面上隐藏一条"这条动作 —— spec §6.1 只有五个端点，
+ *    隐藏是把库里那一列改成 `hidden`（不在这一轮的任何界面上）。所以编辑**没有**
+ *    "我刚改完，列表怎么还是旧的"这条需要绕开缓存的路径。
+ *    ⚠️ 已知并在 spec §6.1 里写着的一件事，这里照实记一遍：公开列表带
+ *    `max-age=60, stale-while-revalidate=300`，所以**手工改库隐藏**一条之后，
+ *    最多 6 分钟内它仍可能从某个缓存里被端出来（60 秒 + 5 分钟 stale 窗口）。
+ *    接受它是因为那条路今天只有直接改库的人会走（没有隐藏端点、也没有隐藏按钮）。
+ */
+
+/** 公开列表的响应形状 —— 与资源库 / 视频墙逐字一致（`items` + `total` + 分页回显）。 */
+export interface TrackedVideoListResponse {
+  items: TrackedVideo[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * 追踪到的视频。**公开**（浏览不设门槛，访问模型的核心）。
+ *
+ * ⚠️ 只回 `status = 'visible'` 的行：过滤在服务端（数据层 `listTrackedVideos`），
+ *    这里**不**做第二道过滤，也不加 `?includeHidden=` 之类的口子 ——
+ *    两处一旦漂移，表现是"被隐藏的视频又挂回公开列表上"（spec §6.1 那一行就是为它写的）。
+ */
+export function fetchTrackedVideos(
+  page: number,
+  pageSize: number,
+  signal?: AbortSignal,
+): Promise<TrackedVideoListResponse> {
+  const params = new URLSearchParams();
+  // 第 1 页不拼 `page`：与 `fetchVideos` / `buildResourceQuery` 同一个约定，
+  // 分享出去的地址里不留一个"和默认值一样"的参数。
+  if (page > 1) params.set('page', String(page));
+  params.set('pageSize', String(pageSize));
+  return request<TrackedVideoListResponse>(`/api/tracking/videos?${params.toString()}`, signal);
+}
+
+/**
+ * 名单（**含停用的**，含"上次同步 / 上次错在什么"这些只有编辑能看的东西）。
+ *
+ * ⚠️ 服务端对这条回了 `no-store`（`routes/tracking.ts`），所以这里不传 cache ——
+ *    传 `'no-store'` 只会是把服务端的判据抄成第二份。
+ */
+export function fetchTrackedCreators(signal?: AbortSignal): Promise<{ items: TrackedCreator[] }> {
+  return request<{ items: TrackedCreator[] }>('/api/tracking/creators', signal);
+}
+
+/**
+ * 加一个博主。入参**只有一个链接或 `@handle`**，平台与 id 由服务端解析出来
+ * （spec §5.1：用户手里就是一条链接，逼他拆成两个字段一定会有人把 mid 填进平台那一栏）。
+ *
+ * ⚠️ 它会真的碰上游（bilibili 的握手 + 名字查询），所以**必须**由用户点一下触发、
+ *    不能在任何"顺便刷新"的路上被调到。两次失败的回答界面上分得很开
+ *    （`lib/trackedErrors.ts`）：`creator_not_found` 是"这条链接指向的人不存在"
+ *    （改链接），`platform_not_configured` 是"我们没配这个平台的凭据"（改服务器）。
+ */
+export function addTrackedCreator(
+  input: TrackedCreatorInput,
+): Promise<{ ok: true; creator: TrackedCreator }> {
+  return sendJson('POST', '/api/tracking/creators', input);
+}
+
+/**
+ * 改一个博主：改显示名 / 停用启用 / **重新回填**（把 `backfill_done` 置 0）。
+ *
+ * ⚠️ 传的是**要改的那几个字段**，不是整行：服务端的 PATCH schema 是
+ *    `.partial().strict()`（多传一个键直接 400），而"空补丁"也会被它拒掉 ——
+ *    那边防的是"界面算错了差分、发来一个看着成功其实什么都没改的请求"。
+ */
+export function updateTrackedCreator(
+  id: string,
+  patch: { displayName?: string; enabled?: boolean; reBackfill?: boolean },
+): Promise<{ ok: true; creator: TrackedCreator }> {
+  return sendJson('PATCH', `/api/tracking/creators/${encodeURIComponent(id)}`, patch);
+}
+
+/**
+ * 删一个博主。**他的视频靠外键级联跟着走**（spec §4.2）——
+ * 所以界面上这是不可逆的一步（重建只能靠重新添加 + 重新回填）。
+ */
+export function deleteTrackedCreator(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/tracking/creators/${encodeURIComponent(id)}`);
 }
 
 // ---------------------------------------------------------------------------
