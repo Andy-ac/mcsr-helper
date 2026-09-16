@@ -1336,8 +1336,10 @@ describe('HTTP：公开视频列表', () => {
     seedVideos(creator.id, ['BV_shown', 'BV_hidden']);
 
     /*
-     * v1 **没有**隐藏端点（spec §6.1 只有这五个），编辑是直接改库设的 ——
-     * 这正是 `status` 那一列存在的唯一理由，所以这里也只能直接改库来造这个状态。
+     * v1 **没有**隐藏端点（spec §6.1 只有这五个），所以"隐藏"这件事今天只有两个来源：
+     * 核对阶段（`upstream_gone`）与手工改库 —— 而这条测试要的是**指定的一支**立刻变
+     * `hidden`，走核对那条路还得造一个上游答案，所以这里直接改库造这个状态。
+     * 这正是 `status` 那一列存在的理由，也是公开列表那条过滤条件要守的东西。
      */
     getDb()
       .prepare("UPDATE tracked_videos SET status = 'hidden' WHERE external_id = ?")

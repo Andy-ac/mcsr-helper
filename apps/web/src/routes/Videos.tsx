@@ -1,7 +1,6 @@
 import { VIDEO_PLATFORMS, type VideoPlatform } from '@mcsr/shared';
 import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
 import type { TrackedCreator, TrackPlatform } from '@mcsr/shared/tracking';
-import { TRACK_PLATFORMS } from '@mcsr/shared/tracking';
 import type { Video } from '@mcsr/shared/videos';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +25,7 @@ import {
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
 import { describeTrackedError } from '@/lib/trackedErrors';
+import { nextParamsForTrackedPlatform, readTrackedPlatform } from '@/lib/trackedQuery';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -174,11 +174,12 @@ export function Videos() {
    * ⚠️ 先校验再用：手打 `?tplatform=foo` 必须退化成"全部"，不许变成 400 错误页
    *    —— 服务端的 `platform` 是封闭枚举，把 `foo` 原样发出去只会拿一句
    *    "查询参数不合法"，而那句话指不到"你把地址改坏了"上（与 `platform` 同一条纪律）。
+   * ⚠️★ 这一读一写（`readTrackedPlatform` / `nextParamsForTrackedPlatform`）住在
+   *    `lib/trackedQuery.ts`：页面这一层是静态渲染**够不到**的（不跑 effect、不点击），
+   *    留在那里的话"换分区删 `tpage`、不碰 `platform` / `page`"这条契约就没有任何
+   *    门禁看得见；抽成纯函数之后 `videorender.tsx` 的 ⑯ 能真的跑它们。
    */
-  const trackedPlatformRaw = params.get('tplatform');
-  const trackedPlatform = (TRACK_PLATFORMS as readonly string[]).includes(trackedPlatformRaw ?? '')
-    ? (trackedPlatformRaw as TrackPlatform)
-    : undefined;
+  const trackedPlatform = readTrackedPlatform(params);
 
   const [trackedRefreshKey, setTrackedRefreshKey] = useState(0);
   const [creatorsRefreshKey, setCreatorsRefreshKey] = useState(0);
@@ -243,16 +244,12 @@ export function Videos() {
    *    一起没了"（spec §8.2 就是为这件事写的）。
    *    ⇒ 所以这里既不能走上面那个 `setParam`（它会删 `page`），也不能走
    *      `setTrackedPage`（它只认页码）。
+   * ⚠️★ 具体的读写那一份住在 `lib/trackedQuery.ts`（`nextParamsForTrackedPlatform`）：
+   *    它返回**下一份**查询串，这一栏只负责把它交给 `setParams`。接线（谁调用谁）
+   *    仍然是静态渲染看不见的那一半，而两个纯函数的行为由 `videorender.tsx` ⑯ 钉着。
    */
   function setTrackedPlatform(next: TrackPlatform | undefined) {
-    setParams((prev) => {
-      const p = new URLSearchParams(prev);
-      // 「全部」= 把参数删掉（不是留一个空值：`?tplatform=` 会让这一栏读出一个空串）
-      if (next === undefined) p.delete('tplatform');
-      else p.set('tplatform', next);
-      p.delete('tpage');
-      return p;
-    });
+    setParams((prev) => nextParamsForTrackedPlatform(prev, next));
   }
 
   /**

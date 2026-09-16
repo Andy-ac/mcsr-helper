@@ -79,6 +79,12 @@ import {
   type TrackedErrorSource,
   trackedErrorSource,
 } from '@/lib/trackedErrors';
+import {
+  nextParamsForTrackedPlatform,
+  readTrackedPlatform,
+  TRACKED_PAGE_PARAM,
+  TRACKED_PLATFORM_PARAM,
+} from '@/lib/trackedQuery';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -1471,66 +1477,6 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
-console.log('⑨ 裸 key 泄漏 + 字面的 `**`（本页产物的原文扫描）');
-// ---------------------------------------------------------------------------
-/*
- * ⚠️ 扫描**必须作用在原文上**（含属性）：`title=` / `alt=` / `aria-label=` 里的裸 key
- *    只有扫原文才看得见（`textOf` 会把属性整段吃掉）。
- * ⚠️ 命名空间清单是**手抄的**，而且必须覆盖本页产物里真会出现的每一族 key：
- *    这一块渲染 `tracked.*`（自己的）、`videos.*`（平台名、去原站看、分页三句）、
- *    `common.*`（加载中 / 确定 / 取消）。少写一族 = 那一族从扫描里漏出去。
- * ⚠️ 字面的 `**`：本仓词条里用 `**这样**` 表示强调（`components/Emphasis.tsx`），
- *    只有经过 `em()` / `emText()` 才会消失。这一节的词条**刻意不带标记**
- *    （理由写在 `zh-CN.ts` 那一节的文件头：`tracked.err*` 是经表派发的，
- *    带标记就得进 `i18n-keys.test.ts` 的 `DYNAMIC_KEYS` 白名单）⇒
- *    产物里出现星号**一定是**缺陷（有人加了一条带标记的词条却没接 `em()`）。
- */
-const everyProduct = products.join('');
-const allRaw = rawText(everyProduct);
-const BARE_KEY = /(?:tracked|videos|common|nav)\.[A-Za-z][A-Za-z0-9.]*/g;
-assert.notEqual(
-  [...'tracked.doesNotExist nav.nope'.matchAll(BARE_KEY)].length,
-  0,
-  '★ 探针：裸 key 扫描器本身必须能命中',
-);
-const leakedKeys = [...new Set([...allRaw.matchAll(BARE_KEY)].map((m) => m[0]))];
-assert.deepEqual(
-  leakedKeys,
-  [],
-  `★★ 产物里有裸 key：${leakedKeys.join(', ')}（词条缺一条就是这个样子）`,
-);
-assert.equal(
-  rawText('<p>a**b**c</p>').includes('**'),
-  true,
-  '★ 探针：`**` 扫描本身必须能命中一个带星号的串',
-);
-assert.deepEqual(
-  [...allRaw.matchAll(/\*\*/g)].map((m) => m[0]),
-  [],
-  '★★ 产物里有字面的 `**`：带标记的词条必须过 `em()`（节点）或 `emText()`（字符串上下文）',
-);
-ok(`无裸 key、无字面 **（${String(everyProduct.length)} 字符，${String(products.length)} 份产物）`);
-
-// ---------------------------------------------------------------------------
-if (LANG === 'en') {
-  console.log('⑩ 英文界面里零汉字');
-  /*
-   * ⚠️ 扫的是**原文**（含属性）：`alt=` / `title=` / `value=` 里的中文同样是
-   *    "英文界面上冒出了中文"。`textOf` 把属性吃掉了，所以不能用它。
-   * ⚠️ `fallbackLng: false` 时缺英文词条会**原样返回 key**（由 ⑨ 抓），
-   *    这一条抓的是另一类：有人把中文**写死在组件里**。
-   */
-  const han = [...new Set(allRaw.match(/[\u4e00-\u9fff]+/g) ?? [])];
-  assert.deepEqual(han, [], `★★ 英文界面里出现了中文：${han.slice(0, 8).join(' / ')}`);
-  assert.notEqual(
-    [...'中文'.matchAll(/[\u4e00-\u9fff]+/g)].length,
-    0,
-    '★ 探针：汉字扫描器本身必须能命中',
-  );
-  ok('英文界面里零汉字（含属性）');
-}
-
-// ---------------------------------------------------------------------------
 console.log('⑫ 门面封面（可选 prop）：传了才画 `<img>`，而且那三样属性是契约');
 // ---------------------------------------------------------------------------
 /*
@@ -1648,6 +1594,22 @@ assert.equal(
   1,
   '★★ 有封面时播放三角**还在**（spec §5.3：封面是"上面盖播放三角"，不是用封面把三角换掉）',
 );
+/*
+ * ★★ 而"还在"只是这一半：**谁画在上面**在静态产物里只剩 DOM 顺序这一个判据
+ *    （样式里的层叠静态断言看不见 —— 见文件末尾"覆盖边界"那一段）。
+ *    `ClickToPlayEmbed` 把封面排在三角**之前**，靠的正是"同一绘制层里靠后的画在上面"；
+ *    反过来（把 `<img>` 挪到三角后面）的表现很具体：**门面上唯一那个可点的提示被图埋掉**，
+ *    用户看到的是一张"点不动的封面"（spec §5.3 那一句"上面盖播放三角"就没了）。
+ *    ⇒ 这一条与上面那条测的是**两件不同的事**：上面是"两个都在"，这里是"谁在前面"。
+ *    ⚠️ 作用域是**门面那一块**（`elementsWithClass` 取的是外层元素、含里面的子元素）。
+ */
+const FACADE_WITH_COVER = elementsWithClass(WITH_COVER_HTML, 'video-embed__facade')[0] ?? '';
+assert.ok(
+  FACADE_WITH_COVER.indexOf('video-embed__cover') >= 0 &&
+    FACADE_WITH_COVER.indexOf('video-embed__cover') <
+      FACADE_WITH_COVER.indexOf('video-embed__playshape'),
+  '★★ 封面必须画在播放三角**之前**（DOM 顺序决定谁在上面：图在前、三角在后 ⇒ 三角留在可见的那一层；反过来会把唯一那个可点的提示埋在图下面）',
+);
 assert.deepEqual(
   elementsWithClass(WITHOUT_COVER_HTML, 'video-embed__cover'),
   [],
@@ -1669,8 +1631,8 @@ console.log('⑬ 分区按钮：四个（全部 + 三个平台），选中态跟
  * ⚠️ `platform` 这一个 prop 只能这样守：`undefined` 是它的**合法值**（=「全部」），
  *    所以 `assertPropsGiven` 那道守卫碰不了它（理由写在 `SECTION_KEYS` 上面）。
  * ⚠️ 点下去发生什么**不在这一组**（SSR 不渲染事件处理器）："换分区要删 `tpage`、
- *    不碰 `platform` / `page`"那一半住在 `routes/Videos.tsx` 里，本脚本够不着 ——
- *    边界写在文件末尾。
+ *    不碰 `platform` / `page`"那一半住在 `lib/trackedQuery.ts` 里，由**⑯** 直接断言
+ *    （两个纯函数）；剩下真正看不见的是"页面有没有真的调它们"（边界写在文件末尾）。
  */
 const chipLabels = (html: string): string[] =>
   elementsWithClass(html, 'tagchip').map((el) => textOf(el));
@@ -1860,8 +1822,10 @@ console.log('⑮ ★★ 面板按平台分成三段（空的分段连标题一�
  *    既看**顺序**又看**少了谁**，比"第一段 startsWith(...) + 断言不含 YouTube"更难写错。
  * ⚠️ 「条数」那一格的两个方向都要有（N=137/M=3 与 N=0/M=0）：只喂 M > 0 的话，
  *    "M = 0 时**不许**有括号"那一条永远不红（那是本任务最容易做错的一半）。
- * ⚠️ 分段不排序、不过滤 `creators` 本身：段内顺序就是 `listCreators` 给的顺序
- *    （`created_at ASC`），界面里再排一次就是第二份口径（spec §5.4）。
+ * ⚠️ 分段只把 `creators` **过滤**一遍、**不排序**：段内顺序就是名单接口返回的那个数组的
+ *    顺序 —— `listCreators` 的 `ORDER BY c.created_at DESC, c.id ASC`（**新加入的在前**），
+ *    所以界面里再排一次就是第二份"谁在前"的口径（spec §5.4；照"加入顺序"补一句升序
+ *    排序会把整份名单倒过来）。
  */
 /** 三个平台名，**手抄**一份（与 ⑬ 同一份顺序）—— spec §5.4 要钉的正是这个顺序。 */
 const PLATFORM_TITLES = [
@@ -1948,6 +1912,190 @@ assert.notEqual(
 );
 ok(
   '面板分段：两段（顺序照 `TRACK_PLATFORMS`）、空段不画（含三段都在的正面对照）、每段自带条数；`N（隐藏 M）` 只在 M > 0 时出现',
+);
+
+// ---------------------------------------------------------------------------
+console.log('⑨ 裸 key 泄漏 + 字面的 `**`（本页产物的原文扫描）');
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️ 扫描**必须作用在原文上**（含属性）：`title=` / `alt=` / `aria-label=` 里的裸 key
+ *    只有扫原文才看得见（`textOf` 会把属性整段吃掉）。
+ * ⚠️ 命名空间清单是**手抄的**，而且必须覆盖本页产物里真会出现的每一族 key：
+ *    这一块渲染 `tracked.*`（自己的）、`videos.*`（平台名、去原站看、分页三句）、
+ *    `common.*`（加载中 / 确定 / 取消）。少写一族 = 那一族从扫描里漏出去。
+ * ⚠️ 字面的 `**`：本仓词条里用 `**这样**` 表示强调（`components/Emphasis.tsx`），
+ *    只有经过 `em()` / `emText()` 才会消失。这一节的词条**刻意不带标记**
+ *    （理由写在 `zh-CN.ts` 那一节的文件头：`tracked.err*` 是经表派发的，
+ *    带标记就得进 `i18n-keys.test.ts` 的 `DYNAMIC_KEYS` 白名单）⇒
+ *    产物里出现星号**一定是**缺陷（有人加了一条带标记的词条却没接 `em()`）。
+ *
+ * ⚠️★ 这一组与 ⑩ **排在所有渲染之后**（⑮ 之后、⑪ 之前），不是紧跟在 ⑧ 后面：
+ *    两者扫的都是 `products` 的**整页快照**（`everyProduct` / `allRaw`），而快照
+ *    在中间拍下来的话，排在它后面的那几份产物 —— ⑫ 门面封面、⑬ 分区按钮、
+ *    ⑭ 三张卡、⑮ 面板三段 —— **这两份扫描一份都不进**：那几份里就算出现裸 key、
+ *    星号或写在组件里的汉字也**不会红**，而夹具注释却声称"⑩ 会扫它们"。
+ *    ⇒ 只能是"先渲染完、再整页扫"（⑪ 那道类名闸同一条纪律：
+ *      收集必须发生在最后一次渲染之后）。
+ *    ⚠️ 连带后果：⑫ 的夹具文字必须是 **ASCII**（`title` 会进 `aria-label`，
+ *      而 `--en` 那一遍的 ⑩ 连属性一起扫汉字）—— 这句话从"声称"变成了**真的**。
+ */
+const everyProduct = products.join('');
+const allRaw = rawText(everyProduct);
+const BARE_KEY = /(?:tracked|videos|common|nav)\.[A-Za-z][A-Za-z0-9.]*/g;
+assert.notEqual(
+  [...'tracked.doesNotExist nav.nope'.matchAll(BARE_KEY)].length,
+  0,
+  '★ 探针：裸 key 扫描器本身必须能命中',
+);
+const leakedKeys = [...new Set([...allRaw.matchAll(BARE_KEY)].map((m) => m[0]))];
+assert.deepEqual(
+  leakedKeys,
+  [],
+  `★★ 产物里有裸 key：${leakedKeys.join(', ')}（词条缺一条就是这个样子）`,
+);
+assert.equal(
+  rawText('<p>a**b**c</p>').includes('**'),
+  true,
+  '★ 探针：`**` 扫描本身必须能命中一个带星号的串',
+);
+assert.deepEqual(
+  [...allRaw.matchAll(/\*\*/g)].map((m) => m[0]),
+  [],
+  '★★ 产物里有字面的 `**`：带标记的词条必须过 `em()`（节点）或 `emText()`（字符串上下文）',
+);
+ok(`无裸 key、无字面 **（${String(everyProduct.length)} 字符，${String(products.length)} 份产物）`);
+
+// ---------------------------------------------------------------------------
+if (LANG === 'en') {
+  console.log('⑩ 英文界面里零汉字');
+  /*
+   * ⚠️ 扫的是**原文**（含属性）：`alt=` / `title=` / `value=` 里的中文同样是
+   *    "英文界面上冒出了中文"。`textOf` 把属性吃掉了，所以不能用它。
+   * ⚠️ `fallbackLng: false` 时缺英文词条会**原样返回 key**（由 ⑨ 抓），
+   *    这一条抓的是另一类：有人把中文**写死在组件里**。
+   * ⚠️★ 它扫的 `allRaw` 与 ⑨ 是**同一份整页快照**（理由写在那上面）：
+   *    ⑫…⑮ 那几份产物也在这份快照里，所以英文那几段夹具的文字必须全是 ASCII。
+   */
+  const han = [...new Set(allRaw.match(/[\u4e00-\u9fff]+/g) ?? [])];
+  assert.deepEqual(han, [], `★★ 英文界面里出现了中文：${han.slice(0, 8).join(' / ')}`);
+  assert.notEqual(
+    [...'中文'.matchAll(/[\u4e00-\u9fff]+/g)].length,
+    0,
+    '★ 探针：汉字扫描器本身必须能命中',
+  );
+  ok('英文界面里零汉字（含属性）');
+}
+
+// ---------------------------------------------------------------------------
+console.log('⑯ 分区参数的读写（`?tplatform=` / 换分区删 `tpage`）—— 页面那一半唯一能被断言的地方');
+// ---------------------------------------------------------------------------
+/*
+ * ★ spec §5.2 + §8.2 那条契约的两个**纯函数**（`apps/web/src/lib/trackedQuery.ts`）：
+ *   · 地址栏里的 `tplatform` **先校验再用**（手打 `?tplatform=foo` ⇒ 「全部」，不是 400）；
+ *   · 换分区 = 回第 1 页（**删 `tpage`**），而且**不许碰** `platform` / `page` —— 那两个是
+ *     同一个页面上**上面那面墙**的状态。
+ *
+ * ⚠️★ 为什么这些断言住在**这里**（本仓没有 web 测试跑器 —— 渲染脚本就是 web 代码的
+ *    断言入口）：页面本身（`routes/Videos.tsx`）静态渲染**够不到** —— 它取数、它是
+ *    7 个 `useState`，那四个处理器一个都不跑（文件末尾"覆盖边界"那一段逐条列了这件事）。
+ *    抽成纯函数之前，"换分区删 `tpage`、不碰 `platform` / `page`"这条契约
+ *    **一条断言都没有**，而它错了的表现是"点一下 B站，上面那面墙的筛选也没了" ——
+ *    只有两栏都用过时才看得见。
+ * ⚠️ 喂进去的是真的 `URLSearchParams`（不是对象字面量）：换分区那一步在 react-router
+ *    里收到的就是它，用一个长得像的东西代替，下面那几条会以"什么都没读到"的方式假绿。
+ */
+
+/** 两个参数名是 spec §10 冻结表里的那一行（改了它，页面上那一栏就与文档对不上了）。 */
+assert.equal(TRACKED_PLATFORM_PARAM, 'tplatform', '★ 分区参数名是 `tplatform`（spec §10）');
+assert.equal(TRACKED_PAGE_PARAM, 'tpage', '★ 页码参数名是 `tpage` —— 换分区要删的就是它');
+
+/** 读：认得出三个平台，认不出的一律退化成「全部」。 */
+const READ_CASES = [
+  ['', undefined],
+  ['tpage=2', undefined],
+  ['tplatform=bilibili', 'bilibili'],
+  ['tplatform=youtube', 'youtube'],
+  ['tplatform=twitch', 'twitch'],
+  // ⚠️ 手打的地址：一个都不许原样发给服务端（`?platform=foo` 那边是 400）
+  ['tplatform=foo', undefined],
+  ['tplatform=', undefined],
+  ['tplatform=Twitch', undefined],
+  ['tplatform=twitch/../x', undefined],
+] as const;
+for (const [query, expected] of READ_CASES) {
+  assert.equal(
+    readTrackedPlatform(new URLSearchParams(query)),
+    expected,
+    `★★ \`?${query}\` ⇒ ${String(expected)}（认不出的值必须退化成「全部」，不是原样发出去）`,
+  );
+}
+assert.equal(
+  READ_CASES.filter(([, expected]) => expected !== undefined).length,
+  3,
+  '★ 探针：上面那组用例里确实有**三个**能读出值的（否则"全都退化成 undefined"也是绿的）',
+);
+
+/** 换分区：带上墙的状态与前两次翻页，看它到底动了什么、没动什么。 */
+const WALL_QUERY = 'platform=youtube&page=3&tpage=2&tplatform=youtube';
+const SWITCHED = nextParamsForTrackedPlatform(new URLSearchParams(WALL_QUERY), 'twitch');
+assert.equal(SWITCHED.get(TRACKED_PLATFORM_PARAM), 'twitch', '★★ 换分区写的是**新的那个平台**');
+assert.equal(
+  SWITCHED.has(TRACKED_PAGE_PARAM),
+  false,
+  '★★ 换分区必须**删掉** `tpage`（= 回到第 1 页）—— 停在第三页而新分区只有一页是一屏空白',
+);
+assert.equal(SWITCHED.get('platform'), 'youtube', '★★ 而**不许碰**上面那面墙的 `platform`');
+assert.equal(SWITCHED.get('page'), '3', '★★ 同样不许碰它的 `page`（两个区块各自翻各自的页）');
+assert.equal(
+  readTrackedPlatform(SWITCHED),
+  'twitch',
+  '★ 写进去的那一份读回来还是同一个平台（一读一写是同一份口径）',
+);
+assert.equal(
+  new URLSearchParams(WALL_QUERY).toString().includes('tplatform=youtube'),
+  true,
+  '★ 探针：上面那条用的查询串确实带着一个旧分区（否则"换掉了"证明不了什么）',
+);
+
+/** 点「全部」：**删参数**，不是留一个空值（`?tplatform=` 在服务端那一头是 400 的取值）。 */
+const CLEARED = nextParamsForTrackedPlatform(new URLSearchParams(WALL_QUERY), undefined);
+assert.equal(
+  CLEARED.has(TRACKED_PLATFORM_PARAM),
+  false,
+  '★★ 「全部」= 把 `tplatform` **删掉**（留一个空串会让这一栏读出一个空值，而墙上那面墙的空串是 400）',
+);
+assert.equal(CLEARED.has(TRACKED_PAGE_PARAM), false, '★★ 点「全部」同样回第 1 页');
+assert.equal(
+  readTrackedPlatform(CLEARED),
+  undefined,
+  '★ 删干净之后读出来就是「全部」（与"没传过这个参数"逐字节同形）',
+);
+assert.equal(CLEARED.get('platform'), 'youtube', '★★ 「全部」也不许顺手清掉墙的 `platform`');
+assert.equal(CLEARED.get('page'), '3', '★★ 也不许清掉墙的 `page`');
+assert.equal(
+  CLEARED.toString().includes('tplatform'),
+  false,
+  '★★ 连"键在不在"都要钉：`tplatform=` 这种**空值**在服务端是非法取值（spec §5.1 的封闭枚举）',
+);
+
+/** 纯函数：**不许就地改**传进来的那一份（改了它 = 改了 react-router 手上的状态）。 */
+const PREV = new URLSearchParams(WALL_QUERY);
+nextParamsForTrackedPlatform(PREV, undefined);
+assert.equal(
+  PREV.get(TRACKED_PLATFORM_PARAM),
+  'youtube',
+  '★★ 传进来的那一份必须原样不动（返回值是新的一份，不是就地改了它）',
+);
+
+/** 反面探针：函数确实会把四个键都**带过**去，而不是"回一个只有 tplatform 的串"。 */
+assert.equal(SWITCHED.get('tpage'), null, '★ 探针：`tpage` 读出来是 null（真的没了）');
+assert.notEqual(
+  SWITCHED.toString(),
+  nextParamsForTrackedPlatform(new URLSearchParams('tplatform=youtube'), 'twitch').toString(),
+  '★ 探针：墙的 `platform` / `page` 确实被带过去了（否则上面两条"不碰它们"是空跑）',
+);
+ok(
+  '分区参数：`tplatform` 认得出三个平台、认不出的一律退化成「全部」；换分区写新值 + 删 `tpage`、而墙的 `platform` / `page` 原样带过去；纯函数不改入参',
 );
 
 // ---------------------------------------------------------------------------
@@ -2128,12 +2276,14 @@ console.log('   所以下面这几件事它**证明不了**：');
 console.log('   · 页面（`routes/Videos.tsx`）本身：它取数、它有 7 个 useState —— 纯 SSR 下');
 console.log('     永远停在 loading 那一屏。⇒ 分页（`?tpage=`）、四个动作的接线、');
 console.log('     `useCan` 的取值、删博主之后**两个刷新键都要动**：**一个字都没断言**。');
-console.log('   · ⚠️★ 换分区那一条链路的**接线**同样一个都没断言（T7）：');
-console.log('     `?tplatform=` 的读写（换分区删 `tpage`、**不碰** `platform` / `page`）、');
-console.log('     手打 `?tplatform=foo` 退化成"全部"、`fetchTrackedVideos` 在「全部」时不拼');
-console.log('     `?platform=`（空串服务端是 400），以及**`trackedPlatform` 有没有进');
-console.log('     `useAsync` 的依赖数组** —— 漏了它 = 换分区列表不重新取数，');
-console.log('     而 ⑬ 那种静态断言**看不见**（它只证明"给我这个 prop 画成什么样"）。');
+console.log('   · ⚠️★ 换分区那一条链路的**接线**（谁调用谁）同样一个都没断言：⑯ 证明的是');
+console.log('     那两个**纯函数**的行为（认不出的值退化成「全部」、换分区删 `tpage`、');
+console.log('     不碰 `platform` / `page`），而**页面有没有真的调它们**在静态渲染里看不出来');
+console.log('     —— 把 `setTrackedPlatform` 改回自己写一份 `URLSearchParams`，⑯ 照样全绿。');
+console.log('     同样看不见的还有两处：`fetchTrackedVideos` 在「全部」时**不拼** `?platform=`');
+console.log('     （空串服务端是 400），以及**`trackedPlatform` 有没有进 `useAsync` 的依赖数组**');
+console.log('     —— 漏了它 = 换分区列表不重新取数，而 ⑬ 那种静态断言看不见');
+console.log('     （它只证明"给我这个 prop 画成什么样"）。');
 console.log('   · **点击的结果**：SSR 的产物里没有事件处理器，一颗接好线的按钮与一颗');
 console.log('     `onClick` 是 `undefined` 的按钮**长得一模一样** —— 这一层用的是运行时守卫');
 console.log('     （`assertPropsGiven`），而"prop 忘了传"在**页面**那一侧是编译错误。');
@@ -2154,8 +2304,10 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  *    脚本照样绿、照样打印"通过 N 项"，只有这个数字会变。改脚本就要一起改这里。
  * ⚠️ en 比 zh 多一组，是因为 ⑩ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`）；两个数差 1 是**正常的**，别把它抹平。
+ * ⚠️ 2026-09-16 的**修复波**：⑫…⑮ 之后又加了 ⑯（分区参数的读写），两个数各 +1
+ *    （14/15 ⇒ 15/16）。
  */
-const expectedGroups = LANG === 'en' ? 15 : 14;
+const expectedGroups = LANG === 'en' ? 16 : 15;
 assert.equal(
   pass,
   expectedGroups,

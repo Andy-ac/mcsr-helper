@@ -31,7 +31,15 @@ process.env.DB_PATH = ':memory:';
 
 const { closeDb, getDb } = await import('./db');
 const { createCreator, upsertVideos } = await import('./tracked-videos');
-const { exitCodeFor, formatSummary, main, runOnce, TRACK_LIMITS } = await import('./track');
+const {
+  exitCodeFor,
+  formatSummary,
+  main,
+  runOnce,
+  TRACK_LIMITS,
+  VERIFY_MAX_MISSING_RATIO,
+  VERIFY_MIN_BATCH_FOR_RATIO,
+} = await import('./track');
 const { createBilibiliAdapter } = await import('./tracking/bilibili');
 const { TwitchRejectedError } = await import('./tracking/twitch');
 const { NoCredentialsError, PlatformHandshakeError } = await import('./tracking/types');
@@ -1391,6 +1399,172 @@ describe('★ 核对阶段（spec §6）', () => {
         { external_id: 'v-b', status: 'hidden', hidden_reason: 'upstream_gone' },
       ],
     );
+  });
+
+  /*
+   * ★★ 比值闸（spec §6.2 第 4 条，2026-09-16 终审冻结）：一次 `200` + 一个短得离谱的
+   *    `data` 与"这一批真的都过期了"在代码里长得一模一样，而它的代价是**一次最多
+   *    埋掉 200 行、退出码还留在 0、而且应用里没有"恢复显示"这个动作**。
+   *
+   * ⚠️★ 三条用例是**一组**，缺一条这道闸就有一种坏法没人看得见：
+   *    · 12/12（超过一半）⇒ 一条都不隐藏 + 记一条核对失败 + 退出码 1；
+   *    · 12/6（**恰好一半**）⇒ 那 6 条照常隐藏、**没有**核对失败 —— 判据是"严格大于"，
+   *      把 `>` 写成 `>=` 只有这一条会红；
+   *    · 3/3（**不够大**）⇒ 全部照常隐藏 —— 把下限去掉（或写小）只有这一条会红，
+   *      而它守的是"新博主那几条真的过期的 VOD 还下得掉"。
+   */
+  it('★★ 一批 12 个上游一个都不认 ⇒ **一条都不隐藏**、记一条核对失败、退出码 1', async () => {
+    const c = addCreator('twitch', 'tw-ratio-all');
+    const ids = Array.from({ length: 12 }, (_, i) => `v-ratio-${String(i)}`);
+    for (const id of ids) insertRaw(c.id, 'twitch', id, { publishedAt: NOW - 30 * 86400 });
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds() {
+        // 空的 `data`：这正是"上游形状变了"与"这一批全过期了"分不开的那一种回答。
+        return new Set<string>();
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        // 同核对那一组别的用例：关掉回填，退出码只可能来自核对这一行。
+        limits: { backfill: 0 },
+      }),
+    );
+
+    // ① 一条都没隐藏，而且**一个字段都没写**（`verify_checked_at` 与隐藏三列一起看）。
+    const rows = getDb()
+      .prepare(
+        'SELECT status, hidden_at, hidden_reason, verify_checked_at FROM tracked_videos ORDER BY external_id',
+      )
+      .all()
+      .map(plain);
+    assert.equal(rows.length, 12, '★ 探针：这一批确实是 12 行（不然下面那条在验一个空集合）');
+    assert.deepEqual(
+      rows,
+      ids.map(() => ({
+        status: 'visible',
+        hidden_at: null,
+        hidden_reason: null,
+        verify_checked_at: null,
+      })),
+      '★★ 整批放弃 ⇒ 12 行一个字段都不许动（连 `verify_checked_at` 都不写）',
+    );
+
+    // ② 一条核对失败（不是 12 条），消息里写清"多少个里的多少个不见了 + 整批放弃"。
+    assert.deepEqual(summary.verify, { checked: 0, hidden: 0, failed: 1 });
+    assert.equal(summary.verifyErrors.length, 1, '★★ 一批记**一条**（不是每个 id 一条）');
+    assert.equal(summary.verifyErrors[0]?.platform, 'twitch');
+    const message = summary.verifyErrors[0]?.error ?? '';
+    assert.match(message, /12/, `★★ 消息里要有"多少个"（实读「${message}」）`);
+    assert.match(message, /整批放弃/, `★★ 而且要写明这一批被放弃了（实读「${message}」）`);
+    assert.match(
+      formatSummary(summary, NOW, NOW),
+      /⚠️ 核对失败: platform=twitch/,
+      '★★ 它按核对失败那一行打印（与创作者的 `⚠️ 失败样例:` 分开）',
+    );
+    assert.equal(exitCodeFor(summary), 1, '★★ 退出码非零 —— 否则这一批是**静默**埋掉的');
+  });
+
+  it('★★ 12 个里消失 6 个（**恰好一半**）⇒ 那 6 个照常隐藏、没有核对失败', async () => {
+    /*
+     * ⚠️ 这是那道闸的**边界**：判据是"**超过**一半"（`missing > ids.length / 2`）。
+     *    写成 `>=` 的话这一条会红 —— 而它红了才是对的：半数消失是"上游确实少了一半"，
+     *    不是"我们问错了 id"，照常隐藏才符合这个功能的全部理由（过期的就该下架）。
+     */
+    const c = addCreator('twitch', 'tw-ratio-half');
+    const gone = Array.from({ length: 6 }, (_, i) => `v-gone-${String(i)}`);
+    const kept = Array.from({ length: 6 }, (_, i) => `v-kept-${String(i)}`);
+    for (const id of [...gone, ...kept]) {
+      insertRaw(c.id, 'twitch', id, { publishedAt: NOW - 30 * 86400 });
+    }
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds() {
+        return new Set(kept);
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0 },
+      }),
+    );
+
+    assert.deepEqual(summary.verify, { checked: 12, hidden: 6, failed: 0 });
+    assert.deepEqual(summary.verifyErrors, [], '★★ 恰好一半不算异常 ⇒ 一条核对失败都没有');
+    assert.equal(exitCodeFor(summary), 0, '★ 而退出码 0：这一轮是成功的');
+    const hiddenIds = getDb()
+      .prepare(
+        "SELECT external_id FROM tracked_videos WHERE status = 'hidden' ORDER BY external_id",
+      )
+      .all()
+      .map((row) => (row as { external_id: string }).external_id);
+    assert.deepEqual(hiddenIds, gone, '★★ 隐藏的**恰好**是消失的那 6 条（留在库里的 6 条不动）');
+  });
+
+  it('★★ 一批只有 3 个、3 个都不认 ⇒ **照常全部隐藏**（低于下限，闸不生效）', async () => {
+    /*
+     * ⚠️ 下限（`VERIFY_MIN_BATCH_FOR_RATIO = 10`）守的是这半边：刚加的博主手上可能只有
+     *    三五条 VOD，而它们**真的**会一起过期（Twitch 的存档最早 7 天）。
+     *    没有下限（或下限写得比 3 小）的话，那几条**永远下不掉** —— 而那一栏会一直
+     *    留着几条已经没了的视频，界面上解释不了。
+     */
+    const c = addCreator('twitch', 'tw-ratio-small');
+    for (const id of ['v-s-1', 'v-s-2', 'v-s-3']) {
+      insertRaw(c.id, 'twitch', id, { publishedAt: NOW - 30 * 86400 });
+    }
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds() {
+        return new Set<string>();
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0 },
+      }),
+    );
+
+    assert.deepEqual(summary.verify, { checked: 3, hidden: 3, failed: 0 });
+    assert.deepEqual(summary.verifyErrors, [], '★★ 3 < 10 ⇒ 这道闸根本不看这一批');
+    assert.equal(exitCodeFor(summary), 0);
+    const hiddenCount = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM tracked_videos WHERE status = 'hidden'")
+      .get() as { n: number };
+    assert.equal(hiddenCount.n, 3, '★★ 三条全部隐藏（"新的博主那几条真的过期了"必须下得掉）');
+  });
+
+  it('★ 两个比值闸常量就是 spec §10 冻结的那两个值（改了它，那道闸的形状就变了）', () => {
+    /*
+     * ⚠️ 与 `TRACK_LIMITS` 那条同一条纪律：这两个数不是"随手能调"的参数 ——
+     *    10 决定"新博主的第一批还能不能下架"，0.5 决定"多坏的一批算坏"。
+     *    改它们要连着改 spec §6.2 第 4 条与 §10 的冻结表。
+     */
+    assert.equal(VERIFY_MIN_BATCH_FOR_RATIO, 10);
+    assert.equal(VERIFY_MAX_MISSING_RATIO, 0.5);
   });
 
   it('★ 刚发出来的不查（§6.1 的 6 天粗筛）：只查够老的那些', async () => {

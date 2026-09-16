@@ -251,8 +251,12 @@ coverUrl?: string | null;
 ### 5.4 管理面板：博主名单按平台分三段
 
 - `TrackedVideos.tsx` 的面板里，名单按 `platform` 分成三段（顺序照 `TRACK_PLATFORMS`），
-  每段一个小标题（复用 `videos.platform*` 词条）+ 该段条数；**段内保持今天的顺序**
-  （`created_at ASC`，即加入顺序）。
+  每段一个小标题（复用 `videos.platform*` 词条）+ 该段条数。
+  ⚠️★ **段内不排序**：那一段只是把名单接口返回的那个数组按 `platform` **过滤**一遍
+  （`creators.filter(...)`），所以段内顺序就是**名单查询给的顺序** ——
+  `listCreators` 的 `ORDER BY c.created_at DESC, c.id ASC`，即**新加入的排在前面**。
+  界面这一层**一次都不许再排**（再排一次就是第二份"谁在前"的口径）；也**不许**照
+  "加入顺序"去补一句 `created_at ASC` 的排序 —— 那会把整份名单**倒过来**。
 - 三段各自的表头列不变（启用/停用、显示名、视频数、上次同步、错误、动作）。
 - ⚠️ **空的分段不渲染**（那个平台一个博主都没有时，连小标题一起不画）—— 与"空容器不渲染"
   同一条纪律；而**三段都空**时，保留今天那句空态文案。
@@ -294,7 +298,7 @@ SELECT id, external_id, platform FROM tracked_videos
   ⇒ `VERIFY_MIN_AGE_SEC = 6 * 86400`（6 天），省掉大量无意义请求。
 - `limit` = §10 冻结表里的 `verify`（**200**）。
 
-### 6.2 一轮里的行为（★ 三条安全线）
+### 6.2 一轮里的行为（★ 四条安全线）
 
 0. **★ 先决定核对哪些平台**（这一步写错 = 永远不核对，而且**不响**）：
    逐个走 `TRACK_PLATFORMS` ——
@@ -312,6 +316,25 @@ SELECT id, external_id, platform FROM tracked_videos
 3. **★ 失败时一条都不隐藏**：`existingVideoIds` 抛了 ⇒ 这一批**什么都不写**
    （连 `verify_checked_at` 都不写，理由：下一次再问一次是幂等的，而"记成查过了"会让它轮到队尾）。
    ⇒ 这条是"静默批量下架"的**唯一**防线，§9 里有专门的断言。
+4. **★ 一批里"消失得太多" ⇒ 整批放弃**（2026-09-16 终审加的这一条，冻结值）：
+   一次上游回答 `200`、而 `data` 短得离谱（或者干脆是空数组）**不是**"这一批都过期了"的
+   正常形状 —— 它更像"上游换了形状"或"我们问错了 id"。而一次核对最多能埋掉
+   `TRACK_LIMITS.verify`（**200**）行、退出码还留在 0，**并且应用里根本没有"恢复显示"
+   这个动作**（§7 第 2 条：`status` 一旦变 `hidden` 就只由人改回来）⇒ 一次坏的 `200`
+   就是一次**手工改库**。
+   - 判据（两个常量都从 `services/api/src/track.ts` 导出，挨着别的核对常量）：
+     **这一批问到的 id 至少 `VERIFY_MIN_BATCH_FOR_RATIO = 10` 个**，
+     **且消失的个数 `missing > ids.length / 2`**（`VERIFY_MAX_MISSING_RATIO = 0.5`）
+     ⇒ 这一批**一条都不隐藏、一个字段都不写**（连 `verify_checked_at` 都不写），
+     只记**一条** `verifyErrors`，消息里写明"**多少个里的多少个**不见了、这一批被放弃"，
+     于是退出码非零（§6.3）—— 它**不是**静默的，而是"响"的。
+   - ⚠️ **那个 10 的下限不是装饰**：刚加的博主手上可能只有三五条 VOD，而它们**真的**会
+     一起过期（Twitch 的存档最早 7 天）⇒ 批次小于 10 时这条闸不生效，
+     否则"新博主的第一批"永远下不掉、那一栏永远留着几条已经没了的视频。
+   - ⚠️ 比较是**严格大于**一半：12 个里 6 个不见了 = **照常隐藏**那 6 个（边界值有一条
+     专门的测试钉着，见 `tracking-run.test.ts` 的「核对阶段」那一组）。
+   - ⚠️ 它**不**替代第 3 条：`existingVideoIds` 抛错照样是"这批没问清"（什么都不写），
+     而这一条管的是"问清了、但答案长得不像真的"。
 
 ### 6.3 摘要与退出码
 
@@ -450,6 +473,7 @@ RunSummary.verifyErrors: Array<{ platform: TrackPlatform; error: string }>;  // 
 | 适配器方法 | `PlatformAdapter.existingVideoIds?(ids: readonly string[]): Promise<ReadonlySet<string>>`（**只有 Twitch 实现**） |
 | Twitch 批量上限 | `TWITCH_VERIFY_BATCH = 100`（适配器内部切批） |
 | 核对的最小年龄 | `VERIFY_MIN_AGE_SEC = 6 * 86400` |
+| 批量核对的比值闸 | `VERIFY_MIN_BATCH_FOR_RATIO = 10`（一批问到这么多 id 才受闸）与 `VERIFY_MAX_MISSING_RATIO = 0.5`（消失的**超过一半** ⇒ 这一批一条都不隐藏、一个字段都不写、记一条 `verifyErrors`，退出码非零；§6.2 第 4 条） |
 | 每轮核对上限 | `TRACK_LIMITS.verify = 200`（**每个平台各自**；`{ backfill: 20, pages: 20, incremental: 40, verify: 200 }`） |
 | 候选排序 | `COALESCE(verify_checked_at, 0) ASC, id ASC` |
 | 摘要新增行 | `  核对: 查 N 个 / 隐藏 M 个`（**永远打印**） |

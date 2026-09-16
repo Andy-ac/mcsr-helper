@@ -18,7 +18,8 @@
  *   · 时长为 0 进了 `duration_sec` ⇒ spec §4.3 的 `short`（`<= 60`）**当场打错**，
  *     而那是一个看起来完全正常的标签（T2 的三个解析器已经堵住了自己的出口，
  *     这里是最后一道闸：见下面 ★ 那一组）；
- *   · `DO UPDATE` 里捎上 `status` ⇒ 编辑手工隐藏过的视频被下一轮同步**悄悄放回来**；
+ *   · `DO UPDATE` 里捎上 `status` ⇒ 被隐藏过的视频被下一轮同步**悄悄放回来**
+ *     （今天隐藏的来源是核对的 `upstream_gone` 与手工改库，对这条纪律是同一件事）；
  *   · `LIMIT -1` 被当成"负的限额" ⇒ 它在 SQLite 里是"**不限**"，
  *     于是这一轮把整份名单都抓一遍，spec §3.3 的有界设计就没了。
  *
@@ -259,7 +260,13 @@ function rawCreator(id: string): RawCreatorRow | undefined {
     .get(id) as unknown as RawCreatorRow | undefined;
 }
 
-/** 手工隐藏一支视频 —— **v1 没有这个端点**，编辑是直接改库的（见 `status` 那一组）。 */
+/**
+ * 手工隐藏一支视频 —— **v1 没有这个端点**（spec §6.1 里只有五个）。
+ *
+ * ⚠️ 产品代码里今天写 `hidden` 的是**核对阶段**（`applyVerifyResult`，只写 `upstream_gone`）；
+ *    这一条是夹具：它要的是"一支被隐藏的视频"，而且是**立刻、可控**的那种，
+ *    所以它直接 UPDATE（走核对那条路还得造一个上游答案）。
+ */
 function hideByHand(platform: TrackPlatform, externalId: string): void {
   getDb()
     .prepare("UPDATE tracked_videos SET status = 'hidden' WHERE platform = ? AND external_id = ?")
@@ -1025,16 +1032,17 @@ describe('追踪数据层：⑤ 拿不到的一律 NULL，绝不许填 0', () =>
 });
 
 // ---------------------------------------------------------------------------
-// status（编辑手工隐藏过的那一支）
+// status（被隐藏过的那一支）
 // ---------------------------------------------------------------------------
 
-describe('追踪数据层：status 是编辑的手工状态，同步不许覆盖它', () => {
+describe('追踪数据层：status 是"隐藏"这件事的状态，同步不许覆盖它', () => {
   it('★★ 手工隐藏过的视频，下一次抓取不许把它放回 visible', () => {
     /*
      * ★★ 这条是 plans/task-4 的 mutation 表点名的：`DO UPDATE` 里捎上
-     *    `status = excluded.status` 的话，编辑手工隐藏过的那一支会被**下一轮同步**
+     *    `status = excluded.status` 的话，隐藏过的那一支会被**下一轮同步**
      *    悄悄放回来 —— 而且没有任何地方报错，界面上看起来只是"它又出现了"。
-     *    v1 **没有**隐藏端点（编辑是直接改库的），所以这条路的唯一凭据就是这个测试。
+     *    这条路的写入者今天有两个（核对的 `upstream_gone` 与手工改库，v1 没有隐藏端点），
+     *    而"同步不许把它放回来"对两者是同一件事；唯一的凭据就是这个测试。
      */
     const creatorId = addCreator();
     upsertVideos(creatorId, 'bilibili', [fetched('BV-hidden', { title: '不该再出现' })], NOW);

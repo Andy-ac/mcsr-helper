@@ -577,8 +577,10 @@ export function TrackedCreatorsPanel({
            *    一个只有标题的空壳看起来像"这一段的数据没加载出来"（与"空容器不渲染"
            *    同一条纪律）。⚠️ 三段**都**空不是这里的事 —— 那种情况走上面那句
            *    "名单还是空的"（`creators.length === 0`），所以这里不必画任何空态。
-           * ⚠️ 段内顺序**就是** `listCreators` 给的顺序（`created_at ASC`）：这里只
-           *    `filter`，**不排序** —— 在界面里再排一次就是第二份"谁在前"的口径。
+           * ⚠️ 段内顺序**就是**名单接口返回的那个数组的顺序：这里只 `filter`，**不排序**
+           *    —— 段内次序由 `listCreators` 那一条 `ORDER BY c.created_at DESC, c.id ASC`
+           *    决定（**新加入的在前**）。在界面里再排一次就是第二份"谁在前"的口径，
+           *    而照"加入顺序"补一句升序排序会把整份名单**倒过来**（spec §5.4）。
            * ⚠️ `rows` 是 `creators` 的子集（不是第二份数据）：`key` 仍然用 `creator.id`。
            */
           TRACK_PLATFORMS.map((platform) => {

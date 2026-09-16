@@ -222,6 +222,34 @@ export const TRACK_LIMITS = { backfill: 20, pages: 20, incremental: 40, verify: 
  */
 export const VERIFY_MIN_AGE_SEC = 6 * 86400;
 
+/**
+ * 比值闸的**下限**（spec §6.2 第 4 条，2026-09-16 终审冻结）：一批里问到的 id
+ * **至少**这么多时，才去看"消失的比例"。
+ *
+ * ⚠️ 这个下限**不是装饰**：刚加的博主手上可能只有三五条 VOD，而它们**真的**会一起过期
+ *    （Twitch 的存档最早 7 天，spec §11 第 5 条）⇒ 小批次必须照常隐藏，
+ *    否则"新博主的第一批"永远下不掉，那一栏留着几条已经没了的视频。
+ */
+export const VERIFY_MIN_BATCH_FOR_RATIO = 10;
+
+/**
+ * 一批里"消失"的比例**超过**它 ⇒ **整批放弃**（spec §6.2 第 4 条，冻结值 `0.5`）。
+ *
+ * ★ 为什么需要这道闸：一次 `200` + 一个短得离谱的 `data`（甚至空数组）与
+ *   "这一批真的都过期了"在代码里**长得一模一样**，而它的代价具体得可怕 ——
+ *   一次最多埋掉 `TRACK_LIMITS.verify`（**200**）行、退出码还留在 0，
+ *   **并且应用里根本没有"恢复显示"这个动作**（spec §7 第 2 条：`status` 一旦变
+ *   `hidden` 就只由人改回来）⇒ 一次坏的 `200` 就是一次**手工改库**。
+ *   ⇒ 批次够大而消失得太多时，宁可"这一批没问清"（什么都不写、记一条核对失败、
+ *     退出码非零），也不做一次不可逆的批量下架。
+ *
+ * ⚠️ 判据是**严格大于** `0.5`：`missing > ids.length / 2` —— 12 个里 6 个消失
+ *    **照常隐藏**那 6 个（边界那一条由 `tracking-run.test.ts` 钉着）。
+ * ⚠️ 它**不替代**"上游抛错 ⇒ 什么都不写"那一条：那条管的是"这批没问到"，
+ *    这条管的是"问到了、但答案长得不像真的"。
+ */
+export const VERIFY_MAX_MISSING_RATIO = 0.5;
+
 // ===========================================================================
 // 引擎
 // ===========================================================================
@@ -325,8 +353,19 @@ export async function runOnce(deps: RunDeps): Promise<RunSummary> {
    *   而核对要做到"我库里这些行该不该继续显示"，与这一轮抓到了什么无关。
    *   连坐的代价很具体：bilibili 一被限流（§2.3 是概率性的），
    *   **Twitch 的过期下架就跟着停一轮**，而它们之间没有任何因果关系。
-   * ⚠️ 它**不抛**（`NoCredentialsError` 之外的一切都在 `verifyVideos` 里结掉）：
-   *   一批没问清不该让整轮崩掉，那是"静默坏掉"的另一个形状。
+   * ⚠️★ 它在阶段内结掉的是"**这一批没问清**"（`verifyVideos` 那个笼统的 `catch`），
+   *   **不是"绝不抛"** —— 有两条路会**穿过这个阶段**逃出去：
+   *     ① 注册表在"状态说 `ok`、却拿不到适配器"时抛出的那个**非** `NoCredentialsError`
+   *        （`verifyVideos` 里那一句 `throw error`，与上面取值循环同一条纪律）；
+   *     ② `pickVerifiableVideos` 那一次查询**长在 `try` 之外**（它抛就是数据库层面的问题，
+   *        与"上游怎么回答"无关）。
+   *   ⇒ 这两条路的表现与"批次失败"**完全不同**：异常一路穿出 `runOnce`，
+   *     `main` 里那句 `formatSummary` **根本不会执行** —— 也就是说**摘要一行都没有**
+   *     （连"回填/增量做了什么"都看不到），最后由 `isMain` 那个 `catch` 把**栈**打进
+   *     journald 并置退出码 1。那仍然是对的（它们是我们自己的 bug，不是上游抖动，
+   *     而"崩+栈"比"安静地少做一件事"响亮），但别把它读成"核对永远只记一条失败"。
+   *   一批没问清则相反：记一行 `verifyErrors`、不崩、退出码非零，那是"静默坏掉"的
+   *   另一个形状的对症药。
    */
   await verifyVideos(deps, now, summary);
 
@@ -453,6 +492,12 @@ async function syncCreator(
  *    ⚠️ 这一条防的是 spec §4 那个 ★★：请求失败**绝不许**被读成"这些 id 都不存在"
  *       —— 那是一次**静默的批量下架**，而且没有任何东西会报错。
  *
+ * ★★ 而"**问到了、但答案长得不像真的**"同样不许照单全收（spec §6.2 第 4 条，2026-09-16
+ *    终审冻结）：批次 ≥ `VERIFY_MIN_BATCH_FOR_RATIO`（10）且**消失的超过一半**时，
+ *    这一批走与失败**同一处置**（什么都不写 + 记一条 `verifyErrors` + 退出码非零），
+ *    只是消息自己写（"多少个里的多少个不见了、整批放弃"）。
+ *    判据在下面那个 `ratioSuspicious`，两个常量的理由写在它们头上。
+ *
  * ⚠️★★ `catch` 故意是**笼统的**（不接受"只 catch 已知的那几个类型"这条建议）：
  *    这条路会抛出什么**不由这里决定**，而 T2 的评审已经量到过一个具体形态 ——
  *    非 401/403/429/5xx 的状态（比如"一批 100 个 id"那个假设不成立时的 400）会以
@@ -501,9 +546,38 @@ async function verifyVideos(deps: RunDeps, now: number, summary: RunSummary): Pr
         adapter,
         candidates.map((c) => c.externalId),
       );
-      const result = applyVerifyResult(candidates, existing, now);
-      summary.verify.checked += result.checked;
-      summary.verify.hidden += result.hidden;
+      /*
+       * ★★ 比值闸（spec §6.2 第 4 条，2026-09-16 终审冻结）：
+       *    一次 `200` + 一个短得离谱的 `data`（甚至空数组）与"这一批真的都过期了"
+       *    长得一模一样，而它一次能埋掉最多 `TRACK_LIMITS.verify` 行、退出码还留在 0 ——
+       *    而应用里**没有**"恢复显示"这个动作（spec §7 第 2 条）。
+       *    ⇒ 批次够大（≥ `VERIFY_MIN_BATCH_FOR_RATIO`）而消失的**超过一半**时，
+       *      这一批走与"上游抛错"同一处置：**一个字段都不写**（含 `verify_checked_at`），
+       *      只记**一条** `verifyErrors`（退出码随之非零，§6.3 —— 它是响的，不是静默的）。
+       *    ⚠️ 消息里必须写清"**多少个里的多少个**不见了、这一批被放弃"：那是这一行的
+       *      全部信息，而操作者看到的只有这一行（`⚠️ 核对失败: platform=… error=…`）。
+       *    ⚠️ 记**一条**而不是每个 id 一条：这个数字本来就是"一批"的属性，
+       *      而退出码只关心"有没有 ≥ 1 条"。
+       *    ⚠️ 它**不替代**下面那个 catch：那条管的是"这批没问到"，
+       *      这条管的是"问到了、但答案长得不像真的"。
+       */
+      const missing = candidates.filter((c) => !existing.has(c.externalId)).length;
+      const ratioSuspicious =
+        candidates.length >= VERIFY_MIN_BATCH_FOR_RATIO &&
+        missing > candidates.length * VERIFY_MAX_MISSING_RATIO;
+      if (ratioSuspicious) {
+        summary.verify.failed += 1;
+        summary.verifyErrors.push({
+          platform,
+          error:
+            `一批 ${String(candidates.length)} 个 id 里有 ${String(missing)} 个上游都不认了` +
+            `（超过一半）⇒ 整批放弃：一条都不隐藏、一个字段都不写（上游的形状变了？）`,
+        });
+      } else {
+        const result = applyVerifyResult(candidates, existing, now);
+        summary.verify.checked += result.checked;
+        summary.verify.hidden += result.hidden;
+      }
     } catch (error) {
       const message = errorText(error);
       summary.verify.failed += 1;
