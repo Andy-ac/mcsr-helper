@@ -65,6 +65,27 @@ export interface CreatorRef {
   handle: string;
   displayName: string;
   avatarUrl: string | null;
+  /**
+   * ★ 平台自己的小东西 —— **2026-09-16 补的**（spec §5 同日修订，落的是 §5.5 那条裁决）。
+   *
+   * 缺口是具体的：§5.5 裁决了 YouTube 的 **uploads 播放列表 ID** 存进
+   * `tracked_creators.platform_meta`，而 `CreatorRef`（上面那一段是 spec §5 逐字）
+   * **没有地方装它** ⇒ `resolveCreator`（唯一知道那个 ID 的地方）拿到的值传不进
+   * `createCreator` ⇒ 每轮同步都只能重新 `channels.list` 一次 —— 那是**白烧配额**，
+   * 而且烧得静悄悄（§5.2 那句"这个 ID 要存下来"说的正是这件事）。
+   * ⇒ 加一个**可选**字段，补上这条路：`resolveCreator` 填 → `createCreator` 落库（JSON 文本）
+   * → 同步时从 creator 上读回来（`StoredCreator.platformMeta`）。
+   * 没有平台小东西的适配器**不填**（bilibili 今天就不填），所以它是可选的：
+   * 必填的话，三个适配器里有两个要为了签名好看而传一个 `null`。
+   *
+   * ⚠️ 它是**适配器之间**的东西，不进对外形状：`TrackedCreator`
+   * （管理面板 / 公开列表读的那一份，`packages/shared/src/tracking.ts`）**不带它** ——
+   * 平台内部字段不该泄漏到 web 层（`tracked-videos.ts` 的 `StoredCreator` 是它的落点）。
+   * ⚠️ 类型是 `Record<string, unknown>` 而不是某个具体形状：那一列是**每个平台各自的**
+   * 小东西（§5.5：YouTube 的 uploads id、Twitch 将来可能还有别的），
+   * 由各适配器自己定义键名；代价是读出来要用时得自己窄化，而这正是"各平台不一样"的代价。
+   */
+  platformMeta?: Record<string, unknown> | null;
 }
 
 export interface PlatformAdapter {

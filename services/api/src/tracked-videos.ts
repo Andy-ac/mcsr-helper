@@ -118,7 +118,42 @@
  *   行与视频都留着，但既不回填也不增量。漏掉一边的表现是"停用之后他还在被增量同步"，
  *   而管理面板上那一行明明写着"已停用"。
  *
- * ⚠️ 两处**不照字面**的地方，都写在这里：
+ * ★★ **排序是公平性的一部分，不是装饰**（2026-09-16 裁决，两条查询同一条规则）：
+ *
+ * ```sql
+ * ORDER BY consecutive_failures ASC, COALESCE(last_synced_at, 0) ASC, id ASC
+ * ```
+ *
+ * 它防的是**饿死**，而饿死是这一层**唯一**能造成的"整份名单停摆"：返回是**有界**的
+ * （`limits.backfill` / `limits.incremental` 是 spec §3.3 表达"一次运行有界"的**唯一**一处），
+ * 而 `recordFailure` **故意不动 `last_synced_at`**（那是**成功**的水位，见那个函数）。
+ * 两件事合起来之后，一个**永远抓不到**的博主（频道被删、链接永久 404、持续 -412 风控）
+ * 在库里与"刚加进来、还没抓过"的行**长得一模一样**：`last_synced_at` 是 NULL、
+ * `backfill_done` 是 0 ⇒ 它**每一轮**都算"到点"。今天没有顺序的话，
+ * `LIMIT 20` 每次挑出来的都可能是同样的 20 个坏博主（SQLite 不保证顺序，实际就是扫描顺序）
+ * ⇒ 名单上其余的人**永远轮不到**，而且每一轮都"成功跑完"、日志里一行错都没有。
+ * 具体到数字：`limits.backfill = 20` 遇上 20 个永久坏掉的频道 = **全名单饿死**。
+ *
+ * ⇒ 用**两个已经存在的列**表达（不加列、不动迁移 020）：
+ *   · `consecutive_failures ASC` —— 失败过的沉到后面，**一直失败的越沉越深**
+ *     （那一列只在一次成功时清零，所以"起来了"的博主会自己回到前面）；
+ *   · `COALESCE(last_synced_at, 0) ASC` —— 同一档里**从没成功过**的排最前
+ *     （NULL ⇒ `0` ⇒ 最小，这正是想要的：新加的博主先跑一轮），然后是最久没同步的。
+ *     ⚠️ `COALESCE` 写出来而不是靠 `ORDER BY last_synced_at ASC` 那条隐式规则
+ *     （SQLite 里 NULL 在 ASC 时排最前）：两者的结果**今天**一样，但后者依赖一条
+ *     "读的人得知道 SQL 怎么排 NULL"的规则，而这条 SQL 的意图必须自己读得出来 ——
+ *     与下面那个 `IS NULL` 分支同一条理由。
+ *   · `id ASC` 只负责**稳定性**，与公平无关：id 是随机 UUID，它保证的是
+ *     "同一个状态查两次给同一个顺序"（重试、翻页、日志对照都靠它）。
+ *
+ * 被否掉的做法（代价写在明面上）：**给失败的博主做退避**（写一个 `next_due_at` 列）——
+ *   那是"更彻底"的方案，但它要动迁移 020 的 DDL（已冻结、有逐列测试钉着），
+ *   而且当场要回答"退避多久"这个**没有依据**的问题（5 分钟？1 小时？指数？）。
+ *   现成的两列表达的是同一条意图（坏的在后面、新来的在前面），代价是：
+ *   **坏博主仍然每轮占一个名额，只是排在最后** —— 真要把它彻底隔离在限额之外，
+ *   那是 T6 的事（`consecutive_failures` 到了某个数就跳过），不是这一层的。
+ *
+ * ⚠️ 另两处**不照字面**的地方，都写在这里：
  *   ① `last_synced_at IS NULL` 也进增量。字面照抄的话 `NULL < 任何数` 是 NULL ⇒
  *      这一行**永远不会**到点。它在今天的写入路径上到不了（`advanceCursor` 把
  *      `backfill_done` 与 `last_synced_at` 一起写），但真出现时的表现是"这个博主
@@ -267,6 +302,22 @@ function toStoredCreator(row: CreatorRow): StoredCreator {
     lastCursor: row.last_cursor,
     platformMeta: parsePlatformMeta(row.platform_meta),
   };
+}
+
+/**
+ * `platformMeta`（适配器给的对象）→ 存进 `platform_meta` 的那个值。
+ *
+ * ★ 没有就是 `NULL`，**不是** `'{}'`、也不是空串：这一列是两个状态的载体 ——
+ *   "这个平台在库里没有自己的小东西"（bilibili 今天就是这样）与"有一组空的小东西"，
+ *   而空串进 JSON 解析会走 `parsePlatformMeta` 的 catch 分支（读出来仍是 `{}`），
+ *   于是**坏值**与**没有**在库里长得一样，将来查"这一列到底有没有人写"就查不出来了。
+ * ⚠️ 反向的 `parsePlatformMeta` 把 `NULL` 读成 `{}`：那是**读**那一侧的选择
+ *   （调用方要多一层 `?.` 才能用，而它几乎总是"取里面的某个键"），
+ *   与这里"写的时候把两个状态分开存"不矛盾：库里分得开，读出来才好按需归一化。
+ */
+function storedPlatformMeta(meta: Record<string, unknown> | null | undefined): string | null {
+  if (meta === undefined || meta === null) return null;
+  return JSON.stringify(meta);
 }
 
 /**
@@ -420,16 +471,21 @@ function getCreator(id: string): TrackedCreator | null {
  * `INSERT ... ON CONFLICT (platform, external_id) DO UPDATE` 里那三列**故意不在**。
  * 见文件头第五节；这里再点名一次，因为改这一行的人八成是从这里读起的。
  *
- * ⚠️ `platform_meta` 建行时留 `NULL`：`CreatorRef`（spec §5 **逐字**）里没有放它的地方，
- *    所以 YouTube 的 uploads 播放列表 ID 到不了这个签名里 —— T8 要写它的话，
- *    加的是另一个函数（那也符合"谁的信息谁负责"：这一层收的是已经解析好的 `CreatorRef`）。
+ * ⚠️ `platform_meta` **建行时就落**（照 spec §5.5 与 §5 那个补上的可选字段）：
+ *    YouTube 的 uploads 播放列表 ID 只有 `resolveCreator` 知道（`channels.list` 那一次），
+ *    不在建行时存下来的话，**每轮同步都要重新 `channels.list`** ——
+ *    那是白烧配额，而且烧得静悄悄（`tracking/types.ts` 的 `CreatorRef.platformMeta`
+ *    那段写着这条路的来龙去脉）。`CreatorRef` 没带它 ⇒ 这一列就是 `NULL`
+ *    （**不是**空串、也**不是** `'{}'`：`NULL` 是"这个平台没有小东西"，
+ *    而 `'{}'` 是"有一组空的小东西"—— 两个不同的状态，读出来一个 `{}` 一个 `{}`，
+ *    所以关键是别把"没有"写成"空的"，`tracking-store.test.ts` ③ 两条各钉一边）。
  */
 const INSERT_CREATOR_SQL = `
   INSERT INTO tracked_creators (
     id, platform, external_id, handle, display_name, avatar_url, platform_meta,
     backfill_done, last_cursor, last_synced_at, last_error, consecutive_failures,
     enabled, added_by, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL, 0, 1, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, 0, 1, ?, ?, ?)
 `;
 
 /**
@@ -454,6 +510,11 @@ export type CreateCreatorResult =
 /**
  * 加一个博主。
  *
+ * ⚠️ `ref.platformMeta` **落库**（JSON 文本，没有就是 `NULL`）：那是 spec §5.5 要存的
+ *    YouTube uploads 播放列表 ID 唯一进得了库的地方 —— 它不在对外形状里
+ *    （`TrackedCreator` 不带它），所以建行这一次是**唯一**的写入口，
+ *    漏掉的表现是"每轮同步都重新 `channels.list`"（`INSERT_CREATOR_SQL` 那段写着）。
+ *
  * ⚠️ 重复的判定靠**再查一次**，不是靠匹配错误文本（`/UNIQUE constraint failed/`）：
  *    那条文本属于 SQLite 的版本，而"按 message 判"这件事本仓已经否过一次
  *    （`tracking/types.ts` 的文件头）。真出了别的写库错误时，这里把原异常**重新抛出去** ——
@@ -475,6 +536,8 @@ export function createCreator(
       ref.handle, // handle（可读标识；没有就是空串，库里 DEFAULT ''）
       ref.displayName, // display_name
       ref.avatarUrl ?? null, // avatar_url（拿不到就是 NULL，不是空串）
+      // platform_meta（JSON 文本；没有就是 NULL —— 见 storedPlatformMeta）
+      storedPlatformMeta(ref.platformMeta),
       addedBy, // added_by（谁加进来的；`ON DELETE SET NULL`，人没了只擦这一格）
       now, // created_at
       now, // updated_at
@@ -574,11 +637,23 @@ export function deleteCreator(id: string): boolean {
  * ⚠️ `now` 是**参数**（裁决 2）：这一层不看时钟。测试因此不用冻结时间就能钉住
  *    "超过一小时才算到点"那条边界（3599 / 3600 / 3601）。
  *
- * 排序两条都是**确定性**的公平：
- *   · 回填按"谁先被加进来"（`created_at ASC`）—— 队列语义；
- *   · 增量按"谁最久没同步"（`last_synced_at ASC`，NULL 排最前）——
- *     到点的博主多于限额时（限额 40，名单可能有 60 个），
- *     按同步时间排才不会让后 20 个**永远**轮不到。
+ * ★★ 两条查询的排序**完全一样**，而且它防的是**饿死**（理由与两个键各自的道理
+ *    写在文件头第七节，冒号后面是那句 SQL）：
+ *
+ * ```sql
+ * ORDER BY consecutive_failures ASC, COALESCE(last_synced_at, 0) ASC, id ASC
+ * ```
+ *
+ *    · `consecutive_failures ASC` —— 失败的博主沉到后面。**没有这一条的话**，
+ *      一个永远抓不到的博主（`recordFailure` 不动 `last_synced_at` ⇒ 它每一轮都"到点"）
+ *      会把 `limits.backfill = 20` 里的名额**每轮**占住，名单上其余的人永远轮不到，
+ *      而每一轮都"成功跑完"、日志里一行错都没有。
+ *    · `COALESCE(last_synced_at, 0) ASC` —— 同档里从没成功过的排最前（NULL ⇒ 0 ⇒ 最小），
+ *      然后是最久没同步的 ⇒ 到点的博主多于限额时（限额 40、名单 60），
+ *      后 20 个不会**永远**轮不到。
+ *    · `id ASC` —— 只保证同一个状态查两次给同一个顺序（公平性由前两个键表达）。
+ * ⚠️ 被否掉的"给失败者加退避列"与它的代价写在文件头第七节（要动已冻结的 DDL +
+ *    当场要回答"退避多久"这个没依据的问题）。改这两个 ORDER BY 之前先读那一段。
  */
 export function pickDueCreators(
   now: number,
@@ -591,7 +666,7 @@ export function pickDueCreators(
       `${CREATOR_SELECT}
         WHERE c.backfill_done = 0 AND c.enabled = 1
         GROUP BY c.id
-        ORDER BY c.created_at ASC, c.id ASC
+        ORDER BY c.consecutive_failures ASC, COALESCE(c.last_synced_at, 0) ASC, c.id ASC
         LIMIT ?`,
     )
     .all(nonNegativeInt(limits.backfill)) as unknown as CreatorRow[];
@@ -607,7 +682,7 @@ export function pickDueCreators(
         WHERE c.backfill_done = 1 AND c.enabled = 1
           AND (c.last_synced_at IS NULL OR c.last_synced_at < ?)
         GROUP BY c.id
-        ORDER BY c.last_synced_at ASC, c.id ASC
+        ORDER BY c.consecutive_failures ASC, COALESCE(c.last_synced_at, 0) ASC, c.id ASC
         LIMIT ?`,
     )
     .all(

@@ -127,6 +127,14 @@ interface RawCreatorRow {
 }
 
 interface RawCreator {
+  /**
+   * 覆盖主键。
+   *
+   * ⚠️ 排序那一组要用它：那条断言说的是"**顺序**"，所以夹具得能把"插入顺序"与"id 顺序"
+   *    都摆在**与期望顺序相反**的方向上 —— 否则把 `ORDER BY` 删掉（退化成扫描顺序）
+   *    时那条断言照样绿，而它正是这一组存在的理由。
+   */
+  id?: string;
   platform?: TrackPlatform;
   externalId?: string;
   displayName?: string;
@@ -149,7 +157,7 @@ interface RawCreator {
  */
 function insertCreator(input: RawCreator = {}): string {
   const name = nextName('tc');
-  const id = input.externalId === undefined ? name : `${name}@${input.externalId}`;
+  const id = input.id ?? (input.externalId === undefined ? name : `${name}@${input.externalId}`);
   getDb()
     .prepare(
       `INSERT INTO tracked_creators (${CREATOR_COLUMNS})
@@ -539,6 +547,75 @@ describe('追踪数据层：③ 同一个博主加两次', () => {
 });
 
 // ---------------------------------------------------------------------------
+// platform_meta：从 CreatorRef 落库，再从同步那条路读回来（spec §5.5）
+// ---------------------------------------------------------------------------
+
+describe('追踪数据层：platform_meta 的往返（§5.5：uploads 播放列表 ID 唯一的落点）', () => {
+  it('★★ 带 platformMeta 的 CreatorRef 必须落进 platform_meta（否则每轮白烧一次 channels.list）', () => {
+    /*
+     * ⚠️ 这条钉的是一个**真缺口**（spec §5 于 2026-09-16 为它补了 `CreatorRef.platformMeta`）：
+     *    §5.5 把 YouTube 的 uploads 播放列表 ID 交给 `tracked_creators.platform_meta`，
+     *    而**知道那个 ID 的只有 `resolveCreator`**（它刚打完那一次 `channels.list`）。
+     *    这条路断掉的表现**不是报错**，是每轮同步都重新 `channels.list` 一次 ——
+     *    配额在烧，而日志里一切正常（`tracking/types.ts` 那个字段的注释写着来龙去脉）。
+     */
+    const meta = { uploadsPlaylistId: 'UU-meta-1', resolvedAt: NOW };
+    const result = createCreator(
+      {
+        platform: 'youtube',
+        externalId: 'UC-meta-1',
+        handle: '@meta',
+        displayName: 'Meta 频道',
+        avatarUrl: null,
+        platformMeta: meta,
+      },
+      null,
+      NOW,
+    );
+    if (!result.ok) assert.fail(`夹具：加博主不该失败（${JSON.stringify(result)}）`);
+    const id = result.creator.id;
+
+    assert.equal(
+      rawCreator(id)?.platform_meta,
+      JSON.stringify(meta),
+      '★ §5.5 那一列存的是**这个 JSON 文本** —— 丢了它，T8 的适配器就只能每轮重打一次 channels.list',
+    );
+
+    /*
+     * 回读那一侧：同步时拿的是 `StoredCreator`（`pickDueCreators` 返回的超集），
+     * 它必须给出**对象**，否则 T8 的适配器自己还得再 `JSON.parse` 一次
+     * （两次解析两处形状，其中一处迟早会漂）。
+     */
+    const mine = pickDueCreators(NOW, { backfill: 200, incremental: 200 }).backfill.find(
+      (c) => c.id === id,
+    );
+    assert.deepEqual(
+      mine?.platformMeta,
+      meta,
+      '★ 同步那条路读回来的是对象（T8 的适配器直接取 uploadsPlaylistId 用）',
+    );
+
+    assert.equal(
+      'platformMeta' in result.creator,
+      false,
+      '★ 对外形状（`TrackedCreator`，管理面板直接塞进 JSON 的那一份）**不许**带上它：' +
+        '平台内部字段不进 web 层 —— 要读它就得走 `StoredCreator`（同步那条路）',
+    );
+  });
+
+  it("★ CreatorRef 没带 platformMeta ⇒ 那一列是 NULL（不是空串、也不是 '{}'）", () => {
+    /*
+     * ⚠️ "这个平台没有小东西"（bilibili 今天就是这样）与"有一组空的小东西"是两个状态。
+     *    写成 `''` 时 JSON 解析走 catch、写成 `'{}'` 时解析出空对象 ——
+     *    两个读出来都像"没有"，于是**将来查不出这一列到底有没有人在写**，
+     *    而这一列的存在理由正是"有适配器会写它"（§5.5）。
+     */
+    const id = addCreator({ platform: 'bilibili', externalId: 'mid-no-meta' });
+    assert.equal(rawCreator(id)?.platform_meta, null, '★ 没有就是 NULL');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ④ 待办从状态推导
 // ---------------------------------------------------------------------------
 
@@ -641,7 +718,6 @@ describe('追踪数据层：④ pickDueCreators（待办从状态推导，没有
       lastCursor: 'pn=3',
       platformMeta: JSON.stringify({ uploadsPlaylistId: 'UU-abc' }),
     });
-    pickDueCreators(NOW, { backfill: 50, incremental: 50 });
 
     const mine = pickDueCreators(NOW, { backfill: 50, incremental: 50 }).backfill.find(
       (c) => c.id === id,
@@ -679,6 +755,114 @@ describe('追踪数据层：④ pickDueCreators（待办从状态推导，没有
     );
     assert.equal(mine?.videoCount, 2);
     assert.equal(mine?.videoCount, storedVideoCount(id), '名单那一列与 storedVideoCount 必须相等');
+  });
+
+  it('④ ★★ 排序第一键：健康的博主排在**一直失败**的前面（否则 20 个坏博主能把限额吃光）', () => {
+    /*
+     * ★★ 这条钉的是**饿死**，不是"顺序好不好看"。三个事实叠起来才有这个坑：
+     *    ① `pickDueCreators` 的返回是**有界**的（`limits.backfill` 是 spec §3.3
+     *       表达"一次运行有界"的**唯一**一处）；
+     *    ② `recordFailure` **故意不动 `last_synced_at`**（那是**成功**的水位）⇒
+     *       一个永远抓不到的博主的 `last_synced_at` **永远是 NULL**、`backfill_done` 永远是 0
+     *       ⇒ 它**每一轮**都算"到点"；
+     *    ③ 它也不会"老到消失"：`created_at` 那类先来先做的顺序对它没有出口。
+     *    ⇒ 没有排序时，`LIMIT 20` 每一轮挑出来的都可能是同样的 20 个坏博主
+     *      （SQLite 不保证顺序，实际就是扫描顺序）⇒ 名单上其余的人**永远轮不到**，
+     *      而每一轮都"成功跑完"、日志里一行错都没有。
+     *    ⇒ 第一键 `consecutive_failures ASC` 就是那个出口。
+     *
+     * ⚠️ 夹具的方向**故意摆成与期望顺序相反**：坏博主**先插入**、id 也**更小**
+     *    （`aaa-…` < `zzz-…`），而且它的 `last_synced_at` 是 NULL —— 单独看**第二键**
+     *    会把它排到最前。所以下面那句断言红的唯一原因只能是**第一键**。
+     */
+    const broken = insertCreator({
+      id: `aaa-broken-${nextName('starve')}`,
+      backfillDone: 0,
+      consecutiveFailures: 5,
+      lastSyncedAt: null,
+      lastError: 'upstream 404',
+    });
+    const healthy = insertCreator({
+      id: `zzz-healthy-${nextName('starve')}`,
+      backfillDone: 0,
+      consecutiveFailures: 0,
+      lastSyncedAt: NOW - 5 * HOUR,
+    });
+
+    const ids = pickDueCreators(NOW, { backfill: 200, incremental: 200 }).backfill.map((c) => c.id);
+    const brokenAt = ids.indexOf(broken);
+    const healthyAt = ids.indexOf(healthy);
+    assert.ok(brokenAt >= 0, '坏的那个**也**到点 —— 这正是这个坑本身（它永远到点）');
+    assert.ok(healthyAt >= 0, '健康的那个也到点');
+    assert.ok(
+      healthyAt < brokenAt,
+      '★ 健康的必须排在**一直失败**的前面 —— 反过来就是饿死：坏博主每一轮都占一个名额，' +
+        '而且它永远不会自己让位（名单上其余的人永远轮不到）',
+    );
+  });
+
+  it('④ ★★ 排序第二键：同档里从没成功过的排最前，然后是最久没同步的', () => {
+    /*
+     * 第一键相同时（都是 0 次失败）比 `COALESCE(last_synced_at, 0)`：
+     *   · NULL（从没成功过）⇒ 0 ⇒ 最小 ⇒ **排最前**：新加的博主先跑一轮；
+     *   · 然后是**最久没同步**的 ⇒ 到点的博主多于限额时（限额 40、名单 60），
+     *     队尾那 20 个不会**永远**轮不到。
+     * ⚠️ 插入顺序**故意与期望顺序相反**（先插"最近刚同步过"的那个）：把 ORDER BY
+     *    删掉、退化成扫描顺序时，最后那句 `oldAt < recentAt` 会当场红。
+     */
+    const recent = insertCreator({ backfillDone: 1, lastSyncedAt: NOW - 2 * HOUR });
+    const never = insertCreator({ backfillDone: 1, lastSyncedAt: null });
+    const old = insertCreator({ backfillDone: 1, lastSyncedAt: NOW - 40 * HOUR });
+
+    const ids = pickDueCreators(NOW, { backfill: 200, incremental: 200 }).incremental.map(
+      (c) => c.id,
+    );
+    const neverAt = ids.indexOf(never);
+    const oldAt = ids.indexOf(old);
+    const recentAt = ids.indexOf(recent);
+    assert.ok(
+      neverAt >= 0 && oldAt >= 0 && recentAt >= 0,
+      '三个都到点（NULL 那个靠 `IS NULL` 那半条 —— 它本来会被 `NULL < 任何数` 静默漏掉）',
+    );
+    assert.ok(
+      neverAt < oldAt,
+      '★ 从没成功过的排在"很久没同步"的前面（新加的博主不该被老账号堵在队尾）',
+    );
+    assert.ok(
+      oldAt < recentAt,
+      '★ 越久没同步越靠前 —— 否则到点的比限额多时，队尾的人**每一轮**都在队尾',
+    );
+  });
+
+  it('④ ★★ 饿死端到端：失败过的博主**仍然到点**，但排在健康博主后面', () => {
+    /*
+     * 上一条用的是手工夹具，这一条走**真实的那条路**：`createCreator` 建行 →
+     * `recordFailure` 记一次失败。两件事必须**同时**成立，缺一不可：
+     *   · 失败**不让**它离队（`last_synced_at` 原地不动 ⇒ 下一轮它还"到点"）——
+     *     这是刻意的（`recordFailure` 那段：「失败不该被藏起来」）；
+     *   · 但它在**顺序**上沉到健康博主的后面 —— 否则"每轮都到点"就等于"每轮都占名额"，
+     *     而 20 个永久坏掉的频道就是**全名单饿死**。
+     */
+    const failing = addCreator();
+    recordFailure(failing, 'bilibili: HTTP 404（频道没了）', NOW);
+
+    // ⚠️ 健康的那个 id 从 'z' 开头：插入顺序与 id 顺序**都**会把它排在 failing 后面
+    const healthy = insertCreator({
+      id: `zzz-healthy-${nextName('e2e')}`,
+      backfillDone: 0,
+      consecutiveFailures: 0,
+    });
+
+    const ids = pickDueCreators(NOW, { backfill: 200, incremental: 200 }).backfill.map((c) => c.id);
+    assert.equal(
+      ids.includes(failing),
+      true,
+      '★ 失败过**不**离队：它下一轮还要被重试（失败不该被藏起来）',
+    );
+    assert.ok(
+      ids.indexOf(healthy) < ids.indexOf(failing),
+      '★ 但它必须排在健康博主的后面 —— "每轮都到点"再加上"每轮都排前面"就是饿死',
+    );
   });
 });
 
