@@ -1,0 +1,35 @@
+# deploy/mcsr-helper-track.timer
+#
+# 安装（deploy.sh 会做）：
+#   sudo install -m 0644 deploy/mcsr-helper-track.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-track.timer
+#   systemctl list-timers mcsr-helper-track.timer    # 看下一次什么时候跑
+#
+# ⚠️ 这个文件名必须与 service 那个**同名**（只是后缀不同）：这里没有写 `Unit=`，
+#    systemd 就是按同名的 service 去找的。
+# ⚠️ 手动触发一轮（排查时用，不影响定时）：
+#   sudo systemctl start mcsr-helper-track.service
+#   journalctl -u mcsr-helper-track -n 40 --no-pager
+
+[Unit]
+Description=MCSR Helper — tracked video sync, every ten minutes
+
+[Timer]
+# 每小时的 0/10/20/30/40/50 分（秒位是 0）—— spec §10 冻结值。
+# ⚠️ 每 10 分钟而不是每小时，是为了"新加的博主最多 10 分钟内开始回填"（§3.4）；
+#    "一小时才增量一次"由 §3.2 那条 `last_synced_at < now - 3600` 在 SQL 里表达，
+#    两者是**两件事**：timer 决定"多久来看一眼"，SQL 决定"谁到点了"。
+OnCalendar=*:0/10
+# 机器关机期间错过的那些点，开机后**补跑一次**（不是补跑全部）。
+# ⚠️ 少了它，一次重启会让"下一次同步"整整推后 10 分钟——而这一轮的功能就是
+#    "加完博主最多 10 分钟开始回填"，那个承诺会随每次重启悄悄变长。
+Persistent=true
+# 抖动最多 30 秒：这台机器上不止一个 timer，而且上游（bilibili）的拒绝是**概率性**的
+# （§2.3）—— 让每次落点略有不同，比每分钟整点齐刷刷打过去更不容易撞上风控。
+# ⚠️ 代价：实际跑的时刻可能是 10:00:27 这种，所以看日志时别拿整点去对。
+RandomizedDelaySec=30
+
+[Install]
+# ⚠️ 是 `timers.target`，不是 `multi-user.target`：timer 归 systemd 的 timer 那一套管。
+WantedBy=timers.target

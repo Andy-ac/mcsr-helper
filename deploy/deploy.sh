@@ -151,6 +151,7 @@ scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
   content/resources.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
+  deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
   "$TMP/caddy-domain.conf" \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
@@ -191,7 +192,7 @@ SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 #    和坑 1 一模一样。换域名时它会一直监听旧域名、给旧域名签证书，
 #    而部署脚本报成功。
 #
-#    ⚠️⚠️ 而且这条**不能靠 reload 生效**：`systemctl reload caddy` 只是让 Caddy
+#    ⚠️⚠️ 而且这条**不能靠 reload 生效**：\`systemctl reload caddy\` 只是让 Caddy
 #         重新读 Caddyfile，**进程的环境变量还是旧的**。Environment= 的改动
 #         必须 restart 才会被进程看到。
 #         所以下面用 CADDY_NEEDS_RESTART 标记：只有 drop-in 真的变了才重启
@@ -260,6 +261,46 @@ if [ -f /tmp/mcsr-helper-api.service ]; then
   fi
 fi
 
+# ---- 视频追踪的 timer（每 10 分钟同步一轮）----
+#
+# 与上面那个 api 单元**完全同一套做法**（\`cmp\` 判断未变就跳过 + install + daemon-reload），
+# 只是这里有两个单元文件，所以用一层循环；\`cmp\` 那一条是本仓既有做法：
+# 无条件 install 会每次部署都改 mtime，于是"文件变没变"这个信息就没了。
+#
+# ⚠️ 只同步**模板**（track.env.example），真正的凭据是 /etc/mcsr-helper/track.env，
+#    由人在服务器上建一次（照 mail.env 的先例，见 deploy/track.env.example）。
+#    模板里没有任何密钥，所以 0644 是对的；真文件必须是 0600 root。
+#
+# ⚠️ \`enable --now\` **每次都执行**：enable 是幂等的，而"只在首次部署时启用"这件事
+#    本仓在 Caddyfile 上踩过坑（改了配置永远不生效，而部署脚本报成功）。
+#    ⚠️ 单元文件改了要 \`daemon-reload\` 才会被 systemctl 看到 —— 而且 reload 之后
+#    systemd 会按新的 OnCalendar 重新排期，所以**不需要** restart 那个 timer
+#    （restart 只会把"下一次"的时间重新数一遍）。
+TRACK_UNITS_CHANGED=0
+for unit in mcsr-helper-track.service mcsr-helper-track.timer; do
+  if [ -f "/tmp/\$unit" ]; then
+    if ! \$SUDO cmp -s "/tmp/\$unit" "/etc/systemd/system/\$unit"; then
+      \$SUDO install -m 0644 "/tmp/\$unit" "/etc/systemd/system/\$unit"
+      TRACK_UNITS_CHANGED=1
+      echo "    \$unit 有变化，已安装"
+    else
+      echo "    \$unit 未变"
+    fi
+  fi
+done
+if [ -f /tmp/track.env.example ]; then
+  \$SUDO install -d -m 0755 /etc/mcsr-helper
+  \$SUDO install -m 0644 /tmp/track.env.example /etc/mcsr-helper/track.env.example
+  echo "    凭据模板已就位：/etc/mcsr-helper/track.env.example"
+fi
+if [ "\$TRACK_UNITS_CHANGED" = "1" ]; then
+  \$SUDO systemctl daemon-reload
+fi
+# ⚠️ 这一句**故意不吞错误**（不加 \`|| true\`）：装不上 timer 就等于这一轮的功能
+#    一次都不会跑，而那种"部署报成功、功能根本不动"正是本仓反复踩过的坑。
+\$SUDO systemctl enable --now mcsr-helper-track.timer
+echo "    追踪 timer 已启用（systemctl list-timers mcsr-helper-track.timer 看下一次）"
+
 # ---------- 桌面安装包 ----------
 #
 # 解到 /srv/mcsr-helper/releases/，由 Caddy 从 /installer/* 提供
@@ -322,7 +363,7 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example
 REMOTE
 ok "部署完成"
 

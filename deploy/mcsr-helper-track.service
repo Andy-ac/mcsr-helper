@@ -1,0 +1,61 @@
+# deploy/mcsr-helper-track.service
+#
+# 安装（deploy.sh 会做，手工装的话是这几行）：
+#   sudo install -m 0644 deploy/mcsr-helper-track.service /etc/systemd/system/
+#   sudo install -m 0644 deploy/mcsr-helper-track.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-track.timer
+#
+# ⚠️ 两个文件名**不能改**：timer 里没有写 `Unit=`，systemd 就是按**同名**去找
+#    这个 service（`mcsr-helper-track.timer` → `mcsr-helper-track.service`）。
+#    改名的表现是"timer 装上了、时间到了什么都没发生"。
+#
+# ⚠️ 这里**故意没有**加固那一套（api 单元里的 ProtectSystem / ReadWritePaths…）：
+#    `ProtectSystem=strict` 会把整个文件系统挂成只读，而 ExecStart 上的 flock
+#    需要在 /run 下**建**一个锁文件 —— 加上加固就变成"每一轮都起不来"。
+#    要加固得先给这个单元一个 RuntimeDirectory，那是另一件事（见报告里的 concern）。
+
+[Unit]
+Description=MCSR Helper — tracked video sync (one shot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=mcsr
+WorkingDirectory=/srv/mcsr-helper/api
+Environment=NODE_ENV=production
+# DB_PATH 显式给出，不依赖 cwd —— 与 mcsr-helper-api.service 同一条理由：
+# 否则"从别的目录启动"会静默打开另一个库文件，表现为"数据不见了"。
+Environment=DB_PATH=/srv/mcsr-helper/api/data/mcsr.db
+# node:sqlite 目前会打印一行 ExperimentalWarning。功能正常，只是噪音；
+# 关掉它以免掩盖真正的警告。
+Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
+# ---- 凭据 ----
+#
+# ⚠️ 密钥**不在这里**，它在服务器上的独立文件 /etc/mcsr-helper/track.env
+#    （chmod 600，root 所有）。理由与 mail.env 完全一样（见 deploy/mail.env.example）：
+#    本单元在版本库里，而 deploy.sh 每次部署都会把它同步到服务器 ——
+#    把 MCSR_YOUTUBE_KEY 写进来 = 把配额提交进 git 历史，删掉也还在历史里。
+#
+# ⚠️ 前缀的 `-` 表示"文件不存在也照常启动"。这不是可有可无的：
+#    bilibili **不需要任何凭据**（spec §2.7），生产上今天就是一个 key 都没有
+#    ⇒ 这个文件通常还不存在，而那**不是**错误（youtube/twitch 会被跳过并打印原因）。
+EnvironmentFile=-/etc/mcsr-helper/track.env
+# ---- 防重叠（★ spec §3.4 要求，不是顺手加的）----
+#
+# `Type=oneshot` 的 timer **不保证**上一轮跑完才启动下一轮：到点了 systemd 就会起。
+# 而 db/index.ts 里 `PRAGMA busy_timeout = 5000` 会让两个重叠的进程**排队等着写**
+# 而不是报错 ⇒ 同一页会被处理两遍、同一个游标会被两个进程各自推进、水位互相覆盖，
+# 而且日志里一行错都没有。⇒ 用 flock 包住 ExecStart（标准做法）。
+#
+# ⚠️ `-n`（--nonblock）是"拿不到锁就立刻退"，而不是排队等。一个全量回填可能几十分钟，
+#    让第二个进程排队等它毫无意义（另一个 10 分钟之后会再来），而且会静默堆出一串待跑进程。
+# ⚠️ 认下的代价：拿不到锁时 flock 退出码是 1 ⇒ systemd 把这一轮记成 **failed**。
+#    也就是说"上一轮还没跑完"在 `systemctl --failed` 里是红的。这是**有意**的：
+#    它同时也是"这一轮的活儿超过了 10 分钟"的信号（回填正在追赶），而那个信号
+#    平时看不到；要是改成静默跳过，名单会**越来越跟不上**而没人发现。
+ExecStart=/usr/bin/flock -n /run/mcsr-helper-track.lock /usr/bin/node /srv/mcsr-helper/api/track.js
+
+# 输出默认就进 journald（不写 StandardOutput= 时它就是 journal，与 api 单元显式写的那两行等价）
+# ⇒ 摘要与失败都在 `journalctl -u mcsr-helper-track` 里，而 spec §6.3 那份摘要的**全部意义**
+#   就是它必须能被人看到。
