@@ -171,6 +171,33 @@
  * `toCreator` / `toStoredCreator` / `toTrackedVideo` 是唯一的三个转换点。
  * 列名**逐列写出来**（不用星号），理由与 `live-shares.ts:89-93` 同一条：
  * 多带一列从响应上看不出来，所以每一列都必须显式加一行。
+ * （`pickVerifiableVideos` 是唯一的例外，见第九节末尾。）
+ *
+ * ===========================================================================
+ * 九、★ 核对：**轮转游标** + "在的与不在的都写"（spec §6.1 / §6.2）
+ * ===========================================================================
+ * 两句话，各防一件**不报错**的事：
+ *   · **挑**（`pickVerifiableVideos`）：`COALESCE(verify_checked_at, 0) ASC` 是轮转游标，
+ *     不是"最新的优先" —— 理由与 `pickDueCreators` 的排序**逐字相同**（第七节）：
+ *     最新优先会让同一批新视频每轮都被问一遍，而**老的那些永远轮不到**，
+ *     每一轮还"成功跑完"、日志里一行错都没有。
+ *   · **写**（`applyVerifyResult`）：每一个被问到的 id 都写 `verify_checked_at`，
+ *     **包括上游还在的那些**。只写"消失的"那些的话，轮转游标会把整批再挑一次 ——
+ *     那不算错（再问一遍是幂等的），只是白问，而且**永远白问同一批**。
+ *
+ * ⚠️★ 这一层**不做"部分成功"**：`existingVideoIds` 要么给出完整集合、要么抛
+ *    （`tracking/types.ts` 里那个方法头上写着"失败必须抛，绝不许当成这些 id 都不存在"），
+ *    所以"失败 ⇒ 一条都不隐藏、连 `verify_checked_at` 都不写"这条防线长在**调用方**
+ *    （`track.ts` 的核对阶段），不在这里。
+ *    在这里"猜一半"的表现会是**静默的批量下架**：请求超时 ⇒ 差集=全部 ⇒ 整批转 hidden。
+ *
+ * ⚠️ 这一层还**没有**别的地方去写 `status = 'hidden'`（v1 没有隐藏端点，编辑是直接改库的）：
+ *    `hidden_reason` 今天的词表只有一个值 `upstream_gone`（spec §3.2 冻结）。
+ *
+ * ⚠️ 第九节唯一的"不算转换点"的地方：`pickVerifiableVideos` 的列少（三格）、形状平，
+ *    再摆一个 `toVerifiableVideo` 只会多一处将来会漂的东西 —— 所以它直接在 SQL 里
+ *    用 `external_id AS externalId` 起别名（这一条是本文件里**唯一**的驼峰别名；
+ *    其余每一处都是 snake_case + 上面的三个转换点，例如同一句里的 `video_count`）。
  */
 import type { TrackedCreator, TrackedVideo, TrackPlatform } from '@mcsr/shared';
 import { newId } from './auth/tokens';
@@ -208,6 +235,7 @@ interface CreatorRow {
   enabled: number;
   created_at: number;
   video_count: number;
+  hidden_count: number;
 }
 
 /** `tracked_videos` 的一行（只取对外的形状要用的那些列）。 */
@@ -245,16 +273,27 @@ const CREATOR_COLUMNS = `
 `;
 
 /**
- * 名单 + 每个博主的条数。
+ * 名单 + 每个博主的条数（两个数，各回答一个问题）。
  *
  * ⚠️ `COUNT(v.id)`（**不是** `COUNT(*)`）：`LEFT JOIN` 对没有视频的博主会补一行全 NULL，
  *    而 `COUNT(*)` 会把那一行也数进去 ⇒ 每个"还没抓过"的博主都显示 1 条，
  *    而这正是管理面板上最需要说老实话的那一格（`COUNT(v.id)` 不数 NULL）。
  * ⚠️ 一次 `GROUP BY` 拿回来，不是每个博主查一次条数（与 `resources.ts:173-180`
  *    那条"列表一页 24 条就是 48 次查询"同一个理由）。
+ *
+ * ★ `video_count` 与 `hidden_count` **故意是两个数**（文件头第二节那对）：
+ *   前者是"库里有多少行"（含隐藏）—— spec §5.1 那个 bilibili 到底判据的输入，
+ *   一个过滤条件都不许加；后者是"其中几行是隐藏的"，只给管理面板显示 `N（隐藏 M）`。
+ *   ⇒ 别把它们"统一"掉：一个少算会让回填永远翻不完，另一个少算只是面板上少一个数字。
+ * ⚠️★ `COALESCE(..., 0)` 不是装饰：一个博主**一条视频都没有**时 `SUM` 返回 `NULL`
+ *   （`LEFT JOIN` 补的那一行），而 `hiddenCount` 对外是 `number` ——
+ *   少了它，管理面板上会拿 `null > 0` 去比、并在 JSON 里发出一个 `null`。
+ *   同一句里的 `SUM` 只认 `'hidden'`：`status` 的值域是迁移 020 的 `CHECK` 钉的，
+ *   所以这里不需要（也不该）写 `NOT IN (...)` 那种反向判据。
  */
 const CREATOR_SELECT = `
-  SELECT ${CREATOR_COLUMNS}, COUNT(v.id) AS video_count
+  SELECT ${CREATOR_COLUMNS}, COUNT(v.id) AS video_count,
+         COALESCE(SUM(CASE WHEN v.status = 'hidden' THEN 1 ELSE 0 END), 0) AS hidden_count
     FROM tracked_creators c
     LEFT JOIN tracked_videos v ON v.creator_id = c.id
 `;
@@ -276,13 +315,14 @@ function toCreator(row: CreatorRow): TrackedCreator {
     enabled: row.enabled === 1,
     videoCount: row.video_count,
     /*
-     * ⚠️ **占位 0**，不是真读数：真正的"隐藏了几条"要 T3 给 `CREATOR_SELECT` 加一个
-     *    `SUM(v.status = 'hidden')`（或 `COUNT(...) FILTER`）才数得出来，而那是 T3 的活。
-     *    今天库里也不可能有那样的行 —— 把 `status` 写成 `'hidden'` 的代码路径本身就是 T3 才有的。
-     *    ⇒ 这一格现在编译得过、读数也是对的，但 T3 落地时必须**换成从 SQL 数出来的那个数**，
-     *      别让这个 0 留在这里（管理面板那一列正是靠它显示 `N（隐藏 M）`）。
+     * ★ 真读数，从 `CREATOR_SELECT` 里那一格数出来（`SUM(CASE WHEN v.status = 'hidden' …)`）。
+     *
+     * ⚠️ 这里曾经是**占位 0**（T1 为了让 `TrackedCreator.hiddenCount` 这个必填格编译得过，
+     *    在每一个构造点上补的零），并留了一句"真值要 T3 数出来"。
+     *    T3 到了：管理面板那一格显示的 `N（隐藏 M）` 现在数的是库里真的有几行 hidden。
+     *    写回 0 的话**编译得过、测试也可能绿**，只有界面会永远说"隐藏 0 条"。
      */
-    hiddenCount: 0,
+    hiddenCount: row.hidden_count,
     createdAt: row.created_at,
   };
 }
@@ -402,7 +442,7 @@ function nonNegativeInt(value: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * 公开列表：**只出 `visible` 的**，按发布时间倒序。
+ * 公开列表：**只出 `visible` 的**，按发布时间倒序；`platform` 可选地只出某一个分区。
  *
  * ⚠️ 为什么要过滤 `status`：v1 没有隐藏端点（spec §6.1 里只有五个端点），
  *    所以 `hidden` 是**编辑直接改库**设的 —— 而一个没人读的状态等于没有那个状态。
@@ -410,13 +450,24 @@ function nonNegativeInt(value: number): number {
  *    代价：这个 `total` 与 `storedVideoCount` 因此是两个数（见文件头第二节）——
  *    刻意的，两个数回答的是两个问题。
  *
+ * ★ `platform`（spec §5.1）是**界面那几个分区按钮**的服务端那一半：不传 = 全部，
+ *   传了 = 只出那个平台。⚠️ 它**必须同时进 `items` 与 `total` 的 `WHERE`** ——
+ *   两处漂移的表现是"第 1 页对、翻到第 2 页开始串平台"（**不是**报错），
+ *   所以下面把条件与其参数写成**一处**常量，两个查询都从它拼。
+ *   ⚠️ 非法值的判定**不在这里**：这一层收的是已经归一化好的 `TrackPlatform`
+ *   （文件头第一节的分工），`?platform=foo` 那件事是路由层的 400（spec §5.1）。
+ *
  * ⚠️ `published_at` 为 NULL 的排在**最后**（SQLite 里 NULL 最小，`DESC` 就把它排到末尾），
  *    那正是想要的：日期不知道的视频不该顶在"最新的"位置上冒充今天发的。
  * ⚠️ 第二个排序键不是装饰（`videos.ts:266-270` 写过同一条理由）：同一秒发布的两支视频
  *    SQLite 不保证稳定顺序，翻页时会有记录重复出现或被整页跳过，而界面上看起来
  *    只是"好像漏了几条"。
  */
-export function listTrackedVideos(opts: { limit: number; offset: number }): {
+export function listTrackedVideos(opts: {
+  limit: number;
+  offset: number;
+  platform?: TrackPlatform;
+}): {
   items: TrackedVideo[];
   total: number;
 } {
@@ -425,24 +476,26 @@ export function listTrackedVideos(opts: { limit: number; offset: number }): {
   const offset = nonNegativeInt(opts.offset);
 
   /*
-   * `total` 与 `items` 跑的是**同一个条件**（这里是 `status = 'visible'`），
-   * 所以把条件写成一处常量：两处各写一遍的话，某天给列表加上一个筛选条件时
+   * `total` 与 `items` 跑的是**同一个条件**（可见性 + 可选的分区），
+   * 所以把它连同它的参数绑成一对：两处各写一遍的话，某天给列表再加一个筛选条件时
    * 很容易只改一处 —— 而那种漏掉的表现是"翻到第三页就没有了"。
    */
-  const visible = "status = 'visible'";
+  const where =
+    opts.platform === undefined ? "status = 'visible'" : "status = 'visible' AND platform = ?";
+  const params: string[] = opts.platform === undefined ? [] : [opts.platform];
 
-  const totalRow = db.prepare(`SELECT COUNT(*) AS n FROM tracked_videos WHERE ${visible}`).get() as
-    | { n: number }
-    | undefined;
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) AS n FROM tracked_videos WHERE ${where}`)
+    .get(...params) as { n: number } | undefined;
 
   const rows = db
     .prepare(
       `SELECT ${VIDEO_COLUMNS} FROM tracked_videos
-        WHERE ${visible}
+        WHERE ${where}
         ORDER BY published_at DESC, id ASC
         LIMIT ? OFFSET ?`,
     )
-    .all(limit, offset) as unknown as VideoRow[];
+    .all(...params, limit, offset) as unknown as VideoRow[];
 
   return { items: rows.map(toTrackedVideo), total: totalRow?.n ?? 0 };
 }
@@ -854,6 +907,104 @@ export function storedVideoCount(creatorId: string): number {
     .prepare('SELECT COUNT(*) AS n FROM tracked_videos WHERE creator_id = ?')
     .get(creatorId) as { n: number } | undefined;
   return row?.n ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// 核对：挑候选 / 写结果（spec §6.1 / §6.2）
+// ---------------------------------------------------------------------------
+
+/** 一条"可以被核对"的视频（spec §6.1）。 */
+export interface VerifiableVideo {
+  id: string;
+  externalId: string;
+  platform: TrackPlatform;
+}
+
+/**
+ * 挑这一轮要核对的视频（spec §6.1）。
+ *
+ * ⚠️★ 排序是**轮转游标**，不是"最新的优先"：`COALESCE(verify_checked_at, 0) ASC` 保证
+ *    没查过的先查、查得最早的接着查。最新优先会让同一批新视频每轮都被问一遍，
+ *    而老的那些**永远轮不到**（`pickDueCreators` 的排序注释里写着同一条理由）。
+ * ⚠️ `published_at <= now - minAgeSec` 是**粗筛**：Twitch 的存档最早 7 天过期，
+ *    刚发出来的根本没得可查；`published_at` 为 NULL 的行**永远不挑**（判据是"够老"，
+ *    而"不知道多老"不该被当成够老）。
+ * ⚠️ 只挑 `status = 'visible'`：已经隐藏的不用再问一次。
+ * ⚠️ LIMIT 要挡住非正整数（SQLite 里 `LIMIT -1` 是"不限"）—— 与 `pickDueCreators` 同一条纪律，
+ *    所以用的是同一个 `nonNegativeInt`（连非整数一起挡：`LIMIT 5.5` 会被 SQLite 悄悄当成 5）。
+ * ⚠️ `platform` 是**必填**的（不是可选筛选项）：能问上游"这些 id 还在不在"的能力是**按平台**
+ *    给的（spec §4，今天只有 Twitch 有），而集合是按平台**整批**问的 ——
+ *    把几个平台的行混进一批，问回来的集合就没法解释是哪个平台的答案。
+ */
+export function pickVerifiableVideos(opts: {
+  platform: TrackPlatform;
+  minAgeSec: number;
+  limit: number;
+  now: number;
+}): VerifiableVideo[] {
+  const limit = nonNegativeInt(opts.limit);
+  if (limit === 0) return [];
+  return getDb()
+    .prepare(
+      `SELECT id, external_id AS externalId, platform FROM tracked_videos
+        WHERE platform = ? AND status = 'visible'
+          AND published_at IS NOT NULL AND published_at <= ?
+        ORDER BY COALESCE(verify_checked_at, 0) ASC, id ASC
+        LIMIT ?`,
+    )
+    .all(opts.platform, opts.now - opts.minAgeSec, limit) as unknown as VerifiableVideo[];
+}
+
+/**
+ * 把一次核对的结果写进库（spec §6.2）。**整个批次一个事务**（与 `upsertVideos` 同一条纪律）。
+ *
+ * · 每一个被问到的 id 都写 `verify_checked_at = now`（在的与不在的都写）——
+ *   不写的话轮转游标会把它再挑一次（那不算错，只是白问一遍）。
+ * · 上游**没返回**的那些：`status = 'hidden'` + `hidden_at` + `hidden_reason = 'upstream_gone'`。
+ *
+ * ⚠️ 调用方**只在整批都成功时**才调它：失败时"一条都不隐藏"这条防线在 `track.ts` 里
+ *    （这里不做"部分成功"的处理，因为 `existingVideoIds` 要么给出完整集合、要么抛）。
+ *    ⚠️ 那意味着：`existingExternalIds` **空集合**是"上游说这些一条都不在了"，
+ *    不是"这次没问到" —— 后者根本走不到这里。
+ * ⚠️ `hidden` 只数**真的被改动的行**（`changes`），不是"差集里有几个"：
+ *    `hide` 那句带着 `AND status = 'visible'`，所以已经隐藏过的行不会被重复计数
+ *    （今天挑不到这样的行，但那个前缀是**第二道闸** —— 它保证"隐藏"这件事只发生一次，
+ *    时间与原因因此是**第一次**判定的那一刻，不会被后来的一轮改写）。
+ * ⚠️ 返回的 `checked` 是**这一批问了几个**（`checked.length`），不是"写得动几个"：
+ *    调用方拿它拼 spec §6.3 那行 `核对: 查 N 个 / 隐藏 M 个`。
+ */
+export function applyVerifyResult(
+  checked: ReadonlyArray<{ id: string; externalId: string }>,
+  existingExternalIds: ReadonlySet<string>,
+  now: number,
+): { checked: number; hidden: number } {
+  if (checked.length === 0) return { checked: 0, hidden: 0 };
+
+  const db = getDb();
+  const markChecked = db.prepare('UPDATE tracked_videos SET verify_checked_at = ? WHERE id = ?');
+  const hide = db.prepare(
+    `UPDATE tracked_videos SET verify_checked_at = ?, status = 'hidden',
+            hidden_at = ?, hidden_reason = 'upstream_gone'
+      WHERE id = ? AND status = 'visible'`,
+  );
+
+  let hidden = 0;
+  db.exec('BEGIN');
+  try {
+    for (const row of checked) {
+      if (existingExternalIds.has(row.externalId)) {
+        markChecked.run(now, row.id);
+      } else {
+        // ⚠️ `changes` 的类型是 `number | bigint`（node:sqlite），`Number()` 与 `deleteCreator` 一致
+        hidden += Number(hide.run(now, now, row.id).changes);
+      }
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return { checked: checked.length, hidden };
 }
 
 // ---------------------------------------------------------------------------

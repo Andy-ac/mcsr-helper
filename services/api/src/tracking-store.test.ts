@@ -34,9 +34,12 @@
  *    ⚠️ 例外是**公开列表**那一组 —— 它的 `total` 是**全表**的数（不是按 creator 收窄的），
  *    所以那一组开头显式清一次表并把理由写在那里。没有清理的话，
  *    "total 是匹配行数"会取决于另外三十条用例碰巧留下了什么。
+ *    ⚠️ 第二个例外是最后一组「★ 核对」：它同样有两处**整表**读数（一条没有按 creator
+ *    收窄的 `SELECT`、一条分区内的 `total`），所以它逐条 **`beforeEach` 清表**——
+ *    理由写在那组的头上。其余各组一条都不动。
  */
 import assert from 'node:assert/strict';
-import { after, describe, it } from 'node:test';
+import { after, beforeEach, describe, it } from 'node:test';
 import type { TrackPlatform } from '@mcsr/shared';
 import type { CreatorRef, FetchedVideo } from './tracking/types';
 
@@ -46,11 +49,13 @@ process.env.DB_PATH = ':memory:';
 const { closeDb, getDb } = await import('./db');
 const {
   advanceCursor,
+  applyVerifyResult,
   createCreator,
   deleteCreator,
   listCreators,
   listTrackedVideos,
   pickDueCreators,
+  pickVerifiableVideos,
   recordFailure,
   storedVideoCount,
   updateCreator,
@@ -259,6 +264,48 @@ function hideByHand(platform: TrackPlatform, externalId: string): void {
   getDb()
     .prepare("UPDATE tracked_videos SET status = 'hidden' WHERE platform = ? AND external_id = ?")
     .run(platform, externalId);
+}
+
+/**
+ * 直接写库造一支视频，**只给这两个字段**（`published_at` / `status`）。
+ *
+ * ⚠️ 为什么不能用 `upsertVideos` 造：它写出来的行永远是 `status = 'visible'`、
+ *    永远带 `first_seen_at = now`，而这一组要的恰恰是"库里已经躺着一支**隐藏**的、
+ *    或者**发布得很早**的"——那些状态在今天的写入路径上只有同步过程会产生，
+ *    用例要的是**指定的初值**（与夹具决定 ① 里 `insertCreator` 同一条理由）。
+ * ⚠️ 它**不做**任何归一化、也不改任何默认值，就是一个 `INSERT`：
+ *    这一组要断言的是被测函数**写了什么**，夹具那边多一层逻辑就多一处会藏住 bug 的地方。
+ * ⚠️ 迁移 021 那三列（`verify_checked_at` / `hidden_at` / `hidden_reason`）**不写** ⇒ `NULL`，
+ *    那正是"从没查过、没被隐藏过"的初值；`verify_checked_at` 由用例自己 `UPDATE` 造
+ *    （它要表达的是"这条已经被查过了"）。
+ */
+function insertRaw(
+  creatorId: string,
+  platform: TrackPlatform,
+  externalId: string,
+  over: { publishedAt?: number | null; status?: string } = {},
+): string {
+  const id = nextName('tv');
+  getDb()
+    .prepare(
+      `INSERT INTO tracked_videos (
+         id, creator_id, platform, external_id, title, thumbnail_url, published_at,
+         duration_sec, view_count, comment_count, is_live_replay, tags, status,
+         first_seen_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, 0, '[]', ?, ?, ?)`,
+    )
+    .run(
+      id, // id
+      creatorId, // creator_id
+      platform, // platform
+      externalId, // external_id
+      `视频 ${externalId}`, // title
+      over.publishedAt ?? null, // published_at（Unix 秒；没给就是 NULL，不是 0）
+      over.status ?? 'visible', // status
+      NOW, // first_seen_at
+      NOW, // updated_at
+    );
+  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,5 +1383,141 @@ describe('追踪数据层：updateCreator', () => {
       NOW,
       '没有实质改动就不该动 updated_at —— 那一列是"最后一次真的改到它"',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑦ 核对：挑候选 / 写核对结果 / 分区筛选 / 隐藏计数
+// ---------------------------------------------------------------------------
+
+describe('★ 核对（spec §6.1 / §6.2）', () => {
+  /*
+   * ⚠️ 这一组逐条**清表**（与"公开列表与名单"那一组同一条理由，见文件头夹具决定 ②）：
+   *    下面有两处断言说的是**整张表** —— ② 那条 `SELECT … FROM tracked_videos`
+   *    **没有**按 creator 收窄，③ 那条 `total` 是分区内的**全表**总数。
+   *    不清的话，这两个读数就取决于前面四十条用例碰巧留下了什么
+   *    （跑到这里时表里还躺着"名单"那一组的 BV-l1 / BV-l2，而 ② 断言的是
+   *    "除了自己造的两行，表里一行都没有"）。
+   * ⚠️ 摆在 `beforeEach` 而不是每条用例开头：这样四条用例**互相之间**也不影响
+   *    （② 那条整表断言要求如此），而计划的用例正文可以一个字都不动。
+   * ⚠️ 视频先删、博主后删：这一组只是要把表清空，**不依赖** `ON DELETE CASCADE`
+   *    （那件事有 ② 那一组专门钉着）。
+   */
+  beforeEach(() => {
+    getDb().exec('DELETE FROM tracked_videos');
+    getDb().exec('DELETE FROM tracked_creators');
+  });
+
+  it('★ 候选只挑"该平台 + visible + 够老"的，且按"最久没查过"排序', () => {
+    /*
+     * ⚠️ 夹具形状按**本文件里真实存在的那个**（`addCreator(over) → id` 字符串），
+     *    不是计划片段里的 `addCreator(platform, externalId) → { id }` ——
+     *    计划那一份是照着"另一个形状的夹具"写的，而这里所有用例（连同上面四十条）
+     *    用的都是同一个返回 id 的 `addCreator`。断言一个字都没变。
+     */
+    const c = addCreator({ platform: 'twitch', externalId: 'tw-1' });
+    const fresh = insertRaw(c, 'twitch', 'v-fresh', { publishedAt: NOW - 3600 }); // 太新
+    const old1 = insertRaw(c, 'twitch', 'v-old-1', { publishedAt: NOW - 30 * 86400 });
+    const old2 = insertRaw(c, 'twitch', 'v-old-2', { publishedAt: NOW - 30 * 86400 });
+    const hidden = insertRaw(c, 'twitch', 'v-hidden', {
+      publishedAt: NOW - 30 * 86400,
+      status: 'hidden',
+    });
+    /*
+     * ⚠️★ 这一行**是这条用例里唯一让"另一个平台"那句断言不是空话的东西**：
+     *    上面四行全是 twitch，所以没有它的话，把 `platform = ?` 从候选查询里整个删掉
+     *    也照样绿（那句 `every(v => v.platform === 'twitch')` 会变成同义反复）。
+     *    它同时要是**够老且可见**的 —— 否则它被排除的原因是别的条件，还是证明不了分区。
+     *    ⚠️ 换一个博主（而不是挂在 twitch 博主名下）：这条行要表达的是"库里另一个平台的视频"。
+     */
+    const other = addCreator({ platform: 'bilibili', externalId: 'mid-other' });
+    insertRaw(other, 'bilibili', 'BV-other', { publishedAt: NOW - 30 * 86400 });
+    getDb()
+      .prepare('UPDATE tracked_videos SET verify_checked_at = ? WHERE id = ?')
+      .run(NOW - 100, old1);
+
+    const picked = pickVerifiableVideos({
+      platform: 'twitch',
+      minAgeSec: 6 * 86400,
+      limit: 10,
+      now: NOW,
+    });
+    const ids = picked.map((v) => v.externalId);
+    assert.equal(ids.includes('v-fresh'), false, '刚发出来的不用查（存档最早 7 天过期）');
+    assert.equal(ids.includes('v-hidden'), false, '已经隐藏的不再查');
+    assert.equal(ids[0], 'v-old-2', '从没查过的（COALESCE=0）排在查过的前面');
+    assert.deepEqual(ids.slice(1), ['v-old-1']);
+
+    // 另一张表那种"另一个平台"的行不许被挑到
+    assert.equal(
+      picked.every((v) => v.platform === 'twitch'),
+      true,
+    );
+    void fresh;
+    // ⚠️ `old2` 只用**值**（它的 id 不进任何断言：它被挑到的证据是"排在第一个"），
+    //    所以这一行挡住 `noUnusedVariables` —— 与 `fresh` / `hidden` 同一手法
+    void old2;
+    void hidden;
+  });
+
+  it('★★ 上游只认一部分 ⇒ 只隐藏差集，且每一个被问到的都写 verify_checked_at', () => {
+    const c = addCreator({ platform: 'twitch', externalId: 'tw-2' });
+    const a = insertRaw(c, 'twitch', 'keep-me', {});
+    const b = insertRaw(c, 'twitch', 'gone-me', {});
+    const rows = [
+      { id: a, externalId: 'keep-me' },
+      { id: b, externalId: 'gone-me' },
+    ];
+    const result = applyVerifyResult(rows, new Set(['keep-me']), NOW);
+
+    assert.deepEqual(result, { checked: 2, hidden: 1 });
+    const rowsAfter = getDb()
+      .prepare(
+        'SELECT external_id, status, hidden_at, hidden_reason, verify_checked_at FROM tracked_videos ORDER BY external_id',
+      )
+      .all() as Array<{
+      external_id: string;
+      status: string;
+      hidden_at: number | null;
+      hidden_reason: string | null;
+      verify_checked_at: number | null;
+    }>;
+    assert.deepEqual(
+      rowsAfter.map((r) => [
+        r.external_id,
+        r.status,
+        r.hidden_at,
+        r.hidden_reason,
+        r.verify_checked_at,
+      ]),
+      [
+        ['gone-me', 'hidden', NOW, 'upstream_gone', NOW],
+        ['keep-me', 'visible', null, null, NOW],
+      ],
+    );
+  });
+
+  it('★ listTrackedVideos 的分区筛选：items 与 total 同条件', () => {
+    const c1 = addCreator({ platform: 'bilibili', externalId: 'mid-1' });
+    const c2 = addCreator({ platform: 'twitch', externalId: 'tw-3' });
+    insertRaw(c1, 'bilibili', 'BV-x', {});
+    insertRaw(c2, 'twitch', 'v-x', {});
+    const all = listTrackedVideos({ limit: 10, offset: 0 });
+    const onlyTwitch = listTrackedVideos({ limit: 10, offset: 0, platform: 'twitch' });
+    assert.equal(all.total, 2);
+    assert.equal(onlyTwitch.total, 1, 'total 必须是分区内的总数，不是全表总数');
+    assert.equal(onlyTwitch.items[0]?.platform, 'twitch');
+  });
+
+  it('★ 名单里的 hiddenCount 与 videoCount 各自数各自的', () => {
+    const c = addCreator({ platform: 'twitch', externalId: 'tw-4' });
+    const visible = insertRaw(c, 'twitch', 'v-a', {});
+    const gone = insertRaw(c, 'twitch', 'v-b', {});
+    void visible;
+    applyVerifyResult([{ id: gone, externalId: 'v-b' }], new Set(), NOW);
+    const creator = listCreators().find((x) => x.id === c);
+    assert.ok(creator);
+    assert.equal(creator.hiddenCount, 1);
+    assert.equal(creator.videoCount, 2, 'videoCount 含隐藏 —— 它是 bilibili 到底判据的输入');
   });
 });
