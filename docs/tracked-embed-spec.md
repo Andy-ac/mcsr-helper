@@ -325,16 +325,28 @@ SELECT id, external_id, platform FROM tracked_videos
    - 判据（两个常量都从 `services/api/src/track.ts` 导出，挨着别的核对常量）：
      **这一批问到的 id 至少 `VERIFY_MIN_BATCH_FOR_RATIO = 10` 个**，
      **且消失的个数 `missing > ids.length / 2`**（`VERIFY_MAX_MISSING_RATIO = 0.5`）
-     ⇒ 这一批**一条都不隐藏、一个字段都不写**（连 `verify_checked_at` 都不写），
+     ⇒ 这一批**一条都不隐藏**（`status` / `hidden_at` / `hidden_reason` 一个都不动），
      只记**一条** `verifyErrors`，消息里写明"**多少个里的多少个**不见了、这一批被放弃"，
      于是退出码非零（§6.3）—— 它**不是**静默的，而是"响"的。
+   - ★★ **但"不隐藏"不等于"什么都不写"**（2026-09-17 复审修掉的那一处）：
+     这一批**每一个被问到的 id 都照常写 `verify_checked_at = now`**
+     （`tracked-videos.ts` 的 `markCheckedWithoutHiding`，与第 2 条同一个单位、同样在事务里）。
+     理由是**答案本身是完整的** —— 我们只是选择不照它动手 ⇒ 不能被记成"从没问过"：
+     `pickVerifiableVideos` 的轮转游标是 `COALESCE(verify_checked_at, 0) ASC`，
+     这一批若不盖章就**永远**停在最前面、**每一轮**都被第一个挑中，
+     同平台其余的行**永远轮不到**（`pickDueCreators` 那条饿死，§6.1 那条排序注释），
+     而每一轮都以非零退出码收场 ⇒ 一次多日没核对（timer 停过、部署窗口，或者库里本来就有
+     上游早就清掉的行）就能把**整个过期下架功能**钉死在它自己身上。
+     盖了章它就在队列里排到后面去：等别的行轮过一遍，它会被**重问一次**（重问是幂等的）。
+     ⚠️ 第 3 条那条失败路径**故意相反**：`existingVideoIds` 抛了时我们**什么都不知道**，
+     所以一条都不写 —— 给它盖章才会把那些行**送到队尾**。
    - ⚠️ **那个 10 的下限不是装饰**：刚加的博主手上可能只有三五条 VOD，而它们**真的**会
      一起过期（Twitch 的存档最早 7 天）⇒ 批次小于 10 时这条闸不生效，
      否则"新博主的第一批"永远下不掉、那一栏永远留着几条已经没了的视频。
    - ⚠️ 比较是**严格大于**一半：12 个里 6 个不见了 = **照常隐藏**那 6 个（边界值有一条
      专门的测试钉着，见 `tracking-run.test.ts` 的「核对阶段」那一组）。
    - ⚠️ 它**不**替代第 3 条：`existingVideoIds` 抛错照样是"这批没问清"（什么都不写），
-     而这一条管的是"问清了、但答案长得不像真的"。
+     而这一条管的是"问清了、但答案长得不像真的"（它的"不作数"只体现在**不隐藏**上）。
 
 ### 6.3 摘要与退出码
 
@@ -473,7 +485,7 @@ RunSummary.verifyErrors: Array<{ platform: TrackPlatform; error: string }>;  // 
 | 适配器方法 | `PlatformAdapter.existingVideoIds?(ids: readonly string[]): Promise<ReadonlySet<string>>`（**只有 Twitch 实现**） |
 | Twitch 批量上限 | `TWITCH_VERIFY_BATCH = 100`（适配器内部切批） |
 | 核对的最小年龄 | `VERIFY_MIN_AGE_SEC = 6 * 86400` |
-| 批量核对的比值闸 | `VERIFY_MIN_BATCH_FOR_RATIO = 10`（一批问到这么多 id 才受闸）与 `VERIFY_MAX_MISSING_RATIO = 0.5`（消失的**超过一半** ⇒ 这一批一条都不隐藏、一个字段都不写、记一条 `verifyErrors`，退出码非零；§6.2 第 4 条） |
+| 批量核对的比值闸 | `VERIFY_MIN_BATCH_FOR_RATIO = 10`（一批问到这么多 id 才受闸）与 `VERIFY_MAX_MISSING_RATIO = 0.5`（消失的**超过一半** ⇒ 这一批一条都不隐藏、每个被问到的 id 照常写 `verify_checked_at = now`（`markCheckedWithoutHiding`）、记一条 `verifyErrors`，退出码非零；§6.2 第 4 条）。⚠️ 盖章那一半是 2026-09-17 复审加的：不盖的话这一批永远排在轮转游标最前面 |
 | 每轮核对上限 | `TRACK_LIMITS.verify = 200`（**每个平台各自**；`{ backfill: 20, pages: 20, incremental: 40, verify: 200 }`） |
 | 候选排序 | `COALESCE(verify_checked_at, 0) ASC, id ASC` |
 | 摘要新增行 | `  核对: 查 N 个 / 隐藏 M 个`（**永远打印**） |

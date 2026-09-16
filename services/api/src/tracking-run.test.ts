@@ -30,7 +30,7 @@
 process.env.DB_PATH = ':memory:';
 
 const { closeDb, getDb } = await import('./db');
-const { createCreator, upsertVideos } = await import('./tracked-videos');
+const { createCreator, pickVerifiableVideos, upsertVideos } = await import('./tracked-videos');
 const {
   exitCodeFor,
   formatSummary,
@@ -38,6 +38,7 @@ const {
   runOnce,
   TRACK_LIMITS,
   VERIFY_MAX_MISSING_RATIO,
+  VERIFY_MIN_AGE_SEC,
   VERIFY_MIN_BATCH_FOR_RATIO,
 } = await import('./track');
 const { createBilibiliAdapter } = await import('./tracking/bilibili');
@@ -1412,6 +1413,10 @@ describe('★ 核对阶段（spec §6）', () => {
    *      把 `>` 写成 `>=` 只有这一条会红；
    *    · 3/3（**不够大**）⇒ 全部照常隐藏 —— 把下限去掉（或写小）只有这一条会红，
    *      而它守的是"新博主那几条真的过期的 VOD 还下得掉"。
+   * ★★ 第四条（2026-09-17 的复审修复）钉的是**跨轮**那一半：被放弃的那一批要**盖章**
+   *    （`verify_checked_at = now`，一条都不隐藏），否则它会**每一轮**都被第一个挑中、
+   *    同平台其余的行永远轮不到 —— 那正是"整批放弃"从一个安全阀变成整条功能的死锁
+   *    那一处（理由与现场写在那一条用例的注释里）。
    */
   it('★★ 一批 12 个上游一个都不认 ⇒ **一条都不隐藏**、记一条核对失败、退出码 1', async () => {
     const c = addCreator('twitch', 'tw-ratio-all');
@@ -1439,7 +1444,7 @@ describe('★ 核对阶段（spec §6）', () => {
       }),
     );
 
-    // ① 一条都没隐藏，而且**一个字段都没写**（`verify_checked_at` 与隐藏三列一起看）。
+    // ① 一条都没隐藏，而 `verify_checked_at` **照常盖上**（见下面那条跨轮的用例）。
     const rows = getDb()
       .prepare(
         'SELECT status, hidden_at, hidden_reason, verify_checked_at FROM tracked_videos ORDER BY external_id',
@@ -1453,9 +1458,16 @@ describe('★ 核对阶段（spec §6）', () => {
         status: 'visible',
         hidden_at: null,
         hidden_reason: null,
-        verify_checked_at: null,
+        /*
+         * ★★ 这一格是**跨轮**那一半（本轮的修复点）：隐藏三列一个都不许动，而
+         *    `verify_checked_at` **必须**写。这一批的答案是**完整的**，我们只是选择
+         *    不照它动手 ⇒ 不盖章就等于把它记成"从没问过"，而轮转游标
+         *    （`COALESCE(verify_checked_at, 0) ASC`）会把没问过的行永远排在最前面。
+         *    与失败那条路（`existingVideoIds` 抛了）**故意不同**：那里什么都不写是对的。
+         */
+        verify_checked_at: NOW,
       })),
-      '★★ 整批放弃 ⇒ 12 行一个字段都不许动（连 `verify_checked_at` 都不写）',
+      '★★ 整批放弃 ⇒ 隐藏三列原封不动，而 12 行都要盖上"问过了"（不然它会永远排在最前面）',
     );
 
     // ② 一条核对失败（不是 12 条），消息里写清"多少个里的多少个不见了 + 整批放弃"。
@@ -1555,6 +1567,92 @@ describe('★ 核对阶段（spec §6）', () => {
       .prepare("SELECT COUNT(*) AS n FROM tracked_videos WHERE status = 'hidden'")
       .get() as { n: number };
     assert.equal(hiddenCount.n, 3, '★★ 三条全部隐藏（"新的博主那几条真的过期了"必须下得掉）');
+  });
+
+  it('★★ 被放弃的那一批下一轮**不再**被第一个挑到（盖章 ⇒ 轮转游标往前走，功能不被钉死）', async () => {
+    /*
+     * ★★ 这一条钉的是**跨轮**那一半，而 12/12 那一条只看得到"这一轮什么都没隐藏"。
+     *    修之前：整批放弃那条路**一个字段都不写** ⇒ 这一批的 `verify_checked_at` 停在 `NULL`，
+     *    而 `pickVerifiableVideos` 按 `COALESCE(verify_checked_at, 0) ASC` 挑
+     *    ⇒ 没查过的行**永远**排在最前面，这一批**每一轮**都被第一个挑中，
+     *    同平台其余的行走不到（`tracked-videos.ts` 文件头第九节那条饿死），
+     *    而 CLI 每一轮都以非零退出码收场 ⇒ 一次就把整个过期下架功能钉死在它自己身上。
+     *    ⚠️ 现场是够得着的：Twitch 的普通 VOD 大约 7 天过期，而候选从
+     *    `published_at <= now - 6 天` 起挑（`VERIFY_MIN_AGE_SEC`）⇒ 只要隔了几天没核对
+     *    （timer 停过、部署窗口、或者库里本来就有上游早就清掉的行），
+     *    挑出来的就是这样一批"超过一半都死了"的批次。
+     * ⚠️ 夹具**必须多于一批**的候选（24 行）+ `verify: 12`：① 一批 12 个里消失 12 个
+     *    才够得着那道闸；② "这一批排到后面去了"只有在**还有别的行可挑**时才看得见 ——
+     *    库里只有那 12 行、上限 200 的话，挑回来的必然还是它们，那条断言会**假红**。
+     */
+    const c = addCreator('twitch', 'tw-ratio-rotate');
+    const ids = Array.from({ length: 24 }, (_, i) => `v-rotate-${String(i).padStart(2, '0')}`);
+    for (const id of ids) insertRaw(c.id, 'twitch', id, { publishedAt: NOW - 30 * 86400 });
+
+    const asked: string[][] = [];
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds(batch) {
+        asked.push([...batch]);
+        // 空的 `data`：这一批**一个都不认** ⇒ 12 ≥ 10 且 12 > 6 ⇒ 那道闸每一轮都生效。
+        return new Set<string>();
+      },
+    };
+    const deps = depsFor({
+      adapters: adapterRegistry({ twitch: adapter }).adapters,
+      platformStatus: ONLY_TWITCH,
+      limits: { backfill: 0, verify: 12 },
+    });
+
+    // 第①轮：挑走 12 个，整批放弃（一条都不隐藏，但 12 行都盖了"问过了"）。
+    const first = await runOnce(deps);
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0]?.length, 12, '★ 探针：这一轮确实问了 12 个（不然下面在验一个空批）');
+    assert.deepEqual(first.verify, { checked: 0, hidden: 0, failed: 1 }, '★★ 这一批一条都没隐藏');
+    assert.equal(exitCodeFor(first), 1, '★ 它是响的（§6.3），修的是"喊完之后还会不会卡住"');
+
+    const abandoned = new Set(asked[0] ?? []);
+    const rest = ids.filter((id) => !abandoned.has(id));
+    assert.equal(rest.length, 12, '★ 探针：另外那 12 个这一轮没被问到');
+
+    /*
+     * ★★ 核心断言：`pickVerifiableVideos` —— 也就是 10 分钟后下一轮真正会跑的那一句查询 ——
+     *    挑回来的 12 个里**一个都不能**来自被放弃的那一批。
+     *    把 `markCheckedWithoutHiding` 那一行去掉，这一条必红（实测红在下面**第一条**判据上：
+     *    探针照过 —— 12 个还是挑得满，只是挑回来的正是被放弃的那一批）。
+     *    ⚠️ 探针那一条不是装饰：`pickVerifiableVideos` 返回空集合时，"一个都没混进来"也是真的。
+     */
+    const picked = pickVerifiableVideos({
+      platform: 'twitch',
+      minAgeSec: VERIFY_MIN_AGE_SEC,
+      limit: 12,
+      now: NOW,
+    });
+    assert.equal(
+      picked.length,
+      12,
+      '★ 探针：这一句查询挑得满 12 个（不是空集合，也不是只有 0 个）',
+    );
+    assert.deepEqual(
+      picked.filter((row) => abandoned.has(row.externalId)),
+      [],
+      '★★ 被放弃的那一批**一个都不许**出现在下一轮的候选最前面（它们已经"问过了"）',
+    );
+
+    // 第②轮：问到的**恰好**是第①轮没问到的那 12 个 —— 两轮零重叠，这才叫"没被钉死"。
+    const second = await runOnce(deps);
+    assert.equal(asked.length, 2, '一轮一批（每平台一次）');
+    assert.deepEqual(
+      [...(asked[1] ?? [])].sort(),
+      [...rest].sort(),
+      '★★ 第②轮问的必须是**另外**那 12 个 —— 同一批每轮重问就是那个死锁',
+    );
+    assert.deepEqual(second.verify, { checked: 0, hidden: 0, failed: 1 });
   });
 
   it('★ 两个比值闸常量就是 spec §10 冻结的那两个值（改了它，那道闸的形状就变了）', () => {

@@ -192,6 +192,9 @@
  *    所以"失败 ⇒ 一条都不隐藏、连 `verify_checked_at` 都不写"这条防线长在**调用方**
  *    （`track.ts` 的核对阶段），不在这里。
  *    在这里"猜一半"的表现会是**静默的批量下架**：请求超时 ⇒ 差集=全部 ⇒ 整批转 hidden。
+ *    ⚠️★ 而**第三种情形**（答案完整、但长得不像真的 ⇒ 调用方的比值闸选择不照它动手）
+ *    走的是本文件的 `markCheckedWithoutHiding`：**只盖章、不隐藏** ——
+ *    "不问"与"问了但不作数"是两件事，那个函数头上写着为什么。
  *
  * ⚠️ `status = 'hidden'` 今天**只有一个写入者**：本文件的 `applyVerifyResult`（CLI 的核对阶段
  *    用 `upstream_gone` 写它，spec §6.2）。**它不是"编辑直接改库"设的**了 ——
@@ -1020,6 +1023,54 @@ export function applyVerifyResult(
     throw error;
   }
   return { checked: checked.length, hidden };
+}
+
+/**
+ * 只盖 `verify_checked_at = now`、**判定一个都不碰**（比值闸那条路，spec §6.2 第 4 条）。
+ *
+ * ★★ 它与 `applyVerifyResult` 的**失败形状**是两件事，别把它们合并成一个"算了"：
+ *   · **失败**（适配器抛了）⇒ 调用方一条都不写：我们**什么都不知道**，再问一遍是幂等的，
+ *     而给这批行盖一个"查过了"会把它们**送到队尾**（`COALESCE(verify_checked_at, 0) ASC`）；
+ *   · **这道闸**（拿到了完整答案、但答案长得不像真的）⇒ 答案是**完整的**，
+ *     我们只是**选择不照它动手**（一条都不隐藏），所以这一批不能被记成"从没问过"。
+ *     ⚠️ 不盖章的代价是**整个功能被钉死在这一批上**：它的 `verify_checked_at` 停在 `NULL`，
+ *        而轮转游标把"没查过的"排在最前面 ⇒ 这一批**每一轮**都被第一个挑中，同平台其余的行
+ *        **永远排在它后面轮不到**（文件头第九节那条饿死），并且 CLI 每一轮都以非零退出码收场。
+ *        一次多日没核对（timer 停了、部署窗口、或者库里本来就有上游早就清掉的行）就够触发。
+ *     ⇒ 盖了章它就在队列里**排到后面**去：等别的行都轮过一遍，它会被**重问一次**
+ *       （重问是幂等的）—— 而"这一批这次不作数"仍然由调用方那条 `verifyErrors`
+ *       （含非零退出码）响亮地记着。
+ *
+ * ⚠️★ `now` 的单位是 **Unix 秒**（计划 Global Constraint 2；`audit_log` 才是毫秒）——
+ *    与 `applyVerifyResult` 写的那两列**同一个单位**。传毫秒的话这些行会**永远**排在秒值的后面，
+ *    而每一轮的摘要看起来都正常（第九节那条饿死的另一个入口）。
+ *
+ * ⚠️ 返回的是**真的写进去几行**（`changes` 之和），不是 `rows.length`：管理员在 CLI 跑着的时候
+ *    删掉一个博主，他的行已经跟着级联没了 —— 与 `applyVerifyResult` 里 `hidden` 数 `changes`
+ *    同一条纪律（"写动了几个"才是调用方要知道的数）。
+ */
+export function markCheckedWithoutHiding(rows: ReadonlyArray<{ id: string }>, now: number): number {
+  // 没有要盖的行 ⇒ 连事务都不开（与 `applyVerifyResult` 同一句）。
+  if (rows.length === 0) return 0;
+
+  const db = getDb();
+  // ★ `now` 是 **Unix 秒**：这一句与 `applyVerifyResult` 里的 `markChecked` **逐字一样**，
+  //   只是**不碰** `status` / `hidden_at` / `hidden_reason`（这一条路一条都不隐藏）。
+  const markChecked = db.prepare('UPDATE tracked_videos SET verify_checked_at = ? WHERE id = ?');
+
+  let stamped = 0;
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      // ⚠️ `changes` 的类型是 `number | bigint`（node:sqlite），`Number()` 与 `applyVerifyResult` 一致
+      stamped += Number(markChecked.run(now, row.id).changes);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return stamped;
 }
 
 // ---------------------------------------------------------------------------

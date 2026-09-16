@@ -165,6 +165,7 @@ import { closeDb } from './db';
 import {
   advanceCursor,
   applyVerifyResult,
+  markCheckedWithoutHiding,
   pickDueCreators,
   pickVerifiableVideos,
   recordFailure,
@@ -240,8 +241,12 @@ export const VERIFY_MIN_BATCH_FOR_RATIO = 10;
  *   一次最多埋掉 `TRACK_LIMITS.verify`（**200**）行、退出码还留在 0，
  *   **并且应用里根本没有"恢复显示"这个动作**（spec §7 第 2 条：`status` 一旦变
  *   `hidden` 就只由人改回来）⇒ 一次坏的 `200` 就是一次**手工改库**。
- *   ⇒ 批次够大而消失得太多时，宁可"这一批没问清"（什么都不写、记一条核对失败、
- *     退出码非零），也不做一次不可逆的批量下架。
+ *   ⇒ 批次够大而消失得太多时，宁可"这一批这次不作数"（**一条都不隐藏**、只把
+ *      `verify_checked_at` 盖上让轮转游标往前走、记一条核对失败、退出码非零），
+ *      也不做一次不可逆的批量下架。
+ *      ⚠️★ "不隐藏"**不是**"一个字段都不写"：盖章那一半见 `verifyVideos` 里那个
+ *      `ratioSuspicious` 与 `markCheckedWithoutHiding` —— 不盖章这一批会永远被第一个挑中，
+ *      同平台的其余行永远轮不到。
  *
  * ⚠️ 判据是**严格大于** `0.5`：`missing > ids.length / 2` —— 12 个里 6 个消失
  *    **照常隐藏**那 6 个（边界那一条由 `tracking-run.test.ts` 钉着）。
@@ -494,8 +499,12 @@ async function syncCreator(
  *
  * ★★ 而"**问到了、但答案长得不像真的**"同样不许照单全收（spec §6.2 第 4 条，2026-09-16
  *    终审冻结）：批次 ≥ `VERIFY_MIN_BATCH_FOR_RATIO`（10）且**消失的超过一半**时，
- *    这一批走与失败**同一处置**（什么都不写 + 记一条 `verifyErrors` + 退出码非零），
- *    只是消息自己写（"多少个里的多少个不见了、整批放弃"）。
+ *    **一条都不隐藏** + 记一条 `verifyErrors`（退出码随之非零），消息自己写
+ *    （"多少个里的多少个不见了、整批放弃"）。
+ *    ⚠️★★ 但"不隐藏"**不等于**"与失败同一处置"：这一批的答案是**完整的**，
+ *    我们只是选择不照它动手 ⇒ 它照常**盖 `verify_checked_at`**（`markCheckedWithoutHiding`），
+ *    否则这一批会永远停在轮转游标的最前面、同平台其余的行永远轮不到（那条饿死），
+ *    而失败那条路（下面那个 `catch`）**什么都不写**才对 —— 那里的"不知道"不该被记成"查过了"。
  *    判据在下面那个 `ratioSuspicious`，两个常量的理由写在它们头上。
  *
  * ⚠️★★ `catch` 故意是**笼统的**（不接受"只 catch 已知的那几个类型"这条建议）：
@@ -552,8 +561,20 @@ async function verifyVideos(deps: RunDeps, now: number, summary: RunSummary): Pr
        *    长得一模一样，而它一次能埋掉最多 `TRACK_LIMITS.verify` 行、退出码还留在 0 ——
        *    而应用里**没有**"恢复显示"这个动作（spec §7 第 2 条）。
        *    ⇒ 批次够大（≥ `VERIFY_MIN_BATCH_FOR_RATIO`）而消失的**超过一半**时，
-       *      这一批走与"上游抛错"同一处置：**一个字段都不写**（含 `verify_checked_at`），
-       *      只记**一条** `verifyErrors`（退出码随之非零，§6.3 —— 它是响的，不是静默的）。
+       *      这一批**一条都不隐藏**，只记**一条** `verifyErrors`
+       *      （退出码随之非零，§6.3 —— 它是响的，不是静默的）。
+       *    ⚠️★ 但它**必须盖章**（`markCheckedWithoutHiding`，就在下面），而失败那条路
+       *      （本函数末尾的 `catch`）**什么都不写** —— 两者看着都像"这一批什么都没做"，
+       *      实际是两件不同的事，理由逐字写在那个函数头上：
+       *        · 这里的**答案是完整的**，我们只是选择不照它动手 ⇒ 不盖章的话这一批的
+       *          `verify_checked_at` 停在 `NULL`，而轮转游标（`COALESCE(verify_checked_at, 0) ASC`）
+       *          把没查过的排在最前面 ⇒ 它**每一轮**都被第一个挑中、同平台其余的行**永远
+       *          轮不到**，而且每一轮都以非零退出码收场 —— 整个功能被钉死在这一批上
+       *          （多日没核对、或者库里本来就有上游早就清掉的行，都够触发）；
+       *        · 失败那条路是"**什么都不知道**"：再问一遍是幂等的，而盖章会把那些行
+       *          送到**队尾**。
+       *      ⇒ 盖了章这一批就排到后面去，等别的行轮过一遍再被**重问一次**；
+       *        "这一次不作数"这件事仍然由下面那条 `verifyErrors` 响亮地记着。
        *    ⚠️ 消息里必须写清"**多少个里的多少个**不见了、这一批被放弃"：那是这一行的
        *      全部信息，而操作者看到的只有这一行（`⚠️ 核对失败: platform=… error=…`）。
        *    ⚠️ 记**一条**而不是每个 id 一条：这个数字本来就是"一批"的属性，
@@ -566,12 +587,16 @@ async function verifyVideos(deps: RunDeps, now: number, summary: RunSummary): Pr
         candidates.length >= VERIFY_MIN_BATCH_FOR_RATIO &&
         missing > candidates.length * VERIFY_MAX_MISSING_RATIO;
       if (ratioSuspicious) {
+        // ★ 盖章在前、记账在后（次序上先说"问过了"，再说"这一批不作数"）：
+        //   把每一个**被问到的** id 都盖成"刚问过"，一条都不隐藏 —— 见上面那条 ⚠️★。
+        markCheckedWithoutHiding(candidates, now);
         summary.verify.failed += 1;
         summary.verifyErrors.push({
           platform,
           error:
             `一批 ${String(candidates.length)} 个 id 里有 ${String(missing)} 个上游都不认了` +
-            `（超过一半）⇒ 整批放弃：一条都不隐藏、一个字段都不写（上游的形状变了？）`,
+            `（超过一半）⇒ 整批放弃：一条都不隐藏` +
+            `（这一批照常记成"问过了"，等别的行轮过一遍再重问；上游的形状变了？）`,
         });
       } else {
         const result = applyVerifyResult(candidates, existing, now);
