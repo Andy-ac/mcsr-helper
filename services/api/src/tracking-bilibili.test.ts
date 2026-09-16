@@ -1,0 +1,917 @@
+/**
+ * bilibili 适配器 + 适配器注册表的**逐值契约**（spec §2.1 / §2.3 / §2.4 / §5.1 / §5.4）。
+ *
+ * ===========================================================================
+ * ★★ 本文件里最重要的那一条
+ * ===========================================================================
+ * `code=0` 但 `vlist=[]`，而这个 UP **还有**数据（spec §2.4 实测：pn=5/6 都空，
+ * 而那个 UP 有 124 条）。没有异常、没有非 200、没有非零 code —— 把它读成"到底了"
+ * 就**静默少存 24 条**，而所有错误处理都不会响。
+ * ⇒ 判据是"`vlist.length < ps` **且** 已存条数 >= `page.count`"，
+ *   而本文件要把它**逐条钉住**，并且**再钉一次"`fetchPage` 真的用了它"** ——
+ *   一个写对但没被调用的纯函数和没写是一样的，所以那两条断言是分开的：
+ *   `bilibiliReachedEnd` 那一组管判据，`fetchPage` 那一组管接线。
+ *
+ * ===========================================================================
+ * 为什么这个文件里所有的网络都是假的
+ * ===========================================================================
+ * 本仓每一套测试都是离线的，而这一层**真打出去**的代价不只"慢"：bilibili 的
+ * 风控是**概率性**的（spec §2.3：同一批请求 13 成 / 7 败，放慢到 1.5 秒没改善），
+ * 一个会真发请求的测试会产生**随机红**，而随机红的下场通常是被人加一个 `skip`。
+ * ⇒ 所有网络都走 `createBilibiliAdapter({ fetchImpl, sleep })` 注入的假实现
+ *   （`sleep` 也必须注入：那三条 10 秒退避会让测试真等 30 秒）。
+ *
+ * ===========================================================================
+ * 那些"外部锚"是怎么来的（免得下一个人以为是抄自己的代码）
+ * ===========================================================================
+ * · `MIXIN_KEY` 那 32 个字符：由 `docs/platform-api-feasibility-notes.md:763-765` 里
+ *   实测到的那对 `img_url` / `sub_url` 推出来，而它与公开实现（`bilibili-API-collect`
+ *   的 WBI 文档、以及 `stracker` 那份 Python 实现）里逐字给出的示例值一致。
+ *   ⚠️ 本仓上一轮探针记下的那个 `w_rid=6465d4b8…`（同文件 `:773`）**不能**当锚：
+ *      它只有把重排后的 **64** 个字符整串当 mixinKey 才算得出来，而 spec §2.1 与
+ *      公开实现都是 `[:32]` —— 那行观测抄的是探针自己的实现（而它当时回的是 412）。
+ *      拿它当期望值就是把一个 bug 钉进测试。
+ * · `QUERY_A` / `WRID_A` 与 `QUERY_B` / `WRID_B`：参数串是**手写死的字面量**
+ *   （不是调用被测代码生成的），md5 用 `node:crypto` 现算 —— 所以这两组断言
+ *   是不循环的：被测代码算出的 md5 必须等于"另一条路"算出的同一个 md5。
+ */
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { describe, it } from 'node:test';
+
+import type { TrackedCreator } from '@mcsr/shared';
+
+import { adapterFor, platformStatus } from './tracking';
+import {
+  BILIBILI_MIXIN_KEY_TABLE,
+  BILIBILI_PAGE_SIZE,
+  BilibiliRateLimitError,
+  BilibiliRejectedError,
+  bilibiliAdapter,
+  bilibiliReachedEnd,
+  createBilibiliAdapter,
+  deriveMixinKey,
+  signWbiQuery,
+} from './tracking/bilibili';
+import {
+  InvalidCreatorInputError,
+  NoCredentialsError,
+  PlatformHandshakeError,
+} from './tracking/types';
+
+// ---------------------------------------------------------------------------
+// 夹具
+// ---------------------------------------------------------------------------
+
+/** 所有用例共用的"现在"。⚠️ 固定值：`wts` 进签名，签名要能逐字断言。 */
+const NOW_MS = 1_788_600_000_000;
+const NOW_SEC = NOW_MS / 1000;
+
+/** 实测到的那对 WBI 密钥（`docs/platform-api-feasibility-notes.md:763`）。 */
+const IMG_URL = 'https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png';
+const SUB_URL = 'https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png';
+/** ⇒ 由上面两个推出来的 mixinKey。公开实现里逐字给的就是这个值。 */
+const MIXIN_KEY = 'ea1db124af3c7062474693fa704f4ff8';
+
+const BUVID3 = 'A1B2C3D4-0000-1111-2222-333344445555infoc';
+const BUVID4 = 'E5F6A7B8-6666-7777-8888-9999AAAABBBBinfoc';
+const MID = '703007996';
+
+/** 真实形状的一条 `vlist` 条目（spec §2.2 的样例，字段一个不少）。 */
+const ITEM = {
+  bvid: 'BV1wHtm6rEK3',
+  title: '你有发现今天的我跟过去哪里不一样么？',
+  created: 1_788_594_186,
+  length: '01:51',
+  play: 59_997,
+  comment: 1198,
+  pic: 'http://i1.hdslb.com/bfs/archive/c4e0d891ff00b445c686d84e0a2a.jpg',
+  description: '简介',
+  author: '某UP',
+  mid: 703_007_996,
+  typeid: 1,
+};
+
+function creator(overrides: Partial<TrackedCreator> = {}): TrackedCreator {
+  return {
+    id: 'tc-1',
+    platform: 'bilibili',
+    externalId: MID,
+    handle: MID,
+    displayName: `mid ${MID}`,
+    avatarUrl: null,
+    backfillDone: false,
+    lastSyncedAt: null,
+    lastError: null,
+    consecutiveFailures: 0,
+    enabled: true,
+    videoCount: 0,
+    createdAt: NOW_SEC,
+    ...overrides,
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function htmlResponse(text: string, status = 200): Response {
+  return new Response(text, { status, headers: { 'content-type': 'text/html' } });
+}
+
+/**
+ * 造一个"跟了重定向"的响应。
+ *
+ * ⚠️ `Response.url` 是**只读**的，而且只有真 `fetch` 会填它（`new Response()` 给的是 `''`），
+ *    所以 b23 那条路只能用一个最小替身 —— 被测代码只用 `status` / `url`。
+ */
+function redirectedTo(finalUrl: string): Response {
+  return {
+    status: 200,
+    ok: true,
+    url: finalUrl,
+    headers: new Headers(),
+    text: async () => '',
+  } as unknown as Response;
+}
+
+interface FetchCall {
+  url: string;
+  init: RequestInit | undefined;
+}
+
+interface Harness {
+  adapter: ReturnType<typeof createBilibiliAdapter>;
+  /** 发出去的每一个请求（顺序即先后）。 */
+  calls: FetchCall[];
+  /** 每一次退避（毫秒），用来断言"等了 10 秒、等了 3 次"。 */
+  sleeps: number[];
+  /** 只数列表请求（`arc/search`），握手那两个不算。 */
+  listCalls: () => FetchCall[];
+}
+
+/**
+ * 一个假的 bilibili：默认握手成功（spi 给 buvid，nav 回**未登录**的 `-101`
+ * 但带 WBI 密钥 —— 那是实测的形状），列表请求交给 `onList`。
+ */
+function harness(
+  onList?: (call: FetchCall, listIndex: number) => Response | Promise<Response>,
+): Harness {
+  const calls: FetchCall[] = [];
+  const sleeps: number[] = [];
+
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : String(input);
+    calls.push({ url, init });
+
+    if (url.includes('/x/frontend/finger/spi')) {
+      return jsonResponse({ code: 0, message: 'ok', data: { b_3: BUVID3, b_4: BUVID4 } });
+    }
+    if (url.includes('/x/web-interface/nav')) {
+      // ⚠️ 未登录的真形状：`code: -101`，而 WBI 密钥照样在（spec §2.1 第 ② 步实测）。
+      return jsonResponse({
+        code: -101,
+        message: '账号未登录',
+        data: { wbi_img: { img_url: IMG_URL, sub_url: SUB_URL } },
+      });
+    }
+
+    const listIndex = calls.filter((call) => call.url.includes('/arc/search')).length - 1;
+    if (onList) return onList({ url, init }, listIndex);
+    return jsonResponse(listBody([{ ...ITEM }], 124));
+  }) as typeof fetch;
+
+  const adapter = createBilibiliAdapter({
+    fetchImpl,
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
+  });
+
+  return {
+    adapter,
+    calls,
+    sleeps,
+    listCalls: () => calls.filter((call) => call.url.includes('/arc/search')),
+  };
+}
+
+function listBody(vlist: unknown[], count: number, code = 0): unknown {
+  return { code, message: 'ok', data: { list: { vlist }, page: { count, pn: 1, ps: 50 } } };
+}
+
+/** 列表请求 URL 的参数视图（已解码 —— 断言里要看的是"值"，不是转义）。 */
+function listParams(call: FetchCall): URL {
+  return new URL(call.url);
+}
+
+/** 直接从 URL 里把 `w_rid` 与"它覆盖的那份 query"拆出来（用 node:crypto 现算 md5）。 */
+function splitSignedQuery(url: string): { query: string; wRid: string } {
+  const raw = new URL(url).search.slice(1);
+  const marker = '&w_rid=';
+  const at = raw.lastIndexOf(marker);
+  assert.ok(at > 0, `URL 里没有 w_rid：${url}`);
+  return { query: raw.slice(0, at), wRid: raw.slice(at + marker.length) };
+}
+
+const md5 = (text: string): string => createHash('md5').update(text).digest('hex');
+
+// ---------------------------------------------------------------------------
+// ★★ 判据本身
+// ---------------------------------------------------------------------------
+
+describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () => {
+  describe('bilibiliReachedEnd —— ★★ §2.4 那个坑的判据', () => {
+    it('★ 清单给的四种情形（逐条，一条都不许动）', () => {
+      // 正常到底：返回不足一页，而且我们存够了。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 24, pageSize: 50, storedTotal: 124 }),
+        true,
+      );
+      // ★★ 那个坑：返回 0 条，但我们只存了 100 条，而上游说有 124 条 ⇒ **不许**判定到底。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 0, pageSize: 50, storedTotal: 100 }),
+        false,
+        '空列表**不是**到底了（spec §2.4）—— 判 true 就是静默少存 24 条',
+      );
+      // 返回满页 ⇒ 当然没到底。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 50, pageSize: 50, storedTotal: 50 }),
+        false,
+      );
+      // 我们存够了，而上游多给了几条（增量重叠）⇒ 到底。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 3, pageSize: 50, storedTotal: 124 }),
+        true,
+      );
+    });
+
+    it('+ 两个条件各自都是必需的（缺一个就会在另一个方向上错）', () => {
+      // 只看"不足一页"：这一条会变成 true，而它还差 4 条没存。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 49, pageSize: 50, storedTotal: 120 }),
+        false,
+      );
+      // 只看"存够了"：满页也到底 —— 一个有 200 条的 UP 会在第一页就结束回填。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 200, returned: 50, pageSize: 50, storedTotal: 200 }),
+        false,
+      );
+      // 两个都满足才算到底：这是"刚好差一条"的那一格。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 124, returned: 23, pageSize: 50, storedTotal: 123 }),
+        false,
+      );
+    });
+
+    it('+ 空频道（总数 0）是一条通路，不是死角', () => {
+      // `0 < 50 && 0 >= 0` ⇒ 到底。一个还没投稿的 UP 不会让回填永远跑不完。
+      assert.equal(
+        bilibiliReachedEnd({ pageCount: 0, returned: 0, pageSize: 50, storedTotal: 0 }),
+        true,
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 密钥与签名（唯一能离线逐值钉住的部分）
+  // -------------------------------------------------------------------------
+
+  describe('mixinKey 的重排表与推导', () => {
+    it('★ 64 位表**逐字**就是 spec §2.1 那张表（写错一位全废）', () => {
+      assert.deepEqual(
+        [...BILIBILI_MIXIN_KEY_TABLE],
+        [
+          46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19,
+          29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30,
+          4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+        ],
+        '这 64 个数字是手抄的；后半段抄错一位在行为上完全看不出来（只取前 32 位）',
+      );
+      assert.equal(BILIBILI_MIXIN_KEY_TABLE.length, 64);
+    });
+
+    it('+ 表是 0–63 的一个排列（所以重排不会取到 undefined 再拼进签名）', () => {
+      const unique = new Set(BILIBILI_MIXIN_KEY_TABLE);
+      assert.equal(unique.size, 64, '有重复的下标 ⇒ 必有另一个下标永远取不到');
+      assert.equal(Math.min(...BILIBILI_MIXIN_KEY_TABLE), 0);
+      assert.equal(Math.max(...BILIBILI_MIXIN_KEY_TABLE), 63);
+    });
+
+    it('★ 用实测到的那对密钥推出 mixinKey（外部锚：公开实现给的就是这 32 个字符）', () => {
+      assert.equal(deriveMixinKey(IMG_URL, SUB_URL), MIXIN_KEY);
+      // 换个 img/sub 就是另一把钥匙（证明它真的在用两个输入，不是抄一个常量）。
+      assert.notEqual(deriveMixinKey(SUB_URL, IMG_URL), MIXIN_KEY);
+    });
+
+    it('+ 文件名去扩展名：带查询串、无扩展名、带 hash 都要抠对', () => {
+      const expect = (img: string, sub: string) => deriveMixinKey(img, sub);
+      assert.equal(
+        expect('https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png?t=1', SUB_URL),
+        MIXIN_KEY,
+        '查询串不该进密钥',
+      );
+      assert.equal(
+        expect('7cd084941338484aae1ad9425b84077c', '4932caff0ff746eab6f01bf08b70ac45'),
+        MIXIN_KEY,
+        '没有协议、没有扩展名的裸名字也要能算',
+      );
+    });
+
+    it('★ 拼起来不是 64 个字符 ⇒ 抛握手错误（不许把 "undefined" 塞进签名）', () => {
+      assert.throws(
+        () => deriveMixinKey('https://i0.hdslb.com/bfs/wbi/short.png', SUB_URL),
+        PlatformHandshakeError,
+        '短了一个字符：表的下标会指到 undefined，而那个 mixinKey 只会在服务端变成一个 -352',
+      );
+    });
+  });
+
+  describe('signWbiQuery —— 顺序就是规则（§2.1 第 ③ 步）', () => {
+    /** 一份真实形状的参数集（`ps=50`、`pn=2`、`wts` 固定）。 */
+    const PARAMS_A = {
+      mid: MID,
+      ps: 50,
+      pn: 2,
+      order: 'pubdate',
+      platform: 'web',
+      web_location: 1550101,
+      dm_img_list: '[]',
+      dm_img_str: 'V2ViR0wgMS',
+      dm_img_inter: '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
+      wts: NOW_SEC,
+    };
+    /** 手写死的期望串（不是被测代码生成的）。 */
+    const QUERY_A = [
+      'dm_img_inter=%7B%22ds%22%3A%5B%5D%2C%22wh%22%3A%5B0%2C0%2C0%5D%2C%22of%22%3A%5B0%2C0%2C0%5D%7D',
+      'dm_img_list=%5B%5D',
+      'dm_img_str=V2ViR0wgMS',
+      `mid=${MID}`,
+      'order=pubdate',
+      'platform=web',
+      'pn=2',
+      'ps=50',
+      'web_location=1550101',
+      `wts=${NOW_SEC}`,
+    ].join('&');
+    const WRID_A = '64f8af83878d2732d8c8cf9b6a17d896';
+
+    it('★ 固定参数的 query 与 w_rid（= md5(query + mixinKey)）', () => {
+      const { query, wRid } = signWbiQuery(PARAMS_A, MIXIN_KEY);
+      assert.equal(query, QUERY_A, "键字典序 ⇒ 值的 !'()* 先删 ⇒ URL 编码");
+      assert.equal(wRid, WRID_A);
+      // 与"另一条路"算出来的比对（node:crypto 现算，不经过被测代码）。
+      assert.equal(wRid, md5(QUERY_A + MIXIN_KEY));
+    });
+
+    it("+ 值里的 !'()* 先删再编码；空格按 encodeURIComponent 编码", () => {
+      // `o'k` ⇒ 去掉 ' ⇒ `ok`；`x y` ⇒ `x%20y`（不是 `x+y`）。
+      const { query } = signWbiQuery({ a: "o'k", b: 'x y', c: '!()*' }, MIXIN_KEY);
+      assert.equal(query, 'a=ok&b=x%20y&c=');
+    });
+
+    it('★ 排序排的是**键**，不是"键=值"整串（真实参数分不出这两种写法）', () => {
+      /*
+       * ⚠️ 为什么这条需要一组**专门造**的参数：
+       *   真实参数集（`PARAMS_A`）里没有任何一个键是另一个键的前缀，
+       *   所以"键排序"与"整串排序"给出**完全一样**的顺序 —— 拿它当判据的话，
+       *   "把值编码放在排序之前"那个 mutation 会**绿着过去**。
+       *   `a` 与 `a-b` 才能分开：`'-'`(0x2D) < `'='`(0x3D)，
+       *   整串排序会把 `a-b=x%20y` 排到 `a=ok` **前面**。
+       */
+      const { query, wRid } = signWbiQuery({ a: 'ok', 'a-b': 'x y', zz: '' }, MIXIN_KEY);
+      assert.equal(query, 'a=ok&a-b=x%20y&zz=');
+      assert.equal(wRid, 'b7aac2b409991ae7127f6085f8d5d16e');
+      assert.notEqual(wRid, '89868eef72502295de6e6f6084efe3ca', '后一个是"先编码再排序"算出来的');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 请求形状：★ 风控参数与签名
+  // -------------------------------------------------------------------------
+
+  describe('fetchPage 的请求形状（假 fetch，不打真网络）', () => {
+    it('★ 列表请求那一串参数（ps/pn/order/platform/web_location）', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+
+      assert.equal(h.listCalls().length, 1);
+      const url = listParams(h.listCalls()[0] as FetchCall);
+      assert.equal(url.origin + url.pathname, 'https://api.bilibili.com/x/space/wbi/arc/search');
+      assert.equal(url.searchParams.get('mid'), MID);
+      assert.equal(url.searchParams.get('ps'), String(BILIBILI_PAGE_SIZE));
+      assert.equal(url.searchParams.get('ps'), '50', 'spec §10 冻结表：ps=50');
+      assert.equal(url.searchParams.get('pn'), '1', 'cursor 为 null ⇒ pn=1');
+      assert.equal(url.searchParams.get('order'), 'pubdate');
+      assert.equal(url.searchParams.get('platform'), 'web');
+      assert.equal(url.searchParams.get('web_location'), '1550101');
+      assert.ok(url.searchParams.get('wts'), 'wts 必须带上（签名要用它）');
+    });
+
+    it('★ dm_img_* 三个必须是**空**值（编造非空实测是 412，比不传更糟）', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      const url = listParams(h.listCalls()[0] as FetchCall);
+
+      assert.equal(url.searchParams.get('dm_img_list'), '[]', '不传是 -352；编造非空是 412');
+      assert.equal(url.searchParams.get('dm_img_str'), 'V2ViR0wgMS');
+      assert.equal(
+        url.searchParams.get('dm_img_inter'),
+        '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
+        '三个 0 就是"空形状"，不是占位符',
+      );
+      // 三缺一都不行：少任何一个都回到 -352（spec §2.1 的对照表）。
+      for (const key of ['dm_img_list', 'dm_img_str', 'dm_img_inter']) {
+        assert.ok(url.searchParams.has(key), `${key} 必须存在（存在但为空才对）`);
+      }
+    });
+
+    it('★ w_rid 覆盖**整份** query（含 dm_img_*），且值就是 md5(query + mixinKey)', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+
+      const { query, wRid } = splitSignedQuery((h.listCalls()[0] as FetchCall).url);
+      assert.equal(wRid, md5(query + MIXIN_KEY), '用 node:crypto 从抓到的 URL 重算一遍');
+      assert.ok(
+        query.includes('dm_img_list=%5B%5D'),
+        'dm_img_* 在签名里面（依据见 bilibili.ts 文件头）',
+      );
+      assert.ok(query.includes(`mid=${MID}`));
+      assert.ok(!query.includes('w_rid'), 'w_rid 自己不进签名');
+      assert.match(wRid, /^[0-9a-f]{32}$/);
+    });
+
+    it('+ cookie 与请求头：buvid3/buvid4/b_nut + 探针那套 UA/referer', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      const headers = new Headers((h.listCalls()[0] as FetchCall).init?.headers);
+
+      assert.equal(
+        headers.get('cookie'),
+        `buvid3=${BUVID3}; buvid4=${BUVID4}; b_nut=${Math.floor(Date.now() / 1000)}`,
+      );
+      // ⚠️ Node 的 fetch 默认发 `User-Agent: node`，那是明显的机器人信号（见 bilibili.ts）。
+      assert.match(headers.get('user-agent') ?? '', /^Mozilla\/5\.0 .*Chrome\//);
+      assert.equal(headers.get('referer'), 'https://www.bilibili.com/');
+      assert.equal(headers.get('accept'), 'application/json, text/plain, */*');
+    });
+
+    it('+ 一个实例只握一次手（3 次 fetchPage ⇒ 2 个握手请求 + 3 个列表请求）', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      await h.adapter.fetchPage(creator(), '2', { storedTotal: 50 });
+      await h.adapter.fetchPage(creator(), '3', { storedTotal: 100 });
+
+      assert.equal(h.listCalls().length, 3);
+      assert.equal(h.calls.length, 5, '握手只有最开始那两次');
+      assert.equal(
+        h.calls.filter((call) => call.url.includes('/finger/spi')).length,
+        1,
+        'spec §5.1：每个进程一次',
+      );
+      assert.equal(h.calls.filter((call) => call.url.includes('/nav')).length, 1);
+    });
+
+    it('+ nav 回 `code:-101 账号未登录` 也照样拿到密钥（匿名可用是这条路的前提）', async () => {
+      const h = harness();
+      // harness 的 nav 就是那个未登录形状；能抓到东西就说明没有把 code!==0 当成失败。
+      const page = await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      assert.equal(page.videos.length, 1);
+    });
+
+    it('+ cursor 是页码（"3" ⇒ pn=3）；不是页码就抛，不把脏值送上游', async () => {
+      const h = harness();
+      await h.adapter.fetchPage(creator(), '3', { storedTotal: 100 });
+      assert.equal(listParams(h.listCalls()[0] as FetchCall).searchParams.get('pn'), '3');
+
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), 'abc', { storedTotal: 100 }),
+        BilibiliRejectedError,
+      );
+      assert.equal(h.listCalls().length, 1, '脏游标不该产生请求');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 字段映射（§5.1）
+  // -------------------------------------------------------------------------
+
+  describe('字段映射（spec §5.1 逐字）', () => {
+    it('★ 八个字段逐项对上', async () => {
+      const h = harness();
+      const page = await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+
+      assert.deepEqual(page.videos, [
+        {
+          externalId: 'BV1wHtm6rEK3',
+          title: '你有发现今天的我跟过去哪里不一样么？',
+          // ⚠️ `http://` 被升级成 `https://`：线上 CSP 是 `img-src 'self' data: https:`。
+          thumbnailUrl: 'https://i1.hdslb.com/bfs/archive/c4e0d891ff00b445c686d84e0a2a.jpg',
+          publishedAt: 1_788_594_186,
+          durationSec: 111,
+          viewCount: 59_997,
+          commentCount: 1198,
+          isLiveReplay: false,
+        },
+      ]);
+    });
+
+    it('★ 拿不到的字段是 null，**绝不是 0**（play=0 留着，缺 play 才是 null）', async () => {
+      const h = harness(() =>
+        jsonResponse(
+          listBody(
+            [
+              { bvid: 'BV-zero', title: '零播放', play: 0, comment: 0, created: 1, length: '0:00' },
+              { bvid: 'BV-missing', title: '上游没给这几格', created: 0 },
+            ],
+            2,
+          ),
+        ),
+      );
+      const page = await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      const [zero, missing] = page.videos;
+
+      assert.equal(zero?.viewCount, 0, '真量到的 0 是数据');
+      assert.equal(zero?.commentCount, 0);
+      assert.equal(zero?.durationSec, null, '`0:00` 是"这一格没有时长"（Task 2 的裁决）');
+      assert.ok(zero?.thumbnailUrl === null || typeof zero.thumbnailUrl === 'string');
+
+      assert.equal(missing?.viewCount, null, '缺 play ⇒ null，填 0 就是"没人看"的假数据');
+      assert.equal(missing?.commentCount, null);
+      assert.equal(missing?.durationSec, null);
+      assert.equal(missing?.thumbnailUrl, null, '缺 pic ⇒ null，不是空串');
+      assert.equal(missing?.publishedAt, null, 'created=0 是 1970，归 null');
+    });
+
+    it('★ 缺 bvid / title 不是字符串 ⇒ 抛（跳过它会静默少一支视频）', async () => {
+      const noBvid = harness(() => jsonResponse(listBody([{ title: '没有 bvid' }], 1)));
+      await assert.rejects(
+        () => noBvid.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        /bvid 不是字符串/,
+        'bvid 是 UNIQUE(platform, external_id) 的一半：当空串就会让后面每一条覆盖同一行',
+      );
+
+      const noTitle = harness(() => jsonResponse(listBody([{ bvid: 'BV-x' }], 1)));
+      await assert.rejects(
+        () => noTitle.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        /title 不是字符串/,
+      );
+    });
+
+    it('+ vlist 不是数组 ⇒ 抛（当成空列表就是静默少存一整页）', async () => {
+      const h = harness(() =>
+        jsonResponse({ code: 0, message: 'ok', data: { list: {}, page: { count: 124 } } }),
+      );
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        /vlist 不是数组/,
+      );
+    });
+
+    it('+ page.count 缺失 ⇒ 抛（两种猜法都会静默出错）', async () => {
+      const h = harness(() =>
+        jsonResponse({ code: 0, message: 'ok', data: { list: { vlist: [] }, page: {} } }),
+      );
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        /page\.count 不是数字/,
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★ 判据接进 fetchPage（写对但没接线 = 没写）
+  // -------------------------------------------------------------------------
+
+  describe('★★ 结束判据接进 fetchPage（spec §5.4 + §2.4）', () => {
+    it('★ `code:0` 但空列表、而我们没存够 ⇒ **不许**判定到底，游标停在原地', async () => {
+      const h = harness(() => jsonResponse(listBody([], 124)));
+      const page = await h.adapter.fetchPage(creator(), '3', { storedTotal: 100 });
+
+      assert.equal(
+        page.reachedEnd,
+        false,
+        '这正是 §2.4 那个坑：判 true 就是静默只存了 100 条，而没有任何东西报错',
+      );
+      assert.equal(page.nextCursor, '3', '游标停在原地：这一页没有真数据，往后翻就永久跳过了它');
+      assert.deepEqual(page.videos, []);
+    });
+
+    it('+ 首屏（cursor 为 null）遇到空页也是停在 pn=1', async () => {
+      const h = harness(() => jsonResponse(listBody([], 124)));
+      const page = await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+      assert.equal(page.reachedEnd, false);
+      assert.equal(page.nextCursor, '1');
+    });
+
+    it('+ 满页 ⇒ 游标 +1（不前进的话回填永远停在第一页）', async () => {
+      const fifty = Array.from({ length: 50 }, (_, index) => ({
+        ...ITEM,
+        bvid: `BV-page1-${index}`,
+      }));
+      const h = harness(() => jsonResponse(listBody(fifty, 200)));
+      const page = await h.adapter.fetchPage(creator(), '4', { storedTotal: 150 });
+
+      assert.equal(page.reachedEnd, false, '满页当然没到底');
+      assert.equal(page.nextCursor, '5');
+      assert.equal(page.videos.length, 50);
+    });
+
+    it('+ 真的到底（不足一页 + 存够了）⇒ reachedEnd=true 且 nextCursor=null', async () => {
+      const h = harness(() => jsonResponse(listBody([{ ...ITEM, bvid: 'BV-last' }], 124)));
+      const page = await h.adapter.fetchPage(creator(), '4', { storedTotal: 124 });
+
+      assert.equal(page.reachedEnd, true);
+      assert.equal(page.nextCursor, null, 'null = 没有下一页（spec §5）');
+    });
+
+    it('+ 空页但**已经存够** ⇒ 到底（那才是正常的结束信号）', async () => {
+      const h = harness(() => jsonResponse(listBody([], 124)));
+      const page = await h.adapter.fetchPage(creator(), '4', { storedTotal: 124 });
+      assert.equal(page.reachedEnd, true);
+      assert.equal(page.nextCursor, null);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 限流：★ 两种拒绝
+  // -------------------------------------------------------------------------
+
+  describe('限流与两种拒绝（spec §2.3）', () => {
+    it('★ `code:-412` ⇒ 等 10 秒重试，最多 3 次（4 个请求 / 3 次 10 秒）', async () => {
+      const h = harness(() => jsonResponse({ code: -412, message: '请求被拦截' }));
+
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(
+            error instanceof BilibiliRateLimitError,
+            `期望限流错误，实际是 ${String(error)}`,
+          );
+          assert.equal(error.retryable, true);
+          assert.equal(error.retries, 3);
+          return true;
+        },
+      );
+      assert.equal(h.listCalls().length, 4, '首发 + 3 次重试');
+      assert.deepEqual(
+        h.sleeps,
+        [10_000, 10_000, 10_000],
+        'spec §2.3 实测：等 2s ❌ / 5s ❌ / 10s ✅',
+      );
+    });
+
+    it('+ 第二次就成功 ⇒ 只发 2 个请求、只等 1 次', async () => {
+      const h = harness((_call, index) =>
+        index === 0
+          ? jsonResponse({ code: -412, message: '请求被拦截' })
+          : jsonResponse(listBody([{ ...ITEM }], 1)),
+      );
+      const page = await h.adapter.fetchPage(creator(), null, { storedTotal: 0 });
+
+      assert.equal(h.listCalls().length, 2);
+      assert.deepEqual(h.sleeps, [10_000]);
+      assert.equal(page.videos.length, 1);
+    });
+
+    it('+ `HTTP 412`（状态码那种）走同一条退避', async () => {
+      const h = harness(() => htmlResponse('request was banned', 412));
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        BilibiliRateLimitError,
+      );
+      assert.equal(h.listCalls().length, 4);
+      assert.equal(h.sleeps.length, 3);
+    });
+
+    it('★ `code:-352` ⇒ **立刻抛、不重试**（与 -412 是两种拒绝）', async () => {
+      const h = harness(() => jsonResponse({ code: -352, message: '风控校验失败' }));
+
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(
+            error instanceof BilibiliRejectedError,
+            `-352 必须是"被拒"而不是"限流"，实际是 ${String(error)}`,
+          );
+          assert.equal(error.code, -352);
+          assert.equal(error.retryable, false);
+          assert.match(error.message, /-352/);
+          return true;
+        },
+      );
+      assert.equal(h.listCalls().length, 1, '等 10 秒修不好"缺风控参数"，所以一次都不重试');
+      assert.deepEqual(h.sleeps, []);
+    });
+
+    it('+ 非 JSON（风控拦下来的 HTML 页）⇒ 抛，绝不当成"空列表"', async () => {
+      const h = harness(() => htmlResponse('<!DOCTYPE html><html>风控</html>'));
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        /响应不是 JSON/,
+      );
+      assert.deepEqual(h.sleeps, [], 'HTML 拦截页不是限流，重试它没有意义');
+    });
+
+    it('+ 别的非零 code（比如 UP 不存在）⇒ 抛，带上 code 与 message', async () => {
+      const h = harness(() => jsonResponse({ code: -404, message: '啥都木有' }));
+      await assert.rejects(
+        () => h.adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(error instanceof BilibiliRejectedError);
+          assert.equal(error.code, -404);
+          assert.match(error.message, /啥都木有/);
+          return true;
+        },
+      );
+      assert.equal(h.listCalls().length, 1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 握手：★ 失败要放弃整个平台
+  // -------------------------------------------------------------------------
+
+  describe('握手失败 ⇒ 放弃整个平台（spec §5.1）', () => {
+    it('★ 拿不到 buvid ⇒ 专用错误，而且**一个列表请求都不发**', async () => {
+      const calls: FetchCall[] = [];
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : String(input);
+          calls.push({ url, init });
+          return jsonResponse({ code: 0, message: 'ok', data: {} });
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await assert.rejects(
+        () => adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(error instanceof PlatformHandshakeError);
+          assert.equal(error.step, 'finger/spi');
+          return true;
+        },
+      );
+      assert.equal(calls.length, 1, '没有 buvid 就别接着打：那会白吃一堆 412（spec §5.1）');
+      assert.equal(calls.filter((call) => call.url.includes('/arc/search')).length, 0);
+    });
+
+    it('+ 密钥拿不到（nav 里没有 wbi_img）⇒ 同样是握手错误', async () => {
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async (input: string | URL | Request) => {
+          const url = typeof input === 'string' ? input : String(input);
+          return url.includes('/nav')
+            ? jsonResponse({ code: 0, message: 'ok', data: {} })
+            : jsonResponse({ code: 0, message: 'ok', data: { b_3: BUVID3, b_4: BUVID4 } });
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await assert.rejects(
+        () => adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(error instanceof PlatformHandshakeError);
+          assert.equal(error.step, 'nav');
+          return true;
+        },
+      );
+    });
+
+    it('+ 握手失败只握一次：后续调用不再发请求，抛的还是同一个类型', async () => {
+      let attempts = 0;
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async () => {
+          attempts += 1;
+          return jsonResponse({ code: 0, message: 'ok', data: {} });
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await assert.rejects(() => adapter.fetchPage(creator(), null, { storedTotal: 0 }));
+      await assert.rejects(
+        () => adapter.fetchPage(creator(), '2', { storedTotal: 0 }),
+        PlatformHandshakeError,
+      );
+      assert.equal(attempts, 1, '一次运行只握一次手 —— 失败也算握过了，别再拿同一个上游试 20 遍');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // resolveCreator
+  // -------------------------------------------------------------------------
+
+  describe('resolveCreator（spec §5.1）', () => {
+    it('★ 纯数字 mid 与 space 链接（带查询串 / 带 /video）', async () => {
+      const h = harness();
+      for (const input of [
+        MID,
+        `https://space.bilibili.com/${MID}`,
+        `https://space.bilibili.com/${MID}/video`,
+        `http://www.space.bilibili.com/${MID}?spm_id_from=333.999.0.0`,
+        `space.bilibili.com/${MID}`,
+      ]) {
+        const ref = await h.adapter.resolveCreator(input);
+        assert.equal(ref.platform, 'bilibili', input);
+        assert.equal(ref.externalId, MID, input);
+      }
+      assert.equal(h.calls.length, 0, '这几种输入不需要联网 —— 一次请求都不该发');
+    });
+
+    it('★ b23.tv 短链：跟重定向，再从**最终 URL** 里抠 mid', async () => {
+      const calls: string[] = [];
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async (input: string | URL | Request) => {
+          calls.push(typeof input === 'string' ? input : String(input));
+          return redirectedTo(`https://space.bilibili.com/${MID}?spm_id_from=444`);
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      const ref = await adapter.resolveCreator('https://b23.tv/AbCdEf');
+      assert.equal(ref.externalId, MID, 'mid 要从**跳转之后**的 URL 里来，不是从短链里');
+      assert.equal(calls.length, 1, '短链只发一次请求（它不需要 cookie，所以不先握手）');
+      assert.equal(calls[0], 'https://b23.tv/AbCdEf');
+    });
+
+    it('+ b23 跳到视频页（抠不到 mid）⇒ 认不出来，而不是瞎猜一个', async () => {
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async () =>
+          redirectedTo('https://www.bilibili.com/video/BV1wHtm6rEK3')) as typeof fetch,
+        sleep: async () => {},
+      });
+      await assert.rejects(
+        () => adapter.resolveCreator('https://b23.tv/AbCdEf'),
+        InvalidCreatorInputError,
+      );
+    });
+
+    it('+ 认不出来的输入 ⇒ InvalidCreatorInputError（路由把它变成 400）', async () => {
+      const h = harness();
+      for (const input of ['', '   ', '随便写的', 'https://youtube.com/@someone']) {
+        await assert.rejects(
+          () => h.adapter.resolveCreator(input),
+          InvalidCreatorInputError,
+          `"${input}" 不该被认成一个博主`,
+        );
+      }
+      assert.equal(h.calls.length, 0);
+    });
+
+    it('+ 名字是**占位**（`mid 703007996`）：acc/info 实测 -352，这里不打它', async () => {
+      const h = harness();
+      const ref = await h.adapter.resolveCreator(MID);
+      assert.equal(ref.displayName, `mid ${MID}`);
+      assert.equal(ref.handle, MID);
+      assert.equal(ref.avatarUrl, null);
+      assert.equal(h.calls.length, 0, '不为了一个显示名去打一个大概率被拒的接口');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 注册表
+  // -------------------------------------------------------------------------
+
+  describe('注册表（tracking/index.ts）', () => {
+    it('★ bilibili 是真适配器；youtube/twitch 抛 NoCredentialsError', () => {
+      const adapter = adapterFor('bilibili');
+      assert.equal(typeof adapter.fetchPage, 'function');
+      assert.equal(typeof adapter.resolveCreator, 'function');
+      assert.equal(adapter, bilibiliAdapter);
+
+      for (const [platform, env] of [
+        ['youtube', 'MCSR_YOUTUBE_KEY'],
+        ['twitch', 'MCSR_TWITCH_ID'],
+      ] as const) {
+        assert.throws(
+          () => adapterFor(platform),
+          (error: unknown) => {
+            assert.ok(error instanceof NoCredentialsError, `${platform} 应当抛 NoCredentialsError`);
+            assert.equal(error.platform, platform);
+            assert.ok(
+              error.requiredEnv.includes(env),
+              `那句日志要告诉运维配什么：${error.requiredEnv.join(',')}`,
+            );
+            return true;
+          },
+        );
+      }
+    });
+
+    it('★ platformStatus()：bilibili=ok，另两个 skipped:no-credentials', () => {
+      assert.deepEqual(platformStatus(), {
+        bilibili: 'ok',
+        youtube: 'skipped:no-credentials',
+        twitch: 'skipped:no-credentials',
+      });
+    });
+
+    it('+ platformStatus() 返回副本（改它不影响下一次调用）', () => {
+      const first = platformStatus();
+      first.bilibili = 'skipped:no-credentials';
+      assert.equal(platformStatus().bilibili, 'ok');
+    });
+  });
+});
