@@ -46,7 +46,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 
 import type { TrackedCreator } from '@mcsr/shared';
 
@@ -1143,7 +1143,39 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
   // -------------------------------------------------------------------------
 
   describe('注册表（tracking/index.ts）', () => {
-    it('★ bilibili 是真适配器；youtube/twitch 抛 NoCredentialsError', () => {
+    /*
+     * ★ T8 起 `adapterFor` / `platformStatus` 读的是**环境变量**（T3 那时 youtube/twitch
+     *   还是写死的占位），所以这一组断言必须**自己把环境钉在"一个凭据都没有"那个状态**上。
+     *
+     * ⚠️ 不钉的代价有两条，第二条更要命：
+     *   · 这台开发机上"配没配 MCSR_YOUTUBE_KEY"会决定这两个用例红不红，而那条红看起来
+     *     像"注册表坏了"（没人会想到去查自己的 shell）；
+     *   · `tracking-routes.test.ts` 最后那一条用的是**真注册表**（真 app）——
+     *     配了 key 的机器上它会**真打一次 YouTube Data API**，而本仓铁律是
+     *     测试绝不打网络。⇒ 那两个文件现在都显式控制环境（这是 T8 带来的新前提）。
+     *
+     * ⚠️ 还原是必须的：`node --test` 是一个文件一个进程，而**同一个文件里的用例共享**它。
+     *    （没配过的那几个要 `delete`，不是赋空串 —— 空串也算"没配"，但那是另一条规则，
+     *    这里要的是"与 T3 那时完全一样的起点"。）
+     */
+    const CREDENTIAL_ENV = ['MCSR_YOUTUBE_KEY', 'MCSR_TWITCH_ID', 'MCSR_TWITCH_SECRET'] as const;
+    const savedEnv = new Map<string, string | undefined>();
+
+    before(() => {
+      for (const name of CREDENTIAL_ENV) {
+        savedEnv.set(name, process.env[name]);
+        delete process.env[name];
+      }
+    });
+
+    after(() => {
+      for (const [name, value] of savedEnv) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
+
+    it('★ bilibili 是真适配器；没凭据时 youtube/twitch 抛 NoCredentialsError', () => {
       const adapter = adapterFor('bilibili');
       assert.equal(typeof adapter.fetchPage, 'function');
       assert.equal(typeof adapter.resolveCreator, 'function');

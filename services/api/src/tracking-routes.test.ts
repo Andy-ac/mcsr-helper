@@ -1349,11 +1349,20 @@ describe('HTTP：挂载与真注册表', () => {
      * ⚠️ 这也顺带钉住了"index.ts 挂的是带真注册表的那个实例" ——
      *   只测 `createTrackingRoute({adapters: 假的})` 的话，index.ts 那一行改错了
      *   （挂错实例、挂错路径、忘了挂）不会有任何测试变红。
+     *
+     * ★★ T8 起"没配 key"这件事**不再是白捡的**：`adapterFor` 改成读环境变量之后，
+     *    配了 `MCSR_YOUTUBE_KEY` 的机器上它会**回一个真适配器**，于是这次 POST 会
+     *    **真打一次 YouTube Data API** —— 而本仓铁律是测试绝不打网络。
+     *    ⇒ 这一段显式把三个凭据环境变量清空再发请求（跑完原样还原）。
+     *    代价：这条映射于是只覆盖"没配"那一半，"配了 ⇒ 能用"那一半归
+     *    `tracking-platforms.test.ts` 的注册表那一组。
      */
-    const res = await callOn(realApp, 'POST', '/api/tracking/creators', {
-      json: { input: 'https://www.youtube.com/@someone' },
-      cookie: editor.cookie,
-    });
+    const res = await withoutCredentials(() =>
+      callOn(realApp, 'POST', '/api/tracking/creators', {
+        json: { input: 'https://www.youtube.com/@someone' },
+        cookie: editor.cookie,
+      }),
+    );
 
     assert.equal(res.status, 503, res.text);
     assert.equal(res.body.error, 'platform_not_configured');
@@ -1362,3 +1371,23 @@ describe('HTTP：挂载与真注册表', () => {
     assert.equal(typeof adapterFor, 'function');
   });
 });
+
+/**
+ * 在"一个平台凭据都没有"的环境下跑一段异步代码，跑完**原样还原**。
+ *
+ * ⚠️ 还原必须做（没配过的要 `delete`，不是赋空串）：`node --test` 是一个文件一个进程，
+ *    而同一个文件里的用例共享它 —— 忘了还原会让**后面**的用例在一个被改过的环境里跑。
+ */
+async function withoutCredentials<T>(run: () => Promise<T>): Promise<T> {
+  const names = ['MCSR_YOUTUBE_KEY', 'MCSR_TWITCH_ID', 'MCSR_TWITCH_SECRET'] as const;
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) delete process.env[name];
+  try {
+    return await run();
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
