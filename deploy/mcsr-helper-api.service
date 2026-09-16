@@ -58,6 +58,28 @@ Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
 # 前缀的 `-` 表示"文件不存在也照常启动" —— 本地和其它环境没有这个文件。
 EnvironmentFile=-/etc/mcsr-helper/mail.env
 
+# ---- 视频追踪的凭据（M4 第九轮）----
+#
+# ★★ 为什么 **API** 也要读这一份（2026-09-16 上线后补的，原来漏了它）：
+#   "加一个博主"这条路**走的是 API 进程** —— 管理面板的 POST /api/tracking/creators
+#   会在这一步调适配器的 `resolveCreator`（去上游解析 handle / login 拿名字与头像），
+#   而注册表 `adapterFor()` 是**按环境变量**判断"这个平台配没配"的。
+#   ⇒ 只把凭据给 `mcsr-helper-track.service`（同步那一侧）的话，
+#     **面板上加不了 YouTube / Twitch 的博主**：会得到 503 `platform_not_configured`
+#     （`routes/tracking.ts` 那张分类表的 NoCredentialsError 一格），
+#     而每一轮的同步摘要里那两个平台**又不会被跳过**（同步进程看得到变量）——
+#     两边的状态不一致，看起来像"配好了但加不上"。
+#
+# ⚠️ 与 mail.env 是同一条纪律：密钥不写进本单元（它在版本库里，deploy.sh 每次同步），
+#    只存在于服务器上那个 0600 root 的文件里。格式见 `deploy/track.env.example`。
+# ⚠️ `-` 前缀：文件不存在也照常启动 —— **今天生产上就是不存在**（`track.env.example`
+#    随部署装到 /etc/mcsr-helper/，但真正的 track.env 要人去建），
+#    而一个都不配是完全正常的状态（bilibili 不需要凭据）。
+# ⚠️ 改这个文件之后**必须 restart**（和 mail.env 一样）：`EnvironmentFile` 是进程启动时
+#    读的，而 API 是长驻进程 ⇒ `systemctl restart mcsr-helper-api`。
+#    同步那侧不用重启（`Type=oneshot`，每 10 分钟一个新进程）。
+EnvironmentFile=-/etc/mcsr-helper/track.env
+
 # ---- Ranked Seeds 上游代理（M4）----
 #
 # 三个变量都**有代码内的默认值**，所以一个都不设也能正常工作：
