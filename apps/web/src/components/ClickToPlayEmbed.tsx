@@ -32,14 +32,20 @@ import { useTranslation } from 'react-i18next';
  * 这不是性能优化，是"页面在最坏情况下也得能用"。
  *
  * ---------------------------------------------------------------------------
- * 二、门面上为什么没有封面图
+ * 二、门面上的封面是**可选的**，而且只有"自己有封面"的那条路会传
  * ---------------------------------------------------------------------------
- * 因为铁律：**绝不抓取任何元数据**（见 shared/videos.ts 文件头）。
- * 封面图 URL 必须从平台的接口或页面上取，那正是我们承诺不做的事。
- * 用第三方图床直接拼 `i.ytimg.com/vi/<id>/...` 也算数 —— 那是把
- * "每次渲染都向 YouTube 发一次请求"写进了组件，而且它同样会失败（私享/删除的视频）。
- * 所以这里用版块自己的配色画一个方块，信息只有**平台 + 视频 ID + 起始时间**，
- * 这三样都是我们自己库里就有的、不需要请求任何人的数据。
+ * 铁律「绝不抓取任何元数据」（shared/videos.ts 文件头）约束的是**用户自贴视频**那条路：
+ * 用户只给一个链接，我们承诺不去扒它的标题与封面。⇒ 那条路**永远不传** `coverUrl`，
+ * 门面就是今天这个色块（信息只有平台 + 视频 ID + 起始时间）。
+ *
+ * 而「追踪的博主」那条路**存在的意义就是抓元数据**（`video-tracking-spec.md` §8.1
+ * 已经把两条路分开写死），它的封面是适配器抓回来的 URL —— 存的是 URL，不是图片本体，
+ * 所以传进来既不违反任何承诺，也不经过我们的服务器。
+ * ⚠️ 封面 URL 为 `null` 时**回到色块**，不许画空框或破图边框（spec §5.3）。
+ * ⚠️ 门面上的 `<img>` 必须是 `alt=""`（装饰性）：按钮自己带 `aria-label`，
+ *    标题就在下面，不该让读屏念两遍。
+ * ⚠️★ `referrerpolicy="no-referrer"` 不是可选项：bilibili 的图床按 Referer 白名单放行，
+ *    带着我们域名的 Referer 会 **403**（实测，spec §2.4）。
  *
  * ---------------------------------------------------------------------------
  * 三、起始偏移：B站要说实话
@@ -76,6 +82,11 @@ interface Props {
   /** 起始偏移（秒）。B站 不支持，门面上会如实说明。 */
   startOffsetSec: number | null;
   /**
+   * 门面上的封面图地址（**可选**）。传了就把封面画在播放三角下面。
+   * ⚠️ 只有「追踪的博主」那条路会传（spec §8.1）；`null` 与不传都回到色块。
+   */
+  coverUrl?: string | null;
+  /**
    * 明确的嵌入地址。**给了就用它，不再自己拼**。
    *
    * ⚠️ 这一条是为「直播」的频道级嵌入加的：
@@ -98,6 +109,7 @@ export function ClickToPlayEmbed({
   idLabel,
   title,
   startOffsetSec,
+  coverUrl,
   src,
   children,
 }: Props) {
@@ -176,6 +188,25 @@ export function ClickToPlayEmbed({
             onClick={() => setActive(true)}
           >
             <span className="video-embed__badge">{platformLabel(platform, t)}</span>
+            {/*
+              ★ 封面必须排在**播放三角之前**（DOM 顺序）。理由不是排版，是**绘制层**：
+              三角带 `filter`（drop-shadow）⇒ 它自成一层，按 CSS 的绘制顺序落在"定位元素"
+              那一层里 —— 与这张绝对定位的图**同层**，而同一层里**靠后的画在上面**。
+              ⇒ 把这段 img 挪到三角后面，封面就会把三角盖掉，而门面上"这里可以点"的
+              唯一提示正好是那个三角。
+              ⚠️ `alt=""` / `loading="lazy"` / `referrerPolicy="no-referrer"` 三样是**契约**
+                 （spec §5.3）：装饰性（可访问名在按钮的 `aria-label` 上）、懒加载、
+                 以及 bilibili 图床那个 403（`§2.4`：不带 Referer 才是 200）。
+            */}
+            {coverUrl ? (
+              <img
+                className="video-embed__cover"
+                src={coverUrl}
+                alt=""
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
             {/* 三角形用 CSS 画，不用 ▶ —— 那个字符不在自托管像素字体的子集里 */}
             {resolved ? <span className="video-embed__playshape" aria-hidden="true" /> : null}
             {/*

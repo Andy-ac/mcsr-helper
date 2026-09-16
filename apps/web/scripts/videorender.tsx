@@ -36,7 +36,7 @@
  * ③ **类名 ↔ CSS**（`docs/pending.md §5.70` / `§5.82`）：本仓样式是全局的、没有
  *    CSS Modules 兜着，而"渲染了一个 `styles.css` 里没有的类名"**全仓没有门禁**
  *    看得见（`ShareForm` 里那个 `.mcsr-input` 笔误活过三轮评审）。
- *    ⇒ 第 ⑪ 组把产物里每一个 `tracked*` 类名收起来逐个查规则，
+ *    ⇒ 第 ⑪ 组把产物里每一个 `tracked*` / `video-embed*` 类名收起来逐个查规则，
  *      而且**匹配前先剥掉 CSS 注释** —— 见那一节说明（不剥的话这一条根本不可能红）。
  *
  * ===========================================================================
@@ -60,6 +60,7 @@ import { createElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
+import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
 import {
   localDate,
   localDateTime,
@@ -1331,7 +1332,136 @@ if (LANG === 'en') {
 }
 
 // ---------------------------------------------------------------------------
-console.log('⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` 类名都要有规则（**先剥注释**）');
+console.log('⑫ 门面封面（可选 prop）：传了才画 `<img>`，而且那三样属性是契约');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一段的判据逐条对应 spec §5.3 那两行：封面 `<img>` 的**三个属性是契约**
+ *    （`alt=""` / `loading="lazy"` / `referrerpolicy="no-referrer"`），以及
+ *    「**没传时外观一个像素都不变**」。
+ * ⚠️ `referrerpolicy="no-referrer"` 不是洁癖：bilibili 的图床按 Referer 白名单放行，
+ *    带着我们域名的 Referer 会 **403**（spec §2.4 实测）—— 那正是"今天三个平台的封面里
+ *    只有 B站 是破图"的原因。这三样里删掉任何一样，产物**照样是绿的**（图还是会显示，
+ *    只是某一类视频全变成破图），所以只能在这里逐条钉死。
+ * ⚠️⚠️ 两件事与"这一段是不是真的在验东西"有关，缺一个它就空跑：
+ *    ① 产物必须进 `products` —— 走上面那个 `render()`，**不是**直接调
+ *       `renderToStaticMarkup`：⑪ 的类名收集只认 `products`，而这一段存在的另一半理由
+ *       就是证明新的那个类名 `video-embed__cover` 在 `styles.css` 里有规则；
+ *    ② 夹具的文字一律 **ASCII**：`title` 会进 `aria-label`（属性），而 `--en` 那一遍的
+ *       ⑩ 连属性一起扫汉字（见上面那段夹具说明）。
+ */
+const COVER_URL = 'https://i0.hdslb.com/bfs/archive/x.jpg';
+
+const WITH_COVER_HTML = render(
+  createElement(ClickToPlayEmbed, {
+    platform: 'bilibili',
+    idLabel: 'BV1xx411c7mD',
+    title: 'Facade with a cover',
+    startOffsetSec: null,
+    coverUrl: COVER_URL,
+  }),
+);
+/*
+ * ⚠️★ 这一条**必须**大小写不敏感，别把它"顺手改回小写去照抄计划"：
+ *    React 19 的 SSR 产物里这个属性印成**驼峰** `referrerPolicy="no-referrer"`
+ *    （实测；`renderToStaticMarkup` 这一层我们控制不了），而 HTML 的属性名是
+ *    **ASCII 大小写不敏感**的 ⇒ 浏览器看到的仍然是 `referrerpolicy`，
+ *    也就是 spec §2.4 要的那一个（"不带 Referer 才是 200"）。
+ *    ⇒ 写成 `includes('referrerpolicy="no-referrer"')` 的话，一个**正确**的实现会被判红，
+ *      而红的原因与代码无关 —— 与 ③ 那条"0 秒 / 时区"同一族：不许写一条
+ *      **正确实现过不了**的断言（那比没有断言更坏：下一个人的第一反应是去改代码）。
+ */
+assert(
+  /<img[^>]*referrerpolicy="no-referrer"/i.test(WITH_COVER_HTML),
+  '封面必须带 referrerpolicy=no-referrer（判据带 `i`：React 19 印的是驼峰 `referrerPolicy`）',
+);
+assert(/<img[^>]*alt=""/.test(WITH_COVER_HTML), '门面里的封面是装饰性的 ⇒ alt 必须是空串');
+assert(WITH_COVER_HTML.includes('loading="lazy"'), '封面要懒加载');
+assert(
+  WITH_COVER_HTML.includes(COVER_URL),
+  `★★ 封面的地址就是调用方给的那个（实扫产物里有没有「${COVER_URL}」）`,
+);
+const WITHOUT_COVER_HTML = render(
+  createElement(ClickToPlayEmbed, {
+    platform: 'youtube',
+    idLabel: 'abc',
+    title: 'Facade without a cover',
+    startOffsetSec: null,
+  }),
+);
+assert(!WITHOUT_COVER_HTML.includes('<img'), '不传封面时门面上**一个 img 都没有**（外观零变化）');
+/*
+ * ★★ `null` 与"根本不传"必须**逐字节相同** —— spec §5.3 的「没传时外观一个像素都不变」
+ *    在这一格上是可判定的（两份 props 只差这一格，产物长度都一样）。
+ * ⚠️ 这一格是**真的会发生**的：YouTube / Twitch 的追踪条目都可能没有封面
+ *    （`thumbnail_url` 是 NULL），而界面必须**回到今天的色块** —— 不许为了
+ *    "看起来统一"画一个空框或破图边框（那东西每一次都要求人解释一次）。
+ */
+const NULL_COVER_HTML = render(
+  createElement(ClickToPlayEmbed, {
+    platform: 'youtube',
+    idLabel: 'abc',
+    title: 'Facade without a cover',
+    startOffsetSec: null,
+    coverUrl: null,
+  }),
+);
+assert.equal(
+  NULL_COVER_HTML,
+  WITHOUT_COVER_HTML,
+  '★★ `coverUrl: null` 与**根本不传**必须逐字节相同（`src=""` 那种实现会让浏览器去请求当前页面）',
+);
+/*
+ * ★ 探针（"反面也要有对照"）：这两份产物里**门面本身**必须在 —— 否则上面那两条
+ *   "没有 img"会在"组件根本没渲染"时也成立（本仓 `§5.63` 那一族）。
+ */
+assert.equal(
+  elementsWithClass(WITH_COVER_HTML, 'video-embed__facade').length,
+  1,
+  '★★ 探针：带封面那一份产物里确实有门面按钮',
+);
+assert.equal(
+  elementsWithClass(WITHOUT_COVER_HTML, 'video-embed__facade').length,
+  1,
+  '★★ 探针：没封面那一份产物里同样有门面按钮（两边的对照才成立）',
+);
+const coverImg = elementsWithClass(WITH_COVER_HTML, 'video-embed__cover')[0];
+assert.ok(
+  coverImg,
+  '★★ 封面必须就是 `<img class="video-embed__cover">` —— ⑪ 靠这个类名去 `styles.css` 里查规则',
+);
+assert.equal(
+  attrOf(coverImg ?? '', 'src'),
+  COVER_URL,
+  '★★ 封面的 `src` 就是调用方给的那个地址（`attrOf` 读的是那个元素自己的属性）',
+);
+assert.equal(
+  attrOf(coverImg ?? '', 'class'),
+  'video-embed__cover',
+  '★★ 门面封面**只允许新增这一个类名**（Global Constraints 第 8 条：分区按钮那一条才是"不许新增"）',
+);
+assert.match(
+  coverImg ?? '',
+  /<img[^>]*referrerpolicy="no-referrer"/i,
+  '★★ 这一样契约必须挂在**那张 img 自己**身上（`i` 同上：React 19 印的是驼峰）—— 挂在别人身上对图床一样是 403',
+);
+assert.equal(
+  elementsWithClass(WITH_COVER_HTML, 'video-embed__playshape').length,
+  1,
+  '★★ 有封面时播放三角**还在**（spec §5.3：封面是"上面盖播放三角"，不是用封面把三角换掉）',
+);
+assert.deepEqual(
+  elementsWithClass(WITHOUT_COVER_HTML, 'video-embed__cover'),
+  [],
+  '★★ 没封面时连那个类名都不许出现（不是"渲染了但看不见"）',
+);
+ok(
+  '门面封面：传了 ⇒ `<img class="video-embed__cover">` 带 src + `alt=""` + lazy + no-referrer，且三角还在；不传或 `null` ⇒ 与今天逐字节相同',
+);
+
+// ---------------------------------------------------------------------------
+console.log(
+  '⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` / `video-embed*` 类名都要有规则（**先剥注释**）',
+);
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ `docs/pending.md §5.70`：本仓样式是全局的、没有 CSS Modules 兜底，而
@@ -1352,6 +1482,13 @@ console.log('⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` 类�
  * ⚠️ `CSS` / `stripCssComments` / `hasCssRule` 三个都在**上面**（① 也要读同一份
  *    `styles.css`），这里只放断言 —— 两处各读一次的话，两个结论会建在**不同的
  *    文件快照**上，而那是假的证据。
+ *
+ * ⚠️ 收进来的**前缀有两族**：`tracked*` 与 `video-embed*`。门面是全站唯一一份嵌入实现，
+ *    而 T6 起它长出了 `video-embed__cover` 这个新类名（spec §5.3）—— 只查 `tracked*`
+ *    的话，"新类名有没有规则"就没有任何东西看得见，而"渲染得出来但什么都不生效的类名"
+ *    正是这一节存在的全部理由（§5.70 那个 `.mcsr-input` 笔误就是这么活过三轮评审的）。
+ *    这一类名只可能在本页产出，因为自检**在这一页**渲染了门面本身（⑫）；
+ *    别的页面上的 `video-embed*` 由那一面的渲染脚本各自负责。
  */
 assert.equal(
   hasCssRule('.tracked__title{}', 'tracked__title'),
@@ -1444,28 +1581,32 @@ const MUST_RENDER = [
  *    就地在中间某一组收集的话，"只有后面那几份产物里才出现的类名"根本不进清单，
  *    于是类名↔规则这道门禁对它们**是空的**（`rankedrender.tsx` 的 ⑧ 记着同一件事）。
  *    ⇒ 这一节排在全文件**最后**（`--en` 那一组在它前面，所以它才是最后一组）。
+ *    ⚠️ 这也是 ⑫ 排在 ⑪ **前面**、编号却比它大的原因：带渲染的段落只能排在收集之前。
  */
-const trackedClasses = [
-  ...new Set(products.flatMap(classNamesIn).filter((cls) => cls.startsWith('tracked'))),
+const CLASS_PREFIXES = ['tracked', 'video-embed'] as const;
+const pageClasses = [
+  ...new Set(
+    products
+      .flatMap(classNamesIn)
+      .filter((cls) => CLASS_PREFIXES.some((prefix) => cls.startsWith(prefix))),
+  ),
 ].sort();
+assert.ok(pageClasses.length > 0, '★★ 探针：产物里确实收集到了类名（否则下面那个循环一次都不跑）');
 assert.ok(
-  trackedClasses.length > 0,
-  '★★ 探针：产物里确实收集到了 `tracked*` 类名（否则下面那个循环一次都不跑）',
+  pageClasses.includes('video-embed__cover'),
+  '★★ 探针：`video-embed__cover` 进了清单 —— ⑫ 那一份产物必须走 `render()`（直接 `renderToStaticMarkup` 的话它就漏出这道门禁，而门禁看起来照样绿）',
 );
 for (const cls of MUST_RENDER) {
-  assert.ok(
-    trackedClasses.includes(cls),
-    `★★ 产物里应当出现 \`.${cls}\`（这一格的界面被摘掉了？）`,
-  );
+  assert.ok(pageClasses.includes(cls), `★★ 产物里应当出现 \`.${cls}\`（这一格的界面被摘掉了？）`);
 }
-for (const cls of trackedClasses) {
+for (const cls of pageClasses) {
   assert.ok(
     hasCssRule(CSS, cls),
     `★★★ \`.${cls}\` 在 \`apps/web/src/styles.css\` 里没有规则 —— 这是一个**渲染得出来、但什么都不生效**的类名（§5.70）`,
   );
 }
 ok(
-  `类名↔CSS：${String(trackedClasses.length)} 个 \`tracked*\` 类名逐个有规则（收集自 ${String(products.length)} 份产物，匹配前已剥注释）`,
+  `类名↔CSS：${String(pageClasses.length)} 个 \`tracked*\` / \`video-embed*\` 类名逐个有规则（收集自 ${String(products.length)} 份产物，匹配前已剥注释）`,
 );
 
 console.log('');
@@ -1483,6 +1624,11 @@ console.log('   · **点击的结果**：SSR 的产物里没有事件处理器�
 console.log('     `onClick` 是 `undefined` 的按钮**长得一模一样** —— 这一层用的是运行时守卫');
 console.log('     （`assertPropsGiven`），而"prop 忘了传"在**页面**那一侧是编译错误。');
 console.log('   · **尺寸、配色与字体**：⑪ 只看类名在不在 `styles.css` 里，不看它长什么样。');
+console.log('   · ⚠️ **层叠（谁盖住谁）**：⑫ 只证明封面的三样属性与"传了才有 `<img>`"——');
+console.log('     封面与门面上那几格文字**谁画在上面**是 CSS 绘制顺序的事，静态产物里看不出来');
+console.log(
+  '     （要跑一个真浏览器）。今天那一条依赖写在 `styles.css` 的 `.video-embed__cover` 上。',
+);
 console.log('   · **服务端那一半**：五个端点的行为、抓取、标签推导、隐藏过滤全在');
 console.log('     `services/api/src/tracking-*.test.ts`；本脚本只碰"props → 产物"这一段。');
 console.log('   · ⚠️ 公开列表带 60 秒公共缓存（+5 分钟 stale 窗口）⇒ 直接改库隐藏一条视频之后，');
@@ -1495,7 +1641,7 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  * ⚠️ en 比 zh 多一组，是因为 ⑩ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`）；两个数差 1 是**正常的**，别把它抹平。
  */
-const expectedGroups = LANG === 'en' ? 11 : 10;
+const expectedGroups = LANG === 'en' ? 12 : 11;
 assert.equal(
   pass,
   expectedGroups,
