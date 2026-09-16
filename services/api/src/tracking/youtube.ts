@@ -18,6 +18,19 @@
  *    抛出去的代价是"这一行数据缺一格"变成一件**看得见**的事（管理面板的"上次错误"那一列
  *    就写着 `last_error`），修法在 message 里。
  *
+ * ★★ 这一格曾经是个**类型谎**，现在不是了（2026-09-16，spec §5 同日修订采纳）。
+ *    原来的契约把 `fetchPage` 的形参写成 `TrackedCreator`（**对外**形状，没有
+ *    `platformMeta`），而运行时拿到的确实是带着它的 `StoredCreator` ⇒ 下面那段读法
+ *    只能把 creator 当 `unknown` 字典绕一圈（`asRecord(creator)?.platformMeta`）：
+ *    类型上说"这一格不存在"，而代码在用它 —— **这正是下一次重构会顺手删掉的那种谎**
+ *    （删掉之后编译器一声不响，代价是每轮对每个 YouTube 博主白烧一次 `channels.list` 配额）。
+ *    ⇒ 契约加了一个明确的名字：`AdapterCreator`（`./types`，= `TrackedCreator` +
+ *    `platformMeta`），`fetchPage` 收的就是它。于是这里**直接读** `creator.platformMeta`，
+ *    一次 `as`、一次 `unknown` 绕路都不需要。
+ *    ⚠️ `TrackedCreator`（web 层读的那一份）**不加** `platformMeta`：平台内部字段不泄漏到对外形状。
+ *    ⚠️ 守住它的断言在 `tracking-platforms.test.ts` 最后那一条（真 `runOnce` + 真内存库）：
+ *       它同时断言"值到得了 `fetchPage`"与"对外形状里没有这一格"。
+ *
  * ===========================================================================
  * 二、★ 时间戳：ISO 8601 → **Unix 秒**（spec §4 那个 ★★ 块）
  * ===========================================================================
@@ -112,10 +125,9 @@
  *    代价（认下）：正在直播的那一条要到它结束之后的那一轮才会被改成 `true`
  *    （upsert 是幂等的，所以它会自己修好）。
  */
-import type { TrackedCreator } from '@mcsr/shared';
-
 import { parseYouTubeDuration } from './parse';
 import {
+  type AdapterCreator,
   type CreatorRef,
   type FetchedVideo,
   type FetchPage,
@@ -383,22 +395,17 @@ function parseChannelInput(input: string): ChannelLookup | null {
  * ★★ 从 creator 上把 uploads 播放列表 ID 读回来 —— 这个缺口就是为这一行补的
  * （§5.5 的裁决 + `CreatorRef.platformMeta`，理由与代价见文件头第一节）。
  *
- * ⚠️ 这行读法看着像"把一个 `TrackedCreator` 当字典读"，而那是**唯一不撒谎的读法**：
- *    契约里的形参类型 `TrackedCreator`（T3 冻结的 spec §5 逐字）**没有** `platformMeta`，
- *    而运行时那个对象是它的**超集** `StoredCreator`（`tracked-videos.ts` 追加的
- *    同步专用字段）。⇒ 这里不做 `as any`、也不改契约（那是别人的文件），
- *    而是把它当 `unknown` 走一遍**结构化**解析：不是对象、缺键、空串一律按"没有"处理。
+ * ⚠️ 形参是 **`AdapterCreator`**（不是 `TrackedCreator`）：这一格正是那个类型存在的理由。
+ *    原来契约说"适配器收的是对外形状"，于是这里只能把 creator 当 `unknown` 字典绕一圈去
+ *    取一个"类型上不存在"的键 —— 那是**唯一不撒谎的读法**，但也是**一次能被无声删掉的读法**。
+ *    现在 `platformMeta` 在类型上就在那儿（`Record<string, unknown>`），所以直接读。
+ *    ⚠️ 里面那一格仍然是 `unknown`：那一列**数据库不知道形状**（§5.5），所以值照样要
+ *    过一遍 `asNonEmptyString`（不是对象、缺键、空串一律按"没有"处理）。
  *    ⚠️ 于是"这一格没传到"与"这一格被手改坏了"表现相同 —— 两者要的动作也一样
  *       （删掉这个博主再加一次），所以合并没有代价。
  */
-function readUploadsPlaylistId(creator: TrackedCreator): string {
-  /*
-   * ⚠️ 读法：`asRecord(creator)` 先把它变成一个字典（`Record<string, unknown>`），
-   *    再按**键**取值 —— 这正是"契约里没有这一格、而运行时对象有"的唯一不撒谎的读法
-   *    （bracket 与 dot 在这里等价，写 `asRecord(creator)?.platformMeta` 也一样）。
-   */
-  const meta = asRecord(asRecord(creator)?.platformMeta);
-  const uploads = asNonEmptyString(meta?.[UPLOADS_PLAYLIST_META_KEY]);
+function readUploadsPlaylistId(creator: AdapterCreator): string {
+  const uploads = asNonEmptyString(creator.platformMeta[UPLOADS_PLAYLIST_META_KEY]);
   if (uploads === null) {
     /*
      * ★ 抛，**不补**那次 `channels.list`（文件头第一节写着为什么）。
@@ -742,7 +749,7 @@ export function createYouTubeAdapter(deps: YouTubeAdapterDeps): PlatformAdapter 
    *    参数本身照契约留着（T3 冻结的接口，而且它与 bilibili 那份是同一个签名）。
    */
   async function fetchPage(
-    creator: TrackedCreator,
+    creator: AdapterCreator,
     cursor: string | null,
     _ctx: { storedTotal: number },
   ): Promise<FetchPage> {

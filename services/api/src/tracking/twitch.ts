@@ -19,23 +19,27 @@
  *    （§5.1），而下一轮是**新进程**（缓存跟着没了）⇒ 下一轮是干净的。
  *
  * ===========================================================================
- * 二、★★ 这个文件里最可疑的一格：`type=archive,highlight,upload`
+ * 二、★ `type=all` —— spec §5.3 那一格**原来写错了**，2026-09-16 已修订
  * ===========================================================================
- * §5.3 冻结的请求是 `Get Videos?user_id=<>&first=100&after=<cursor>&type=archive,highlight,upload`。
- * ⚠️ **Twitch 文档把 `type` 写成一个单值枚举**（`all` / `upload` / `archive` / `highlight`），
- *    而逗号分隔的列表**没有**文档依据。本机没有凭据、也没有网络，所以这一格
- *    **既没法验证、也没法证伪**。
+ * §5.3 原来冻结的请求是 `Get Videos?...&type=archive,highlight,upload`，而
+ * **Twitch 的 `type` 是一个单值枚举**（`all` / `upload` / `archive` / `highlight`），
+ * 逗号串不是合法取值。T8 的实现者量到这一点之后**照 spec 实现、并把它钉成一条会红的
+ * 断言**（"冲突时以 spec 为准"，而那时连实测都没有），把这一格交回给 spec 作者裁决。
+ * ⇒ **裁决（2026-09-16）：用 `type=all`**，spec §5.3 同日改成这个名字。
+ *    理由：`all` 正是这三类的并集，而它要对上的意图是"**尽可能多贴**"（§1.2 R6）——
+ *    逗号那版就算被接受，也只会**更少**地抓到内容，而不是更准。
+ *    代价：`highlight` 与 `upload` 也会进来（它们本来就是该博主的内容，`type` 逐条带着）。
+ * ⚠️ 这一格**不是**实测出来的：本机没有凭据也没有网络。它是"文档写着单值枚举"这一个
+ *    事实对 spec 的一次订正（见第五节），失败签名从此不存在（不会再有那个必然的 400）。
  *
- * ⇒ 这里**照 §5.3 逐字实现**（"spec 与实测冲突时以 spec 为准"，而这次连实测都没有），
- *   并把**失败签名**与**一行修法**写在这里，好让第一个真跑的人不必从零开始查：
- *     · 失败签名：**每一个** `Get Videos` 都回 HTTP 400（`{"error":"Bad Request",…}`），
- *       于是 Twitch 这一轮**一个视频都抓不到**，而 bilibili 完全正常（平台各自独立失败）；
- *     · 一行修法：把 `TWITCH_VIDEO_TYPES` 改成 `'all'`（`all` 是这三类的并集，
- *       所以"抓全部"这个意图不变）。
- *     · ⚠️ 测试把这一格**钉住了**（`tracking-platforms.test.ts` 里那条 `type` 断言），
- *       所以改它是一个**会红**的改动，而不是一次静默偏移。
- * ⚠️ 取另一侧（直接写 `type=all`）的代价：偷偷改掉了 spec 冻结的一格，而如果
- *    逗号写法其实是被接受的，我们白白丢掉了一个"只抓这三类"的约束。
+ * ★★ `isLiveReplay` **不由这个请求参数决定**，而是**逐条**看每个 item 自己的
+ *    `type === 'archive'`（`toFetchedVideo` 那一行，§5.3 逐字）。
+ *    这两件事很容易被写成一件事：请求参数回答的是"**要哪些**"，标签回答的是
+ *    "**这一条是什么**"。按请求参数去置标签（"既然只抓 archive，那抓到的都是回放"）
+ *    在今天的 `type=all` 下会**全错**，而且错得看不出来 —— 每一支普通投稿都会挂着
+ *    "直播回放"这个标签（§4.3 那张标签表是给人看的）。
+ *    ⇒ 测试分开钉住：一条断言请求参数**是 `all` 且不是逗号串**，另一条断言同一页里
+ *      archive / highlight / upload 三条**各自**的标签。
  *
  * ===========================================================================
  * 三、★ 失败分类（与 `youtube.ts` 那张表同一个形状）
@@ -74,7 +78,7 @@
  *   · `POST https://id.twitch.tv/oauth2/token`（表单体里的 `client_id` / `client_secret` /
  *     `grant_type=client_credentials`）→ `access_token` / `expires_in`；
  *   · `Get Users?login=` → `data[0].id` / `login` / `display_name` / `profile_image_url`；
- *   · `Get Videos?user_id=&first=100&type=…` → `data[].id` / `title` / `created_at` /
+ *   · `Get Videos?user_id=&first=100&type=all` → `data[].id` / `title` / `created_at` /
  *     `duration`（`"1h2m3s"`，**不是秒数**）/ `view_count` / `thumbnail_url`（**模板**）/
  *     `type`（`archive` | `highlight` | `upload`）/ `pagination.cursor`；
  *   · 请求头 `Client-Id` + `Authorization: Bearer <token>`。
@@ -85,10 +89,9 @@
  *    ⇒ **不许把本文件读成"跑通了"。**
  */
 
-import type { TrackedCreator } from '@mcsr/shared';
-
 import { parseTwitchDuration } from './parse';
 import {
+  type AdapterCreator,
   type CreatorRef,
   type FetchedVideo,
   type FetchPage,
@@ -112,11 +115,15 @@ const HELIX_BASE = 'https://api.twitch.tv/helix';
 export const TWITCH_PAGE_SIZE = 100;
 
 /**
- * ★ §5.3 冻结的那一格 `type=`。⚠️ **读上面文件头第二节再看这一行** ——
- * 它是本文件里唯一一处"文档写着单值枚举、而我们送了一个列表"的地方，
- * 失败签名与一行修法都写在那里。
+ * ★ §5.3 的那一格 `type=`（2026-09-16 修订后的取值：单值枚举里的 **`all`**）。
+ * ⚠️ **不许再写回逗号串**：`type` 是**单值**枚举，`archive,highlight,upload` 不是合法取值
+ *    （来龙去脉见文件头第二节）。`all` 本来就覆盖这三类，且对上"尽可能多贴"那个意图。
+ * ⚠️ 名字从 `TWITCH_VIDEO_TYPES` 改成单数：它装的是**一个**枚举值，复数名字会让下一个读者
+ *    以为这里可以放列表 —— 而这一格出的正是"名字/类型说的和实际做的不一样"那类事故。
+ * ⚠️ 这一行被 `tracking-platforms.test.ts` 钉着：常量本身**加**一条请求参数断言，
+ *    两边都带"不许出现逗号"的判据。
  */
-export const TWITCH_VIDEO_TYPES = 'archive,highlight,upload';
+export const TWITCH_VIDEO_TYPE = 'all';
 
 /**
  * 封面的尺寸。Twitch 的 `thumbnail_url` 是**模板**（`…/thumb%{width}x%{height}.jpg`），
@@ -591,6 +598,7 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
        */
       commentCount: null,
       // ★ §5.3 逐字：`type === 'archive'` ⇒ 一场直播的存档。
+      //   ⚠️ **逐条**判定，与请求参数（`TWITCH_VIDEO_TYPE = 'all'`）无关 —— 见文件头第二节。
       isLiveReplay: asNonEmptyString(item?.type) === 'archive',
     };
   }
@@ -602,7 +610,7 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
    *    （"语义可靠"），所以那个参数在这里没有用武之地（参数照契约留着）。
    */
   async function fetchPage(
-    creator: TrackedCreator,
+    creator: AdapterCreator,
     cursor: string | null,
     _ctx: { storedTotal: number },
   ): Promise<FetchPage> {
@@ -612,7 +620,7 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
         // §5.3：按 user_id 查（`user_login` 这个参数已经不在文档里了）。
         user_id: creator.externalId,
         first: String(TWITCH_PAGE_SIZE),
-        type: TWITCH_VIDEO_TYPES,
+        type: TWITCH_VIDEO_TYPE,
         ...(cursor === null ? {} : { after: cursor }),
       },
       'Get Videos',

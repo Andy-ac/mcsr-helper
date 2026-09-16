@@ -48,8 +48,6 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
-import type { TrackedCreator } from '@mcsr/shared';
-
 import { adapterFor, platformStatus } from './tracking';
 import {
   BILIBILI_MIXIN_KEY_TABLE,
@@ -63,6 +61,7 @@ import {
   signWbiQuery,
 } from './tracking/bilibili';
 import {
+  type AdapterCreator,
   InvalidCreatorInputError,
   NoCredentialsError,
   PlatformHandshakeError,
@@ -102,7 +101,17 @@ const ITEM = {
   typeid: 1,
 };
 
-function creator(overrides: Partial<TrackedCreator> = {}): TrackedCreator {
+/**
+ * `fetchPage` 的入参（`AdapterCreator`）。
+ *
+ * ⚠️ 类型从 `TrackedCreator` 换成 `AdapterCreator` 是 **T8 那处契约修订**的连带改动
+ *    （`types.ts` 里 `AdapterCreator` 那段）：适配器收的是**同步那条路上的** creator，
+ *    它比对外形状多一个 `platformMeta`。bilibili 一眼都不看那一格（它没有平台小东西，
+ *    `resolveCreator` 不填、库里存 `NULL`，读出来归一化成 `{}`），
+ *    但夹具必须交出**运行时会真的递过来**的那个形状 —— 否则这几百行测试断言的是一张
+ *    "适配器永远收不到"的入参。
+ */
+function creator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
   return {
     id: 'tc-1',
     platform: 'bilibili',
@@ -117,6 +126,8 @@ function creator(overrides: Partial<TrackedCreator> = {}): TrackedCreator {
     enabled: true,
     videoCount: 0,
     createdAt: NOW_SEC,
+    // ★ 库里 bilibili 这一列是 `NULL` → `parsePlatformMeta` 读成 `{}`（与 Twitch 那边同一条理由）
+    platformMeta: {},
     ...overrides,
   };
 }

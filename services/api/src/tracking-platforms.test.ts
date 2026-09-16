@@ -19,7 +19,7 @@
  *     `liveStreamingDetails.actualEndTime`（这一条的**字段清单**来自
  *     `docs/platform-api-feasibility-notes.md:237-263` 抄下的官方页面原文）。
  *   · Twitch：`oauth2/token` 的 client credentials、`Get Users?login=`、
- *     `Get Videos` 的 `type=archive|highlight|upload` 与 `duration="1h2m3s"`、
+ *     `Get Videos` 的 `type=all`（⚠️ 单值枚举，逗号串不是合法取值）与 `duration="1h2m3s"`、
  *     `pagination.cursor` 缺失即没有下一页（§5.4 逐字）。
  *   · 唯一一条**量过的**东西是 YouTube 的**报错信封形状**
  *     （`docs/platform-api-feasibility-notes.md:280-286`：无 key 调用实测回 403
@@ -38,6 +38,17 @@
  * 2. **两个平台的"到底了"判据不同**（§5.4 明说"不许写成一个 if"）。⇒ 除了各自的
  *    正反用例，还有一条**交叉喂**的用例：给 YouTube 的响应塞一个 Twitch 风格的
  *    `pagination.cursor`、给 Twitch 的响应塞一个 `nextPageToken`，两个都必须**不认**。
+ *
+ * ===========================================================================
+ * ★★ 两处 spec 订正（都是 T8 的实现者发现、交回裁决、2026-09-16 落进 spec 的）
+ * ===========================================================================
+ * 1. **`type=all`**：§5.3 原来冻结的是逗号串 `archive,highlight,upload`，而 Twitch 的
+ *    `type` 是**单值枚举** ⇒ 那一格改成了 `all`（Twitch 那一组里两条断言盯着它）。
+ * 2. **`AdapterCreator`**：`fetchPage` 原来声明收 `TrackedCreator`（**对外**形状、没有
+ *    `platformMeta`），而 YouTube 的适配器**必须**从 creator 上读 uploads 播放列表 ID
+ *    —— "类型上说这一格不存在、运行时它确实在"正是下一次重构会顺手删掉的那种谎。
+ *    ⇒ 契约里多了一个明确的类型（`./tracking/types`），本文件用的就是它，
+ *    最后那一条端到端用例同时钉住"值到得了 `fetchPage`"与"对外形状里没有它"。
  *
  * ===========================================================================
  * 为什么所有网络都是假的（照 `tracking-bilibili.test.ts` 的理由）
@@ -61,11 +72,10 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import type { TrackedCreator } from '@mcsr/shared';
-
 import { adapterFor, platformStatus } from './tracking';
-import { createTwitchAdapter, TwitchRejectedError } from './tracking/twitch';
+import { createTwitchAdapter, TWITCH_VIDEO_TYPE, TwitchRejectedError } from './tracking/twitch';
 import {
+  type AdapterCreator,
   InvalidCreatorInputError,
   NoCredentialsError,
   type PlatformAdapter,
@@ -125,12 +135,16 @@ const TWITCH_CREATED_ISO = '2018-11-14T21:30:18Z';
 const SECONDS_CEILING = 10_000_000_000;
 
 /**
- * 同步那条路上的 creator：`TrackedCreator` **加上** `platformMeta`
- * （那是 `tracked-videos.ts` 的 `StoredCreator`，`TrackedCreator` 的超集）。
+ * 同步那条路上的 creator：**`AdapterCreator`** —— `TrackedCreator` 加上 `platformMeta`
+ * （数据层的 `StoredCreator` 结构上满足它）。
+ *
+ * ⚠️ 本文件原来自己拼了一个 `TrackedCreator & { platformMeta?: … }` 的本地类型，并在两处
+ *    `as` 过去读那一格 —— 那正是 T8 报出来的"类型谎"在测试里的样子。
+ *    `AdapterCreator` 进契约之后，这里用的是**契约自己那个类型**，一次 `as` 都不需要：
+ *    于是"适配器拿到的 creator 上有没有 `platformMeta`"从此是**编译器**在管，
+ *    而不是靠这几条断言替它把关。
  */
-type SyncCreator = TrackedCreator & { platformMeta?: Record<string, unknown> };
-
-function creator(overrides: Partial<SyncCreator> = {}): SyncCreator {
+function creator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
   return {
     id: 'tc-1',
     platform: 'youtube',
@@ -152,16 +166,22 @@ function creator(overrides: Partial<SyncCreator> = {}): SyncCreator {
 }
 
 /**
- * Twitch 那条路上的 creator：`externalId` 是 **user id**（`Get Videos` 按它查）、
- * 没有 `platformMeta`（Twitch 不需要跨轮记东西，见适配器里那一格）。
+ * Twitch 那条路上的 creator：`externalId` 是 **user id**（`Get Videos` 按它查）。
+ *
+ * ⚠️ `platformMeta` 是 **`{}`** 而不是 `undefined`：库里那一列 Twitch 写的是 `NULL`，
+ *    而 `parsePlatformMeta` 把 `NULL` 读成 `{}`（`tracked-videos.ts` 那一段注释写着
+ *    "写的时候把两个状态分开存、读出来按需归一化"）⇒ **`{}` 才是 CLI 真的会递过来的东西**，
+ *    夹具照抄运行时，不照抄愿望。Twitch 适配器照样一眼都不看它（`fetchPage` 里没有那一格）。
+ *    ⚠️ 而且 `AdapterCreator.platformMeta` 是**必填**的：写 `undefined` 现在过不了类型检查 ——
+ *    这正是契约变诚实之后的副作用，见 `types.ts` 里 `AdapterCreator` 那段。
  */
-function twitchCreator(overrides: Partial<SyncCreator> = {}): SyncCreator {
+function twitchCreator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
   return creator({
     platform: 'twitch',
     externalId: TWITCH_USER_ID,
     handle: TWITCH_LOGIN,
     displayName: 'TwitchDev',
-    platformMeta: undefined,
+    platformMeta: {},
     ...overrides,
   });
 }
@@ -1180,7 +1200,7 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
         'https://static-cdn.jtvnw.net/jtv_user_pictures/twitchdev-300x300.png',
       );
       assert.equal(
-        (ref as { platformMeta?: unknown }).platformMeta,
+        ref.platformMeta,
         undefined,
         'Twitch 没有要跨轮记的"平台小东西"（游标已经是自己的一列）⇒ 不填',
       );
@@ -1282,7 +1302,7 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
   });
 
   describe('fetchPage：Get Videos', () => {
-    it('★ query：user_id / first=100 / type=…（§5.3 逐字），首轮没有 after', async () => {
+    it('★★ query：user_id / first=100 / type=all（单值枚举，不是逗号串），首轮没有 after', async () => {
       const h = twitch();
       await h.adapter.fetchPage(twitchCreator(), null, { storedTotal: 0 });
 
@@ -1295,10 +1315,27 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
       );
       assert.equal(call.params.get('user_login'), null);
       assert.equal(call.params.get('first'), '100', '文档：Get Videos 的 first 上限是 100');
+      /*
+       * ★★ 这一格原来是 `archive,highlight,upload`（spec §5.3 原话），而 **`type` 是单值
+       *    枚举**（`all` / `upload` / `archive` / `highlight`）—— 逗号串不是合法取值。
+       *    2026-09-16 spec §5.3 修订成 `all`，这条断言跟着改。
+       *    ⚠️ **下面两条一起钉**：精确等于 `all`，**外加**一条专门盯逗号的 ——
+       *    只留"等于 all"的话，"把逗号串写回来"仍然会红，但红的理由要靠人去看 diff；
+       *    这一条把理由写在消息里。而它的失败形状值得写清楚：上游回 **400**，
+       *    于是 Twitch 这一轮**一个视频都抓不到**，而 bilibili 完全正常（平台各自独立失败），
+       *    日志上看起来像"Twitch 今天不行"。
+       */
+      assert.equal(call.params.get('type'), 'all', '★ §5.3（2026-09-16 修订）：type=all');
       assert.equal(
-        call.params.get('type'),
-        'archive,highlight,upload',
-        '§5.3 冻结的那一格（⚠️ 见 twitch.ts 里那条"文档上最可疑"的注释）',
+        call.params.get('type')?.includes(','),
+        false,
+        '★★ type 是**单值枚举**，逗号串不是合法取值 —— 别把 archive,highlight,upload 写回来',
+      );
+      assert.equal(TWITCH_VIDEO_TYPE, 'all', '导出的常量本身也必须是那一个单值枚举');
+      assert.equal(
+        TWITCH_VIDEO_TYPE.includes(','),
+        false,
+        '★★ 逗号串不许回到常量里（它是这一格的唯一写入方）',
       );
       assert.equal(call.params.get('after'), null, '首轮不许送一个空的 after');
     });
@@ -1355,7 +1392,7 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
       assert.equal(page.nextCursor, null);
     });
 
-    it("★ type==='archive' ⇒ isLiveReplay；highlight / upload ⇒ false", async () => {
+    it("★★ type==='archive' ⇒ isLiveReplay；highlight / upload ⇒ false（逐条判定，不由请求参数决定）", async () => {
       const h = twitch({
         videos: () =>
           jsonResponse({
@@ -1370,9 +1407,20 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
       const page = await h.adapter.fetchPage(twitchCreator(), null, {
         storedTotal: 0,
       });
+
+      /*
+       * ★★ 断言的是**每一条自己的 `type`**，不是请求参数 —— 这两件事很容易被写成一件事：
+       *    请求参数回答"**要哪些**"，`isLiveReplay` 回答"**这一条是什么**"。
+       *    按请求参数置标签（"既然发的是 all，那……"）在这里会全错；而在旧写法
+       *    `type=archive` 下它**看起来**是对的（每一支都真挂着"直播回放"标签），
+       *    这正是这一条必须分开钉的理由。
+       *    ⚠️ 三条是**同一个请求、同一页**里的，所以"标签跟着请求参数走"那种写法
+       *    在这里必然红（而它不会在生产里报任何错，只会让普通投稿挂上直播回放的标签）。
+       */
+      assert.equal(h.route('videos')[0]?.params.get('type'), 'all', '这一个请求发的是 all');
       assert.equal(page.videos[0]?.isLiveReplay, true, 'archive = 一场直播的存档');
       assert.equal(page.videos[1]?.isLiveReplay, false, 'highlight 是剪辑，不是回放');
-      assert.equal(page.videos[2]?.isLiveReplay, false);
+      assert.equal(page.videos[2]?.isLiveReplay, false, 'upload 是普通投稿，不是回放');
     });
 
     it("★ duration '1h2m3s' ⇒ 3723（接 Task 2 的纯函数），拿不到 ⇒ NULL", async () => {
@@ -1627,7 +1675,16 @@ describe('★★ §5.5：uploads 播放列表 ID 从库到适配器全程都在�
         throw new Error('runOnce 不该走 resolveCreator：把链接解析成博主是路由（T5）的事');
       },
       async fetchPage(pageCreator) {
-        seen.push({ creatorId: pageCreator.id, meta: (pageCreator as SyncCreator).platformMeta });
+        /*
+         * ★★ `pageCreator` 的类型是**契约里的 `AdapterCreator`**，不是本文件自己拼的
+         *    交叉类型：这一行**编译得过**本身就是一件证据 —— "适配器收得到 `platformMeta`"
+         *    从此是编译器在管（原来 `(pageCreator as SyncCreator)` 那个 `as` 正是把
+         *    编译器绕开的那一步）。
+         *    ⚠️ 但类型只证明"允许有"，**不证明真塞了** ⇒ 下面那条值断言照样不能删：
+         *      `runOnce` 里只要有人 `.map(toCreator)` 一下（把 `StoredCreator` 降回公开
+         *      形状），类型上仍然合法（那是另一个对象），而值就**静默**没了。
+         */
+        seen.push({ creatorId: pageCreator.id, meta: pageCreator.platformMeta });
         return { videos: [], nextCursor: null, reachedEnd: true };
       },
     };
@@ -1647,6 +1704,19 @@ describe('★★ §5.5：uploads 播放列表 ID 从库到适配器全程都在�
       call.meta,
       { [UPLOADS_PLAYLIST_META_KEY]: UPLOADS_ID },
       '★★ 这一格空掉的话，fetchPage 就只能每轮再打一次 channels.list（§5.5 那段代价）',
+    );
+
+    /*
+     * ★★ 另一半（spec §5 的 `AdapterCreator` 那段逐字）：**`TrackedCreator` 不带它**。
+     *    这里断言的是**对外形状那个对象本身** —— 路由就是直接把它塞进 JSON 的。
+     *    有人顺手把 `platformMeta` 加进 `toCreator` 的话这一条会红；而它的后果是
+     *    "我们内部怎么翻页"出现在管理面板的响应里：对任何一个 JSON 消费者那都是一次
+     *    **静默的契约扩张**，发出去就删不掉了。
+     */
+    assert.equal(
+      'platformMeta' in created.creator,
+      false,
+      '★★ 对外形状（TrackedCreator）不许带 platformMeta —— 它只活在适配器那一层',
     );
   });
 });

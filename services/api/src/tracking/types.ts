@@ -14,9 +14,11 @@
  * ===========================================================================
  * 文件排法：上半段是 spec §5 **逐字**，下半段是本任务补的三样
  * ===========================================================================
- * 上半段（`FetchedVideo` / `FetchPage` / `CreatorRef` / `PlatformAdapter`）**逐字**
- * 照抄 `docs/video-tracking-spec.md` §5，连它自己的注释都原样留着 —— 那是冻结规格，
- * 改一个字都要先在 spec 里改。⚠️ 复审时逐字比对就是这一段的判据。
+ * 上半段（`FetchedVideo` / `FetchPage` / `CreatorRef` / `PlatformAdapter` /
+ * `AdapterCreator`）**逐字**照抄 `docs/video-tracking-spec.md` §5，连它自己的注释都原样留着
+ * —— 那是冻结规格，改一个字都要先在 spec 里改。⚠️ 复审时逐字比对就是这一段的判据。
+ * ⚠️ `AdapterCreator` 是 **2026-09-16 新加的那一段**（T8 的实现者量到的一处类型谎，
+ *    同日由 spec §5 修订采纳）—— 见它自己那段注释。
  *
  * 下半段是 spec §5 **没有**、但这三个模块必须共享的东西：四个错误类型。
  * 它们放在这里而不是某个适配器里，理由是一条很具体的约束：**谁抛、谁抓，不在一个文件里**。
@@ -103,10 +105,24 @@ export interface PlatformAdapter {
    * YouTube / Twitch 忽略它（它们的结束语义只看游标）。
    */
   fetchPage(
-    creator: TrackedCreator,
+    creator: AdapterCreator,
     cursor: string | null,
     ctx: { storedTotal: number },
   ): Promise<FetchPage>;
+}
+
+/**
+ * ★ 适配器真正拿到的形状 —— **2026-09-16 补的**（T8 的实现者量到的一个类型谎）：
+ * `fetchPage` 原来声明收 `TrackedCreator`，而那是**对外**形状、**没有 `platformMeta`**；
+ * 可是 YouTube 的适配器**必须**从 creator 上读 uploads 播放列表 ID（T4 报出来的那个缺口）。
+ * ⇒ 运行时那个值是有的（CLI 传的是带它的 `StoredCreator`），**但类型上说不存在**
+ * —— 这正是"下次重构时会被删掉"的那种谎。
+ * ⇒ 给它一个明确的名字：`AdapterCreator`（内部形状，多一个 `platform_meta`）。
+ * ⚠️ 它**不进** `TrackedCreator`（对外形状不带平台内部字段），
+ * 而数据层的 `StoredCreator` 结构上天然满足它。
+ */
+export interface AdapterCreator extends TrackedCreator {
+  platformMeta: Record<string, unknown>;
 }
 
 // ===========================================================================

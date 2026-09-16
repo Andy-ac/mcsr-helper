@@ -368,7 +368,21 @@ export interface PlatformAdapter {
    * ⇒ 裁决：把 `storedTotal` **由调用方传进来**（调用方本来就要查一次，顺手就有了）。
    * YouTube / Twitch 忽略它（它们的结束语义只看游标）。
    */
-  fetchPage(creator: TrackedCreator, cursor: string | null, ctx: { storedTotal: number }): Promise<FetchPage>;
+  fetchPage(creator: AdapterCreator, cursor: string | null, ctx: { storedTotal: number }): Promise<FetchPage>;
+}
+
+/**
+ * ★ 适配器真正拿到的形状 —— **2026-09-16 补的**（T8 的实现者量到的一个类型谎）：
+ * `fetchPage` 原来声明收 `TrackedCreator`，而那是**对外**形状、**没有 `platformMeta`**；
+ * 可是 YouTube 的适配器**必须**从 creator 上读 uploads 播放列表 ID（T4 报出来的那个缺口）。
+ * ⇒ 运行时那个值是有的（CLI 传的是带它的 `StoredCreator`），**但类型上说不存在**
+ * —— 这正是"下次重构时会被删掉"的那种谎。
+ * ⇒ 给它一个明确的名字：`AdapterCreator`（内部形状，多一个 `platform_meta`）。
+ * ⚠️ 它**不进** `TrackedCreator`（对外形状不带平台内部字段），
+ * 而数据层的 `StoredCreator` 结构上天然满足它。
+ */
+export interface AdapterCreator extends TrackedCreator {
+  platformMeta: Record<string, unknown>;
 }
 ```
 
@@ -437,8 +451,13 @@ export interface PlatformAdapter {
 - 需要 `MCSR_TWITCH_ID` + `MCSR_TWITCH_SECRET`。**没配就跳过**。
 - app access token：client credentials，**进程内缓存**（有效期约 60 天，但按小时刷新足够）。
 - `resolveCreator`：`twitch.tv/<login>` → `Get Users?login=` → user id + display_name + avatar。
-- `fetchPage`：`Get Videos?user_id=<>&first=100&after=<cursor>&type=archive,highlight,upload`
+- `fetchPage`：`Get Videos?user_id=<>&first=100&after=<cursor>&type=all`
   → `type==='archive'` ⇒ `isLiveReplay = true`。
+  ⚠️★ **本行原写的是 `type=archive,highlight,upload`，那是错的**（2026-09-16 由 T8 的实现者量到）：
+  Twitch 的 `type` 是**单值枚举**（`all` / `upload` / `archive` / `highlight`），
+  传逗号串不是合法取值。⇒ **裁决：用 `type=all`** —— 它本身就覆盖 archive + highlight + upload，
+  正好对上"尽可能多贴"（§1.2 R6 的延伸）+ `isLiveReplay` 由**逐条**的 `type` 判定，不靠请求参数。
+  代价：highlight 与 upload 也会进来（它们本来就是该博主的内容）。
 - ⚠️ `duration` 是形如 `"1h2m3s"` 的字符串，**不是秒数** —— 要解析（见 §5.6）。
 
 ### 5.4 ★ 三个平台"到底了"的语义**不一样**，不许写成一个 if
