@@ -543,8 +543,14 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
     /*
      * ⚠️ `...(platform === undefined ? {} : { platform })` 是计划（brief step 4）逐字冻结的形状，
      *    **不要简化成 `platform,`**：它要说的是"这个键**不在**"，而不是"传一个 `undefined` 进去"——
-     *    而 `listTrackedVideos` 的 `platform?: TrackPlatform` 读的正是"键在不在"这件事
-     *    （不传 = 全部，传了 = 只出那个平台）。
+     *    这是**接口层面**的区分：`listTrackedVideos` 的那一格是可选参数
+     *    （`platform?: TrackPlatform`），展开这版交给它的是"没有这个条件"，
+     *    `platform,` 交给它的是"这个条件被显式设成了 `undefined`"。
+     *    ⚠️ 但**别**把这句说成"callee 在看键在不在"：它读的是**值**
+     *    （`opts.platform === undefined ? "status = 'visible'" : …`，`tracked-videos.ts:483-485`），
+     *    所以今天这两版在运行期同效（那个开关是 `false`，见下）—— 观察得到的只有一句：
+     *    不传 = 全部，传了 = 只出那个平台。展开这版的价值在于它**说的**正是接口本来的意思，
+     *    而且是那个开关哪天打开时仍然成立的那一版。
      *    ⚠️ 照实记一句（别照抄计划给的那个理由）：计划说它"是 `exactOptionalPropertyTypes`
      *    逼出来的、直传过不了编译"，而**本仓那个开关是 `false`**（`tsconfig.base.json:17`）——
      *    实测直传 `platform,` 今天能过 `tsc`（T4 报告 §7.1 的四次对照）。
