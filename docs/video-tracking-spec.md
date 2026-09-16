@@ -305,12 +305,21 @@ CREATE INDEX idx_tracked_videos_creator ON tracked_videos (creator_id, published
 
 | 标签 | 判据 | 为什么它可判定 |
 |---|---|---|
-| `liveReplay` | `is_live_replay = 1` | Twitch 有 `type='archive'`；YouTube 有 `liveStreamingDetails`；bilibili 存档里 v1 判不出（见 §8） |
+| `liveReplay` | `is_live_replay = 1` | Twitch 有 `type='archive'`；YouTube ★ **看 `liveStreamingDetails.actualEndTime` 存在**（见下）；bilibili 存档里 v1 判不出（见 §8） |
 | `short` | `duration_sec <= 60` | bilibili 有 `length`；YouTube 有 `contentDetails.duration`；Twitch 有 `duration` |
 | `long` | `duration_sec >= 1200` | 同上 |
 
 ⚠️ **判据必须能指到一个可执行的东西**（本仓纪律）。`duration_sec` 为 `NULL` 的**一律不打**
 时长标签 —— 打一个"猜的"标签比不打更坏。
+
+⚠️★ **YouTube 那一条的判据是 2026-09-16 收紧的**（T8 评审发现 spec 与代码不一致）：
+原文写的是"有 `liveStreamingDetails` 即算回放"，而代码判的是
+**`liveStreamingDetails.actualEndTime` 存在**。
+⇒ **裁决：spec 跟代码走**，因为**正在直播中的那一场也有 `liveStreamingDetails`**，
+只是没有 `actualEndTime` ⇒ 按原文会把**正在进行的直播**也标成"回放"。
+代价（写下来）：这个判据**文档上有、实测没有**（本机没有 YouTube key，见 §2.7），
+而它判错的后果是**静默**的 —— 存的不是 `NULL` 而是一个看起来合理的 `0`，
+所以它被列进 T9 的"未验证清单"里点名。
 
 ---
 
@@ -442,8 +451,13 @@ export interface AdapterCreator extends TrackedCreator {
   ⇒ ⚠️ `tracked_creators.external_id` 存 **channelId**，upload 播放列表 ID 存在 `handle` 里吗？
   **不** —— 见 §5.5 的裁决。
 - `fetchPage`：`playlistItems.list?part=snippet,contentDetails&playlistId=<uploads>&maxResults=50&pageToken=<cursor>`
-  → 再对拿到的 id **批量补一次** `videos.list?part=contentDetails,statistics&id=<≤50 个>`
-  （时长与播放量只有这里有）。
+  → 再对拿到的 id **批量补一次**
+  `videos.list?part=contentDetails,statistics,liveStreamingDetails&id=<≤50 个>`
+  （时长与播放量只有这里有；`liveStreamingDetails` 是判"是不是直播回放"用的，见下）。
+  ⚠️★ **第三个 part 是 2026-09-16 补的**（T8 评审发现 spec 与代码不一致）：
+  原文只写了 `contentDetails,statistics`，而代码多要了一个 `liveStreamingDetails`。
+  ⇒ **裁决：spec 跟代码走** —— 三个 part 在**同一次**调用里（配额仍然是 1 unit / 50 个 id），
+  而少了它就没法判回放。
 - **到底了**：`nextPageToken` 不存在即到底（这个接口的语义是可靠的，与 bilibili 不同）。
 
 ### 5.3 Twitch
