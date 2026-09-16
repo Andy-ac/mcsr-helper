@@ -35,8 +35,13 @@
  * `thumbnail_url` / `published_at` / `duration_sec` / `view_count` / `comment_count`
  * 全是**可空、且没有默认值**的。这不是手滑漏了 `DEFAULT 0`：
  *
- * · 本仓既有纪律（`packages/shared/src/seed.ts` 里 `SeedRecord.matchDate` 那条注释）：
- *   "null 是真实存在的…**不能**显示成 0，1970 年 1 月 1 日看起来像一条真实数据"。
+ * · 本仓既有纪律（`apps/web/src/components/SeedResultCard.tsx:154-155`，那条注释贴在
+ *   `record.matchDate` 的**渲染**上）："null 是真实存在的…**不能**显示成 0 ——
+ *   1970 年 1 月 1 日看起来像一条真实数据"。
+ *   ⚠️ 出处本身也钉住，因为这里指错过一次：`packages/shared/src/seed.ts:110` 的
+ *      `SeedRecord.matchDate` **没有**注释（`seed.ts:108-114` 是光秃秃的字段列表）；
+ *      同文件里那条同族注释在 `seed.ts:123-125`（`availableCounts`：不能退化成 0，
+ *      "那是在撒谎"）。⇒ 引一句注释前先把那个文件打开看一眼。
  * · 在这里具体是：**播放量 0 与"上游没给播放量"是两件事**。填 0 之后
  *   "这支视频没人看"与"这个平台这一轮没回这个字段"在库和界面上**长得一模一样**，
  *   而后者是**接口悄悄变了**的信号 —— 那正是最需要被看见的那一类故障。

@@ -266,8 +266,12 @@ CREATE INDEX idx_tracked_videos_creator ON tracked_videos (creator_id, published
 
 - **`UNIQUE (platform, external_id)`**：翻页会重复看到同一批视频（增量重叠是常态），
   有它才能用 `INSERT ... ON CONFLICT DO UPDATE` 做成**幂等**；没有它每次增量都会插重复行。
-- **拿不到的字段一律 `NULL`，不许填 0**：本仓既有纪律（`SeedRecord.matchDate` 那条注释：
-  "null 是真实存在的…**不能**显示成 0，1970 年 1 月 1 日看起来像一条真实数据"）。
+- **拿不到的字段一律 `NULL`，不许填 0**：本仓既有纪律 ——
+  `apps/web/src/components/SeedResultCard.tsx:154-155` 那条注释（贴在该卡
+  `record.matchDate` 的渲染上）："null 是真实存在的…**不能**显示成 0 ——
+  1970 年 1 月 1 日看起来像一条真实数据"。⚠️ 它**不在** `packages/shared/src/seed.ts` 里：
+  那边的 `SeedRecord.matchDate`（`seed.ts:110`）是一个没有注释的字段，
+  上一版这里是"`SeedRecord.matchDate` 那条注释"而不点名文件，于是被指认到了 `seed.ts` 上。
   播放量 0 与"上游没给"是两件事。
 - **`ON DELETE CASCADE`**：删掉一个博主，他的视频跟着走（与 `content_contributors` 那类
   "没有外键所以必须手工清"的教训相反 —— 这里**能**用外键就用）。

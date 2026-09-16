@@ -37,8 +37,11 @@ export type TrackPlatform = (typeof TRACK_PLATFORMS)[number];
  *
  * ⚠️★ 五个计量字段（`publishedAt` / `durationSec` / `viewCount` / `commentCount` /
  *    `thumbnailUrl`）都**可以是 `null`**，而且**不许在别处退化成 `0` 或 `''`**：
- *    这是本仓既有纪律（`seed.ts` 里 `SeedRecord.matchDate` 那条注释："null 是真实存在的…
- *    **不能**显示成 0，1970 年 1 月 1 日看起来像一条真实数据"）。
+ *    这是本仓既有纪律（`apps/web/src/components/SeedResultCard.tsx:154-155` 贴在该卡
+ *    `record.matchDate` 渲染上的那条注释："null 是真实存在的…**不能**显示成 0 ——
+ *    1970 年 1 月 1 日看起来像一条真实数据"）。
+ *    ⚠️ 它**不在** `seed.ts` 里（那边的 `SeedRecord.matchDate` 是没注释的字段）——
+ *       这行注释的第一版就是这么指错的，别再跟着抄。
  *    落在这里具体是：**播放量 0 与"上游没给播放量"是两件事** —— 填 0 之后
  *    "这支视频没人看"与"这个平台这一轮没回这个字段"在界面上一模一样，
  *    而后者是**接口悄悄变了**的信号。⇒ 界面上那几格要自己处理"没有值"（显示破折号）。
@@ -124,6 +127,11 @@ export interface TrackedCreator {
  */
 export const TrackedCreatorInputSchema = z.object({
   input: z.string().trim().min(1).max(300),
+  /*
+   * ⚠️ 纯空白（`'   '`）**通过**校验：`.trim()` 先把它变成 `''`，而 `max(80)` 对空串是通的。
+   *    ⇒ 任务 5 那条路由必须把 `''` 当成"没填"（回落到平台给的名字），否则管理面板上
+   *      会出现一行空白的显示名。这里只记代价、不收紧，因为形状是计划逐字钉的。
+   */
   displayName: z.string().trim().max(80).nullish(),
 });
 export type TrackedCreatorInput = z.infer<typeof TrackedCreatorInputSchema>;

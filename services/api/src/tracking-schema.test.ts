@@ -26,12 +26,26 @@
  *     是**相反**的两种处置（一个"跟着走"、一个"只把出处擦掉"），最容易一起写错：
  *     两处都写成 `CASCADE` 的话，"删一个账号"会顺手删掉他加进来的博主。
  *
+ * ★ ⑤（清单点名的 `foreign_key_check`）拆成了三条：那一条在**本文件的夹具里恒定成立**
+ *   （外键开着 + 每行的 creator_id 都是真行 ⇒ 库里不可能有悬空行），所以它旁边补了
+ *   `PRAGMA foreign_keys` = 1 与"不存在的 creator_id 必须被拒"两条**能红**的邻位 ——
+ *   详见那一节自己的注释。同理，每条"期望数据库报错"的用例都钉着**哪一种**错误
+ *   （`/UNIQUE constraint failed/`，不是原来那个连 `NOT NULL constraint failed` 与
+ *   `FOREIGN KEY constraint failed` 一起收的 `/UNIQUE|constraint/i`）：放宽成正则里
+ *   通配的 `constraint`，夹具坏掉时这些用例会因为**别的原因**变绿。
+ *
  * ===========================================================================
  * ⚠️ 这个文件也是**迁移能应用**的证据
  * ===========================================================================
- * 每个测试进程都用 `DB_PATH=':memory:'` 建一个**全新**的库，也就是每次 `getDb()`
- * 都把 001…020 从头跑一遍。⚠️ 本仓规矩是**不在本机建磁盘库**（数据库只存在于
- * 服务器上；`services/api/data/` 下曾经误提交过一个 `mcsr.db`）。
+ * 每个测试进程都用 `DB_PATH=':memory:'` 建一个**全新**的库，001…020 确实从头跑了一遍 ——
+ * ⚠️ 但只在**进程内第一次** `getDb()` 时跑：`getDb()` 把连接缓存在模块级变量里
+ * （`db/index.ts:23` 的 `instance`、`:30` 的提前返回、`:52` 的赋值），之后每条用例
+ * 拿到的都是**同一个连接**，迁移不会再跑一遍。
+ * （上一版这里写的是"每次 `getDb()` 都把 001…020 从头跑一遍"，那是假的：它把"每个进程
+ *   一个新库"错读成了"每次调用都重建库"。真要是每次重建，上面那段"故意不清表"的理由
+ *   也就不成立了 —— 每条用例刚插的行会立刻消失。）
+ * ⚠️ 本仓规矩是**不在本机建磁盘库**（数据库只存在于服务器上；
+ * `services/api/data/` 下曾经误提交过一个 `mcsr.db`）。
  */
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
@@ -401,9 +415,14 @@ describe('tracked_videos：UNIQUE (platform, external_id)', () => {
     const creator = insertCreator();
     insertVideo({ creatorId: creator, id: 'tv-dup-1', externalId: 'BV1wHtm6rEK3' });
 
+    // ⚠️ 正则钉的是**哪一种**失败，不是"反正报了个 constraint 错"：
+    //    原来的 `/UNIQUE|constraint/i` 连 `NOT NULL constraint failed` 与
+    //    `FOREIGN KEY constraint failed` 一起收 —— 夹具一旦坏掉（少给一列、creator_id 写错），
+    //    这两条唯一约束就会**因为别的原因**变绿。`node:sqlite` 的原话就是
+    //    `UNIQUE constraint failed: tracked_videos.platform, tracked_videos.external_id`。
     assert.throws(
       () => insertVideo({ creatorId: creator, id: 'tv-dup-2', externalId: 'BV1wHtm6rEK3' }),
-      /UNIQUE|constraint/i,
+      /UNIQUE constraint failed/,
       '★ 翻页会重复看到同一批视频 ⇒ 没有这条约束，每次增量都会插重复行',
     );
   });
@@ -445,7 +464,7 @@ describe('tracked_creators：UNIQUE (platform, external_id)', () => {
 
     assert.throws(
       () => insertCreator({ platform: 'twitch', externalId: '44322889' }),
-      /UNIQUE|constraint/i,
+      /UNIQUE constraint failed/,
       '★ 同一个博主加两次必须由数据库拒绝',
     );
 
@@ -532,34 +551,43 @@ describe('值域 CHECK（把不可能的状态变成插不进去的行）', () =
      * spec §4.1 / §4.2 的 `CHECK` 只说了一件事：**这张表里不可能存在越界的行**。
      * 它同时是数据层（与 `packages/shared/src/tracking.ts` 那三个联合类型）
      * 敢把这几列当成枚举的信心的来源 —— 手法与 019 那四条 CHECK 相同。
+     *
+     * ⚠️ 下面每一处正则都必须是 `/CHECK constraint failed/`，不能退回 `/CHECK|constraint/i`
+     *    （原来就是那个）：后者连 `NOT NULL constraint failed` 与 `FOREIGN KEY constraint failed`
+     *    一起收，而这两种失败**说明夹具坏了**（少给一列、或 creator_id 指向了不存在的行）。
+     *    坏掉的夹具会让这一整块**因为别的原因**变绿，那比红还糟 —— 见文件头那条铁律。
      */
     const creator = insertCreator();
 
     // platform 的值域，两张表各一处
     assert.throws(
       () => insertCreator({ platform: 'niconico' }),
-      /CHECK|constraint/i,
+      /CHECK constraint failed/,
       'tracked_creators.platform 只收 bilibili/youtube/twitch',
     );
     assert.throws(
       () => insertVideo({ creatorId: creator, platform: 'niconico' }),
-      /CHECK|constraint/i,
+      /CHECK constraint failed/,
       'tracked_videos.platform 只收 bilibili/youtube/twitch',
     );
 
     // 两个 0/1 开关（`backfill_done` / `enabled`）
-    assert.throws(() => insertCreator({ backfillDone: 2 }), /CHECK|constraint/i, 'backfill_done');
-    assert.throws(() => insertCreator({ enabled: 2 }), /CHECK|constraint/i, 'enabled');
+    assert.throws(
+      () => insertCreator({ backfillDone: 2 }),
+      /CHECK constraint failed/,
+      'backfill_done',
+    );
+    assert.throws(() => insertCreator({ enabled: 2 }), /CHECK constraint failed/, 'enabled');
     assert.throws(
       () => insertVideo({ creatorId: creator, isLiveReplay: 2 }),
-      /CHECK|constraint/i,
+      /CHECK constraint failed/,
       'is_live_replay',
     );
 
     // status 的值域 + 正面控制（另一半必须真的插得进去）
     assert.throws(
       () => insertVideo({ creatorId: creator, status: 'deleted' }),
-      /CHECK|constraint/i,
+      /CHECK constraint failed/,
       'status 只收 visible/hidden',
     );
     assert.doesNotThrow(() => insertVideo({ creatorId: creator, status: 'hidden' }));
@@ -571,8 +599,39 @@ describe('值域 CHECK（把不可能的状态变成插不进去的行）', () =
 // ---------------------------------------------------------------------------
 
 describe('外键自检', () => {
+  it('⑤ `PRAGMA foreign_keys` 必须是 1（下面两条的前提）', () => {
+    /*
+     * ⚠️ 先验这一条，因为**外键其余的一切都建立在它上面**：`PRAGMA foreign_keys` 的默认值
+     *    是**关**，本仓是在建连接时显式打开的（`db/index.ts:44-45`，那里的注释写的就是
+     *    "写了 REFERENCES 也不生效"）。关着的时候 `REFERENCES` 形同虚设 —— 悬空引用照插，
+     *    `foreign_key_check` 也照样回 0 行（它没什么可查的）。
+     *    ⇒ 少了这一条，下面那条"拒插"与"0 行"都可能只是"约束根本没开"造成的假绿。
+     */
+    const row = getDb().prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
+    assert.equal(row.foreign_keys, 1, '★★ 外键强制必须开着：关着的时候 REFERENCES 等于没写');
+  });
+
+  it('⑤ ★★ 不存在的 creator_id 必须被数据库拒绝（这一条才钉得住 REFERENCES）', () => {
+    /*
+     * ⚠️ 这一条是本轮补的"能红"的邻位。原来这一节只有下面那条 `foreign_key_check`，
+     *    而它在**这个夹具里恒定成立**：外键是开的、每行的 creator_id 都是刚插进去的真行
+     *    ⇒ 库里不可能有悬空行，于是把 `REFERENCES tracked_creators (id)` 整段删掉，
+     *    它**照样绿**（只是没东西可查了）。"空集里没有反例"不是一条约束的证据。
+     * ⇒ 真正的判据是**插一个不存在的 creator_id 试一试**：那个子句一旦不在，这一行会被
+     *    静默写进库，变成 `content_contributors` 那种孤儿行（迁移 020 文件头第三节写了
+     *    这类行的代价：它不报错，只在别处表现成奇怪的结果）。
+     */
+    assert.throws(
+      () => insertVideo({ creatorId: 'tc-does-not-exist', externalId: 'BV-fk-orphan' }),
+      /FOREIGN KEY constraint failed/,
+      '★★ 指向不存在博主的视频行必须插不进去（没有 REFERENCES 的话它会静默入库）',
+    );
+  });
+
   it('⑤ PRAGMA foreign_key_check 回 0 行', () => {
     // 先真的写几条进去：空库上跑 foreign_key_check 永远是 0 行，什么也证明不了。
+    // ⚠️ 但"写了几条进去"也**不足以**让它变得可证伪（理由见上面那条）：这一条是任务清单
+    //    点名要的，留着当库的卫生检查；钉住外键的是上面那条"拒插"。
     const creator = insertCreator();
     insertVideo({ creatorId: creator, externalId: 'BV-fk-1' });
     insertVideo({ creatorId: creator, externalId: 'BV-fk-2' });
