@@ -109,6 +109,24 @@ export interface PlatformAdapter {
     cursor: string | null,
     ctx: { storedTotal: number },
   ): Promise<FetchPage>;
+
+  /**
+   * ★ 批量问上游："这些 id 你还认不认？" —— 返回**仍然存在**的那些 id。
+   *
+   * ⚠️ 这一条**不在 spec §5 里**（上面那一段逐字抄的是 §5）：它是 spec §4 加进来的
+   *    **可选**能力 —— 复审逐字比对 §5 时，这个 interface 比它多出**这一个**方法是对的。
+   *
+   * ★ 只有 Twitch 实现它（用户裁决：只做 Twitch，spec §7 第 1 条）。别的平台**不实现**，
+   *   调用方按"方法不存在 = 这个平台没有这个能力"处理 —— 平台差异不进公共层。
+   *
+   * ⚠️★ 失败**必须抛**（复用本文件的错误类型），**绝不许**把"请求失败"当成
+   *    "这些 id 都不存在" —— 那是一次**静默的批量下架**（spec §4）。
+   * ⚠️ 响应形状不对（`data` 不是数组、条目没有 `id`）也要**抛**：
+   *    把"我们读不懂"当成"上游没有"同样是一次静默下架。
+   * ⚠️ 返回的是**集合**；调用方自己算差集（`ids - existing`）。
+   * ⚠️ 只读：不写库、不改游标、不动 `last_error`。
+   */
+  existingVideoIds?(ids: readonly string[]): Promise<ReadonlySet<string>>;
 }
 
 /**

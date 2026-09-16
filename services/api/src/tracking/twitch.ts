@@ -52,6 +52,13 @@
  * | token 那一步的任何失败 / 不是 JSON / 顶层形状漂移 | PlatformHandshakeError | 同上 |
  * | 单条坏了（缺 id / title）                     | TwitchRejectedError      | 这一个 creator 失败 |
  *
+ * ★ 核对（`existingVideoIds`，spec §4）走的是**同一张表**（它只经过 `helixJson`），
+ *   只有一处不同、而那一处值得写下来："**条目没有 id**"在抓取那条路是 **creator 级**
+ *   （`TwitchRejectedError`），在核对这条路上是**平台级**（`PlatformHandshakeError`）。
+ *   理由：那条路上**没有 creator**，而读不出 id 的那一条只能被读成"这个 id 上游没认"
+ *   —— 也就是一次下架。处置也不同：核对失败 ⇒ 这一批**什么都不写**（`track.ts` 的
+ *   核对阶段），不是某个 creator 失败。
+ *
  * ★ 401 **不**在这里重试、也**不**清 token 缓存：CLI 拿到 `PlatformHandshakeError` 就
  *   放弃这个平台，而**下一次运行是一个新进程**（缓存跟着消失）⇒ 下一轮自然是干净的。
  *   代价（认下）：真出现"token 提前失效"时，这一轮整个 Twitch 不抓（10 分钟后恢复）。
@@ -124,6 +131,15 @@ export const TWITCH_PAGE_SIZE = 100;
  *    两边都带"不许出现逗号"的判据。
  */
 export const TWITCH_VIDEO_TYPE = 'all';
+
+/**
+ * 批量核对一次最多问几个 id。
+ *
+ * ⚠️ 100 是**文档值**（`Get Videos` 的 `id` 参数上限），本仓**没有实测**
+ *    （spec §11 第 1 条）：我们只有一个能用的 client id，"发 101 个看它报什么"不值得。
+ *    ⇒ 按 100 切批，并且**不依赖**"超了会报错"来发现写错。
+ */
+const TWITCH_VERIFY_BATCH = 100;
 
 /**
  * 封面的尺寸。Twitch 的 `thumbnail_url` 是**模板**（`…/thumb%{width}x%{height}.jpg`），
@@ -400,14 +416,28 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
    *
    * ⚠️ 请求头逐字用文档里的那两格（`Client-Id` / `Authorization`）。头名本来不区分大小写，
    *    但"与文档逐字一致"省掉了下一个人去核对的一次。
+   *
+   * ★ `repeatIds`（第四个参数，**可选**）存在的唯一理由：`params` 是
+   *   `Record<string, string>`，**装不下同一个键出现两次**，而批量核对（spec §4）要的
+   *   正是 `?id=<a>&id=<b>&…`。⇒ 重复的 `id` 走这个参数，`URLSearchParams.append`
+   *   会把每一个都留一份（换成 `set` 就只剩最后一个 —— 那等于只核对了 100 个里的 1 个，
+   *   而另外 99 个会被读成"上游没返回"）。
+   *   ⚠️ 为什么**不**在 `existingVideoIds` 里自己 `fetch` 一次：Twitch 这一层的
+   *     401/403/429/5xx 分类**只有这一份**（三个平台各有一份自己的 —— 上游形状不同），
+   *     复制第二份的下场是"修好一处、另一处没改"（本文件头三节逐条列的就是这份分类）。
+   *     参数可选 ⇒ 它上面那两个既有调用方（`Get Users` / `Get Videos`）一个字节都不变。
    */
   async function helixJson(
     path: string,
     params: Record<string, string>,
     step: string,
+    repeatIds?: readonly string[],
   ): Promise<unknown> {
     const token = await appToken();
-    const url = `${HELIX_BASE}/${path}?${new URLSearchParams(params).toString()}`;
+    const query = new URLSearchParams(params);
+    // ★ 逐个 append（不是 set）：空数组 ⇒ 一个都不加，`params` 里已有的键照样只出现一次。
+    for (const id of repeatIds ?? []) query.append('id', id);
+    const url = `${HELIX_BASE}/${path}?${query.toString()}`;
 
     let response: Response;
     try {
@@ -641,5 +671,70 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
     return { videos, nextCursor: reachedEnd ? null : nextCursor, reachedEnd };
   }
 
-  return { resolveCreator, fetchPage };
+  /**
+   * ★ spec §4：批量核对"这些 VOD 上游还认不认"。
+   *
+   * 只读，一次最多 `TWITCH_VERIFY_BATCH` 个 id（文档上限）。
+   * ⚠️ 上游没返回的 id **就是不存在**（过期 / 被删 / 转私享）—— 但**前提是这一批问成功了**：
+   *    任何失败都抛出去，让调用方"一条都不隐藏"（那条防线在 `track.ts` 的核对阶段）。
+   * ⚠️ 一条**故意留着的不对称**：非 401/403/429/5xx 的 4xx（比如"id 太多"的 400）
+   *    到这里是 `TwitchRejectedError` **原样**抛出去，不做 `resolveCreator` 那种
+   *    "翻译成平台级"—— 那种翻译是**路由**按类型分派的要求，而这条路唯一的消费者是
+   *    CLI 的核对阶段，它把**任何**抛出来的错都算"这一批失败"（spec §6.3）。
+   *    ⇒ 那一天的形状是"每轮核对都失败、退出码非零"（响亮），不是静默下架。
+   */
+  async function existingVideoIds(ids: readonly string[]): Promise<ReadonlySet<string>> {
+    /*
+     * ⚠️ 这个名字有三处用处（下面每一条错误信息里都有它）：它是"卡在哪一步"，
+     *   而三处漂成两个字（一处"核对"一处"verify"）就再也对不上了。
+     */
+    const step = 'Get Videos（核对）';
+    const existing = new Set<string>();
+
+    /*
+     * ⚠️ 空数组 ⇒ 一个请求都不发（循环不进）：一个**不带 id** 的 `Get Videos` 在上游是
+     *    一次 400 ⇒ 每一轮核对都会红着退出（§6.3 把核对失败算进退出码），
+     *    而"没有候选"本来就不该是一次请求。
+     */
+    for (let at = 0; at < ids.length; at += TWITCH_VERIFY_BATCH) {
+      const batch = ids.slice(at, at + TWITCH_VERIFY_BATCH);
+      const body = await helixJson('videos', {}, step, batch);
+
+      /*
+       * ★ 形状不对**必须抛**：把"我们读不懂"当成"上游没有"就是一次静默的批量下架（§4）。
+       *   ⚠️ **不复用** `requireData`：它那句话写的是"当成空列表就会静默少存一整页"
+       *   （抓取那条路的后果），而这条路上的后果是"这些 id 全被下架"。
+       *   类型沿用同一个（平台级形状漂移）：上游改了字段形状 ⇒ 每一批都会撞上同一件事。
+       */
+      const data = asRecord(body)?.data;
+      if (!Array.isArray(data)) {
+        throw new PlatformHandshakeError(
+          'twitch',
+          step,
+          'data 不是数组（上游的形状变了）—— 当成"全都还在"或"全都没了"都是静默下架',
+        );
+      }
+
+      for (const raw of data) {
+        const id = asNonEmptyString(asRecord(raw)?.id);
+        if (id === null) {
+          /*
+           * ★ 抛，**不许跳过**：读不出 id 的那一条既不能算"在"也不能算"不在" ——
+           *   跳过它，等于把它代表的那个 id 当成"上游没返回"（= 隐藏）。
+           *   与 `youtube.ts` 的 `fetchVideoDetails`"分不出这一条属于哪一支视频就抛"同一条。
+           */
+          throw new PlatformHandshakeError(
+            'twitch',
+            step,
+            'data[] 里有一条没有 id（上游的形状变了）—— 分不出它是哪个 id，跳过它就是把它下架',
+          );
+        }
+        existing.add(id);
+      }
+    }
+
+    return existing;
+  }
+
+  return { resolveCreator, fetchPage, existingVideoIds };
 }

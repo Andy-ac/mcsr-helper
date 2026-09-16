@@ -431,6 +431,12 @@ interface TwitchHarness {
   adapter: PlatformAdapter;
   calls: FetchCall[];
   route: (name: TwitchRoute) => FetchCall[];
+  /**
+   * 只数 URL 里含 `/videos?` 的调用。
+   * ⚠️ 与 `route('videos')` **不是**一回事：核对那条路（§4）一次带 100 个重复的 `id`，
+   *    要断言的就是"切了几批"，而那是**调用次数**本身。
+   */
+  videosCalls: () => FetchCall[];
 }
 
 function twitch(
@@ -484,6 +490,7 @@ function twitch(
     }),
     calls,
     route: (name) => calls.filter((call) => routeOf(call.url) === name),
+    videosCalls: () => calls.filter((call) => call.url.includes('/videos?')),
   };
 }
 
@@ -1532,6 +1539,98 @@ describe('★ Twitch 适配器（spec §5.3 / §5.4）', () => {
       await assert.rejects(
         () => h.adapter.fetchPage(twitchCreator(), null, { storedTotal: 0 }),
         PlatformHandshakeError,
+      );
+    });
+  });
+
+  /*
+   * ===========================================================================
+   * ★★ 核对（`existingVideoIds`，spec §4）—— 本轮的第三个阶段唯一的**上游判据**
+   * ===========================================================================
+   * 这一组四条钉的是同一件事的四个面：**"上游没返回"只在一批真的问成功时才算"不存在"**。
+   * 读错它的后果不是一条数据不对，而是一次**静默的批量下架** —— 几百条视频在界面上
+   * 同时消失，而摘要里只有一行 `核对: 查 200 个 / 隐藏 200 个`（那看起来与"上游真的
+   * 没了这么多"一模一样）。⇒ 这里只断言"在 / 不在 / 抛"三件事；
+   * "谁去隐藏、写哪一列"是 CLI 与数据层的事（spec §6.2 第 3 条）：
+   * **抛出去 ⇒ 这一批什么都不写**，那条防线要靠这里"确实抛了"才成立。
+   *
+   * ⚠️ 这一组**没有一条**来自真实响应（本机一个 Twitch 凭据都没有，见文件头）：
+   *    100 那个批量上限是**文档值**，本仓没有实测（spec §11 第 1 条）。
+   */
+  describe('★★ existingVideoIds（spec §4）', () => {
+    it('★ 上游只返回还在的那些 ⇒ 结果就是那些（调用方据此隐藏差集）', async () => {
+      const h = twitch({
+        videos: () => jsonResponse({ data: [{ id: '111' }, { id: '333' }] }),
+      });
+      const adapter = h.adapter;
+      assert.ok(adapter.existingVideoIds, 'Twitch 必须实现这个能力');
+      const existing = await adapter.existingVideoIds(['111', '222', '333']);
+      assert.deepEqual([...existing].sort(), ['111', '333']);
+
+      const call = h.videosCalls()[0];
+      assert.ok(call, '核对必须打一次 Get Videos');
+      assert.equal(h.videosCalls().length, 1, '三个 id 一批问完（上限 100）');
+      /*
+       * ★★ 文档的形状是**同一个 `id` 参数重复出现**（`?id=111&id=222`），不是逗号串
+       *    （那是 YouTube 的 `videos.list` 的形状）。写成逗号串在这里是一次 **400**，
+       *    而后来的表现是核对**永远失败** —— 不是静默下架，是静默地一条都隐藏不了。
+       *    ⚠️ 这条断言同时钉住"重复的 id 从哪来"：`helixJson` 收的是
+       *      `Record<string, string>`，**装不下重复的键** ⇒ 必须有另一条路把它送出去。
+       */
+      assert.deepEqual(
+        call.params.getAll('id'),
+        ['111', '222', '333'],
+        '★ 重复的 id 参数，不是逗号串',
+      );
+      assert.equal(call.params.get('user_id'), null, '核对不按博主问：只按 id 问');
+
+      /*
+       * ⚠️ 空输入**一个请求都不发**：它的意思是"没有候选"，而一个不带 id 的
+       *    `Get Videos` 在上游是一次 400 ⇒ 每一轮核对都会红着退出
+       *    （§6.3 把核对失败算进退出码）。
+       */
+      assert.equal((await adapter.existingVideoIds([])).size, 0);
+      assert.equal(h.videosCalls().length, 1, '空输入不许发请求');
+    });
+
+    it('★★ 请求失败 ⇒ 抛（绝不许回落成"全都还在"，更不许回落成空集）', async () => {
+      const h = twitch({ videos: () => jsonResponse({ error: 'boom' }, 500) });
+      await assert.rejects(
+        () => h.adapter.existingVideoIds!(['111']),
+        PlatformUnavailableError,
+        '★ 5xx 沿用既有分类（"过一会儿再来"）；这里钉的是它**抛出来了** —— 回落成空集 或 回落成全集 都是在替上游撒谎',
+      );
+    });
+
+    it('★★ 形状不对 ⇒ 抛（"我们读不懂"不等于"上游没有"）', async () => {
+      for (const body of [
+        // data 不是数组（spec §4 点名的第一种）
+        { data: 'nope' },
+        // 条目没有 id（spec §4 点名的第二种）：读不出来的那一条**既不能算"在"也不能算"不在"**
+        { data: [{ id: '111' }, { title: '这一条没有 id' }] },
+      ]) {
+        const h = twitch({ videos: () => jsonResponse(body) });
+        await assert.rejects(
+          () => h.adapter.existingVideoIds!(['111']),
+          PlatformHandshakeError,
+          `${JSON.stringify(body)}：读不懂就必须抛 —— 把它读成"上游没有"就是一次静默下架`,
+        );
+      }
+    });
+
+    it('+ 超过 100 个 ⇒ 自己切批（请求次数 = ceil(n/100)）', async () => {
+      const h = twitch({ videos: () => jsonResponse({ data: [] }) });
+      const ids = Array.from({ length: 201 }, (_, i) => String(1000 + i));
+      await h.adapter.existingVideoIds!(ids);
+      assert.equal(h.videosCalls().length, 3);
+      /*
+       * ★ 次数对了**还不够**：切错位置（每批 101 个、或者少发一批）同样是 3 次，
+       *    而每一次的内容都不对。⇒ 逐批看带了几个 id，把"每批 ≤ 100"钉死。
+       */
+      assert.deepEqual(
+        h.videosCalls().map((each) => each.params.getAll('id').length),
+        [100, 100, 1],
+        '每批 ≤ `TWITCH_VERIFY_BATCH`（100 是文档值），最后一批是剩下的那一个',
       );
     });
   });
