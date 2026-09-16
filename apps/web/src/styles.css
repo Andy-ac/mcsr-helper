@@ -8191,11 +8191,48 @@ html[data-theme='light'] {
 }
 
 /*
+ * ---- 按平台分段（T8，spec §5.4）----
+ *
+ * 名单从"一张表"变成"每平台一段"（顺序照 `TRACK_PLATFORMS`）。
+ * ⚠️★ 空的分段**连小标题一起不画**（组件里那行 `return null`）⇒ 这里**不需要**
+ *    任何"空段落"的样式：那个界面根本不存在（不存在的状态不需要解释）。
+ * ⚠️ 下面三条是**最小**规则：本仓的类名↔CSS 守卫要求产物里每一个 `tracked*`
+ *    类名都有规则（`apps/web/scripts/videorender.tsx` 第 ⑪ 组），而这三格一开始
+ *    就是为此而加的 —— 不加规则的话那个类名"渲染得出来但什么都不生效"。
+ */
+
+/* 一段（小标题 + 它自己的表格）。⚠️ 上边距是段与段之间的分隔：
+   第一段紧跟在"加博主"那一栏后面，不该再顶出一大截空白。 */
+.tracked__group {
+  margin-top: 24px;
+}
+
+/* 段的小标题（平台名 + 条数）。
+   ⚠️ 字号取 `--fs-px-sm`（与"显示名"同一档）：它是**分段的标签**，
+      不是这一块的主标题（那是 `.tracked__title` 的 h2）—— 层级靠字号与位置表达。
+   ⚠️ `margin` 归零后自己给下边距：`h4` 的浏览器默认上边距会把段间距顶成两倍。 */
+.tracked__grouptitle {
+  margin: 0 0 8px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+
+/* 段内条数：贴在小标题右边的那一格数字。
+   ⚠️ `--fg-muted`：它是读数，不该跟平台名抢注意力；
+   ⚠️ `tabular-nums`：几段的数字要上下对得齐（与 `.tracked__total` 同一条理由）。 */
+.tracked__groupcount {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/*
  * 七列在窄屏上装不下 ⇒ 横向滚动兜底放在**这一层**，不放在表格自己身上
  * （`overflow-x` 与 `width: 100%` 落在同一个元素上时，浏览器会把"表格比容器宽"
  * 变成"表格被压扁"，要绕过去得写 `min-width: max-content` —— `.ranked__tablescroll`
  * 为同一件事写过完整的一段）。
  * ⚠️ 兜底是"表格自己滚一次"，而不是"整页被顶出一条横向滚动条"。
+ * ⚠️★ T8 起它住在**每一段里面**（每段一张表）：横滚的是那一段，不是整块面板。
  */
 .tracked__tablescroll {
   overflow-x: auto;

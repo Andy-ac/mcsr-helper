@@ -1826,6 +1826,26 @@ export const en: TranslationSchema = {
      */
     emptyHint:
       'Nothing has been fetched for the creators on the list yet — fetching runs every 10 minutes.',
+    /*
+     * ★★ The empty sentence for **one partition** (`platform !== undefined`, the four
+     *    buttons of spec §5.2) — it does a different job from the two above, and
+     *    reusing them is wrong.
+     *
+     * ⚠️★ `emptyHint` names the cause as "nothing has been fetched / runs every 10
+     *    minutes". Inside a partition the cause is often that **no creator of that
+     *    platform is on the list at all** (two of the three platforms look like this
+     *    today). Reusing it sends the reader off to wait for the crawler, and the
+     *    crawler will never fetch a creator that is **not on the list** — pointing at
+     *    an action that cannot succeed is worse than saying nothing, which is the whole
+     *    reason this sentence exists.
+     * ⚠️ It **replaces the second sentence**: a partition renders only this one (see
+     *    `emptyTitle` in `TrackedVideos.tsx`), so it has to carry the "why" itself —
+     *    both causes: no creator for this platform on the list, or nothing fetched yet.
+     * ⚠️ It promises **no time**: fetching runs every 10 minutes, but "wait a bit and it
+     *    will show up" is not necessarily true here (with no creator it never will).
+     */
+    emptyPlatform:
+      'No videos on this platform yet — the list has no creator for it, or their videos have not been fetched yet.',
     thumbAlt: 'Thumbnail of {{title}}',
     publishedAt: 'Published',
     duration: 'Length',
@@ -1874,6 +1894,19 @@ export const en: TranslationSchema = {
     colSynced: 'Last synced',
     colError: 'Last error',
     colVideos: 'Videos',
+    /*
+     * ★ The **second half** of `N（hidden M）` (spec §5.4, first bullet): at M = 0 the
+     *   whole bracket is not drawn (the render site reads
+     *   `creator.hiddenCount > 0 ? … : null`).
+     *
+     * ⚠️ The parentheses are **not** in this sentence — they are layout, supplied by the
+     *    render site. This string only answers "how do we say M".
+     * ⚠️★ M is "how many of his rows the takedown check has **hidden**"
+     *    (`status = 'hidden'`), **not** a difference: the `N` above still counts **all**
+     *    of his rows (hidden ones included, spec §5.4 last ⚠️) — the two numbers count
+     *    different things, so `137（hidden 3）` reads "137 stored, 3 of them not shown".
+     */
+    hiddenCount: 'hidden {{count}}',
     colActions: 'Actions',
     stateOn: 'Enabled',
     stateOff: 'Disabled',

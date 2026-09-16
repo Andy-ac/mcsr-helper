@@ -143,7 +143,15 @@ export interface TrackedVideosSectionProps {
   total: number;
   page: number;
   pageSize: number;
-  /** 空列表时显示的那一句话（页面给 —— 只有它知道为什么是空的）。 */
+  /**
+   * 「全部」那一档空列表时显示的那一句话（页面给 —— 只有它知道为什么是空的）。
+   *
+   * ⚠️★ 它管的是**没有选分区**那一档（T8）：选了某个分区、而那个分区里一条都没有时，
+   *    空的是另一件事，说的也是**另一句话**（`tracked.emptyPlatform`，见组件里
+   *    `emptyTitle` 那一段）。页面照旧只传「全部」那一句 —— 分区那一句的判据
+   *    （`platform !== undefined` 且 `items` 是空的）就在**组件手里的两个 prop** 上，
+   *    页面再判一次就是第二份口径，而两份口径迟早会漂。
+   */
   empty: string;
   /** 正在取数。⚠️ 与"空列表"是两件事，**不许**合并。 */
   loading: boolean;
@@ -186,6 +194,21 @@ export function TrackedVideosSection({
 }: TrackedVideosSectionProps) {
   const { t, i18n } = useTranslation();
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+
+  /*
+   * ★★ 空态那一句话：**选了分区**的时候不是页面给的那一句（T8，spec §5.4 那四个按钮）。
+   *
+   * ⚠️★ 为什么必须分开说：`tracked.emptyHint`（下面第二句）把空的原因说成"名单上的博主
+   *    还没有抓到 / 抓取每 10 分钟跑一轮"。在**某一个分区**里空，原因常常是
+   *    **名单上连这个平台的博主都没有**（今天三个平台里有两个就是这样）——
+   *    照原样说的话，用户会去等抓取，而抓取永远不会把一个**不在名单上**的博主抓回来。
+   * ⚠️ 所以分区里换一句（`tracked.emptyPlatform`，它自己把两种原因都写清楚），
+   *    并且**不画第二句**：那一句正是要修正的那件事。
+   * ⚠️ 判据在这一层而不是页面：`platform` 与 `items` 都是本组件手里的 prop，
+   *    "这个分区里一条都没有"由它们一起决定（理由见 `empty` 那格 prop 的说明）。
+   * ⚠️ 它**不影响**取数：分区仍然只由服务端筛（上面那段说明），这里换的是一句话。
+   */
+  const emptyTitle = platform === undefined ? empty : t('tracked.emptyPlatform');
 
   return (
     <section className="tracked" aria-labelledby="tracked-title">
@@ -240,13 +263,18 @@ export function TrackedVideosSection({
       {!loading && error === null && items.length === 0 ? (
         /*
          * 空态是**一句陈述**，不是一块空白（本仓纪律：空白看起来像坏了）。
-         * ⚠️ 两句话：第一句由页面给（"还没有追踪到视频"），第二句是这一栏的说明
-         *    （这些视频由服务器定时抓、名单由编辑维护）—— 少了第二句，访客会以为
-         *    这一栏坏了，或者以为我们漏掉了他的视频。
+         * ⚠️ 「全部」那一档是**两句话**：第一句由页面给（"还没有追踪到视频"），第二句是
+         *    这一栏的说明（这些视频由服务器定时抓、名单由编辑维护）—— 少了第二句，
+         *    访客会以为这一栏坏了，或者以为我们漏掉了他的视频。
+         * ⚠️★ 而**分区**那一档只有一句（`emptyTitle` = `tracked.emptyPlatform`）：
+         *    第二句在分区里说的原因是错的（那一句已经被这句取代了，见上面 `emptyTitle`）。
+         *    它仍然是一句**说清为什么空**的话，所以这一块不是空白。
          */
         <div className="tracked__empty">
-          <p className="tracked__emptytitle">{empty}</p>
-          <p className="tracked__emptyhint">{t('tracked.emptyHint')}</p>
+          <p className="tracked__emptytitle">{emptyTitle}</p>
+          {platform === undefined ? (
+            <p className="tracked__emptyhint">{t('tracked.emptyHint')}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -535,129 +563,181 @@ export function TrackedCreatorsPanel({
         <p className="tracked__empty">{t('tracked.manageEmpty')}</p>
       ) : null}
 
-      {!loading && loadError === null && creators.length > 0 ? (
-        /*
-         * ⚠️ 外面套一层 `.tracked__tablescroll`（横向滚动兜底）：七列在窄屏上装不下，
-         *    而"顶出一条**页面级**的横向滚动条"是整页在动，比表格自己滚一次糟得多
-         *    （`.ranked__tablescroll` 为同一件事写过完整的一段）。
-         * ⚠️ 表格形状复用 `.admintable`（全站唯一的表格形状，账号管理页在用）：
-         *    在这里再写一遍那几行属性就是第二份会漂移的口径。
-         */
-        <div className="tracked__tablescroll">
-          <table className="admintable tracked__table">
-            <thead>
-              <tr>
-                <th>{t('tracked.colPlatform')}</th>
-                <th>{t('tracked.colName')}</th>
-                <th>{t('tracked.colState')}</th>
-                <th>{t('tracked.colSynced')}</th>
-                <th>{t('tracked.colError')}</th>
-                <th>{t('tracked.colVideos')}</th>
-                <th>{t('tracked.colActions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {creators.map((creator) => (
-                <tr
-                  className={`tracked__row${creator.enabled ? '' : ' tracked__row--off'}`}
-                  key={creator.id}
-                >
-                  <td>
-                    <span className="badge badge--kind">{t(PLATFORM_KEYS[creator.platform])}</span>
-                  </td>
-                  <td className="tracked__name">
-                    {/*
-                      ⚠️ `display_name` 是 NOT NULL，但**可能是空串**（迁移 020 那一列的
-                      `DEFAULT ''`）—— 空串在这里显示成 `—`：一个空白的名字格看起来像
-                      界面坏了，而 `—` 说的正是"这一格没有值"。
-                    */}
-                    <span className="tracked__displayname">{creator.displayName || DASH}</span>
-                    {creator.handle === '' ? null : (
-                      <span className="tracked__handle">{creator.handle}</span>
-                    )}
-                  </td>
-                  <td className="tracked__state">
-                    {creator.enabled ? t('tracked.stateOn') : t('tracked.stateOff')}
-                  </td>
-                  <td className="tracked__synced">
-                    {/*
-                      ⚠️ **秒**的时间戳，必须经 `toMillis`；从没同步过是 `null` ⇒ `—`
-                      （**不是** 1970 —— 那是这一整类 bug 最容易漏的一格：
-                      `new Date(null)` 恰好也是 1970，所以"忘了判 null"与"忘了乘 1000"
-                      在这一格上长得一样，而两者都要靠这一条断言拦住）。
-                    */}
-                    {localDateTime(creator.lastSyncedAt, i18n.language)}
-                  </td>
-                  <td className="tracked__err">
-                    {creator.lastError === null ? DASH : creator.lastError}
-                    {creator.consecutiveFailures > 0 ? (
-                      <span className="tracked__streak">
-                        {t('tracked.failStreak', { count: creator.consecutiveFailures })}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="tracked__total">{String(creator.videoCount)}</td>
-                  <td className="tracked__actions">
-                    <button
-                      type="button"
-                      className="ghostbtn"
-                      disabled={busy}
-                      onClick={() => onToggle(creator.id, !creator.enabled)}
-                    >
-                      {creator.enabled ? t('tracked.disable') : t('tracked.enable')}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghostbtn"
-                      disabled={busy}
-                      title={t('tracked.rebackfillHint')}
-                      onClick={() => onRebackfill(creator.id)}
-                    >
-                      {t('tracked.rebackfill')}
-                    </button>
-                    {/*
-                      删除走**行内两步确认**（照 `VideoCard` 的先例，不用 `window.confirm`：
-                      原生弹窗与整站样式无关，而且会阻塞渲染）。
-                      ⚠️ 为什么删一个博主值得确认、而停用不值得：删掉之后他的视频靠外键
-                      **一起没了**（spec §4.2），重建只能靠重新添加 + 重新回填一整轮。
-                    */}
-                    {confirmingId === creator.id ? (
-                      <>
-                        <span className="tracked__confirm">{t('tracked.confirmDelete')}</span>
-                        <button
-                          type="button"
-                          className="dangerbtn"
-                          disabled={busy}
-                          onClick={() => onDelete(creator.id)}
+      {!loading && loadError === null && creators.length > 0
+        ? /*
+           * ★★ 名单按平台分成**三段**（T8，spec §5.4）：顺序照 `TRACK_PLATFORMS`
+           *    （bilibili → youtube → twitch），每段一个小标题 + 该段条数。
+           *
+           * ⚠️★ 为什么是**三个 `<section>`** 而不是"一张表里插三行小标题"：
+           *    spec §5.4 要的每一段都有自己的**小标题与条数**，而它们在 `<table>` 里
+           *    只能变成一个没有语义的额外行（读屏软件念出来是一张表里混着几行标题）；
+           *    顺带每段还各自拿到一个 `.tracked__tablescroll` —— 窄屏上横滚的是**那一段**，
+           *    而不是把整块面板一起推出去。
+           * ⚠️★ 空的分段**连小标题一起不画**（下面那行 `return null`，spec §5.4）：
+           *    一个只有标题的空壳看起来像"这一段的数据没加载出来"（与"空容器不渲染"
+           *    同一条纪律）。⚠️ 三段**都**空不是这里的事 —— 那种情况走上面那句
+           *    "名单还是空的"（`creators.length === 0`），所以这里不必画任何空态。
+           * ⚠️ 段内顺序**就是** `listCreators` 给的顺序（`created_at ASC`）：这里只
+           *    `filter`，**不排序** —— 在界面里再排一次就是第二份"谁在前"的口径。
+           * ⚠️ `rows` 是 `creators` 的子集（不是第二份数据）：`key` 仍然用 `creator.id`。
+           */
+          TRACK_PLATFORMS.map((platform) => {
+            const rows = creators.filter((creator) => creator.platform === platform);
+            // ⚠️ 空的分段连小标题一起不画（spec §5.4）
+            if (rows.length === 0) return null;
+            return (
+              <section className="tracked__group" key={platform}>
+                <h4 className="tracked__grouptitle">
+                  {t(PLATFORM_KEYS[platform])}
+                  <span className="tracked__groupcount">{rows.length}</span>
+                </h4>
+                {/*
+                 * ⚠️ 外面套一层 `.tracked__tablescroll`（横向滚动兜底）：七列在窄屏上
+                 *    装不下，而"顶出一条**页面级**的横向滚动条"是整页在动，比表格自己
+                 *    滚一次糟得多（`.ranked__tablescroll` 为同一件事写过完整的一段）。
+                 * ⚠️ 表格形状复用 `.admintable`（全站唯一的表格形状，账号管理页在用）：
+                 *    在这里再写一遍那几行属性就是第二份会漂移的口径。
+                 */}
+                <div className="tracked__tablescroll">
+                  <table className="admintable tracked__table">
+                    <thead>
+                      <tr>
+                        <th>{t('tracked.colPlatform')}</th>
+                        <th>{t('tracked.colName')}</th>
+                        <th>{t('tracked.colState')}</th>
+                        <th>{t('tracked.colSynced')}</th>
+                        <th>{t('tracked.colError')}</th>
+                        <th>{t('tracked.colVideos')}</th>
+                        <th>{t('tracked.colActions')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((creator) => (
+                        <tr
+                          className={`tracked__row${creator.enabled ? '' : ' tracked__row--off'}`}
+                          key={creator.id}
                         >
-                          {t('common.confirm')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghostbtn"
-                          disabled={busy}
-                          onClick={() => onAskDelete(null)}
-                        >
-                          {t('common.cancel')}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="dangerbtn"
-                        disabled={busy}
-                        onClick={() => onAskDelete(creator.id)}
-                      >
-                        {t('tracked.delete')}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+                          <td>
+                            <span className="badge badge--kind">
+                              {t(PLATFORM_KEYS[creator.platform])}
+                            </span>
+                          </td>
+                          <td className="tracked__name">
+                            {/*
+                              ⚠️ `display_name` 是 NOT NULL，但**可能是空串**（迁移 020 那一列的
+                              `DEFAULT ''`）—— 空串在这里显示成 `—`：一个空白的名字格看起来像
+                              界面坏了，而 `—` 说的正是"这一格没有值"。
+                            */}
+                            <span className="tracked__displayname">
+                              {creator.displayName || DASH}
+                            </span>
+                            {creator.handle === '' ? null : (
+                              <span className="tracked__handle">{creator.handle}</span>
+                            )}
+                          </td>
+                          <td className="tracked__state">
+                            {creator.enabled ? t('tracked.stateOn') : t('tracked.stateOff')}
+                          </td>
+                          <td className="tracked__synced">
+                            {/*
+                              ⚠️ **秒**的时间戳，必须经 `toMillis`；从没同步过是 `null` ⇒ `—`
+                              （**不是** 1970 —— 那是这一整类 bug 最容易漏的一格：
+                              `new Date(null)` 恰好也是 1970，所以"忘了判 null"与"忘了乘 1000"
+                              在这一格上长得一样，而两者都要靠这一条断言拦住）。
+                            */}
+                            {localDateTime(creator.lastSyncedAt, i18n.language)}
+                          </td>
+                          <td className="tracked__err">
+                            {creator.lastError === null ? DASH : creator.lastError}
+                            {creator.consecutiveFailures > 0 ? (
+                              <span className="tracked__streak">
+                                {t('tracked.failStreak', { count: creator.consecutiveFailures })}
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="tracked__total">
+                            {String(creator.videoCount)}
+                            {/*
+                              ★★ `N（隐藏 M）`（spec §5.4）：M = 0 时**连括号一起不画** ——
+                              不存在的状态不需要解释（与"空容器不渲染"同一条纪律）。
+                              ⚠️ `N` 仍然是**库里所有行**（含隐藏）的条数：它是 bilibili
+                              "到底判据"的输入（全局约束 5），隐藏功能**不许**碰它的语义
+                              ⇒ 隐藏的那几条是**加在括号里**说出来的，不是从 N 里减掉。
+                              ⚠️ 括号是全角 `（）`，由这里给（不是词条的一部分）：两种语言
+                              都长成 `N（…）`，而词条只回答"M 怎么说"（见 `zh-CN.ts` 那一句）。
+                              ⚠️ M 是服务端算的（`listCreators` 的 `SUM(CASE WHEN …)`）：
+                              这一层不数、也不猜 —— 猜的话两个数迟早对不上。
+                            */}
+                            {creator.hiddenCount > 0
+                              ? `（${t('tracked.hiddenCount', { count: creator.hiddenCount })}）`
+                              : null}
+                          </td>
+                          <td className="tracked__actions">
+                            <button
+                              type="button"
+                              className="ghostbtn"
+                              disabled={busy}
+                              onClick={() => onToggle(creator.id, !creator.enabled)}
+                            >
+                              {creator.enabled ? t('tracked.disable') : t('tracked.enable')}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghostbtn"
+                              disabled={busy}
+                              title={t('tracked.rebackfillHint')}
+                              onClick={() => onRebackfill(creator.id)}
+                            >
+                              {t('tracked.rebackfill')}
+                            </button>
+                            {/*
+                              删除走**行内两步确认**（照 `VideoCard` 的先例，不用 `window.confirm`：
+                              原生弹窗与整站样式无关，而且会阻塞渲染）。
+                              ⚠️ 为什么删一个博主值得确认、而停用不值得：删掉之后他的视频靠外键
+                              **一起没了**（spec §4.2），重建只能靠重新添加 + 重新回填一整轮。
+                            */}
+                            {confirmingId === creator.id ? (
+                              <>
+                                <span className="tracked__confirm">
+                                  {t('tracked.confirmDelete')}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="dangerbtn"
+                                  disabled={busy}
+                                  onClick={() => onDelete(creator.id)}
+                                >
+                                  {t('common.confirm')}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="ghostbtn"
+                                  disabled={busy}
+                                  onClick={() => onAskDelete(null)}
+                                >
+                                  {t('common.cancel')}
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="dangerbtn"
+                                disabled={busy}
+                                onClick={() => onAskDelete(creator.id)}
+                              >
+                                {t('tracked.delete')}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            );
+          })
+        : null}
     </section>
   );
 }

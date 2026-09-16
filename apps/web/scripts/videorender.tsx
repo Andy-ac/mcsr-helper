@@ -454,9 +454,19 @@ const PER_PLATFORM_VIDEOS: TrackedVideo[] = [
 
 const CREATOR_ON: TrackedCreator = {
   id: 'tc-on',
-  platform: 'youtube',
-  externalId: 'UC0123456789abcdef',
-  handle: '@example',
+  /*
+   * ⚠️★ 平台是 **bilibili**（T8 起）：面板按 `TRACK_PLATFORMS`（bilibili → youtube →
+   *    twitch）**分段**，而 ⑮ 要断言"**第一个**小标题就是**第一个**平台"。
+   * ⚠️★ 夹具里**只给两个平台**（bilibili + twitch），第三个（YouTube）**故意不给**：
+   *    它就是"**空的分段连标题一起不画**"（spec §5.4）这条规则的证据 ——
+   *    三份夹具都在场的话，那条规则**没有任何一份产物**能证明。
+   *    YouTube 那一份由 `CREATOR_YT` 单独提供，⑮ 的正面对照才用它（见那一段）。
+   * ⚠️ `externalId` / `handle` 只是夹具值（这个脚本不验它们的形状 —— 解析链接的是
+   *    服务端）：与平台对齐只是为了让这一行看起来像真的。
+   */
+  platform: 'bilibili',
+  externalId: '703007996',
+  handle: '703007996',
   displayName: 'Example Creator',
   avatarUrl: null,
   backfillDone: true,
@@ -466,15 +476,13 @@ const CREATOR_ON: TrackedCreator = {
   enabled: true,
   videoCount: 137,
   /*
-   * ⚠️ 占位 0（`TrackedCreator` 的必填格，迁移 021 那一轮加的）：
-   *    真值要 T3 从 SQL 数出来、再由 T8 在这里摆成"隐藏了几条"的夹具
-   *    （面板要显示 `N（隐藏 M）`）。T8 落地时**必须换掉这个 0**。
-   * ⚠️ 这个脚本不在 `apps/web/tsconfig.json` 的 include 里（`scripts/**` 都不在，
-   *    见那个文件里"JSX 走 classic runtime"那段），所以少了这一格 `pnpm -w check`
-   *    **不会**报错 —— 它是由 `check:all` 里那句 `tsx scripts/videorender.tsx` 执行的，
-   *    而 tsx 只剥类型、不做类型检查。⇒ 编译门禁拦不住这里的漂移，只能靠人看。
+   * ★★ T8：`hiddenCount` 是"他名下**被下架核对隐藏**的行数"（spec §5.4），
+   *    面板那一格要显示成 `137（隐藏 3）`。
+   *    这一格**故意是 3 而不是 0**：0 的话那一格与今天逐字相同 ⇒
+   *    "带括号"那一半**没有任何一份产物**证明得了（T3 留下的那个占位 0 到这里还清）。
+   * ⚠️ M = 0 的那一半由 `CREATOR_OFF`（下面那行）提供，⑮ 两条一起断言。
    */
-  hiddenCount: 0,
+  hiddenCount: 3,
 };
 
 /** 停用 + 从没同步过 + 上一轮失败过两次（第 ⑥ 组要把这四件事都画对）。 */
@@ -491,6 +499,31 @@ const CREATOR_OFF: TrackedCreator = {
   consecutiveFailures: 2,
   enabled: false,
   videoCount: 0,
+  /*
+   * ⚠️ 与 `CREATOR_ON` 的 3 成对：**M = 0 时那一格一个括号都不许有**
+   *    （"不存在的状态不需要解释"，与"空容器不渲染"同一条纪律）。
+   *    ⑮ 用它做反面：整份产物里不许出现 `（隐藏 0）`。
+   */
+  hiddenCount: 0,
+};
+
+/**
+ * 第三个平台的博主（YouTube）——**只**给 ⑮ 的正面对照用。
+ *
+ * ⚠️ 默认那两份夹具**故意没有** YouTube（见 `CREATOR_ON` 的说明）：那一段空着，
+ *    它才是"空的分段不渲染"的证据。而"只断言没有"是**半边**对照 —— 一个**永远只画两段**
+ *    的实现照样绿（本仓的"反面也要有对照"）。所以这里备一份，让同一份代码在**三段都在**
+ *    的夹具下也被渲染一次，断言三段**都在**、顺序照 `TRACK_PLATFORMS`。
+ */
+const CREATOR_YT: TrackedCreator = {
+  ...CREATOR_ON,
+  id: 'tc-yt',
+  platform: 'youtube',
+  externalId: 'UC0123456789abcdef',
+  handle: '@example',
+  displayName: 'YouTube Example',
+  videoCount: 5,
+  hiddenCount: 0,
 };
 
 interface SectionProps extends Record<string, unknown> {
@@ -945,6 +978,49 @@ assert.ok(
   textOf(emptyBox ?? '').includes(t('tracked.emptyHint')),
   `★★ 空态里还要有第二句说明（"抓取每 10 分钟跑一轮"）—— 少了它，访客会以为这一栏坏了`,
 );
+/*
+ * ★★ 而**分区里**空是另一回事（T8）：说成"还没抓到 / 抓取每 10 分钟跑一轮"是**假话**。
+ *
+ * ⚠️★ 一个分区里一条都没有，原因往往是**名单上连这个平台的博主都没有**（今天三个平台里
+ *    有两个就是这样）。沿用上面那句 `emptyHint` 会把用户送去等抓取，而抓取永远不会
+ *    把一个**不在名单上**的博主抓回来 —— 那是把注意力引向一个必然不成功的动作。
+ * ⇒ 分区里换一句（`tracked.emptyPlatform`），而且**不画第二句**：`emptyHint` 正是
+ *    要修正的那件事（它在分区里说的原因是错的）。
+ * ⚠️ 这一条**必须与上面那条成对**：只留分区那一半的话，一个"永远说分区话术"的实现照样绿
+ *    —— 而那一档（「全部」时一条都没有）恰恰是今天最常见的那一屏。
+ */
+const EMPTY_PARTITION_HTML = renderSection(
+  { items: [], total: 0, platform: 'twitch' },
+  '空分区（Twitch）',
+);
+const emptyPartitionTitle = textOf(
+  elementsWithClass(EMPTY_PARTITION_HTML, 'tracked__emptytitle')[0] ?? '',
+);
+assert.equal(
+  elementsWithClass(EMPTY_PARTITION_HTML, 'tracked__empty').length,
+  1,
+  '★★ 分区里空也是一句话 + 那一块（不是一片空白 —— 空白看起来像坏了）',
+);
+assert.equal(
+  emptyPartitionTitle,
+  t('tracked.emptyPlatform'),
+  `★★ 分区里空用的是**那一句**（实读「${emptyPartitionTitle}」）`,
+);
+assert.notEqual(
+  emptyPartitionTitle,
+  t('tracked.empty'),
+  '★★ 而它与「全部」那一句必须是**不同**的话（同一个字符串会让上面那条退化成空跑）',
+);
+assert.notEqual(
+  t('tracked.emptyPlatform'),
+  'tracked.emptyPlatform',
+  '★★ 探针：这一句在当前语言里必须有真值（缺词条时它原样返回 key，下面那条就成了空跑）',
+);
+assert.equal(
+  textOf(EMPTY_PARTITION_HTML).includes(t('tracked.emptyHint')),
+  false,
+  '★★ 分区里**不许**再画那句"名单上的博主还没抓到 / 抓取每 10 分钟跑一轮" —— 在分区里它把原因说错了方向',
+);
 assert.deepEqual(
   elementsWithClass(EMPTY_HTML, 'pager'),
   [],
@@ -1032,8 +1108,8 @@ assert.ok(
 );
 assert.equal(
   elementsWithClass(WITH_MANAGE_HTML, 'tracked__table').length,
-  1,
-  '★ 正面对照：名单表格也在',
+  2,
+  '★ 正面对照：名单表格也在 —— T8 起是**每平台一张**（夹具里两个平台 ⇒ 两张）',
 );
 ok('管理面板：`canManage:false` ⇒ 空串；`true` ⇒ 整块在（两个 props 只差这一格）');
 
@@ -1049,29 +1125,43 @@ console.log(
  *    连续失败两次 —— 四件都是 spec §6.3 要的"能看见"。
  */
 const tableCount = elementsWithClass(WITH_MANAGE_HTML, 'admintable').length;
-assert.equal(tableCount, 1, '★ 名单用的就是全站那一张表格形状（`.admintable`）');
-const headers = [...WITH_MANAGE_HTML.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) =>
-  textOf(m[1] ?? ''),
+assert.equal(
+  tableCount,
+  2,
+  '★ 名单用的就是全站那一张表格形状（`.admintable`）—— T8 起**每平台一张**（夹具里两个平台 ⇒ 两张）',
 );
-assert.deepEqual(
-  headers,
-  [
-    t('tracked.colPlatform'),
-    t('tracked.colName'),
-    t('tracked.colState'),
-    t('tracked.colSynced'),
-    t('tracked.colError'),
-    t('tracked.colVideos'),
-    t('tracked.colActions'),
-  ],
-  '★★ 七列表头与顺序（平台 / 名字 / 状态 / 上次同步 / 上次错误 / 条数 / 操作）',
-);
-for (const h of headers) {
-  assert.equal(
-    /^tracked\./.test(h),
-    false,
-    `★★ 表头必须是**词条的值**，不是裸 key（读到「${h}」）`,
+/*
+ * ⚠️★ 七列表头**每张表各查一遍**（T8 起面板里不止一张表）：原来的写法是从整份产物里
+ *    抓**所有** `<th>`，两张表时那个数组会变成 14 格 —— 于是"七列"这条断言会以一种
+ *    与"某一列被删掉"完全无关的方式红，或者更糟：有人把期望值改成 14 格，从此
+ *    少一列也看不出来（本仓最怕的那种漂移）。
+ */
+const tables = elementsWithClass(WITH_MANAGE_HTML, 'tracked__table');
+assert.equal(tables.length, 2, `★ 探针：这一段要两张分段表（实测 ${String(tables.length)}）`);
+const headersOf = (table: string): string[] =>
+  [...table.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) => textOf(m[1] ?? ''));
+for (const [index, table] of tables.entries()) {
+  const headers = headersOf(table);
+  assert.deepEqual(
+    headers,
+    [
+      t('tracked.colPlatform'),
+      t('tracked.colName'),
+      t('tracked.colState'),
+      t('tracked.colSynced'),
+      t('tracked.colError'),
+      t('tracked.colVideos'),
+      t('tracked.colActions'),
+    ],
+    `★★ 第 ${String(index + 1)} 张表的七列表头与顺序（平台 / 名字 / 状态 / 上次同步 / 上次错误 / 条数 / 操作）`,
   );
+  for (const h of headers) {
+    assert.equal(
+      /^tracked\./.test(h),
+      false,
+      `★★ 表头必须是**词条的值**，不是裸 key（读到「${h}」）`,
+    );
+  }
 }
 const rows = elementsWithClass(WITH_MANAGE_HTML, 'tracked__row');
 assert.equal(rows.length, 2, `★ 两个博主两行（实测 ${String(rows.length)} 行）`);
@@ -1104,8 +1194,8 @@ assert.ok(
 );
 assert.equal(
   textOf(elementsWithClass(rows[0] ?? '', 'tracked__total')[0] ?? ''),
-  String(CREATOR_ON.videoCount),
-  '★ 「条数」那一格是他名下已存的条数',
+  `${String(CREATOR_ON.videoCount)}（${t('tracked.hiddenCount', { count: CREATOR_ON.hiddenCount })}）`,
+  '★ 「条数」那一格是他名下已存的条数，后面跟着被隐藏的那几条（`N（隐藏 M）`，spec §5.4）',
 );
 assert.ok(
   textOf(elementsWithClass(rows[0] ?? '', 'tracked__synced')[0] ?? '').includes('2025'),
@@ -1754,6 +1844,113 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
+console.log('⑮ ★★ 面板按平台分成三段（空的分段连标题一起不画）+ 「条数」那一格带隐藏条数');
+// ---------------------------------------------------------------------------
+/*
+ * ★ spec §5.4：管理面板的名单按 `platform` 分成三段，顺序照 `TRACK_PLATFORMS`
+ *   （bilibili → youtube → twitch），每段有自己的小标题与条数；**空的分段不渲染**；
+ *   每段的"条数"那一格在 M > 0 时显示成 `N（隐藏 M）`。
+ *
+ * ⚠️★ 这一组的判据全部建在**夹具的差别**上，而不是"某个类名渲染出来了没有"：
+ *    · 夹具里只有**两个**平台（bilibili + twitch）⇒ "第三段不画"才有一条**真的**
+ *      产物证明它（三份夹具都在场时，那条规则谁也证明不了）；
+ *    · 而"只断言没有第三段"是**半边**对照 —— 一个**永远只画两段**的实现照样绿，
+ *      所以紧接着用三个平台的夹具再渲染一次（`CREATOR_YT` 就是为它准备的）。
+ * ⚠️ 顺序与"没有 YouTube 那一段"合成一条断言（`PLATFORM_TITLES.find`）：数组比较里
+ *    既看**顺序**又看**少了谁**，比"第一段 startsWith(...) + 断言不含 YouTube"更难写错。
+ * ⚠️ 「条数」那一格的两个方向都要有（N=137/M=3 与 N=0/M=0）：只喂 M > 0 的话，
+ *    "M = 0 时**不许**有括号"那一条永远不红（那是本任务最容易做错的一半）。
+ * ⚠️ 分段不排序、不过滤 `creators` 本身：段内顺序就是 `listCreators` 给的顺序
+ *    （`created_at ASC`），界面里再排一次就是第二份口径（spec §5.4）。
+ */
+/** 三个平台名，**手抄**一份（与 ⑬ 同一份顺序）—— spec §5.4 要钉的正是这个顺序。 */
+const PLATFORM_TITLES = [
+  t('videos.platformBilibili'),
+  t('videos.platformYoutube'),
+  t('videos.platformTwitch'),
+] as const;
+/** 小标题 → 它属于哪个平台（认不出来就原样返回，那条断言会当场红）。 */
+const titlePlatform = (title: string): string =>
+  PLATFORM_TITLES.find((name) => title.startsWith(name)) ?? title;
+
+const groupSections = elementsWithClass(WITH_MANAGE_HTML, 'tracked__group');
+assert.equal(
+  groupSections.length,
+  2,
+  `★★ 两个平台 ⇒ **两段**（实测 ${String(groupSections.length)} 段）`,
+);
+const groupTitles = elementsWithClass(WITH_MANAGE_HTML, 'tracked__grouptitle').map((el) =>
+  textOf(el),
+);
+assert.equal(
+  groupTitles[0]?.startsWith(PLATFORM_TITLES[0]),
+  true,
+  `★★ 第一个小标题是**第一个平台**（\`TRACK_PLATFORMS\` 的顺序，bilibili 在最前）—— 实读「${groupTitles[0] ?? ''}」`,
+);
+assert.deepEqual(
+  groupTitles.map((title) => titlePlatform(title)),
+  [PLATFORM_TITLES[0], PLATFORM_TITLES[2]],
+  '★★ 两段的顺序是 `TRACK_PLATFORMS` 的顺序（bilibili 在前、twitch 在后），而**没有** YouTube 那一段',
+);
+assert.deepEqual(
+  elementsWithClass(WITH_MANAGE_HTML, 'tracked__groupcount').map((el) => textOf(el)),
+  ['1', '1'],
+  '★ 每段有**自己的条数**（spec §5.4：小标题 + 该段条数）—— 夹具每段恰好一个博主',
+);
+assert.equal(
+  rawText(WITH_MANAGE_HTML).includes(PLATFORM_TITLES[1]),
+  false,
+  '★★ 夹具里没有 YouTube 的博主 ⇒ **第三段连小标题一起不画**（spec §5.4：空的分段不渲染）',
+);
+const THREE_GROUPS_HTML = renderPanel(
+  { creators: [CREATOR_ON, CREATOR_YT, CREATOR_OFF] },
+  '三个平台都有博主（正面对照）',
+);
+assert.deepEqual(
+  elementsWithClass(THREE_GROUPS_HTML, 'tracked__grouptitle').map((el) =>
+    titlePlatform(textOf(el)),
+  ),
+  [PLATFORM_TITLES[0], PLATFORM_TITLES[1], PLATFORM_TITLES[2]],
+  '★★ 正面对照：三个平台都有博主时**三段都在** —— 少了这一条，一个"永远只画两段"的实现照样绿',
+);
+assert.deepEqual(
+  elementsWithClass(EMPTY_LIST_HTML, 'tracked__group'),
+  [],
+  '★★ 名单一个人都没有时**一段都不画**，只剩那句"名单还是空的"（spec §5.4 最后那半句）',
+);
+/*
+ * 「条数」那一格：`N（隐藏 M）`，M = 0 时**没有括号**。
+ * ⚠️ 括号是全角 `（）`，由渲染点给（不是词条的一部分，见 `zh-CN.ts` 那一句的说明）——
+ *    两种语言都长这样，所以这里用 `t(...)` 拼期望值，而不是写死一句中文。
+ */
+const groupRows = elementsWithClass(WITH_MANAGE_HTML, 'tracked__row');
+assert.equal(groupRows.length, 2, `★ 探针：两段各一行（实测 ${String(groupRows.length)} 行）`);
+const hiddenCell = textOf(elementsWithClass(groupRows[0] ?? '', 'tracked__total')[0] ?? '');
+assert.equal(
+  hiddenCell,
+  `${String(CREATOR_ON.videoCount)}（${t('tracked.hiddenCount', { count: CREATOR_ON.hiddenCount })}）`,
+  `★★ 有隐藏行的博主显示成 \`N（隐藏 M）\`（实读「${hiddenCell}」）—— N 仍是**库里所有行**（含隐藏），M 是其中现在不显示的那些`,
+);
+assert.equal(
+  textOf(elementsWithClass(groupRows[1] ?? '', 'tracked__total')[0] ?? ''),
+  String(CREATOR_OFF.videoCount),
+  '★★ 而 `hiddenCount: 0` 的那一格**只有那个数**、没有括号（不存在的状态不需要解释）',
+);
+assert.equal(
+  rawText(WITH_MANAGE_HTML).includes(`（${t('tracked.hiddenCount', { count: 0 })}）`),
+  false,
+  '★★ 整份产物里都不许出现 `（隐藏 0）` —— M = 0 时连括号一起不画（与"空容器不渲染"同一条纪律）',
+);
+assert.notEqual(
+  t('tracked.hiddenCount', { count: 0 }),
+  'tracked.hiddenCount',
+  '★★ 探针：这一句在当前语言里必须有真值（缺词条时它原样返回 key，上面那条就成了空跑）',
+);
+ok(
+  '面板分段：两段（顺序照 `TRACK_PLATFORMS`）、空段不画（含三段都在的正面对照）、每段自带条数；`N（隐藏 M）` 只在 M > 0 时出现',
+);
+
+// ---------------------------------------------------------------------------
 console.log(
   '⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` / `video-embed*` 类名都要有规则（**先剥注释**）',
 );
@@ -1864,6 +2061,15 @@ const MUST_RENDER = [
   'tracked__addbtn',
   'tracked__tablescroll',
   'tracked__table',
+  /*
+   * ⚠️ T8：面板按平台分段的三格（spec §5.4）。它们是**新类名** —— 按这一节上面的
+   *    说明，新类名本来只需要"在 `styles.css` 里有规则"（下面那个循环兜着），
+   *    列进这张手抄清单是为了另一半：**"分段"这件事本身被整块摘掉**时，
+   *    光靠类名循环是看不出来的（少一个类名不等于少了那一段界面）。
+   */
+  'tracked__group',
+  'tracked__grouptitle',
+  'tracked__groupcount',
   'tracked__row',
   'tracked__row--off',
   'tracked__name',
@@ -1949,7 +2155,7 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  * ⚠️ en 比 zh 多一组，是因为 ⑩ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`）；两个数差 1 是**正常的**，别把它抹平。
  */
-const expectedGroups = LANG === 'en' ? 14 : 13;
+const expectedGroups = LANG === 'en' ? 15 : 14;
 assert.equal(
   pass,
   expectedGroups,
