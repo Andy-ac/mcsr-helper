@@ -481,7 +481,7 @@ RunSummary.verifyErrors: Array<{ platform: TrackPlatform; error: string }>;  // 
 | API 查询参数 | `platform`（枚举 = `TRACK_PLATFORMS`；非法 ⇒ 400 `invalid_query`） |
 | 前端 URL 参数 | `tplatform`（换分区时删 `tpage`；**不碰** `platform` / `page`） |
 | 分区按钮的类名 | 复用 `tagcloud` / `tagcloud__label` / `tagchip` / `tagchip--on`（**不新增 CSS**） |
-| 词条 | 复用 `videos.allPlatforms` / `videos.platform*` / `videos.play` / `videos.playHint` / `videos.embedUnavailable`；**新增只允许一个**：`tracked.hiddenCount`（中英都要，且要进渲染自检） |
+| 词条 | 复用 `videos.allPlatforms` / `videos.platform*` / `videos.play` / `videos.playHint` / `videos.embedUnavailable`；**新增只允许两个**：`tracked.hiddenCount`（面板那格的 `N（隐藏 M）`）与 `tracked.emptyPlatform`（**分区里**空的时候那一句 —— 2026-09-16 的 Ruling 9 放行：分区为空时若沿用"还没有追踪到视频 / 抓取每 10 分钟跑一轮"，会把用户送去等一次永远不会发生的抓取）。中英都要，且都要进渲染自检。 |
 | 封面 `<img>` 的属性 | `referrerpolicy="no-referrer"` + `loading="lazy"` + `alt=""` |
 | `ClickToPlayEmbed` 新 prop | `coverUrl?: string \| null`（不传时外观零变化） |
 | 共享类型新增 | `TrackedCreator.hiddenCount: number` |
