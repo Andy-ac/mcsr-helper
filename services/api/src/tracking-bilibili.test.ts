@@ -125,6 +125,8 @@ function creator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
     consecutiveFailures: 0,
     enabled: true,
     videoCount: 0,
+    // ⚠️ `TrackedCreator` 的必填格（迁移 021 那一轮加的）。夹具补 0 —— 适配器一眼都不看它
+    hiddenCount: 0,
     createdAt: NOW_SEC,
     // ★ 库里 bilibili 这一列是 `NULL` → `parsePlatformMeta` 读成 `{}`（与 Twitch 那边同一条理由）
     platformMeta: {},

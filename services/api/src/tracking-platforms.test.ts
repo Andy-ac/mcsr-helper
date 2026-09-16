@@ -158,6 +158,8 @@ function creator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
     consecutiveFailures: 0,
     enabled: true,
     videoCount: 0,
+    // ⚠️ `TrackedCreator` 的必填格（迁移 021 那一轮加的）。夹具补 0 —— 适配器一眼都不看它
+    hiddenCount: 0,
     createdAt: YT_PUBLISHED_SEC,
     // ★ 这一格就是 §5.5 那个缺口的落点：有它，`fetchPage` 才不必每轮重打 channels.list
     platformMeta: { [UPLOADS_PLAYLIST_META_KEY]: UPLOADS_ID },

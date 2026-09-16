@@ -168,6 +168,12 @@ export interface TrackedCreator {
   enabled: boolean;
   /** 他名下已经存了多少条（管理面板那一列）。⚠️ 它是**数出来的**，不是存在 `tracked_creators` 上的。 */
   videoCount: number;
+  /**
+   * 他名下**被隐藏**的条数（`status = 'hidden'`）。管理面板用它显示 `N（隐藏 M）`。
+   * ⚠️ `videoCount` 的语义**不变**（库里有多少条，含隐藏）—— 它是 bilibili 到底判据的输入，
+   *    spec §3.2 的 ★★ 写着"少算了会让回填提前收尾"。
+   */
+  hiddenCount: number;
   createdAt: number;
 }
 

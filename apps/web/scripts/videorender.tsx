@@ -412,6 +412,16 @@ const CREATOR_ON: TrackedCreator = {
   consecutiveFailures: 0,
   enabled: true,
   videoCount: 137,
+  /*
+   * ⚠️ 占位 0（`TrackedCreator` 的必填格，迁移 021 那一轮加的）：
+   *    真值要 T3 从 SQL 数出来、再由 T8 在这里摆成"隐藏了几条"的夹具
+   *    （面板要显示 `N（隐藏 M）`）。T8 落地时**必须换掉这个 0**。
+   * ⚠️ 这个脚本不在 `apps/web/tsconfig.json` 的 include 里（`scripts/**` 都不在，
+   *    见那个文件里"JSX 走 classic runtime"那段），所以少了这一格 `pnpm -w check`
+   *    **不会**报错 —— 它是由 `check:all` 里那句 `tsx scripts/videorender.tsx` 执行的，
+   *    而 tsx 只剥类型、不做类型检查。⇒ 编译门禁拦不住这里的漂移，只能靠人看。
+   */
+  hiddenCount: 0,
 };
 
 /** 停用 + 从没同步过 + 上一轮失败过两次（第 ⑥ 组要把这四件事都画对）。 */

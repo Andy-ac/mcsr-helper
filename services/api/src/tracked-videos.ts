@@ -275,6 +275,14 @@ function toCreator(row: CreatorRow): TrackedCreator {
     // 0/1 → boolean 只在这里换算一次（spec §4.3 的边界纪律）
     enabled: row.enabled === 1,
     videoCount: row.video_count,
+    /*
+     * ⚠️ **占位 0**，不是真读数：真正的"隐藏了几条"要 T3 给 `CREATOR_SELECT` 加一个
+     *    `SUM(v.status = 'hidden')`（或 `COUNT(...) FILTER`）才数得出来，而那是 T3 的活。
+     *    今天库里也不可能有那样的行 —— 把 `status` 写成 `'hidden'` 的代码路径本身就是 T3 才有的。
+     *    ⇒ 这一格现在编译得过、读数也是对的，但 T3 落地时必须**换成从 SQL 数出来的那个数**，
+     *      别让这个 0 留在这里（管理面板那一列正是靠它显示 `N（隐藏 M）`）。
+     */
+    hiddenCount: 0,
     createdAt: row.created_at,
   };
 }

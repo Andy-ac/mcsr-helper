@@ -37,7 +37,7 @@
  * ===========================================================================
  * ⚠️ 这个文件也是**迁移能应用**的证据
  * ===========================================================================
- * 每个测试进程都用 `DB_PATH=':memory:'` 建一个**全新**的库，001…020 确实从头跑了一遍 ——
+ * 每个测试进程都用 `DB_PATH=':memory:'` 建一个**全新**的库，001…021 确实从头跑了一遍 ——
  * ⚠️ 但只在**进程内第一次** `getDb()` 时跑：`getDb()` 把连接缓存在模块级变量里
  * （`db/index.ts:23` 的 `instance`、`:30` 的提前返回、`:52` 的赋值），之后每条用例
  * 拿到的都是**同一个连接**，迁移不会再跑一遍。
@@ -293,6 +293,17 @@ const VIDEO_COLUMNS: ColumnSpec[] = [
   { name: 'status', type: 'TEXT', notnull: 1, dfltValue: "'visible'" },
   { name: 'first_seen_at', type: 'INTEGER', notnull: 1, dfltValue: null },
   { name: 'updated_at', type: 'INTEGER', notnull: 1, dfltValue: null },
+  /*
+   * ★ 下面三列是**迁移 021** 加的。`ALTER TABLE … ADD COLUMN` 一律追加到末尾，
+   *   所以这张表的形状从 020 的 15 列变成 18 列。
+   * ⚠️ 这一条 deepEqual 是**整表**比对，021 落地时它必须跟着长 —— 否则红的会是
+   *    "这张表与 020 不一致"这个**假象**，而真正的原因只是"表按预期长大了"。
+   * ⚠️ 三列都可空、都没有默认值（`NULL` = 没查过 / 没隐藏过），理由见本文件末尾
+   *    「迁移 021：可见性三列」那一组。
+   */
+  { name: 'verify_checked_at', type: 'INTEGER', notnull: 0, dfltValue: null },
+  { name: 'hidden_at', type: 'INTEGER', notnull: 0, dfltValue: null },
+  { name: 'hidden_reason', type: 'TEXT', notnull: 0, dfltValue: null },
 ];
 
 // ---------------------------------------------------------------------------
@@ -638,5 +649,34 @@ describe('外键自检', () => {
 
     const rows = getDb().prepare('PRAGMA foreign_key_check').all();
     assert.deepEqual(rows, [], `foreign_key_check 报出了悬空的行：${JSON.stringify(rows)}`);
+  });
+});
+
+describe('★ 迁移 021：可见性三列（spec §3）', () => {
+  it('★ 三列都在，类型对，而且可为 NULL', () => {
+    const cols = getDb().prepare('PRAGMA table_info(tracked_videos)').all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    for (const name of ['verify_checked_at', 'hidden_at', 'hidden_reason']) {
+      const col = byName.get(name);
+      assert.ok(
+        col,
+        `tracked_videos 少了 ${name} 这一列 —— 迁移 021 没跑（先看 migrate.ts 登记了没有）`,
+      );
+      assert.equal(col.notnull, 0, `${name} 必须是可空的：NULL 才表示"没查过 / 没隐藏过"`);
+    }
+    assert.equal(byName.get('verify_checked_at')?.type, 'INTEGER');
+    assert.equal(byName.get('hidden_at')?.type, 'INTEGER');
+    assert.equal(byName.get('hidden_reason')?.type, 'TEXT');
+  });
+
+  it('★ 021 在迁移登记表里（没登记 = 永远不跑）', () => {
+    const applied = getDb()
+      .prepare("SELECT name FROM _migrations WHERE name = '021_tracked_video_visibility'")
+      .all();
+    assert.equal(applied.length, 1);
   });
 });

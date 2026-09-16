@@ -36,6 +36,7 @@ import { m017SlotsAndDimensions } from './migrations/017_slots_and_dimensions';
 import { m018ContentContributors } from './migrations/018_content_contributors';
 import { m019LiveShares } from './migrations/019_live_shares';
 import { m020TrackedVideos } from './migrations/020_tracked_videos';
+import { m021TrackedVideoVisibility } from './migrations/021_tracked_video_visibility';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -162,6 +163,12 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    "删了博主，他的视频留成孤儿"。`tracking-schema.test.ts` 的 ③④⑥⑧ 各钉一条。
    */
   { name: '020_tracked_videos', sql: m020TrackedVideos },
+  /*
+   * 021：`tracked_videos` 的可见性三列（`docs/tracked-embed-spec.md` §3）。
+   * ⚠️ 纯 `ALTER TABLE ADD COLUMN`，不重建表 ⇒ 不需要 `PRAGMA foreign_keys`。
+   * ⚠️ 不登记 = 不跑，而症状是"代码看着对、库里没有那三列"（020 那一轮踩过）。
+   */
+  { name: '021_tracked_video_visibility', sql: m021TrackedVideoVisibility },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
