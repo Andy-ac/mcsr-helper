@@ -132,7 +132,11 @@
  * ===========================================================================
  * 九、防重叠**不在这里**（在 unit 里，spec §3.4）
  * ===========================================================================
- * `ExecStart=/usr/bin/flock -n /run/mcsr-helper-track.lock …`。
+ * `ExecStart=/usr/bin/flock -n /run/mcsr-helper-track/sync.lock /usr/bin/node /srv/mcsr-helper/api/track.js`。
+ * ⚠️★ 锁文件**在 `RuntimeDirectory` 建的目录里**（`/run` 本身是 root 所有 0755，
+ *    以 `User=mcsr` 跑的本单元在那层建不出文件 —— 单元里那一段注释有完整的事故与修法）。
+ *    2026-09-16 复审量到：这里原来抄的是更早那一版的 `/run/mcsr-helper-track.lock`，
+ *    也就是说"跟着这行去查锁"会查到一个**不存在的路径**。
  * ⚠️ 为什么不在这个进程里加锁（比如写一个 pid 文件）：`Type=oneshot` 的 timer
  *    **不保证**上一轮跑完才启动下一轮，而 `PRAGMA busy_timeout = 5000` 会让两个
  *    重叠的进程**排队等着写**而不是报错 ⇒ 同一个游标会被两个进程分别推进。

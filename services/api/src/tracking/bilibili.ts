@@ -407,11 +407,23 @@ export interface BilibiliAdapterDeps {
   fetchImpl?: typeof fetch;
   /** 注入假实现，否则那三条 10 秒退避会让测试真等 30 秒。 */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * spec §5.1 强制要求的那个**痕迹**往哪里写（"已存行数与 `page.count` 不一致"；
+   * 触发条件与"为什么不是每页都写"在 `fetchPage` 末尾那个 ★ 痕迹那一段里）。
+   *
+   * 默认 `console.warn` ⇒ 生产上就是 journald（`journalctl -u mcsr-helper-track`）。
+   * 测试注入一个收集器，于是"什么时候**不**写"也能逐条断言 —— 那是这条要求的另一半：
+   * 一个每页都写的痕迹等于没有痕迹。
+   */
+  warn?: (message: string) => void;
 }
 
 export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformAdapter {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
+  /* ⚠️ 包一层箭头函数而不是 `deps.warn ?? console.warn`：后者会让 `console.warn`
+   **丢掉 `this`**（它是 `console` 的方法，Node 上恰好不炸，但那是运气，不是契约）。*/
+  const warn = deps.warn ?? ((message: string) => console.warn(message));
 
   /*
    * 会话缓存。⚠️ 存的是 **Promise**，不是结果：`fetchPage` 是被顺序调用的，
@@ -894,20 +906,94 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     });
 
     /*
-     * ★ 游标怎么走（spec §5.1："否则视为'被限流'，`reachedEnd = false` 并把游标停在原地"）。
+     * ★★ 游标怎么走：**spec §5.1 那张三行的表，逐字实现**（2026-09-16 由最终评审改正）。
      *
-     * 两种"没到底"要分开，因为它们的意思完全不同：
-     *   · **这一页有数据** ⇒ 正常翻页：`pn + 1`。
-     *     ⚠️ 那种情况**必须**往前翻：不翻的话回填永远停在第一页（"游标停在原地"照字面
-     *        用在满页上，就是分页功能直接没了）；
-     *   · **这一页一条都没有** ⇒ §2.4 那个"被限流"的形状：游标**不动**。
-     *     往前翻的代价是**永久跳过**这几页真数据（实测里连着两页都空），
-     *     而重复抓同一页是幂等的（`UNIQUE (platform, external_id)` + upsert）。
-     *     ⚠️ 调用方要注意：**这一页一条都没有时本轮应该停下这个 creator**，
-     *        否则下一次请求还是同一页、还是空 —— 那是死循环，而 §3.3 的页数上限
-     *        只是它的兜底。
+     * | 这一页 | reachedEnd | 游标 |
+     * |---|---|---|
+     * | 满页（`returned === ps`） | false | 前进（`pn + 1`） |
+     * | 不满页但已存 < `page.count` | false | **原地** |
+     * | 不满页且已存 >= `page.count` | true | `null` |
+     *
+     * ⚠️★ 改之前这里是 `videos.length === 0 ? page : page + 1` —— **只把"空页"认作原地**，
+     *    于是"**不满页但有数据**"（`0 < returned < ps`）会前进一页。那一格是整段里最坏的一种：
+     *      · 上游把一页截断（风控/抽风）时，被截掉的那几条（`returned..ps`）**永久跳过**
+     *        —— 因为下一页的 `pn+1` 从第 `ps` 条开始，而重复抓同一页是幂等的
+     *        （`UNIQUE (platform, external_id)` + upsert），代价只是**一次请求**；
+     *      · 更坏的是它**还能凑够数**：跳过 26 条、后面几页照常满页，`storedTotal` 会
+     *        正好爬到 `page.count` ⇒ `reachedEnd` **提前**为真，丢掉的 26 条纹丝不动地
+     *        留在上游，而库里、日志里、管理面板上**一个字都没有**。
+     *    ⇒ 判据与 spec 一致：**只有"明确给满了一页"才前进**（`returned === ps` 是上游在说
+     *      "后面还有"）；其余一切"没到底"的情况一律原地重抓。
+     *      ⚠️ 代码里写的是 `>=`，不是 `===`：真多给了几条同样说明后面还有，
+     *         归到"满页"那一格更安全（`>` 只可能来自上游违约，不是我们能控制的事）。
+     *    ⚠️ 代价写清楚（认下）：**每一条回填要多花一轮**——最后一个不满页那一轮只写库、
+     *      不收尾，下一轮（10 分钟后）用已经涨上去的 `storedTotal` 再判一次才 `reachedEnd`。
+     *      ⚠️ 多花的是**轮次，不是请求数**：一个 124 条的 UP 新旧两版都是 **4 个请求**
+     *        （老版是 pn=1/2/3 之后**多打一个空页**才知道到底、一轮跑完；新版是 pn=1/2/3
+     *        就地收手、下一轮拿 pn=3 再判一次）。真正的差别是**收尾晚 10 分钟**，
+     *        换的是"绝不跳过被截掉的那几条"。这正是那句"可以慢点，不考虑时间问题"买下来的东西。
+     *        ⚠️ 别把它写成"多花一个请求"：那是**假的**（2026-09-16 复审量到），
+     *        而一句夸大的代价会把下一个人引回那条会静默丢数据的规则上。
+     *    ⚠️ 认下的另一个代价（**残余风险，写下来**）：上游**长期**只给不满页、而它列的条目
+     *      我们又都存下了（`storedTotal` 永远追不上 `page.count`，例如 UP 删过视频）时，
+     *      这一格会**每轮都停在原地**：`backfill_done` 永远不置 1 ⇒ 连增量同步也进不来
+     *      （`pickDueCreators` 的增量那条路要求 `backfill_done = 1`），而 `last_error` 是空的、
+     *      退出码是 0。**可见性只有下面那条痕迹**（每轮一行、点名 mid/pn/两个数）。
+     *      这一格在旧规则下**同样存在**（空页那一支），新规则只是多收了一个形状。
+     *      要修得加状态（DDL 已冻结），而且"卡了 K 轮就自动前进"正好会把静默跳过装回来
+     *      ⇒ **不修**，靠痕迹与面板看着（`pending.md` 里记了这条）。
+     *    ⚠️ 别把这一条读成"不许前进"：**满页必须前进**，否则回填永远冻结在第 1 页
+     *      （一个 124 条的 UP 每轮都重抓 `pn=1`，永远过不了 50 条）—— spec §5.1 已经把
+     *      那句错的"否则把游标停在原地"改掉了，改的理由逐字在 §5.1 那张表上面。
+     *    ⚠️ 调用方要注意：**原地不动时本轮要停下这个 creator**（CLI 那边就是
+     *      `nextCursor === cursor ⇒ partial`），否则剩下的次数全打在同一个页面上 ——
+     *      而那是往风控的账上加分（§2.3：拒绝是概率性的）。
      */
-    const nextCursor = reachedEnd ? null : String(videos.length === 0 ? page : page + 1);
+    const isFullPage = videos.length >= BILIBILI_PAGE_SIZE;
+    const nextCursor = reachedEnd ? null : isFullPage ? String(page + 1) : String(page);
+
+    /*
+     * ★ 痕迹（spec §5.1 强制要求，2026-09-16 最终评审发现**一行都没写**）：
+     *   「日志里要留一个"已存行数与 `page.count` 不一致"的痕迹，好让它在发生时看得见，
+     *     而不是靠猜。」
+     *
+     * ⚠️ 为什么这一条这么要紧：`reachedEnd` 是**两个数比出来**的，而我们这一边的那个数
+     *    （`storedTotal`）只是"**我们库里**这个 creator 有多少行"——它和上游的 `page.count`
+     *    是**两个不同的量**，谁也不能证明另一个。§5.1 点名的那种失效方式就长在这里：
+     *    UP 主**删过视频**之后我们手里的行数会**多于**上游还能列出来的条数，
+     *    于是"空页 + 已存 >= count"同时成立 ⇒ `reachedEnd` 提前为真，最后那几条真视频
+     *    **永远抓不到**，而全链路一声不响（这本书里最贵的一类错）。
+     *    ⇒ 两个数不一致时**必须**留下一行，这是它唯一的可见性来源。
+     *
+     * ⚠️ 触发条件是"**在一条候选的结尾上**两个数不一致"（`returned < ps`），**不是**每页都比：
+     *    回填途中的满页天然"不一致"（我们 50 条、上游 124 条），那是**正常的落后**而不是异常
+     *    ⇒ 每页都写的话，一份 20 个频道的回填会刷出一屏"不一致"，而真正的那一次被淹在里面。
+     *    一个每页都响的痕迹等于没有痕迹（与 spec §3.2"全量失败不能看起来像空轮询"同一条纪律）。
+     *
+     * ⚠️ 写在这里而不是 CLI 里：适配器**本来就握着**这两个数（`pageCount` 与 `ctx.storedTotal`），
+     *    搬到 CLI 就得把 `page.count` 塞进公共的 `FetchPage` —— 那正是 §5.4 那句
+     *    "三个平台的到底了语义不一样，不许写成一个 if"要防的（把某一个平台的概念
+     *    写进公共层）。代价：这条痕迹走 `console.warn` ⇒ journald，**不进** `last_error`
+     *    （那一列是"这个 creator 失败了"，而这里不是失败，是"我们还不知道自己有没有到底"）。
+     */
+    if (videos.length < BILIBILI_PAGE_SIZE && ctx.storedTotal !== pageCount) {
+      const who = `mid=${creator.externalId}（${creator.displayName}）pn=${String(page)}`;
+      /*
+       * ⚠️ 空页与"不满页"分开说（2026-09-16 复审提的措辞问题）：空页那一个是
+       *    §2.4 **实测到的**形状（`code=0` 却一条都不给，而它说还有 24 条），
+       *    而"不满页"只是"候选的结尾"。一句话把两者混起来，等于说"这一页上有数据"
+       *    —— 而空页上**没有**，数据是上游的 `count` 说存在的。
+       */
+      const shape =
+        videos.length === 0
+          ? '本页返回=0（**空页**：上游回 code=0 却一条都没给，而它说还有）'
+          : `本页返回=${String(videos.length)}（不满一页，也不是空页）`;
+      warn(
+        ctx.storedTotal > pageCount
+          ? `[track:bilibili] ⚠️ 已存行数与 page.count 不一致：${who} 上游总数=${String(pageCount)} 我们已存=${String(ctx.storedTotal)} —— 已存**多于**上游 ⇒ reachedEnd 判成了"到底"（spec §5.1 点名的残余风险：UP 删过视频时最后几条真视频会抓不到，去核对一下这个 UP 是不是删过投稿）`
+          : `[track:bilibili] ⚠️ 已存行数与 page.count 不一致：${who} ${shape} 上游总数=${String(pageCount)} 我们已存=${String(ctx.storedTotal)} —— 判"没到底"、游标停在原地，下一轮重抓这一页（同一个 UP 反复出现在同一页时它就被卡住了：要么被限流、要么上游的 count 与它**列得出来**的条目对不上）`,
+      );
+    }
 
     return { videos, nextCursor, reachedEnd };
   }

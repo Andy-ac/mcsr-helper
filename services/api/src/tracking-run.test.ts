@@ -32,6 +32,7 @@ process.env.DB_PATH = ':memory:';
 const { closeDb, getDb } = await import('./db');
 const { createCreator, upsertVideos } = await import('./tracked-videos');
 const { exitCodeFor, formatSummary, main, runOnce, TRACK_LIMITS } = await import('./track');
+const { createBilibiliAdapter } = await import('./tracking/bilibili');
 const { NoCredentialsError, PlatformHandshakeError } = await import('./tracking/types');
 type FetchedVideo = import('./tracking/types').FetchedVideo;
 type FetchPage = import('./tracking/types').FetchPage;
@@ -75,6 +76,9 @@ const NOW = 1_788_600_000;
 const HOUR = 3600;
 /** spec §10 冻结的每次运行上限：回填 20 / 翻 20 页 / 增量 40。 */
 const LIMITS = { backfill: 20, pages: 20, incremental: 40 };
+
+/** 一个 mid（`addCreator` 的 `externalId`）。真适配器那条用例拿它当 bilibili 的博主 id。 */
+const MID = '703007996';
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -464,6 +468,148 @@ describe('runOnce —— 一轮同步的骨架', () => {
     const resumed = makeAdapter(() => ({ videos: [], nextCursor: null, reachedEnd: true }));
     await runOnce(depsFor({ adapters: adapterRegistry({ bilibili: resumed.adapter }).adapters }));
     assert.equal(resumed.calls[0]?.cursor, '2');
+  });
+
+  it('★★ 真适配器 + 真 CLI：最后一页不满的回填要**跨两轮**才收尾（2026-09-16 最终评审）', async () => {
+    /*
+     * 为什么这一条要用**真**适配器（本文件唯一的一处）：
+     *   本文件其它用例的假适配器是**自己**决定游标怎么走的，所以它们钉住的是
+     *   "CLI 拿到一个停在原地的游标会怎么办"，而钉不住"bilibili 适配器**真的**会给一个
+     *   停在原地的游标"。最终评审在后者上找到了不一致（spec §5.1 那张表第 2 行 vs 代码），
+     *   而它的下游后果正好是这一条：**不满页但没存够 ⇒ 游标不许前进**
+     *   （前进一页 = 上游截掉的那几条永久跳过）。于是"这一页之后就地收手"成为必然，
+     *   这一轮也就**不可能**再判到底了 ⇒ 只能下一轮用涨上去的 `storedTotal` 再判一次。
+     *   ⇒ "跨两轮收尾"不是副作用，是这条裁决的**形状**，所以它要被钉住：
+     *     只要 `pickDueCreators` 不再捡回没翻完的博主，或者 `advanceCursor` 的
+     *     `backfill_done` 判据漂了，这个博主的回填就**永远停在最后一页** ——
+     *     每轮重抓、永不收尾，而摘要里看起来"每轮都在跑"（本文件开头列的那类故障）。
+     */
+    const creator = addCreator('bilibili', MID);
+
+    /** 实测到的那对 WBI 密钥（`docs/platform-api-feasibility-notes.md:763`）⇒ 握手那条路才会给 mixinKey。 */
+    const IMG_URL = 'https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png';
+    const SUB_URL = 'https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png';
+
+    /** 124 条：第 1/2 页各满 50，第 3 页只有 24（这就是"最后一页不满"）。 */
+    const vlistFor = (pn: number): unknown[] => {
+      const start = (pn - 1) * 50;
+      const size = Math.max(0, Math.min(50, 124 - start));
+      return Array.from({ length: size }, (_, index) => ({
+        bvid: `BV1pn${String(pn)}v${String(index)}`,
+        title: `第 ${String(pn)} 页第 ${String(index)} 条`,
+        pic: 'http://i1.hdslb.com/bfs/archive/cover.jpg',
+        created: NOW - 86_400,
+        length: '05:00',
+        play: 10,
+        comment: 2,
+      }));
+    };
+
+    const calls: string[] = [];
+    const warns: string[] = [];
+    const jsonResponse = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+
+    /** 每一轮都是**新的**适配器实例（生产上每轮就是一个新进程）⇒ 会话不跨轮复用。 */
+    const freshAdapter = (): PlatformAdapter => {
+      const fetchImpl = (async (input: string | URL | Request) => {
+        const url = typeof input === 'string' ? input : String(input);
+        calls.push(url);
+
+        if (url.includes('/x/frontend/finger/spi')) {
+          return jsonResponse({ code: 0, data: { b_3: 'buvid3', b_4: 'buvid4' } });
+        }
+        if (url.includes('/x/web-interface/nav')) {
+          // 实测形状：未登录的 `-101`，而 WBI 密钥照样在。
+          return jsonResponse({
+            code: -101,
+            message: '账号未登录',
+            data: { wbi_img: { img_url: IMG_URL, sub_url: SUB_URL } },
+          });
+        }
+        if (!url.includes('/arc/search')) {
+          throw new Error(`假上游收到一个没预料到的请求：${url}`);
+        }
+        const pn = Number(new URL(url).searchParams.get('pn'));
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { list: { vlist: vlistFor(pn) }, page: { count: 124, pn, ps: 50 } },
+        });
+      }) as typeof fetch;
+
+      return createBilibiliAdapter({
+        fetchImpl,
+        // 假上游从不回 `-412` ⇒ 走到退避就是这条用例的假设坏了，要红。
+        sleep: async () => {
+          throw new Error('这一轮不该出现退避（假上游从不回 -412）');
+        },
+        warn: (message: string) => {
+          warns.push(message);
+        },
+      });
+    };
+
+    const listCalls = (): string[] => calls.filter((url) => url.includes('/arc/search'));
+
+    // ---- 第一轮：翻到不满的那一页就收手，不收尾 ----
+    const first = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ bilibili: freshAdapter() }).adapters,
+        platformStatus: ONLY_BILIBILI,
+      }),
+    );
+
+    assert.equal(first.backfill.tried, 1);
+    assert.equal(first.backfill.failed, 0, '这一轮没有任何失败 —— 它只是"还没翻完"');
+    assert.equal(first.backfill.done, 0, '★ 不满页那一轮不许收尾（收尾要靠下一轮的 storedTotal）');
+    assert.equal(first.inserted, 124, '第 3 页那 24 条也必须已经落库（先写库、再决定游标）');
+    assert.equal(listCalls().length, 3, 'pn=1/2/3 各一次；第 3 页之后就地收手，不许接着翻 pn=4');
+
+    const rowAfterFirst = creatorRow(creator.id);
+    assert.equal(
+      rowAfterFirst.last_cursor,
+      '3',
+      '★ 停在**不满的那一页**上 —— 前进一页就是从第 50 条开始，被截掉的 26 条再也拿不到',
+    );
+    assert.equal(rowAfterFirst.backfill_done, 0);
+    assert.equal(rowAfterFirst.last_synced_at, NOW, '没翻完也是成功的一轮，水位照常前进');
+
+    /*
+     * ★ 三页里**只有**第 3 页留了痕迹：前两页是满页，而"我们 50、上游 124"是回填的
+     *   正常落后，不是异常（spec §5.1 那条痕迹的触发条件里必须有"在候选的结尾上"）。
+     */
+    assert.equal(warns.length, 1, `只该有最后一页那一行，实到：${JSON.stringify(warns)}`);
+    assert.match(warns[0] ?? '', /我们已存=100/);
+
+    // ---- 第二轮：同一个游标、同一页，这次 storedTotal 已经等于 count ⇒ 到底 ----
+    const second = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ bilibili: freshAdapter() }).adapters,
+        platformStatus: ONLY_BILIBILI,
+        now: NOW + 600,
+      }),
+    );
+
+    assert.equal(
+      second.backfill.tried,
+      1,
+      '第一轮没翻完的博主必须**仍然到点**（否则回填永不收尾）',
+    );
+    assert.equal(second.backfill.done, 1);
+    assert.equal(second.backfill.failed, 0);
+    assert.equal(second.inserted, 0, '第二轮重复抓的是同一页，`ON CONFLICT` 幂等');
+    assert.equal(second.updated, 24, '那 24 条是"更新"，不是"新增"');
+    assert.equal(listCalls().length, 4, '第二轮只补 1 个请求：停在 pn=3，就从 pn=3 再判一次');
+
+    const rowAfterSecond = creatorRow(creator.id);
+    assert.equal(rowAfterSecond.backfill_done, 1, '★ 第二轮才收尾（这就是"可以慢点"买到的东西）');
+    assert.equal(rowAfterSecond.last_cursor, null, '收尾 ⇒ 游标清空（下一次从第一页开始看新的）');
+    assert.equal(rowAfterSecond.consecutive_failures, 0);
+    assert.equal(warns.length, 1, '第二轮两个数相等 ⇒ 一行都不该多');
   });
 
   it('⑤-回填 limits.backfill 是硬上限：5 个待办只处理 2 个（spec §3.3）', async () => {

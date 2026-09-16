@@ -170,6 +170,14 @@ interface Harness {
   calls: FetchCall[];
   /** 每一次退避（毫秒），用来断言"等了 10 秒、等了 3 次"。 */
   sleeps: number[];
+  /**
+   * spec §5.1 那条痕迹（"已存行数与 `page.count` 不一致"）收到的每一行。
+   *
+   * ⚠️ 注入收集器而不是让默认的 `console.warn` 打到测试输出上：这条要求的**另一半**
+   *    是"什么时候**不**写"（回填途中的满页天然不一致，写它就是把真信号淹掉），
+   *    而那只有能数行数才断言得了。
+   */
+  warns: string[];
   /** 只数列表请求（`arc/search`），握手那两个不算。 */
   listCalls: () => FetchCall[];
 }
@@ -183,6 +191,7 @@ function harness(
 ): Harness {
   const calls: FetchCall[] = [];
   const sleeps: number[] = [];
+  const warns: string[] = [];
 
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : String(input);
@@ -210,12 +219,16 @@ function harness(
     sleep: async (ms: number) => {
       sleeps.push(ms);
     },
+    warn: (message: string) => {
+      warns.push(message);
+    },
   });
 
   return {
     adapter,
     calls,
     sleeps,
+    warns,
     listCalls: () => calls.filter((call) => call.url.includes('/arc/search')),
   };
 }
@@ -654,6 +667,109 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
       const page = await h.adapter.fetchPage(creator(), '4', { storedTotal: 124 });
       assert.equal(page.reachedEnd, true);
       assert.equal(page.nextCursor, null);
+    });
+
+    it('★★ 不满页但**还有数据**（上游把这一页截断了）⇒ 游标**停在原地**', async () => {
+      /*
+       * ★★ 最终评审改掉的那一格。原来的判据是"**空页**才原地"：
+       *     `videos.length === 0 ? page : page + 1` —— 于是"不满页但有数据"
+       *     （`0 < returned < ps`）会**前进一页**，而代价是最坏的一种：
+       *       · 上游截掉的那 26 条（`returned..ps`）**永久跳过**（下一页从第 50 条开始，
+       *         而重抓同一页是幂等的：`UNIQUE (platform, external_id)` + upsert）；
+       *       · 后面几页照常满页时 `storedTotal` 还能**凑到** `page.count`
+       *         ⇒ `reachedEnd` 提前为真 ⇒ 丢掉的 26 条在库里、日志里、面板上
+       *         **一个字都没有**。
+       *     spec §5.1 那张表第 2 行写的就是这一格，逐字是"**原地**"。
+       *     ⇒ 这条断言钉住它：改回去（或把 `isFullPage` 改成"非空"）这里会红。
+       */
+      const partial = Array.from({ length: 24 }, (_, index) => ({
+        ...ITEM,
+        bvid: `BV-partial-${String(index)}`,
+      }));
+      const h = harness(() => jsonResponse(listBody(partial, 124)));
+      const page = await h.adapter.fetchPage(creator(), '3', { storedTotal: 100 });
+
+      assert.equal(page.reachedEnd, false, '还差 24 条没存到，不能判到底');
+      assert.equal(
+        page.nextCursor,
+        '3',
+        '原地：前进一页就是从第 50 条开始，中间那 26 条再也拿不到',
+      );
+      assert.equal(page.videos.length, 24, '这 24 条本来就要收下（先写库、再决定游标）');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // spec §5.1 那条痕迹
+  // -------------------------------------------------------------------------
+
+  describe('★ 痕迹：已存行数与 page.count 不一致（spec §5.1 强制要求）', () => {
+    /** 一页 n 条（bvid 各不相同，免得两页的断言互相污染）。 */
+    const pageOf = (n: number): unknown[] =>
+      Array.from({ length: n }, (_, index) => ({
+        ...ITEM,
+        bvid: `BV-${String(n)}-${String(index)}`,
+      }));
+
+    it('★ 候选结尾上两个数不一致（不满页、而我们没存够）⇒ 留一行，且四个数都在里面', async () => {
+      const h = harness(() => jsonResponse(listBody(pageOf(24), 124)));
+      await h.adapter.fetchPage(creator(), '3', { storedTotal: 100 });
+
+      assert.equal(h.warns.length, 1, 'spec §5.1：不一致时必须留下痕迹，否则只能靠猜');
+      const line = h.warns[0] ?? '';
+      assert.match(line, /已存行数与 page\.count 不一致/, '这句话要能在 journal 里被 grep 到');
+      assert.match(line, /上游总数=124/, '上游那个数');
+      assert.match(line, /我们已存=100/, '我们这一边的数 —— 两个数都在，人才能自己判');
+      assert.match(line, new RegExp(MID), '要点名是哪个 UP（面板与库里找的都是 mid）');
+      assert.match(line, /本页返回=24/);
+    });
+
+    it('★ 空页与"不满页"的措辞分开（§2.4 实测的那个形状要一眼认出来）', async () => {
+      // ⚠️ 空页上**没有**数据，数据是上游的 `count` 说存在的 —— 一句话混起来就是在说
+      //    "这一页上有数据"（2026-09-16 复审提的措辞问题）。
+      const h = harness(() => jsonResponse(listBody([], 124)));
+      await h.adapter.fetchPage(creator(), '5', { storedTotal: 100 });
+
+      assert.equal(h.warns.length, 1);
+      const line = h.warns[0] ?? '';
+      assert.match(line, /本页返回=0/);
+      assert.match(line, /空页/);
+      assert.match(line, /我们已存=100/);
+    });
+
+    it('★ 反面：真的到底（两个数**相等**）⇒ 一行都不写', async () => {
+      const h = harness(() => jsonResponse(listBody(pageOf(24), 124)));
+      await h.adapter.fetchPage(creator(), '3', { storedTotal: 124 });
+
+      assert.deepEqual(h.warns, [], '数字一致就是"我们信这个判据"的正常情形，不该有噪音');
+    });
+
+    it('★ 反面：回填途中的满页天然"不一致"（我们 150、上游 200）⇒ 不写', async () => {
+      const h = harness(() => jsonResponse(listBody(pageOf(50), 200)));
+      await h.adapter.fetchPage(creator(), '4', { storedTotal: 150 });
+
+      /*
+       * 这一条是"一个每页都响的痕迹等于没有痕迹"那一半：回填的正常状态**就是**
+       * 我们落后于上游 —— 每页都写会刷出满屏"不一致"，把真正的那一次淹掉。
+       * ⇒ 触发条件里必须有"在一条候选的结尾上"（`returned < ps`）。
+       */
+      assert.deepEqual(h.warns, []);
+    });
+
+    it('★★ 反方向（已存**多于**上游）⇒ 点明 §5.1 那个残余风险', async () => {
+      const h = harness(() => jsonResponse(listBody([], 124)));
+      const page = await h.adapter.fetchPage(creator(), '4', { storedTotal: 130 });
+
+      assert.equal(page.reachedEnd, true, '已存 >= 总数 ⇒ 判据成立（这正是危险所在）');
+      assert.equal(h.warns.length, 1);
+      const line = h.warns[0] ?? '';
+      assert.match(line, /上游总数=124/);
+      assert.match(line, /我们已存=130/);
+      assert.match(
+        line,
+        /残余风险/,
+        '这一行的意义就是"到底"这个判断可能被 UP 删过视频这件事骗了 —— 必须写出来',
+      );
     });
   });
 
