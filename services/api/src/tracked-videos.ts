@@ -962,6 +962,12 @@ export function pickVerifiableVideos(opts: {
  *   不写的话轮转游标会把它再挑一次（那不算错，只是白问一遍）。
  * · 上游**没返回**的那些：`status = 'hidden'` + `hidden_at` + `hidden_reason = 'upstream_gone'`。
  *
+ * ⚠️★ `now` 的单位是 **Unix 秒**（计划 Global Constraint 2：本栏目两张表一律秒，
+ *    `audit_log` 才是毫秒）。它一次写**两列**：`verify_checked_at` 与 `hidden_at`。
+ *    传毫秒的话两件事都不会报错：`hidden_at` 与同表的 `published_at` 差 1000 倍，
+ *    而轮转游标 `COALESCE(verify_checked_at, 0) ASC` 会把毫秒值**永远**排在秒值后面 ——
+ *    这些行此后**永远挑不到**，每一轮还"成功跑完"（第九节那条饿死，这是它的另一个入口）。
+ *
  * ⚠️ 调用方**只在整批都成功时**才调它：失败时"一条都不隐藏"这条防线在 `track.ts` 里
  *    （这里不做"部分成功"的处理，因为 `existingVideoIds` 要么给出完整集合、要么抛）。
  *    ⚠️ 那意味着：`existingExternalIds` **空集合**是"上游说这些一条都不在了"，
@@ -981,6 +987,8 @@ export function applyVerifyResult(
   if (checked.length === 0) return { checked: 0, hidden: 0 };
 
   const db = getDb();
+  // ★ `now` 是 **Unix 秒**（与 `published_at` 同一单位；`audit_log` 才是毫秒）—— 下面两个 UPDATE
+  //   都拿它写 `verify_checked_at` / `hidden_at`：传 `Date.now()` 会把这些行钉在轮转游标的末尾。
   const markChecked = db.prepare('UPDATE tracked_videos SET verify_checked_at = ? WHERE id = ?');
   const hide = db.prepare(
     `UPDATE tracked_videos SET verify_checked_at = ?, status = 'hidden',
