@@ -22,12 +22,16 @@
  *   2. **"段"的上界**（裁决写在 `tracking/parse.ts` 文件头）：`12:99`、`1:99:00`
  *      要被拒，而 `99:00` 要被**接受**成 5940。后面这条是刻意钉住的裁决 ——
  *      它写成一条断言，是为了让"改主意"变成一件会红的事，而不是一次静默的偏移。
- *   3. **0 与 null 是两件事**：`'0:00'` / `'0s'` / `'PT0S'` 都要解析成 **0**，
- *      而 `''` / `null` / `undefined` / `'abc'` 一律 `null`（**不是 0**）。
- *      ⚠️ 这与本仓既有纪律同源（`apps/web/src/components/SeedResultCard.tsx:154-155`
+ *   3. **总和为 0 一律 `null`**（复审裁决，理由全文在 `tracking/parse.ts` 文件头）：
+ *      `'0:00'` / `'0s'` / `'PT0S'` / `'P0D'` 与 `''` / `null` / `undefined` / `'abc'`
+ *      一样都返回 `null`。没有任何平台会产出一支真 0 秒的视频 —— 那些 0 是
+ *      "这一格没量到"（YouTube 用 `PT0S` / `P0D` 表示已下架 / 待首播 / 拿不到时长的
+ *      那些条目），而回 0 的后果是**没有报错的错标签**：`deriveTags` 立刻给一支我们
+ *      一无所知的视频打上 `short`（`0 <= 60`），存进去就是一个看起来完全正常的
+ *      `["short"]`。⚠️ 这条与本仓既有纪律同源（`apps/web/src/components/SeedResultCard.tsx:154-155`
  *      贴在该卡 `matchDate` 渲染上的那条"不能显示成 0"，另一个副本见
- *      `packages/shared/src/tracking.ts:38-47`）：`0` 是一个真实的测量值，
- *      而"没量到"必须是 `null` —— 合并这两个之后，"这支视频没人看"与
+ *      `packages/shared/src/tracking.ts:59`）：`0` 只在**真的量到 0** 时才是数据，
+ *      "没量到"必须是 `null` —— 两者合并之后，"这支视频没人看"与
  *      "上游这一轮没回这个字段"就再也分不开了。
  *   4. **格式之外的东西要拒**：天数在 ISO 8601 里合法（`P1D`）但在 Twitch 的
  *      `1h2m3s` 里不合法；`P1M` 是**月**不是一分钟（`PT1M` 才是）——
@@ -120,9 +124,15 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       }
     });
 
-    it('+ `0:00` 解析成 0（**不是** null）：0 是格式如实表达的值，缺值才是 null', () => {
-      assert.equal(parseBilibiliLength('0:00'), 0);
-      assert.equal(parseBilibiliLength('0:0'), 0);
+    it('+ ⚠️ 总和为 0 ⇒ null：`0:00` 是"这一格没时长"，不是"一支 0 秒的视频"', () => {
+      // 裁决与理由见 `tracking/parse.ts` 文件头。回 0 的话这支视频会拿到一个
+      // 看起来完全正常的 `short`（spec §4.3 的 `0 <= 60`），而没有任何异常可抓。
+      assert.equal(parseBilibiliLength('0:00'), null);
+      assert.equal(
+        parseBilibiliLength('0:0'),
+        null,
+        '短写法同理 —— 判的是**总和**，不是那个字符串',
+      );
     });
 
     it('+ null / undefined / 空串 / 纯空白 ⇒ null（上游没给这一格，不是"0 秒"）', () => {
@@ -150,12 +160,20 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       assert.equal(parseTwitchDuration('1h30s'), 3630, '缺 m 段');
       assert.equal(parseTwitchDuration('2h30m'), 9000, '缺 s 段');
       assert.equal(parseTwitchDuration('1h0m0s'), 3600, '补齐的 0 段');
-      assert.equal(parseTwitchDuration('10h59m59s'), 39599, '各段的上界');
+      assert.equal(parseTwitchDuration('10h59m59s'), 39599, '三段齐全的常见满值');
       assert.equal(
         parseTwitchDuration('1m2h'),
         null,
         '顺序反了必须拒（不能靠"有没有见过 h"来修正）',
       );
+    });
+
+    it('+ ⚠️ 没有冒号 ⇒ 段不受 59 约束：`1h99m` 就是 99 分钟（与 `99:00` 同一条裁决）', () => {
+      // 与 bilibili 那条裁决同源（`tracking/parse.ts` 文件头："只有冒号**后面**的段受 0–59"）。
+      // Twitch 的形状里**根本没有冒号**，59 这条规则在这里没有落点：99 分是这个格式的
+      // 字面意思，不是"该进位没进位"（`1:99` 才是那种输入错）。
+      // ⚠️ 真正约束这些段的只有"1–4 位数字"那条理智边界（`'99999h'` 在下面那条里被拒）。
+      assert.equal(parseTwitchDuration('1h99m'), 9540, '1 小时 99 分是合法写法，不是错误');
     });
 
     it('+ ⚠️ 不接受 `d`（天）：spec §2.3 写明这个字段是 `1h2m3s` 形状', () => {
@@ -183,9 +201,9 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       }
     });
 
-    it('+ `0s` 解析成 0（**不是** null）', () => {
-      assert.equal(parseTwitchDuration('0s'), 0);
-      assert.equal(parseTwitchDuration('0h0m0s'), 0);
+    it('+ ⚠️ 总和为 0 ⇒ null（`0s` / `0h0m0s` —— Twitch 不产出一支真的 0 秒 VOD）', () => {
+      assert.equal(parseTwitchDuration('0s'), null);
+      assert.equal(parseTwitchDuration('0h0m0s'), null, '三段补齐的写法值一样是 0');
     });
 
     it('+ null / undefined / 空串 / 纯空白 ⇒ null', () => {
@@ -218,6 +236,13 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       assert.equal(parseYouTubeDuration('PT1M'), 60, 'T 段里的 M 才是分钟');
       assert.equal(parseYouTubeDuration('P1DT2H3M4S'), 93_784, '四段齐全');
       assert.equal(parseYouTubeDuration('P2DT30M'), 174_600, '天 + 分（跳过时与秒）');
+    });
+
+    it('+ ⚠️ 同上：ISO 也没有"59 分钟"这条规则 —— `PT99M` = 5940', () => {
+      // 与 bilibili 的 `99:00` 同一条裁决（`tracking/parse.ts` 文件头）：被 0–59 约束的
+      // 只有"冒号**后面**的段"，而这个形状里没有冒号。分钟数的上界是"1–4 位数字"
+      // （`'P99999D'` 在下面那条非法输入里被拒），不是 59。
+      assert.equal(parseYouTubeDuration('PT99M'), 5940, '99 分钟是合法的 ISO 时长');
     });
 
     it('+ ⚠️ `P1M` 是**月**，一律拒绝；`PT1M` 才是一分钟', () => {
@@ -254,9 +279,12 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       }
     });
 
-    it('+ `PT0S` 解析成 0（**不是** null）', () => {
-      assert.equal(parseYouTubeDuration('PT0S'), 0);
-      assert.equal(parseYouTubeDuration('P0D'), 0);
+    it('+ ⚠️ 总和为 0 ⇒ null：`PT0S` / `P0D` 正是 YouTube 的"拿不到时长"写法', () => {
+      // 已下架 / 待首播 / 部分直播条目都会走到这里。回 0 的话它们会带着一个
+      // 看起来完全正常的 `short` 入库，而且没有任何东西会报错 ——
+      // 裁决与理由全文在 `tracking/parse.ts` 文件头。
+      assert.equal(parseYouTubeDuration('PT0S'), null);
+      assert.equal(parseYouTubeDuration('P0D'), null);
     });
 
     it('+ null / undefined / 空串 / 纯空白 ⇒ null', () => {
@@ -309,7 +337,11 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
       );
     });
 
-    it('+ 0 秒是 short —— 0 是一个真实的测量值（缺值才不打标签）', () => {
+    it('+ 0 秒仍是 short —— spec §4.3 的判据逐字是 `<= 60`（解析器已不再产出 0）', () => {
+      // ⚠️ 三个解析器现在把"总和为 0"折成 `null`（见 `tracking/parse.ts` 文件头），
+      //    所以 0 走不到这条路上 —— 它只可能是有人绕开解析器直接写进 `duration_sec`。
+      //    判据本身**不**动：spec §4.3 写的就是 `duration_sec <= 60`，
+      //    在这一层重写它等于把同一条规则放进两个地方。
       assert.deepEqual(deriveTags({ durationSec: 0, isLiveReplay: false }), ['short']);
     });
 
@@ -336,7 +368,7 @@ describe('★ 追踪视频的时长解析与标签推导（spec §5.6 / §4.3）
 
     it('+ ⚠️ 负数按 spec §4.3 的判据**字面**处理 ⇒ `short`（刻意的观察值，不是我们想要的形状）', () => {
       // 判据逐字是 `duration_sec <= 60`，而 `-1 <= 60` 为真 ⇒ `short`。
-      // 三个解析器都只产出 `null` 或非负整数（`0:00` / `0s` / `PT0S` 是 0），
+      // 三个解析器只产出**正整数**或 `null`（总和为 0 也折成 `null`，见 parse.ts 文件头），
       // 所以 `-1` 走不到这条路上 —— 它只可能是有人绕开解析器直接写库。
       // ⚠️ 这里**不**加"负数 ⇒ 不打标签"那条守卫：那等于在这一层替 spec 重写判据，
       //    而该拦它的地方是写库那条路（数据层看得见 0 与负数，标签这层看不见）。
