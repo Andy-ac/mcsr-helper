@@ -323,7 +323,16 @@ export interface CreatorRef {
 export interface PlatformAdapter {
   /** 管理员粘贴的链接/标识 → 规范化成 CreatorRef。解析不出来就抛。 */
   resolveCreator(input: string): Promise<CreatorRef>;
-  fetchPage(creator: TrackedCreator, cursor: string | null): Promise<FetchPage>;
+  /**
+   * 抓一页。
+   *
+   * ⚠️ **第三个参数是预检扫描抓出来的一处订正**（2026-09-16）：
+   * 本规格原来写的是两参 `fetchPage(creator, cursor)`，但 §5.4 要求 bilibili 的
+   * "到底了"判据里含"**我们库里已存条数** >= `page.count`" —— 而适配器**不该知道数据库**。
+   * ⇒ 裁决：把 `storedTotal` **由调用方传进来**（调用方本来就要查一次，顺手就有了）。
+   * YouTube / Twitch 忽略它（它们的结束语义只看游标）。
+   */
+  fetchPage(creator: TrackedCreator, cursor: string | null, ctx: { storedTotal: number }): Promise<FetchPage>;
 }
 ```
 
