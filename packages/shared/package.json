@@ -17,7 +17,8 @@
     "./calendar-time": "./src/calendar-time.ts",
     "./videos": "./src/videos.ts",
     "./live": "./src/live.ts",
-    "./ranked": "./src/ranked/index.ts"
+    "./ranked": "./src/ranked/index.ts",
+    "./tracking": "./src/tracking.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

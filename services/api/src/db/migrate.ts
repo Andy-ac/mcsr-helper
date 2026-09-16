@@ -35,6 +35,7 @@ import { m016LiveDedupeKey } from './migrations/016_live_dedupe_key';
 import { m017SlotsAndDimensions } from './migrations/017_slots_and_dimensions';
 import { m018ContentContributors } from './migrations/018_content_contributors';
 import { m019LiveShares } from './migrations/019_live_shares';
+import { m020TrackedVideos } from './migrations/020_tracked_videos';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -148,6 +149,19 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    `live-shares.ts` 的 `createShare`，有两条测试钉着（spec §3.4）。
    */
   { name: '019_live_shares', sql: m019LiveShares },
+  /*
+   * 020：视频博主追踪（`tracked_creators` / `tracked_videos`）。
+   *
+   * ⚠️ 与 009/013/014/018/019 同一个性质：**纯建表 + 建索引**，不重建任何表 ⇒
+   *    **留在事务里**（不加 noTransaction），失败即整体回滚。
+   *    这里没有任何一句需要 `PRAGMA foreign_keys`（理由见 020 的文件头第四节）。
+   *
+   * ⚠️ 两张表的 `UNIQUE (platform, external_id)` 与两个 `ON DELETE` 是**功能**而不是装饰：
+   *    删掉唯一约束不会有任何报错，只是每次增量都插重复行（`ON CONFLICT` 那个子句
+   *    也会跟着写不出来）；把 `tracked_videos` 的 `CASCADE` 写成 `NO ACTION` 则是
+   *    "删了博主，他的视频留成孤儿"。`tracking-schema.test.ts` 的 ③④⑥⑧ 各钉一条。
+   */
+  { name: '020_tracked_videos', sql: m020TrackedVideos },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
