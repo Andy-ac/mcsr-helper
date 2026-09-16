@@ -579,9 +579,18 @@ export function Videos() {
         /*
          * ⚠️ 三个状态**分开传**，一个都不许合并：把 loading / error 折进"items 是空的"
          *    会让取数失败渲染成"还没有追踪到视频" —— 一句假话（`empty` 那一条的说明）。
+         * ⚠️★ 失败那一句**先有翻译好的前言、再接原始细节**（`videos.loadFailed` +
+         *    `useAsync` 给的那句）：与上面那面墙那一处逐字同形。只把原文传下去的话，
+         *    英文界面上出现的是一整句中文（`API 返回 HTTP 500` 来自 `lib/api.ts`），
+         *    而 `--en` 的零汉字扫描看不见这一层 —— 页面不在它的夹具里
+         *    （脚本末尾的"覆盖边界"写着这件事）。
          */
         loading={trackedState.status === 'loading'}
-        error={trackedState.status === 'error' ? trackedState.error : null}
+        error={
+          trackedState.status === 'error'
+            ? `${t('videos.loadFailed')}：${trackedState.error}`
+            : null
+        }
         onPage={setTrackedPage}
       />
 
@@ -594,6 +603,20 @@ export function Videos() {
         loading={creatorsState.status === 'loading'}
         busy={panelBusy}
         creators={creatorsState.status === 'ok' ? creatorsState.data.items : []}
+        /*
+         * ⚠️★ 取数失败**必须**自己占一格（而不是折进上面那句 `creators: []`）：
+         *    折进去的话面板会渲染成"名单还是空的 —— 在上面贴一个博主的链接"，
+         *    而那句是**假话**（名单不是空的，是没读到），并且会把编辑送去重贴一条
+         *    **已经在名单上**的链接（再贴一次只会拿到 `duplicate`）。
+         *    与上面那一栏的 `error` 是同一条纪律：三态分开传，谁都别替谁说话。
+         * ⚠️ 前言复用 `videos.loadFailed`（与那面墙、与上面那一栏同一个说法），
+         *    然后是 `useAsync` 给的原始细节。
+         */
+        loadError={
+          creatorsState.status === 'error'
+            ? `${t('videos.loadFailed')}：${creatorsState.error}`
+            : null
+        }
         input={addInput}
         fieldErrors={panelFieldErrors}
         notice={panelNotice}

@@ -50,6 +50,18 @@ import { watchUrl } from '@/components/VideoEmbed';
  *   一起加载会把首屏拖慢，而比例不固定的图片到达时会让每一行重排。
  * ⚠️ `thumbnailUrl` 为 null 时**不渲染 `<img>`**（而不是 `src=""`）：
  *   `src=""` 会让浏览器去请求**当前页面**，一次请求换来一张碎图。
+ *
+ * ===========================================================================
+ * ★ 空的列表与**没取到的列表**是两件事（两栏**同一条纪律**）
+ * ===========================================================================
+ * 两栏各有自己的三态：正在取数 / 取数失败 / 正常（空或非空），而失败**不许**折进"空"。
+ * 折了的话界面会说一句**假话**，并且把人引向一个必然失败的动作：
+ *   · 公开列表会说"还没有追踪到视频"（其实列表不是空的，是没取到）；
+ *   · 管理面板会说"名单还是空的 —— 在上面贴一个博主的链接"，而编辑照着贴的那条链接
+ *     **已经在名单上**，再贴一次只会拿到 `duplicate`（`tracked.errDuplicate`）。
+ * ⇒ 两个组件都把三态**分开吃 props**（面板那一格叫 `loadError`，不叫 `error`：
+ *   它说的是"这张表没读到"，与"我刚才那一下失败了"是两个不同的问题），
+ *   渲染自检对两栏各断言一次"取数失败时**没有**空态那一块"。
  */
 
 /** 没有值的那一格 —— 全仓的约定（`CalendarDetail` / `SeedResultCard` 都是它）。 */
@@ -92,7 +104,8 @@ function tagLabel(tag: string, t: (key: string) => string): string {
  *
  * ⚠️ 导出只为了一件本仓反复吃过亏的事：`apps/web` 没有测试运行器，
  *    `apps/web/scripts/videorender.tsx` 是这一页唯一的断言执行者 ——
- *    "0 秒是不是 1970 / null 是不是 `—`"这两条要能**直接**问它，
+ *    "0 秒会不会被当成'没有值'（它渲染出来的是**纪元那一刻**，UTC 以东是 1970、
+ *    以西是 1969 —— 所以那条断言**不许**写死年份）/ null 是不是 `—`"这两条要能**直接**问它，
  *    而不是只能靠产物里有没有 `1970` 去猜（`RANKED_ERROR_KEYS` 是同一处置）。
  * ⚠️ `locale` 是**必填**参数（由调用点传 `i18n.language`）：不传时 `toLocaleDateString()`
  *    跟的是**宿主机器**的 locale ⇒ 中文系统上的英文界面会印出中文日期，而两种语言
@@ -218,8 +231,14 @@ export function TrackedVideosSection({
                   <div className="tracked__head">
                     <span className="badge badge--kind">{t(PLATFORM_KEYS[video.platform])}</span>
                     {/*
-                      标签容器**只在有标签时渲染**（spec §5.2 的同类裁决）：渲染一个空的
-                      `<ul>` 会占一行高度，看起来像"这里本来该有东西、丢了"。
+                      标签容器**只在有标签时渲染**：渲染一个空的
+                      `<ul class="tracked__tags">` 会占掉一行高度，读起来像"这里本来
+                      该有标签、结果丢了" —— 一个不存在的容器不需要任何解释，
+                      而一个空容器每看一次都要解释一次。
+                      ⚠️ 这条是**本块自己的判断**，不是从规格抄来的：spec 里没有任何
+                      一节裁决过空容器（原先这里引的 "§5.2" 讲的是 **YouTube 适配器**，
+                      与容器毫无关系）。引用一个不存在的裁决比不引更糟 ——
+                      下一个人会去找它，然后以为是自己读漏了。
                       ⚠️ "`durationSec` 为 null 时一个时长标签都不打"是抓取那一侧的事
                       （`deriveTags`）；界面这一侧只管画它拿到的。
                     */}
@@ -323,6 +342,20 @@ export interface TrackedCreatorsPanelProps {
   /** 有动作在飞（加 / 停用 / 重新回填 / 删）—— 期间所有控件都禁用。 */
   busy: boolean;
   creators: TrackedCreator[];
+  /**
+   * ★★ 名单**没取到**（发出去的那个 GET 失败了）时的那一句话；`null` = 没出错。
+   *
+   * ⚠️★ 这一格**必须**有，而且与 `notice` 是**两件事**（虽然两者都是"一句话"）：
+   *   · `notice` 说的是**某个动作的结果**（刚才那一下加 / 停用 / 回填 / 删怎么了）；
+   *   · 这一格说的是**这张表本身没读到** —— 于是下面那句"名单还是空的"是**假话**，
+   *     而且它会把编辑送去重贴一条**已经在名单上**的链接（再贴必然拿到 `duplicate`）。
+   * ⚠️ 计划里那行接口签名写的是 `error`，本组件里叫 `loadError`：与 `notice` 并排时，
+   *   "error" 会被读成"动作失败了"（那正是 `notice.kind === 'bad'` 在说的事），
+   *   而这一格唯一的意思就是"列表没读到，界面不知道名单现在是什么样"。
+   * ⚠️ 两格可以同时有内容（通知在上、这一句在下），不需要"谁说"的规则：
+   *   它们回答的是不同的问题（"我刚才那一下怎么了" vs "这张表现在是什么状态"）。
+   */
+  loadError: string | null;
   /** 加博主输入框里的**原文**（受控 —— 见文件头"纯视图"那一段）。 */
   input: string;
   /**
@@ -370,6 +403,7 @@ export function TrackedCreatorsPanel({
   loading,
   busy,
   creators,
+  loadError,
   input,
   fieldErrors,
   notice,
@@ -427,11 +461,25 @@ export function TrackedCreatorsPanel({
 
       {loading ? <p className="state">{t('common.loading')}</p> : null}
 
-      {!loading && creators.length === 0 ? (
+      {/*
+        ★★ 名单**没取到** ⇒ 这一块，而**不是**下面那句"名单还是空的"。
+        ⚠️ 这句话在这里是**必须**的：没有它，取数失败会渲染成"名单还是空的 —— 在上面
+        贴一个博主的链接"，而那句话既假（名单不是空的，是没读到）又有害（编辑会去重贴
+        一条已经在名单上的链接，然后拿到 `duplicate`）。这与公开列表那一栏的 `error`
+        是同一条纪律（文件头"空的列表与没取到的列表是两件事"）。
+        ⚠️ 与 `notice` 不冲突、也不互相覆盖：notice 在更上面，说的是"刚才那个动作怎么了"。
+      */}
+      {loadError === null ? null : (
+        <div className="state state--error">
+          <p>{loadError}</p>
+        </div>
+      )}
+
+      {!loading && loadError === null && creators.length === 0 ? (
         <p className="tracked__empty">{t('tracked.manageEmpty')}</p>
       ) : null}
 
-      {!loading && creators.length > 0 ? (
+      {!loading && loadError === null && creators.length > 0 ? (
         /*
          * ⚠️ 外面套一层 `.tracked__tablescroll`（横向滚动兜底）：七列在窄屏上装不下，
          *    而"顶出一条**页面级**的横向滚动条"是整页在动，比表格自己滚一次糟得多

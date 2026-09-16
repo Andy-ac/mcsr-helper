@@ -270,6 +270,7 @@ const PANEL_KEYS = [
   'loading',
   'busy',
   'creators',
+  'loadError',
   'input',
   'fieldErrors',
   'notice',
@@ -445,6 +446,7 @@ interface PanelProps extends Record<string, unknown> {
   loading: boolean;
   busy: boolean;
   creators: TrackedCreator[];
+  loadError: string | null;
   input: string;
   fieldErrors: Record<string, string>;
   notice: { kind: 'ok' | 'bad' | 'info'; text: string } | null;
@@ -475,6 +477,7 @@ const panelProps = (over: Partial<PanelProps> = {}): PanelProps => ({
   loading: false,
   busy: false,
   creators: [CREATOR_ON, CREATOR_OFF],
+  loadError: null,
   input: '',
   fieldErrors: {},
   notice: null,
@@ -731,7 +734,7 @@ console.log('③ ★★ 时间戳只经 `toMillis`（秒 ⇒ 毫秒）：2025 �
  * ⚠️ 判据三层：
  *    ① 产物里出现 2025（那一格真的渲染了）；
  *    ② **整个产物里没有 `1970`**（把每一处时间戳一起兜住，包括"上次同步"那一格）；
- *    ③ `localDate` / `localDateTime` 直接问一遍 —— `null ⇒ —`、`0 ⇒ 1970`
+ *    ③ `localDate` / `localDateTime` 直接问一遍 —— `null ⇒ —`、**真的 0 秒照常渲染**
  *      （0 是一个**合法**的 Unix 时刻，`toMillis` 不许把它当成"没有值"吞掉）。
  */
 assert.equal(
@@ -748,9 +751,31 @@ assert.equal(
   '—',
   '★★ `null` ⇒ 「—」（不是 1970：0 毫秒恰好也是 1970，两者在这一格上长得一样）',
 );
+/*
+ * ⚠️★ **真的 0 秒**这一条**不许**写死年份（原来这里是 `localDate(0, LANG).includes('1970')`）。
+ *    `localDate` 走 `toLocaleDateString(locale)`，用的是**跑测机器**的时区：纪元那一刻
+ *    在 UTC 以东是 1970-01-01、在 UTC 以西是 **1969-12-31** ⇒ 一个**正确**的实现
+ *    会在美洲的机器上把这条断言判红，而红的原因与代码毫无关系。
+ *    "一份会被正确的实现判红的断言"比没有断言更坏：下一个人的第一反应是去改代码。
+ * ⚠️ 判据因此拆成三条，每一条都与时区无关：
+ *    ① `toMillis(0)` 就是 `0` —— 写成 `sec || null` 的实现**在这一步**就已经把 0 变成 null；
+ *    ② 它渲染出来的**不是** `—`（"没有值"与"一个合法时刻"必须分得开，这是本条的要害）；
+ *    ③ 它渲染的就是**纪元那一刻**那一天 —— 是哪一年取决于跑测机器的时区，两种都对。
+ */
+assert.equal(
+  toMillis(0),
+  0,
+  '★ 探针：`toMillis(0)` 就是 `0`（写 `sec || null` 的话这里已经是 `null` 了）',
+);
+const EPOCH_RENDERED = localDate(0, LANG);
+assert.notEqual(
+  EPOCH_RENDERED,
+  '—',
+  `★★ **真的 0 秒**不许被当成"没有值"渲染成「—」（写成 \`sec || null\` 就会；实读「${EPOCH_RENDERED}」）`,
+);
 assert.ok(
-  localDate(0, LANG).includes('1970'),
-  '★★ 而**真的 0 秒**必须照常渲染成 1970 —— 写成 `sec || null` 会把一个合法时刻吞掉',
+  EPOCH_RENDERED.includes('1970') || EPOCH_RENDERED.includes('1969'),
+  `★★ 而它渲染的就是**纪元那一刻**那一天（实读「${EPOCH_RENDERED}」）—— 一天之内是 1970 还是 1969，取决于**跑测机器**的时区，所以这条断言不许只认其中一个`,
 );
 assert.ok(
   localDateTime(PUBLISHED_SEC, LANG).includes('2025'),
@@ -773,7 +798,9 @@ for (const [where, html] of [
     `★★ ${where} 的产物里出现了 \`1970\` —— 这一栏的每一个时间戳都必须经 \`toMillis()\`（spec §4）`,
   );
 }
-ok('时间戳：2025 而不是 1970；`null` ⇒ 「—」；真的 0 秒 ⇒ 1970（两种错法各有一条断言）');
+ok(
+  '时间戳：2025 而不是 1970；`null` ⇒ 「—」；真的 0 秒 ⇒ 纪元那一刻（**与时区无关**，两种错法各有一条断言）',
+);
 
 // ---------------------------------------------------------------------------
 console.log('④ 空列表 ⇒ 一句明确的「还没有追踪到视频」，不是空白');
@@ -891,7 +918,9 @@ assert.equal(
 ok('管理面板：`canManage:false` ⇒ 空串；`true` ⇒ 整块在（两个 props 只差这一格）');
 
 // ---------------------------------------------------------------------------
-console.log('⑥ 面板内容：七列表头 + 一行博主的六个读数 + "上次同步"经 `toMillis`');
+console.log(
+  '⑥ 面板内容：七列表头 + 两行博主的六个读数 + "上次同步"经 `toMillis` + 「空 / 取数中 / 取数失败」三态',
+);
 // ---------------------------------------------------------------------------
 /*
  * ★ spec §6.2 第二段点名的六列（平台 / 名字 / 状态 / 上次同步 / 上次错误 / 条数）
@@ -990,7 +1019,47 @@ assert.equal(
   1,
   '★ 加载中有它自己那一句话（`common.loading`）',
 );
-ok('面板内容：七列表头 + 两行（启用 / 停用）的六个读数都与夹具对得上');
+/*
+ * ★★ 第三种状态：**名单没取到**（`loadError`）。
+ *
+ * ⚠️ 这一条在加 `loadError` 那格 prop 之前**写不出来**，而这正是它值得单列一组的理由：
+ *    页面当时把取数失败折进了 `creators: []`（`status === 'ok' ? items : []`），
+ *    于是"名单没读到"与"名单上一个人都没有"在 props 上**长得一模一样** ——
+ *    产物层面再怎么写也只能证明后者。缺陷的现场是：GET 500 / 断网 / 会话过期时，
+ *    面板渲染出"名单还是空的 —— 在上面贴一个博主的链接"这句话**是假的**
+ *    （名单不是空的，是没读到），而且它把编辑送去重贴一条**已经在名单上**的链接，
+ *    再贴一次只会拿到 `duplicate`。
+ * ⚠️ 这一组是**双向**的：上面 `EMPTY_LIST_HTML` 那一条仍然要证明
+ *    "`creators: []` 且没有失败 ⇒ 那句话在" —— 只留失败那半边的话，
+ *    一个**永远**不渲染空态的实现照样绿（本仓的"反面也要有对照"）。
+ */
+const PANEL_LOAD_FAILED_TEXT = 'LOAD_FAILED_TEXT';
+const PANEL_ERROR_HTML = renderPanel(
+  { creators: [], loadError: PANEL_LOAD_FAILED_TEXT },
+  '名单取数失败',
+);
+assert.deepEqual(
+  elementsWithClass(PANEL_ERROR_HTML, 'tracked__empty'),
+  [],
+  `★★ 名单**没取到**不许渲染成"名单是空的"（那句「${t('tracked.manageEmpty')}」会让编辑去重贴一条已经在名单上的链接，而再贴一次只会拿到 duplicate）`,
+);
+assert.deepEqual(
+  elementsWithClass(PANEL_ERROR_HTML, 'tracked__table'),
+  [],
+  '★★ 也没读到名单 ⇒ 不渲染表格（一张空表看起来像"名单被人清空了"）',
+);
+assert.ok(
+  textOf(PANEL_ERROR_HTML).includes(PANEL_LOAD_FAILED_TEXT),
+  '★ 失败那一句必须渲染出来（页面翻好的文本：翻译好的前言 + 原始细节）',
+);
+assert.equal(
+  elementsWithClass(PANEL_ERROR_HTML, 'state--error').length,
+  1,
+  '★ 面板的取数失败有它自己那一块样式（与"名单是空的"、与"加载中"都不同款）',
+);
+ok(
+  '面板内容：七列表头 + 两行（启用 / 停用）的六个读数都与夹具对得上；"名单是空的" / "加载中" / "取数失败"三态分开',
+);
 
 // ---------------------------------------------------------------------------
 console.log('⑦ 面板的四个动作面：受控输入框 / 字段级红字 / 顶部的 notice / 二次确认');
