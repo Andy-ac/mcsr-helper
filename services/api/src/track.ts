@@ -142,6 +142,20 @@
  *    重叠的进程**排队等着写**而不是报错 ⇒ 同一个游标会被两个进程分别推进。
  *    这件事只有"谁负责拉起进程"那一层知道（systemd），所以锁放在那里；
  *    自己实现一份要么漏（`O_EXCL` 的陈旧锁文件）要么又要一套超时与清理。
+ *
+ * ===========================================================================
+ * 十、第三个阶段「核对」（spec §6）：一轮现在是**回填 → 增量 → 核对**
+ * ===========================================================================
+ * 核对问的是"我库里这些行上游还认不认"，判据与"这一轮抓到了什么"**无关** ⇒
+ * 它与前面两个阶段**互相独立**：一个平台在回填里失败**不许**把核对一起停掉（反之亦然）。
+ * 理由很具体：bilibili 的拒绝是**概率性**的（§2.3），而它的抖动与
+ * "某个 Twitch VOD 是不是过期了"之间没有任何因果关系。
+ * ⚠️★ 核对的失败形状与抓取**不一样**，两处都很容易写成"看起来更严谨"的那一版：
+ *   · **失败 ⇒ 这一批什么都不写**（连 `verify_checked_at` 都不写）—— 见 `verifyVideos`
+ *     头上那条 ★★，以及它为什么是"重问一遍幂等"而不是"记成查过了"；
+ *   · **失败不算某个博主的错**（一批里混着好几个人的视频）⇒ 单独进 `verifyErrors`，
+ *     但**照样进退出码** —— 否则"每轮核对都失败"在 journald 里与"一切正常"长得一样，
+ *     而它没有任何别的痕迹（那一批什么都不写）。
  */
 
 import { pathToFileURL } from 'node:url';
@@ -150,7 +164,9 @@ import { TRACK_PLATFORMS, type TrackedCreator, type TrackPlatform } from '@mcsr/
 import { closeDb } from './db';
 import {
   advanceCursor,
+  applyVerifyResult,
   pickDueCreators,
+  pickVerifiableVideos,
   recordFailure,
   type StoredCreator,
   storedVideoCount,
@@ -168,12 +184,16 @@ export interface RunDeps {
   adapters: (platform: TrackPlatform) => PlatformAdapter;
   platformStatus: () => Record<TrackPlatform, 'ok' | 'skipped:no-credentials'>;
   now: () => number;
-  limits: { backfill: number; pages: number; incremental: number };
+  limits: { backfill: number; pages: number; incremental: number; verify: number };
 }
 
 export interface RunSummary {
   backfill: { tried: number; done: number; failed: number };
   incremental: { tried: number; done: number; failed: number };
+  /** 核对阶段（spec §6.3）：查了多少条、隐藏了多少条、几批失败。 */
+  verify: { checked: number; hidden: number; failed: number };
+  /** 核对阶段的失败原文（一批一条）。⚠️ 与创作者的 `failures` **分开**：它不是某个博主的错。 */
+  verifyErrors: Array<{ platform: TrackPlatform; error: string }>;
   inserted: number;
   updated: number;
   platforms: Record<TrackPlatform, 'ok' | 'skipped:no-credentials' | 'failed'>;
@@ -181,15 +201,26 @@ export interface RunSummary {
 }
 
 /**
- * spec §10 冻结的每次运行上限：回填 20 个 / 翻 20 页 / 增量 40 个。
+ * spec §10 冻结的每次运行上限：回填 20 个 / 翻 20 页 / 增量 40 个 / **核对 200 个（每平台）**。
  *
  * ⚠️ **故意不给环境变量开关**（与 unit 里那些 `MCSR_*` 凭据不同）：§3.3 的配额算术
  *    （"40 个频道/次 × 24 次/天 ≈ 1000–2000 units/天，在 10000 之内"）成立的前提就是
- *    这三个数是常量。一个"顺手能调大"的限额会让那条算术无声地失效，而症状是
+ *    这几个数是常量。一个"顺手能调大"的限额会让那条算术无声地失效，而症状是
  *    **YouTube 配额在月中被烧光**，那时所有增量一起停 —— 与本文件第三节那个坑同类。
  *    真要改，改这里并同步改 spec §10 的冻结表。
+ * ⚠️ 第四格（`verify = 200`，T5 加的）量的是**每轮每个平台**问上游多少个 id。
+ *    与前三格同一个姿态：它是"一次运行有界"在这条新路上的那一个入口 ——
+ *    上游是按 id 记账的，一个漏掉的界会让一次运行把整库都问一遍。
  */
-export const TRACK_LIMITS = { backfill: 20, pages: 20, incremental: 40 };
+export const TRACK_LIMITS = { backfill: 20, pages: 20, incremental: 40, verify: 200 };
+
+/**
+ * 多久以内的视频不用核对。
+ *
+ * Twitch 的存档最早 7 天过期（spec §11 第 5 条只是一句背景，不是判据），
+ * 所以刚发出来的根本没得可查 ⇒ 拿 6 天当粗筛，省掉大量无意义请求。
+ */
+export const VERIFY_MIN_AGE_SEC = 6 * 86400;
 
 // ===========================================================================
 // 引擎
@@ -230,6 +261,8 @@ export async function runOnce(deps: RunDeps): Promise<RunSummary> {
   const summary: RunSummary = {
     backfill: { tried: 0, done: 0, failed: 0 },
     incremental: { tried: 0, done: 0, failed: 0 },
+    verify: { checked: 0, hidden: 0, failed: 0 },
+    verifyErrors: [],
     inserted: 0,
     updated: 0,
     // 先照 `platformStatus()` 填（ok / skipped），本轮真出事了才改写成 'failed'。
@@ -282,6 +315,20 @@ export async function runOnce(deps: RunDeps): Promise<RunSummary> {
       // 'partial' 两边都不加：它既没完成也没失败，差值就是"还在翻的"（文件头第六节）。
     }
   }
+
+  /*
+   * ★ 第三个阶段，**在增量之后**（回填 → 增量 → 核对）。
+   *
+   * ⚠️★ 它与上面那两个阶段**互相独立**：一个平台在回填里失败**不影响**核对
+   *   （反之亦然）。理由不是宽容，而是两件事的成功判据**完全不同**：
+   *   抓取失败说明"这一页没拿到"，核对失败说明"这一批 id 没问清" ——
+   *   而核对要做到"我库里这些行该不该继续显示"，与这一轮抓到了什么无关。
+   *   连坐的代价很具体：bilibili 一被限流（§2.3 是概率性的），
+   *   **Twitch 的过期下架就跟着停一轮**，而它们之间没有任何因果关系。
+   * ⚠️ 它**不抛**（`NoCredentialsError` 之外的一切都在 `verifyVideos` 里结掉）：
+   *   一批没问清不该让整轮崩掉，那是"静默坏掉"的另一个形状。
+   */
+  await verifyVideos(deps, now, summary);
 
   return summary;
 }
@@ -388,6 +435,85 @@ async function syncCreator(
 }
 
 // ===========================================================================
+// 第三个阶段：核对（spec §6）—— 问上游"这些视频你还认不认"
+// ===========================================================================
+
+/**
+ * 第三个阶段：**核对上游还认不认这些视频**（spec §6）。
+ *
+ * ★ 平台选择（spec §6.2 第 0 步）：
+ *   · `platformStatus()` 是 `skipped:no-credentials` 的直接跳过（要适配器会抛）；
+ *   · 拿到适配器之后判 `typeof adapter.existingVideoIds === 'function'`。
+ *   这两件事都不算失败、都不影响退出码 —— 而写错这一步的表现是"**永远不核对、也不响**"
+ *   （每个平台每轮少做一件事，摘要里那一格还是好看的 0/0）。
+ *
+ * ★★ 失败时**一条都不隐藏**：`existingVideoIds` 抛了 ⇒ 这一批什么都不写
+ *    （连 `verify_checked_at` 都不写：下一次再问一遍是幂等的，
+ *     而"记成查过了"会让它轮到队尾）。
+ *    ⚠️ 这一条防的是 spec §4 那个 ★★：请求失败**绝不许**被读成"这些 id 都不存在"
+ *       —— 那是一次**静默的批量下架**，而且没有任何东西会报错。
+ *
+ * ⚠️★★ `catch` 故意是**笼统的**（不接受"只 catch 已知的那几个类型"这条建议）：
+ *    这条路会抛出什么**不由这里决定**，而 T2 的评审已经量到过一个具体形态 ——
+ *    非 401/403/429/5xx 的状态（比如"一批 100 个 id"那个假设不成立时的 400）会以
+ *    `TwitchRejectedError` **原样**抛出来，而那个类型平时表示"**这个 creator** 的数据有问题"。
+ *    核对**不是按 creator 问的**（一批里混着好几个博主的视频）⇒ 这里没有任何"坏博主"可指，
+ *    唯一正确的处置是"这一批没问清"：记一行 `verifyErrors`、退出码非零、什么都不写。
+ *    漏出去（或按类型白名单收窄）的代价很具体：**整轮崩在核对这一步**，
+ *    而回填与增量**这一轮已经做的工作全部作废**（库里留着半轮的结果，
+ *    journald 里一条栈）。⇒ 判"成功/失败"的判据只能是"**这批问清了没有**"。
+ *    ⚠️ 认下的代价：一次真属于某条视频的坏数据（比如某一行读不出 id）也会记成
+ *      "整批失败"，于是那一批**这一轮一条都不隐藏**。下一轮重来一次是幂等的，
+ *      而反过来（猜一半）是一次静默下架 —— 两个方向的代价不对称。
+ *
+ * ⚠️ 一个平台在回填里**握手失败**（`runOnce` 那个 `abandoned`）**不**影响这里，
+ *    而且这样是对的：核对的判据与抓取无关。代价也已经被别处付掉了 ——
+ *    Twitch 的 app token 失败在**实例内**缓存着同一份 Promise（`twitch.ts` 第一节），
+ *    而注册表对同一套凭据返回同一个实例（`index.ts`）⇒ 这里再问一次**不会多打一个请求**，
+ *    只会拿到同一个错，于是记成"这一批没问清"（响亮，且这一批什么都不写）。
+ */
+async function verifyVideos(deps: RunDeps, now: number, summary: RunSummary): Promise<void> {
+  for (const platform of TRACK_PLATFORMS) {
+    if (deps.platformStatus()[platform] === 'skipped:no-credentials') continue;
+
+    let adapter: PlatformAdapter;
+    try {
+      adapter = deps.adapters(platform);
+    } catch (error) {
+      /* 没凭据的平台在这里抛 NoCredentialsError —— 那是"跳过"，不是失败。 */
+      if (error instanceof NoCredentialsError) continue;
+      throw error;
+    }
+    const ask = adapter.existingVideoIds;
+    if (ask === undefined) continue; // 这个平台没有这个能力（今天只有 Twitch 有）
+
+    const candidates = pickVerifiableVideos({
+      platform,
+      minAgeSec: VERIFY_MIN_AGE_SEC,
+      limit: deps.limits.verify,
+      now,
+    });
+    if (candidates.length === 0) continue;
+
+    try {
+      // ⚠️ bind：适配器的方法是对象上的（`this` 无所谓，但保持一个写法）。
+      const existing = await ask.call(
+        adapter,
+        candidates.map((c) => c.externalId),
+      );
+      const result = applyVerifyResult(candidates, existing, now);
+      summary.verify.checked += result.checked;
+      summary.verify.hidden += result.hidden;
+    } catch (error) {
+      const message = errorText(error);
+      summary.verify.failed += 1;
+      summary.verifyErrors.push({ platform, error: message });
+      /* ⚠️ 这一批**什么都不写**（含 verify_checked_at）—— 见这个函数头上那条 ★★。 */
+    }
+  }
+}
+
+// ===========================================================================
 // 摘要与退出码（spec §6.3）
 // ===========================================================================
 
@@ -415,6 +541,8 @@ export function formatSummary(summary: RunSummary, startedAt: number, finishedAt
     `  回填: ${bucketLine(summary.backfill)}`,
     `  增量: ${bucketLine(summary.incremental)}`,
     `  新增视频 ${String(summary.inserted)} 条 / 更新 ${String(summary.updated)} 条`,
+    // 核对那一行：`查 N 个 / 隐藏 M 个`（失败几个看下一段那几行，与 `failures` 分开打）。
+    `  核对: 查 ${String(summary.verify.checked)} 个 / 隐藏 ${String(summary.verify.hidden)} 个`,
     // 平台那一行照 `TRACK_PLATFORMS` 的冻结顺序，加第四个平台时会自动多一格。
     `  平台: ${TRACK_PLATFORMS.map((p) => `${p} ${summary.platforms[p]}`).join(' / ')}`,
   ];
@@ -431,18 +559,34 @@ export function formatSummary(summary: RunSummary, startedAt: number, finishedAt
     );
   }
 
+  /*
+   * ★ 核对那一行的失败**单独一段**、前缀也不一样（`⚠️ 核对失败:`）。
+   *   理由不是排版：它**不是某个博主的错**（`RunSummary.verifyErrors` 那行注释），
+   *   混进上面那段会让人去名单里找一个不存在的坏博主。
+   */
+  for (const failure of summary.verifyErrors) {
+    lines.push(`  ⚠️ 核对失败: platform=${failure.platform} error=${failure.error}`);
+  }
+
   return lines.join('\n');
 }
 
 /**
  * 这一轮的退出码。**有失败 ⇒ 1**（文件头第三节），跳过不算。
  *
- * ⚠️ 两个来源都看一眼（`failures` 与 `platforms`）：今天它们由 `syncCreator` 同时写，
- *    所以是等价的 —— 但真出现"只改了平台状态"的那条路时，退出码仍然是响的。
+ * ⚠️ 三个来源都看一眼（`failures` / `verifyErrors` / `platforms`）：今天前两个由
+ *    `syncCreator` 与 `verifyVideos` 分别写，所以是等价的 —— 但真出现"只改了平台状态"
+ *    的那条路时，退出码仍然是响的。
+ * ⚠️ `verifyErrors` 必须在里面（spec §6.3）：核对失败是**唯一**能说明"这批 id 没问清"
+ *    的地方，而它今天没有任何别的痕迹（那一批什么都不写、库里看不出没查过的那几行
+ *    与查过还在的那几行有什么区别）。少了它，一个"每年核对都失败"的进程
+ *    在 journald 里与"一切正常"一模一样 —— 本文件第三节那个坑的第三个入口。
  */
 export function exitCodeFor(summary: RunSummary): 0 | 1 {
   const anyPlatformFailed = TRACK_PLATFORMS.some((p) => summary.platforms[p] === 'failed');
-  return summary.failures.length > 0 || anyPlatformFailed ? 1 : 0;
+  return summary.failures.length > 0 || summary.verifyErrors.length > 0 || anyPlatformFailed
+    ? 1
+    : 0;
 }
 
 // ===========================================================================
@@ -467,7 +611,32 @@ export function dryRunPlan(deps: RunDeps): string {
     `  增量 待办 ${String(due.incremental.length)} 个（本轮上限 ${String(deps.limits.incremental)}）：`,
   );
   for (const creator of due.incremental) lines.push(`    ${creatorRowLine(creator)}`);
+
+  /*
+   * ★ 核对也报一下待办数（spec §6.3）：不报的话预演**只看得见前两个阶段**，
+   *   而"核对是不是真的在做"恰恰是这一轮新加的那件事。
+   * ⚠️ 逐平台各数一次再相加，因为上限是按平台给的（`TRACK_LIMITS.verify`）——
+   *   一次 `pickVerifiableVideos` 只能问一个平台（它的 `platform` 是必填的）。
+   * ⚠️ 这一格是**候选数**，不是"真会问出去的 id 数"：预演不许去要适配器
+   *    （"不抓网络是结构上的"那条断言），所以它数不出"哪些平台有 `existingVideoIds`
+   *    这个能力" —— 没有能力的平台（今天的 bilibili）在这里照样被数进去。
+   * ⚠️★ 预演**只读**：`pickVerifiableVideos` 是一句 SELECT，没有任何写入 ——
+   *    与下面那句"不动名单与视频的任何一行"是同一条承诺（它照样会打开库、跑迁移）。
+   */
+  const verifyTodo = TRACK_PLATFORMS.reduce(
+    (n, platform) =>
+      n +
+      pickVerifiableVideos({
+        platform,
+        minAgeSec: VERIFY_MIN_AGE_SEC,
+        limit: deps.limits.verify,
+        now,
+      }).length,
+    0,
+  );
+
   lines.push(
+    `  核对 待办 ${String(verifyTodo)} 个（每平台上限 ${String(deps.limits.verify)}）`,
     `  平台: ${TRACK_PLATFORMS.map((p) => `${p} ${status[p]}`).join(' / ')}`,
     /*
      * ⚠️ 说的是"不动名单与视频的任何一行"，不是"什么都不写"：预演照样要**打开库**

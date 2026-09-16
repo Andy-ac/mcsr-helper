@@ -1794,7 +1794,12 @@ describe('★★ §5.5：uploads 播放列表 ID 从库到适配器全程都在�
       adapters: () => adapter,
       platformStatus: () => ({ bilibili: 'ok', youtube: 'ok', twitch: 'ok' }),
       now: () => YT_PUBLISHED_SEC,
-      limits: { backfill: 5, pages: 5, incremental: 5 },
+      /*
+       * ⚠️ `verify` 是 T5 给 `RunDeps.limits` 加的第四格。这一句写的是**整个对象**
+       *    （不像 `tracking-run.test.ts` 的 `depsFor` 那样有默认值合并）⇒ 少一格就编不过。
+       *    值本身在这里无所谓：那个假适配器没有 `existingVideoIds`，核对阶段一个都不问。
+       */
+      limits: { backfill: 5, pages: 5, incremental: 5, verify: 5 },
     });
 
     assert.equal(seen.length, 1, 'runOnce 必须把库里的那一行交给 fetchPage（而且只交一次）');

@@ -33,6 +33,7 @@ const { closeDb, getDb } = await import('./db');
 const { createCreator, upsertVideos } = await import('./tracked-videos');
 const { exitCodeFor, formatSummary, main, runOnce, TRACK_LIMITS } = await import('./track');
 const { createBilibiliAdapter } = await import('./tracking/bilibili');
+const { TwitchRejectedError } = await import('./tracking/twitch');
 const { NoCredentialsError, PlatformHandshakeError } = await import('./tracking/types');
 type FetchedVideo = import('./tracking/types').FetchedVideo;
 type FetchPage = import('./tracking/types').FetchPage;
@@ -74,8 +75,14 @@ beforeEach(() => {
 const NOW = 1_788_600_000;
 /** 增量同步的间隔（spec §3.2：一小时）。 */
 const HOUR = 3600;
-/** spec §10 冻结的每次运行上限：回填 20 / 翻 20 页 / 增量 40。 */
-const LIMITS = { backfill: 20, pages: 20, incremental: 40 };
+/**
+ * spec §10 冻结的每次运行上限：回填 20 / 翻 20 页 / 增量 40 / **核对 200**。
+ *
+ * ⚠️ 第四格（`verify`）是 T5 加的，而且它**必须在 `depsFor` 的默认值里**：
+ *    `RunDeps.limits` 是一个整体，核对阶段读的就是 `deps.limits.verify`
+ *    （少了它 ⇒ `undefined` ⇒ 一条候选都挑不出来 ⇒ 那一组断言全变成"没查"）。
+ */
+const LIMITS = { backfill: 20, pages: 20, incremental: 40, verify: 200 };
 
 /** 一个 mid（`addCreator` 的 `externalId`）。真适配器那条用例拿它当 bilibili 的博主 id。 */
 const MID = '703007996';
@@ -160,6 +167,50 @@ function video(externalId: string, overrides: Partial<FetchedVideo> = {}): Fetch
   };
 }
 
+/**
+ * 造一支**已经躺在库里**的视频，返回它的行 id（`tracked_videos.id`，不是 `external_id`）。
+ *
+ * ⚠️ 它走 `upsertVideos`，**不自己写一句 INSERT**（`tracking-store.test.ts` 的 `insertRaw`
+ *    是另一种，那边要的初值"只有同步过程才会产生"：隐藏的、发布得很早的）。这一组要的初值
+ *    恰好是**今天的写入路径会给出来的那一种**：`status = 'visible'`、`first_seen_at = NOW`、
+ *    迁移 021 那三列是 `NULL`（"从没查过、没被隐藏过"）—— 而核对那一组的断言正是对着这三列。
+ *    少写一句 SQL 就少一处会漂的列清单：`upsertVideos` 的列清单已经由 T3 的测试钉着了。
+ * ⚠️ `publishedAt` 没给就是 `NULL`（不是 0，Global Constraint 6）：`pickVerifiableVideos`
+ *    对 `published_at IS NULL` 的行**永远不挑**（"不知道多老"不等于"够老"）。
+ */
+function insertRaw(
+  creatorId: string,
+  platform: TrackPlatform,
+  externalId: string,
+  over: { publishedAt?: number | null } = {},
+): string {
+  upsertVideos(
+    creatorId,
+    platform,
+    [video(externalId, { publishedAt: over.publishedAt ?? null })],
+    NOW,
+  );
+  const row = getDb()
+    .prepare('SELECT id FROM tracked_videos WHERE creator_id = ? AND external_id = ?')
+    .get(creatorId, externalId) as { id: string } | undefined;
+  assert.ok(row, `夹具没写进去：${platform}/${externalId}`);
+  return row.id;
+}
+
+/**
+ * 把 `node:sqlite` 读出来的一行/一批行**展开成普通对象**再断言。
+ *
+ * ⚠️★ 不是洁癖：`node:sqlite` 的行对象**原型不是 `Object.prototype`**，而本文件从
+ *    `node:assert/strict` 拿的 `assert.deepEqual` 就是 `deepStrictEqual` —— 它会**连原型一起比**，
+ *    于是"字段一模一样"的两行也会红在原型上（`user-live-links.test.ts:176` 记着同一个坑，
+ *    那里用的也是 `{ ...row }`；`tracking-store.test.ts` 则把行拍成元组来绕开它）。
+ *    ⚠️ 这个坑很容易被读成"数据真的不对"：报错里那两行长得一样，只有 `[Object: null prototype]`
+ *    那一行小字不同。
+ */
+function plain<T extends object>(row: T): T {
+  return { ...row };
+}
+
 /** 一次 `fetchPage` 调用留下的痕迹。 */
 interface FetchCall {
   creatorId: string;
@@ -229,6 +280,20 @@ const ONLY_BILIBILI: Record<TrackPlatform, 'ok' | 'skipped:no-credentials'> = {
   bilibili: 'ok',
   youtube: 'skipped:no-credentials',
   twitch: 'skipped:no-credentials',
+};
+
+/**
+ * 核对的今天（spec §7 第 1 条的用户裁决：**只做 Twitch**）：只有 twitch 能用。
+ *
+ * ⚠️ 那两句 `skipped:no-credentials` 不是装饰：核对阶段**第一步**就按它跳过平台
+ *    （照抄回填/增量那条路，理由也一样 —— 没凭据的平台适配器会抛）。前两个平台
+ *    写成 `ok` 的话，`adapterRegistry` 里没给它们适配器 ⇒ 那一步会抛
+ *    `NoCredentialsError`，而"跳过"就变成了"整轮崩"。
+ */
+const ONLY_TWITCH: Record<TrackPlatform, 'ok' | 'skipped:no-credentials'> = {
+  bilibili: 'skipped:no-credentials',
+  youtube: 'skipped:no-credentials',
+  twitch: 'ok',
 };
 
 function depsFor(init: {
@@ -409,8 +474,15 @@ describe('runOnce —— 一轮同步的骨架', () => {
     /*
      * ★ 顺序：先看 `platformStatus()` 再要适配器（`tracking/index.ts` 的文件头写着这条）。
      *   反过来的话这里会抛 NoCredentialsError —— 而"跳过"就变成了"整轮崩在这儿"。
+     * ⚠️ 断言的是"**只有 bilibili** 被问过"，不是"恰好被问一次"：T5 的核对阶段同样要先
+     *   拿到适配器才看得出这个平台有没有 `existingVideoIds` 那个能力，所以它每一轮也会问一次
+     *   （见下一条用例的下一段注释）。跳过的那两个平台**一次都到不了这里**，这才是本句钉的。
      */
-    assert.deepEqual(registry.asked, ['bilibili']);
+    assert.deepEqual(
+      [...new Set(registry.asked)],
+      ['bilibili'],
+      `只有 bilibili 该被问到，实到：${JSON.stringify(registry.asked)}`,
+    );
   });
 
   it('④-首面 第一页就被限流 ⇒ 游标停在原地，下一轮从同一页继续', async () => {
@@ -854,6 +926,14 @@ describe('运行摘要与退出码（spec §6.3）', () => {
     const summary = {
       backfill: { tried: 3, done: 1, failed: 0 },
       incremental: { tried: 0, done: 0, failed: 0 },
+      /*
+       * ⚠️ 核对的空格子**必须显式写出来**（T5 之后 `RunSummary` 多了这两个字段）：
+       *    这一条是**直接**造一个摘要对象喂给 `formatSummary`（不走 `runOnce`），
+       *    少一格就是运行期 TypeError（"读不到 undefined 的 checked"）——
+       *    而它看起来会像摘要函数坏了，不是夹具少了一格。
+       */
+      verify: { checked: 0, hidden: 0, failed: 0 },
+      verifyErrors: [],
       inserted: 0,
       updated: 0,
       platforms: { ...ONLY_BILIBILI },
@@ -864,8 +944,14 @@ describe('运行摘要与退出码（spec §6.3）', () => {
     assert.equal(exitCodeFor(summary), 0);
   });
 
-  it('★ 限额就是 spec §10 冻结的那三个数（改了它，§3.3 的配额算术就不成立）', () => {
-    assert.deepEqual(TRACK_LIMITS, { backfill: 20, pages: 20, incremental: 40 });
+  it('★ 限额就是 spec §10 冻结的那四个数（改了它，§3.3 的配额算术就不成立）', () => {
+    /*
+     * ⚠️ 四个数是**整体**冻结的：前三格是 §3.3 那条"40 个频道/次 ≈ 1000–2000 units/天"的
+     *    前提，第四格（`verify`，T5 加的）是"每轮最多问上游 200 个 id"。
+     *    把这一条断言放宽成"包含这几个键"就等于把冻结表变成可调的 —— 那正是 `TRACK_LIMITS`
+     *    那段注释里说的"顺手能调大"。
+     */
+    assert.deepEqual(TRACK_LIMITS, { backfill: 20, pages: 20, incremental: 40, verify: 200 });
   });
 });
 
@@ -901,6 +987,43 @@ describe('CLI 壳', () => {
     );
   });
 
+  it('★ --dry-run 也报核对的待办数，而且照旧一个字段都不写（只读）', async () => {
+    const c = addCreator('twitch', 'dry-verify');
+    const old = insertRaw(c.id, 'twitch', 'v-old', { publishedAt: NOW - 30 * 86400 });
+    // 太新 ⇒ 不算待办（6 天粗筛）：预演报的数必须与核对阶段真会问的那些**一致**。
+    insertRaw(c.id, 'twitch', 'v-fresh', { publishedAt: NOW - 3600 });
+    const registry = adapterRegistry({
+      twitch: makeAdapter(() => {
+        throw new Error('--dry-run 不该抓任何一页');
+      }).adapter,
+    });
+
+    const { result, out } = await captureStdout(() =>
+      main(['--dry-run'], depsFor({ adapters: registry.adapters, platformStatus: ONLY_TWITCH })),
+    );
+
+    assert.equal(result, 0);
+    assert.match(out, /核对 待办 1 个（每平台上限 200）/);
+    assert.equal(registry.asked.length, 0, '★ 预演连适配器都不去要（核对那一行是纯 SELECT）');
+    /*
+     * ⚠️ 这一格是"预演只读"里最容易破的一处：`pickVerifiableVideos` 看起来像"挑出来就要写回去"，
+     *    而它只是一句 SELECT。发了预演却发现一批 `verify_checked_at` 被盖上，
+     *    会让轮转游标整轮错位，而预演的输出看起来完全正常。
+     */
+    assert.deepEqual(
+      plain(
+        getDb()
+          .prepare('SELECT status, hidden_at, verify_checked_at FROM tracked_videos WHERE id = ?')
+          .get(old) as {
+          status: string;
+          hidden_at: number | null;
+          verify_checked_at: number | null;
+        },
+      ),
+      { status: 'visible', hidden_at: null, verify_checked_at: null },
+    );
+  });
+
   it('★ 有失败时 main 返回 1（`process.exitCode` 就是照着它设的）', async () => {
     addCreator('bilibili', 'exit-16');
     const { adapter } = makeAdapter(() => {
@@ -926,5 +1049,455 @@ describe('CLI 壳', () => {
     assert.equal(result, 0);
     assert.match(out, /track: 本轮 开始=/);
     assert.match(out, /结束=/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ④ 第三个阶段「核对」（spec §6）—— 问上游"这些 VOD 你还认不认"，不认的转 hidden
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组守的是**同一类故障的第三个入口**：不抛、只是结果变成另一个样子。
+ *   · 上游失败被当成"这些 id 都不存在" ⇒ **一次静默的批量下架**（spec §4 那条 ★★）；
+ *   · 上游失败**什么都不写**（连 `verify_checked_at` 都不写）⇒ 下一轮再问一遍是幂等的，
+ *     而"记成查过了"会让这一批轮到队尾（`tracked-videos.ts` 第九节）；
+ *   · 平台**没有这个能力**却去调它 ⇒ 每个平台每轮一条假失败，退出码永远是 1（狼来了）。
+ *
+ * ⚠️★ 前两条用例都带 `limits: { backfill: 0 }`，这是**有意**的（本任务对夹具的唯一一处补充）：
+ *    `addCreator` 造出来的博主是**待回填**的，而这两条造的假适配器里 `fetchPage` 是
+ *    `throw`（"不该走到这里"）⇒ 不关掉回填，那一下会先记下一条**创作者级**失败，
+ *    退出码于是**与核对无关地**变成 1 —— 下一条用例的 `exitCodeFor === 0` 会红，
+ *    而上一条的 `=== 1` 会**假绿**（它的理由从"核对失败"漂成"抓取失败"）。
+ *    ⇒ 关掉回填与增量之后，退出码只可能来自核对那一行，断言才是它看上去的那个意思。
+ *    ⚠️ 另一条路（把 `fetchPage` 改成返回一个成功的空页）也能让 0/1 对上，但那样
+ *      "核对确实是退出码的唯一来源"就没被钉住。核对的成功**不依赖**抓取做过什么
+ *      （`track.ts` 第四节那条裁决），所以让它单独站着才是这一组要表达的东西。
+ *    ⚠️ 另一层保险在下面那条 `★★ 创作者级的错误类型` 用例里：那里抓取是**成功**的，
+ *      所以"一个阶段失败不影响另一个阶段"是**正面**钉住的，不是靠关掉它。
+ */
+describe('★ 核对阶段（spec §6）', () => {
+  it('★★ 上游失败 ⇒ 零隐藏：状态没变、verify_checked_at 没写、摘要里有一行核对失败、退出码 1', async () => {
+    const c = addCreator('twitch', 'tw-fail');
+    const v = insertRaw(c.id, 'twitch', 'v-1', { publishedAt: NOW - 30 * 86400 });
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('不该走到这里');
+      },
+      async fetchPage() {
+        throw new Error('不该走到这里');
+      },
+      async existingVideoIds() {
+        throw new Error('twitch: 500 boom');
+      },
+    };
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0 },
+      }),
+    );
+
+    /*
+     * ★★ 一次断言**四列**：这一批**什么都不许写**。
+     *    `status` / `hidden_at` / `hidden_reason` 三列是"一条都没隐藏"；
+     *    而 `verify_checked_at` 那一格才是**最容易漏**的一半 —— 写它的后果不是当场出错，
+     *    而是这一行**掉到轮转游标的队尾**（`COALESCE(verify_checked_at, 0) ASC`），
+     *    要等所有别的行都轮过一遍才回来，而每一轮的摘要看起来都正常。
+     */
+    const row = plain(
+      getDb()
+        .prepare(
+          'SELECT status, hidden_at, hidden_reason, verify_checked_at FROM tracked_videos WHERE id = ?',
+        )
+        .get(v) as {
+        status: string;
+        hidden_at: number | null;
+        hidden_reason: string | null;
+        verify_checked_at: number | null;
+      },
+    );
+    assert.deepEqual(row, {
+      status: 'visible',
+      hidden_at: null,
+      hidden_reason: null,
+      verify_checked_at: null,
+    });
+    assert.equal(summary.verify.failed, 1);
+    assert.equal(summary.verify.hidden, 0);
+    assert.match(formatSummary(summary, NOW, NOW), /⚠️ 核对失败: platform=twitch/);
+    assert.equal(exitCodeFor(summary), 1);
+  });
+
+  it('★ 上游少返回一个 ⇒ 只隐藏那一个；每行都写了 verify_checked_at', async () => {
+    const c = addCreator('twitch', 'tw-ok');
+    const keep = insertRaw(c.id, 'twitch', 'v-keep', { publishedAt: NOW - 30 * 86400 });
+    const gone = insertRaw(c.id, 'twitch', 'v-gone', { publishedAt: NOW - 30 * 86400 });
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds() {
+        return new Set(['v-keep']);
+      },
+    };
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        // 同上：这一条量的也是核对阶段（回填关掉才谈得上"退出码 0 是核对给的"）。
+        limits: { backfill: 0 },
+      }),
+    );
+    assert.deepEqual(summary.verify, { checked: 2, hidden: 1, failed: 0 });
+    assert.match(formatSummary(summary, NOW, NOW), /核对: 查 2 个 \/ 隐藏 1 个/);
+    assert.equal(exitCodeFor(summary), 0, '隐藏了几条**不是**失败 —— 这一轮是成功的');
+    const statuses = getDb()
+      .prepare('SELECT external_id, status FROM tracked_videos ORDER BY external_id')
+      .all()
+      .map(plain);
+    assert.deepEqual(statuses, [
+      { external_id: 'v-gone', status: 'hidden' },
+      { external_id: 'v-keep', status: 'visible' },
+    ]);
+
+    /*
+     * ★ 标题承诺的另一半：**在的和不在的都写**了 `verify_checked_at`（`applyVerifyResult`
+     *   那句"每一个被问到的 id 都写"）。只写"还在的"那些的代价很具体：消失的那一行
+     *   停在轮转游标的最前面，**每一轮都被挑回来重问一遍**，而每一轮看起来都正常。
+     */
+    const checkedAt = (id: string): number | null => {
+      const checked = getDb()
+        .prepare('SELECT verify_checked_at FROM tracked_videos WHERE id = ?')
+        .get(id) as { verify_checked_at: number | null } | undefined;
+      assert.ok(checked, `库里没有这一行：${id}`);
+      return checked.verify_checked_at;
+    };
+    assert.equal(checkedAt(keep), NOW, '还在的那一行也要写 —— 不写它会被再挑一次');
+    assert.equal(checkedAt(gone), NOW, '★ 消失的那一行更要写：不写就每轮重问一遍');
+  });
+
+  it('★ 平台没有这个能力 ⇒ 一条都不查，摘要里是 0/0，退出码 0', async () => {
+    const c = addCreator('bilibili', 'bi-no-verify');
+    /*
+     * ⚠️ 夹具**故意放一条够老的可见视频**：核对阶段因此**有活可干**，
+     *    "一条都不查"才是可观测的。没有它的话这一条在"能力检查整个漏掉"的实现下
+     *    照样通过（候选是 0 ⇒ 循环体压根不进 ⇒ 摘要还是 0/0/0，一条断言都不会红）。
+     */
+    const bv = insertRaw(c.id, 'bilibili', 'BV-no-verify', { publishedAt: NOW - 30 * 86400 });
+    const { adapter } = makeAdapter(() => ({ videos: [], nextCursor: null, reachedEnd: true }));
+    // 前提本身也要钉住：bilibili 适配器**根本没有**这个能力（spec §4：今天只有 Twitch 有）。
+    assert.equal(adapter.existingVideoIds, undefined, 'bilibili 不该有核对能力');
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ bilibili: adapter }).adapters,
+        platformStatus: ONLY_BILIBILI,
+      }),
+    );
+    assert.deepEqual(summary.verify, { checked: 0, hidden: 0, failed: 0 });
+    assert.match(formatSummary(summary, NOW, NOW), /核对: 查 0 个 \/ 隐藏 0 个/);
+    assert.equal(exitCodeFor(summary), 0);
+
+    // ★ "一条都不查"必须真的**一个字段都没写**：那一行的三列原封不动。
+    assert.deepEqual(
+      plain(
+        getDb()
+          .prepare('SELECT status, hidden_at, verify_checked_at FROM tracked_videos WHERE id = ?')
+          .get(bv) as {
+          status: string;
+          hidden_at: number | null;
+          verify_checked_at: number | null;
+        },
+      ),
+      { status: 'visible', hidden_at: null, verify_checked_at: null },
+    );
+  });
+
+  it('★★ 上游用一个**创作者级**的错误类型拒绝 ⇒ 一行核对失败 + 非零退出码，而这一轮照样跑完', async () => {
+    /*
+     * 这一条钉的是 T2 评审量到的那个**真风险**（不是假想）：`existingVideoIds` 里
+     * 收到的若不是 401/403/429/5xx（比如"一批 100 个 id"那个假设不成立时的 400），
+     * 抛出来的是 `TwitchRejectedError` **原样** —— 一个平时表示"**这个 creator** 的
+     * 数据有问题"的类型（`twitch.ts` 那一段注释把这条不对称写明了）。
+     *
+     * ★ 核对**不是按 creator 问的**：一批里混着好几个博主的视频，没有任何一个"坏博主"
+     *   可指。所以这条路只有两种正确形状，而这一条把**两种都钉住**：
+     *   · 记成 `verifyErrors` 里的**一行**（与 `failures` 分开，摘要里指不出人，也不指错人）；
+     *   · 退出码非零（§6.3 那条护栏：否则"每轮核对都失败"在 journald 里看不出来）。
+     * ⚠️ 认不出来的错误类型漏出去（比如只 `catch` 已知的那几个类）会让整轮**崩在核对这一步**，
+     *    表现是"每次同步都被打断"——**回填与增量已经做的工作全部作废**，而库里还留着半轮的结果。
+     *    所以这一条**故意让抓取成功**：抓取写进去的那条新视频必须还在（另两个阶段的工作
+     *    不受影响），而且一条都没隐藏。
+     */
+    const c = addCreator('twitch', 'tw-rejected');
+    insertRaw(c.id, 'twitch', 'v-stale', { publishedAt: NOW - 30 * 86400 });
+
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('不该走到这里');
+      },
+      /** 抓取这一侧**正常**：它这一轮真的会写进去一条新视频（就是"别的阶段的工作"）。 */
+      async fetchPage() {
+        return { videos: [video('v-new')], nextCursor: null, reachedEnd: true };
+      },
+      async existingVideoIds() {
+        throw new TwitchRejectedError('Get Videos 回了 400（一批 100 个 id 的假设不成立）');
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+      }),
+    );
+
+    // ① 摘要里**恰好一行**核对失败，而且它**不是**创作者级的失败。
+    assert.equal(summary.verify.failed, 1);
+    assert.equal(summary.verifyErrors.length, 1);
+    assert.equal(summary.verifyErrors[0]?.platform, 'twitch');
+    assert.match(summary.verifyErrors[0]?.error ?? '', /Get Videos 回了 400/);
+    assert.deepEqual(summary.failures, [], '核对失败不是某个博主的错 —— 不许混进 failures');
+    assert.equal(summary.platforms.twitch, 'ok', '抓取成功了就是 ok，核对失败不改这个值');
+    assert.match(formatSummary(summary, NOW, NOW), /⚠️ 核对失败: platform=twitch/);
+
+    // ② 退出码非零（这一轮确实有一步没做成）。
+    assert.equal(exitCodeFor(summary), 1);
+
+    // ③ 这一轮**跑完了**：回填那一条新视频真的落库了（另两个阶段的工作不受影响）。
+    assert.deepEqual(summary.backfill, { tried: 1, done: 1, failed: 0 });
+    assert.equal(summary.inserted, 1);
+    const fresh = getDb()
+      .prepare('SELECT status FROM tracked_videos WHERE creator_id = ? AND external_id = ?')
+      .get(c.id, 'v-new') as { status: string } | undefined;
+    assert.equal(fresh?.status, 'visible');
+
+    // ④ 而核对那一批**什么都不写**：一条都没隐藏、连 verify_checked_at 都没写。
+    assert.deepEqual(
+      getDb()
+        .prepare(
+          `SELECT external_id, status, hidden_at, verify_checked_at FROM tracked_videos
+            WHERE creator_id = ? ORDER BY external_id`,
+        )
+        .all(c.id)
+        .map(plain),
+      [
+        { external_id: 'v-new', status: 'visible', hidden_at: null, verify_checked_at: null },
+        { external_id: 'v-stale', status: 'visible', hidden_at: null, verify_checked_at: null },
+      ],
+    );
+  });
+
+  it('★★ 回填失败**不妨碍**核对：同一个平台，抓取挂了，该下架的照下架', async () => {
+    /*
+     * ★ 这是"三个阶段互相独立"的**另一半**（`runOnce` 里那条 ★★ 说的是"反之亦然"）。
+     *    上面几条都把核对单独关起门来量（`backfill: 0`），而这一条**故意让抓取失败**。
+     *    核对的判据与抓取无关 ⇒ 抓取失败只该让摘要多一条 `failures`、退出码变成 1，
+     *    而"这批 id 上游还认不认"照问、该隐藏的照隐藏。
+     * ⚠️★ 写成"一个阶段挂了就整轮收手"（读起来更保守）的代价很具体：bilibili 的拒绝是
+     *    **概率性**的（§2.3），于是 Twitch 的过期下架会跟着它的抖动一轮一轮地停 ——
+     *    而两者之间没有任何因果关系。表现是"过期的 VOD 有时下架、有时不下架"，
+     *    没有任何地方会报错。
+     * ⚠️ 这条也顺带钉住"退出码 1 的**来源**"：这里的 1 是抓取失败给的，
+     *    而不是核对失败（`verifyErrors` 是空的）。
+     */
+    const c = addCreator('twitch', 'tw-mixed');
+    const gone = insertRaw(c.id, 'twitch', 'v-gone', { publishedAt: NOW - 30 * 86400 });
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('不该走到这里');
+      },
+      async fetchPage() {
+        throw new Error('twitch: 500 抓取挂了');
+      },
+      async existingVideoIds() {
+        return new Set<string>(); // 上游说这一条不在了
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+      }),
+    );
+
+    // 抓取那一侧一个字都没变：记一条失败、平台报 failed。
+    assert.equal(summary.backfill.failed, 1);
+    assert.equal(summary.failures.length, 1);
+    assert.equal(summary.platforms.twitch, 'failed');
+
+    // ★ 而核对照跑：查了 1 个、隐藏了 1 个，一条核对失败都没有。
+    assert.deepEqual(summary.verify, { checked: 1, hidden: 1, failed: 0 });
+    assert.deepEqual(summary.verifyErrors, []);
+    assert.deepEqual(
+      plain(
+        getDb()
+          .prepare('SELECT status, hidden_reason FROM tracked_videos WHERE id = ?')
+          .get(gone) as { status: string; hidden_reason: string | null },
+      ),
+      { status: 'hidden', hidden_reason: 'upstream_gone' },
+    );
+
+    // 退出码 1 是**抓取**那条失败给的（核对自己没有出问题）。
+    assert.equal(exitCodeFor(summary), 1);
+  });
+
+  it('★ 上游返回空集合 ⇒ 那一批全部隐藏（"都没了"与"没问到"是两件事）', async () => {
+    /*
+     * ⚠️ 这是**失败**那几条的对照面：空集合走的是同一条路，而它**必须**隐藏。
+     *    把它和"请求失败"混成一件事，就是 spec §4 那条 ★★ 要防的静默下架；
+     *    反过来，因为怕下架而把空集合也当成失败，等于**永远不隐藏任何东西** ——
+     *    那一片视频过期之后会永远留在墙上（本功能存在的理由）。
+     */
+    const c = addCreator('twitch', 'tw-allgone');
+    insertRaw(c.id, 'twitch', 'v-a', { publishedAt: NOW - 30 * 86400 });
+    insertRaw(c.id, 'twitch', 'v-b', { publishedAt: NOW - 30 * 86400 });
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds() {
+        return new Set<string>();
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0 },
+      }),
+    );
+
+    assert.deepEqual(summary.verify, { checked: 2, hidden: 2, failed: 0 });
+    assert.equal(exitCodeFor(summary), 0);
+    assert.deepEqual(
+      getDb()
+        .prepare(
+          'SELECT external_id, status, hidden_reason FROM tracked_videos ORDER BY external_id',
+        )
+        .all()
+        .map(plain),
+      [
+        { external_id: 'v-a', status: 'hidden', hidden_reason: 'upstream_gone' },
+        { external_id: 'v-b', status: 'hidden', hidden_reason: 'upstream_gone' },
+      ],
+    );
+  });
+
+  it('★ 刚发出来的不查（§6.1 的 6 天粗筛）：只查够老的那些', async () => {
+    /*
+     * ⚠️ 这条与"少返回一个"那条的差别只有时间：`published_at` 在 6 天以内的一律不查
+     *    （Twitch 的存档最早 7 天过期 ⇒ 刚发的根本没得可查）。
+     *    写错这一步的代价是**每轮白问一批**（而且还按 200 的上限占着名额，
+     *    真正该核对的那些排在后面），一个异常都不会有。
+     */
+    const c = addCreator('twitch', 'tw-age');
+    const fresh = insertRaw(c.id, 'twitch', 'v-fresh', { publishedAt: NOW - 3600 }); // 太新
+    const old = insertRaw(c.id, 'twitch', 'v-old', { publishedAt: NOW - 30 * 86400 });
+    /** 边界那一条：差一秒就不算够老（`<=` 的哪一侧由它钉住）。 */
+    const edge = insertRaw(c.id, 'twitch', 'v-edge', {
+      publishedAt: NOW - 6 * 86400 + 1,
+    });
+    const asked: string[][] = [];
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds(ids) {
+        asked.push([...ids]);
+        return new Set(ids);
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0 },
+      }),
+    );
+
+    assert.equal(asked.length, 1);
+    assert.deepEqual(asked[0], ['v-old'], '★ 只问够老的那一条（太新与差一秒的都留下）');
+    assert.deepEqual(summary.verify, { checked: 1, hidden: 0, failed: 0 });
+    assert.equal(exitCodeFor(summary), 0);
+    // 没被问到的两条一个字段都不许动（"没查"不是"查过且还在"）。
+    assert.deepEqual(
+      getDb()
+        .prepare('SELECT id, verify_checked_at FROM tracked_videos ORDER BY external_id')
+        .all()
+        .map(plain),
+      [
+        { id: edge, verify_checked_at: null },
+        { id: fresh, verify_checked_at: null },
+        { id: old, verify_checked_at: NOW },
+      ],
+    );
+  });
+
+  it('★ 核对按平台整批问，且一次问不超过 limits.verify 个（spec §10 的第四格）', async () => {
+    /*
+     * ⚠️ 两件事一起钉，因为它们各自都会**静默**出错：
+     *   · 批里混进别的平台的 id ⇒ 问回来的集合没法解释是哪个平台的答案
+     *     （`pickVerifiableVideos` 的 `platform` 因此是必填的）；
+     *   · 上限没生效 ⇒ 一次把整库的 Twitch 视频问出去（§3.3 那条"一次运行有界"
+     *     在这里的入口），而上游是按**每个 id** 记账的。
+     */
+    const c = addCreator('twitch', 'tw-limit');
+    for (const id of ['v-1', 'v-2', 'v-3']) {
+      insertRaw(c.id, 'twitch', id, { publishedAt: NOW - 30 * 86400 });
+    }
+    const other = addCreator('bilibili', 'bi-mixed');
+    insertRaw(other.id, 'bilibili', 'BV-mixed', { publishedAt: NOW - 30 * 86400 });
+
+    const asked: string[][] = [];
+    const adapter: PlatformAdapter = {
+      async resolveCreator() {
+        throw new Error('x');
+      },
+      async fetchPage() {
+        throw new Error('x');
+      },
+      async existingVideoIds(ids) {
+        asked.push([...ids]);
+        return new Set(ids);
+      },
+    };
+
+    const summary = await runOnce(
+      depsFor({
+        adapters: adapterRegistry({ twitch: adapter }).adapters,
+        platformStatus: ONLY_TWITCH,
+        limits: { backfill: 0, verify: 2 },
+      }),
+    );
+
+    assert.equal(asked.length, 1, '一次运行里每个平台只问一批');
+    assert.equal(asked[0]?.length, 2, '★ limits.verify = 2 ⇒ 一批最多 2 个 id');
+    assert.ok(
+      asked[0]?.every((id) => id.startsWith('v-')),
+      `批里不许混进别的平台的 id：${JSON.stringify(asked[0])}`,
+    );
+    assert.deepEqual(summary.verify, { checked: 2, hidden: 0, failed: 0 });
+    /*
+     * ⚠️ 被上限截掉的那一条**一个字段都不写**（它这一轮根本没被问到）：
+     *    写了 `verify_checked_at` 就等于"查过了还在"，而它其实还没查。
+     */
+    const unchecked = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM tracked_videos WHERE verify_checked_at IS NULL')
+      .get() as { n: number };
+    assert.equal(unchecked.n, 2, '一条 bilibili + 一条被上限截掉的 twitch');
   });
 });
