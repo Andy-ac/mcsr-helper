@@ -322,6 +322,17 @@ export interface CreatorRef {
   handle: string;
   displayName: string;
   avatarUrl: string | null;
+  /**
+   * ★ 平台自己的小东西 —— **2026-09-16 补的**（T4 的实现者发现的一个真缺口）：
+   * §5.5 裁决了 `tracked_creators.platform_meta` 存 YouTube 的 uploads 播放列表 ID，
+   * 但 `CreatorRef` 原来是 spec §5 逐字冻结的、**没有地方装它** ⇒
+   * `resolveCreator` 拿到的 uploads id 传不到 `createCreator` 手里，
+   * 后果是**每轮同步都要重新 `channels.list` 一次**（白烧配额）。
+   * ⇒ 加一个可选字段：`resolveCreator` 填，`createCreator` 落库，`fetchPage` 从 creator 上读回来。
+   * ⚠️ **它是适配器之间的东西，不进对外形状**：`TrackedCreator`（管理面板读的那个）
+   * 不带它 —— 平台内部字段不该泄漏到 web 层。
+   */
+  platformMeta?: Record<string, unknown> | null;
 }
 
 export interface PlatformAdapter {
@@ -346,14 +357,46 @@ export interface PlatformAdapter {
   ⚠️ **握手失败要当作"本轮放弃 bilibili"**，不能带着空 cookie 继续打（那会白吃一堆 412）。
 - **游标**：`pn`（页码）。`fetchPage` 把 `cursor ?? '1'` 传进去。
 - **到底了**：**依据 §2.4** —— 只有当 `vlist.length < ps` **且** 已存条数 >= `page.count`
-  才算到底；否则**视为"被限流"**，`reachedEnd = false` 并把游标停在原地。
-- **限流**：`code === -412` ⇒ 等 **10 秒**重试，最多 **3** 次；仍失败则本轮跳过这个频道。
+  才算到底。
+  ⚠️ **这一句原来还写着"否则把游标停在原地"，那是错的**（2026-09-16 由 T3 评审量到并改正）：
+  字面照做会让**回填永远冻结在第 1 页** —— 一个 124 条的 UP 每轮都重抓 `pn=1`，永远过不了 50 条。
+  正确语义是**分三种**：
+
+  | 这一页 | `reachedEnd` | 游标 |
+  |---|---|---|
+  | 满页（`returned === ps`） | `false` | **前进**（`pn + 1`）—— 它明确不是最后一页 |
+  | 不满页但**已存 < `page.count`** | `false` | **原地**（§2.4 那个坑：空页其实是被限流） |
+  | 不满页且已存 >= `page.count` | `true` | `null` |
+
+- ⚠️ **这条判据的残余风险（写下来，别当它已经关死）**：它依赖调用方给的 `storedTotal`，
+  而那只是"**我们这个 creator 在库里有多少行**"。如果 UP 主**删过视频**，我们手里的行数会
+  **多于**上游还能列出来的条数 ⇒ 那时"空页 + 已存 >= count"会**同时成立**，
+  `reachedEnd` 会**提前**为真，最后那几条真视频永远抓不到。
+  ⇒ **给 T4/T6 的要求**：`storedTotal` 必须是"**这个 creator 的行数**"（CLI 本来就拿得到），
+  并且日志里要留一个"已存行数与 `page.count` 不一致"的痕迹，
+  好让它在发生时**看得见**，而不是靠猜。
+- **限流**：`code === -412` ⇒ 等 **10 秒**重试，**最多 3 次重试**（即最多 4 个请求、
+  3 次 10 秒等待）；仍失败则本轮跳过这个频道。
+  ⚠️ 2026-09-16 澄清：原文"最多 3 次"没有说清是"3 次重试"还是"3 个请求"，
+  而 §2.3 那个探针写的是 `for (a = 0; a < 3 && !got; a++)`（共 3 个请求）。
+  **冻结口径取"3 次重试 / 4 个请求"**（`bilibili.ts` 与它的测试都按这个钉着）；
+  代价是最坏情况每个频道多打一个请求 + 多等 10 秒。
 - **字段映射**：`bvid`→externalId、`title`、`pic`→thumbnailUrl、
-  `created`→publishedAt、`length`("MM:SS"/"HH:MM:SS")→durationSec、
+  `created`→publishedAt、`length`("HH:MM:SS" 或 "MM:SS")→durationSec、
   `play`→viewCount、`comment`→commentCount、`isLiveReplay=false`（v1 判不出，见 §8）。
+- ★ **`displayName` 必须是真的 UP 主名，不许留 `mid <id>` 占位**
+  （2026-09-16 由 T3 评审提出、我裁定）。
+  背景：`x/space/wbi/acc/info`（拿 UP 主资料的接口）实测回 **`-352` 风控**，所以"officially" 拿名字那条路是堵的
+  —— 但 **`arc/search` 每一条 `vlist` 里都带 `author`**（spec §2.1 的字段清单里就有）。
+  ⇒ **裁决**：`resolveCreator` 在握手之后**多发一个 `ps=1` 的 `arc/search`**，
+  取第一条的 `author` 当 `displayName`（外加 `data.list.vlist[0].author` 为空或该 UP 一个投稿都没有时，
+  回落到 `mid <id>`）。
+  **代价写在明面上**：加一个博主时多一次上游请求（一次性，不是每轮），
+  换来的是管理面板列出来的是**名字**而不是一串数字。
+  ⇒ 这条**不需要改 `FetchedVideo`**（它按 spec §5 逐字冻结，本来就没有 `author` 字段）——
+  名字是在 `resolveCreator` 那条路上单独拿的。
 - **resolveCreator**：接受 `space.bilibili.com/<mid>`、`b23.tv` 短链、
-  或直接一串数字 mid。⚠️ **不接受"把 mid 填进 platform 那一栏"那种形状** ——
-  与 `VideoInputSchema` 的既有裁决一致（入参是**一个链接**，拆分在服务端做）。
+  或直接一串数字 mid。⚠️ **不接受"把 mid 填进 platform 那一栏"那种形状** ——  与 `VideoInputSchema` 的既有裁决一致（入参是**一个链接**，拆分在服务端做）。
 
 ### 5.2 YouTube
 
@@ -417,6 +460,7 @@ deriveTags({ durationSec, isLiveReplay }) -> string[]   // §4.3 那三条判据
 | 端点 | 谁 | 干什么 |
 |---|---|---|
 | `GET /api/tracking/videos` | **公开** | 追踪到的视频列表（分页，按 `published_at DESC`） |
+| ⚠️ 它的过滤口径 | — | **只回 `status = 'visible'` 的**（2026-09-16 补写）：`status` 这一列存在的唯一理由就是"管理员可以手工藏掉一条"，而 `videos.ts` 的公开列表也是这么滤的。**不写这一句的话，下一个人会以为那个列没用。** |
 | `GET /api/tracking/creators` | `live.manage` | 名单（含采集状态：回填完没、上次同步、上次错误） |
 | `POST /api/tracking/creators` | `live.manage` | 加一个（入参是**一个链接或 @handle**，服务端解析） |
 | `PATCH /api/tracking/creators/:id` | `live.manage` | 改显示名 / 停用启用 / **重新回填**（把 `backfill_done` 置 0） |
