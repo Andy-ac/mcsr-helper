@@ -1,7 +1,7 @@
 /**
  * 追踪的博主与他们全部视频 —— **HTTP 面**（spec §6.1 那五个端点）。
  *
- *   GET    /api/tracking/videos          **公开**      追踪到的视频（分页，published_at DESC）
+ *   GET    /api/tracking/videos          **公开**      追踪到的视频（分页 published_at DESC，可带 `?platform=` 分区，spec §5.1）
  *   GET    /api/tracking/creators        live.manage  名单（含采集状态）
  *   POST   /api/tracking/creators        live.manage  加一个（入参是**一个链接或 @handle**）
  *   PATCH  /api/tracking/creators/:id    live.manage  改显示名 / 停用启用 / 重新回填
@@ -523,9 +523,15 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
    * （`docs/v1-plan.md §0.1`）的核心。
    *
    * ⚠️★ `status = 'visible'` 的过滤在**数据层**（`listTrackedVideos`），这里一个条件都不加、
-   *    也不给查询参数（裁决 4）：加第二道过滤或开一个 `?includeHidden=1`，
+   *    也不开 `?includeHidden=1` 那样的口子（裁决 4）：加第二道过滤或开一个口子，
    *    都会让"公开列表该显示什么"有两个答案，而两处一旦漂移，
    *    表现是"编辑隐藏过的视频还挂在公开列表上"（spec §6.1 那一行就是为这件事写的）。
+   *
+   * ★ `?platform=` 是**另一件事**（spec §5.1）：它筛的是**分区**（界面上那排按钮，
+   *    T7 会把 URL 上的 `tplatform` 译成它）—— 它不回答"什么能出现在公开列表上"，
+   *    那句话仍然只有数据层那一个 `WHERE` 说了算（`listTrackedVideos` 把分区条件与
+   *    `status` 拼在**同一处**，`items` 与 `total` 共用它）。
+   *    ⚠️ 所以透传它**不**违反上面那一条：多一个分区的筛选项，不等于可见性多一个答案。
    */
   trackingRoute.get('/videos', (c) => {
     const parsed = TrackedVideoQuerySchema.safeParse(c.req.query());
@@ -533,8 +539,23 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       return c.json({ error: 'invalid_query', issues: formatIssues(parsed.error) }, 400);
     }
 
-    const { page, pageSize } = parsed.data;
-    const { items, total } = listTrackedVideos({ limit: pageSize, offset: (page - 1) * pageSize });
+    const { page, pageSize, platform } = parsed.data;
+    /*
+     * ⚠️ `...(platform === undefined ? {} : { platform })` 是计划（brief step 4）逐字冻结的形状，
+     *    **不要简化成 `platform,`**：它要说的是"这个键**不在**"，而不是"传一个 `undefined` 进去"——
+     *    而 `listTrackedVideos` 的 `platform?: TrackPlatform` 读的正是"键在不在"这件事
+     *    （不传 = 全部，传了 = 只出那个平台）。
+     *    ⚠️ 照实记一句（别照抄计划给的那个理由）：计划说它"是 `exactOptionalPropertyTypes`
+     *    逼出来的、直传过不了编译"，而**本仓那个开关是 `false`**（`tsconfig.base.json:17`）——
+     *    实测直传 `platform,` 今天能过 `tsc`（T4 报告 §7.1 的四次对照）。
+     *    这一行因此不是"今天必须这么写"，而是"那个开关哪天打开时**唯一**在这里不红的写法"
+     *    （同一次对照：强制打开之后这一处是 TS2379，展开这版不是）。
+     */
+    const { items, total } = listTrackedVideos({
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      ...(platform === undefined ? {} : { platform }),
+    });
 
     c.header('Cache-Control', PUBLIC_CACHE);
     // 形状与视频墙逐字一致（items / total / page / pageSize）：两个列表共用一套分页控件

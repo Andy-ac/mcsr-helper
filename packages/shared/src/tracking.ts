@@ -136,6 +136,15 @@ export interface TrackedVideo {
 export const TrackedVideoQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(DEFAULT_PAGE_SIZE),
+  /**
+   * 分区（spec §5.1）。⚠️ **封闭枚举**（取值就是 `TRACK_PLATFORMS`）：`?platform=` 空串
+   * **不是**它的取值 —— 公开列表那条路由把校验失败一律翻成 400 `invalid_query`
+   * （`routes/tracking.ts`），与上面那面墙同一条纪律（spec §5.1 那一格逐字写着
+   * "封闭枚举，空串不是它的取值"；那边也是同一句 `z.enum(VIDEO_PLATFORMS).optional()`）。
+   * ⚠️ 前端的 URL 参数叫 `tplatform`，这里叫 `platform`：HTTP 这一层只有这一栏，
+   * 而 URL 那一层一个页面上有两面墙（spec §8.2）。
+   */
+  platform: z.enum(TRACK_PLATFORMS).optional(),
 });
 export type TrackedVideoQuery = z.infer<typeof TrackedVideoQuerySchema>;
 

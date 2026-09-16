@@ -254,6 +254,28 @@ function bilibiliFake(): FakeAdapter {
 }
 
 /**
+ * twitch 的假适配器：`https://twitch.tv/<handle>` ⇒ 一个 ref。
+ *
+ * ⚠️ 它存在的唯一理由是**分区那一组**（下面 `platform 分区`）：那条用例要一个**真的
+ *    twitch 博主行**，因为 `upsertVideos` 会拿这一批的 `platform` 与博主的 `platform`
+ *    对一遍，对不上**当场抛**（`tracked-videos.ts` 那条交叉校验）——
+ *    拿 bilibili 的博主造一条 twitch 的视频是做不到的。
+ */
+function twitchFake(): FakeAdapter {
+  return fakeAdapter((input) => {
+    const handle = /twitch\.tv\/([^/?#]+)/.exec(input)?.[1];
+    if (!handle) throw new InvalidCreatorInputError('twitch', input, '假适配器也认不出');
+    return {
+      platform: 'twitch',
+      externalId: `tw-${handle}`,
+      handle,
+      displayName: `Twitch ${handle}`,
+      avatarUrl: null,
+    };
+  });
+}
+
+/**
  * 一个注册表：给了谁就用谁，**没给的抛 `NoCredentialsError`**。
  * 真注册表今天就是这样（`tracking/index.ts`：youtube / twitch 直接抛）。
  */
@@ -367,14 +389,40 @@ function creatorsOf(res: Res): TrackedCreator[] {
   return (res.body.items ?? []) as TrackedCreator[];
 }
 
-function videosOf(res: Res): Array<{ id: string; externalId: string; status: string }> {
-  return (res.body.items ?? []) as Array<{ id: string; externalId: string; status: string }>;
+function videosOf(
+  res: Res,
+): Array<{ id: string; externalId: string; platform: string; status: string }> {
+  return (res.body.items ?? []) as Array<{
+    id: string;
+    externalId: string;
+    // 分区那一组要按它断言「只回了这一个平台」（`TrackedVideo.platform` 本来就一直在响应里）
+    platform: string;
+    status: string;
+  }>;
 }
 
 /** 加一个博主（POST），返回它那一条。**所有需要"先有一个博主"的用例都走它。** */
 async function addCreator(cookie: string, mid: string, extra: Record<string, unknown> = {}) {
   const res = await call('POST', '/api/tracking/creators', {
     json: { input: `https://space.bilibili.com/${mid}`, ...extra },
+    cookie,
+  });
+  assert.equal(res.status, 201, `加博主应当 201：${res.text}`);
+  return res.body.creator as TrackedCreator;
+}
+
+/**
+ * `addCreator` 的**指定 app** 版。
+ *
+ * ⚠️ 上面那个用的是本文件的全局 `app`，而它的注册表只认识 bilibili ——
+ *    分区那一组要在同一个库里再加一个 twitch 博主，于是自己建一个 app 再走这条路。
+ * ⚠️ 它同样走**真的 POST**（不直接写库）：视频那两个夹具直接写库是因为路由
+ *    根本没有"加视频"的端点，而"加博主"有，而且这条路上的 `platform` 交叉校验
+ *    正是这条用例依赖的东西。
+ */
+async function addCreatorOn(target: TestApp, cookie: string, input: string) {
+  const res = await callOn(target, 'POST', '/api/tracking/creators', {
+    json: { input },
     cookie,
   });
   assert.equal(res.status, 201, `加博主应当 201：${res.text}`);
@@ -1309,6 +1357,115 @@ describe('HTTP：公开视频列表', () => {
       assert.equal(res.status, 400, `${query} ⇒ ${res.text}`);
       assert.equal(res.body.error, 'invalid_query');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 公开视频列表的 `platform` 分区（spec §5.1）
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组守的是 spec §5.1 那一格：`platform` 是**封闭枚举**（取值就是 `TRACK_PLATFORMS`），
+ * 非法值 400 `invalid_query`，不传 = 全部，而 **`total` 是分区内的总数**。
+ *
+ * ★ 为什么 `total` 那一半值钱：界面的分页控件吃的是 `total / pageSize` 算出来的**总页数**。
+ *   `total` 要是全表总数，症状**不是**报错 —— 是"切到 Twitch 之后还能往后翻两页，
+ *   点进去是空的"，而"偶尔翻到一页空的"没有任何地方会红。
+ * ⚠️ 参数名是 `platform`（HTTP 这一层）；界面上那个 URL 参数叫 `tplatform`，
+ *   理由是一个页面上有两面墙（spec §8.2），与本层无关。
+ */
+describe('HTTP：公开列表的 platform 分区', () => {
+  it('★ platform 参数：只回那个分区，且 total 是分区内的总数', async () => {
+    /*
+     * 夹具：两条 bilibili + 一条 twitch（用 `upsertVideos` 造 —— 路由没有"加视频"的端点）。
+     * ⚠️ 两个博主必须挂在**各自的平台**下（数据层拿这一批的 platform 与博主的对一遍），
+     *    而本文件全局那个 `app` 的注册表只认识 bilibili ⇒ 这一条自己建一个 app
+     *    （照「平台分发」那一组的做法），走**真的 POST** 把两个博主加出来。
+     */
+    const twitch = twitchFake();
+    const target = testApp(registryOf({ bilibili, twitch }));
+    const editor = await signUp('editor', target);
+
+    const bili = await addCreatorOn(
+      target,
+      editor.cookie,
+      `https://space.bilibili.com/${nextMid()}`,
+    );
+    const tw = await addCreatorOn(target, editor.cookie, 'https://twitch.tv/somebody');
+    seedVideos(bili.id, ['BV_1', 'BV_2']);
+    upsertVideos(tw.id, 'twitch', [fetchedVideo('tw-1', 'Twitch 的一场', 1_700_000_500)], now);
+
+    /*
+     * 对照：**不传 = 全部**（spec §5.1 那一格的缺省），顺序仍是 published_at DESC。
+     * ⚠️ 这一条不是多余的：少了它，下面那些断言在"整个端点只回一个平台"这种坏法下
+     *    照样能过 —— 而"不传参数时与今天完全一致"正是本任务不许破坏的那一件事。
+     */
+    const all = await callOn(target, 'GET', '/api/tracking/videos');
+    assert.equal(all.status, 200, all.text);
+    assert.equal(all.body.total, 3, '不传 platform 时 total 是全部条数');
+    assert.deepEqual(
+      videosOf(all).map((v) => v.externalId),
+      ['tw-1', 'BV_2', 'BV_1'],
+      '全表倒序里那个 twitch 的确实在（下面"分区内"才说得上是对比）',
+    );
+
+    const onlyTwitch = await callOn(target, 'GET', '/api/tracking/videos?platform=twitch');
+    assert.equal(onlyTwitch.status, 200, onlyTwitch.text);
+    assert.equal(onlyTwitch.body.total, 1, 'total 必须是**分区内**的总数，不是全表总数');
+    const twitchItems = videosOf(onlyTwitch);
+    assert.equal(
+      twitchItems.every((v) => v.platform === 'twitch'),
+      true,
+      `只该回 twitch 的：${JSON.stringify(twitchItems)}`,
+    );
+    // ⚠️ 上面那一句对**空数组**也是 true（`.every` 的老毛病）⇒ 条数必须单独钉一次
+    assert.equal(twitchItems.length, 1);
+    assert.deepEqual(
+      twitchItems.map((v) => v.externalId),
+      ['tw-1'],
+    );
+
+    // 另一个方向：bilibili 那个分区里恰好是另外两条（两半都要有，否则"筛选"只有一半是硬的）
+    const onlyBili = await callOn(target, 'GET', '/api/tracking/videos?platform=bilibili');
+    assert.equal(onlyBili.status, 200, onlyBili.text);
+    assert.equal(onlyBili.body.total, 2);
+    assert.deepEqual(
+      videosOf(onlyBili).map((v) => v.externalId),
+      ['BV_2', 'BV_1'],
+    );
+
+    /*
+     * ★ 分页也在**分区内**算：`pageSize=1` 的第 2 页是"B站那两条里的第二条"。
+     *   把条件只写在 items 那一半的写法（比如拿全表排序再切页）会在这里红 ——
+     *   全表的第 2 页是 `BV_2`，而 `total` 会变成 3（总页数跟着错）。
+     */
+    const secondPage = await callOn(
+      target,
+      'GET',
+      '/api/tracking/videos?platform=bilibili&pageSize=1&page=2',
+    );
+    assert.equal(secondPage.status, 200, secondPage.text);
+    assert.equal(secondPage.body.total, 2, 'total 不随 page 变，且仍是分区内的总数');
+    assert.deepEqual(
+      videosOf(secondPage).map((v) => v.externalId),
+      ['BV_1'],
+    );
+  });
+
+  it('★ platform=foo ⇒ 400 invalid_query（封闭枚举，空串也不是它的取值）', async () => {
+    const res = await call('GET', '/api/tracking/videos?platform=foo');
+    assert.equal(res.status, 400, res.text);
+    assert.equal(res.body.error, 'invalid_query');
+
+    /*
+     * ★ 空串**不是**"全部"：`z.enum` 是封闭的，`?platform=` 与 `?platform=foo` 落进
+     *   同一个 400（spec §5.1 那一格，与上面那面墙 `videos.ts:87` 同一条纪律）。
+     *   想表达"全部"的唯一办法是**不传**这个参数 —— 静默把空串当成"不筛"的代价是
+     *   前端拼错一个变量名时，用户看到的那排按钮**看起来生效了**，而列表纹丝不动。
+     */
+    const empty = await call('GET', '/api/tracking/videos?platform=');
+    assert.equal(empty.status, 400, empty.text);
+    assert.equal(empty.body.error, 'invalid_query');
   });
 });
 
