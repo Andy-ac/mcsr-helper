@@ -18,14 +18,16 @@
  * 照抄 `docs/video-tracking-spec.md` §5，连它自己的注释都原样留着 —— 那是冻结规格，
  * 改一个字都要先在 spec 里改。⚠️ 复审时逐字比对就是这一段的判据。
  *
- * 下半段是 spec §5 **没有**、但这三个模块必须共享的东西：三个错误类型。
+ * 下半段是 spec §5 **没有**、但这三个模块必须共享的东西：四个错误类型。
  * 它们放在这里而不是某个适配器里，理由是一条很具体的约束：**谁抛、谁抓，不在一个文件里**。
  *   · `NoCredentialsError` —— 注册表（`index.ts`）抛，CLI 抓（`platformStatus()` 那条路）；
  *   · `PlatformHandshakeError` —— bilibili（今天的）与 Twitch（T8 的 app token）抛，
  *     CLI 抓（"本轮放弃这个平台"，spec §5.1）；
+ *   · `PlatformUnavailableError` —— 适配器里那些**裸 `fetch`** 抛（连不上/超时），
+ *     路由与 CLI 都抓（T5 把两件事分开的那一次评审加的这个类型，理由见它自己那段）；
  *   · `InvalidCreatorInputError` —— 三个适配器的 `resolveCreator` 都抛，
  *     路由（T5）抓（入参解析不出来 ⇒ 400 带机器可读的 reason，spec §6.1 ④）。
- * 三者都要**跨模块按类型判**，所以它们必须住在一个谁都能 import、又不依赖任何平台实现的
+ * 四者都要**跨模块按类型判**，所以它们必须住在一个谁都能 import、又不依赖任何平台实现的
  * 文件里。放 `bilibili.ts` 会让 T5/T8 为了一个错误类型去 import 一个平台适配器
  * （并在 T8 改成"从 index 里拿"时绕回来），放 `index.ts` 会成环
  * （`index` 已经 import 了 `bilibili`）。
@@ -108,7 +110,7 @@ export interface PlatformAdapter {
 }
 
 // ===========================================================================
-// 二、spec §5 之外的补充（T3 裁决）—— 三个错误类型
+// 二、spec §5 之外的补充（T3 裁决；`PlatformUnavailableError` 是 T5 复审补的）—— 四个错误类型
 // ===========================================================================
 
 /**
@@ -159,6 +161,45 @@ export class PlatformHandshakeError extends Error {
   constructor(platform: TrackPlatform, step: string, detail: string, options?: ErrorOptions) {
     super(`${platform}: 握手失败（${step}）：${detail}`, options);
     this.name = 'PlatformHandshakeError';
+    this.platform = platform;
+    this.step = step;
+  }
+}
+
+/**
+ * 我们**根本联系不上上游**：请求没发出去（DNS / TCP / TLS 失败），或者超时了。
+ *
+ * 谁抛：**适配器自己**。凡是没有被 `handshakeStep` 那样的包装兜住、直接 `await fetch`
+ * 的地方，都要把"fetch 被拒"翻译成这个类型 —— 今天 bilibili 有两处（列表/取名字那条
+ * `requestJson`、b23 短链那条跳转），两处都写在 `bilibili.ts` 里。
+ * 谁抓：路由 T5（映射进 502 家族，与握手失败同一个处置）与 CLI T6。
+ *
+ * ⚠️★ 为什么这是一条**类型**，而不是让路由写一个 `catch` 兜住一切：
+ *    · 一个笼统的兜底会把**我们自己的 bug** 也报成"上游今天不行"（拼错的字段、
+ *      坏掉的签名构造器抛的普通 Error 都会落进去）—— 那时没人会去看代码，
+ *      而这类错**重试永远不会成功**。归属必须由"唯一知道 HTTP 层发生了什么"的那一层判：
+ *      适配器说"我发不出去/等不到回答"，路由才敢把它当上游的问题。
+ *    · 反过来，"连不上"与"上游回了个坏形状"（`BilibiliRejectedError`）在**处置**上
+ *      确实是两件事：前者过一会儿再来，后者要我们改。今天它们在 HTTP 这一层
+ *      都是 502（对调用方的动作恰好相同），差别留在类型与日志里。
+ *
+ * ⚠️ 与 `PlatformHandshakeError` 分开，尽管两者的 HTTP 回答一样：握手失败意味着
+ *    "这一轮整个平台都别碰了"（CLI 要停止处理这个平台的**所有** creator，spec §5.1），
+ *    而一次普通请求超时只说明**这一次**没打出去。混成一个类型会把一次网络抖动
+ *    升级成整轮放弃一个平台。
+ *    ⚠️ 推论（也是这个类型**唯一**不会被看到的地方）：握手那两步的失败仍然被
+ *       `handshakeStep` 收成 `PlatformHandshakeError`（连不上上游时这一轮整个平台
+ *       确实不该继续碰），所以它露面的时机是**不在这两步里的请求** ——
+ *       握手**之前**的 b23 短链跳转，与握手**之后**的取名字 / 翻页。
+ */
+export class PlatformUnavailableError extends Error {
+  readonly platform: TrackPlatform;
+  /** 卡在哪一步（`/x/space/wbi/arc/search` / `b23` / …），日志里要能直接看出来。 */
+  readonly step: string;
+
+  constructor(platform: TrackPlatform, step: string, detail: string, options?: ErrorOptions) {
+    super(`${platform}: 联系不上上游（${step}）：${detail}`, options);
+    this.name = 'PlatformUnavailableError';
     this.platform = platform;
     this.step = step;
   }

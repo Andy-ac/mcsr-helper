@@ -8,8 +8,17 @@
  * 但手段不同：这里**不 mock `fetch`**，而是把适配器注册表**注入**进路由
  * （`createTrackingRoute({ adapters })`）。
  * mock 只能挡住"我以为会走的那条路"；而注入的假适配器在**类型上**就替代了真的那一个 ——
- * 真的 `tracking/bilibili.ts` 根本没有被 import 进这个文件，所以哪天路由多打了一次上游、
- * 或者有人把注入拆掉，这一套会**当场红**，而不是安静地打出去。
+ * 这一套里每一个 app 的适配器都是下面那些 `fakeAdapter`（它的 `fetchPage` 直接抛），
+ * 而**真的适配器实例**（`bilibiliAdapter` / `createBilibiliAdapter`）一个都没有被 import
+ * 进这个文件，所以哪天路由多打了一次上游、或者有人把注入拆掉，这一套会**当场红**，
+ * 而不是安静地打出去。
+ *
+ * ⚠️ 上面那句**不是**"这个文件没 import 过 `tracking/bilibili.ts`"—— 第 59 行导入了它，
+ *    导入的是两个**错误类**（`BilibiliRateLimitError` / `BilibiliRejectedError`：
+ *    它们只有 bilibili 会抛，所以住在那个文件里，见 `tracking/types.ts` 的文件头）。
+ *    结论仍然成立，但成立的理由是**进来的是错误类、不是适配器**（前者不可能发请求），
+ *    而不是一句"没碰过那个文件"—— 那句话是假的，而一句假的理由会让下一个读它的人
+ *    以为"往这个文件里 import 适配器的零件是安全的"。
  *
  * ⚠️ 唯一碰真注册表的是最后那个 describe（挂载）：它**只**喂 youtube 链接，
  *    那条路上 `adapterFor('youtube')` 直接抛 `NoCredentialsError`（今天一个 key 都没有，
@@ -17,12 +26,20 @@
  *    所以 T8 之后这条仍然是"没凭据 ⇒ 503"，不会变成一次真的 YouTube 调用。
  *
  * ===========================================================================
- * 五类失败的映射在这里被逐类钉住，表在 `routes/tracking.ts`
+ * 那张失败分类表在这里被**逐行**钉住，表在 `routes/tracking.ts`
  * ===========================================================================
- * 裁决 2（2026-09-16）：适配器抛出来的东西**不许**一律变成 500。五类各有各的状态码，
- * 下面**一类一条用例**。每一条都额外断言"错误的原文**不在**响应体里" ——
- * 那一条正是"细节只进日志"的可执行形式：少了它，"顺手把 message 塞进 body"这种改法
- * 会让所有状态码断言照样全绿。
+ * 裁决 2（2026-09-16）：适配器抛出来的东西**不许**一律变成 500。每一类各有各的状态码，
+ * 下面**一类一条用例**（T5 复审把 `BilibiliRejectedError` 按 `-404` 拆成了两条，
+ * 于是那张表七行、这一组九条）。
+ *
+ * ★ 每一条都断言**两件事** —— 因为"细节只进日志"是一句**两半**的话：
+ *   · 细节**不在**响应体里（扫 `res.text`）：少了它，"顺手把 message 塞进 body"
+ *     这种改法会让所有状态码断言照样全绿；
+ *   · 细节**在**日志里（`postAsEditorWithLog` 截下 `console.error`）：少了它，
+ *     `classifyAdapterFailure` 里那行 `console.error` 被删掉之后整套**照样绿**，
+ *     而一次失败在两边都不留痕迹 —— 响应体里没有（这是对的），日志里也没有
+ *     （这是灾难：上游的 code、message、输入原文全没了）。
+ *     这半条正是 T5 复审点名"只断言了一半"的那一句。
  */
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, it } from 'node:test';
@@ -56,10 +73,15 @@ const { createTrackingRoute } = await import('./routes/tracking');
 const { adapterFor } = await import('./tracking');
 // ⚠️ 五类错误住在**两个**文件里（T3 的分工，理由见 `tracking/types.ts` 的文件头）：
 //    跨平台的三类在 `types.ts`，bilibili 专属的两类在 `bilibili.ts`。
+//    ⚠️ 这里 import 的全是**错误类**，一个适配器实例都没有 —— 那就是"这一套不打真网络"
+//    的结构性依据（见文件头第二段）。`PlatformUnavailableError` 是 T5 复审加的那一个。
 const { BilibiliRateLimitError, BilibiliRejectedError } = await import('./tracking/bilibili');
-const { InvalidCreatorInputError, NoCredentialsError, PlatformHandshakeError } = await import(
-  './tracking/types'
-);
+const {
+  InvalidCreatorInputError,
+  NoCredentialsError,
+  PlatformHandshakeError,
+  PlatformUnavailableError,
+} = await import('./tracking/types');
 const { upsertVideos, storedVideoCount } = await import('./tracked-videos');
 const { authRoute } = await import('./routes/auth');
 const { loadUser, sameOriginOnly } = await import('./auth/middleware');
@@ -102,12 +124,23 @@ async function callOn(
   target: TestApp,
   method: string,
   path: string,
-  options: { json?: unknown; cookie?: string } = {},
+  options: { json?: unknown; cookie?: string; realIp?: string; forwardedFor?: string } = {},
 ): Promise<Res> {
   const headers: Record<string, string> = {
     origin: SITE.productionOrigin,
-    'x-forwarded-for': testIp(),
+    /*
+     * ⚠️ 默认每个请求一个不同的转发 IP（真 app 上有 240 次/分钟/IP 的全局限流）。
+     *    要**故意**指定它的只有那条审计 ip 的用例：它必须让两个头带着**不同的**值，
+     *    才分得清代码取的是哪一个。
+     */
+    'x-forwarded-for': options.forwardedFor ?? testIp(),
   };
+  /*
+   * ⚠️ 默认**不**带 `x-real-ip`（与改造前逐字一样），只有那条审计 ip 的用例显式给 ——
+   *    本仓的内容审计取的是 `x-real-ip`（`routes/live.ts:249` 那一行），
+   *    而"请求本来带的是哪个头"正是那条用例要分清楚的东西。
+   */
+  if (options.realIp !== undefined) headers['x-real-ip'] = options.realIp;
   if (options.json !== undefined) headers['content-type'] = 'application/json';
   if (options.cookie) headers.cookie = options.cookie;
 
@@ -310,12 +343,13 @@ interface AuditRow {
   entity_type: string;
   entity_id: string | null;
   reason: string | null;
+  ip: string | null;
 }
 
 function auditsOf(entityId: string): AuditRow[] {
   return getDb()
     .prepare(
-      `SELECT action, actor_id, entity_type, entity_id, reason FROM audit_log
+      `SELECT action, actor_id, entity_type, entity_id, reason, ip FROM audit_log
         WHERE entity_id = ? ORDER BY rowid`,
     )
     .all(entityId) as unknown as AuditRow[];
@@ -572,10 +606,48 @@ async function postAsEditor(target: TestApp, input = 'https://space.bilibili.com
   return res;
 }
 
+/**
+ * 与 `postAsEditor` 相同，但**顺手把 `console.error` 截下来**。
+ *
+ * ★ 为什么必须截：`classifyAdapterFailure` 里那一行 `console.error` 是"细节只进日志"
+ *   这句话的**另一半**。下面每一类都断言了"细节不在响应体里"，但没有一条看得见日志 ——
+ *   于是**删掉那一行，整套照样绿**，而一次失败在两边都不留痕迹：响应体里没有（那是对的），
+ *   日志里也没有（那是灾难：上游的 code、原文、message 全都没了）。
+ *   ⇒ 这一条断言就是那行代码的可执行形式（mutation：删掉它 ⇒ 这一组变红）。
+ * ⚠️ `console.error` 是全局的，所以在 `try/finally` 里换掉再换回去：
+ *   node:test 在同一个文件里是**顺序**跑用例的，只要不漏掉 finally 就不会互相看见。
+ */
+async function postAsEditorWithLog(
+  target: TestApp,
+  input = 'https://space.bilibili.com/1',
+): Promise<{ res: Res; logs: string[] }> {
+  const logs: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+  try {
+    return { res: await postAsEditor(target, input), logs };
+  } finally {
+    console.error = original;
+  }
+}
+
+/**
+ * "细节只进日志"的可执行形式：那行日志必须**存在**，而且必须同时提到给定的几段文字
+ * （分类名、上游的 code、原文）。日志缺失时把截到的东西一起报出来 ——
+ * 不然一条"期望 true 实际 false"的断言在这里什么都说明不了。
+ */
+function assertLogged(logs: string[], needles: readonly string[], message: string): void {
+  const hit = logs.filter((line) => needles.every((needle) => line.includes(needle)));
+  assert.ok(hit.length > 0, `${message}；截到的日志：${JSON.stringify(logs)}`);
+}
+
 /*
- * ⚠️ 这一组里有**七**条：裁决 2 那张表的五类各一条，加两条"表外的" ——
+ * ⚠️ 这一组里有**九**条：裁决 2 那张表的**七**类各一条（`BilibiliRejectedError`
+ *    按 `-404` 占了**两**条 —— T5 复审把那一行拆开了），加两条"表外的" ——
  *    一个普通异常（必须是 500，不许被归进上面任何一类）和一个"适配器回错了平台"
- *    （那是我们自己的 bug，数据库拦不住）。名字里的"五类"指的是那张表。
+ *    （那是我们自己的 bug，数据库拦不住）。
  */
 describe('HTTP：适配器失败（裁决 2 的那张表 + 表外的两种）', () => {
   it('InvalidCreatorInputError ⇒ 400（管理员贴错了，重贴一个就行）', async () => {
@@ -585,25 +657,27 @@ describe('HTTP：适配器失败（裁决 2 的那张表 + 表外的两种）', 
       }),
     });
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     assert.equal(res.status, 400, res.text);
     assert.equal(res.body.error, 'invalid_input');
     assert.equal(res.body.reason, 'unresolvable_input');
     assert.ok(!res.text.includes(LEAK), res.text);
+    assertLogged(logs, ['InvalidCreatorInputError', LEAK], '细节必须落在日志里');
   });
 
   it('NoCredentialsError ⇒ 503 platform_not_configured（是我们没配，不是调用方的错）', async () => {
     // 注册表里没有 bilibili ⇒ 真注册表今天对 youtube/twitch 的行为完全一样
     const target = appThatFails({});
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     assert.equal(res.status, 503, res.text);
     assert.equal(res.body.error, 'platform_not_configured');
     assert.equal(res.body.platform, 'bilibili');
     // 它**不是** 500：这不是崩溃，是"这个平台这一轮不可用"（spec §9.1 ⑧ 的同一条）
     assert.notEqual(res.status, 500);
+    assertLogged(logs, ['NoCredentialsError', 'MCSR_FAKE_KEY'], '细节必须落在日志里');
   });
 
   it('BilibiliRateLimitError ⇒ 429 rate_limited（可重试，不是 500）', async () => {
@@ -613,7 +687,7 @@ describe('HTTP：适配器失败（裁决 2 的那张表 + 表外的两种）', 
       }),
     });
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     /*
      * ★ 适配器内部那 3 次 10 秒重试**已经跑完了**（spec §5.1 冻结口径），
@@ -624,21 +698,84 @@ describe('HTTP：适配器失败（裁决 2 的那张表 + 表外的两种）', 
     assert.equal(res.body.error, 'rate_limited');
     assert.notEqual(res.status, 500);
     assert.ok(!res.text.includes(LEAK), res.text);
+    assertLogged(logs, ['BilibiliRateLimitError', LEAK], '细节必须落在日志里');
   });
 
-  it('BilibiliRejectedError ⇒ 502（我们的适配层和上游脱节了，细节只在日志里）', async () => {
+  it('BilibiliRejectedError（-352 那种）⇒ 502（我们的适配层和上游脱节了，细节只在日志里）', async () => {
     const target = appThatFails({
       bilibili: fakeAdapter(() => {
         throw new BilibiliRejectedError(LEAK, -352);
       }),
     });
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     assert.equal(res.status, 502, res.text);
     assert.equal(res.body.error, 'upstream_bad_response');
     assert.ok(!res.text.includes(LEAK), res.text);
     assert.ok(!res.text.includes('bilibili'), '上游/适配器的细节一个字都不进响应体');
+    assertLogged(logs, ['BilibiliRejectedError', LEAK], '细节必须落在日志里');
+  });
+
+  it('★ BilibiliRejectedError(code=-404) ⇒ 400 creator_not_found，**不是** 502（T5 复审 Important 1）', async () => {
+    const target = appThatFails({
+      // `bilibili.ts:215` 写明 `-404` 是"这个 UP 不存在"，而取名字那条路对任何非零 code 都抛
+      bilibili: fakeAdapter(() => {
+        throw new BilibiliRejectedError(LEAK, -404);
+      }),
+    });
+
+    const { res, logs } = await postAsEditorWithLog(target);
+
+    /*
+     * ★ 这一条钉的是"**编辑被送到哪儿去修**"：
+     *   `-404` 说的是"这个 mid 在 bilibili 那边不存在"—— 编辑要做的是**改链接**。
+     *   报 502（`upstream_bad_response`）时他看到的是一句没有指向的兜底文案
+     *   （`apiErrorText` 对认不出的码回「出错了，请稍后再试。」），于是他会一遍遍重贴
+     *   同一条坏链接，而真正要做的事永远不会发生 —— 那正是本次评审要修的那类缺陷。
+     * ⚠️ 反向的一半同样重要（mutation M13 就是它）：**别的 code 不许被这一行接走**，
+     *   所以上面那条 `-352` 的用例必须仍然是 502。
+     */
+    assert.equal(
+      res.status,
+      400,
+      `bilibili 说"没有这个 UP"是一个**调用方能自己修**的入参问题，不是上游的天气：${res.text}`,
+    );
+    assert.notEqual(res.status, 502);
+    assert.equal(res.body.error, 'invalid_input');
+    assert.equal(res.body.reason, 'creator_not_found', '机器可读的 reason 是前端唯一能分派的东西');
+    assert.ok(!res.text.includes(LEAK), res.text);
+    /*
+     * ⚠️ 原始 code 必须仍然看得见：`-404` 被单独接走之后，"上游到底回了什么"
+     *   只剩日志这一处证据（万一上游哪天用 `-404` 表示别的意思，这里是唯一分得开的地方）。
+     */
+    assertLogged(logs, ['BilibiliRejectedError(-404)', '-404', LEAK], '原始 code 必须留在日志行里');
+  });
+
+  it('★ PlatformUnavailableError ⇒ 502（适配器联系不上上游，与握手失败同一个处置）', async () => {
+    const target = appThatFails({
+      bilibili: fakeAdapter(() => {
+        throw new PlatformUnavailableError('bilibili', 'arc/search', LEAK);
+      }),
+    });
+
+    const { res, logs } = await postAsEditorWithLog(target);
+
+    /*
+     * ★ T5 复审的 Important 2：适配器里那两处**没有被包装的 `fetch`**（取名字那条路与
+     *   b23 短链那条路）被拒/超时时，抛的就是这个类型。
+     *   在此之前它既不是那五类里的任何一个，于是**同一个物理事件**（上游连不上）
+     *   在握手那一步是 502、在取名字这一步却是 500「我们崩了」——
+     *   而 500 会把运维送去查堆栈，那里什么都没有。
+     * ⚠️ 这一条**只**证明路由认得出这个类型；"适配器真的会抛它"由
+     *   `tracking-bilibili.test.ts` 里那两条（注入会拒的假 fetch）证明 —— 两层分开，
+     *   因为路由这边打不到真的适配器，而适配器那边也不该知道 HTTP 状态码。
+     */
+    assert.equal(res.status, 502, res.text);
+    assert.equal(res.body.error, 'upstream_bad_response');
+    assert.notEqual(res.status, 500, '500 会把"上游连不上"报成"我们崩了"');
+    assert.ok(!res.text.includes(LEAK), res.text);
+    assertLogged(logs, ['PlatformUnavailableError', LEAK], '细节必须落在日志里');
   });
 
   it('PlatformHandshakeError ⇒ 502（同上：这是"我们要改"，不是"上游抖了"）', async () => {
@@ -648,31 +785,39 @@ describe('HTTP：适配器失败（裁决 2 的那张表 + 表外的两种）', 
       }),
     });
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     assert.equal(res.status, 502, res.text);
     assert.equal(res.body.error, 'upstream_bad_response');
     assert.ok(!res.text.includes(LEAK), res.text);
+    assertLogged(logs, ['PlatformHandshakeError', LEAK], '细节必须落在日志里');
   });
 
-  it('第六种：别的异常**不**被映射成上面任何一种 —— 那是我们的 bug，走 500', async () => {
+  it('表外：别的异常**不**被映射成上面任何一种 —— 那是我们的 bug，走 500', async () => {
     const target = appThatFails({
       bilibili: fakeAdapter(() => {
         throw new Error(LEAK);
       }),
     });
 
-    const res = await postAsEditor(target);
+    const { res, logs } = await postAsEditorWithLog(target);
 
     /*
      * ⚠️ 这一条守的是"分类表有没有兜底成一个 500 以外的东西"：
-     *    把任意异常都归进上面五类里的某一类，表现是**我们自己的 bug**
+     *    把任意异常都归进上面那些行里的某一类，表现是**我们自己的 bug**
      *    被报成"上游在限流"或"管理员贴错了链接" —— 而这两种都会让人去错的
      *    方向找原因（前者等，后者重贴链接），代码里的那个错永远不会被看见。
+     * ⚠️ 这一条也是"不许加一个 catch 兜住一切"（T5 复审 Important 2 被否掉的替代方案）
+     *    的现场守卫：那样的兜底会让**这一条**当场变红，而不是等下一次线上出事。
      */
     assert.equal(res.status, 500, res.text);
     assert.deepEqual(res.body, { error: 'internal_error' });
     assert.ok(!res.text.includes(LEAK), res.text);
+    assert.equal(
+      logs.filter((line) => line.includes('加博主失败')).length,
+      0,
+      '认不出的异常不许被记成一次"适配器失败" —— 那是两件不同的事，日志里也要分得开',
+    );
   });
 
   it('适配器回的 platform 与它自己的平台不一致 ⇒ 500，而且一行都不写', async () => {
@@ -950,6 +1095,66 @@ describe('HTTP：删一个博主', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 审计的 ip：`x-real-ip`，不是可以被调用方自己编的 `x-forwarded-for`
+// ---------------------------------------------------------------------------
+
+describe('HTTP：三条审计的 ip 取 x-real-ip', () => {
+  it('★ 加 / 改 / 删三行记的都是 x-real-ip（不是调用方自己填的 x-forwarded-for）', async () => {
+    const editor = await signUp('editor');
+    const mid = nextMid();
+    /*
+     * ⚠️ 两个头**一起喂，而且值不同**：这样"取的是哪一个"才是**看得出来**的
+     *    （只喂一个的话，两种写法都会通过，这条用例就白写了）。
+     *    `clientIp(c)`（`auth/ratelimit.ts`）优先读 `x-forwarded-for` 的**最左段** ——
+     *    那一段是调用方自己填得进去的，所以它适合限流（要让配额跟着真实访客走），
+     *    不适合审计（事后没有人会去核对它）。本仓每一处内容审计都是 `x-real-ip`
+     *    （`routes/live.ts:249`，也就是 T5 brief 让它照抄的那个文件）。
+     */
+    const forged = '203.0.113.9';
+    const real = '198.51.100.7';
+
+    const created = await callOn(app, 'POST', '/api/tracking/creators', {
+      json: { input: `https://space.bilibili.com/${mid}` },
+      cookie: editor.cookie,
+      realIp: real,
+      forwardedFor: forged,
+    });
+    assert.equal(created.status, 201, created.text);
+    const creator = created.body.creator as TrackedCreator;
+
+    const patched = await callOn(app, 'PATCH', `/api/tracking/creators/${creator.id}`, {
+      json: { enabled: false },
+      cookie: editor.cookie,
+      realIp: real,
+      forwardedFor: forged,
+    });
+    assert.equal(patched.status, 200, patched.text);
+
+    const deleted = await callOn(app, 'DELETE', `/api/tracking/creators/${creator.id}`, {
+      cookie: editor.cookie,
+      realIp: real,
+      forwardedFor: forged,
+    });
+    assert.equal(deleted.status, 200, deleted.text);
+
+    const audits = auditsOf(creator.id);
+    assert.deepEqual(
+      audits.map((a) => a.action),
+      ['tracked_creator.create', 'tracked_creator.update', 'tracked_creator.delete'],
+    );
+    for (const audit of audits) {
+      assert.equal(
+        audit.ip,
+        real,
+        `${audit.action} 的审计 ip 应当是代理写的 x-real-ip，而不是调用方能自己编的那个头`,
+      );
+      // 反向的那一半：把 x-forwarded-for 抄进审计（原来那三行的写法）必须**当场可见**
+      assert.notEqual(audit.ip, forged);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 公开视频列表（GET /videos）
 // ---------------------------------------------------------------------------
 
@@ -1019,6 +1224,19 @@ describe('HTTP：挂载与真注册表', () => {
     assert.equal(res.body.total, 0);
     // 没挂上的话 index.ts 的 notFound 会给出这个（它比一个 404 更容易被认出来）
     assert.equal(res.body.error, undefined, res.text);
+    /*
+     * ★ 缓存头必须在**真 app** 上验一次（T5 复审的顺手修）：`index.ts` 有一条
+     *   `/api/*` 的默认中间件把 `Cache-Control` 设成 `no-store`（它的注释写着
+     *   "需要公开缓存的端点在自己的 handler 里覆盖它"），而**注入的测试 app 里没有那条中间件**
+     *   （`testApp()` 只挂 sameOriginOnly + loadUser + 本路由）—— 也就是说
+     *   "公开列表给 60 秒公开缓存"这件事在别的用例里从来没有在**默认值生效的场合**被证明过：
+     *   写成一个拼错的头名、或者忘了在 handler 里 `c.header`，那边照样绿。
+     */
+    assert.match(
+      String(res.cacheControl),
+      /^public, max-age=60/,
+      '路由的 c.header 必须压过 index.ts 那条 no-store 默认（否则公开列表永远不缓存）',
+    );
   });
 
   it('真注册表 + 今天一个凭据都没有：youtube 链接 ⇒ 503，且一个上游请求都没发出去', async () => {

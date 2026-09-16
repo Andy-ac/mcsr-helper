@@ -28,28 +28,51 @@
  *    必填参数把这件事变成一次**编译错误**。
  *
  * ===========================================================================
- * 二、★★ 适配器失败 → 状态码：**一张表**（裁决 2，2026-09-16）
+ * 二、★★ 适配器失败 → 状态码：**一张表**（裁决 2，2026-09-16；两处补于 T5 复审）
  * ===========================================================================
  * 判据是一句话：**这是谁的问题**，而不是"谁抛的"。一律 500 的代价不是难看 ——
  * 是"管理员贴错了一条链接"和"我们的适配层和上游脱节了"在日志与界面上长得一模一样，
  * 而这两件事要的人、要的动作完全不同（重贴一次 vs 去看代码）。
  *
  * ```text
- * 抛出来的东西                  状态码  谁的问题            响应体                          日志
- * ----------------------------  ------  ------------------  ------------------------------  ----
- * InvalidCreatorInputError      400     调用方（重贴一次）  invalid_input + reason          有
- * NoCredentialsError            503     我们没配（不是崩）  platform_not_configured         有
- * BilibiliRateLimitError        429     上游在限流我们      rate_limited                    有
- * BilibiliRejectedError         502     我们的适配层要改    upstream_bad_response           有
- * PlatformHandshakeError        502     同上                upstream_bad_response           有
+ * 抛出来的东西                      状态码  谁的问题             响应体                              日志
+ * --------------------------------  ------  -------------------  ----------------------------------  ----
+ * InvalidCreatorInputError           400    调用方（重贴一次）   invalid_input + unresolvable_input  有
+ * BilibiliRejectedError(code=-404)   400    调用方（mid 不存在） invalid_input + creator_not_found   有
+ * NoCredentialsError                 503    我们没配（不是崩）   platform_not_configured             有
+ * BilibiliRateLimitError             429    上游在限流我们       rate_limited                        有
+ * BilibiliRejectedError（其余）      502    我们的适配层要改     upstream_bad_response               有
+ * PlatformHandshakeError             502    同上                 upstream_bad_response               有
+ * PlatformUnavailableError           502    上游暂时联系不上     upstream_bad_response               有
  * ```
  *
- * 五条各自的理由与**被否掉的替代方案**（每一条的代价都写在明处）：
+ * 七行各自的理由与**被否掉的替代方案**（每一条的代价都写在明处）：
  *
  *   · **400 / invalid_input + reason**：与 `routes/seeds.ts` 的 `invalidInput` 同形
  *     （一个通用错误码 + 一个机器可读的 reason），而不是给"认不出的链接"新开一个错误码 ——
  *     错误码那张表（`error-codes.test.ts`）是给"用户能看到的失败结果"用的，
  *     字段级的问题全挤进去会变成一份没人看得完的清单。裁决 1 让**重复添加**也走这个形状。
+ *     ★ 代价与收益同时在这里：`invalid_input` 这一个码下现在有**三个** reason
+ *     （`unresolvable_input` / `creator_not_found` / `duplicate`），前端**必须按 reason
+ *     分派**——这就是"一个通用码 + 机器可读的 reason"这个形状的账。
+ *   · **`-404` 单独一行，400 而不是 404**（T5 复审的 Important 1，原来它与别的
+ *     `BilibiliRejectedError` 一起报 502）：
+ *     `bilibili.ts:215` 写明 `-404` 是"**这个 UP 不存在**"，而"加一个博主"这条路
+ *     每次贴一个不存在的 mid 都会走到它（`lookupDisplayName` 对任何非零 code 都抛）。
+ *     报 502 的代价是**编辑被送到错的地方修**：`upstream_bad_response` 在界面上没有
+ *     自己的文案，落进 `apiErrorText` 的兜底「出错了，请稍后再试。」—— 于是他会一遍遍
+ *     重贴同一条坏链接，而真正要做的事（改链接）永远不会发生。
+ *     ⇒ 400 + `invalid_input` + `reason: 'creator_not_found'`，**不是** 404：
+ *       · 400 是这个端点为"入参不对"已经在用的那一档（`unresolvable_input` / `duplicate`），
+ *         前端因此只需要**一个**读者（按 reason 定位输入框）—— 这是裁决 1 定下的形状；
+ *       · 404 在本仓是"**这个 URL 指向的东西不存在**"（PATCH/DELETE `/creators/:id`），
+ *         而这里 POST 的 URL 是好的，坏的是 body 里的那一串；更要紧的是 **404 也没有前端文案**
+ *         （`apiErrorText` 对认不出的码与 404 回的是同一句「出错了，请稍后再试。」），
+ *         换一个状态码**修不好这个缺陷**，只有机器可读的 reason 才修得好。
+ *       · reason 不与 `unresolvable_input` 合并：两者要人做的事不同 ——
+ *         前者是"上游说没有这个人"（改输入即可），后者可能意味着我们的分发/解析表要改。
+ *     ⚠️ `code` 仍然留在日志行里（`kind` 就写着 `-404`）：万一上游哪天用 `-404`
+ *       表示别的意思，日志是唯一还看得见这个区别的地方。
  *   · **503** 而不是 400：没凭据是**我们的配置**，不是调用方贴错了东西；也不是 500，
  *     因为它不是崩溃（spec §9.1 ⑧：没凭据的平台要"跳过并说明原因"）。
  *   · **429** 而不是 500：适配器内部那 3 次 10 秒重试**已经跑完了**（spec §5.1 的冻结口径），
@@ -57,15 +80,19 @@
  *     ⚠️ 它**不带 `Retry-After`**，也没有 `retryAfterSec`：我们**不知道** bilibili 的
  *     风控什么时候松（spec §2.3 说它是概率性的），编一个数字等于承诺一件做不到的事
  *     （`routes/seeds.ts` 的 `seed_write_disabled` 那条 503 写着同一条理由）。
- *   · **502** 而不是 500：这两类都意味着**我们的适配层和上游脱节了**（上游改了字段、
- *     形状变了、`-352` 风控挡住了签名），排查方向是"我们要改" —— 而 500 的排查方向
- *     是"去查堆栈"。细节（上游的 code、原文）**只进日志**，一个字都不进响应体。
- *     ⚠️ 认下的偏离：`BilibiliRejectedError` 也覆盖"这个 UP 不存在"（`-404`）这种
- *     **上游说没有、而不是我们错了**的情况（`bilibili.ts` 的文件头把三个来源合并
- *     成同一个类型，理由是"对调用方是同一件事：这一轮别指望这个频道了"）。
- *     合并的好处是这里只有一行；代价是那种情况也会报 502，而它其实更像 404。
+ *   · **502** 而不是 500（后三行）：它们都意味着**不是调用方的问题** —— 上游改了字段、
+ *     形状变了、`-352` 风控挡住了签名，或者干脆联系不上。细节（上游的 code、原文）
+ *     **只进日志**，一个字都不进响应体。
+ *   · ★ **`PlatformUnavailableError` 由适配器抛，不是路由兜的**（T5 复审的 Important 2）：
+ *     "联系不上上游"这件事的归属方是**唯一知道 HTTP 层发生了什么的那一层**（适配器），
+ *     所以它在 `bilibili.ts` 里把两处裸 `fetch` 的拒翻译成这个类型，路由只认类型。
+ *     ⚠️ **被否掉的替代方案：这里加一个 `catch` 兜住一切 ⇒ 502。** 代价是双向的：
+ *     我们自己的 bug（拼错的字段、坏掉的签名构造器抛的普通 Error）会被报成
+ *     "上游今天不行"，于是没人去看代码，而**这类错重试永远不会成功**；
+ *     同时"第六类必须是 500"这条纪律（下面）也就不存在了。
+ *     ⇒ 认不出的异常继续 `throw`，让它去 `onError` 拿那行堆栈。
  *
- * ⚠️ **第六类（不是这五种的异常）绝不映射**：它是我们的 bug，必须走 `throw`
+ * ⚠️ **表外那一类（不是上面七种的异常）绝不映射**：它是我们的 bug，必须走 `throw`
  *    → `index.ts` 的 `onError`（500 + 堆栈在日志里）。把任意异常都归进上面某一行，
  *    表现是我们自己的错被报成"上游在限流"或"管理员贴错了链接" —— 两种都会让人
  *    往错的方向找，而代码里那个错永远不会被看见。
@@ -109,6 +136,13 @@
  *     而"删的是谁"正是事后唯一想知道的东西（`routes/live.ts` 的 DELETE 为此预读了一次）；
  *   · 被拒的请求（400 / 403 / 401 / 404）**一条审计都不写**：审计说的是"谁把什么改成了什么"，
  *     记一条没有发生的改动比少记一条更糟。
+ *   · ★ `ip` 取 `x-real-ip`（`c.req.header('x-real-ip') ?? null`），**不用** `clientIp(c)`
+ *     （T5 复审顺手修的一处）：后者优先读 `x-forwarded-for` 的**最左段**
+ *     （`auth/ratelimit.ts` 那一行是**为限流**写的），而最左段是**调用方自己填得进去**的。
+ *     审计是事后才翻的东西，没有任何东西会去核对它 —— 一条能自己编的"是谁"比没有更糟。
+ *     本仓每一处内容审计都是这一行（`live.ts:249`、`videos.ts:257`、`resources.ts:406`、
+ *     `calendar.ts:285`、`shares.ts:216`、`admin.ts:232`），追踪这三条原来是个**静默的例外**
+ *     （没有任何断言看得见它）。现在有了一条：`tracking-routes.test.ts` 那一条同时喂两个头。
  * · 缓存：公开列表给 60 秒公开缓存（与视频墙、直播清单同一条）；两个 `live.manage`
  *   的端点一律 `no-store`（它们含只有编辑能看的采集状态，缓存住会漏给别人）。
  */
@@ -118,7 +152,6 @@ import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { type AuthVariables, requireCapability } from '../auth/middleware';
-import { clientIp } from '../auth/ratelimit';
 import {
   createCreator,
   deleteCreator,
@@ -129,10 +162,11 @@ import {
 } from '../tracked-videos';
 import { adapterFor } from '../tracking';
 /*
- * ⚠️ 五类错误**住在两个文件里**，这不是笔误，是 T3 定下的分工
+ * ⚠️ 错误类型**住在两个文件里**，这不是笔误，是 T3 定下的分工
  * （`tracking/types.ts` 的文件头写着理由）：
- *   · `NoCredentialsError` / `PlatformHandshakeError` / `InvalidCreatorInputError`
- *     是**跨平台**的（注册表抛、三个适配器都抛），住在不依赖任何平台实现的 `types.ts`；
+ *   · `NoCredentialsError` / `PlatformHandshakeError` / `PlatformUnavailableError` /
+ *     `InvalidCreatorInputError` 是**跨平台**的（注册表抛、三个适配器都抛），
+ *     住在不依赖任何平台实现的 `types.ts`；
  *   · `BilibiliRateLimitError` / `BilibiliRejectedError` 只有 bilibili 会抛，
  *     就住在 `bilibili.ts` 里 —— 把它们搬进 `types.ts` 等于让"这个平台独有的
  *     风控语义"变成一个所有适配器都要知道的类型。
@@ -146,6 +180,7 @@ import {
   NoCredentialsError,
   type PlatformAdapter,
   PlatformHandshakeError,
+  PlatformUnavailableError,
 } from '../tracking/types';
 import { writeAudit } from '../users';
 
@@ -232,11 +267,21 @@ const CreatorPatchSchema = z
   );
 
 // ---------------------------------------------------------------------------
-// ★★ 五类适配器失败 → 状态码：唯一的映射表
+// ★★ 适配器失败 → 状态码：唯一的映射表（七行）
 // ---------------------------------------------------------------------------
 
-/** 入参那一侧唯一的 reason（认不出链接 / 平台时用它，重复添加用它旁边那个）。 */
+/**
+ * 入参那一侧的三个 reason。前端**按 reason 分派**（不是按 `invalid_input` 这个码：
+ * 它同时兜着三种不同的入参问题），所以这三个字符串是**契约**，不是日志文案。
+ *
+ * · `unresolvable_input` —— 我们解析不出一个博主（贴错形状 / 平台判不出来）；
+ * · `creator_not_found`  —— ★ 上游明确说"没有这个 mid"（`-404`，T5 复审的 Important 1）。
+ *   ⚠️ 它**不**与上面那个合并：要人做的事不同（"改输入"vs"可能我们的分发/解析表要改"），
+ *   而这两件事在日志里必须分得开。
+ * · `duplicate`（下面用到时写的是字面量）—— 已经在名单上了。
+ */
 const UNRESOLVABLE_INPUT = 'unresolvable_input';
+const CREATOR_NOT_FOUND = 'creator_not_found';
 
 /**
  * 400：管理员贴进来的东西我们解析不出一个博主。
@@ -244,6 +289,8 @@ const UNRESOLVABLE_INPUT = 'unresolvable_input';
  * ⚠️ 两个来源共用**同一个**回答，而且只此一处（`InvalidCreatorInputError` 那一行
  *    与"连平台都判不出来"那一条都调它）—— 分头写两份 body 的话，改了一处另一处
  *    就静默不一样了，而前端是**按 reason 定位输入框**的。
+ * ⚠️ `creator_not_found`（`-404`）那一行**不走这里**：它的 reason 不同、含义也不同
+ *    （一个是"我认不出"，一个是"上游说没有"），共用这个函数就等于把两者又合并回去。
  */
 function unresolvable(c: TrackingContext) {
   return c.json({ error: 'invalid_input', reason: UNRESOLVABLE_INPUT }, 400);
@@ -252,7 +299,8 @@ function unresolvable(c: TrackingContext) {
 /**
  * 分类表的一行。
  *
- * `body` 收 `unknown` 而不是某个具体错误类型：这张表要**混装**五个不同的类，
+ * `body` 收 `unknown` 而不是某个具体错误类型：这张表要**混装**六个不同的类
+ * （七行：`BilibiliRejectedError` 按 `-404` 占两行），
  * 而 TypeScript 的逆变会让"每行只收自己那个类型"的写法根本组不成数组。
  * 每一行自己的 `is` 就是判据，`body` 里要取字段就顺手再窄化一次（不用 `as`）。
  */
@@ -265,11 +313,14 @@ interface FailureRule {
 }
 
 /**
- * ★★ **五类失败与它们的 HTTP 回答**（裁决 2）。理由与代价写在文件头第二节。
+ * ★★ **七类失败与它们的 HTTP 回答**（裁决 2 + T5 复审的两处，共七行）。
+ * 理由与代价写在文件头第二节。
  *
- * ⚠️ 行**顺序即匹配顺序**，五个 `instanceof` 两两不重叠，所以顺序今天不影响结果；
- *    但它是从"最具体"往"最泛"排的，将来万一加了有继承关系的错误类型，也仍然是对的。
- * ⚠️ 这五类之外的异常**故意不在表里**：调用方拿 `null` 之后必须 `throw`（见下面的
+ * ⚠️ 行**顺序即匹配顺序**：`BilibiliRejectedError` 那两行**不是**两两不重叠的 ——
+ *    第一行按 `code === -404` 再分一次，所以**它必须在前面**（`find` 取第一个命中的行）。
+ *    其余行的 `instanceof` 两两不重叠，顺序今天不影响结果；但整张表仍然是从
+ *    "最具体"往"最泛"排的，将来加有继承关系的错误类型时同样是对的。
+ * ⚠️ 这七类之外的异常**故意不在表里**：调用方拿 `null` 之后必须 `throw`（见下面的
  *    `classifyAdapterFailure`），让它走 index.ts 的 onError。
  */
 const ADAPTER_FAILURES: readonly FailureRule[] = [
@@ -279,6 +330,26 @@ const ADAPTER_FAILURES: readonly FailureRule[] = [
     status: 400,
     // 详情（认不出的原因 + 管理员贴的原文）在 message 里，只进日志
     body: () => ({ error: 'invalid_input', reason: UNRESOLVABLE_INPUT }),
+  },
+  {
+    /*
+     * ★★ T5 复审的 Important 1：`-404` 从"我们的适配层和上游脱节了"里**拆出来**。
+     *
+     * `bilibili.ts:215` 逐字写着 `-404` 是"**这个 UP 不存在**"，而这条路每次贴一个
+     * 不存在的 mid 都会走到它（`lookupDisplayName` 对任何非零 code 都抛）。
+     * 报 502 时编辑看到的是 `apiErrorText` 的兜底「出错了，请稍后再试。」
+     * —— 一句让他**一遍遍重贴同一条坏链接**的话，而真正要做的事（改链接）不会发生。
+     * ⇒ 400 + `invalid_input` + `reason: 'creator_not_found'`（理由与被否掉的 404
+     *   写在文件头第二节：400 是这个端点为"入参不对"已经在用的那一档，前端只需要
+     *   一个按 reason 分派的读者；404 在本仓是"这个 URL 指向的东西不存在"，而且
+     *   它在界面上同样是那句没用的兜底话）。
+     * ⚠️ `kind` 里带着 `-404`：日志行因此仍然看得见上游的原始 code，
+     *   万一上游哪天用 `-404` 表示别的意思，这里是唯一还记得区别的地方。
+     */
+    kind: 'BilibiliRejectedError(-404)',
+    is: (error) => error instanceof BilibiliRejectedError && error.code === -404,
+    status: 400,
+    body: () => ({ error: 'invalid_input', reason: CREATOR_NOT_FOUND }),
   },
   {
     kind: 'NoCredentialsError',
@@ -301,6 +372,7 @@ const ADAPTER_FAILURES: readonly FailureRule[] = [
     kind: 'BilibiliRejectedError',
     is: (error) => error instanceof BilibiliRejectedError,
     status: 502,
+    // 走到这里的 `-352` / 形状变了 / 非 JSON 都是"我们要改"（`-404` 已被上一行接走）
     body: () => ({ error: 'upstream_bad_response' }),
   },
   {
@@ -309,14 +381,30 @@ const ADAPTER_FAILURES: readonly FailureRule[] = [
     status: 502,
     body: () => ({ error: 'upstream_bad_response' }),
   },
+  {
+    /*
+     * ★ T5 复审的 Important 2：适配器**联系不上上游**（fetch 被拒 / 20 秒超时）。
+     *   与握手失败同一个处置（502 "过一会儿再来"）—— 因为对调用方它就是同一句话。
+     * ⚠️ 这一行**必须**由适配器抛出的类型接住，而不是靠这里加一个笼统的 `catch`：
+     *   一个兜住一切的 `catch` 会把我们自己的 bug 也报成上游的天气，而**那类错
+     *   重试永远不会成功**（代价写在文件头第二节末）。类型是这个分工的凭据。
+     */
+    kind: 'PlatformUnavailableError',
+    is: (error) => error instanceof PlatformUnavailableError,
+    status: 502,
+    body: () => ({ error: 'upstream_bad_response' }),
+  },
 ];
 
 /**
- * 把这五类翻译成 HTTP 回答；**不是这五类就返回 `null`**（调用方必须重新抛）。
+ * 把上面七类翻译成 HTTP 回答；**不是这七类就返回 `null`**（调用方必须重新抛）。
  *
- * ★ 五条都记一行日志，包括 400 那一条：这些动作都很罕见（管理员偶尔加一个博主），
+ * ★ 每一类都记一行日志，包括 400 那几条：这些动作都很罕见（管理员偶尔加一个博主），
  *   而"这条链接为什么认不出"将来唯一的证据就是那行 message（里面有输入原文）。
  *   ⚠️ 细节**只**在这行日志里 —— 响应体里永远没有上游的 code / 原文 / 平台内部状态。
+ *   ⚠️ 这行日志**也有断言**（`tracking-routes.test.ts` 的 `postAsEditorWithLog`）：
+ *      它是"细节只进日志"这句话的另一半 —— 少了它，一次失败在两边都留不下痕迹，
+ *      而删掉这一行不会让任何"响应体里没有细节"的断言变红。
  */
 function classifyAdapterFailure(c: TrackingContext, error: unknown): Response | null {
   const rule = ADAPTER_FAILURES.find((row) => row.is(error));
@@ -520,7 +608,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityType: 'tracked_creator',
       entityId: result.creator.id,
       reason: `${ref.platform} ${ref.externalId}`,
-      ip: clientIp(c),
+      ip: c.req.header('x-real-ip') ?? null,
       now,
     });
 
@@ -557,7 +645,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityType: 'tracked_creator',
       entityId: id,
       reason: patchReason(parsed.data),
-      ip: clientIp(c),
+      ip: c.req.header('x-real-ip') ?? null,
       now,
     });
 
@@ -589,7 +677,7 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       entityType: 'tracked_creator',
       entityId: id,
       reason: `${existing.platform} ${existing.externalId}`,
-      ip: clientIp(c),
+      ip: c.req.header('x-real-ip') ?? null,
       now,
     });
 

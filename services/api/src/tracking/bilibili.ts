@@ -87,6 +87,7 @@ import {
   InvalidCreatorInputError,
   type PlatformAdapter,
   PlatformHandshakeError,
+  PlatformUnavailableError,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -230,6 +231,20 @@ export class BilibiliRejectedError extends Error {
     this.name = 'BilibiliRejectedError';
     this.code = code;
   }
+}
+
+/**
+ * 把 `fetch` 的**拒绝**翻译成一句能进日志的话 —— 关键是带上**错误的名字**：
+ * `AbortSignal.timeout` 给的是 `DOMException: TimeoutError`，连不上给的是
+ * `TypeError: fetch failed`。两者在这一层都是"联系不上上游"（同一个类型），
+ * 但排查方向不同（上游慢/挂了 vs DNS/网络/证书），日志里必须分得开。
+ *
+ * ⚠️ 不用 `error.message.includes(…)` 去分类：那句话是运行时的文案，不是契约。
+ *    名字 + 原文一起记下来就够了 —— 判类型的是 `PlatformUnavailableError`。
+ */
+function fetchFailureDetail(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  return String(error);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +491,10 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
    * 发一个 GET 并读出 JSON —— **限流与风控只在这一个地方判**（spec §2.3）。
    *
    * ⚠️ 判据有**四条**，缺一条就漏一种失败（顺序即优先级）：
+   *   ★ 第 0 条（在有响应之前）：`fetch` **自己被拒**（DNS/TCP/TLS 失败）或**超时**
+   *     ⇒ `PlatformUnavailableError`。它必须在第 1–4 条之前，因为那四条判的都是
+   *     "上游回了什么"，而这里压根没有响应 —— 漏了它，同一个物理事件（上游连不上）
+   *     在握手那一步是 502、在这一步却会穿到调用方的兜底变成 500。
    *   1. `HTTP 412` → 限流：等 10 秒重试；
    *   2. body 里 `code: -412` → 同一种限流（它是 200，只看状态码看不见）；
    *   3. body 里 `code: -352` → **风控校验失败，不重试**（等 10 秒等不好它）；
@@ -489,15 +508,28 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
     let retries = 0;
 
     for (;;) {
-      const response = await fetchImpl(url, {
-        headers: cookie ? { ...BROWSER_HEADERS, cookie } : { ...BROWSER_HEADERS },
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          headers: cookie ? { ...BROWSER_HEADERS, cookie } : { ...BROWSER_HEADERS },
+          /*
+           * ⚠️ `follow` 是默认值，这里写出来是因为 `resolveCreator` 依赖它：
+           * b23.tv 短链必须跟到最终 URL 才能抠出 mid（spec §5.1）。
+           */
+          redirect: 'follow',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (error) {
         /*
-         * ⚠️ `follow` 是默认值，这里写出来是因为 `resolveCreator` 依赖它：
-         * b23.tv 短链必须跟到最终 URL 才能抠出 mid（spec §5.1）。
+         * ★ 上面第 0 条：`fetch` 被拒 / 20 秒超时。
+         *   ⚠️ 不重试：那 3 次 × 10 秒的预算在 spec §2.3 是**为 `-412` 实测定下的**
+         *   （"等 10 秒就能恢复"），把网络失败也算进去会凭空多等最多 30 秒，
+         *   而没有任何实测支持它会好。这条路的重试是**下一轮**（10 分钟后）。
          */
-        redirect: 'follow',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+        throw new PlatformUnavailableError('bilibili', path, fetchFailureDetail(error), {
+          cause: error,
+        });
+      }
 
       if (response.status === 412) {
         await waitBeforeRetry(
@@ -747,11 +779,24 @@ export function createBilibiliAdapter(deps: BilibiliAdapterDeps = {}): PlatformA
        *    「取名字」那一次请求在这之后（`resolveCreator` 里），所以抠不出 mid 时
        *    一次上游请求都不多花。
        */
-      const response = await fetchImpl(url.toString(), {
-        headers: { ...BROWSER_HEADERS },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      let response: Response;
+      try {
+        response = await fetchImpl(url.toString(), {
+          headers: { ...BROWSER_HEADERS },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (error) {
+        /*
+         * ★ 与 `requestJson` 那条**同一个归属**：短链跟不到也是一次"我们联系不上上游"
+         *   （DNS / 连接 / TLS / 20 秒超时），不是"管理员贴错了链接"（那是
+         *   `InvalidCreatorInputError`，下面那几处），更不是我们的 bug。
+         *   ⇒ 路由把两者分开：这一条 502（过一会儿再来），贴错链接那一条 400（重贴）。
+         */
+        throw new PlatformUnavailableError('bilibili', 'b23', fetchFailureDetail(error), {
+          cause: error,
+        });
+      }
       /*
        * ⚠️ 最终 URL 要**重新解析一遍**再抠 mid：`response.url` 是一个完整 URL
        * （`https://space.bilibili.com/123?spm_id_from=…`），而 `SPACE_URL` 认的是

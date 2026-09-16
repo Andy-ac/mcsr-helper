@@ -66,6 +66,7 @@ import {
   InvalidCreatorInputError,
   NoCredentialsError,
   PlatformHandshakeError,
+  PlatformUnavailableError,
 } from './tracking/types';
 
 // ---------------------------------------------------------------------------
@@ -741,10 +742,133 @@ describe('★ bilibili 适配器（spec §2.1 / §2.3 / §2.4 / §5.1）', () =>
   });
 
   // -------------------------------------------------------------------------
+  // ★ 联系不上上游：两处裸 fetch 都要翻译成专用类型（T5 复审的 Important 2）
+  // -------------------------------------------------------------------------
+
+  describe('★ 联系不上上游 ⇒ PlatformUnavailableError（不是"我们的 bug"）', () => {
+    /*
+     * ★ 缺口是**同一个物理事件两个回答**：握手那两个请求被 `handshakeStep` 包着
+     *   （失败 ⇒ `PlatformHandshakeError` ⇒ 502），而**取名字**那一个
+     *   （`lookupDisplayName` → `requestJson`）与 **b23 短链**那一个当时是裸 `fetch` ——
+     *   它们被拒/超时的时候抛的是 `TypeError` / `DOMException`，一路穿到路由的兜底，
+     *   于是"上游连不上"变成了 500「我们崩了」，而 500 会把运维送去查堆栈。
+     * ⇒ 归属由**适配器**判（只有它知道 HTTP 层发生了什么），这两条用例钉的就是它。
+     */
+
+    it('★ 取名字那一条：fetch 被拒（DNS/连接失败）⇒ PlatformUnavailableError', async () => {
+      // 握手正常，列表请求（取名字那一个）在**网络层**炸掉 —— 假 fetch 直接抛就是这个形状
+      const h = harness(() => {
+        throw new TypeError('fetch failed');
+      });
+
+      await assert.rejects(
+        () => h.adapter.resolveCreator(MID),
+        (error: unknown) => {
+          assert.ok(
+            error instanceof PlatformUnavailableError,
+            `取名字时连不上上游必须是 PlatformUnavailableError（路由据此报 502），实际是 ${String(error)}`,
+          );
+          assert.equal(error.platform, 'bilibili');
+          assert.match(error.step, /arc\/search/, '日志里要能看出是哪一个请求没打出去');
+          // 错误的名字与原文都要留下：TimeoutError 与 fetch failed 的排查方向不同
+          assert.match(error.message, /TypeError: fetch failed/);
+          assert.ok(error.cause instanceof TypeError, '原文当 cause 留着（别只留一句转述）');
+          return true;
+        },
+      );
+      assert.equal(h.listCalls().length, 1, '网络失败**不重试**：3×10 秒的预算是为 -412 定的');
+      assert.deepEqual(h.sleeps, []);
+    });
+
+    it('★ 20 秒超时（`AbortSignal.timeout` 拒的是 DOMException: TimeoutError）也是同一个类型', async () => {
+      const h = harness(() => {
+        // 真 `AbortSignal.timeout` 超时抛的就是这个（name 是判据，message 是运行时文案）
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      });
+
+      await assert.rejects(
+        () => h.adapter.resolveCreator(MID),
+        (error: unknown) => {
+          assert.ok(error instanceof PlatformUnavailableError, `实际是 ${String(error)}`);
+          assert.match(error.message, /TimeoutError/, '"超时"与"连不上"在日志里必须分得开');
+          return true;
+        },
+      );
+      assert.deepEqual(h.sleeps, [], '超时不重试：等 10 秒不会让一个 20 秒超时的请求变快');
+    });
+
+    it('★ b23 短链那一条：fetch 被拒 ⇒ 同一个类型（**不是** InvalidCreatorInputError）', async () => {
+      const calls: string[] = [];
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async (input: string | URL | Request) => {
+          calls.push(typeof input === 'string' ? input : String(input));
+          throw new TypeError('fetch failed');
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await assert.rejects(
+        () => adapter.resolveCreator('https://b23.tv/AbCdEf'),
+        (error: unknown) => {
+          /*
+           * ⚠️ 这两个错误在这一层**长得像但完全不同**：`InvalidCreatorInputError`
+           *   是"管理员贴错了"（路由 ⇒ 400，让他重贴），这条是"我们联系不上上游"
+           *   （路由 ⇒ 502，过一会儿再来）。混成一个的话，一次网络抖动会被答成
+           *   "这条链接认不出" —— 而管理员会去改一条本来就没问题的链接。
+           */
+          assert.ok(
+            error instanceof PlatformUnavailableError,
+            `短链跟不到是"联系不上上游"，不是"链接贴错了"；实际是 ${String(error)}`,
+          );
+          assert.equal(error.step, 'b23');
+          return true;
+        },
+      );
+      assert.equal(calls.length, 1, '第一个请求就炸了 ⇒ 后面一次握手都不该发生');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // 握手：★ 失败要放弃整个平台
   // -------------------------------------------------------------------------
 
   describe('握手失败 ⇒ 放弃整个平台（spec §5.1）', () => {
+    it('★ 握手的那个请求**连不上** ⇒ 仍然是 PlatformHandshakeError（放弃整个平台）', async () => {
+      /*
+       * ★ 这条钉的是一个**故意**的合并：`handshakeStep` 把 `requestJson` 抛出来的任何东西
+       *   （包括上面那个 `PlatformUnavailableError`）都收成 `PlatformHandshakeError`。
+       *   那是对的 —— 连不上上游时这一轮整个平台都不该继续碰（否则 20 个 creator
+       *   会各等 20 秒去撞同一个连不上的上游），而"整轮放弃一个平台"正是这个类型的语义。
+       *   代价：网络原因在握手这一步看不出来（类型说"握手失败"）——
+       *   `cause` 里留着原文，日志里分得开。
+       */
+      const adapter = createBilibiliAdapter({
+        fetchImpl: (async () => {
+          throw new TypeError('fetch failed');
+        }) as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await assert.rejects(
+        () => adapter.fetchPage(creator(), null, { storedTotal: 0 }),
+        (error: unknown) => {
+          assert.ok(error instanceof PlatformHandshakeError, `实际是 ${String(error)}`);
+          assert.equal(error.step, 'finger/spi');
+          /*
+           * ⚠️ `cause` 在这里是**两层**，而两层都该留着：
+           *   `requestJson` 先把 `TypeError` 收成 `PlatformUnavailableError`
+           *   （它自己用 cause 挂着原文），`handshakeStep` 再把它收成握手错误
+           *   （同样用 cause 挂着中间那一层）。外面那层说"这一轮放弃这个平台"，
+           *   里面两层说"为什么" —— 而 message 里也已经带着原文（见上一行断言）。
+           */
+          const cause: unknown = error.cause;
+          assert.ok(cause instanceof PlatformUnavailableError, '中间那层是"联系不上上游"');
+          assert.ok(cause.cause instanceof TypeError, '最里面是原始的网络错误');
+          return true;
+        },
+      );
+    });
+
     it('★ 拿不到 buvid ⇒ 专用错误，而且**一个列表请求都不发**', async () => {
       const calls: FetchCall[] = [];
       const adapter = createBilibiliAdapter({
