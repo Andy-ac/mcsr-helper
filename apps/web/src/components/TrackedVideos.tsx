@@ -1,7 +1,8 @@
 import type { TrackedCreator, TrackedVideo, TrackPlatform } from '@mcsr/shared/tracking';
-import { toMillis } from '@mcsr/shared/tracking';
+import { TRACK_PLATFORMS, toMillis } from '@mcsr/shared/tracking';
 import { formatTimecode } from '@mcsr/shared/videos';
 import { useTranslation } from 'react-i18next';
+import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
 import { Field, Notice } from '@/components/Form';
 import { watchUrl } from '@/components/VideoEmbed';
 
@@ -148,6 +149,18 @@ export interface TrackedVideosSectionProps {
   loading: boolean;
   /** 取数失败的那一句话；`null` = 没出错。 */
   error: string | null;
+  /**
+   * 当前分区（`undefined` = 全部）。
+   *
+   * ⚠️★ 它只影响**取数**（服务端筛选，spec §5.1），组件自己是纯的：分区**不在这里**
+   *    过滤 `items` —— 在界面里再筛一次就是第二份"什么算这个分区"，而两份口径一旦
+   *    漂移，表现是"分页器说共 40 条、列表里却只有 3 条"（`total` 是服务端给的）。
+   * ⚠️ 它由页面从 URL 读出来（`?tplatform=`），组件**不读地址栏**：这一层只回答
+   *    "给我这些 props，画成什么样"（文件头那一段）。
+   */
+  platform: TrackPlatform | undefined;
+  /** 换分区。⚠️ 必填 —— 少传它 = 四个按不动的按钮。 */
+  onPlatformChange: (platform: TrackPlatform | undefined) => void;
   /** 翻页。⚠️ 必填 —— 见上面那段（少传它 = 一个按不动的分页器）。 */
   onPage: (page: number) => void;
 }
@@ -167,6 +180,8 @@ export function TrackedVideosSection({
   empty,
   loading,
   error,
+  platform,
+  onPlatformChange,
   onPage,
 }: TrackedVideosSectionProps) {
   const { t, i18n } = useTranslation();
@@ -178,6 +193,41 @@ export function TrackedVideosSection({
         {t('tracked.title')}
       </h2>
       <p className="tracked__sub">{t('tracked.subtitle')}</p>
+
+      {/*
+        ★★ 分区按钮（T7，spec §5.2）—— **照抄上面那面墙**（`routes/Videos.tsx` 那个
+        `tagcloud`）：同一套类名（`tagcloud` / `tagcloud__label` / `tagchip` / `tagchip--on`）、
+        同样的四个按钮、平台名走 `videos.platform*` 同一批词条。**不新增 CSS**。
+
+        ⚠️★ 它排在**三态之外**（不跟着列表空 / 失败 / 加载中一起消失）：
+           这正是分区最需要出现的时候 —— 在"Twitch 分区里一条都没有"那一屏上，
+           四个按钮是用户**唯一**能退回「全部」的出口；把它们跟空态一起藏起来，
+           表现就是"点进去之后这一栏什么都没有，而且退不回来"。
+        ⚠️ 「全部」那一颗在 `platform === undefined` 时带 `--on`（与那面墙逐字同形）：
+           「当前什么都没筛」也要看得出来，否则四个按钮都不亮，看起来像没选中任何一项。
+        ⚠️ 平台名走 `PLATFORM_KEYS`（本文件上面那张表），**不在这里写第二份** ——
+           同一个平台两个名字正是它当初被抽出来的原因。
+      */}
+      <div className="tagcloud">
+        <span className="tagcloud__label">{t('videos.allPlatforms')}</span>
+        <button
+          type="button"
+          className={`tagchip${platform === undefined ? ' tagchip--on' : ''}`}
+          onClick={() => onPlatformChange(undefined)}
+        >
+          {t('videos.allPlatforms')}
+        </button>
+        {TRACK_PLATFORMS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`tagchip${platform === p ? ' tagchip--on' : ''}`}
+            onClick={() => onPlatformChange(p)}
+          >
+            {t(PLATFORM_KEYS[p])}
+          </button>
+        ))}
+      </div>
 
       {loading ? <p className="state">{t('common.loading')}</p> : null}
 
@@ -207,24 +257,44 @@ export function TrackedVideosSection({
           <ul className="tracked__grid">
             {items.map((video) => (
               <li className="tracked__card" key={video.id}>
-                <div
-                  className={`tracked__thumb${
-                    video.thumbnailUrl === null ? ' tracked__thumb--none' : ''
-                  }`}
-                >
-                  {video.thumbnailUrl === null ? null : (
-                    /*
-                     * ⚠️ `loading="lazy"` + 固定宽高比（CSS 的 `aspect-ratio`）：
-                     *    一屏几十张图一起请求会把首屏拖慢，而比例不固定的图片
-                     *    到达时会让每一行重排（用户正在读的东西突然跳走）。
-                     */
-                    <img
-                      className="tracked__img"
-                      src={video.thumbnailUrl}
-                      alt={t('tracked.thumbAlt', { title: video.title })}
-                      loading="lazy"
-                    />
-                  )}
+                {/*
+                  ★★ 媒体那一格是一个**门面**（T7，spec §5.3）：点一下才真的挂 iframe。
+                  ⚠️ 这里是全站唯一那份嵌入实现（`ClickToPlayEmbed`）的第三个调用点 ——
+                     绝不在这里再写一份地址拼接 / 权限 / 门面：复制一份之后的典型剧情是
+                     "某天修好了其中一份，另一份没改"（那个组件文件头写着这件事）。
+
+                  ⚠️★ 封面走 T6 新加的 `coverUrl`：它的三样属性是**契约**
+                     （`alt=""` + `loading="lazy"` + `referrerpolicy="no-referrer"` ——
+                     bilibili 图床按 Referer 白名单放行，带 Referer 是 403），
+                     而 `thumbnailUrl` 为 `null` 时门面**回到纯色块**（§5.3）：
+                     不许画一个空框、也不许画一条破图边框 —— 那种东西每次都要人解释一遍。
+                  ⚠️ 六格里另外五格（标题 / 发布时间 / 时长 / 播放量 / 评论数）**一格没动**（§8.4）：
+                     变的是封面那一格的**可访问名**从 `img` 的 `alt` 挪到了门面按钮的
+                     `aria-label` 上（`img` 自己变成装饰性的 `alt=""`）。
+                  ⚠️★ 「去原站」那条外链**留在** `children` 里（§5.3 那张表）：
+                     它是**兜底出口** —— 嵌不出来 / 被墙 / 平台抽风时，用户更需要的正是它，
+                     所以它既不能删、也不该被挪到别处去。
+                     ⚠️ 它的 URL 形状仍然走 `watchUrl`（`VideoEmbed.tsx`）：三个平台的地址
+                     形状已经在那边跑过一轮，**不在这里抄第二份** —— 抄错的表现是一条
+                     404 的链接，而它不会让任何门禁变红。
+                */}
+                <div className="tracked__media">
+                  <ClickToPlayEmbed
+                    platform={video.platform}
+                    idLabel={video.externalId}
+                    title={video.title}
+                    startOffsetSec={null}
+                    coverUrl={video.thumbnailUrl}
+                  >
+                    <a
+                      className="tracked__out"
+                      href={watchUrl(video.platform, video.externalId)}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                    >
+                      {t('videos.openOriginal')}
+                    </a>
+                  </ClickToPlayEmbed>
                 </div>
 
                 <div className="tracked__body">
@@ -276,20 +346,6 @@ export function TrackedVideosSection({
                       {video.commentCount === null ? DASH : String(video.commentCount)}
                     </dd>
                   </dl>
-
-                  {/*
-                    去原站的链接。⚠️ URL 形状复用视频墙那一个（`watchUrl`，`VideoEmbed.tsx`）：
-                    三个平台的地址形状已经在那边跑过一轮，**不在这里抄第二份** ——
-                    抄错的表现是一条 404 的链接，而它不会让任何门禁变红。
-                  */}
-                  <a
-                    className="tracked__out"
-                    href={watchUrl(video.platform, video.externalId)}
-                    target="_blank"
-                    rel="noopener noreferrer nofollow"
-                  >
-                    {t('videos.openOriginal')}
-                  </a>
                 </div>
               </li>
             ))}

@@ -26,6 +26,7 @@ import type {
   TrackedCreator,
   TrackedCreatorInput,
   TrackedVideo,
+  TrackPlatform,
   VideoPlatform,
 } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
@@ -1535,10 +1536,21 @@ export interface TrackedVideoListResponse {
  * ⚠️ 只回 `status = 'visible'` 的行：过滤在服务端（数据层 `listTrackedVideos`），
  *    这里**不**做第二道过滤，也不加 `?includeHidden=` 之类的口子 ——
  *    两处一旦漂移，表现是"被隐藏的视频又挂回公开列表上"（spec §6.1 那一行就是为它写的）。
+ *
+ * ⚠️★ `platform` 是**分区**（spec §5.1，T4 加的查询参数）：筛选在**服务端**做，
+ *    所以 `total` 是"该分区内的总数"，翻页也只在分区内翻。
+ *    ⇒ 「全部」传 `undefined`，**绝不许**传空串 `''`。
  */
 export function fetchTrackedVideos(
   page: number,
   pageSize: number,
+  /**
+   * 分区；`undefined` = 全部。
+   * ⚠️ 它是**必填的位置参数**（不是可选的末尾参数）：分区这条路上"忘了传"与
+   *    "传了 `undefined`"在类型上长得一样，写成可选参数会让下面那个口子
+   *    在某个调用点被静默跳过 —— 而表现是"点了 Twitch 却还是全部"，不报错。
+   */
+  platform: TrackPlatform | undefined,
   signal?: AbortSignal,
 ): Promise<TrackedVideoListResponse> {
   const params = new URLSearchParams();
@@ -1546,6 +1558,15 @@ export function fetchTrackedVideos(
   // 分享出去的地址里不留一个"和默认值一样"的参数。
   if (page > 1) params.set('page', String(page));
   params.set('pageSize', String(pageSize));
+  /*
+   * ⚠️★ 「全部」时**不拼**这个参数（与"第 1 页不拼 `page`"同一个约定）。
+   *    这里不能图省事写成 `params.set('platform', platform ?? '')`：
+   *    `platform` 在服务端是**封闭枚举**（`TrackedVideoQuerySchema`），
+   *    空串**不是**它的取值 ⇒ `?platform=` 是一个 400（T4 实测），
+   *    而用户看到的是"查询参数不合法"，那句话指不到"你把分区清空了"上
+   *    （与上面那面墙同一条纪律，`routes/Videos.tsx` 的注释里写着）。
+   */
+  if (platform !== undefined) params.set('platform', platform);
   return request<TrackedVideoListResponse>(`/api/tracking/videos?${params.toString()}`, signal);
 }
 

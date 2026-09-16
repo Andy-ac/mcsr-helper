@@ -1,6 +1,7 @@
 import { VIDEO_PLATFORMS, type VideoPlatform } from '@mcsr/shared';
 import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
-import type { TrackedCreator } from '@mcsr/shared/tracking';
+import type { TrackedCreator, TrackPlatform } from '@mcsr/shared/tracking';
+import { TRACK_PLATFORMS } from '@mcsr/shared/tracking';
 import type { Video } from '@mcsr/shared/videos';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -167,6 +168,18 @@ export function Videos() {
    */
   const trackedPage = Number(params.get('tpage') ?? '1') || 1;
 
+  /*
+   * ⚠️★ 分区参数是 `tplatform`，**不是** `platform`：上面那面墙已经占了 `platform`，
+   *    共用会让两个区块互相改对方的筛选（spec §8.2；`tpage` 的注释里写着同一条理由）。
+   * ⚠️ 先校验再用：手打 `?tplatform=foo` 必须退化成"全部"，不许变成 400 错误页
+   *    —— 服务端的 `platform` 是封闭枚举，把 `foo` 原样发出去只会拿一句
+   *    "查询参数不合法"，而那句话指不到"你把地址改坏了"上（与 `platform` 同一条纪律）。
+   */
+  const trackedPlatformRaw = params.get('tplatform');
+  const trackedPlatform = (TRACK_PLATFORMS as readonly string[]).includes(trackedPlatformRaw ?? '')
+    ? (trackedPlatformRaw as TrackPlatform)
+    : undefined;
+
   const [trackedRefreshKey, setTrackedRefreshKey] = useState(0);
   const [creatorsRefreshKey, setCreatorsRefreshKey] = useState(0);
   const [addInput, setAddInput] = useState('');
@@ -179,8 +192,17 @@ export function Videos() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   const trackedState = useAsync<TrackedVideoListResponse>(
-    (signal) => fetchTrackedVideos(trackedPage, DEFAULT_PAGE_SIZE, signal),
-    [trackedPage, trackedRefreshKey],
+    (signal) => fetchTrackedVideos(trackedPage, DEFAULT_PAGE_SIZE, trackedPlatform, signal),
+    /*
+     * ⚠️★ `trackedPlatform` **必须在依赖数组里**：漏了它的表现是"点了 Twitch、
+     *    按钮亮着、列表还是全部那些" —— 一次请求都不发，而且**不报错**
+     *    （`useAsync` 只在依赖变化时重跑）。渲染自检看不见这一条：它不跑 effect，
+     *    只证明"给我这个 prop 画成什么样"。
+     * ⚠️ 依赖数组里写 `?? ''`（而不是裸的 `trackedPlatform`）：与上面那面墙
+     *    `platform ?? ''` 同一个形状 —— `undefined` 与 `''` 在这里是同一个意思
+     *    （"全部"），列成同一个值时不会因为"从没传变到传了空"而多跑一次请求。
+     */
+    [trackedPage, trackedPlatform ?? '', trackedRefreshKey],
   );
 
   /*
@@ -207,6 +229,28 @@ export function Videos() {
       const p = new URLSearchParams(prev);
       if (next > 1) p.set('tpage', String(next));
       else p.delete('tpage');
+      return p;
+    });
+  }
+
+  /**
+   * 追踪那一栏的换分区。
+   *
+   * ⚠️★ 换分区 = **回到第 1 页**（与那面墙"换筛选回第一页"同一条）：停在第三页而
+   *    新分区只剩一页的话，用户看到的是一片空白，他会以为"这个分区没有视频"。
+   * ⚠️★ 而它**只碰** `tpage` —— **不许碰** `platform` / `page`：那两个是上面那面墙的
+   *    状态，顺手删掉的表现是"在追踪那一栏点一下 B站，上面那面墙的筛选和页码
+   *    一起没了"（spec §8.2 就是为这件事写的）。
+   *    ⇒ 所以这里既不能走上面那个 `setParam`（它会删 `page`），也不能走
+   *      `setTrackedPage`（它只认页码）。
+   */
+  function setTrackedPlatform(next: TrackPlatform | undefined) {
+    setParams((prev) => {
+      const p = new URLSearchParams(prev);
+      // 「全部」= 把参数删掉（不是留一个空值：`?tplatform=` 会让这一栏读出一个空串）
+      if (next === undefined) p.delete('tplatform');
+      else p.set('tplatform', next);
+      p.delete('tpage');
       return p;
     });
   }
@@ -591,6 +635,13 @@ export function Videos() {
             ? `${t('videos.loadFailed')}：${trackedState.error}`
             : null
         }
+        /*
+         * ⚠️★ 分区**只影响取数**（服务端筛选，spec §5.1）：把 `trackedPlatform` 往下传
+         *    是让四个按钮画对选中态，组件**不会**拿它去过滤 `items` ——
+         *    在界面里再筛一次就是第二份"什么算这个分区"，而 `total` 是服务端给的。
+         */
+        platform={trackedPlatform}
+        onPlatformChange={setTrackedPlatform}
         onPage={setTrackedPage}
       />
 

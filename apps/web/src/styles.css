@@ -7992,6 +7992,26 @@ html[data-theme='light'] {
 }
 
 /*
+ * ★★ 卡片那一格的媒体（T7）：里面是**门面**（`ClickToPlayEmbed`），不是一张裸 `<img>`。
+ *
+ * ⚠️★ 16:9 的盒子**不在这里** —— 门面自带 `.video-embed__frame`（同样是 16:9、
+ *    `overflow: hidden`、`border-radius`），这一格只负责**卡片自己的结构**：
+ *    在媒体区和正文区之间画一条分隔线。它画的正是原来 `.tracked__thumb` 上那一条
+ *    `border-bottom` —— 少了它，图和字会糊成一整块，而"哪里是画面、哪里是文字"
+ *    是这张卡唯一的层次。
+ *    ⇒ 所以这个类名**不是**可有可无的壳：⑪ 那条"渲染出来的类名必须在 `styles.css`
+ *      里有规则"（`docs/pending.md §5.70`）判的正是这件事 —— 一个什么都不做的类名
+ *      会被它当场逮住，而那是**对的**（渲染得出来却什么都不生效的类名没人会发现）。
+ * ⚠️ 下面 `.tracked__thumb` / `.tracked__thumb--none` / `.tracked__img` 三条规则今天
+ *    **没人用了**（那一格换成了门面）：留着不删是刻意的，删它们是另一件事。
+ *    同理，"没有封面"那一档不再需要虚线占位框 —— `coverUrl` 为 `null` 时门面
+ *    自己就回到纯色块（spec §5.3）。
+ */
+.tracked__media {
+  border-bottom: 1px solid var(--line);
+}
+
+/*
  * ★ 封面框：**固定 16:9**。
  * ⚠️★ 比例必须写死：图片是**异步**到达的，不写比例时每一张图到达都会把下面的
  *   标题顶下去（一屏几十张 = 几十次重排，用户正在读的东西会跳走）。
@@ -8117,8 +8137,9 @@ html[data-theme='light'] {
   white-space: nowrap;
 }
 
-/* 「去原站看」。⚠️ `align-self: flex-start`：卡片正文是竖排 flex，不写的话它会被
-   拉成整行宽 —— 一条横贯卡片的链接看起来像一条分割线。 */
+/* 「去原站看」。⚠️ `align-self: flex-start`：它今天住在**门面那一格**里
+   （`.video-embed` 也是竖排 flex；T7 之前它住在卡片正文里，同样是竖排 flex）——
+   不写的话它会被拉成整行宽，而一条横贯卡片的链接看起来像一条分割线。 */
 .tracked__out {
   align-self: flex-start;
   font-size: 12px;

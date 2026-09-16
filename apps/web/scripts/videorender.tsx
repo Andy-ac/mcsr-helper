@@ -54,7 +54,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en, zhCN } from '@mcsr/shared/i18n';
-import { type TrackedCreator, type TrackedVideo, toMillis } from '@mcsr/shared/tracking';
+import {
+  type TrackedCreator,
+  type TrackedVideo,
+  type TrackPlatform,
+  toMillis,
+} from '@mcsr/shared/tracking';
 import i18n from 'i18next';
 import { createElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -255,6 +260,16 @@ function assertPropsGiven(
   }
 }
 
+/*
+ * ⚠️★ 列表那一栏的两个"分区"prop（T7 起）：
+ *   · `platform` **不在** `SECTION_KEYS` 里，而且**不能**加进去：`undefined` 是它的
+ *     **合法值**（= 「全部」），而上面那道守卫判的正是 `undefined`
+ *     ⇒ 加进去的话每一个"全部"夹具都会红在一句**假话**上（"prop 没有传"）。
+ *     ⇒ 它的守卫只能是**行为**上的：⑬ 用两个 props 对照（`undefined` ⇒ 「全部」选中 /
+ *       `'twitch'` ⇒ Twitch 选中）。传丢了的表现就是那条断言红 —— 而它在产物里看得见。
+ *   · `onPlatformChange` 是函数，照旧进 `SECTION_FNS`：漏了它 = 四个按不动的按钮，
+ *     而 SSR 的产物与接好线的**逐字节相同**（`onPage` 是同一条）。
+ */
 const SECTION_KEYS = [
   'items',
   'total',
@@ -265,7 +280,7 @@ const SECTION_KEYS = [
   'error',
   'onPage',
 ] as const;
-const SECTION_FNS = ['onPage'] as const;
+const SECTION_FNS = ['onPage', 'onPlatformChange'] as const;
 const PANEL_KEYS = [
   'canManage',
   'loading',
@@ -359,12 +374,23 @@ const VIEWS = 12345;
 const COMMENTS = 678;
 const THUMB = 'https://i0.hdslb.com/bfs/archive/example.jpg';
 
+/*
+ * 三条视频的**平台侧 id**（三个平台各一个形状：BV 号 / YouTube videoId / Twitch 数字 id）。
+ * ⚠️ 三条都**不含字符 `0`**：第 ② 组那条"整个产物里一个 `0` 都不许有"的扫描会连
+ *    **属性**一起扫（含 `data-embed-src`），而这些 id 正好会进那张卡的嵌入地址里。
+ *    含 `0` 的 id 会让那条断言以"地址里有个 0"的方式假红。
+ */
+const BILI_ID = 'BV1xx411c7mD';
+const YT_ID = 'dQw4w9WgXcQ';
+const TWITCH_ID = '123456789';
+const YT_THUMB = 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg';
+
 /** 六个字段都在的一张卡（第 ① 组的主夹具）。 */
 const FULL_VIDEO: TrackedVideo = {
   id: 'tv-1',
   creatorId: 'tc-1',
   platform: 'bilibili',
-  externalId: 'BV1xx411c7mD',
+  externalId: BILI_ID,
   title: 'RSG 1.16 world record, full run commentary',
 
   thumbnailUrl: THUMB,
@@ -378,11 +404,22 @@ const FULL_VIDEO: TrackedVideo = {
   firstSeenAt: PUBLISHED_SEC,
 };
 
-/** 四个可空字段**全为 null**、没有封面、没有标签（第 ②③ 组的主夹具）。 */
+/**
+ * 四个可空字段**全为 null**、没有封面、没有标签（第 ②③ 组的主夹具）。
+ *
+ * ⚠️★ 平台是 **YouTube**（T7 起），不是 B站 —— 理由只有一个，但是硬的：
+ *    ② 那条扫描连**属性**一起扫，而门面把嵌入地址挂在了 `data-embed-src` 上；
+ *    B站 那个地址里带着 `autoplay=0&danmaku=0`（`buildEmbedUrl` 拼的固定参数），
+ *    于是"产物里一个 `0` 都不许有"会**假红**在一个完全正确的实现上。
+ *    ⇒ 换成一条地址里没有 `0` 的平台（YouTube 只有 `/embed/<id>` 一段）。
+ *    ⚠️ 这不是把判据放松：四格仍然是 `—`、整份产物仍然要一个 `0` 都没有，
+ *      变的只是"这一份产物里恰好不会有别人拼进来的 0"。
+ */
 const NULL_VIDEO: TrackedVideo = {
   ...FULL_VIDEO,
   id: 'tv-null',
-  externalId: 'BV1xx411c7mD',
+  platform: 'youtube',
+  externalId: YT_ID,
   thumbnailUrl: null,
   publishedAt: null,
   durationSec: null,
@@ -399,6 +436,21 @@ const MIXED_VIDEO: TrackedVideo = {
   durationSec: DURATION_BIG,
   tags: ['liveReplay', 'long', 'weirdTagFromTheFuture'],
 };
+
+/*
+ * 三个平台各一条（⑭ 的三张卡）。
+ *
+ * ⚠️ 三条都是**同一份夹具**（`FULL_VIDEO`）只换"平台 + id + 封面"三格：别的字段逐字相同，
+ *    于是"某一格渲染成了别人的值"这个错法在对照里看得见。
+ * ⚠️ 封面那一格**故意两种都有**：B站 / YouTube 给地址，Twitch 给 `null` ——
+ *    一条夹具同时盖住"有封面"与"没有封面"（`null` 时门面回到纯色块，spec §5.3），
+ *    而三张卡是**同一次渲染**出来的，两条路的差别只可能来自那一格。
+ */
+const PER_PLATFORM_VIDEOS: TrackedVideo[] = [
+  { ...FULL_VIDEO, id: 'tv-bili', platform: 'bilibili', externalId: BILI_ID, thumbnailUrl: THUMB },
+  { ...FULL_VIDEO, id: 'tv-yt', platform: 'youtube', externalId: YT_ID, thumbnailUrl: YT_THUMB },
+  { ...FULL_VIDEO, id: 'tv-tw', platform: 'twitch', externalId: TWITCH_ID, thumbnailUrl: null },
+];
 
 const CREATOR_ON: TrackedCreator = {
   id: 'tc-on',
@@ -449,6 +501,12 @@ interface SectionProps extends Record<string, unknown> {
   empty: string;
   loading: boolean;
   error: string | null;
+  /**
+   * 当前分区（`undefined` = 「全部」）。
+   * ⚠️ 它**不在** `SECTION_KEYS` 里，而且不能加进去 —— 理由写在那个常量上面。
+   */
+  platform: TrackPlatform | undefined;
+  onPlatformChange: (platform: TrackPlatform | undefined) => void;
   onPage: (page: number) => void;
 }
 
@@ -479,6 +537,9 @@ const sectionProps = (over: Partial<SectionProps> = {}): SectionProps => ({
   empty: t('tracked.empty'),
   loading: false,
   error: null,
+  // 「全部」是默认那一档（`undefined`），所以绝大多数夹具不用管这两个 prop
+  platform: undefined,
+  onPlatformChange: noop,
   onPage: noop,
   ...over,
 });
@@ -559,16 +620,21 @@ const hasCssRule = (css: string, cls: string): boolean =>
   );
 
 /*
- * 封面那一条规则（`aspect-ratio` 在不在）—— ① 用它，操作数在这里切出来。
+ * 卡片那一格**媒体框**的规则（`aspect-ratio` 在不在）—— ① 用它，操作数在这里切出来。
+ *
+ * ⚠️★ T7 起这一格是**门面**（`ClickToPlayEmbed`），16:9 的盒子也随之从 `.tracked__thumb`
+ *    换成了 `.video-embed__frame`（门面**自带**那一个框，spec §5.3）。
+ *    判据一个字没变 ——"媒体框的比例必须写死" —— 只是它现在住在另一个类名的规则里。
+ *    （`.tracked__thumb` 那条规则留在 `styles.css` 里没人用了，见 ⑪ 的说明。）
  * ⚠️ 切片的两端是**两个类名**（不是行号）：行号是会漂的锚点（`docs/pending.md §5.23`）。
  */
-const CSS_TRACKED_THUMB = CSS.slice(
-  CSS.indexOf('.tracked__thumb {'),
-  CSS.indexOf('.tracked__thumb--none'),
+const CSS_VIDEO_FRAME = CSS.slice(
+  CSS.indexOf('.video-embed__frame {'),
+  CSS.indexOf('.video-embed__iframe {'),
 );
 assert.ok(
-  CSS_TRACKED_THUMB.length > 0,
-  '★ 探针：切出了 `.tracked__thumb` 那一段规则（切不到就是这段注释过期了）',
+  CSS_VIDEO_FRAME.length > 0,
+  '★ 探针：切出了 `.video-embed__frame` 那一段规则（切不到就是这段注释过期了）',
 );
 
 /**
@@ -597,31 +663,67 @@ console.log('① 卡片六个字段都在（R4）+ 时长格式 + 标签按 §4.
 // ---------------------------------------------------------------------------
 /*
  * ★ 这一组是后面每一组的**基线**：它把"一张卡上到底有什么"钉死。
- * ⚠️ 封面那条判据是 `img` 上有 `src` 与 `alt`**两样**（只有 src 的图在读屏软件里
- *    什么都不说；只有 alt 的图根本不显示）。
+ * ⚠️ T7 起封面那一格是**门面**（spec §5.3）：判据从"`img` 上有 `src` 与 `alt` 两样"
+ *    换成了"**按钮**的可访问名 + 封面那张 `img` 的 `src` / `lazy` / `referrerpolicy`"
+ *    —— 六格还是一格没少（§8.4），只是那一格的可访问名换了个地方住。
  */
 const FULL_HTML = renderSection({}, '六个字段都在');
 const fullCard = theCard(FULL_HTML);
-const img = elementsWithClass(fullCard, 'tracked__img')[0];
-assert.ok(img, '★★ 封面必须是一个 `<img class="tracked__img">`（没有它这张卡就没有图）');
-assert.equal(attrOf(img ?? '', 'src'), THUMB, `★★ 封面的 \`src\` 就是上游给的那个地址`);
+/*
+ * ★★ 封面那一格（T7 起是**门面**，spec §5.3 / §8.4）。
+ *
+ * ⚠️★ §8.4 点名要的就是这一处改动：六格一格没少，变的是**可访问名**从 `<img alt>`
+ *    挪到了包住它的那个按钮上（`aria-label` = 播放 + 标题，`img` 的 `alt=""`）。
+ *    ⇒ 这一组原来的五条断言（`tracked__img` 的 src / alt / lazy + `--none` + 16:9）
+ *      **不是被删掉**，而是按 §8.4 换成了：按钮的 `aria-label` 含标题 + 封面那张
+ *      `<img>` 的 `src` / `lazy` / `referrerpolicy` 三样 + 媒体框仍是 16:9。
+ * ⚠️ 为什么要逐条钉住：删掉其中任何一样，产物**照样是绿的** ——
+ *    图还是会显示，只是 B站 的封面全变成破图（`referrerpolicy`）、
+ *    或者读屏软件在这一格上什么都不说（`aria-label`）。
+ */
+const facade = elementsWithClass(fullCard, 'video-embed__facade')[0];
 assert.ok(
-  (attrOf(img ?? '', 'alt') ?? '').includes(FULL_VIDEO.title),
-  `★★ 封面必须有 \`alt\`，而且它说的是**哪支视频**（实读「${attrOf(img ?? '', 'alt') ?? ''}」）`,
+  facade,
+  '★★ 卡片那一格必须是一个**门面按钮**（`video-embed__facade`）—— spec §5.3：点一下才加载',
+);
+const FACADE_LABEL = attrOf(facade ?? '', 'aria-label') ?? '';
+assert.ok(
+  FACADE_LABEL.includes(FULL_VIDEO.title),
+  `★★ 门面的可访问名必须含**标题**（§8.4：它从 \`img alt\` 挪到了这里；实读「${FACADE_LABEL}」）`,
+);
+assert.ok(
+  FACADE_LABEL.startsWith(t('videos.play')),
+  `★★ 而且它说的是「播放 + 标题」（实读「${FACADE_LABEL}」）—— 光一个标题读屏用户不知道点下去会发生什么`,
+);
+const cover = elementsWithClass(fullCard, 'video-embed__cover')[0];
+assert.ok(
+  cover,
+  '★★ `thumbnailUrl` 非 null ⇒ 门面上那张封面在（`<img class="video-embed__cover">`，T6 的 prop）',
+);
+assert.equal(attrOf(cover ?? '', 'src'), THUMB, '★★ 封面的 `src` 就是上游给的那个地址');
+assert.equal(
+  attrOf(cover ?? '', 'alt'),
+  '',
+  '★★ 封面是**装饰性**的 ⇒ `alt=""`（可访问名在按钮上，不该让读屏念两遍）',
 );
 assert.equal(
-  attrOf(img ?? '', 'loading'),
+  attrOf(cover ?? '', 'loading'),
   'lazy',
   '★★ 封面必须 `loading="lazy"`（一屏几十张图一起请求会把首屏拖慢）',
 );
+assert.match(
+  cover ?? '',
+  /referrerpolicy="no-referrer"/i,
+  '★★ 封面必须 `referrerpolicy="no-referrer"`（bilibili 图床按 Referer 白名单放行，带 Referer 是 403；判据带 `i`：React 19 的 SSR 印的是驼峰 `referrerPolicy`，而 HTML 属性名不区分大小写）',
+);
 assert.equal(
-  hasClassIn(elementsWithClass(fullCard, 'tracked__thumb')[0] ?? '', 'tracked__thumb--none'),
-  false,
-  '★ 有封面时**不带** `tracked__thumb--none`（那一格是"没有封面"的标记）',
+  elementsWithClass(fullCard, 'tracked__media').length,
+  1,
+  '★ 媒体那一格是 `.tracked__media`（门面在里面；播放三角压在封面上的层叠见 CSS 那条注释）',
 );
 assert.ok(
-  /aspect-ratio/.test(CSS_TRACKED_THUMB),
-  '★★ 封面框的 CSS 里必须有 `aspect-ratio`（比例不固定时图片到达会让整页重排）',
+  /aspect-ratio/.test(CSS_VIDEO_FRAME),
+  '★★ 卡片那一格的媒体框必须有 `aspect-ratio`（比例不固定时图片到达会让整页重排）',
 );
 assert.equal(
   textOf(elementsWithClass(fullCard, 'tracked__cardtitle')[0] ?? ''),
@@ -672,7 +774,9 @@ assert.equal(
   '1:02:03',
   '★★ `durationSec: 3723` ⇒ `1:02:03`（**分钟位要补零** —— 去掉补零这条会红）',
 );
-ok('六个字段：标题 / 封面（src+alt+lazy+16:9）/ 发布时间 / 时长 / 播放量 / 评论数，标签三种都对');
+ok(
+  '六个字段：标题 / 封面（点一下才播的门面：按钮 `aria-label` 含标题 + 封面那张 `<img>` 的 src / lazy / no-referrer + 16:9）/ 发布时间 / 时长 / 播放量 / 评论数，标签三种都对',
+);
 
 // ---------------------------------------------------------------------------
 console.log('② ★★ 缺的值显示「—」，**绝不许显示 0**');
@@ -717,14 +821,19 @@ assert.equal(
   '★ 同一次渲染里没有标签容器（这一格的空是可见的）',
 );
 assert.equal(
-  elementsWithClass(nullCard, 'tracked__img').length,
+  elementsWithClass(nullCard, 'video-embed__cover').length,
   0,
-  '★★ 没有封面 ⇒ **一个 `<img>` 都不渲染**（`src=""` 会让浏览器去请求当前页面）',
+  '★★ 没有封面 ⇒ 门面上**一个封面 `<img>` 都不渲染**（`src=""` 会让浏览器去请求当前页面）',
 );
 assert.equal(
-  hasClassIn(elementsWithClass(nullCard, 'tracked__thumb')[0] ?? '', 'tracked__thumb--none'),
-  true,
-  '★ 没有封面时那一格带 `--none`（"没有封面"与"还没加载出来"要分得开）',
+  nullCard.includes('<img'),
+  false,
+  '★★ 而整张卡上一个 `<img>` 都没有（更强的判据：这一格是这张卡上唯一可能出现图片的地方）',
+);
+assert.equal(
+  elementsWithClass(nullCard, 'video-embed__facade').length,
+  1,
+  '★★ 探针：没有封面时**门面仍然在**（否则上面那两条会以"整张卡没渲染出来"的方式通过）—— spec §5.3：`null` 回到纯色块，不许画空框也不许画破图边框',
 );
 /* 混合夹具：只有一格是 null ⇒ 证明不是"整行都画成 —"。 */
 const MIXED_CELLS = theCard(renderSection({ items: [MIXED_VIDEO] }, '只有播放量是 null'));
@@ -1459,6 +1568,192 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
+console.log('⑬ 分区按钮：四个（全部 + 三个平台），选中态跟着 `platform` 走');
+// ---------------------------------------------------------------------------
+/*
+ * ★ spec §5.2（照抄 §2.6 那面墙）：四个按钮、同一套类名（`tagcloud` / `tagchip` /
+ *   `tagchip--on`）、平台名走 `videos.platform*` 词条 —— **不新增 CSS**。
+ *
+ * ⚠️★ 判据是**两个 props 对照**（`undefined` 与 `'twitch'`），不是"按钮渲染出来了没有"：
+ *    一个把选中态**写死**在「全部」上的实现，只渲染一次是看不出来的。
+ * ⚠️ `platform` 这一个 prop 只能这样守：`undefined` 是它的**合法值**（=「全部」），
+ *    所以 `assertPropsGiven` 那道守卫碰不了它（理由写在 `SECTION_KEYS` 上面）。
+ * ⚠️ 点下去发生什么**不在这一组**（SSR 不渲染事件处理器）："换分区要删 `tpage`、
+ *    不碰 `platform` / `page`"那一半住在 `routes/Videos.tsx` 里，本脚本够不着 ——
+ *    边界写在文件末尾。
+ */
+const chipLabels = (html: string): string[] =>
+  elementsWithClass(html, 'tagchip').map((el) => textOf(el));
+const activeChips = (html: string): string[] =>
+  elementsWithClass(html, 'tagchip')
+    .filter((el) => hasClassIn(el, 'tagchip--on'))
+    .map((el) => textOf(el));
+
+const ALL_PLATFORMS_HTML = renderSection({}, '分区：全部');
+assert.deepEqual(
+  chipLabels(ALL_PLATFORMS_HTML),
+  [
+    t('videos.allPlatforms'),
+    t('videos.platformBilibili'),
+    t('videos.platformYoutube'),
+    t('videos.platformTwitch'),
+  ],
+  '★★ 四个按钮，顺序是「全部 + 三个平台」（`TRACK_PLATFORMS` 的顺序）—— 与上面那面墙逐字同形',
+);
+assert.equal(
+  textOf(elementsWithClass(ALL_PLATFORMS_HTML, 'tagcloud__label')[0] ?? ''),
+  t('videos.allPlatforms'),
+  '★★ 那一行前面的标签（照抄 §2.6 的 `tagcloud__label`）',
+);
+assert.equal(
+  elementsWithClass(ALL_PLATFORMS_HTML, 'tagchip').every((el) => attrOf(el, 'type') === 'button'),
+  true,
+  '★ 四个都必须是 `type="button"`（默认的 submit 在表单里会变成一次整页提交）',
+);
+assert.deepEqual(
+  activeChips(ALL_PLATFORMS_HTML),
+  [t('videos.allPlatforms')],
+  '★★ 「全部」时**只有**「全部」是选中态（与那面墙同一条）',
+);
+const TWITCH_CHIPS_HTML = renderSection({ platform: 'twitch' }, '分区：只看 Twitch');
+assert.deepEqual(
+  activeChips(TWITCH_CHIPS_HTML),
+  [t('videos.platformTwitch')],
+  '★★ `platform="twitch"` ⇒ 选中态**跟着 props 走**（亮的是 Twitch 那一个，别的都不亮）',
+);
+assert.deepEqual(
+  chipLabels(TWITCH_CHIPS_HTML),
+  chipLabels(ALL_PLATFORMS_HTML),
+  '★ 四个按钮的**文字**与分区无关（换分区换的是选中态与列表，不是按钮本身）',
+);
+ok('分区按钮：四个（全部 + 三个平台）+ 同一行标签 + 选中态跟着 `platform` 走');
+
+// ---------------------------------------------------------------------------
+console.log('⑭ 卡片是门面：三个平台的 `data-embed-src` 形状 + 封面三样 + 「去原站」那条外链还在');
+// ---------------------------------------------------------------------------
+/*
+ * ★ spec §9 第 14 条：三张卡各自的嵌入地址形状 —— bilibili 含 `bvid=`、
+ *   YouTube 含 `/embed/`、Twitch 含 `video=v` 与 `parent=`。
+ *
+ * ⚠️★ Twitch 那一条**必须**先伪造 `globalThis.location` 再渲染：
+ *    `buildEmbedUrl` 对 Twitch 在**没有 origin** 时返回 `null`（宁可不嵌，也不发一个
+ *    注定被 parent 校验拒掉的请求），而脚本环境里没有 `location` ⇒ 不伪造的话
+ *    Twitch 那张卡的 `data-embed-src` 是**空的**，而"形状对不对"这条断言会以
+ *    **"根本没有地址"**的方式通过（本仓最怕的那种空跑）。
+ *    ⚠️ 伪造完**必须还原**（`finally`）：不还原的话后面每一份产物都带着一个不存在的
+ *    域名，而那种污染不会有任何报错（`liverender.tsx` 是同一处置）。
+ * ⚠️ 三条视频是**同一次渲染**出来的（spec §9 第 14 条那两种写法都允许）：
+ *    三张卡的差别只可能来自 `platform` / `externalId` / `thumbnailUrl` 那三格。
+ */
+const EMBED_ORIGIN = 'mcsr.example';
+const THREE_PLATFORM_HTML = ((): string => {
+  const backup = (globalThis as { location?: unknown }).location;
+  try {
+    (globalThis as { location?: unknown }).location = { hostname: EMBED_ORIGIN };
+    return renderSection(
+      { items: PER_PLATFORM_VIDEOS, total: PER_PLATFORM_VIDEOS.length },
+      '三个平台各一条',
+    );
+  } finally {
+    if (backup === undefined) delete (globalThis as { location?: unknown }).location;
+    else (globalThis as { location?: unknown }).location = backup;
+  }
+})();
+const platformCards = elementsWithClass(THREE_PLATFORM_HTML, 'tracked__card');
+assert.equal(
+  platformCards.length,
+  3,
+  `★ 探针：这一份产物里应当恰好三张卡（实测 ${String(platformCards.length)}）`,
+);
+const facadeSrcOf = (card: string): string => {
+  const faces = elementsWithClass(card, 'video-embed__facade');
+  assert.equal(faces.length, 1, `★ 探针：一张卡上恰好一个门面（实测 ${String(faces.length)}）`);
+  const src = attrOf(faces[0] ?? '', 'data-embed-src');
+  assert.notEqual(
+    src,
+    null,
+    '★★ 门面必须挂上"点下去会加载哪个地址"（`data-embed-src`）—— 拼不出地址时它是空的，下面每一条都会变成空跑',
+  );
+  return src ?? '';
+};
+const biliCard = platformCards[0] ?? '';
+const ytCard = platformCards[1] ?? '';
+const twitchCard = platformCards[2] ?? '';
+const biliSrc = facadeSrcOf(biliCard);
+const ytSrc = facadeSrcOf(ytCard);
+const twitchSrc = facadeSrcOf(twitchCard);
+
+assert.ok(
+  biliCard.includes('data-embed-src="https://player.bilibili.com/player.html?bvid='),
+  '★★ B站 的嵌入门面：地址形状是 `player.bilibili.com/player.html?bvid=<BV号>`',
+);
+assert.ok(
+  biliSrc.includes(`bvid=${BILI_ID}`),
+  `★★ 而且 bvid 就是那一条的 \`externalId\`（实读「${biliSrc}」）`,
+);
+assert.ok(
+  ytCard.includes('data-embed-src="https://www.youtube.com/embed/'),
+  '★★ YouTube 的嵌入门面：地址形状是 `www.youtube.com/embed/<videoId>`',
+);
+assert.ok(
+  ytSrc.includes(`/embed/${YT_ID}`),
+  `★★ 而且 videoId 就是那一条的 \`externalId\`（实读「${ytSrc}」）`,
+);
+assert.ok(
+  twitchCard.includes('video=v') && twitchCard.includes('parent='),
+  '★★ Twitch 的嵌入门面：地址里必须有 `video=v<数字ID>` 与 `parent=<域名>`（漏了 `v` 前缀播放器是个白框，而且不报错）',
+);
+assert.ok(
+  twitchSrc.includes(`video=v${TWITCH_ID}`) && twitchSrc.includes(`parent=${EMBED_ORIGIN}`),
+  `★★ 而且两个值都是真的（实读「${twitchSrc}」）—— parent 必须是**裸域名**（带协议 / 路径会被静默拒播）`,
+);
+assert.equal(
+  attrOf(elementsWithClass(biliCard, 'video-embed__facade')[0] ?? '', 'disabled'),
+  null,
+  '★ 地址拼得出来 ⇒ 门面**可点**（`disabled` 那一档是"这里嵌不了"）',
+);
+/*
+ * ★ §8.4 + §5.3 要的三样，在这一份**真实卡片**产物上再查一遍：
+ *   ⚠️ ⑫ 查的是组件本身的两态（传了 / 没传），它证明不了"卡片**这里**传了 `coverUrl`"
+ *      —— 删掉卡片里那一行传参，⑫ 照样全绿，只有下面这几条会红。
+ */
+assert.match(
+  biliCard,
+  /referrerpolicy="no-referrer"/i,
+  '★★ 封面还是不许带 Referer（判据带 `i`：React 19 的 SSR 印的是驼峰 `referrerPolicy`，而 HTML 属性名不区分大小写 ⇒ 浏览器看到的仍是 `referrerpolicy`）',
+);
+assert.equal(
+  elementsWithClass(biliCard, 'video-embed__cover').length,
+  1,
+  '★★ 有 `thumbnailUrl` 的那一条卡上确实画了封面',
+);
+assert.equal(
+  elementsWithClass(twitchCard, 'video-embed__cover').length,
+  0,
+  '★ 而 `thumbnailUrl: null` 的那一条**没有**封面 `<img>`（同一次渲染里的正面对照）',
+);
+assert.ok(biliCard.includes('tracked__out'), '★★ 「去原站」那条外链必须还在（它是兜底出口）');
+for (const [where, card, href] of [
+  ['B站', biliCard, `https://www.bilibili.com/video/${BILI_ID}`],
+  ['YouTube', ytCard, `https://www.youtube.com/watch?v=${YT_ID}`],
+  ['Twitch', twitchCard, `https://www.twitch.tv/videos/${TWITCH_ID}`],
+] as const) {
+  assert.equal(
+    attrOf(elementsWithClass(card, 'tracked__out')[0] ?? '', 'href'),
+    href,
+    `★★ ${where} 的「去原站」指向原视频页（形状走 \`watchUrl\`，不在这一栏里抄第二份）`,
+  );
+}
+assert.equal(
+  elementsWithClass(biliCard, 'tracked__cardtitle').length,
+  1,
+  '★★ §8.4：标题那一行还在 —— 封面换了画法，不等于把六格里的某一格删掉',
+);
+ok(
+  '卡片门面：三个平台的嵌入地址形状都对（Twitch 带 `video=v` + 裸域名 `parent`），封面三样属性、「去原站」外链与标题都在',
+);
+
+// ---------------------------------------------------------------------------
 console.log(
   '⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` / `video-embed*` 类名都要有规则（**先剥注释**）',
 );
@@ -1541,9 +1836,16 @@ const MUST_RENDER = [
   'tracked__emptyhint',
   'tracked__grid',
   'tracked__card',
-  'tracked__thumb',
-  'tracked__thumb--none',
-  'tracked__img',
+  /*
+   * ⚠️ T7：`tracked__thumb` / `tracked__thumb--none` / `tracked__img` 这三格
+   *    **换成了** `tracked__media`（门面自带 16:9 的框，§5.3）。
+   *    这不是"把清单改短了"：媒体那一格仍然必须出现，只是它的类名变了；
+   *    封面那一格的判据搬去了 ① / ⑭（§8.4 点名要的就是"改成断言按钮的可访问名 +
+   *    封面那张 `<img>` 的三样属性"，不是把这一格删掉）。
+   *    ⚠️ `styles.css` 里那三条规则**留着没删**：它们只是今天没人用了，
+   *       而删它们是另一件事（不在 T7 的文件清单里）。
+   */
+  'tracked__media',
   'tracked__body',
   'tracked__head',
   'tracked__tags',
@@ -1581,7 +1883,7 @@ const MUST_RENDER = [
  *    就地在中间某一组收集的话，"只有后面那几份产物里才出现的类名"根本不进清单，
  *    于是类名↔规则这道门禁对它们**是空的**（`rankedrender.tsx` 的 ⑧ 记着同一件事）。
  *    ⇒ 这一节排在全文件**最后**（`--en` 那一组在它前面，所以它才是最后一组）。
- *    ⚠️ 这也是 ⑫ 排在 ⑪ **前面**、编号却比它大的原因：带渲染的段落只能排在收集之前。
+ *    ⚠️ 这也是 ⑫ / ⑬ / ⑭ 排在 ⑪ **前面**、编号却比它大的原因：带渲染的段落只能排在收集之前。
  */
 const CLASS_PREFIXES = ['tracked', 'video-embed'] as const;
 const pageClasses = [
@@ -1620,6 +1922,12 @@ console.log('   所以下面这几件事它**证明不了**：');
 console.log('   · 页面（`routes/Videos.tsx`）本身：它取数、它有 7 个 useState —— 纯 SSR 下');
 console.log('     永远停在 loading 那一屏。⇒ 分页（`?tpage=`）、四个动作的接线、');
 console.log('     `useCan` 的取值、删博主之后**两个刷新键都要动**：**一个字都没断言**。');
+console.log('   · ⚠️★ 换分区那一条链路的**接线**同样一个都没断言（T7）：');
+console.log('     `?tplatform=` 的读写（换分区删 `tpage`、**不碰** `platform` / `page`）、');
+console.log('     手打 `?tplatform=foo` 退化成"全部"、`fetchTrackedVideos` 在「全部」时不拼');
+console.log('     `?platform=`（空串服务端是 400），以及**`trackedPlatform` 有没有进');
+console.log('     `useAsync` 的依赖数组** —— 漏了它 = 换分区列表不重新取数，');
+console.log('     而 ⑬ 那种静态断言**看不见**（它只证明"给我这个 prop 画成什么样"）。');
 console.log('   · **点击的结果**：SSR 的产物里没有事件处理器，一颗接好线的按钮与一颗');
 console.log('     `onClick` 是 `undefined` 的按钮**长得一模一样** —— 这一层用的是运行时守卫');
 console.log('     （`assertPropsGiven`），而"prop 忘了传"在**页面**那一侧是编译错误。');
@@ -1641,7 +1949,7 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  * ⚠️ en 比 zh 多一组，是因为 ⑩ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`）；两个数差 1 是**正常的**，别把它抹平。
  */
-const expectedGroups = LANG === 'en' ? 12 : 11;
+const expectedGroups = LANG === 'en' ? 14 : 13;
 assert.equal(
   pass,
   expectedGroups,
