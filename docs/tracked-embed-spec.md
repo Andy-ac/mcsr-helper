@@ -221,6 +221,27 @@ GET https://api.twitch.tv/helix/videos?id=<id>&id=<id>…      （请求头同�
 - 数据层：`listTrackedVideos(opts)` 的 `opts` 加**可选** `platform?: TrackPlatform`；
   `items` 与 `total` 必须跑**同一个条件**（上一轮那条注释守的就是这件事）。
 
+#### 5.1b ★ 2026-09-19（用户第 9 条）：这张表**多了七个参数** + 一条新端点
+
+上面那张表是第 8 条那一轮的**冻结值**，本轮**没有**改动它，而是**扩充**了它。
+权威口径（取值、缺省、非法值、两条跨字段判据、以及"为什么每个参数都必须进 schema"）
+在 **`docs/videos-live-spec.md` §2**；这里只留一行清单，免得下一个人以为表是完整的：
+
+| 参数 | 取值 | 缺省 |
+|---|---|---|
+| `sort` | `new` \| `views` | `new` |
+| `creatorId` | 博主 id（`min(1).max(64)`） | 不传 = 全部博主 |
+| `tag` | `liveReplay` \| `short` \| `long` | 不传 = 全部 |
+| `durMin` / `durMax` | 秒（闭区间） | 不传 = 不限 |
+| `since` / `until` | Unix **秒**（闭区间） | 不传 = 不限 |
+
+外加一条**新端点** `GET /api/tracking/roster`（公开只读、每行五个键、
+`public, max-age=60, stale-while-revalidate=300`，与公开列表同档）——
+界面那一侧用它填博主下拉框（`/creators` 那条今天需要 `live.manage`，线上匿名实测 **401**）。
+
+⚠️★ 实测（2026-09-19，生产）：这个端点**静默忽略未知查询参数**（`?sort=views` 与不带它
+逐条相同）⇒ 少写一个参数**不报错、只什么都不做**（界面看起来"点了没反应"）。
+
 ### 5.2 追踪那一栏的分区按钮（**照抄 §2.6**）
 
 - 位置：`TrackedVideos.tsx` 里列表**上方**，与上面那面墙同一个视觉（同 `tagcloud` / `tagchip` 类名，
@@ -505,7 +526,7 @@ RunSummary.verifyErrors: Array<{ platform: TrackPlatform; error: string }>;  // 
 | 候选排序 | `COALESCE(verify_checked_at, 0) ASC, id ASC` |
 | 摘要新增行 | `  核对: 查 N 个 / 隐藏 M 个`（**永远打印**） |
 | 核对失败前缀 | `  ⚠️ 核对失败: platform=… error=…`（与创作者的 `⚠️ 失败样例:` 分开） |
-| API 查询参数 | `platform`（枚举 = `TRACK_PLATFORMS`；非法 ⇒ 400 `invalid_query`） |
+| API 查询参数 | `platform`（枚举 = `TRACK_PLATFORMS`；非法 ⇒ 400 `invalid_query`）。⚠️ **2026-09-19 又加了七个**：`sort` / `creatorId` / `tag` / `durMin` / `durMax` / `since` / `until` —— 见 §5.1b |
 | 前端 URL 参数 | `tplatform`（换分区时删 `tpage`；**不碰** `platform` / `page`） |
 | 分区按钮的类名 | 复用 `tagcloud` / `tagcloud__label` / `tagchip` / `tagchip--on`（**不新增 CSS**） |
 | 词条 | 复用 `videos.allPlatforms` / `videos.platform*` / `videos.play` / `videos.playHint` / `videos.embedUnavailable`；**新增只允许两个**：`tracked.hiddenCount`（面板那格的 `N（隐藏 M）`）与 `tracked.emptyPlatform`（**分区里**空的时候那一句 —— 2026-09-16 的 Ruling 9 放行：分区为空时若沿用"还没有追踪到视频 / 抓取每 10 分钟跑一轮"，会把用户送去等一次永远不会发生的抓取）。中英都要，且都要进渲染自检。 |

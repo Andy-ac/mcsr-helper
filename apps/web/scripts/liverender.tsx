@@ -23,7 +23,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en as enDict, zhCN } from '@mcsr/shared/i18n';
-import type { LiveChannel, UserLiveLink } from '@mcsr/shared/live';
+import { filterLiveChannels, type LiveChannel, type UserLiveLink } from '@mcsr/shared/live';
 import type { Video } from '@mcsr/shared/videos';
 import i18n from 'i18next';
 /*
@@ -99,6 +99,24 @@ function channel(over: Partial<LiveChannel> = {}): LiveChannel {
     status: 'visible',
     createdAt: 0,
     updatedAt: 0,
+    /*
+     * ★★ 迁移 023 的三列（2026-09-18，用户第 10 条）—— `live_channel 三态`。
+     *
+     * ⚠️★ 默认值**全都是 `null`**，而且这是**有意的**：
+     *   · `isLive: null` = **没查过**（这一列刚加、这个平台我们还不查、或者这一轮那条上游整个失败了）。
+     *     `null` 与 `false`（问过、没在播）在界面上都是"什么都不显示"，但在**数据**里必须分得开
+     *     （`packages/shared/src/live.ts` 的 `LiveChannel` 那段 ★★ 写着为什么）——
+     *     夹具的默认值取 `null` 就顺带守住了"谁都别把 `null` 当成 `false`"这件事：
+     *     把默认值写成 `false` 的话，下面每一条 `isLive: true` 的断言都还在，而
+     *     "没查过 ⇒ 什么都不画"那一档就**没有任何一份产物**证明了。
+     *   · `viewerCount: null` = **上游没给**（不是 0：上游真的会给 0，实测过）。
+     *   · `liveCheckedAt: null` = 从没查过。⚠️ 它在界面上**没有渲染点**（卡片不印"上次查的时刻"），
+     *     所以它不会出现在任何产物里 —— 留在夹具里是为了形状完整（少一格是静默的，
+     *     本文件不在 tsconfig 的 include 里，见文件头）。
+     */
+    isLive: null,
+    viewerCount: null,
+    liveCheckedAt: null,
     ...over,
   };
 }
@@ -339,6 +357,193 @@ console.log(`【${LANG}】直播卡：能嵌的那一行`);
     '★ B站 的房间地址**不能**加 `/live` 后缀（那条路径不存在）',
   );
   ok('没有视频 ID → 频道级的 /live（且只有 YouTube 用这个后缀）');
+}
+
+/*
+ * ★★ 「直播中」徽章与人数（用户第 10 条，2026-09-18 落地）。
+ *
+ * ⚠️★ 这一组盯的是 `LiveCard` 里那个**三态**判断，而三态里最贵的一档是"**没查过**"：
+ *   · `isLive === true`  + `viewerCount` 有值 ⇒ 徽章 + 人数；
+ *   · `isLive === true`  + `viewerCount === null` ⇒ 徽章**在**、人数那一格**一个节点都没有**
+ *     （不是 0、不是"未知" —— 那两种都会留下一个空框或一句假话）；
+ *   · `isLive === null`（从没查过）⇒ **两者都不画**；
+ *   · `isLive === false`（问过、没在播）⇒ 同样两者都不画（与上一档在界面上一样，
+ *     在数据里分得开 —— `packages/shared/src/live.ts` 那段 ★★ 解释了为什么必须分开）。
+ *
+ * ⚠️★ 判据是**节点数**，不是"串出现过几次"：`nodesWithClass` 数的是**挂着这个类名的元素**。
+ *    `markup.includes('badge--live')` 会被一段文字、一个属性值满足 —— 那正是"一条断言
+ *    在该红时不红"的经典形状。配的两条探针（`<p>badge--live</p>` 数不到、真节点数得到）
+ *    把这件事钉在原地。
+ * ⚠️ 每一档都带上"平台徽章在不在"这条对照：它证明**这张卡真的渲染了**
+ *    （否则"没有直播徽章"会在"整张卡都没渲染"的时候也成立）。
+ */
+{
+  console.log(`\n【${LANG}】直播卡：★★「直播中」徽章与人数 —— 三档互斥（用户第 10 条）`);
+
+  /** 产物里**挂着这个类名的元素**个数（不是"串出现几次" —— 见上面那段）。 */
+  const nodesWithClass = (markup: string, cls: string): number =>
+    [...markup.matchAll(/<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g)].filter((m) =>
+      (/(?<![\w-])class="([^"]*)"/.exec(m[0])?.[1] ?? '').split(/\s+/).includes(cls),
+    ).length;
+
+  /* ⚠️ 探针：计数器读的是 `class` 属性里的**整个词**，不是子串。 */
+  assert.equal(
+    nodesWithClass('<span class="badge badge--live">x</span>', 'badge--live'),
+    1,
+    '探针：这个计数器能数到一个真的节点',
+  );
+  assert.equal(
+    nodesWithClass('<p>badge--live</p>', 'badge--live'),
+    0,
+    '★★ 探针：**只出现在文字里**的类名一个都不算（`markup.includes` 那一版会数到它 ⇒ 那才是"不会红的断言"）',
+  );
+  assert.equal(
+    nodesWithClass('<i data-class="badge--live" class="other"></i>', 'badge--live'),
+    0,
+    '★★ 探针：`data-class="badge--live"` **不算**（`\\bclass=` 会被它满足 —— 这是本仓踩过的那个坑）',
+  );
+
+  const cardFor = (over: Partial<LiveChannel>): string =>
+    html(
+      <ul>
+        <LiveCard channel={channel(over)} />
+      </ul>,
+    );
+
+  /** 一档的期望：直播徽章几个节点、人数几个节点。 */
+  const BADGE_STATES: readonly {
+    label: string;
+    over: Partial<LiveChannel>;
+    badge: number;
+    viewers: number;
+    why: string;
+  }[] = [
+    {
+      label: '在播 + 有人数',
+      over: { isLive: true, viewerCount: 5000, liveCheckedAt: 1_760_000_000 },
+      badge: 1,
+      viewers: 1,
+      why: '徽章 + 人数那一格都在',
+    },
+    {
+      label: '在播 + 人数为 0',
+      over: { isLive: true, viewerCount: 0, liveCheckedAt: 1_760_000_000 },
+      badge: 1,
+      viewers: 1,
+      why: '★ 0 是**上游真的说了 0**（实测：Twitch 的在播流里有 `viewer_count=0` 的条目）⇒ 那一格照样画「0 人观看」。写成 `channel.viewerCount ? …` 的实现会在这里红',
+    },
+    {
+      label: '在播 + 上游没给人数',
+      over: { isLive: true, viewerCount: null, liveCheckedAt: 1_760_000_000 },
+      badge: 1,
+      viewers: 0,
+      why: '★ 徽章在，而**人数那一格一个节点都没有**（不是 0、不是"人数未知"：那两种都会留下一个空框或一句我们没验证过的话）',
+    },
+    {
+      label: '问过、没在播',
+      over: { isLive: false, viewerCount: null, liveCheckedAt: 1_760_000_000 },
+      badge: 0,
+      viewers: 0,
+      why: '两者都不画（界面上"没在播"与"没查过"一样安静，但它们在数据里是两句话）',
+    },
+    {
+      label: '从没查过',
+      over: { isLive: null, viewerCount: null, liveCheckedAt: null },
+      badge: 0,
+      viewers: 0,
+      why: '★ 两者都不画 —— 这一档最容易被写坏（`channel.isLive ? …` 把 `null` 也当成"在播"，会凭空多出一枚徽章）',
+    },
+  ];
+  for (const state of BADGE_STATES) {
+    const markup = cardFor(state.over);
+    assert.equal(
+      nodesWithClass(markup, 'badge--kind'),
+      1,
+      `★★ ${state.label}：这一张卡上**平台徽章**必须还在（它是"卡真的渲染了"的对照 —— 少了它，下面两条"没有 X"可能只是因为整张卡没渲染）`,
+    );
+    assert.equal(
+      nodesWithClass(markup, 'badge--live'),
+      state.badge,
+      `★★ ${state.label} ⇒ 「直播中」徽章 **${String(state.badge)}** 个（实测 ${String(nodesWithClass(markup, 'badge--live'))}）：${state.why}`,
+    );
+    assert.equal(
+      nodesWithClass(markup, 'live-card__viewers'),
+      state.viewers,
+      `★★ ${state.label} ⇒ 人数那一格 **${String(state.viewers)}** 个节点（实测 ${String(nodesWithClass(markup, 'live-card__viewers'))}）：${state.why}`,
+    );
+  }
+  /** 某一档的产物里，"人数那一格"的**可见文字**（没有那一格时返回空串）。 */
+  const viewersTextOf = (markup: string): string => {
+    const m = /<span class="live-card__viewers">([\s\S]*?)<\/span>/.exec(markup);
+    return m === null ? '' : decodeEntities(m[1] ?? '').trim();
+  };
+  const withCount = cardFor(BADGE_STATES[0]?.over ?? {});
+  const zeroCount = cardFor(BADGE_STATES[1]?.over ?? {});
+  const nullCount = cardFor(BADGE_STATES[2]?.over ?? {});
+  assert.equal(
+    viewersTextOf(withCount),
+    i18n.t('live.viewers', { n: 5000 }),
+    `★★ 人数那一格的文字是**词条插值**出来的（实读「${viewersTextOf(withCount)}」）—— 写死一句"有人观看"也满足"节点在"，所以必须比文字`,
+  );
+  assert.equal(
+    viewersTextOf(zeroCount),
+    i18n.t('live.viewers', { n: 0 }),
+    `★★ 上游给 0 ⇒ 画的就是「${i18n.t('live.viewers', { n: 0 })}」（0 是一个**数据**，不是"没有数据"）`,
+  );
+  assert.equal(
+    viewersTextOf(nullCount),
+    '',
+    '★★ 上游没给人数 ⇒ 那一格连文字都没有（不是 0、不是空框 —— 空框会被读成"这里坏了"）',
+  );
+  assert.notEqual(
+    i18n.t('live.viewers', { n: 0 }),
+    i18n.t('live.viewers', { n: 5000 }),
+    '★ 探针：上面那两条比的确实是**两个不同的串**（插值没生效的话两条会同时为真）',
+  );
+  /*
+   * ★★ 能红证明（本仓 F1 那一套）：把**旧写法**（恒渲染）喂给同一个计数函数。
+   *    ⚠️ 少了它，"没有徽章"与"这个计数判据写坏了"在输出上完全一样。
+   */
+  assert.notEqual(
+    nodesWithClass('<li><span class="badge badge--live">直播中</span></li>', 'badge--live'),
+    0,
+    '★★ 能红证明：恒渲染徽章的旧写法**会被同一个计数器数到** ⇒ 上面 `isLive: false / null` 那两条"0 个"确实在区分行为',
+  );
+  assert.notEqual(
+    nodesWithClass(
+      '<li><span class="live-card__viewers">0 人观看</span></li>',
+      'live-card__viewers',
+    ),
+    0,
+    '★★ 能红证明：把"没给人数"画成 `0`（或"未知"那一类）的写法会被同一个计数器数到 ⇒ "null ⇒ 0 个节点"那条有区分力',
+  );
+  /*
+   * ⚠️ 这里原来还有一条"同一份计数器在**真的**那一格上数得到 1"的对照 —— **删掉了**：
+   *    它与上面循环里"在播 + 有人数 ⇒ 1 个节点"**逐字同义**（那一条跑的也是真产物），
+   *    属于"由上一条推出来的恒真断言"（本仓对那种断言的处置是删，不是留）。
+   *    计数器的两条"能红证明"喂的是**手写**片段，而真产物上的那半由循环顶着。
+   */
+  /*
+   * ★ 时间戳那一列（`liveCheckedAt`）**不进界面**：卡片不印"上次查的时刻"。
+   *   ⚠️ 这是**刻意的**：一句"X 分钟前查的"会把"迟到"这件事**逐行**摊开，
+   *   而页面已经把这份迟到说清楚了（`live.recordsChannels` 那句"每几分钟一次、
+   *   可能晚几分钟"）—— 逐行的时间戳只会让人逐行去怀疑。
+   *   ⚠️ 下面这条**能红**：谁把那个字段渲染出来（不管是数字还是"X 分钟前"），
+   *   产物里都会出现那个 `1760000000`。
+   */
+  assert.equal(
+    withCount.includes('1760000000'),
+    false,
+    '★★ `liveCheckedAt`（1760000000）**不许出现在卡片上** —— 卡片不印"上次查的时刻"，迟到由页面上那一句统一交代',
+  );
+  assert.equal(
+    withCount.includes('1760'),
+    false,
+    '★ 更强的判据：连那一串的开头都不在产物里（写成「X 分钟前」的实现也要先算出那个时刻，产物里留下的至少是它的数字形状）',
+  );
+  ok(
+    '★ 三档互斥：在播+人数（文字 = 词条插值）/ 在播+0（照画「0 人观看」）/ 在播+null（人数**零节点**）/ 没在播与从没查过（两者都不画）；能红证明：恒渲染的旧写法会被同一计数器数到',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -738,10 +943,22 @@ console.log(`\n【${LANG}】资源库「视频资料」的播放器`);
     <ResourceVideoEmbed url="https://www.bilibili.com/video/BV1xx411c7mD" title="一个教程" />,
   );
   assert.ok(hasFacade(good), '能解析成视频的 URL 应当画出播放器');
+  /*
+   * ★★ `danmaku` 从 `0` 改成 `1`（2026-09-19，用户第 8 条）—— **判据一个字没放松**：
+   *    这里仍然是"地址**逐字符**可断言"，变的只是那个值（旧裁决被推翻了）。
+   *
+   * ⚠️ 为什么翻过来：`danmaku=0` 不是"弹幕默认关"，而是**连弹幕数据都不取** ——
+   *    播放器页源码 `if (SP.danmaku != null && !SP.danmaku) featureList.add('noDanmaku')`，
+   *    而核心对那个 feature 直接 `return this.log.i('noDanmaku')`。
+   *    用户看到的"调不了弹幕"是**开关根本不存在**（证据与代价都在
+   *    `packages/shared/src/videos.ts` 的 bilibili 分支与 §2.2 of `docs/tracked-embed-spec.md`）。
+   * ⚠️★ 这条断言仍然**能红**：`buildEmbedUrl` 里把那个 `1` 改回 `0`（或漏掉这个参数）
+   *    时它会当场逐字符不等。它守的是"这个值是什么"，不是"地址长得像"。
+   */
   assert.equal(
     embedSrc(good),
-    'https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&autoplay=0&danmaku=0',
-    'B站 的嵌入地址形状',
+    'https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&autoplay=0&danmaku=1',
+    'B站 的嵌入地址形状（`danmaku=1`：`0` 会让播放器连弹幕数据都不取）',
   );
   // 兜底出口必须指向**用户自己贴的那个 URL**，不是我们拼的规范链接
   assert.ok(
@@ -979,9 +1196,18 @@ const authoringForm = html(
      *    页面本身不在这个产物里。
      *
      *    中文模式之所以一直"通过"，纯粹是**巧合**：`live.title` 的中文是「直播」，
-     *    而产物里有「直播中」（`live.recordsChannels` 那句话的一部分），
-     *    `includes('直播')` 于是为真。换成英文（`title: 'Live'`）就立刻为假。
+     *    而产物里有含「直播」二字的长句，`includes('直播')` 于是为真。
+     *    换成英文（`title: 'Live'`）就立刻为假。
      *    ⇒ 换句话说：它守的不是"`live.` 命名空间被渲染了"，而是"某个含『直播』二字的长句在产物里"。
+     *
+     *    ⚠️★ 上面那句"含「直播」二字的长句"原文写的是「（`live.recordsChannels` 那句话的一部分）」——
+     *    **那是假的**（2026-09-19 逐条核过，两处都错）：
+     *      · `live.recordsChannels` **不在这个产物里**：它由 `routes/Live.tsx:131` 渲染，
+     *        而那是个要取数的**页面**，本脚本画不出来（`grep` 全仓只有那一处引用）；
+     *      · 产物里**确实**有「直播中」，但它的来源是 `live.liveBadge`（徽章，本脚本的夹具
+     *        真的渲染了它）与 `live.noEmbedBilibili` 那句里的「直播间号」。
+     *    ⇒ 教训是上面那条的**加强版**：偶然命中不仅会在换语言时暴露，还会在**改词条**时
+     *      悄悄换一个来源 —— 留着那句错的解释，下一个人会照着它去找一个不存在的键。
      *
      *    教训值得留在原地：**用"译文是产物子串"来证明覆盖时，必须挑一个真的由该 fixture 渲染出来的键**，
      *    否则中文里很容易被某个更长句子的片段意外命中 —— 而那种偶然命中在**换语言时才暴露**。
@@ -1179,8 +1405,8 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
   );
   assert.equal(
     embedSrc(bili),
-    'https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&autoplay=0&danmaku=0',
-    'B站：地址形状固定，而且**起始偏移不该出现**（该平台不支持跳转）',
+    'https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&autoplay=0&danmaku=1',
+    'B站：地址形状固定（`danmaku=1`），而且**起始偏移不该出现**（该平台不支持跳转）',
   );
   assert.equal(
     outHref(bili),
@@ -1883,8 +2109,497 @@ console.log(`\n【${LANG}】娱乐视频墙的播放器（VideoEmbed）—— �
   ok('★ 能红证明：B站若被说成"认不出平台"或"以为能嵌"，上述两条断言必然失败');
 }
 
+/** 这一行的每一处页面源码守卫都读**同一份** `Live.tsx` 快照（一次读、一次剥注释）。 */
+const LIVE_PAGE_SOURCE = readFileSync(new URL('../src/routes/Live.tsx', import.meta.url), 'utf8');
+/**
+ * 剥掉注释之后的页面源码 —— **扫描源码形状的守卫必须先把自己那类文本排除掉**
+ * （本脚本 F2 那一段为同一件事写过一整段：守卫会被自己写的说明文字绊倒）。
+ * ⚠️ 只剥 `/* … *​/` 与行首的 `//`：与 F2 用的那一版逐字相同。
+ */
+const stripTsComments = (source: string): string =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
+const LIVE_CODE = stripTsComments(LIVE_PAGE_SOURCE);
+
+// ---------------------------------------------------------------------------
+console.log(`\n【${LANG}】★★ 顺序：服务端给的顺序就是屏幕上的顺序（前端**不许再排一遍**）`);
+// ---------------------------------------------------------------------------
+{
+  /*
+   * ★ 用户第 10 条："将正在直播的频道按**观看人数递降**的顺序排列在前面，并显示观看人数"。
+   *
+   * ⚠️★ 那份顺序由**服务端**给（`services/api/src/live.ts` 的 `LIVE_ORDER_BY`，
+   *    四类行 + "人数为 NULL 排最后"；`services/api/src/live-order.test.ts` 逐条钉着它）。
+   *    页面那一侧的契约只有一句：**原样渲染**（`Live.tsx` 的 `items` 直接来自接口、
+   *    `shown` 只做搜索过滤、**不排序**）。
+   * ⇒ 这一组分三层来守它，因为单靠哪一层都不够：
+   *    ① **渲染层**：一份"在播两人 + 不在播两人 + 从没查过一人"的夹具，逐行比 `<li>` 的顺序；
+   *    ② **反面**：把同一份夹具**倒过来**再渲染一次，顺序必须跟着倒
+   *       —— 这一条证明①读的是"传入顺序"，而不是某个写死的顺序；
+   *    ③ **源码层**：`Live.tsx` 里**一个 `.sort(` 都不许有**（那是"前端又排了一遍"的唯一写法）。
+   *       ⚠️ ③ 是**回归守卫**，不是替浏览器测量 —— 它挡的是"有人顺手补一次排序"。
+   *    ④ **纯函数层**：`filterLiveChannels` 只筛不排，而且**空查询返回的是新数组**
+   *       （调用方因此不必写 `query ? filter(…) : all` 那种两分支）。
+   *
+   * ⚠️ ① 用的是**真的**服务端顺序（在播降序 → 不在播 → 从没查过），而不是随便一份数组：
+   *    夹具本身说谎的话，这一组证明的就不是用户要的那个顺序了。
+   */
+  const SERVER_ORDER: LiveChannel[] = [
+    channel({ id: 'o1', displayName: 'Live First', isLive: true, viewerCount: 90000 }),
+    channel({ id: 'o2', displayName: 'Live Second', isLive: true, viewerCount: 12 }),
+    channel({ id: 'o3', displayName: 'Offline One', isLive: false, viewerCount: null }),
+    channel({ id: 'o4', displayName: 'Offline Two', isLive: false, viewerCount: null }),
+    channel({ id: 'o5', displayName: 'Never Checked', isLive: null, viewerCount: null }),
+  ];
+  const listOf = (rows: readonly LiveChannel[]): string =>
+    html(
+      <ul>
+        {rows.map((row) => (
+          <LiveCard key={row.id} channel={row} />
+        ))}
+      </ul>,
+    );
+  /** 产物里每一张卡的**名字**，按 DOM 顺序（= 屏幕顺序）。 */
+  const cardNamesOf = (markup: string): string[] =>
+    [...markup.matchAll(/<h2 class="live-card__name">([\s\S]*?)<\/h2>/g)].map((m) =>
+      decodeEntities(m[1] ?? '').trim(),
+    );
+
+  const IN_ORDER = listOf(SERVER_ORDER);
+  assert.equal(
+    cardNamesOf(IN_ORDER).length,
+    5,
+    `★★ 探针：这一份产物里应当恰好五张卡（实测 ${String(cardNamesOf(IN_ORDER).length)}）—— 少一张，"逐行顺序"就少比一行`,
+  );
+  assert.deepEqual(
+    cardNamesOf(IN_ORDER),
+    SERVER_ORDER.map((row) => row.displayName),
+    '★★★ **逐行**顺序与传入的（= 服务端给的）顺序逐条相同：在播两人（人数降序）→ 不在播两人 → 从没查过一人。' +
+      '⚠️ 断言的是**整串数组**而不是"在播的排在前面"那种笼统说法 —— 后者在"在播内部顺序反了"时照样为真',
+  );
+  /*
+   * ★★ 反面：把夹具**倒过来**。顺序必须跟着倒 —— 这一条排除"某个写死的顺序"或
+   *    "某处按人数重排了一次"这两类实现（它们会让两次渲染得到同一个顺序）。
+   */
+  const REVERSED = [...SERVER_ORDER].reverse();
+  assert.deepEqual(
+    cardNamesOf(listOf(REVERSED)),
+    REVERSED.map((row) => row.displayName),
+    '★★ 反过来喂进去，屏幕上的顺序也**跟着反过来** ⇒ 上面那条比的确实是"传入顺序"，不是任何写死的顺序（若视图自己按人数重排，这一条会红）',
+  );
+  assert.notDeepEqual(
+    cardNamesOf(listOf(REVERSED)),
+    cardNamesOf(IN_ORDER),
+    '★ 探针：两次渲染的顺序**确实不同**（否则上一条是空跑）',
+  );
+
+  /*
+   * ★ ③ 源码层：`Live.tsx` 里不许有 `.sort(`。
+   * ⚠️ 判据建在**剥掉注释之后**的代码上；并且配一条能红证明（拿一段带 `.sort(` 的假源码喂进去）。
+   */
+  const SORT_CALL = /\.sort\s*\(/;
+  assert.equal(
+    SORT_CALL.test(LIVE_CODE),
+    false,
+    '★★ `Live.tsx` 里**一个 `.sort(` 都不许有**：顺序由服务端给（`LIVE_ORDER_BY`），前端再排一次就是第二份真相 —— ' +
+      '两份顺序漂移时，页面上看到的与被断言的那个不一样，而且**没有任何门禁**会发现',
+  );
+  assert.notEqual(
+    SORT_CALL.test('const shown = items.sort((a, b) => b.viewerCount - a.viewerCount);'),
+    false,
+    '★★ 能红证明：这条判据能认出"前端又排了一遍"的写法（否则上面那条是恒真的空跑）',
+  );
+  assert.equal(
+    SORT_CALL.test('// 这里**不许**写 .sort( —— 顺序由服务端给'),
+    true,
+    '★ 说明：判据本身认得出注释里的 `.sort(` —— 所以上面对 `LIVE_CODE`（**已剥注释**）跑的那一条才是有效的',
+  );
+  assert.ok(
+    /filterLiveChannels\(items,\s*query\)/.test(LIVE_CODE),
+    '★★ 列表那一份是**纯函数筛出来的**（`filterLiveChannels(items, query)`）—— 而不是在渲染处再写一套过滤',
+  );
+  assert.ok(
+    /\{shown\.map\(/.test(LIVE_CODE),
+    '★★ 渲染的正是筛出来的那一份（`shown.map(`）—— 换回 `items.map(` 会让搜索框变成摆设（而页面看起来完全正常）',
+  );
+
+  /*
+   * ★ ④ 纯函数层：`filterLiveChannels` 只筛不排。
+   * ⚠️ 判据用的是**故意违反"服务端顺序"**的一份输入（从没查过的排在最前）。
+   *    正着给（已经是人数降序）的话，"函数里偷偷排了一遍"这条**照样绿** ——
+   *    那是 T1/T2 报告里记过两次的"夹具正着给 ⇒ 空刀"。
+   */
+  const SCRAMBLED: LiveChannel[] = [
+    channel({ id: 's1', displayName: 'Never', isLive: null, viewerCount: null }),
+    channel({ id: 's2', displayName: 'Offline', isLive: false, viewerCount: null }),
+    channel({ id: 's3', displayName: 'Few', isLive: true, viewerCount: 12 }),
+    channel({ id: 's4', displayName: 'Many', isLive: true, viewerCount: 90000 }),
+  ];
+  assert.deepEqual(
+    filterLiveChannels(SCRAMBLED, '').map((row) => row.id),
+    ['s1', 's2', 's3', 's4'],
+    '★★ 空查询 ⇒ **原样返回、一个都不许重排**（夹具故意把"从没查过"放在最前：函数里若按人数排一遍，这里立刻红）',
+  );
+  assert.notEqual(
+    filterLiveChannels(SCRAMBLED, ''),
+    SCRAMBLED,
+    '★★ 返回的是一份**新数组**（调用方拿到的永远是一份可以直接渲染的列表，不必在渲染处再写 `query ? filtered : all` 的分支）',
+  );
+  assert.deepEqual(
+    SCRAMBLED.map((row) => row.id),
+    ['s1', 's2', 's3', 's4'],
+    '★ 纯函数不改入参（`items` 是 `useAsync` 手上那一份）',
+  );
+  ok(
+    '★ 顺序：五张卡**逐行**与服务端顺序一致 / 倒过来喂也倒过来画（⇒ 不是写死的顺序）/ 页面源码里没有 `.sort(`（能红证明）/ `filterLiveChannels` 只筛不排且返回新数组',
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log(`\n【${LANG}】★★ 搜索框（用户第 10 条后半句）：本地筛、两种空态分开说`);
+// ---------------------------------------------------------------------------
+{
+  /*
+   * ★ 用户第 10 条："并允许用户在搜索栏搜索直播"。
+   *
+   * ⚠️★ 这一格**渲染不出来**（它长在 `routes/Live.tsx` 那个要取数的页面里，而且只在
+   *    `list.status === 'ok' && items.length > 0` 时渲染 —— 纯 SSR 下页面永远停在
+   *    loading 那一屏）⇒ 结构那几条只能是**源码级**守卫（与 F2/F3 同一处置：
+   *    守的是回归，不是替浏览器测量）。
+   *    ⚠️ 交互（输入、清空、实时筛）在静态渲染里**测不到**，要真浏览器 —— 记在文件末尾。
+   *
+   * ⚠️ 纯函数那一半（`filterLiveChannels`）**能**直接断言，所以放在这里一起：
+   *    它是"搜什么、怎么算命中"的唯一一份定义，而页面只负责把输入框的值喂进来。
+   */
+  const SEARCH_INPUT = /<input[\s\S]{0,300}?value=\{query\}[\s\S]{0,300}?onChange=\{/;
+  assert.ok(
+    SEARCH_INPUT.test(LIVE_CODE),
+    '★★ 搜索框必须是**受控**的（`value={query}` + `onChange=`）：非受控的话"清空"与"两个输入框同步"都要靠 DOM 去读，而那是第二份状态',
+  );
+  assert.equal(
+    SEARCH_INPUT.test('<input id="live-q" type="search" />'),
+    false,
+    '★★ 能红证明：非受控的写法（没有 value / onChange）会被同一判据拒绝',
+  );
+  assert.ok(
+    /type="search"/.test(LIVE_CODE),
+    '★ 用 `type="search"`（浏览器自带一键清空与语义 —— `Ranked.tsx` 那一栏逐字同形）',
+  );
+  assert.equal(
+    countOf(LIVE_CODE, "t('live.searchLabel')"),
+    2,
+    `★★ 标签（\`sr-only\`）与占位符**共用同一个词条**，所以它必须出现**两次**（实测 ${String(countOf(LIVE_CODE, "t('live.searchLabel')"))} 次）—— ` +
+      '只给占位符不给标签的话，用户输入第一个字、占位符消失之后，读屏软件会念出一个**没有名字**的输入框',
+  );
+  assert.notEqual(
+    i18n.t('live.searchLabel'),
+    'live.searchLabel',
+    '★ 探针：这个名字在当前语言下必须解析出真值（缺词条时界面显示的是原始 key）',
+  );
+  /*
+   * ★★ 两种空态**必须分开**：`live.empty`（"还没有记录任何频道"）与 `live.searchEmpty`
+   *    （"没有匹配的频道"）。合成一句的后果是"刚看见过那些频道"的人被告知这一页是空的。
+   *    ⚠️ 判据两条：① 两个键**都在**页面里；② 两句**不是同一个串**（写成同一个值也算合并）。
+   */
+  assert.ok(
+    /t\('live\.searchEmpty'\)/.test(LIVE_CODE),
+    '★★ 搜不到时渲染的是 `live.searchEmpty`（**不是** `live.empty`）—— 名单里**有**东西，只是这一个词没命中',
+  );
+  assert.ok(
+    /t\('live\.empty'\)/.test(LIVE_CODE),
+    '★★ 而"一条都没有"那一档仍然说 `live.empty`（两句话的读者与处境都不同）',
+  );
+  assert.equal(
+    /t\('live\.searchEmpty'\)/.test("t('live.empty')"),
+    false,
+    '★★ 能红证明：判据能把两句**分开**（否则"换错键"这件事看不出来）',
+  );
+  assert.notEqual(
+    i18n.t('live.searchEmpty'),
+    i18n.t('live.empty'),
+    `★★ 两个词条的**值**也必须不同（实读「${i18n.t('live.searchEmpty')}」vs「${i18n.t('live.empty')}」）—— 值写成同一句话等于两句合并，而那正是要防的事`,
+  );
+  assert.notEqual(
+    i18n.t('live.empty'),
+    'live.empty',
+    '★ 探针：`live.empty` 在当前语言下必须解析出真值',
+  );
+
+  /*
+   * ★ 纯函数：判据（三个字段、子串、忽略大小写、**不搜 handle**）。
+   * ⚠️ 这几条与 `services/api/src/live-order.test.ts` 里那一组**故意重复**：
+   *    那一条住服务端测试套件里（提 PR 时会跑），这一条住渲染自检里（改界面时会跑）——
+   *    两份都在的成本是几行，而"改了这一半、忘了那一半"的成本是这一格静默失效。
+   */
+  const BILI = channel({
+    displayName: 'Fruit Berries',
+    handle: 'fruitberries',
+    tags: ['ranked', '速通'],
+    note: 'RSG 主玩',
+  });
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'fruit').map((row) => row.id),
+    [BILI.id],
+    '★★ 显示名命中（子串）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'FRUIT').map((row) => row.id),
+    [BILI.id],
+    '★★ 忽略大小写（`toLowerCase()` 而不是 `toLocaleLowerCase()`：本机区域设置不该改变筛选结果）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'ranked').map((row) => row.id),
+    [BILI.id],
+    '★ 标签命中（"找某个打排位/速通的"最可能的入口）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'RSG').map((row) => row.id),
+    [BILI.id],
+    '★ 说明命中（卡片上那句说明）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'fruitberries').map((row) => row.id),
+    [],
+    '★★★ **不搜 `handle`**：它已不是人填的、卡片上也不显示（`LiveCard` 里那一格为什么被删掉写在原地）' +
+      '⇒ 搜一个用户**看不见**的字段会让结果看起来随机。⚠️ 这一条的红法很具体：把 `handle` 加进判据就会红',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], 'nothing-matches-this'),
+    [],
+    '★ 一个都不命中 ⇒ 空数组（页面据此说 `live.searchEmpty`）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], '   ').map((row) => row.id),
+    [BILI.id],
+    '★ 只有空白 ⇒ 当作**空查询**（返回全部）—— 否则用户误按一次空格，整个名单就"没有匹配的频道"了',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI], '  fruit  ').map((row) => row.id),
+    [BILI.id],
+    '★ 两头的空白被 `trim()` 掉（用户从别处粘过来的词常常带着空格）',
+  );
+  assert.deepEqual(
+    filterLiveChannels([BILI, channel({ id: 'c2', displayName: 'Someone Else' })], 'else').map(
+      (row) => row.id,
+    ),
+    ['c2'],
+    '★ 筛掉的那些**不出现在结果里**（"永远返回全部"的实现会在这里红）',
+  );
+  ok(
+    '★ 搜索框：受控 + `type="search"` + 标签与占位符同一个词条（2 处）+ 两种空态两句不同的话；纯函数：显示名/标签/说明命中、忽略大小写、**不搜 handle**、空串与纯空白返回全部且是新数组',
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log(`\n【${LANG}】★★ 那句承诺改写之后：旧句一个字都不在，新句把两件事说全（中英两侧）`);
+// ---------------------------------------------------------------------------
+{
+  /*
+   * ★★ 这是这一条线上**最敏感**的地方（T2 报告的 §6 把它单列了一节）。
+   *
+   * 改前：中文「这里记录的是 MCSR 相关的**直播频道**。」+ 英文
+   *      "These are **channels**, not a "who is live right now" board — we do not detect
+   *      liveness, so there is no live badge."
+   * 与之配套的是 `routes/Live.tsx` 文件头那段推理：「这一页**不检测直播状态**……
+   * 所以**没有「直播中」标记**」，并点明那句话是这一页**能一直保持诚实的唯一原因**。
+   *
+   * 用户第 10 条要的正是那个标记 ⇒ 那句承诺**从"仍然为真"变成"不再为真"**。
+   * 处置**不是删掉**（删掉之后页面上不再有任何一句说明这页是什么），而是换成仍然为真的说法：
+   * 「…「直播中」和人数目前只查 Twitch 与 B站，每几分钟一次，所以可能晚几分钟。」
+   *
+   * ⚠️★ 两件事**少一件都是新的谎**：
+   *   ① **会迟到**（3 分钟作业 + 60 秒 `max-age` + 300 秒 `stale-while-revalidate` ⇒ 最多旧 9 分钟）；
+   *   ② **只查两个平台**（YouTube 行永远没有徽章，而"没查"与"没在播"在界面上长得一样）。
+   * ⇒ 所以这一组**两个方向都要断**：旧句**不在**（否则等于没改）、新句**说全了两件事**
+   *   （否则等于删掉承诺）。只断一头的话，"删掉那句"与"换成真话"在产物里长得一样。
+   *
+   * ⚠️ 判据建在**词条本身**（`zhCN.live.recordsChannels` / `enDict.live.recordsChannels`）+
+   *    **页面源码**（那句话由谁渲染、怎么渲染）两处。页面上那一句渲染不出来
+   *    （`Live.tsx` 要取数）⇒ 词条是"说了什么"的唯一可断言处，而页面是"有没有用上它"的证据。
+   */
+  const OLD_ZH = '这里记录的是 MCSR 相关的**直播频道**。';
+  const OLD_EN =
+    'These are **channels**, not a "who is live right now" board — we do not detect liveness, so there is no live badge.';
+  const newZh: string = zhCN.live.recordsChannels;
+  const newEn: string = enDict.live.recordsChannels;
+
+  /*
+   * ① 旧句**不在**。
+   * ⚠️★ 中文这一侧要小心：新句子**仍然以旧句的前半段开头**（"这里记录的是 MCSR 相关的
+   *    **直播频道**"这件事今天依然为真 —— 它只是不够了）。所以中文只能断"**不是原样留着**"，
+   *    不能断"旧串不存在"（那会是一条**必然红**的断言）。英文那一侧可以断"整句不在"：
+   *    新句子在那里从 `not a` 之后就分叉了。
+   *    这是"中英两侧的承诺形状不同"的一个真实后果，写在这里免得下一个人照抄错的那一版。
+   */
+  assert.notEqual(
+    newZh,
+    OLD_ZH,
+    '★★ 中文那一句**换过了**（原样留着 = 用户第 10 条的标记没有被交代过）—— ⚠️ 它仍然以旧句的前半段开头，所以这一侧只能断"不是原值"',
+  );
+  assert.equal(
+    newEn.includes(OLD_EN),
+    false,
+    `★★ 旧的英文承诺**一个字都不在了**（"we do not detect liveness, so there is no live badge"）—— 实读「${newEn}」`,
+  );
+  /*
+   * ★ 页面源码层：旧承诺的**形状**不许再出现在代码里（注释里的历史引文不算 —— 先剥注释）。
+   *   ⚠️ 判据写的是"这一类说法"，不是那一句话：`不检测` / `没有「直播中」` 是它当年的两种写法。
+   */
+  const OLD_CLAIM = /不检测直播状态|没有「直播中」|no live badge|do not detect liveness/;
+  assert.equal(
+    OLD_CLAIM.test(LIVE_CODE),
+    false,
+    '★★ `Live.tsx` 代码里（**剥掉注释之后**）不许再出现旧承诺的写法 —— 它现在是**假的**，而它是这段推理的第二份拷贝（`LiveCard` 的文件头也改过一处）',
+  );
+  assert.notEqual(
+    OLD_CLAIM.test('  // 这一页不检测直播状态，所以没有「直播中」标记'),
+    false,
+    '★★ 能红证明：这条判据能认出旧承诺的形状（否则上面那条是恒真的空跑）',
+  );
+  assert.equal(
+    OLD_CLAIM.test(stripTsComments('/* 这一节原来写着：「这一页**不检测直播状态**…」 */')),
+    false,
+    '★ 说明（探针）：判据的前置是"先剥注释" —— 文件头那段**历史引文**（逐字引着旧话）在剥掉注释之后就不算违规，否则这条断言会红在一个正确的改动上',
+  );
+  assert.equal(
+    OLD_CLAIM.test('/* 这一节原来写着：「这一页**不检测直播状态**…」 */'),
+    true,
+    '★ 说明（探针的另一半）：**不剥注释**的话，那段历史引文会被判成违规 ⇒ 上面那条"先剥"不是可选的装饰',
+  );
+
+  /*
+   * ② 新句把**两件事**说全（中英各一次）。⚠️ 关键词判据是"有没有说到"，不是"措辞对不对"。
+   */
+  const REQUIRED: readonly (readonly [label: string, re: RegExp, text: string])[] = [
+    ['中文·会迟到（每几分钟 / 可能晚几分钟）', /每几分钟|几分钟/, newZh],
+    ['中文·点名只查两个平台', /Twitch/, newZh],
+    ['中文·点名 B站', /B\s?站/, newZh],
+    ['英文·会迟到（every few minutes / lag）', /every few minutes|few minutes|lag/i, newEn],
+    ['英文·点名只查两个平台', /Twitch/i, newEn],
+    ['英文·点名 Bilibili', /bilibili/i, newEn],
+  ];
+  for (const [label, re, text] of REQUIRED) {
+    assert.ok(re.test(text), `★★ 改写后的那句话漏了「${label}」这一层：${re}（实读「${text}」）`);
+  }
+  assert.equal(
+    /every few minutes|few minutes|lag/i.test('These are channels.'),
+    false,
+    '★★ 能红证明：关键词判据对不含该词的句子给 false（⇒ 上面六条不是恒真）',
+  );
+  /*
+   * ★ 页面**真的用上了**那一句（而不是留在词条表里）：`em(t('live.recordsChannels'))`。
+   *   ⚠️ 必须是 `em(`（节点上下文）：词条里有 `**` 强调标记，直接 `{t(...)}` 会让用户在
+   *   页面上看到一对字面星号（本仓 2026-09-14 修过的那类缺陷）。
+   */
+  assert.ok(
+    /em\(t\('live\.recordsChannels'\)\)/.test(LIVE_CODE),
+    "★★ 页面上那句是 `em(t('live.recordsChannels'))` —— 过 `em()` 渲染（`**` 才会变成粗体），而不是直接 `{t(...)}`",
+  );
+  assert.equal(
+    /em\(t\('live\.recordsChannels'\)\)/.test("{t('live.recordsChannels')}"),
+    false,
+    '★★ 能红证明：直接 `{t(...)}` 的写法会被同一判据拒绝（那样页面上会出现字面星号）',
+  );
+  /*
+   * ★ 而"这一页记的是什么"这件事**仍然**要说 —— 删掉那句（而不是改写）也是一种坏法：
+   *   页面上不再有任何一句说明它是什么，而"有绿色徽章"的猜测会自己长出来。
+   */
+  assert.ok(
+    /live\.recordsChannels/.test(LIVE_CODE) && newZh.length > 0 && newEn.length > 0,
+    '★★ 承诺**改写**过，不是删掉：页面仍然渲染它、中英两份都非空',
+  );
+  ok(
+    '★ 承诺：旧的中文那句已换（英文旧句整句不在，页面代码里也没有旧写法）；新句中英各把"每几分钟 / 可能晚几分钟"与"只查 Twitch 与 B站"说全，页面用 `em()` 渲染它',
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log(
+  `\n【${LANG}】★★ 直播线新类名 ↔ CSS（\`badge--live\` / \`live-card__viewers\` 都要有规则）`,
+);
+// ---------------------------------------------------------------------------
+{
+  /*
+   * ★ 本仓样式是**全局**的、没有 CSS Modules 兜底 ⇒ "渲染了一个 `styles.css` 里根本没有的
+   *   类名"是一条**渲染得出来、但什么都不生效**的缺陷（`docs/pending.md §5.70`；
+   *   `ShareForm` 里那个 `.mcsr-input` 笔误活过三轮评审）。
+   *   ⚠️ 这一条在**本栏目内**把它关掉 —— 与 `videorender.tsx` 的 ⑪ 同形，
+   *   只是这里的类名族不是 `tracked*`（清单是**手抄**的：直播卡片那几个新类名）。
+   *
+   * ⚠️★ 匹配前**先剥 CSS 注释**（`§5.82` 那个实测出来的假绿）：`styles.css` 里
+   *   `.badge--live` 与 `.live-card__viewers` 的**上方注释**都逐字写着这两个类名
+   *   ⇒ 不剥注释的话，"把那条规则删掉"这道门禁**照样绿**。
+   * ⚠️ 边界必须"整个类名相等"：`css.includes('.badge--live')` 会被 `.badge--livebar`
+   *   之类的更长的名字满足（`.badge--kind` 那条探针是同一条）。
+   */
+  const CSS_LIVE = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const stripCssComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const hasCssRule = (css: string, cls: string): boolean =>
+    new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(
+      stripCssComments(css),
+    );
+  /* ⚠️ 探针：这条判据本身要能红能绿。 */
+  assert.equal(hasCssRule('.badge--live{}', 'badge--live'), true, '★ 探针：能认出一条规则');
+  assert.equal(
+    hasCssRule('/* .badge--live {} */', 'badge--live'),
+    false,
+    '★★★ 探针：**只在注释里出现过**的类名不算"有规则"（`styles.css` 这两个类名的上方注释里就写着它们）',
+  );
+  assert.equal(
+    hasCssRule('.badge--livebar{}', 'badge--live'),
+    false,
+    '★★ 探针：`.badge--livebar` 不能凑数（前缀关系）',
+  );
+  assert.equal(
+    hasCssRule(CSS_LIVE, 'live-card__nosuchclass'),
+    false,
+    '★★ 探针：不存在的类名不许在真那份 `styles.css` 里"找到"（否则下面整节是空跑）',
+  );
+
+  /* 这几个类名必须在**产物里**出现过（手抄清单：防"整块界面被摘掉"）。 */
+  const LIVE_CLASSES = ['badge--live', 'live-card__viewers'] as const;
+  const badgeProduct = html(
+    <ul>
+      <LiveCard channel={channel({ isLive: true, viewerCount: 4321 })} />
+    </ul>,
+  );
+  for (const cls of LIVE_CLASSES) {
+    assert.ok(
+      badgeProduct.includes(cls),
+      `★★ 产物里应当出现 \`.${cls}\`（这一格的界面被摘掉了？）—— 少了它，下面那条"有规则"就没有消费者`,
+    );
+    assert.ok(
+      hasCssRule(CSS_LIVE, cls),
+      `★★★ \`.${cls}\` 在 \`apps/web/src/styles.css\` 里没有规则 —— 这是一个**渲染得出来、但什么都不生效**的类名（§5.70）`,
+    );
+  }
+  assert.equal(
+    hasCssRule(CSS_LIVE, 'badge--kind'),
+    true,
+    '★ 对照：既有的 `.badge--kind`（平台徽章）同样有规则 —— 证明这份 CSS 读对了',
+  );
+  ok(
+    '★ 类名↔CSS：`badge--live` 与 `live-card__viewers` 都出现在产物里、且在 `styles.css` 里各有规则（匹配前已剥注释；探针：注释里的类名不算、前缀不算）',
+  );
+}
+
 console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
 console.log('⚠️ 这个脚本验的是**渲染**：没有点击、没有请求、没有悬停。');
 console.log('   要验交互（加/改/隐藏/删除、live_exists 指向那一行）需要 dev server + 浏览器。');
+
+/*
+ * ⚠️ 项数是**手抄的**（本仓惯例，`videorender.tsx` 末尾那条同形）：它防的是
+ *    **把一整组断言摘掉** —— 删掉一段之后脚本照样绿、照样打印"通过 N 项"，
+ *    只有这个数字会变。改脚本（加/删一条 `ok(…)`）就要一起改这里。
+ * ⚠️ 2026-09-19（用户第 10 条，T3）：48 ⇒ **53**（「直播中」徽章与人数、顺序、
+ *    搜索框、承诺改写、新类名↔CSS 五组各 +1）。
+ * ⚠️ 中英两遍**同一个数**：这个脚本里没有任何 `if (LANG === 'en')` 分支
+ *    （与 `videorender.tsx` 相反 —— 那边 en 多一组）。
+ */
+const expectedItems = 53;
+assert.equal(
+  pass,
+  expectedItems,
+  `探针：这一轮应当通过 ${String(expectedItems)} 项（少了就说明有人把某一段摘掉了）`,
+);

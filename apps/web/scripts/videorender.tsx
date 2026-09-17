@@ -53,9 +53,11 @@
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import type { UserSelf } from '@mcsr/shared/auth';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import {
   type TrackedCreator,
+  type TrackedCreatorSummary,
   type TrackedVideo,
   type TrackPlatform,
   toMillis,
@@ -73,6 +75,7 @@ import {
   TrackedVideosSection,
 } from '@/components/TrackedVideos';
 import { ApiError } from '@/lib/api';
+import { AuthProvider } from '@/lib/auth';
 import {
   describeTrackedError,
   TRACKED_ERRORS,
@@ -80,11 +83,24 @@ import {
   trackedErrorSource,
 } from '@/lib/trackedErrors';
 import {
+  clearedTrackedFilterParams,
+  nextParamsForTrackedFilter,
   nextParamsForTrackedPlatform,
+  nextParamsForVideosTab,
+  readTrackedFilters,
   readTrackedPlatform,
+  readVideosTab,
+  TRACKED_CREATOR_PARAM,
+  TRACKED_DURATION_PARAM,
   TRACKED_PAGE_PARAM,
   TRACKED_PLATFORM_PARAM,
+  TRACKED_SORT_PARAM,
+  TRACKED_TAG_PARAM,
+  TRACKED_TIME_PARAM,
+  type TrackedFilterState,
+  VIDEOS_TAB_PARAM,
 } from '@/lib/trackedQuery';
+import { Videos } from '@/routes/Videos';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -285,8 +301,20 @@ const SECTION_KEYS = [
   'loading',
   'error',
   'onPage',
+  /*
+   * ★★ 第 9 条那两个"必填但**不是函数**"的新 prop（2026-09-19）。
+   * ⚠️ 它们与 `platform` 的处置**故意相反**（`platform` 不许进这张表，见上面那段）：
+   *    `filters` / `creators` 的合法值里**没有 `undefined`**（`filters` 必填、`creators`
+   *    空数组就是"只有全部博主"），所以漏传它们在这里是**能命中**的。
+   * ⚠️★ 而漏传的代价正是本仓最怕的那一种：`filters` 漏了 ⇒ 五个下拉框**全都停在
+   *    "全部"**而列表其实是筛过的（界面上写着"全部"、实际只显示一部分，且**没有任何解释**）；
+   *    `creators` 漏了 ⇒ `creators.map` 当场崩在渲染里（这一条不用守卫也能发现，
+   *    但守卫给的是一句"少传了 prop"，而不是一个 `Cannot read properties of undefined`）。
+   */
+  'filters',
+  'creators',
 ] as const;
-const SECTION_FNS = ['onPage', 'onPlatformChange'] as const;
+const SECTION_FNS = ['onPage', 'onPlatformChange', 'onFilterChange', 'onClearFilters'] as const;
 const PANEL_KEYS = [
   'canManage',
   'loading',
@@ -344,9 +372,10 @@ const products: string[] = [];
 
 const render = (node: ReactElement): string => {
   /*
-   * ⚠️ 包 `MemoryRouter` 与其余十个渲染脚本同形：这一块今天**一个 `<Link>` 都不渲染**
-   *    （唯一的 `<a>` 是外链，不需要 router），所以包着是空操作。留着它是照既有形状
-   *    —— 将来它长出内部链接时，缺 router 是**当场崩**，而那正是我们想要的。
+   * ⚠️ 包 `MemoryRouter` 与其余十个渲染脚本同形。**它从 ⑰ 起不再是空操作**：
+   *    那两组渲染的是**真页面**（`routes/Videos.tsx`，里面有 `<Link to="/live">`），
+   *    缺 router 是**当场崩** —— 这正是当初留着这一层的理由
+   *    （页面里只用一个 `<a>` 外链的那些产物仍然不需要它）。
    */
   const html = renderToStaticMarkup(
     createElement(I18nextProvider, { i18n }, createElement(MemoryRouter, null, node)),
@@ -398,7 +427,15 @@ const FULL_VIDEO: TrackedVideo = {
   platform: 'bilibili',
   externalId: BILI_ID,
   title: 'RSG 1.16 world record, full run commentary',
-
+  /*
+   * ★★ 博主显示名（用户第 8 条，2026-09-19）。
+   * ⚠️★ 它**必须**在这一份主夹具上：`tracked__creator` 是这一轮新加的类名，
+   *    而"新加的类名必须在产物里出现过"是 ⑪ 那张手抄清单（`MUST_RENDER`）的全部理由 ——
+   *    只把类名写进清单、夹具却不带名字的话，那条断言会**当场红**（这正是我们要的：
+   *    一个"渲染得出来但没人渲染"的类名，它新加的 CSS 规则也就没有消费者看着）。
+   * ⚠️ 文字是 **ASCII**（⑩ 的零汉字扫描会连属性一起扫所有产物）。
+   */
+  creatorName: 'Up Example',
   thumbnailUrl: THUMB,
   publishedAt: PUBLISHED_SEC,
   durationSec: DURATION_SMALL,
@@ -415,11 +452,16 @@ const FULL_VIDEO: TrackedVideo = {
  *
  * ⚠️★ 平台是 **YouTube**（T7 起），不是 B站 —— 理由只有一个，但是硬的：
  *    ② 那条扫描连**属性**一起扫，而门面把嵌入地址挂在了 `data-embed-src` 上；
- *    B站 那个地址里带着 `autoplay=0&danmaku=0`（`buildEmbedUrl` 拼的固定参数），
- *    于是"产物里一个 `0` 都不许有"会**假红**在一个完全正确的实现上。
+ *    B站 那个地址里带着 `autoplay=0&danmaku=1`（`buildEmbedUrl` 拼的固定参数），
+ *    于是"产物里一个 `0` 都不许有"会**假红**在一个完全正确的实现上
+ *    （那个 `autoplay=0` 里的 0 是真的要在地址里的）。
  *    ⇒ 换成一条地址里没有 `0` 的平台（YouTube 只有 `/embed/<id>` 一段）。
  *    ⚠️ 这不是把判据放松：四格仍然是 `—`、整份产物仍然要一个 `0` 都没有，
  *      变的只是"这一份产物里恰好不会有别人拼进来的 0"。
+ *    ⚠️★ 2026-09-19：`danmaku` 从 `0` 改成了 `1`，但这句话**依然成立** ——
+ *      留在地址里的是 `autoplay=0`（那半句还成立），所以这一格**不需要**跟着改；
+ *      而"`danmaku` 现在是 1"这件事由 `liverender.tsx` 的两条逐字符断言与
+ *      `services/api/src/videos.test.ts` 钉着（本脚本只看这一份产物里有没有那个字符）。
  */
 const NULL_VIDEO: TrackedVideo = {
   ...FULL_VIDEO,
@@ -568,6 +610,45 @@ const CREATOR_COOLING: TrackedCreator = {
   hiddenCount: 0,
 };
 
+/**
+ * 博主下拉的名册（`GET /api/tracking/roster` 的 `items`，第 9 条）—— **三行，各有一件事要证**。
+ *
+ * ⚠️★ 三行**不是**"随便凑三个"：
+ *   · `ROSTER_BILI` —— 常态那一行（有显示名 + 有投稿）；
+ *   · `ROSTER_NONAME` —— `displayName: ''`：下拉框那一格**回落成 handle**
+ *     （`creatorLabel`；⚠️ **不是**回落到空、也**不是**整格不渲染 —— 卡片那一格才是
+ *     "空就不画"，两处的理由不同，组件里那段注释写着）；
+ *   · `ROSTER_ZERO` —— `videoCount: 0`：条数那一格必须**真的画出 0**，
+ *     而它是"这个人名下还没有公开内容"的唯一线索（`creatorOption` 的注释写着这条）。
+ *     ⚠️ 0 在这里**不是**"没有值"（本仓"绝不为缺失值填 0"那条管的是**缺失**）：
+ *     名册给的 0 是一个真的数（线上确实有位博主一条都没有）。
+ * ⚠️ 名字一律 **ASCII**：⑨ / ⑩（`--en` 那一编）扫的是所有产物的原文（夹具里的汉字
+ *    会让英文那一遍红在一句与它无关的话上）。
+ * ⚠️ ★ 三行的 **id 互不相同、且与 `TrackedCreator` 那四份夹具不共用**：下拉框断言的是
+ *    "传给它的那一份名册"，与面板那一份名单是两条路（`/roster` vs `/creators`）。
+ */
+const ROSTER_BILI: TrackedCreatorSummary = {
+  id: 'tc-on',
+  platform: 'bilibili',
+  displayName: 'Example Creator',
+  handle: '703007996',
+  videoCount: 137,
+};
+const ROSTER_NONAME: TrackedCreatorSummary = {
+  id: 'tc-noname',
+  platform: 'twitch',
+  displayName: '',
+  handle: 'Somebody_TV',
+  videoCount: 4,
+};
+const ROSTER_ZERO: TrackedCreatorSummary = {
+  id: 'tc-yt',
+  platform: 'youtube',
+  displayName: 'YouTube Example',
+  handle: '@example',
+  videoCount: 0,
+};
+
 interface SectionProps extends Record<string, unknown> {
   items: TrackedVideo[];
   total: number;
@@ -583,6 +664,17 @@ interface SectionProps extends Record<string, unknown> {
   platform: TrackPlatform | undefined;
   onPlatformChange: (platform: TrackPlatform | undefined) => void;
   onPage: (page: number) => void;
+  /**
+   * 第 9 条的五个筛选/排序（`lib/trackedQuery.ts` 的 `TrackedFilterState`）。
+   * ⚠️ 必填（`sort` 永远有值）⇒ 它在 `SECTION_KEYS` 里，理由写在那张表上面。
+   */
+  filters: TrackedFilterState;
+  /** 博主下拉的名册（`GET /api/tracking/roster` 的 `items`）。空数组 = 只有「全部博主」。 */
+  creators: TrackedCreatorSummary[];
+  /** 改一档筛选；`value === undefined` 表示回到「全部」。 */
+  onFilterChange: (key: string, value: string | undefined) => void;
+  /** 「清除筛选」（连分区与页码一起清）。 */
+  onClearFilters: () => void;
 }
 
 interface PanelProps extends Record<string, unknown> {
@@ -616,6 +708,14 @@ const sectionProps = (over: Partial<SectionProps> = {}): SectionProps => ({
   platform: undefined,
   onPlatformChange: noop,
   onPage: noop,
+  /*
+   * 第 9 条那四格。默认值 = **"什么都没筛"**（`sort` 只能是 `'new'`，其余四格不传）
+   * + 三行名册 ⇒ 五个下拉框都画在最常见的那一档上，个别夹具再逐个覆盖。
+   */
+  filters: { sort: 'new' },
+  creators: [ROSTER_BILI, ROSTER_NONAME, ROSTER_ZERO],
+  onFilterChange: noop,
+  onClearFilters: noop,
   ...over,
 });
 
@@ -854,6 +954,77 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
+console.log('①·b ★★ 卡片上的博主名（第 8 条）：有名字画一格、空串与"没有这一格"都**整格不渲染**');
+// ---------------------------------------------------------------------------
+/*
+ * ★ 用户第 8 条的后半句："然后显示视频博主名称"。
+ *
+ * ⚠️★ 三档**必须各自一份产物**，因为这是一个**三态**（不是两态）：
+ *   · 有名字        ⇒ 恰好一个 `.tracked__creator`，文字就是那个名字；
+ *   · `''`（空串）  ⇒ **零个节点**（库里那一列是 `DEFAULT ''`，服务端把 NULL 也收成它）；
+ *   · 没有这一格（管理面板那一侧的写入响应不走那个 JOIN）⇒ **零个节点**。
+ *   只喂"有名字"那一档的话，"空串时画一个空 `<span>`"与"永远画一格、里面可能什么都没有"
+ *   这两种实现**照样全绿** —— 而它们正是这一格要防的（空框会被读成"数据坏了"）。
+ *
+ * ⚠️ 判据是**节点数**，不是"产物里有没有那个字符串"：
+ *   一个 `<span class="tracked__creator"></span>`（空节点）在 `includes('tracked__creator')`
+ *   下面是真的 —— 本仓反复吃过这个形状的亏（`liverender.tsx` 的 F1 那条空徽章）。
+ *   ⇒ 所以两档反面都断言 `elementsWithClass(...).length === 0`，并配一条**能红证明**：
+ *     拿旧写法（恒渲染一个空 `<span>`）喂给同一个计数函数，它必须数得到。
+ */
+const WITH_CREATOR_HTML = renderSection({}, '博主名：有名字');
+const creatorCells = elementsWithClass(theCard(WITH_CREATOR_HTML), 'tracked__creator');
+assert.equal(
+  creatorCells.length,
+  1,
+  `★★ 有名字时**恰好一格**（实测 ${String(creatorCells.length)}）—— 0 就是"名字没画出来"（用户第 8 条要的正是它）`,
+);
+assert.equal(
+  textOf(creatorCells[0] ?? ''),
+  'Up Example',
+  '★★ 那一格的文字就是**这一行**的 `creatorName`（联错行 / 印成 handle 都会在这里红）',
+);
+assert.equal(
+  hasClassIn(creatorCells[0] ?? '', 'badge'),
+  false,
+  '★ 它不是平台徽章那一格（两个信息共用一个类名的话，⑪ 那道门禁就分不出谁是谁了）',
+);
+
+const NO_CREATOR_HTML = renderSection(
+  { items: [{ ...FULL_VIDEO, id: 'tv-noname', creatorName: '' }] },
+  '博主名：空串',
+);
+const ABSENT_CREATOR_HTML = renderSection(
+  { items: [{ ...FULL_VIDEO, id: 'tv-absent', creatorName: undefined }] },
+  '博主名：没有这一格',
+);
+for (const [where, product] of [
+  ["`creatorName: ''`（库里那一列的空串）", NO_CREATOR_HTML],
+  ['没有 `creatorName` 这一格', ABSENT_CREATOR_HTML],
+] as const) {
+  assert.equal(
+    elementsWithClass(theCard(product), 'tracked__creator').length,
+    0,
+    `★★ ${where} ⇒ **整格不渲染**（不是空框、也不退化成 handle）—— 空框会被读成"这里的数据坏了"`,
+  );
+  /* ⚠️ 探针：这两份产物确实**画了卡**（否则上面那条会以"整张卡都没渲染"的方式通过）。 */
+  assert.equal(
+    elementsWithClass(product, 'tracked__cardtitle').length,
+    1,
+    `★ 探针：${where} 那一份产物里标题还在（证明卡画出来了，缺的只是博主那一格）`,
+  );
+}
+const CREATOR_OLD_SHAPE = '<li class="tracked__card"><span class="tracked__creator"></span></li>';
+assert.equal(
+  elementsWithClass(CREATOR_OLD_SHAPE, 'tracked__creator').length,
+  1,
+  '★★ 能红证明：旧写法（恒渲染一个**空**的 `.tracked__creator`）会被同一个计数函数数到 1 ⇒ 上面两条"零个节点"确实有区分力（写成"文字为空"就会恒绿）',
+);
+ok(
+  '博主名：有名字恰好一格且文字正确；空串与"没有这一格"都是**零节点**（能红证明：旧写法的空节点会被数到）',
+);
+
+// ---------------------------------------------------------------------------
 console.log('② ★★ 缺的值显示「—」，**绝不许显示 0**');
 // ---------------------------------------------------------------------------
 /*
@@ -865,6 +1036,17 @@ console.log('② ★★ 缺的值显示「—」，**绝不许显示 0**');
  *       这一类错法一网打尽，不限于我想到的那四处。
  * ⚠️ ② 只在这一份产物上扫（所有可空字段全 null、没有分页器、夹具数字里不含 0）——
  *    在别的产物上扫会因为**时长里的补零**（`1:02:03`）假红。
+ * ⚠️★ 2026-09-19（第 9 条）：被扫的那一段**先减掉筛选条**。**这不是把判据放松**，
+ *    而是"这一份产物里没有别人带来的 0"这条前提被筛选条打破了，而那个 0 是**真的**：
+ *    · `<option value="30d">`（时间范围那一档的**取值本身就是 `30d`**）；
+ *    · 名册里 `ROSTER_ZERO` 的 `videoCount` 是**真的 0**（线上确实有位博主一条都没有），
+ *      经 `tracked.creatorOption` 印成「…（0）」。
+ *    两者都在**控件**那一格里，而这一组守的是**卡片上的四格**（0 只能来自"把 null 兜成 0"）。
+ *    ⇒ 减掉那一格的**判据一个字没动**：仍然是"整份剩余产物里没有 `0` 这个字符"，
+ *      覆盖卡片、分页器、空态与所有属性；减掉的只是那个**取值是枚举 id** 的控件条。
+ *    ⚠️ 下面两条探针钉住"减掉的确实是那一格、而且它里面确实有 0" —— 没有它们的话，
+ *      一个"减掉了整页"的实现与"减掉一格"在输出上一样（本仓那类"守卫因为错误的
+ *      原因通过"）。
  */
 const NULL_HTML = renderSection({ items: [NULL_VIDEO] }, '四个可空字段全 null');
 const nullCard = theCard(NULL_HTML);
@@ -880,10 +1062,37 @@ for (const cls of [
     `★★ \`${cls}\`：拿不到的值显示成「—」（实测「${cellOf(nullCard, cls)}」）—— 显示成 0 是一个看起来像数据的谎`,
   );
 }
+/*
+ * 减掉的那一格（筛选条）：它自己**必须**找得到、而且它里面**确实有** 0
+ * （`<option value="30d">` 与名册里那个真 0 的条数）—— 见上面那段的说明。
+ */
+const NULL_FILTER_BARS = elementsWithClass(NULL_HTML, 'filters');
 assert.equal(
-  rawText(NULL_HTML).includes('0'),
+  NULL_FILTER_BARS.length,
+  1,
+  `★★ 探针：这一份产物里应当恰好一条筛选条（实测 ${String(NULL_FILTER_BARS.length)}）—— 数不到就说明"减掉的是哪一段"变了，下面那条扫描的强度随之变成未知`,
+);
+assert.equal(
+  rawText(NULL_FILTER_BARS[0] ?? '').includes('0'),
+  true,
+  '★★ 探针：被减掉的那一格**确实带来了 0**（`<option value="30d">` 与「（0）」那个真条数）—— 它不再带来 0 时这条会红，那时可以连减法一起删掉',
+);
+const NULL_WITHOUT_FILTERS = NULL_HTML.slice(
+  0,
+  NULL_HTML.indexOf(NULL_FILTER_BARS[0] ?? ''),
+).concat(
+  NULL_HTML.slice(
+    NULL_HTML.indexOf(NULL_FILTER_BARS[0] ?? '') + (NULL_FILTER_BARS[0] ?? '').length,
+  ),
+);
+assert.ok(
+  rawText(NULL_WITHOUT_FILTERS).length > 500,
+  `★★ 探针：减掉一格之后还剩得下一份完整的产物（实测 ${String(rawText(NULL_WITHOUT_FILTERS).length)} 字符）—— 否则上面那条是在一段近乎空的串上"通过"`,
+);
+assert.equal(
+  rawText(NULL_WITHOUT_FILTERS).includes('0'),
   false,
-  `★★ 四个可空字段全 null 的产物里**一个 \`0\` 都不许有**（扫了 ${String(rawText(NULL_HTML).length)} 字符，含属性）—— \`0\` 看起来像"上游说这支视频没人看"`,
+  `★★ 四个可空字段全 null 的产物（**减掉筛选条那一格**）里**一个 \`0\` 都不许有**（扫了 ${String(rawText(NULL_WITHOUT_FILTERS).length)} 字符，含属性）—— \`0\` 看起来像"上游说这支视频没人看"`,
 );
 assert.equal(
   rawText(NULL_HTML).includes('—'),
@@ -1118,6 +1327,133 @@ assert.equal(
   '★ 失败有它自己那一块样式（与空态、与加载中都不同款）',
 );
 ok('空态是一句话（含第二句说明），与"加载中"、"取数失败"三态分开');
+
+// ---------------------------------------------------------------------------
+console.log('④·b ★★ 三种空而不同的原因**互相排斥**（第 9 条的第三句 + 排序不算筛选）');
+// ---------------------------------------------------------------------------
+/*
+ * ★ 第 9 条给这一栏加了第三句空态（`tracked.emptyFilter`：「这个筛选下没有视频 ——
+ *   把条件放宽一点，或者清除筛选再看看」）。于是"空"有**三个**互不相同的原因：
+ *     ① 筛了什么      ⇒ `tracked.emptyFilter`；
+ *     ② 选了分区      ⇒ `tracked.emptyPlatform`（T8）；
+ *     ③ 什么都没筛    ⇒ 页面给的那句（`empty` prop = `tracked.empty`）+ 第二句 `emptyHint`。
+ *
+ * ⚠️★ 为什么这一组的每一条都要断言**另外两句不在产物里**：
+ *   只断言"我想要的那句在"的话，一个**永远印同一句**的实现（例如把三个分支写成同一个
+ *   三元式）会让**全部三条**都绿 —— 而那是这一组唯一要防的事。三句话说的是三个不同的原因，
+ *   也就把用户送去三个不同的动作：放宽筛选 / 换分区 / 去等抓取（`emptyHint` 说"每 10 分钟跑一轮"）。
+ *   把 ① 说成 ③ 会让人去等一次**永远不会让一个筛得太窄的列表长出东西来**的抓取。
+ *
+ * ⚠️ 判据是**那一格节点的文字**（`.tracked__emptytitle`）而不是"产物里有没有这个串"：
+ *   后者在"三句话都印出来"时照样为真（本仓那条"包含某串字"的老毛病）。
+ *   三条各配一次全文扫描，作为第二层（万一将来有人把某句挪到别处渲染）。
+ * ⚠️★ 顺序也是契约（越具体越优先）：筛选 > 分区 > 什么都没筛。下面第 ④ 条
+ *   （**筛了 + 也选了分区**）钉的就是这个优先级 —— 它必须说"这个筛选下没有"。
+ */
+const emptyTitleOf = (product: string): string => {
+  const titles = elementsWithClass(product, 'tracked__emptytitle');
+  assert.equal(
+    titles.length,
+    1,
+    `★ 探针：空态那一块里应当恰好一句标题（实测 ${String(titles.length)}）—— 0 句会让下面每条以"没渲染"的方式通过，2 句说明三个分支被印在了一起`,
+  );
+  return textOf(titles[0] ?? '');
+};
+const SENTENCES: readonly (readonly [label: string, text: string])[] = [
+  ['筛选（`tracked.emptyFilter`）', t('tracked.emptyFilter')],
+  ['分区（`tracked.emptyPlatform`）', t('tracked.emptyPlatform')],
+  ['什么都没筛（页面给的 `empty`）', t('tracked.empty')],
+];
+assert.equal(
+  new Set(SENTENCES.map(([, text]) => text)).size,
+  3,
+  '★★ 探针：三句话**互不相同**（其中两句写成同一串的话，下面"另外两句不在"就永远有一条是假红/空跑）',
+);
+
+const EMPTY_BY_FILTER_HTML = renderSection(
+  { items: [], total: 0, filters: { sort: 'new', tag: 'long' } },
+  '空：筛了标签',
+);
+assert.equal(
+  emptyTitleOf(EMPTY_BY_FILTER_HTML),
+  t('tracked.emptyFilter'),
+  '★★ ① 筛了什么而列表是空的 ⇒ 说「这个筛选下没有视频」（那是**用户刚刚做的那个动作**，不是抓取的问题）',
+);
+const EMPTY_BY_FILTER_AND_PLATFORM_HTML = renderSection(
+  { items: [], total: 0, platform: 'twitch', filters: { sort: 'new', tag: 'long' } },
+  '空：既筛了标签又选了分区',
+);
+assert.equal(
+  emptyTitleOf(EMPTY_BY_FILTER_AND_PLATFORM_HTML),
+  t('tracked.emptyFilter'),
+  '★★ ④ 两者同时为真时**筛选那一句优先**（越具体越优先：分区那句话把原因推给"这一栏没有这个平台的内容"，而用户刚改的是筛选）',
+);
+const EMPTY_BY_PLATFORM_HTML = renderSection(
+  { items: [], total: 0, platform: 'twitch' },
+  '空：只选了分区',
+);
+assert.equal(
+  emptyTitleOf(EMPTY_BY_PLATFORM_HTML),
+  t('tracked.emptyPlatform'),
+  '★★ ② 只选了分区 ⇒ `tracked.emptyPlatform`（T8 那一句）',
+);
+/*
+ * ★★ ③ 一条都不筛 —— 而这里的夹具**故意带上 `sort: 'views'`**。
+ *    ⚠️★ 这就是"排序**不算**筛选"那条裁决的**唯一**证据（T1 §4.5）：排序不改变结果集，
+ *      所以"只是把列表按播放量重排了一下"的空列表**不许**说"这个筛选下没有视频"
+ *      —— 那句话会让用户去五个下拉框里找一个不存在的筛选。
+ *      ⇒ 判据在 `hasTrackedFilters` 里（排除 `sort`），两处消费者（空态、清除按钮）共用它。
+ *    ⚠️ 这一条**能红**：把判据改成"`filters` 里有任何一格非默认值就算筛过"，
+ *      这一份产物立刻会说 `tracked.emptyFilter`。
+ */
+const EMPTY_SORT_ONLY_HTML = renderSection(
+  { items: [], total: 0, filters: { sort: 'views' } },
+  '空：只换了排序（不算筛选）',
+);
+const emptyCases: readonly (readonly [where: string, product: string, want: string])[] = [
+  ['① 筛了标签', EMPTY_BY_FILTER_HTML, t('tracked.emptyFilter')],
+  ['② 只选了分区', EMPTY_BY_PLATFORM_HTML, t('tracked.emptyPlatform')],
+  ['③ 什么都没筛（页面给的 `empty`）', EMPTY_HTML, t('tracked.empty')],
+  ['③·b 只换了排序', EMPTY_SORT_ONLY_HTML, t('tracked.empty')],
+];
+for (const [where, product, want] of emptyCases) {
+  assert.equal(
+    emptyTitleOf(product),
+    want,
+    `★★ ${where} ⇒ 空态说的必须是那一句（实读「${emptyTitleOf(product)}」）`,
+  );
+  for (const [otherLabel, other] of SENTENCES) {
+    if (other === want) continue;
+    assert.equal(
+      rawText(product).includes(other),
+      false,
+      `★★★ ${where} 的产物里**不许**出现另外那一句（${otherLabel}）—— 三句话说的是三个不同的原因，` +
+        '印错一句就把用户送去一个解决不了他问题的动作（只断言"我要的在"的话，一个永远印同一句的实现全绿）',
+    );
+  }
+}
+/*
+ * 「清除筛选」那颗按钮的**个数**也是三态的一部分（同一个 `hasTrackedFilters` 判据）：
+ *   · 筛了  ⇒ 筛选条里一颗 + 空态里一颗 = **2**（空态那颗是用户唯一的出口）；
+ *   · 只选分区 ⇒ 筛选条里一颗 + 空态里一颗 = **2**（分区也在同一个判据里）；
+ *   · 什么都没筛（含"只换了排序"）⇒ **0 颗**（一颗什么都不清的按钮是噪音）。
+ * ⚠️ 数节点而不是"有没有这个类名"：一个"永远画一颗"的实现会在第三档上露馅。
+ */
+for (const [where, product, wanted] of [
+  ['① 筛了标签', EMPTY_BY_FILTER_HTML, 2],
+  ['② 只选了分区', EMPTY_BY_PLATFORM_HTML, 2],
+  ['③ 什么都没筛', EMPTY_HTML, 0],
+  ['③·b 只换了排序', EMPTY_SORT_ONLY_HTML, 0],
+] as const) {
+  assert.equal(
+    elementsWithClass(product, 'filters__clear').length,
+    wanted,
+    `★★ ${where} ⇒ 「清除筛选」恰好 ${String(wanted)} 颗（筛选条里那颗 + 空态里那颗；排序**不算**筛选）`,
+  );
+}
+ok(
+  '三种空态互相排斥（筛选 > 分区 > 什么都没筛；每一条都断言另外两句**不在**产物里）+ 排序不算筛选 + 「清除筛选」颗数三档',
+);
 
 // ---------------------------------------------------------------------------
 console.log('⑤ ★ 管理面板：没有 `live.manage` 时**整块不渲染**（两个 props 对照）');
@@ -1784,6 +2120,223 @@ assert.deepEqual(
 ok('分区按钮：四个（全部 + 三个平台）+ 同一行标签 + 选中态跟着 `platform` 走');
 
 // ---------------------------------------------------------------------------
+console.log('⑬·b ★★ 五个下拉框（第 9 条）：逐格断言选项文字 + 取值 + **当前选中项**');
+// ---------------------------------------------------------------------------
+/*
+ * ★ 用户第 9 条要的是"按时间范围筛选 / 筛选标签 / 筛选时长范围，按时间倒序 / 播放量倒序排列，
+ *   用下拉框展示所有追踪的博主，允许用户选择某位博主仅查看他的视频"——五个控件。
+ *
+ * ⚠️★ 这一组力的着力点是**两张表**（`TrackedVideos.tsx` 里的 `TIME_KEYS` / `DURATION_KEYS` /
+ *    `SORT_KEYS` 那三张 id→词条 的映射表）。它们**没有**被 `services/api/src/i18n-keys.test.ts`
+ *    那条"字面量键必须存在"的守卫覆盖（键是**拼出来**的 `t(TIME_KEYS[id])`），所以
+ *    表里写错一个字母时，产物里出现的是**原始 key**（`tracked.time7d`），而这里
+ *    断言的右边是**真词条** ⇒ 当场红。这正是那三张表存在的全部理由。
+ * ⚠️★ 期望值**手抄**在这份脚本里（不 import 组件那三张表）：import 过来的话，
+ *    "表里写的是哪个键"与"断言期望哪个键"就是同一份数据 —— 那是**恒真**的断言
+ *    （本仓最贵的一类缺陷）。手抄的键名与 `zh-CN.ts` / `en.ts` 里的真键逐字对齐。
+ *
+ * ⚠️ 选中项那一半是本组**真正的**新东西：React 在 SSR 里把受控 `<select value>` 的选中态
+ *    渲染成 `<option value="30d" selected="">`（实测，见下面的探针）——
+ *    于是"传进去的 `filters` 有没有真的让下拉框停在那一档"是**产物里看得见**的。
+ *    少了它，"五个下拉框全都停在「全部」而列表是筛过的"这种状态一条断言都没有
+ *    （那正是 `TrackedVideosSectionProps.filters` 那段注释点名的最坏形状）。
+ */
+type SelectOption = { value: string; label: string; selected: boolean };
+/** 一个 `<select>` 里的选项（值 / 可见文字 / 有没有 `selected`）。 */
+const optionsOf = (select: string): SelectOption[] =>
+  [...select.matchAll(/<option\s+value="([^"]*)"([^>]*)>([^<]*)<\/option>/g)].map((m) => ({
+    value: decode(m[1] ?? ''),
+    selected: /\bselected\b/.test(m[2] ?? ''),
+    label: decode(m[3] ?? ''),
+  }));
+const selectsOf = (html: string): string[] => elementsWithClass(html, 'filters__select');
+/** 选中的那个 `<option>` 的 **value**（`null` = 这一个 select 一个都没选中）。 */
+const selectedValueOf = (select: string): string | null => {
+  const picked = optionsOf(select).filter((o) => o.selected);
+  assert.equal(
+    picked.length,
+    1,
+    `★ 探针：一个 \`<select>\` 里应当**恰好一个**选中项（实测 ${String(picked.length)}）—— ` +
+      '0 个会让"选中态跟着 filters 走"这条断言以"什么都没选中"的方式通过',
+  );
+  return picked[0]?.value ?? null;
+};
+/* ⚠️ 探针：读取器本身要能命中（否则下面每一条都在一段读不出东西的串上"通过"）。 */
+assert.deepEqual(
+  optionsOf('<select><option value="a">A</option><option value="b" selected="">B</option></select>')
+    .filter((o) => o.selected)
+    .map((o) => o.value),
+  ['b'],
+  '★★ 探针：`optionsOf` 能认出一个选中项（React SSR 印的是 `selected=""`）',
+);
+assert.equal(
+  optionsOf('<select>没有选项</select>').length,
+  0,
+  '★★ 探针：读不出选项时返回**空数组**（不是"随便给一个"）—— 下面每一条都建在它上面',
+);
+
+/** 五个控件的**期望形状**（手抄 —— 见上面那段：import 组件那三张表就成了恒真断言）。 */
+const EXPECTED_SELECTS: readonly {
+  aria: string;
+  why: string;
+  options: readonly (readonly [value: string, label: string])[];
+}[] = [
+  {
+    aria: t('tracked.filterTime'),
+    why: '时间范围（三档预设 + 「全部时间」）',
+    options: [
+      ['', t('tracked.timeAll')],
+      ['7d', t('tracked.time7d')],
+      ['30d', t('tracked.time30d')],
+      ['1y', t('tracked.time1y')],
+    ],
+  },
+  {
+    aria: t('tracked.filterTag'),
+    why: '标签（`TRACKED_VIDEO_TAGS` 三个 + 「全部标签」）',
+    options: [
+      ['', t('tracked.tagAll')],
+      ['liveReplay', t('tracked.tagLiveReplay')],
+      ['short', t('tracked.tagShort')],
+      ['long', t('tracked.tagLong')],
+    ],
+  },
+  {
+    aria: t('tracked.filterDuration'),
+    why: '时长（四档闭区间 + 「全部时长」）',
+    options: [
+      ['', t('tracked.durAll')],
+      ['lt1', t('tracked.durLt1')],
+      ['1to5', t('tracked.dur1to5')],
+      ['5to15', t('tracked.dur5to15')],
+      ['gt15', t('tracked.durGt15')],
+    ],
+  },
+  {
+    aria: t('tracked.filterSort'),
+    why: '排序（**没有**「全部」那一档：排序永远有一个当前值）',
+    options: [
+      ['new', t('tracked.sortNew')],
+      ['views', t('tracked.sortViews')],
+    ],
+  },
+  {
+    aria: t('tracked.filterCreator'),
+    why: '博主（名册逐行：名字 · 平台（条数））',
+    options: [
+      ['', t('tracked.creatorAll')],
+      [
+        ROSTER_BILI.id,
+        t('tracked.creatorOption', {
+          name: ROSTER_BILI.displayName,
+          platform: t('videos.platformBilibili'),
+          count: ROSTER_BILI.videoCount,
+        }),
+      ],
+      // ⚠️ `displayName` 为空那一行：**回落成 handle**（`creatorLabel`），不是空、也不是整格不画
+      [
+        ROSTER_NONAME.id,
+        t('tracked.creatorOption', {
+          name: ROSTER_NONAME.handle,
+          platform: t('videos.platformTwitch'),
+          count: ROSTER_NONAME.videoCount,
+        }),
+      ],
+      [
+        ROSTER_ZERO.id,
+        t('tracked.creatorOption', {
+          name: ROSTER_ZERO.displayName,
+          platform: t('videos.platformYoutube'),
+          count: 0,
+        }),
+      ],
+    ],
+  },
+];
+
+/** 一份"五档全选上"的筛选状态（选中态那一半的主夹具）。 */
+const ALL_FILTERS: TrackedFilterState = {
+  sort: 'views',
+  tag: 'short',
+  duration: '1to5',
+  time: '30d',
+  creatorId: ROSTER_NONAME.id,
+};
+const FILTERS_HTML = renderSection({ filters: ALL_FILTERS }, '五档筛选全选上');
+const filterSelects = selectsOf(FILTERS_HTML);
+assert.equal(
+  filterSelects.length,
+  5,
+  `★★ 筛选条里**恰好五个** \`<select>\`（实测 ${String(filterSelects.length)}）—— 第 9 条点名的就是这五个（时间 / 标签 / 时长 / 排序 / 博主）`,
+);
+assert.equal(
+  filterSelects.every((el) => /^<select\b/.test(el)),
+  true,
+  '★ 五个都是**真的 `<select>`**（不是别的元素挂了一个同名的类 —— 那会让下面每一条断言作用在一个不存在的控件上）',
+);
+for (const [i, expected] of EXPECTED_SELECTS.entries()) {
+  const select = filterSelects[i] ?? '';
+  assert.equal(
+    attrOf(select, 'aria-label'),
+    expected.aria,
+    `★★ 第 ${String(i + 1)} 个下拉框的可访问名必须是「${expected.aria}」（${expected.why}）—— ` +
+      '标签只走 `aria-label`：可见的标签由第一个选项自己承担，五个控件靠它区分',
+  );
+  assert.deepEqual(
+    optionsOf(select).map((o) => [o.value, o.label] as const),
+    expected.options.map(([value, label]) => [value, label] as const),
+    `★★ 第 ${String(i + 1)} 个下拉框（${expected.why}）的**取值与文字逐条**都要对上 —— ` +
+      '文字来自手抄的词条键：`TIME_KEYS` / `DURATION_KEYS` / `SORT_KEYS` 表里写错一个字母时，产物里是原始 key，这里当场红',
+  );
+}
+/*
+ * 选中态：`ALL_FILTERS` 五档全给上 ⇒ 五个下拉框各自停在**它那一档**上。
+ * ⚠️ 期望值手写在下面这份表里（与 `EXPECTED_SELECTS` 同一个顺序），**不**从 `ALL_FILTERS` 反推 ——
+ *    反推的话"选中态有没有跟着 props 走"就变成"filters 与它自己相等"（恒真）。
+ */
+assert.deepEqual(
+  filterSelects.map((el) => selectedValueOf(el)),
+  ['30d', 'short', '1to5', 'views', ROSTER_NONAME.id],
+  '★★ 五个下拉框的**选中项逐个**等于传进来的 `filters`（时间 30d / 标签 short / 时长 1to5 / 排序 views / 博主那一位）—— ' +
+    '这一条红的样子就是"传了 filters、下拉框还停在全部"（界面上写着「全部」而列表是筛过的）',
+);
+/*
+ * 反面对照（本仓老规矩）：**什么都不筛**的那一份产物里，选中项落在各自的**第一档**上，
+ * 而排序那一格是 `new`。少了这一半，"永远选中最后一个选项"的实现也能过上面那条。
+ */
+const DEFAULT_FILTERS_HTML = renderSection({}, '什么都不筛（默认）');
+assert.deepEqual(
+  selectsOf(DEFAULT_FILTERS_HTML).map((el) => selectedValueOf(el)),
+  ['', '', '', 'new', ''],
+  "★★ 默认那档（`filters: { sort: 'new' }`）：四格停在「全部」那一档、排序停在 `new` —— " +
+    '「默认值对应的选项」与「没有值」在产物里是**同一个 `<option value="">`**，这一条把两件事都钉住',
+);
+assert.equal(
+  optionsOf(filterSelects[3] ?? '').some((o) => o.value === ''),
+  false,
+  '★★ 排序那一格**没有**空值选项：排序永远有一个当前值，"没选"不是一个合法的排序（多一个「全部」会让列表的顺序无法解释）',
+);
+/*
+ * ★★ 名册为空（`creators: []`）时的降级：下拉框只剩「全部博主」，而**列表照常画**。
+ *    ⚠️ 这是"能接受"的降级（`creators` prop 的说明写着），所以它必须被**明确**断言下来 ——
+ *    否则某天有人把它改成"名册空就整块不渲染"时，没有任何东西会响。
+ */
+const EMPTY_ROSTER_HTML = renderSection({ creators: [] }, '名册还没取到（空数组）');
+assert.deepEqual(
+  optionsOf(selectsOf(EMPTY_ROSTER_HTML)[4] ?? '').map((o) => [o.value, o.label] as const),
+  [['', t('tracked.creatorAll')]],
+  '★★ 名册为空 ⇒ 博主那一格**只剩「全部博主」**（能接受的降级：它仍然能表达"全部"）',
+);
+assert.equal(
+  elementsWithClass(EMPTY_ROSTER_HTML, 'tracked__card').length,
+  1,
+  '★ 探针：名册为空时**列表照常画**（把"名册空"读成"没有内容"会得到一屏空白）',
+);
+ok(
+  '五个下拉框：可访问名 + 逐条选项（取值与文字，含空显示名回落 handle、条数为 0 那一行）+ 五个选中项逐个等于 `filters`（默认那档四格停在「全部」、排序 `new`）+ 空名册降级',
+);
+
+// ---------------------------------------------------------------------------
 console.log('⑭ 卡片是门面：三个平台的 `data-embed-src` 形状 + 封面三样 + 「去原站」那条外链还在');
 // ---------------------------------------------------------------------------
 /*
@@ -2202,6 +2755,387 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
+console.log('⑯·b ★★ `vtab` 的读写（第 8 条那两个栏目）+ 切栏目**不重置任何状态**');
+// ---------------------------------------------------------------------------
+/*
+ * ★ 第 8 条那条契约的第二半：**换栏目不许动别的键**。
+ *
+ * ⚠️★ 它住在 `lib/trackedQuery.ts` 的两个纯函数里，理由是"页面那一层静态渲染够不到"
+ *    （不跑 effect、不点击）—— 与上面 ⑯ 逐字同一条。这一组是那条契约**唯一**的守门人。
+ * ⚠️ 判据用**整串相等**（`toString()`）而不是逐个键查：逐个查的话，
+ *    "顺手多删了一个键"或"多留了一个空值"都能溜过去 —— 而那两个都是这条契约的核心。
+ */
+assert.equal(
+  VIDEOS_TAB_PARAM,
+  'vtab',
+  '★ 栏目参数名是 `vtab`（`V` 前缀：通用名 `?tab=` 会被别的页面顺手拿去用）',
+);
+
+const TAB_READ_CASES = [
+  ['', 'wall'],
+  ['vtab=wall', 'wall'],
+  ['vtab=tracked', 'tracked'],
+  // ⚠️ 认不出的值 / 空串 / 手打错大小写 ⇒ **退化成 wall**（不许 400，也不许"两块都不显示"）
+  ['vtab=foo', 'wall'],
+  ['vtab=', 'wall'],
+  ['vtab=Tracked', 'wall'],
+  ['vtab=tracked&tpage=3', 'tracked'],
+] as const;
+for (const [query, expected] of TAB_READ_CASES) {
+  assert.equal(
+    readVideosTab(new URLSearchParams(query)),
+    expected,
+    `★★ \`?${query}\` ⇒ ${expected}（认不出的值退化成那面墙 —— 一个被改坏的地址不该变成一整块错误页，也不该变成空页面）`,
+  );
+}
+assert.equal(
+  TAB_READ_CASES.filter(([, expected]) => expected === 'tracked').length,
+  2,
+  '★ 探针：上面那组用例里确实有**两条**读得出 `tracked`（否则"全都退化成 wall"也是绿的）',
+);
+
+/** 切栏目用的查询串：墙的四个键 + 这一栏的七个键**全都在**（两个栏目各自的状态都留在地址里）。 */
+const BOTH_TABS_QUERY =
+  'platform=youtube&authorId=u-1&page=3&view=mine' +
+  '&tpage=2&tplatform=twitch&tsort=views&ttag=short&tdur=lt1&ttime=7d&tcreator=c-9';
+assert.equal(
+  new URLSearchParams(BOTH_TABS_QUERY).toString().split('&').length,
+  11,
+  '★ 探针：这一份查询串确实带着**十一个**键（少了的话下面"一个都不许动"就成了空跑；改了这份夹具就要连这里一起改）',
+);
+/* ⚠️ 传进去的是**这一份**（`TAB_PREV`），下面才好在它身上查"有没有被就地改掉"。 */
+const TAB_PREV = new URLSearchParams(BOTH_TABS_QUERY);
+
+/** 切到 `tracked`：**只多一个 `vtab`**，其余十一个键逐字符不变。 */
+const TO_TRACKED = nextParamsForVideosTab(TAB_PREV, 'tracked');
+assert.equal(
+  TO_TRACKED.toString(),
+  `${BOTH_TABS_QUERY}&${VIDEOS_TAB_PARAM}=tracked`,
+  '★★ 切到追踪那一栏：只多了 `vtab=tracked`，墙的四个键与这一栏的七个键**逐字符原样**（"切一次就清一次"的表现是"每次切回来都要重新筛一遍"，用户会以为地址被吃了）',
+);
+/** 切回 `wall`：`vtab` **被删掉**（默认值不进地址栏），其余十一个键同样逐字符不变。 */
+const BACK_TO_WALL = nextParamsForVideosTab(TO_TRACKED, 'wall');
+assert.equal(
+  BACK_TO_WALL.toString(),
+  BOTH_TABS_QUERY,
+  '★★ 切回那面墙：`vtab` 被**删掉**（本仓"不把默认值拼进地址"的约定），而两个栏目各自的状态**一个都没动** —— 从追踪切回来，之前翻到第 3 页仍然是第 3 页',
+);
+assert.equal(
+  nextParamsForVideosTab(new URLSearchParams(''), 'wall').has(VIDEOS_TAB_PARAM),
+  false,
+  '★★ 本来就没什么可切的时候更不该留下 `?vtab=wall`（一个"等于默认值"的参数会让分享出去的地址看起来像改过什么）',
+);
+assert.equal(
+  TAB_PREV.toString(),
+  BOTH_TABS_QUERY,
+  '★★ 纯函数**不许就地改**传进来的那一份（那是 react-router 手上的状态：就地改它 = 当前地址被悄悄改掉）',
+);
+assert.notEqual(
+  TO_TRACKED.toString(),
+  nextParamsForVideosTab(new URLSearchParams(), 'tracked').toString(),
+  '★ 探针：其余十一个键确实被**带过去了**（否则上面"只多一个键"那两条是在两个空串上比）',
+);
+ok(
+  '栏目参数：`vtab` 认得出两个值、认不出的退化成那面墙；切栏目**只碰 `vtab`**（`wall` 时删掉它，其余十一个键逐字符原样）；纯函数不改入参',
+);
+
+// ---------------------------------------------------------------------------
+console.log('⑯·c ★★ 五个筛选参数的读写 + 「清除筛选」删的正好是那七个键');
+// ---------------------------------------------------------------------------
+/*
+ * ★ 第 9 条那条契约的另外三半（与 ⑯ 的 `tplatform` 逐字同一条纪律）：
+ *   ① **先校验再用**：认不出的值一律退化成"不限"（服务端对非法值是 400，
+ *      而"地址被改坏了"不该变成一个用户没法自救的错误页）；
+ *   ② **改任一档都删 `tpage`**（= 回到第 1 页），而且**不许碰**上面那面墙的四个键；
+ *   ③ 「清除筛选」删的是**这一栏的七个键**（五个筛选 + 分区 + 页码），墙的四个键一个不动。
+ * ⚠️ 这三条同样只有**纯函数层**能被断言（页面那一层的接线静态渲染够不到）。
+ */
+const FILTER_READ_CASES: readonly (readonly [query: string, state: TrackedFilterState])[] = [
+  ['', { sort: 'new' }],
+  ['tsort=views', { sort: 'views' }],
+  // ⚠️ 排序只有两个取值：认不出的一律退化成 `new`（**不问服务端**）
+  ['tsort=foo', { sort: 'new' }],
+  ['tsort=', { sort: 'new' }],
+  ['ttag=short', { sort: 'new', tag: 'short' }],
+  ['ttag=liveReplay', { sort: 'new', tag: 'liveReplay' }],
+  ['ttag=long', { sort: 'new', tag: 'long' }],
+  ['ttag=weirdTagFromTheFuture', { sort: 'new' }],
+  ['tdur=lt1', { sort: 'new', duration: 'lt1' }],
+  ['tdur=5to15', { sort: 'new', duration: '5to15' }],
+  ['tdur=foo', { sort: 'new' }],
+  ['ttime=7d', { sort: 'new', time: '7d' }],
+  ['ttime=1y', { sort: 'new', time: '1y' }],
+  ['ttime=foo', { sort: 'new' }],
+  ['tcreator=c-9', { sort: 'new', creatorId: 'c-9' }],
+  // ⚠️ 空 / 只有空白 ⇒ "不限"（`?tcreator=` 在服务端那一头是 400 的取值，绝不能原样发出去）
+  ['tcreator=', { sort: 'new' }],
+  ['tcreator=%20%20', { sort: 'new' }],
+  [
+    'tsort=views&ttag=short&tdur=1to5&ttime=30d&tcreator=c-9',
+    { sort: 'views', tag: 'short', duration: '1to5', time: '30d', creatorId: 'c-9' },
+  ],
+];
+for (const [query, state] of FILTER_READ_CASES) {
+  assert.deepEqual(
+    readTrackedFilters(new URLSearchParams(query)),
+    state,
+    `★★ \`?${query}\` ⇒ ${JSON.stringify(state)}（五个参数**逐个**先校验再用：认不出的值退化成"不限"，不许原样发给服务端）`,
+  );
+}
+assert.equal(
+  FILTER_READ_CASES.length,
+  18,
+  '★ 探针：这一组用例是**十八条**（手抄的数：加了用例就要连这里一起改，否则它会红在一个已经对的地方）',
+);
+assert.equal(
+  FILTER_READ_CASES.filter(([, state]) => Object.keys(state).length > 1).length,
+  9,
+  '★ 探针：上面那组用例里确实有**九条**读出了非默认状态（否则"全都退化成默认"也是绿的）',
+);
+assert.equal(
+  FILTER_READ_CASES.filter(([, state]) => Object.keys(state).length === 1).length,
+  9,
+  '★ 探针：而**九条**退化成"什么都没筛"（认不出的值：`tsort=foo`/`ttag=weirdTagFromTheFuture`/`tdur=foo`/`ttime=foo`、空串：`tsort=`/`tcreator=`、只有空白：`tcreator=%20%20`、以及"一条都没传"）',
+);
+
+/*
+ * 改一档筛选：上一份查询串里**十一个键全在**，看它动了什么、没动什么。
+ * ⚠️ 判据也是**整串相等** —— 比逐个键更能抓住"顺手删掉了一个 `tpage` 之外的键"。
+ */
+const FILTER_PREV_QUERY = BOTH_TABS_QUERY;
+/* ⚠️ 这一份传进去（`FILTER_PREV`），下面才好在它身上查"有没有被就地改掉"。 */
+const FILTER_PREV = new URLSearchParams(FILTER_PREV_QUERY);
+const FILTER_CHANGED = nextParamsForTrackedFilter(FILTER_PREV, TRACKED_TAG_PARAM, 'long');
+assert.equal(FILTER_CHANGED.get(TRACKED_TAG_PARAM), 'long', '★★ 改标签：写进去的是**新值**');
+assert.equal(
+  FILTER_CHANGED.has(TRACKED_PAGE_PARAM),
+  false,
+  '★★ 改任一档筛选都**删掉 `tpage`**（= 回到第 1 页）：停在第三页而新条件下只剩一页是一屏空白，用户会以为"这个筛选没有视频"',
+);
+assert.equal(
+  FILTER_CHANGED.toString(),
+  'platform=youtube&authorId=u-1&page=3&view=mine&tplatform=twitch&tsort=views&ttag=long&tdur=lt1&ttime=7d&tcreator=c-9',
+  '★★★ 而**别的键一个都不许动**：墙的四个（`platform`/`authorId`/`page`/`view`）与这一栏其余五个（`tplatform`/`tsort`/`tdur`/`ttime`/`tcreator`）逐字符原样 —— 少一个 = "改了下拉框，上面那面墙的筛选也没了"',
+);
+const FILTER_CLEARED_ONE = nextParamsForTrackedFilter(
+  new URLSearchParams(FILTER_PREV_QUERY),
+  TRACKED_TIME_PARAM,
+  undefined,
+);
+assert.equal(
+  FILTER_CLEARED_ONE.has(TRACKED_TIME_PARAM),
+  false,
+  '★★ 选回「全部」⇒ 把这个键**删掉**，不是留一个空值（`?ttime=` 在服务端那一头不是它的取值）',
+);
+assert.equal(
+  FILTER_CLEARED_ONE.toString(),
+  'platform=youtube&authorId=u-1&page=3&view=mine&tplatform=twitch&tsort=views&ttag=short&tdur=lt1&tcreator=c-9',
+  '★★ 而其余键（含被留下的四个筛选）逐字符原样',
+);
+assert.equal(
+  FILTER_PREV.toString(),
+  FILTER_PREV_QUERY,
+  '★★ 纯函数不改入参（与上面 `tplatform` / `vtab` 两条同一条）—— 传进去的就是这一份，改了就当场红',
+);
+
+/*
+ * 「清除筛选」：删的**正好是这一栏的七个键**，墙的四个键一个不动。
+ */
+const CLEARED_ALL_PREV = new URLSearchParams(FILTER_PREV_QUERY);
+const CLEARED_ALL = clearedTrackedFilterParams(CLEARED_ALL_PREV);
+assert.equal(
+  CLEARED_ALL.toString(),
+  'platform=youtube&authorId=u-1&page=3&view=mine',
+  '★★★ 「清除筛选」之后**只剩墙那四个键**：这一栏的七个（`tpage`/`tplatform`/`tsort`/`ttag`/`tdur`/`ttime`/`tcreator`）全删，墙的四个逐字符原样',
+);
+assert.equal(
+  CLEARED_ALL_PREV.toString(),
+  FILTER_PREV_QUERY,
+  '★★ 「清除筛选」同样**不许就地改**入参（改的是那一份地址栏状态：就地改了它，用户点完清除会看到地址栏原地不动而列表空了）',
+);
+for (const key of [
+  TRACKED_PAGE_PARAM,
+  TRACKED_PLATFORM_PARAM,
+  TRACKED_SORT_PARAM,
+  TRACKED_TAG_PARAM,
+  TRACKED_DURATION_PARAM,
+  TRACKED_TIME_PARAM,
+  TRACKED_CREATOR_PARAM,
+] as const) {
+  assert.equal(
+    new URLSearchParams(FILTER_PREV_QUERY).has(key),
+    true,
+    `★ 探针：这一份查询串里确实带着 \`${key}\`（否则"它被清掉了"这条是空跑）`,
+  );
+}
+assert.equal(
+  new URLSearchParams(FILTER_PREV_QUERY).has(VIDEOS_TAB_PARAM),
+  false,
+  '★ 说明：这一份查询串里**没有** `vtab` —— 清除筛选不碰栏目（用户仍在追踪那一栏里，否则他点完会莫名其妙被弹回去）',
+);
+ok(
+  '五个筛选参数：认得出取值域里的每一个、认不出的一律退化成"不限"（18 条用例）；改一档只写新值 + 删 `tpage` + 其余十个键逐字符原样；“清除筛选”删的正好是这一栏那七个键',
+);
+/*
+ * ★ 用户第 8 条：「最后将两个栏目"自己贴的视频"和"追踪的博主"分开，在顶部切换」。
+ *
+ * ⚠️★ 这一组**渲染的是真页面**（`routes/Videos.tsx` 本身），而不是某个组件 ——
+ *    这是本文件里**唯一**一处能对页面下判断的地方，所以它值得一段说明：
+ *    · 页面确实可以渲染：它取数用的是 `useAsync`，而 `renderToStaticMarkup`
+ *      **不跑 effect** ⇒ 它停在 loading 那一屏，但顶部的切换器、两个栏目各自的
+ *      `<section>`、以及"哪一块被包在条件里"**全是同步渲染**出来的；
+ *    · `?vtab=` 由 `useSearchParams()` 读（`MemoryRouter` 的 `initialEntries` 给 URL），
+ *      `useAuth()` 需要一个 `AuthProvider`（`lib/auth.tsx` 在 Provider 外直接 throw）——
+ *      用它的 `initialUser` 注入点（那个口子就是给渲染自检留的，生产调用方一个字都不传）。
+ *
+ * ⚠️ 判据是**节点数**，不是"产物里含不含某个字符串"：`tracked` 与 `video-wall` 各数一次，
+ *    **恰好一个是 1、另一个是 0**。写成 `includes('video-wall')` 的话，"两块都在"与
+ *    "一块都没在"都可能满足或漏过 —— 而用户要的正是"同一时刻只有一块"。
+ *    ⚠️ 反面（"两块都不显示"）是**真的发生过**的一类坏法：`readVideosTab` 的注释里
+ *      写着 `raw === 'tracked' ? 'tracked' : raw` 那种写法会让一个错值渲染出**空页面**
+ *      ⇒ 所以下面每一档都断言"另一块是 0"**并且**"这一块是 1"（两侧都要有）。
+ * ⚠️ `video-wall` 在 loading 那一屏就出现了（`WallSkeleton` 用的就是这个类名，6 个骨架块），
+ *    所以"墙那一块在不在"这件事在这一屏上也是可判的。
+ */
+const renderPage = (entry: string, who: UserSelf | null): string => {
+  const markup = renderToStaticMarkup(
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(
+        MemoryRouter,
+        { initialEntries: [entry] },
+        createElement(AuthProvider, { initialUser: who }, createElement(Videos)),
+      ),
+    ),
+  );
+  /*
+   * ⚠️ 进 `products`（与其余产物同一处置）：⑨ 的裸 key 扫描与 ⑩ 的零汉字扫描扫的是
+   *    **所有产物**，而这一份是页面第一份进来的产物 —— 页面上那些词条（`videos.tabWall`
+   *    是本轮新加的）因此第一次真的进了那道扫描。
+   */
+  products.push(markup);
+  return markup;
+};
+const fieldsCount = (markup: string, cls: string): number => elementsWithClass(markup, cls).length;
+
+const WALL_PAGE_HTML = renderPage('/videos', null);
+const TRACKED_PAGE_HTML = renderPage('/videos?vtab=tracked', null);
+const BAD_TAB_PAGE_HTML = renderPage('/videos?vtab=foo', null);
+for (const [where, markup, wall, tracked] of [
+  ['`/videos`（没有 `vtab`）', WALL_PAGE_HTML, 1, 0],
+  ['`?vtab=tracked`', TRACKED_PAGE_HTML, 0, 1],
+  ['`?vtab=foo`（认不出的值）', BAD_TAB_PAGE_HTML, 1, 0],
+] as const) {
+  assert.equal(
+    fieldsCount(markup, 'video-wall'),
+    wall,
+    `★★ ${where} ⇒ \`.video-wall\`（自贴那面墙）**${String(wall)} 个**（实测 ${String(fieldsCount(markup, 'video-wall'))}）`,
+  );
+  assert.equal(
+    fieldsCount(markup, 'tracked'),
+    tracked,
+    `★★ ${where} ⇒ \`.tracked\`（追踪那一栏）**${String(tracked)} 个**（实测 ${String(fieldsCount(markup, 'tracked'))}）—— ` +
+      '两块在**同一时刻**不能同时出现；而"一块都没有"是另一种坏法（错值把整页渲染成空的），所以两侧都要数',
+  );
+}
+/*
+ * ★★ 反面（"两块都不显示"）**不在**上面那三对之外另写一条：那三对已经**逐档**钉住了
+ *    "一个 1、另一个 0"（`1 + 0` 与 `0 + 1`），也就是用户那句"同一时刻只显示一栏"的完整判据。
+ *    ⚠️ 曾经在这里写过一条"两块之和恒等于 1"的循环 —— 那是**恒真**的（由上面对推出），
+ *    本仓对"不可能红的断言"的处置是删掉它，而不是留着当装饰。真正的反面由
+ *    `?vtab=foo` 那一档提供（认不出的值 ⇒ 仍然渲染那面墙，不是空页面）。
+ */
+/*
+ * ★★ 探针（反面控制）：**数的是"这一份产物里真的有那块"，不是"这一段代码没崩"**。
+ *    tracked 那一档里筛选条有 5 个 `<select>`（只有追踪那一栏有），墙那一档一个都没有 ——
+ *    两个数互为对照，说明"1 / 0"确实是**哪一块被渲染**的结果。
+ */
+assert.equal(
+  fieldsCount(TRACKED_PAGE_HTML, 'filters__select'),
+  5,
+  '★★ 探针：`?vtab=tracked` 那一份产物里筛选条真的画出来了（5 个下拉框）—— 没有它的话，"产物里有 `.tracked` 的节点"可能只是某个空壳',
+);
+assert.equal(
+  fieldsCount(WALL_PAGE_HTML, 'filters__select'),
+  0,
+  '★★ 对照：墙那一档里**一个** `filters__select` 都没有（筛选条只在追踪那一栏里）',
+);
+/*
+ * ★ 顶部那两个切换器按钮的**状态**（用户要的是"在顶部切换"）：
+ *   · 恰好两颗（`video-viewswitch__item`，取**第一组** —— 匿名访客只有顶部这一组，
+ *     「推荐视频 / 我的分享」那一组要登录才画）；
+ *   · 文字分别是 `videos.tabWall` 与 `tracked.title`；
+ *   · `aria-pressed` **恰好一个为真**，且跟着 `vtab` 走。
+ * ⚠️ 用 `aria-pressed` 而不是 `role="tab"` 是本仓的既有裁决（`routes/Seeds.tsx` 同一条），
+ *   所以这里断的也是它。
+ */
+const topSwitchItems = (markup: string): string[] => {
+  const switches = elementsWithClass(markup, 'video-viewswitch');
+  assert.equal(
+    switches.length,
+    1,
+    `★ 探针：匿名访客在**这一屏**上只有顶部那一组切换器（实测 ${String(switches.length)} 组）—— 第二组（推荐视频 / 我的分享）要登录才画`,
+  );
+  return elementsWithClass(switches[0] ?? '', 'video-viewswitch__item');
+};
+for (const [where, markup, wantWall] of [
+  ['`/videos`', WALL_PAGE_HTML, true],
+  ['`?vtab=tracked`', TRACKED_PAGE_HTML, false],
+] as const) {
+  const items = topSwitchItems(markup);
+  assert.deepEqual(
+    items.map((el) => textOf(el)),
+    [t('videos.tabWall'), t('tracked.title')],
+    `★★ ${where}：顶部两颗按钮的文字是「${t('videos.tabWall')}」与「${t('tracked.title')}」（右边那颗**复用** ` +
+      '`tracked.title` —— 同一个东西不该有两个名字）',
+  );
+  assert.deepEqual(
+    items.map((el) => attrOf(el, 'aria-pressed')),
+    wantWall ? ['true', 'false'] : ['false', 'true'],
+    `★★ ${where}：选中态必须跟着 ` +
+      '`vtab` 走（`aria-pressed` 恰好一颗为真 —— 两颗都不亮时用户看不出自己在哪一栏）',
+  );
+}
+/*
+ * ★★ 管理面板**只在追踪那一栏里**（`routes/Videos.tsx` 那段注释的裁决）：
+ *    用一个真编辑器（`editor` + 邮箱已验证 ⇒ `live.manage`）渲染两次对照。
+ *    ⚠️ 这一段同时钉住"`useCan` 的取值真的接到了页面上"：没有能力时那一块整块返回 `null`。
+ */
+const editorUser: UserSelf = {
+  id: 'u-editor',
+  displayName: 'Editor Example',
+  avatarUrl: null,
+  role: 'editor',
+  email: 'editor@example.com',
+  locale: 'zh-CN',
+  emailVerified: true,
+  canSubmit: true,
+  mcName: null,
+  createdAt: 0,
+};
+const EDITOR_WALL_PAGE_HTML = renderPage('/videos', editorUser);
+const EDITOR_TRACKED_PAGE_HTML = renderPage('/videos?vtab=tracked', editorUser);
+assert.equal(
+  fieldsCount(EDITOR_TRACKED_PAGE_HTML, 'tracked__manage'),
+  1,
+  '★★ 编辑器（`live.manage`）在追踪那一栏上**看得到**管理面板 —— 正面对照（否则下面那条是在验一个永远不渲染的组件）',
+);
+assert.equal(
+  fieldsCount(EDITOR_WALL_PAGE_HTML, 'tracked__manage'),
+  0,
+  '★★ 而同一份产物在墙那一栏上**一块都没有**（面板跟着追踪那一栏走：它维护的就是那份名单）',
+);
+assert.equal(
+  fieldsCount(EDITOR_TRACKED_PAGE_HTML, 'video-wall'),
+  0,
+  '★ 编辑器那一份同样满足"两块加起来一块"（登录之后顶部切换器仍然是那两个栏目）',
+);
+ok(
+  '两个栏目互斥：`?vtab=wall|tracked|认不出的值` 三档各数一次（两块加起来恰好一块）+ 顶部两颗按钮的文字与 `aria-pressed` 跟着走 + 管理面板只在追踪那一栏',
+);
+
+// ---------------------------------------------------------------------------
 console.log(
   '⑪ ★★ 类名 ↔ CSS —— 产物里每一个 `tracked*` / `video-embed*` 类名都要有规则（**先剥注释**）',
 );
@@ -2296,6 +3230,15 @@ const MUST_RENDER = [
   'tracked__media',
   'tracked__body',
   'tracked__head',
+  /*
+   * ★★ 第 8 条（2026-09-19）：卡片上的博主名那一格。它是**新类名**，而"新类名的 CSS
+   *    规则有没有消费者"正是这张手抄清单存在的理由 —— 夹具不带名字的话，
+   *    `.tracked__creator` 永远不会出现在任何产物里，`styles.css` 里那条新规则
+   *    就**没有任何东西**看着（⑪ 的类名循环只会去检查"出现过的类名有没有规则"，
+   *    它看不见"有规则却没人用"）。
+   *    ⇒ `FULL_VIDEO.creatorName` 与 ①·b 那一组是这一条断言的**前提**。
+   */
+  'tracked__creator',
   'tracked__tags',
   'tracked__tag',
   'tracked__cardtitle',
@@ -2374,6 +3317,127 @@ ok(
   `类名↔CSS：${String(pageClasses.length)} 个 \`tracked*\` / \`video-embed*\` 类名逐个有规则（收集自 ${String(products.length)} 份产物，匹配前已剥注释）`,
 );
 
+// ---------------------------------------------------------------------------
+console.log('⑪·b ★★ `.tracked__grid` 的最小列宽与 `.video-wall` **取同一个下界**（源码级守卫）');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 用户第 8 条的原话里有"和上面栏目相同"这一层意思（"追踪的博主"里 B站 视频
+ *    无法全屏 / 调不了弹幕与声音）。那一条报障里**真的**有一条机制是**框太窄**：
+ *    `.video-wall` 是 `minmax(400px,1fr)`（`styles.css:4039`），而 `.tracked__grid`
+ *    原来是 `minmax(280px,1fr)`（`:8695`）—— 同一个播放器，两种控件密度，
+ *    而本仓自己在 `.video-wall` 上面写着"嵌入框一窄，播放器里的控件就挤成一团"。
+ *
+ * ⚠️★ 第 9 条落地时（T1）把 280 改成了 400，而**当时没有任何东西看得见这个数字**：
+ *    ⑪ 只查"这个类名有没有规则"，查不出那条规则里写的是 400 还是 280
+ *    （T1 报告的 §4.6 把这一刀记成**空刀**：改了它、门禁全绿）。
+ *    ⇒ 这一组补上那一条。判据**不许**写成"CSS 里有没有 `400px` 这个串"：
+ *      那种写法①恒真（注释里、别的规则里都有 400px），②过窄（有人把两个栅格一起改成
+ *      别的数时它就红在一个**正确**的改动上）。要读的是 `.tracked__grid` **那条规则**
+ *      的 `grid-template-columns`，并把两个栅格的**下界**拿去比。
+ *
+ * ⚠️ 阅读器先剥注释（与 ⑪ 同一条纪律，`§5.82` 那个假绿）：`styles.css` 里这一段的
+ *    **上方注释**逐字写着"最小列宽与墙上那面墙取同一个数（400px…）" ⇒
+ *    不剥注释的话，"把规则里的 400 改回 280"这条守卫**照样绿**（注释里那个 400 还在）。
+ * ⚠️ 选择器要**整个类名**相等（`(?![A-Za-z0-9_-])`）：`css.includes('.tracked__grid')`
+ *    会被 `.tracked__grid--wide` 这种更长的名字满足。
+ */
+/** 某条规则的**规则体**（`{…}` 之间那一小段）；`null` = `styles.css` 里没有这条规则。 */
+const ruleBodyOf = (css: string, cls: string): string | null => {
+  /*
+   * ⚠️ 前缀 `(?:^|\n|,|})` 不是装饰：`.video-wall {…}` 与 `.video-wall > li {…}` 都存在，
+   *    只写 `\.video-wall\s*\{` 的话两者都能被命中，而"读到了哪一条"会随文件里的
+   *    **书写顺序**漂 —— 那时断言看起来照样绿，只是它读的是另一条规则。
+   */
+  const re = new RegExp(
+    `(?:^|\\n|,|})\\s*\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])[^{}]*\\{([^{}]*)\\}`,
+  );
+  const m = re.exec(stripCssComments(css));
+  return m === null ? null : (m[1] ?? '');
+};
+/** 那条规则里的 `grid-template-columns` **下界**（px）；`null` = 没有这条规则 / 不是这个形状。 */
+const gridMinPxOf = (css: string, cls: string): number | null => {
+  const body = ruleBodyOf(css, cls);
+  if (body === null) return null;
+  const m = /grid-template-columns:\s*repeat\(\s*auto-fill\s*,\s*minmax\(\s*(\d+)px\s*,/.exec(body);
+  return m === null ? null : Number(m[1]);
+};
+/* ⚠️ 探针：阅读器本身要能命中，而且**认的是规则里的那个数**（不是文件里第一个 400px）。 */
+assert.equal(
+  gridMinPxOf(
+    '.tracked__grid {\n  grid-template-columns: repeat(auto-fill, minmax(412px, 1fr));\n}',
+    'tracked__grid',
+  ),
+  412,
+  '★★ 探针：读到的必须是**那条规则里**的那个数（写死 400 的实现会在这一条上红）',
+);
+assert.equal(
+  gridMinPxOf(
+    '/* .tracked__grid { grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); } */',
+    'tracked__grid',
+  ),
+  null,
+  '★★★ 探针：**只在注释里出现过**的那条规则不算数（`styles.css` 这一段的注释里逐字写着 400px ⇒ 不剥注释的版本对"改回 280"恒绿）',
+);
+assert.equal(
+  gridMinPxOf(
+    '.tracked__grid--wide {\n  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));\n}',
+    'tracked__grid',
+  ),
+  null,
+  '★★ 探针：`.tracked__grid--wide` **不能**满足 `.tracked__grid`（前缀关系；`hasCssRule` 那条探针是同一条）',
+);
+assert.equal(
+  gridMinPxOf('.tracked__grid > li {\n  display: flex;\n}', 'tracked__grid'),
+  null,
+  '★★ 探针：同名前缀的**另一条**规则（`.tracked__grid > li`）里没有这个属性 ⇒ 返回 `null`，而不是"随便找一条"',
+);
+
+const TRACKED_GRID_MIN = gridMinPxOf(CSS, 'tracked__grid');
+const VIDEO_WALL_MIN = gridMinPxOf(CSS, 'video-wall');
+assert.notEqual(
+  TRACKED_GRID_MIN,
+  null,
+  '★★ 探针：`.tracked__grid` 那条规则里确实有 `grid-template-columns: repeat(auto-fill, minmax(<n>px, …))`（读不到就说明选择器或属性名变了，下面那条会变成空跑）',
+);
+assert.notEqual(
+  VIDEO_WALL_MIN,
+  null,
+  '★★ 探针：`.video-wall` 那条规则同样读得到（两个数要**比**，少一个就没得比）',
+);
+assert.equal(
+  TRACKED_GRID_MIN,
+  VIDEO_WALL_MIN,
+  `★★ 用户第 8 条要的是"和上面栏目相同"：两个栅格的**最小列宽必须是同一个数**（实测 \`.tracked__grid=${String(TRACKED_GRID_MIN)}px\` vs \`.video-wall=${String(VIDEO_WALL_MIN)}px\`）—— ` +
+    '同一个播放器、两套控件密度，正是"追踪栏里播放器控件挤成一团"那条报障的机制之一',
+);
+assert.ok(
+  (TRACKED_GRID_MIN ?? 0) >= 400 && (VIDEO_WALL_MIN ?? 0) >= 400,
+  `★★ 两个下界都**不许低于 400px**（实测 ${String(TRACKED_GRID_MIN)}px / ${String(VIDEO_WALL_MIN)}px）：400 是"播放器控件装得下"这个理由写下的那个数（\`.video-wall\` 上面那条注释）。` +
+    '⚠️ 要把两个**一起**调小是可以的，但那是一次产品决定：请连同这条断言与两处注释一起改，别让它悄悄缩回去',
+);
+/*
+ * ★★ 能红证明（就地做，不动工作区）：把真实那份 CSS 里 `.tracked__grid` 的那个数改成 280
+ *    （= 这一轮之前的值），同一个比较**必须**看出两个数不同。
+ *    ⚠️ 它证明的是"这条判据真的在比那两个数"，而不是"某个字符串在文件里出现过"。
+ */
+const GRID_MUTATED_CSS = CSS.replace(
+  /(\.tracked__grid(?![A-Za-z0-9_-])[^{}]*\{[^{}]*?minmax\(\s*)\d+(px\s*,)/,
+  '$1280$2',
+);
+assert.notEqual(
+  GRID_MUTATED_CSS,
+  CSS,
+  '★★ 探针：能红证明那一条确实改到了那份 CSS（改不动的话下面那条证明是空的）',
+);
+assert.notEqual(
+  gridMinPxOf(GRID_MUTATED_CSS, 'tracked__grid'),
+  gridMinPxOf(GRID_MUTATED_CSS, 'video-wall'),
+  '★★★ 能红证明：把 `.tracked__grid` 改回 `280px` 之后，上面那条"两个下界相等"会**当场不等** ⇒ 这条守卫有区分力（T1 那一轮它是空刀：改了 280、门禁全绿）',
+);
+ok(
+  `栅格宽度：\`.tracked__grid\` 与 \`.video-wall\` 的最小列宽都是 ${String(TRACKED_GRID_MIN)}px（读的是各自的规则体、已剥注释；能红证明：改回 280px 会不等）`,
+);
+
 console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
@@ -2382,15 +3446,29 @@ console.log('覆盖边界（写清楚，免得下一个人高估它）');
 console.log('═══════════════════════════════════════════════════════════════════════');
 console.log('⚠️ 这是一个**静态渲染**：`renderToStaticMarkup` 不跑 effect、不点击、不发请求。');
 console.log('   所以下面这几件事它**证明不了**：');
-console.log('   · 页面（`routes/Videos.tsx`）本身：它取数、它有 7 个 useState —— 纯 SSR 下');
-console.log('     永远停在 loading 那一屏。⇒ 分页（`?tpage=`）、四个动作的接线、');
-console.log('     `useCan` 的取值、删博主之后**两个刷新键都要动**：**一个字都没断言**。');
-console.log('   · ⚠️★ 换分区那一条链路的**接线**（谁调用谁）同样一个都没断言：⑯ 证明的是');
-console.log('     那两个**纯函数**的行为（认不出的值退化成「全部」、换分区删 `tpage`、');
-console.log('     不碰 `platform` / `page`），而**页面有没有真的调它们**在静态渲染里看不出来');
-console.log('     —— 把 `setTrackedPlatform` 改回自己写一份 `URLSearchParams`，⑯ 照样全绿。');
-console.log('     同样看不见的还有两处：`fetchTrackedVideos` 在「全部」时**不拼** `?platform=`');
-console.log('     （空串服务端是 400），以及**`trackedPlatform` 有没有进 `useAsync` 的依赖数组**');
+console.log('   · 页面（`routes/Videos.tsx`）的**取数那一半**：它取数、它有 7 个 useState ——');
+console.log('     纯 SSR 下永远停在 loading 那一屏。⇒ 分页（`?tpage=`）、四个动作的接线、');
+console.log('     删博主之后**两个刷新键都要动**：**一个字都没断言**。');
+console.log('   · ⚠️★ ⑰ 起，页面的**同步那一半**有一部分能断言了（两个栏目互斥、顶部切换器的文字');
+console.log('     与 `aria-pressed`、管理面板只在追踪那一栏）：那些都在 SSR 的产物里。');
+console.log('     而 `useCan` 的取值**只**在"编辑器 / 匿名"两档上验过 —— 别的角色的表现没验。');
+console.log('   · ⚠️★ 换分区 / 换栏目 / 改筛选那几条链路的**接线**（谁调用谁）同样一个都没断言：');
+console.log(
+  '     ⑯ / ⑯·b / ⑯·c 证明的是那几个**纯函数**的行为（认不出的值退化成默认、换分区删 `tpage`、',
+);
+console.log(
+  '     切栏目只碰 `vtab`、不碰 `platform` / `page`），而**页面有没有真的调它们**在静态渲染里',
+);
+console.log(
+  '     看不出来 —— 把 `setTrackedFilter` 改回自己写一份 `URLSearchParams`，⑯·c 照样全绿。',
+);
+console.log(
+  '     ⚠️ **一个反例值得点名**（页面那一层确实看得见的一点）：切换器按下去之后地址变不变、',
+);
+console.log('     列表重不重取，全靠"页面调了那个纯函数" + "依赖数组里列了那个值"');
+console.log('     —— 两者都不在产物的射程里。');
+console.log('     同样看不见的还有：`fetchTrackedVideos` 在「全部」时**不拼** `?platform=`');
+console.log('     （空串服务端是 400），以及那几个值有没有进 `useAsync` 的依赖数组');
 console.log('     —— 漏了它 = 换分区列表不重新取数，而 ⑬ 那种静态断言看不见');
 console.log('     （它只证明"给我这个 prop 画成什么样"）。');
 console.log('   · **点击的结果**：SSR 的产物里没有事件处理器，一颗接好线的按钮与一颗');
@@ -2416,8 +3494,12 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  * ⚠️ 2026-09-16 的**修复波**：⑫…⑮ 之后又加了 ⑯（分区参数的读写），两个数各 +1
  *    （14/15 ⇒ 15/16）。
  * ⚠️ 2026-09-17：又加了 ⑥·b（冷却窗口，迁移 022），两个数再各 +1（15/16 ⇒ 16/17）。
+ * ⚠️ 2026-09-19（第 8/9 条，T3）：加了**七组** —— ①·b（卡片上的博主名）、④·b（三种空态
+ *    互相排斥）、⑬·b（五个下拉框）、⑪·b（两个栅格同一个下界）、⑯·b（`vtab`）、
+ *    ⑯·c（五个筛选参数与「清除筛选」）、⑰（两个栏目互斥，渲染真页面）
+ *    ⇒ 两个数再各 +7（16/17 ⇒ 23/24）。
  */
-const expectedGroups = LANG === 'en' ? 17 : 16;
+const expectedGroups = LANG === 'en' ? 24 : 23;
 assert.equal(
   pass,
   expectedGroups,
