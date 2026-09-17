@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import { setLocale } from '@/i18n';
 import { useAuth } from '@/lib/auth';
 import { canReviewAny, useCan } from '@/lib/capabilities';
-import { NAV_SECTIONS } from '@/lib/nav';
+import { loadNavOrder, moveNavOrder, orderNavSections, saveNavOrder } from '@/lib/navOrder';
 import { applyTheme, normalizeTheme, storeTheme, type Theme } from '@/lib/theme';
 
 /*
@@ -117,6 +117,37 @@ export function Layout() {
     });
   }
 
+  /*
+   * ★ 分区顺序（2026-09-17）—— 用户要求「左侧栏目自行调整顺序」。
+   *   交互、两条操作路径与刻意没做的部分，全部写在下面 <nav> 前面那一段注释里。
+   *
+   * ⚠️ 状态里放的是**路由数组**（顺序本身），列表每一帧都由 `orderNavSections`
+   *    从 `NAV_SECTIONS` 现推 —— 不把渲染好的分区对象存进状态。
+   *    这样"表里新加的分区"在下一次渲染就会出现，而存在状态里的快照永远不会有它
+   *    （那一栏于是**从侧栏消失，且不报错**）。
+   */
+  const [navOrder, setNavOrder] = useState<string[] | null>(() => loadNavOrder());
+  const sections = useMemo(() => orderNavSections(navOrder), [navOrder]);
+
+  /** 正在拖的行 / 它下面的落点行（不拖的时候都是 null）。 */
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+
+  /**
+   * 把第 from 行挪到第 to 行 —— **拖动与方向键都走这里**（只有这一份实现）。
+   *
+   * ⚠️ 存下去的是"当前可见顺序的整条"（`moveNavOrder` 的结果），不是"默认顺序 +
+   *    一条改动"：下次分区表里多一栏时，`orderNavSections` 会把它追加在这条的**末尾**。
+   */
+  function applyMove(from: number, to: number) {
+    const current = sections.map((s) => s.to);
+    const next = moveNavOrder(current, from, to);
+    // 越界（第一行按 ↑ / 最后一行按 ↓）与原地不动都会原样返回 ⇒ 不写、不重渲染
+    if (next.length === current.length && next.every((route, i) => route === current[i])) return;
+    setNavOrder(next);
+    saveNavOrder(next);
+  }
+
   // 路由变化时回到顶部。
   // 不这么做的话：从长列表点进详情页会停在原来的滚动位置，看起来像"页面没变"。
   const mainRef = useRef<HTMLElement>(null);
@@ -161,31 +192,153 @@ export function Layout() {
           <span className="sidebar__stage">M1</span>
         </NavLink>
 
-        <div className="sidebar__group">{t('nav.sections')}</div>
+        {/*
+          ★ 分区可以**自行调整顺序**了（2026-09-17，用户要求）。
+          同一次要求里的另一半是「去掉顶部的『分区』这些字」——
+          原来这里有一行 `<div className="sidebar__group">分区</div>`，
+          它整个删掉了；词条 `nav.sections` 也跟着从**两份**字典里删掉：
+          留一条没有任何渲染点的词条，下一个人只会以为界面上还有那行字。
 
-        <nav aria-label="main">
-          {NAV_SECTIONS.map((s) =>
-            s.milestone ? (
-              <span key={s.to} className="sidebar__item" aria-disabled="true" title={s.milestone}>
-                <span className={`sidebar__block sidebar__block--${s.block}`} aria-hidden="true" />
-                <span className="sidebar__label">{t(s.labelKey)}</span>
-              </span>
-            ) : (
-              <NavLink
-                key={s.to}
-                to={s.to}
-                // viewTransition：让浏览器对整页做交叉淡入。
-                // 侧边栏用 CSS 的 view-transition-name 钉住不动（见 styles.css），
-                // 所以看起来只有内容区在换。
-                viewTransition
-                className={({ isActive }) => `sidebar__item${isActive ? ' is-active' : ''}`}
-                title={t(s.labelKey)}
-              >
-                <span className={`sidebar__block sidebar__block--${s.block}`} aria-hidden="true" />
-                <span className="sidebar__label">{t(s.labelKey)}</span>
-              </NavLink>
-            ),
-          )}
+          ---------------------------------------------------------------------
+          两条路，缺一条这个功能就不是人人能用
+          ---------------------------------------------------------------------
+          · **鼠标**：整行可拖（`draggable`），落点算在目标行上。
+            ⚠️ 链接自己的原生拖动（拖名字会拖出一串 URL 的 ghost）必须关掉 ——
+               `<NavLink draggable={false}>`。不关的话，拖"名字"和拖"把手"
+               是两件不同的事，而前者什么都不会发生。
+          · **键盘**：聚焦把手上按 ↑ / ↓（见下面那颗按钮的 `onKeyDown`）。
+            ⚠️ 键盘**不是可选项**：只有拖动的话，键盘用户完全用不了这个功能。
+              把手是一颗**真的 `<button>`**，所以天然可 Tab、可聚焦，
+              焦点环由全站那条 `:focus-visible` 给（见 styles.css）。
+            ⚠️ 方向键要 `preventDefault`，否则它会去滚页面 ——
+              表现是"按一下 ↑，行没动，页面滚了一下"。
+            ⚠️ `key={s.to}` 是这件事的一部分：React 会**移动**已有的 DOM 节点
+              而不是重建它们，所以行挪走之后焦点仍然在那颗把手上，
+              用户能连着按几下。用下标当 key 的话，按一下 ↑ 焦点就会掉到
+              手底下另一行的把手上（那是很典型、很难自己发现的无障碍缺陷）。
+
+          ---------------------------------------------------------------------
+          刻意没做的（代价写在这里，别让下一个人以为漏了）
+          ---------------------------------------------------------------------
+          · 「我的收藏 / 我的提交」那两个子项、账号管理、审核、以及底部
+            语言/主题/收起那些按钮**都不参与排序** —— 顺序是按路由存的，
+            它们不在 `NAV_SECTIONS` 里。⇒ 把「我的」拖到最上面时，
+            它那两个子项仍然留在下面。要跟着走就得把子项也做成可排序的，
+            那是另一件事（而且"子项跟着父项走"要先定义清楚再动手）。
+          · 顺序**不跟账号走**：换设备 / 换浏览器 / 清站点数据就回到默认。
+            代价与"要跨设备得上什么"写在 `lib/navOrder.ts` 的文件头。
+          · 首页**不受影响**：它按 `NAV_SECTIONS` 的默认顺序渲染，
+            只有侧栏跟随用户存的顺序（`homerender.tsx` 钉着这一点）。
+        */}
+        <nav className="sidebar__nav" aria-label="main">
+          {/*
+            ⚠️ 分区那几行包在一个 `<ul>` 里、每行是 `<li>`，不是 `<div>`：
+               拖动事件必须挂在**能挂事件**的元素上，而 `div` + `onDragStart`
+               是 biome 的 `a11y/noStaticElementInteractions` 明确要拦的形状
+               （"静态元素不许有交互"）。给 `div` 加一个角色是治不了的 —— 这个
+               交互（拖着一行换位置）在 ARIA 里**没有**对应的角色，硬套一个
+               （`role="button"` 之类）只会让读屏念出更错的东西。
+               ⇒ 用真正的列表：`<ul>/<li>` 是这批"可以排序的条目"的本来形状，
+                 而且读屏会念出"列表，8 项"，那正是这一行行东西的实际情况。
+            ⚠️ `<ul>` 里**只有**这 8 行：下面的子项（我的收藏 / 我的提交）、
+               账号管理、审核都留在 `<ul>` 外面 —— 它们不参与排序，也不是同一批东西。
+          */}
+          <ul className="sidebar__list">
+            {sections.map((s, i) => {
+              const label = t(s.labelKey);
+              return (
+                <li
+                  key={s.to}
+                  className={`sidebar__row${dragFrom === i ? ' is-dragging' : ''}${
+                    dropAt === i && dragFrom !== null && dragFrom !== i ? ' is-drop' : ''
+                  }`}
+                  draggable
+                  onDragStart={(e) => {
+                    setDragFrom(i);
+                    /*
+                     * ⚠️ 这两行都不是装饰：
+                     *   · `setData` —— Firefox 里**不给"没有数据的拖动"起手**
+                     *     （dragstart 里不写数据，整个拖动根本不会开始）；
+                     *   · `effectAllowed` —— 光标才会显示成"移动"而不是"禁止"。
+                     */
+                    e.dataTransfer.setData('text/plain', s.to);
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragOver={(e) => {
+                    if (dragFrom === null) return;
+                    // ⚠️ 不 preventDefault 就**不会**触发 drop（拖到哪儿都是禁止光标）
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDropAt(i);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragFrom !== null) applyMove(dragFrom, i);
+                    setDragFrom(null);
+                    setDropAt(null);
+                  }}
+                  // 拖到侧栏外面松手 / 按 Esc 取消：状态必须清掉，
+                  // 否则那一行会一直停在"半透明 + 落点线"的样子上。
+                  onDragEnd={() => {
+                    setDragFrom(null);
+                    setDropAt(null);
+                  }}
+                >
+                  {s.milestone ? (
+                    <span className="sidebar__item" aria-disabled="true" title={s.milestone}>
+                      <span
+                        className={`sidebar__block sidebar__block--${s.block}`}
+                        aria-hidden="true"
+                      />
+                      <span className="sidebar__label">{label}</span>
+                    </span>
+                  ) : (
+                    <NavLink
+                      to={s.to}
+                      // viewTransition：让浏览器对整页做交叉淡入。
+                      // 侧边栏用 CSS 的 view-transition-name 钉住不动（见 styles.css），
+                      // 所以看起来只有内容区在换。
+                      viewTransition
+                      // ⚠️ 见上面那段注释：不关掉链接的原生拖动，拖名字就变成"拖 URL"
+                      draggable={false}
+                      className={({ isActive }) => `sidebar__item${isActive ? ' is-active' : ''}`}
+                      title={label}
+                    >
+                      <span
+                        className={`sidebar__block sidebar__block--${s.block}`}
+                        aria-hidden="true"
+                      />
+                      <span className="sidebar__label">{label}</span>
+                    </NavLink>
+                  )}
+
+                  {/*
+                    排序把手。⚠️ 两条路都挂在它身上：鼠标拖（整行都可拖，
+                    把手当然也在内）、键盘按 ↑ / ↓。
+                    ⚠️ `aria-label` 里带**这一栏自己的名字**（`nav.reorder` 的
+                       `{{name}}`）：读屏念出来的是"调整『资源库』的顺序"，
+                      而不是一排一模一样的"调整顺序"（那等于没说调哪一栏）。
+                    ⚠️ 字符只能用 ↑ / ↓：字体子集里只有 U+2190-2193 这四个箭头，
+                       ↕ / ⇅ / ⠿ 都不在（`check-font-coverage` 会红）——
+                       与「收起」那颗按钮用 ← / → 是同一条约束。
+                  */}
+                  <button
+                    type="button"
+                    className="sidebar__handle"
+                    aria-label={t('nav.reorder', { name: label })}
+                    title={t('nav.reorderHint')}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+                      e.preventDefault();
+                      applyMove(i, e.key === 'ArrowUp' ? i - 1 : i + 1);
+                    }}
+                  >
+                    ↑↓
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
 
           {/*
             「我的提交」—— `/me` 的**子项**，缩进一级。
@@ -193,6 +346,9 @@ export function Layout() {
                平级会让侧边栏看起来有两个"我的"。缩进表达的是归属，
                位置表达的是"先去账号页，再点进去看提交记录"。
             只在登录后显示：没登录的人点进去只会被弹回来。
+            ⚠️★ 这两个子项**不参与排序**（它们不在 `NAV_SECTIONS` 里，
+               也没有 `.sidebar__row` 那一层）⇒ 把「我的」拖到最上面时，
+               它们仍然留在原来的位置。理由与代价写在上面 <nav> 前面那段注释里。
           */}
           {/*
             「我的收藏」和「我的提交」是同一层级的子项：都是"我的"这个分区

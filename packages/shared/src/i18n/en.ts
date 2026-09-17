@@ -22,7 +22,30 @@ export const en: TranslationSchema = {
     backHome: 'Back to home',
   },
   nav: {
-    sections: 'SECTIONS',
+    /*
+     * ★ "Reorder it yourself" (2026-09-17; the user asked for the sidebar sections
+     *   to be reorderable). This is the **accessible name** of the drag handle.
+     * ⚠️ `{{name}}` is that section's own name (another key in this same `nav.*`):
+     *   a screen reader then says "Reorder Resources" instead of a row of
+     *   identical "Reorder" buttons that never say *what* they reorder.
+     * ⚠️ `sections: 'SECTIONS'` used to sit here: it was the text of the small
+     *   group heading, and the same request said to remove it ("去掉顶部的
+     *   『分区』这些字") ⇒ the heading is gone and the key is deleted from **both**
+     *   dictionaries. `services/api/src/i18n-keys.test.ts` checks that the two
+     *   dictionaries line up and that every literal `t('…')` key exists -- it has
+     *   **no** "unused key" rule, so keeping this one would stay green while
+     *   leaving the next reader thinking the heading is still on screen.
+     */
+    reorder: 'Reorder "{{name}}"',
+    /*
+     * ⚠️ This is the handle's tooltip, and it has to name **both** routes: dragging
+     *   (mouse) and ↑ / ↓ (keyboard). Saying only "drag" leaves keyboard users
+     *   with no idea what the button does.
+     * ⚠️ Only ↑ / ↓: the font subset carries exactly four arrows, U+2190-2193
+     *   (↕ / ⇅ / ⠿ are NOT in it -- `check-font-coverage` would go red). Same
+     *   constraint as the ← / → on the collapse button.
+     */
+    reorderHint: 'Drag to reorder; with it focused, press ↑ / ↓ to move it up or down',
     collapse: 'Collapse',
     expand: 'Expand',
     resources: 'Resources',

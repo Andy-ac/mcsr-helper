@@ -505,19 +505,17 @@ code {
   line-height: 1.6;
 }
 
-.sidebar__group {
-  font-family: var(--font-pixel);
-  font-size: var(--fs-px-sm);
-  color: var(--fg-faint);
-  padding: 16px 10px 6px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-/* ⚠️ 删掉的两条：`.sidebar.is-collapsed .sidebar__group { padding: 16px 0 6px;
-   text-align: center; font-size: 0 }` 和它的 `::after { content: '···' }`。
-   它们唯一的用途是把"分区"这个小组标题压成一个居中的省略号，好让 64px 的
-   图标条看起来不是空的。整条侧栏不再存在之后它没有地方可显示；而在这 300ms
-   的收起过程里，它反而会让小组标题**中途变成三个点**，是一处能看见的抖动。 */
+/* ⚠️ 删掉的一条（2026-09-17）：`.sidebar__group` —— 它是导航上面那行小组标题
+   （「分区」/ "SECTIONS"）的全部样式，而用户要求「去掉顶部的『分区』这些字」，
+   那一行整个从 `Layout.tsx` 里删掉了 ⇒ 这条规则再没有任何东西可以命中。
+   ⚠️ 它原来还兼着"把导航和品牌行隔开"的那 16px 上内边距，那点间距**搬走了**
+      （见文件末尾那一块里的 `.sidebar__nav`）—— 就地删掉元素的话导航会贴上
+      品牌行，看起来像品牌名底下多了一行子项。
+   ⚠️ 这里更早删掉的是两条只服务「图标条」的规则（`.sidebar.is-collapsed
+      .sidebar__group` 与它的 `::after { content: '···' }`）：它们唯一的用途是把
+      这个小标题压成居中的省略号，好让 64px 的图标条看起来不是空的。整条侧栏
+      改成**完全收起**之后它没有地方可显示；而在那 300ms 的收起过程里，它反而会
+      让小组标题**中途变成三个点**，是一处能看见的抖动。 */
 
 .sidebar__item {
   display: flex;
@@ -6030,7 +6028,9 @@ html[data-theme='light'] {
 }
 
 /* ---- 标签 / 说明 / 状态句：只加粗，不变大 ---- */
-.sidebar__group,
+/* ⚠️ 这里原来还有一条 `.sidebar__group`（导航上面那行「分区」小组标题）。
+   2026-09-17 那行整个删掉了 ⇒ 也从这个名单里去掉 —— 留着它的后果是
+   "改字号时要满文件找还有谁在读这个不存在的类"。 */
 .sidebar__brandtext,
 .sidebar__label,
 .sidebar__stage,
@@ -8354,6 +8354,104 @@ html[data-theme='light'] {
   line-height: 1.7;
   color: var(--fg-muted);
 }
+
+/* ==================================================================
+   侧栏分区的「我的顺序」+ 排序把手（2026-09-17，用户要求：
+   「左侧栏目自行调整顺序，去掉顶部的『分区』这些字」）
+
+   ⚠️ 这一块只长在**分区那几行**上（`lib/nav.ts` 的 `NAV_SECTIONS` 渲染出来的
+      那几行）。它们外面多了一层 `.sidebar__row`，右边多了一颗 `.sidebar__handle`。
+      子项（我的收藏 / 我的提交）、账号管理 / 审核、以及底部那几排按钮**都没有**
+      这一层 —— 顺序是按路由存的，它们不在那张表里（见 `Layout.tsx` 的注释）。
+
+   ⚠️ 为什么整块写在文件**末尾**：与上面几块同一条理由（`.sidebar__block--shares`、
+      `.sidebar__block--ranked` 那里写着）—— 侧栏那组基础规则在文件开头，
+      就地插进去会让人以为它们是"侧栏一直以来的样子"，而不是这次新增的一块。
+
+   ⚠️ 把手**必须一直看得见**，不能做成"悬停才出现"：它同时是键盘那条路的入口，
+      而键盘用户看不见 hover 会揭示什么。宽度也只给了 18px ——
+      侧栏 208px、最长的一行是「Ranked 实时信息」，再宽一点那一行就会被裁掉。
+   ================================================================== */
+
+/* 原来那行「分区」小标题（`.sidebar__group`，见上面那条「删掉的一条」）兼着
+   "把导航和品牌行隔开"的 16px 上内边距 ⇒ 元素删掉之后那点间距搬到这里。
+   不搬的话导航会贴上品牌行，看起来像品牌名底下多了一行子项。 */
+.sidebar__nav {
+  padding-top: 16px;
+}
+
+/* 分区那几行是一个**列表**（`<ul>` / `<li>`）—— 不是 `div`。
+   ⚠️ 为什么非用列表：拖动事件必须挂在能挂事件的元素上，而 `div` + `onDragStart`
+      是 biome 的 `a11y/noStaticElementInteractions` 明令要拦的形状。给 `div`
+      套一个 ARIA 角色治不了 —— "拖着一行换位置"在 ARIA 里没有对应角色。
+      ⇒ `<ul>/<li>` 是这批"可以排序的条目"的本来形状，读屏会念"列表，8 项"。
+   ⚠️ 下面三行是 `<ul>` 的默认样式重置（浏览器给它 40px 左内边距与圆点）。
+      不重置的话这一列会整体右移 40px，那几个小方块与上面品牌行就错开了。 */
+.sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* 一行 = 链接 + 把手。
+   ⚠️ `draggable` 挂在**整行**上（不是只有把手）：用户会去抓那一行的名字，
+      抓名字也该能拖。链接自己的原生拖动（拖出一串 URL 的 ghost）由
+      `<NavLink draggable={false}>` 关掉，见 `Layout.tsx`。 */
+.sidebar__row {
+  display: flex;
+  align-items: center;
+}
+/* ⚠️ `min-width: 0` 不能省：不加的话 flex 项不会缩到内容宽度以下，
+   长名字（「Ranked 实时信息」）会把把手挤出侧栏右边缘。 */
+.sidebar__row > .sidebar__item {
+  flex: 1;
+  min-width: 0;
+}
+/* 正在拖的那一行：淡下去，让人看出"这一行正在跟着光标走"。 */
+.sidebar__row.is-dragging {
+  opacity: 0.45;
+}
+/* 落点：一条草绿色的上边线。
+   ⚠️ 用 `box-shadow: inset` 而不是 `border-top`：边框会把这行撑高 2px，
+      拖动过程中整条列表会跟着上下跳一下。 */
+.sidebar__row.is-drop {
+  box-shadow: inset 0 2px 0 var(--grass-bright);
+}
+
+/* 排序把手：鼠标这边是拖，键盘那边是 ↑ / ↓（见 `Layout.tsx` 的 `onKeyDown`）。
+   ⚠️ 它是一颗真的 `<button>`，所以 Tab 顺序、回车/空格、焦点环都是浏览器给的 ——
+      焦点环由全站那条 `:where(a, button, input, select, [tabindex]):focus-visible`
+      统一提供，这里**不**另写一份（文件上面写着为什么用 focus-visible）。 */
+.sidebar__handle {
+  flex: 0 0 18px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: var(--r-xs);
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.6;
+  cursor: grab;
+  transition:
+    opacity var(--t) var(--ease),
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.sidebar__handle:hover {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.05);
+}
+.sidebar__handle:active {
+  cursor: grabbing;
+}
+/* 收起时把手跟着文字一起淡掉。
+   ⚠️ 侧栏是滑着关的（--t-slow），不写这条的话，那 300ms 里文字都淡没了，
+      右边却还挂着一颗孤零零的箭头。 */
+.sidebar.is-collapsed .sidebar__handle {
+  opacity: 0;
+}
+
 
 
 
