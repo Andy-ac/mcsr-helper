@@ -656,6 +656,34 @@ export function TrackedCreatorsPanel({
                                 {t('tracked.failStreak', { count: creator.consecutiveFailures })}
                               </span>
                             ) : null}
+                            {/*
+                              ★★ 冷却窗口（迁移 022，`docs/pending.md` §5.98）。
+
+                              ⚠️★ 为什么它**必须**画出来：连续失败满 3 次之后这个博主会被
+                              `pickDueCreators` **跳过一小时**，而在名单上他与其他"只是还没到点"
+                              的博主长得**一模一样** —— 不写这一句的话，操作者看到的就是
+                              "这一栏很久没更新，而且日志里连失败都没有"（那一小时里一条失败
+                              记录都不会有，因为**一个请求都没发**）。这一格是那个状态唯一的出口。
+                              ⚠️★ 又是**秒**的时间戳 ⇒ 必须经 `toMillis`（本文件头那段）：
+                              裸的 `new Date(creator.cooldownUntil)` 少乘 1000，显示出来是 1970 年，
+                              而类型检查拦不住（两边都是 number）。用的是与"上次同步"同一支
+                              `localDateTime`（同一个换算点，不在这里再写一遍）。
+                              ⚠️ `null` ⇒ **一个字都不画**（`=== null ? null : …`）：写 `—` 的话
+                              每一行都会多出一句"这一格没有值"，而"没有冷却"这件事不需要解释
+                              （与 `hiddenCount > 0` 才画括号、空容器不渲染是同一条纪律）。
+                              ⚠️ 已知的残余（写在这里，别当成 bug 查）：这一列**只有一次成功会清它**
+                              （`advanceCursor`），所以窗口过期但一直没被同步到的博主仍然带着一个
+                              **过去**的死线 —— 这一格会照样把那句"冷却中"画出来。今天出现它的前提是
+                              "他既没被挑中、也没成功过"（平台没凭据 / 已停用 / 被限额挤掉），
+                              而这种情形下"他为什么没更新"本来就在上面那一列里写着。
+                            */}
+                            {creator.cooldownUntil === null ? null : (
+                              <span className="tracked__cooldown">
+                                {t('tracked.cooldown', {
+                                  until: localDateTime(creator.cooldownUntil, i18n.language),
+                                })}
+                              </span>
+                            )}
                           </td>
                           <td className="tracked__total">
                             {String(creator.videoCount)}

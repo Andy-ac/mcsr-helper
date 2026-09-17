@@ -155,6 +155,19 @@
  *   **坏博主仍然每轮占一个名额，只是排在最后** —— 真要把它彻底隔离在限额之外，
  *   那是 T6 的事（`consecutive_failures` 到了某个数就跳过），不是这一层的。
  *
+ * ★★ **2026-09-17 补：那次退避真的做了**（`docs/pending.md` §5.98 的处置，
+ *    迁移 **022** 的 `cooldown_until`）。当年列出的两个障碍现在都有答案：
+ *      · DDL 冻结 ⇒ **不动 020**，加**一条新迁移**（020 一个字没改，逐列测试照旧钉着）；
+ *      · "退避多久没依据" ⇒ 依据来了，而且是外部的：生产的出口 IP 被 bilibili 风控
+ *        盯上之后每 10 分钟喂一次失败请求（`-352`/`412`），冻结值因此是
+ *        **连续 3 次失败 ⇒ 冷却 3600 秒**（`COOLDOWN_AFTER_FAILURES` / `COOLDOWN_SEC`，
+ *        §10 那张表里也记着）。
+ *    ⚠️ 与上面那段的关系：**排序那两键一个字都没改**（成功的水位、饿死的分析全都还成立），
+ *    冷却只是多了一句 `WHERE`（"还在冷却里的不挑"）。两者不重叠 —— 冷却解决的是
+ *    "别再喂一个已经明显失败的目标"，排序解决的是"没在冷却的那些人之间的公平"。
+ *    ⚠️ 代价也跟着换了位置：坏博主不再占名额（好事），但冷却窗口内那个频道
+ *    **一次都不会被试**（窗口一到自动回来，不是放弃他 —— `RECORD_FAILURE_SQL` 那条 CASE）。
+ *
  * ⚠️ 另两处**不照字面**的地方，都写在这里：
  *   ① `last_synced_at IS NULL` 也进增量。字面照抄的话 `NULL < 任何数` 是 NULL ⇒
  *      这一行**永远不会**到点。它在今天的写入路径上到不了（`advanceCursor` 把
@@ -216,6 +229,26 @@ import type { CreatorRef, FetchedVideo } from './tracking/types';
 /** 增量同步的间隔（秒）。spec §3.2 / §10 冻结值：一小时。 */
 const INCREMENTAL_INTERVAL_SEC = 3600;
 
+/**
+ * 连续失败满几次就进**冷却**（spec §10 冻结值，2026-09-17 加）。
+ *
+ * ★ 为什么是 3：timer 每 10 分钟一轮，所以 3 次 = **连续半小时**都在失败 ——
+ *   比"一次抖动"（bilibili 的 `-412` 是概率性的，下一轮自己会好）长得多，
+ *   又比"等一小时再试"短得多。这个数**不是**用来判断"这个频道坏了"的
+ *   （那是 `enabled`，编辑的决定），它只回答"现在还要不要继续喂这一次失败"。
+ */
+export const COOLDOWN_AFTER_FAILURES = 3;
+
+/**
+ * 冷却多久（**秒**）。spec §10 冻结值：一小时。
+ *
+ * ⚠️ 与 `INCREMENTAL_INTERVAL_SEC` **数值相同但语义完全无关**，别合并成一个常量：
+ *   那一个是"多久算'该增量了'"（正常节奏），这一个是"失败之后多久再碰他"（退避）。
+ *   哪天调其中一个（比如把增量间隔改成 20 分钟），合并过的那个常量会让另一件事
+ *   跟着悄悄变 —— 而症状是"退避窗口莫名其妙变短了"，从名字上完全看不出来。
+ */
+export const COOLDOWN_SEC = 3600;
+
 // ---------------------------------------------------------------------------
 // 行与形状
 // ---------------------------------------------------------------------------
@@ -240,6 +273,8 @@ interface CreatorRow {
   last_synced_at: number | null;
   last_error: string | null;
   consecutive_failures: number;
+  /** 迁移 022：冷却到什么时候（Unix 秒）。`NULL` = 不在冷却中（见 `cooldownUntil`）。 */
+  cooldown_until: number | null;
   enabled: number;
   created_at: number;
   video_count: number;
@@ -277,7 +312,7 @@ const VIDEO_COLUMNS = `
 const CREATOR_COLUMNS = `
   c.id, c.platform, c.external_id, c.handle, c.display_name, c.avatar_url, c.platform_meta,
   c.backfill_done, c.last_cursor, c.last_synced_at, c.last_error, c.consecutive_failures,
-  c.enabled, c.created_at
+  c.cooldown_until, c.enabled, c.created_at
 `;
 
 /**
@@ -319,6 +354,14 @@ function toCreator(row: CreatorRow): TrackedCreator {
     lastSyncedAt: row.last_synced_at,
     lastError: row.last_error,
     consecutiveFailures: row.consecutive_failures,
+    /*
+     * ★ 冷却死线（迁移 022）**原样走出去**：它是 `number | null`，而 `NULL` 是
+     *   "不在冷却中"这个状态本身。
+     * ⚠️ 这里**不许**写 `?? 0` 之类的兜底：0 秒是 1970-01-01，而管理面板那一格会把它
+     *   渲染成"冷却中，至 1970/1/1"—— 一句**看起来像真数据**的谎（本仓既有纪律，
+     *   见 `packages/shared/src/tracking.ts` 里那一格与 `toMillis` 的说明）。
+     */
+    cooldownUntil: row.cooldown_until,
     // 0/1 → boolean 只在这里换算一次（spec §4.3 的边界纪律）
     enabled: row.enabled === 1,
     videoCount: row.video_count,
@@ -735,6 +778,29 @@ export function deleteCreator(id: string): boolean {
  *    · `id ASC` —— 只保证同一个状态查两次给同一个顺序（公平性由前两个键表达）。
  * ⚠️ 被否掉的"给失败者加退避列"与它的代价写在文件头第七节（要动已冻结的 DDL +
  *    当场要回答"退避多久"这个没依据的问题）。改这两个 ORDER BY 之前先读那一段。
+ *
+ * ★★ 两个 `WHERE` 里的**冷却那一行**（迁移 022，2026-09-17 加）：
+ *
+ * ```sql
+ * AND (c.cooldown_until IS NULL OR c.cooldown_until <= ?)   -- 参数是 now
+ * ```
+ *
+ *   它接的是文件头第七节末尾那句"真要把它彻底隔离在限额之外，那是 T6 的事" ——
+ *   现在**真的做了**，而且判据是一个**列**而不是 `consecutive_failures >= 3`：
+ *   差别在"什么时候放他回来"。只看计数的话，一个连续失败 5 次的博主会**永远**不在待办里
+ *   （它的计数要等一次成功才清零，而它已经不再被挑了 ⇒ 永远等不到那次成功）。
+ *   冷却写的是"到几点为止"，所以**到点自动回来**，不需要任何别的动作去解锁他。
+ *
+ *   ⚠️★ 这条判据**不是**把排序换成"按冷却排序"，ORDER BY 一个字都没动：冷却只是
+ *   "这一轮**不挑**他"，而不冷却的那些博主之间的公平性仍然由 `consecutive_failures ASC`
+ *   那三个键表达（第七节）。两件事回答的是不同的问题，改这一行的人别把它们合起来。
+ *   ⚠️ 边界是**闭**的（`<=`）：`cooldown_until === now` 就到期了 —— 一小时整过去之后
+ *   第一轮就该重试他，否则那个"一小时"实际变成"一小时零几分钟"（而它取决于 timer 相位）。
+ *   ⚠️ 两条查询都要这一行：漏掉一条的表现是"冷却中的博主仍然被回填"（或者反过来），
+ *   而它们各自看起来都完全正常。
+ *   ⚠️ 被冷却的不进待办 ⇒ CLI 连适配器都不会为他要一个（`track.ts` 那一步只在待办里循环）
+ *   —— 这正是这一列的目的：**别再喂**。代价写清楚：冷却期间这个博主**一次都不会被试**，
+ *   所以"他是不是已经好了"只能等到窗口结束才知道（一小时，不是永久）。
  */
 export function pickDueCreators(
   now: number,
@@ -746,11 +812,15 @@ export function pickDueCreators(
     .prepare(
       `${CREATOR_SELECT}
         WHERE c.backfill_done = 0 AND c.enabled = 1
+          AND (c.cooldown_until IS NULL OR c.cooldown_until <= ?)
         GROUP BY c.id
         ORDER BY c.consecutive_failures ASC, COALESCE(c.last_synced_at, 0) ASC, c.id ASC
         LIMIT ?`,
     )
-    .all(nonNegativeInt(limits.backfill)) as unknown as CreatorRow[];
+    .all(
+      now, // 冷却死线的判据（见上面那条 ★★：`<=` 是闭的）
+      nonNegativeInt(limits.backfill),
+    ) as unknown as CreatorRow[];
 
   /*
    * ⚠️ `last_synced_at IS NULL` 那半条**不是**多余的（文件头第七节 ①）：
@@ -762,12 +832,14 @@ export function pickDueCreators(
       `${CREATOR_SELECT}
         WHERE c.backfill_done = 1 AND c.enabled = 1
           AND (c.last_synced_at IS NULL OR c.last_synced_at < ?)
+          AND (c.cooldown_until IS NULL OR c.cooldown_until <= ?)
         GROUP BY c.id
         ORDER BY c.consecutive_failures ASC, COALESCE(c.last_synced_at, 0) ASC, c.id ASC
         LIMIT ?`,
     )
     .all(
-      now - INCREMENTAL_INTERVAL_SEC,
+      now - INCREMENTAL_INTERVAL_SEC, // 到点判据（spec §3.2 的 `now - 3600`）
+      now, // 冷却死线的判据（与上面那条查询同一个 `now`，同一条 ★★）
       nonNegativeInt(limits.incremental),
     ) as unknown as CreatorRow[];
 
@@ -1092,6 +1164,11 @@ export function markCheckedWithoutHiding(rows: ReadonlyArray<{ id: string }>, no
  *   ③ `consecutive_failures` 归零、`last_error` 抹成 `NULL`：一次成功就是一次成功，
  *      计数从 0 重新开始（"要不要放弃这个频道"那个判据读的就是它）。
  *      ⚠️ 留着 last_error 的话，管理面板上会一直显示一条早就好了的错误。
+ *   ④ `cooldown_until` 也**必须**清成 `NULL`（迁移 022）：不清的表现是"他已经好了，
+ *      但接下来一小时还是不被挑"—— 而界面上那一行仍然写着"冷却中"，看不出任何异常。
+ *      它与 ③ 是同一件事的两半（冷却的**唯一**来源是连续失败），所以两条一起写在这里。
+ *      ⚠️ 现实里这条路走得通：冷却期间这一列会被 `pickDueCreators` 跳过，而窗口一到
+ *      他又被挑中 ⇒ 一次成功就落在这里（这就是"到点自己回来"那条闭环的下半截）。
  *
  * ⚠️ 博主不存在时静默无事发生（UPDATE 影响 0 行）：现实里会有 ——
  *    管理员在 CLI 跑着的时候把他删了，视频也跟着级联没了。
@@ -1099,6 +1176,7 @@ export function markCheckedWithoutHiding(rows: ReadonlyArray<{ id: string }>, no
 const ADVANCE_CURSOR_SQL = `
   UPDATE tracked_creators
      SET last_cursor = ?, last_synced_at = ?, last_error = NULL, consecutive_failures = 0,
+         cooldown_until = NULL,
          updated_at = ?,
          backfill_done = CASE WHEN ? = 1 THEN 1 ELSE backfill_done END
    WHERE id = ?
@@ -1132,17 +1210,81 @@ export function advanceCursor(
  *    比失败本身难查得多。
  * ⚠️ `enabled` 也不动：连续失败不是自动停用。停用是编辑的决定（spec §6.3 的
  *    `consecutive_failures` 是给人看的判据，不是自动开关）。
+ *
+ * ★★ 冷却那一列（迁移 022）的三条规矩，**全部在这一句 SQL 里**表达：
+ *
+ * ```sql
+ * cooldown_until = CASE
+ *   WHEN consecutive_failures + 1 >= ?                          -- 满 3 次
+ *        AND (cooldown_until IS NULL OR cooldown_until <= ?)     -- 而且现在不在冷却里
+ *     THEN ? + ?                                                 -- now + 3600
+ *   ELSE cooldown_until                                          -- 否则原样留着
+ * END
+ * ```
+ *
+ *   ① **满了才设**：`consecutive_failures + 1 >= ?` 读的是**这一句之前的**旧值
+ *      （SQLite 的 UPDATE 里，等号右边的列名一律是更新前的值）⇒ 第 3 次失败才落死线，
+ *      第 1、2 次什么都不做（一次抖动不该让他歇一小时，见 `COOLDOWN_AFTER_FAILURES`）。
+ *   ② **不续期**：已经在冷却里（`cooldown_until > now`）时走 `ELSE`，死线**原地不动**。
+ *      ⚠️★ 反过来（每次失败都写 `now + 3600`）的后果**正好与这个功能的目的相反**：
+ *      一个被风控盯上的 IP 每 10 分钟失败一次 ⇒ 死线每 10 分钟往后推一小时 ⇒
+ *      **永远出不来**。而这个错的现场特别难认：库里那一列看着"一直在更新"，
+ *      日志里也一直在记失败，只有"这个频道再也不被抓了"这件事是静默的。
+ *   ③ **过期之后重新计**：`cooldown_until <= now` 就是"窗口已经过去了"，那时再一次失败
+ *      会设一条新的死线（`now + COOLDOWN_SEC`）—— 也就是"还是不行就再歇一小时"。
+ *      ⚠️ 判据是"**这一刻还在不在冷却里**"而不是"计数到没到 3"：计数在成功时清零，
+ *      而冷却期内的失败会让它停在 ≥3，用计数当判据就分不出这两种情形了。
+ *
+ *   ⚠️ 三件事挤在一句 SQL 里（而不是"读出来、在 TS 里算、再写回去"）的理由与
+ *   计数那一条**逐字相同**：读-改-写会把一次并发写入变成丢更新，而这里根本不需要读。
  */
 const RECORD_FAILURE_SQL = `
   UPDATE tracked_creators
-     SET last_error = ?, consecutive_failures = consecutive_failures + 1, updated_at = ?
+     SET last_error = ?, consecutive_failures = consecutive_failures + 1,
+         cooldown_until = CASE
+           WHEN consecutive_failures + 1 >= ?
+                AND (cooldown_until IS NULL OR cooldown_until <= ?)
+             THEN ? + ?
+           ELSE cooldown_until
+         END,
+         updated_at = ?
    WHERE id = ?
 `;
 
 export function recordFailure(creatorId: string, message: string, now: number): void {
   getDb().prepare(RECORD_FAILURE_SQL).run(
     message, // last_error（原文；管理面板与 spec §6.3 的摘要都读它）
+    COOLDOWN_AFTER_FAILURES, // 上面 CASE 的阈值（3）
+    now, // 上面 CASE 的"现在" —— 死线还没到才算"在冷却里"（不续期那条）
+    now, // 死线的基数是**这一次**失败的时刻（不是上一轮的死线）
+    COOLDOWN_SEC, // …加上一小时（`? + ?` 由 SQL 自己算，与 `+ 1` 同一手法）
     now, // updated_at
     creatorId,
   );
+}
+
+/**
+ * 名单上现在**还在冷却里**的博主有几个（给 `track --dry-run` 那一行用）。
+ *
+ * ★ 它存在的理由是**可读性**，不是可观测性：一个冷却中的博主**不在待办里**
+ *   （`pickDueCreators` 跳过），所以预演的列表里根本没有他 —— 没有这一行的话，
+ *   操作者看到的就只是"名单上 20 个人，待办里 3 个"，然后去怀疑抓取漏了谁。
+ *   `docs/pending.md` §5.98 就是这条：那一次的现象正是"两个 bilibili 频道从 09:30 起
+ *   没再更新"，而摘要里一行错都没有（失败**被记下来**了，但没人知道它已经进了冷却）。
+ *
+ * ⚠️ 判据与 `pickDueCreators` **逐字对齐**：`enabled = 1` 且 `cooldown_until > now`。
+ *    · 带 `enabled = 1` 是因为停用的博主不在待办里的原因是**另一件事** ——
+ *      把他数进来的话，这一行会指着一个错的病因（"他在冷却"），而编辑该看的是"他停用了"；
+ *    · 边界也是闭的（`> now` 才算还在冷却），与待办那条 `<=` 是同一根线，少写一个等号
+ *      就会出现"预演说 1 个在冷却、而待办里他已经回来了"这种自相矛盾的输出。
+ *
+ * ⚠️ 它**只读**（一句 SELECT）：预演那句"不抓任何一页、不动名单与视频的任何一行"照旧成立。
+ * ⚠️ 它**不按平台分组**：冷却是一个博主的状态，与平台无关（三个平台各有各的失败，
+ *   而风控那件事今天只在 bilibili 上发生过 —— 但判据不该只对某一个平台成立）。
+ */
+export function countCoolingCreators(now: number): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM tracked_creators WHERE enabled = 1 AND cooldown_until > ?')
+    .get(now) as { n: number } | undefined;
+  return row?.n ?? 0;
 }

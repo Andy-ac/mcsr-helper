@@ -273,6 +273,17 @@ const CREATOR_COLUMNS: ColumnSpec[] = [
   { name: 'added_by', type: 'TEXT', notnull: 0, dfltValue: null },
   { name: 'created_at', type: 'INTEGER', notnull: 1, dfltValue: null },
   { name: 'updated_at', type: 'INTEGER', notnull: 1, dfltValue: null },
+  /*
+   * ★ 这一列是**迁移 022** 加的（连续失败 3 次 ⇒ 冷却 3600 秒，`docs/pending.md` §5.98）。
+   *   `ALTER TABLE … ADD COLUMN` 一律追加到末尾，所以它排在 `updated_at` **后面**
+   *   （020 声明的列序一个都没动 —— 那张表没有被重建）。
+   * ⚠️ 这一条 deepEqual 是**整表**比对，022 落地时它必须跟着长 —— 否则红的会是
+   *   "这张表与 020 不一致"这个**假象**，而真正的原因只是"表按预期长大了"（021 那一轮
+   *   为同一件事写过同一段话）。
+   * ⚠️ 可空、没有默认值：`NULL` 就是"不在冷却中"这个状态本身，理由见本文件末尾
+   *   「迁移 022」那一组与 `packages/shared/src/tracking.ts` 里那一格。
+   */
+  { name: 'cooldown_until', type: 'INTEGER', notnull: 0, dfltValue: null },
 ];
 
 const VIDEO_COLUMNS: ColumnSpec[] = [
@@ -676,6 +687,52 @@ describe('★ 迁移 021：可见性三列（spec §3）', () => {
   it('★ 021 在迁移登记表里（没登记 = 永远不跑）', () => {
     const applied = getDb()
       .prepare("SELECT name FROM _migrations WHERE name = '021_tracked_video_visibility'")
+      .all();
+    assert.equal(applied.length, 1);
+  });
+});
+
+describe('★ 迁移 022：冷却死线（`docs/pending.md` §5.98 的处置）', () => {
+  it('★ 这一列在、类型对、而且可为 NULL', () => {
+    /*
+     * ⚠️ 三条判据缺一不可，而每一条错了都不会抛：
+     *   · **不在** ⇒ `recordFailure` 那句 UPDATE 会抛 "no such column"
+     *     （这一条算是幸运的，会红在别处）；
+     *   · 类型不是 INTEGER ⇒ SQLite 的动态类型会照样把它存下来，而
+     *     `cooldown_until <= now` 的比较在**文本**上是字典序 —— 表现是
+     *     "冷却窗口在一部分时间上生效、在另一部分上不生效"，没有报错；
+     *   · **不许 NOT NULL**：`NULL` 是"不在冷却中"这个状态本身。给了默认值
+     *     （比如 0）才是真麻烦：每一行**天生**带着一个 1970 年的死线，
+     *     而"有没有在冷却"这件事从此分不出来（`toCreator` 那一格写着这件事）。
+     */
+    const cols = getDb().prepare('PRAGMA table_info(tracked_creators)').all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const byName = new Map(cols.map((c) => [c.name, c]));
+    const col = byName.get('cooldown_until');
+    assert.ok(
+      col,
+      'tracked_creators 少了 cooldown_until 这一列 —— 迁移 022 没跑（先看 migrate.ts 登记了没有）',
+    );
+    assert.equal(
+      col.type,
+      'INTEGER',
+      '它是 Unix **秒**，与 last_synced_at / published_at 同一单位',
+    );
+    assert.equal(col.notnull, 0, '必须可空：NULL 才是"不在冷却中"');
+    assert.equal(
+      col.dflt_value,
+      null,
+      '★ 不许有默认值 —— 一行天生的 1970 死线等于"这一列永远有值"',
+    );
+  });
+
+  it('★ 022 在迁移登记表里（没登记 = 永远不跑）', () => {
+    const applied = getDb()
+      .prepare("SELECT name FROM _migrations WHERE name = '022_tracked_creator_cooldown'")
       .all();
     assert.equal(applied.length, 1);
   });

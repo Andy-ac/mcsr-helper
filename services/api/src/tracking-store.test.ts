@@ -51,6 +51,8 @@ const { closeDb, getDb } = await import('./db');
 const {
   advanceCursor,
   applyVerifyResult,
+  COOLDOWN_AFTER_FAILURES,
+  COOLDOWN_SEC,
   createCreator,
   deleteCreator,
   listCreators,
@@ -1183,6 +1185,177 @@ describe('追踪数据层：⑥ 失败计数、成功清零、水位', () => {
     // 现实里会有：管理员在 CLI 跑着的时候把博主删了（视频跟着级联没了）。
     recordFailure('tc-gone', '失败', NOW);
     advanceCursor('tc-gone', null, true, NOW);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑦ 冷却（迁移 022）
+// ---------------------------------------------------------------------------
+
+/**
+ * 冷却死线的**直读** —— 单独一句窄 SELECT。
+ *
+ * ⚠️ 为什么不把这列加进上面那个 `CREATOR_COLUMNS`：那一个常量同时喂 `insertCreator`
+ *    的位置绑定 INSERT（`VALUES (?, ?, …)`），多一列就要把那一串占位符整个挪一遍 ——
+ *    而这一组只关心一列，为此动整套夹具是拿十几处风险换一处方便。
+ * ⚠️ 行不存在时**当场炸**（不是返回 `null`）：`null` 在这一组里是有意义的值
+ *    （"不在冷却中"），把"这个博主根本不在库里"也读成 `null` 会让下方每一条断言
+ *    在夹具出错时**假绿**。
+ */
+function cooldownOf(id: string): number | null {
+  const row = getDb().prepare('SELECT cooldown_until FROM tracked_creators WHERE id = ?').get(id) as
+    | { cooldown_until: number | null }
+    | undefined;
+  assert.ok(row, `库里没有博主 ${id}`);
+  return row.cooldown_until;
+}
+
+describe('追踪数据层：⑦ 冷却（连续失败 3 次 ⇒ 一小时不再挑）', () => {
+  it('⑦ ★ 冻结值就是 spec §10 那两个数（改这里 = 同时改冻结论证）', () => {
+    /*
+     * ⚠️ 这两个数是**冻结论证**的一部分（`docs/video-tracking-spec.md` §10 与
+     *    `docs/pending.md` §5.98）：`-352`/`412` 的生产现场决定了"3 次 / 1 小时"。
+     *    这一条钉住的是"代码与文档说的是同一件事" —— 有人调了常量却只改代码时，
+     *    它当场红，而那条失败信息会把人送回 spec 那张表。
+     */
+    assert.equal(COOLDOWN_AFTER_FAILURES, 3, '连续失败满 3 次（timer 每 10 分钟一轮 ⇒ 半小时）');
+    assert.equal(COOLDOWN_SEC, 3600, '冷却一小时');
+  });
+
+  it('⑦ ★ 前两次失败不设死线，第三次设成 `这一次失败的时刻 + COOLDOWN_SEC`', () => {
+    const id = insertCreator();
+
+    recordFailure(id, '第一次：#412 风控', NOW);
+    assert.equal(
+      cooldownOf(id),
+      null,
+      '★ 1 次失败**不**冷却：bilibili 的 -412 是概率性的，下一轮常常自己就好',
+    );
+
+    recordFailure(id, '第二次：#412 风控', NOW + 600);
+    assert.equal(cooldownOf(id), null, `第 ${String(COOLDOWN_AFTER_FAILURES - 1)} 次也还不设`);
+
+    recordFailure(id, '第三次：#352 风控', NOW + 1200);
+    assert.equal(
+      cooldownOf(id),
+      NOW + 1200 + COOLDOWN_SEC,
+      '★★ 死线 = **这一次**失败的时刻 + 3600（写成"第一次失败的时刻 + 3600"是一个更早的死线，' +
+        '而它在库里看起来完全正常 —— 窗口于是比设计的短）',
+    );
+    assert.equal(rawCreator(id)?.consecutive_failures, 3, '计数照旧累加（它与死线是两个读数）');
+  });
+
+  it('⑦ ★★ 冷却期内再失败**不推死线**；窗口过了再失败才重新计一小时', () => {
+    /*
+     * ★★ 这一条钉的是本功能**唯一**会把它变成反效果的地方。
+     *    一个被风控盯上的出口 IP 每 10 分钟失败一次：如果每次失败都写 `now + 3600`，
+     *    死线就每 10 分钟往后推一小时 ⇒ 那个博主**永远出不来**，
+     *    而库里那一列看着"一直在更新"、日志里也一直在记失败 —— 一切看起来都在正常工作。
+     *    ⇒ 判据只能是"**这一刻在不在冷却里**"（`cooldown_until <= now` 才重新计）。
+     */
+    const id = insertCreator();
+    recordFailure(id, '第一次', NOW);
+    recordFailure(id, '第二次', NOW + 600);
+    recordFailure(id, '第三次', NOW + 1200);
+    const first = cooldownOf(id);
+    assert.equal(first, NOW + 1200 + COOLDOWN_SEC, '夹具：先有一条死线');
+
+    recordFailure(id, '第四次（还在冷却里）', NOW + 1800);
+    assert.equal(
+      cooldownOf(id),
+      first,
+      '★★ 冷却期内失败 ⇒ 死线**原地不动**（续期就是"永远出不来"，与这个功能的目的正好相反）',
+    );
+    assert.equal(rawCreator(id)?.consecutive_failures, 4, '计数照加 —— 沉到待办后面那一半照旧成立');
+
+    // 窗口过期之后（`first` 是死线那一刻，判据是 `<=` ⇒ 正好到点就算过期）
+    recordFailure(id, '第五次（窗口已经过了）', first + 1);
+    assert.equal(
+      cooldownOf(id),
+      first + 1 + COOLDOWN_SEC,
+      '★★ 窗口过了再失败 ⇒ 一条**新**的死线（"还是不行就再歇一小时"），基数仍然是这一次失败的**当刻**',
+    );
+  });
+
+  it('⑦ ★★ 冷却中的博主两个桶都不挑；窗口一过（含正好到点）就回来', () => {
+    /*
+     * ⚠️★ 两条查询**都要**有那一行 `WHERE`（回填与增量各一条）：漏掉一条的表现是
+     *    "冷却中的博主仍然被回填"（或者反过来被增量），而两条查询各自看起来
+     *    都完全正常 —— 而冷却的全部意义就是**别再喂他**。
+     */
+    const backfillCreator = insertCreator({ backfillDone: 0 });
+    const incrementalCreator = insertCreator({ backfillDone: 1, lastSyncedAt: NOW - 10 * HOUR });
+    for (const id of [backfillCreator, incrementalCreator]) {
+      recordFailure(id, '失败', NOW);
+      recordFailure(id, '失败', NOW);
+      recordFailure(id, '失败', NOW);
+    }
+    const deadline = NOW + COOLDOWN_SEC;
+    assert.equal(cooldownOf(backfillCreator), deadline, '夹具：两条死线都在这一刻');
+
+    const cooling = pickDueCreators(NOW + 60, { backfill: 200, incremental: 200 });
+    assert.equal(
+      cooling.backfill.map((c) => c.id).includes(backfillCreator),
+      false,
+      '★ 冷却中 ⇒ 回填不挑他（这一条漏掉的话，他每轮还在打上游，正是要停的那件事）',
+    );
+    assert.equal(
+      cooling.incremental.map((c) => c.id).includes(incrementalCreator),
+      false,
+      '★ 冷却中 ⇒ 增量也不挑他（与上一条是**两条不同的 SQL**，各要一行）',
+    );
+
+    const atDeadline = pickDueCreators(deadline, { backfill: 200, incremental: 200 });
+    assert.equal(
+      atDeadline.backfill.map((c) => c.id).includes(backfillCreator),
+      true,
+      '★★ 边界是**闭**的：正好到点就回来 —— 否则那个"一小时"实际是一小时零几分钟，' +
+        '而多出来的那几分钟取决于 timer 的相位（不可复现）',
+    );
+    assert.equal(
+      atDeadline.incremental.map((c) => c.id).includes(incrementalCreator),
+      true,
+      '★ 增量那条查询同一个边界（两条 SQL 的 `<=` 是同一条线）',
+    );
+  });
+
+  it('⑦ ★★ 一次成功把死线与计数**一起**清掉', () => {
+    /*
+     * ⚠️ 两半都要断言：只清计数的话，他已经好了却继续一小时不被挑，
+     *    而界面上那一行还写着"冷却中，至 …"—— 没有人会知道那是假的。
+     */
+    const id = insertCreator({ backfillDone: 1, lastSyncedAt: NOW - 10 * HOUR });
+    recordFailure(id, '失败', NOW);
+    recordFailure(id, '失败', NOW);
+    recordFailure(id, '失败', NOW);
+    assert.equal(cooldownOf(id), NOW + COOLDOWN_SEC, '夹具：先有一条死线');
+
+    advanceCursor(id, 'pn=2', false, NOW + 60);
+
+    assert.equal(cooldownOf(id), null, '★★ 成功 ⇒ 死线清成 NULL（`NULL` 才是"不在冷却中"）');
+    assert.equal(rawCreator(id)?.consecutive_failures, 0, '★ 计数一并清零（本来就有的一半）');
+    assert.equal(rawCreator(id)?.last_error, null, '★ last_error 也抹掉（本来就有的一半）');
+  });
+
+  it('⑦ ★★ 没失败过的博主完全不受影响，而且他那一格仍然是 NULL', () => {
+    /*
+     * ★ spec 的那一句是"**每一个其他博主与每一个其他平台照旧跑**"。
+     *   ⚠️ 这条断言的两半缺一不可：只断言"健康那个在待办里"的话，一个把所有博主
+     *   都冷却掉的实现也绿（只要他也在里面）；只断言"冷却那个不在"的话，
+     *   一个"待办永远为空"的实现也绿。
+     *   ⚠️ 而且"没失败过"那一格必须是 `NULL` 而**不是 0**：写 0 的话，
+     *   "不在冷却中"与"冷却到 1970 年"在库里分不开（见 shared 那一格与 `toCreator`）。
+     */
+    const cooling = insertCreator({ backfillDone: 0 });
+    const healthy = insertCreator({ backfillDone: 0 });
+    recordFailure(cooling, '失败', NOW);
+    recordFailure(cooling, '失败', NOW);
+    recordFailure(cooling, '失败', NOW);
+
+    const ids = pickDueCreators(NOW, { backfill: 200, incremental: 200 }).backfill.map((c) => c.id);
+    assert.equal(ids.includes(healthy), true, '★ 健康的那个照常被挑（冷却不是"整份名单停摆"）');
+    assert.equal(ids.includes(cooling), false, '★ 冷却的那个不在里面');
+    assert.equal(cooldownOf(healthy), null, '★ 他没冷却 ⇒ 那一格是 NULL，不是 0');
   });
 });
 

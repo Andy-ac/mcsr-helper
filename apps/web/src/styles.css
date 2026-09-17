@@ -8413,6 +8413,25 @@ html[data-theme='light'] {
   color: var(--fg);
 }
 
+/* 「冷却中，至 … 为止不再抓」（迁移 022）：与上一句**同一格里**的第三行。
+   ⚠️★ 它为什么必须看得见：冷却期间抓取**一个请求都不发**（`pickDueCreators` 跳过），
+      所以 journal 里连一条失败都没有 —— 这一行是那个状态唯一出口
+      （组件那一格的注释写了完整的一段）。
+   ⚠️ 样式与 `.tracked__streak` 同一形状（同字号、同像素字体、同全强度前景色）：
+      两句话说的是同一件事的两半（失败了几次 / 到几点为止不再抓），
+      分成两种字号只会让人以为其中一条不重要。
+   ⚠️ 与 `.tracked__streak` **分开一个类名**而不是复用：⚠️ 复用的话它在产物里
+      与"连续失败 N 次"**长得一样**，而渲染自检要判的是"不冷却时一个字都不许有"
+      —— 共用一个类名时，那一格在断言里根本分不出来（`videorender.tsx` 那一组要的
+      正是这两件事各自的有无）。 */
+.tracked__cooldown {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-pixel);
+  font-size: 12px;
+  color: var(--fg);
+}
+
 /* 「条数」：`tabular-nums` 让这一列的数字上下对得齐。 */
 .tracked__total {
   font-variant-numeric: tabular-nums;

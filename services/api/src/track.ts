@@ -165,6 +165,9 @@ import { closeDb } from './db';
 import {
   advanceCursor,
   applyVerifyResult,
+  COOLDOWN_AFTER_FAILURES,
+  COOLDOWN_SEC,
+  countCoolingCreators,
   markCheckedWithoutHiding,
   pickDueCreators,
   pickVerifiableVideos,
@@ -710,6 +713,26 @@ export function dryRunPlan(deps: RunDeps): string {
     `  增量 待办 ${String(due.incremental.length)} 个（本轮上限 ${String(deps.limits.incremental)}）：`,
   );
   for (const creator of due.incremental) lines.push(`    ${creatorRowLine(creator)}`);
+
+  /*
+   * ★ 冷却那一行（迁移 022，2026-09-17 加）：**为什么某个频道不在上面的列表里**。
+   *
+   * ⚠️★ 这一行是这一列**唯一**能在运行期看见的地方（界面上那一格要人来打开面板），
+   *    而它防的是一个很具体的误判：冷却中的博主**不在待办里**，所以预演的输出里
+   *    根本没有他 —— 没有这一行的话，"名单上 20 个人、待办里 3 个"读起来像抓取漏了谁，
+   *    而真正的原因是那一个已经被跳过了一小时（`docs/pending.md` §5.98 的现场）。
+   * ⚠️ 两个数都从常量算（`COOLDOWN_AFTER_FAILURES` / `COOLDOWN_SEC`），**不手抄**：
+   *    照抄的话，改冻结值的人只要漏掉这一句，预演就会印出一个与真实行为不符的口径
+   *    （本仓为同一件事吃过亏：spec 的冻结表与代码各写一遍就会漂）。
+   * ⚠️ 它**只读**（`countCoolingCreators` 是一句 SELECT），也不去要适配器 ——
+   *    下面那句"不抓任何一页"照旧成立。
+   */
+  const cooling = countCoolingCreators(now);
+  lines.push(
+    `  冷却: ${String(cooling)} 个博主在冷却窗口里` +
+      `（连续失败满 ${String(COOLDOWN_AFTER_FAILURES)} 次 ⇒ 冷却 ${String(COOLDOWN_SEC / 60)} 分钟；` +
+      '他们不在上面的待办里）',
+  );
 
   /*
    * ★ 核对也报一下待办数（spec §6.3）：不报的话预演**只看得见前两个阶段**，

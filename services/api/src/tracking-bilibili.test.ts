@@ -127,6 +127,9 @@ function creator(overrides: Partial<AdapterCreator> = {}): AdapterCreator {
     videoCount: 0,
     // ⚠️ `TrackedCreator` 的必填格（迁移 021 那一轮加的）。夹具补 0 —— 适配器一眼都不看它
     hiddenCount: 0,
+    // ⚠️ 同一条：迁移 022 加的冷却死线。`null` = 不在冷却里，而适配器同样一眼都不看它
+    //    （冷却这件事决定的是"要不要调适配器"，那是 `pickDueCreators` 的事）
+    cooldownUntil: null,
     createdAt: NOW_SEC,
     // ★ 库里 bilibili 这一列是 `NULL` → `parsePlatformMeta` 读成 `{}`（与 Twitch 那边同一条理由）
     platformMeta: {},

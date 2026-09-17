@@ -37,6 +37,7 @@ import { m018ContentContributors } from './migrations/018_content_contributors';
 import { m019LiveShares } from './migrations/019_live_shares';
 import { m020TrackedVideos } from './migrations/020_tracked_videos';
 import { m021TrackedVideoVisibility } from './migrations/021_tracked_video_visibility';
+import { m022TrackedCreatorCooldown } from './migrations/022_tracked_creator_cooldown';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -169,6 +170,17 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    * ⚠️ 不登记 = 不跑，而症状是"代码看着对、库里没有那三列"（020 那一轮踩过）。
    */
   { name: '021_tracked_video_visibility', sql: m021TrackedVideoVisibility },
+  /*
+   * 022：`tracked_creators.cooldown_until` —— 连续失败 3 次之后的 1 小时冷却窗口
+   * （`docs/pending.md` §5.98 的处置；冻结值写在 §10 那张表里）。
+   *
+   * ⚠️ 与 011 / 015 / 021 同一个形状：纯 `ALTER TABLE ADD COLUMN`（可空、无默认值），
+   *    **不重建表** ⇒ 不需要 `PRAGMA foreign_keys`，**留在事务里**（不加 noTransaction），
+   *    失败即整条回滚。别看到"改表结构"就条件反射加 noTransaction。
+   * ⚠️ 不登记 = 不跑，而症状是"代码看着对、库里没有那一列"（020 与 021 两轮都踩过，
+   *    `tracking-schema.test.ts` 末尾那一组专门钉"它在 `_migrations` 里"）。
+   */
+  { name: '022_tracked_creator_cooldown', sql: m022TrackedCreatorCooldown },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

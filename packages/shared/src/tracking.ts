@@ -173,6 +173,19 @@ export interface TrackedCreator {
   lastError: string | null;
   /** 连续失败次数。⚠️ 平台各自独立失败，这一个数是"要不要放弃这个频道"的判据。 */
   consecutiveFailures: number;
+  /**
+   * 冷却到什么时候为止（**Unix 秒**）。`null` = **不在冷却中** —— 这也是"没有这个状态"
+   * 该有的那个值：写 `0` 的话它与"冷却到 1970 年"分不开，而面板上那一句会变成
+   * "冷却中，1970-01-01 之前不再抓"（本仓同一条纪律，见 `lastSyncedAt` 与 `TrackedVideo` 那段 ★★）。
+   *
+   * ★ 它由 `recordFailure` 在**连续失败满 `COOLDOWN_AFTER_FAILURES`（3）次**时设成
+   *   `now + COOLDOWN_SEC`（3600 秒），由 `pickDueCreators` 在它还没过期时**跳过这个博主**，
+   *   并由一次成功（`advanceCursor`）清成 `NULL`。
+   *   ⚠️ 为什么这件事必须**看得见**（而不是只在库里）：一个正在冷却的博主在名单上
+   *   与"只是还没到点"长得一模一样，而界面上那一格（`tracked.cooldown`）是操作者
+   *   唯一能看出"它这一小时**故意**没被挑"的地方 —— 不说的话，看起来就是抓取漏了他。
+   */
+  cooldownUntil: number | null;
   /** 停用的博主不再参与回填与增量（`enabled = 0`），但行与视频都留着。 */
   enabled: boolean;
   /** 他名下已经存了多少条（管理面板那一列）。⚠️ 它是**数出来的**，不是存在 `tracked_creators` 上的。 */

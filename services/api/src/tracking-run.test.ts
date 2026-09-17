@@ -30,7 +30,14 @@
 process.env.DB_PATH = ':memory:';
 
 const { closeDb, getDb } = await import('./db');
-const { createCreator, pickVerifiableVideos, upsertVideos } = await import('./tracked-videos');
+const {
+  createCreator,
+  pickVerifiableVideos,
+  recordFailure,
+  upsertVideos,
+  /** 冷却的冻结值（迁移 022）：本文件的断言**从常量拼期望值**，不手抄那两个数。 */
+  COOLDOWN_SEC,
+} = await import('./tracked-videos');
 const {
   exitCodeFor,
   formatSummary,
@@ -142,10 +149,17 @@ function creatorRow(id: string): {
   consecutive_failures: number;
   last_error: string | null;
   enabled: number;
+  /**
+   * 冷却死线（迁移 022，Unix 秒）。
+   * ⚠️ 这一格是 2026-09-17 加进这个读数的：本文件那一组用例要断言"冷却中的博主
+   *    这一轮**什么都没发生**"（计数不涨、死线不推），而那两件事都在这一行的列上。
+   */
+  cooldown_until: number | null;
 } {
   const row = getDb()
     .prepare(
-      `SELECT backfill_done, last_cursor, last_synced_at, consecutive_failures, last_error, enabled
+      `SELECT backfill_done, last_cursor, last_synced_at, consecutive_failures, last_error, enabled,
+              cooldown_until
          FROM tracked_creators WHERE id = ?`,
     )
     .get(id) as
@@ -156,6 +170,7 @@ function creatorRow(id: string): {
         consecutive_failures: number;
         last_error: string | null;
         enabled: number;
+        cooldown_until: number | null;
       }
     | undefined;
   assert.ok(row, `库里没有博主 ${id}`);
@@ -1058,6 +1073,93 @@ describe('CLI 壳', () => {
     assert.equal(result, 0);
     assert.match(out, /track: 本轮 开始=/);
     assert.match(out, /结束=/);
+  });
+
+  it('★★ 冷却中的博主：这一轮**一个请求都不发**、记录也不动，预演仍然报得出冷却数', async () => {
+    /*
+     * ★★ 这一条是整件事的**端到端**：`docs/pending.md` §5.98 的现场是"timer 每 10 分钟
+     *    喂一次必然失败的请求"，而这一组要钉的就是"满了 3 次之后**不再喂**"。
+     *
+     * ⚠️ 断言分三层，缺一层就有一条假的安心：
+     *   ① **没有任何一页被抓**（`calls.length === 0`）—— 冷却是在 `pickDueCreators`
+     *      那一步生效的，所以适配器**根本不会被调用**；写成"要了适配器但不翻页"也行，
+     *      但那意味着每一轮仍然在做一件多余的事，而这一条把那种实现也排除掉；
+     *   ② **这一行什么都没变**（计数不涨、死线不推）—— 一轮空跑不该被记成一次失败
+     *      （`recordFailure` 只在真尝试过之后才被调用），也不该把死线往后推；
+     *   ③ **预演把这件事说出来**（`冷却: N 个…`）—— 冷却中的博主**不在待办里**，
+     *      没有这一行的话，预演的输出读起来就是"名单上有人，抓取漏了他"。
+     */
+    const cooling = addCreator('bilibili', 'cool-18');
+    // ⚠️ 走**真实那条路**攒满 3 次失败（不直接 UPDATE 那一列）：死线该写在哪一刻
+    //    正是被测的东西，手写夹具会把"基数写成第一次失败的时刻"这个错直接埋掉。
+    for (let i = 0; i < 3; i += 1) {
+      recordFailure(cooling.id, 'bilibili: code=-352 风控校验失败', NOW);
+    }
+    const deadline = NOW + COOLDOWN_SEC;
+    assert.equal(creatorRow(cooling.id).cooldown_until, deadline, '夹具：冷却到一小时后');
+
+    const { adapter, calls } = makeAdapter(() => {
+      throw new Error('冷却中的博主不该被适配器看到 —— 这一轮连一次 fetchPage 都不该有');
+    });
+    const registry = adapterRegistry({ bilibili: adapter });
+
+    const { result, out } = await captureStdout(() =>
+      main([], depsFor({ adapters: registry.adapters, platformStatus: ONLY_BILIBILI })),
+    );
+
+    assert.equal(result, 0, '★ 这一轮什么都没做 ⇒ 不算失败（退出码 0；冷却不是错，它是设计）');
+    assert.equal(calls.length, 0, '★★ 冷却中 ⇒ 一次 fetchPage 都没有（这就是"别再喂这个 IP"）');
+    assert.match(
+      out,
+      /回填: 试 0 个 \/ 完成 0 个 \/ 失败 0 个/,
+      '★ 摘要里他是"没被挑中"，不是"失败了"',
+    );
+    const coolingRow = creatorRow(cooling.id);
+    assert.equal(
+      coolingRow.consecutive_failures,
+      3,
+      '★★ 空跑不许再记一次失败（记录只来自真实尝试）',
+    );
+    assert.equal(coolingRow.cooldown_until, deadline, '★★ 死线也不许被推（那一轮什么都没发生）');
+    assert.equal(
+      coolingRow.last_error,
+      'bilibili: code=-352 风控校验失败',
+      '★ 上次错误照旧留着（它是上一轮的事实，不是这一轮的）',
+    );
+
+    // ---- 预演：冷却数报得出来，而且他**不在**待办的列表里（这一行说的正是"为什么他不在"）----
+    const dry = await captureStdout(() =>
+      main(['--dry-run'], depsFor({ adapters: registry.adapters, platformStatus: ONLY_BILIBILI })),
+    );
+    assert.equal(dry.result, 0);
+    assert.match(dry.out, /冷却: 1 个博主在冷却窗口里/, '★★ 预演要报出"有几个在冷却"');
+    assert.match(
+      dry.out,
+      new RegExp(`连续失败满 3 次 ⇒ 冷却 ${String(COOLDOWN_SEC / 60)} 分钟`),
+      '★ 那一句里的两个数从常量拼（改了冻结值而漏改文案的话，这里会红）',
+    );
+    assert.equal(
+      dry.out.includes(cooling.id),
+      false,
+      '★★ 他**不在**待办的列表里 —— 预演那一行说的正是"为什么他不在"（在的话这一行就是多余的）',
+    );
+
+    /*
+     * ⚠️ 反面：窗口一过他就**回来**了（冷却不是"放弃这个频道"，那是 `enabled` 的事）。
+     *    这一条同时钉住"预演报的数是真的跟着时间走的"，而不是一个永远 ≥ 1 的装饰。
+     */
+    const later = await captureStdout(() =>
+      main(
+        ['--dry-run'],
+        depsFor({
+          adapters: registry.adapters,
+          platformStatus: ONLY_BILIBILI,
+          now: deadline + 1,
+        }),
+      ),
+    );
+    assert.match(later.out, /冷却: 0 个博主在冷却窗口里/, '★ 死线过去了 ⇒ 冷却数为 0');
+    assert.ok(later.out.includes(cooling.id), '★★ 而且他回到待办列表里（窗口一到自动回来）');
   });
 });
 

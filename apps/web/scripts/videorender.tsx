@@ -479,6 +479,12 @@ const CREATOR_ON: TrackedCreator = {
   lastSyncedAt: PUBLISHED_SEC,
   lastError: null,
   consecutiveFailures: 0,
+  /*
+   * ★★ 冷却（迁移 022）：这一格是 `null` = **不在冷却里**。
+   *    ⚠️ 它**故意是 null**：⑥·b 要的正是"不冷却时那一句**一个字都不许有**"这一半，
+   *      只喂一个冷却中的夹具的话，一个"每行都画一句"的实现照样绿。
+   */
+  cooldownUntil: null,
   enabled: true,
   videoCount: 137,
   /*
@@ -529,6 +535,36 @@ const CREATOR_YT: TrackedCreator = {
   handle: '@example',
   displayName: 'YouTube Example',
   videoCount: 5,
+  hiddenCount: 0,
+};
+
+/**
+ * 第四个博主：**正在冷却里**（迁移 022，`docs/pending.md` §5.98 的处置）。
+ *
+ * ⚠️★ 它存在的理由与 `CREATOR_YT` 逐字相同 —— 上面两份夹具的 `cooldownUntil` 都是
+ *    `null`（那是常态），所以"冷却时那一句真的画出来"这件事**没有任何一份产物**
+ *    证明得了。而只留它的话反过来又证明不了"不冷却时一个字都不画"。
+ *    ⇒ ⑥·b 用这两个方向对照。
+ * ⚠️ 三个数**必须是自洽的**（夹具不许说谎）：`consecutiveFailures: 3` 正是
+ *    `COOLDOWN_AFTER_FAILURES`（3）—— 现实里 `cooldown_until` 只在这一刻（或更多次失败
+ *    之后）才被写上，`2` 与它同时出现是一种**不可能**的状态（那种夹具会悄悄把
+ *    写测试的人引向错的实现：按 `consecutiveFailures` 判而不管那一列）。
+ *    死线同理是 `PUBLISHED_SEC + 3600`（`COOLDOWN_SEC`）。
+ * ⚠️ 文字全部是 **ASCII**：⑨ / ⑩（`--en` 那一遍）扫的是**所有产物**的原文，
+ *    夹具里写汉字会让英文那一遍红在一句与它无关的话上（`CREATOR_OFF` 的 `lastError`
+ *    也是同一条约束）。
+ */
+const CREATOR_COOLING: TrackedCreator = {
+  ...CREATOR_ON,
+  id: 'tc-cool',
+  externalId: '99999999',
+  handle: '99999999',
+  displayName: 'Cooling Creator',
+  lastError: 'bilibili: code=-352',
+  consecutiveFailures: 3,
+  cooldownUntil: PUBLISHED_SEC + 3600,
+  videoCount: 12,
+  // ⚠️ 与 `CREATOR_ON`/`CREATOR_OFF` 一样只是为了让这一行看起来像真的（⑮ 不看这份产物）
   hiddenCount: 0,
 };
 
@@ -1275,6 +1311,73 @@ assert.equal(
 );
 ok(
   '面板内容：七列表头 + 两行（启用 / 停用）的六个读数都与夹具对得上；"名单是空的" / "加载中" / "取数失败"三态分开',
+);
+
+// ---------------------------------------------------------------------------
+console.log('⑥·b ★★ 冷却窗口（迁移 022）：冷却中那一句画出来，不冷却时**一个字都不画**');
+// ---------------------------------------------------------------------------
+/*
+ * ★ `cooldown_until`（迁移 022，`docs/pending.md` §5.98 的处置）：连续失败满 3 次之后
+ *   这个博主**一小时**不再被挑（`pickDueCreators` 跳过），而冷却期间抓取
+ *   **一个请求都不发** ⇒ `journalctl` 里连一条失败都没有。
+ *   ⇒ 这一格是那个状态在界面上**唯一**的出口，它错了没有任何东西会响：
+ *     少画一句就是"这一栏很久没更新、而且什么错都没记"；多画一句就是
+ *     每一行都挂着一句"这一格没有值"式的噪音（与"空容器不渲染"同一条纪律）。
+ *
+ * ⚠️★ 两个方向**都要有**，而且理由与⑮那一段逐字相同：夹具里 `CREATOR_ON` / `CREATOR_OFF`
+ *    的 `cooldownUntil` 都是 `null`（常态），所以只断言"冷却的画出来了"的话，
+ *    一个**永远画一句**的实现照样绿；反过来只断言"没冷却时没有"的话，
+ *    一个**永远不画**的实现（那一列接错了、或者词条漏了）也照样绿。
+ * ⚠️ 期望值用 `t(...)` 拼、时间那一格用 `localDateTime` 拼（**不写死**一个日期串）：
+ *    写死的话，这一条在 `--en` 那一遍会因为语言不同而红在一句与它无关的话上，
+ *    而且换一个时区跑也会红 —— 两个门禁都会变成"没法信"的那种。
+ *    同一个换算点（`toMillis`）由 ③ 那一组专门钉着，这里钉的是"渲染点用没用它"。
+ */
+const COOLING_HTML = renderPanel(
+  { creators: [CREATOR_COOLING, CREATOR_ON] },
+  '一个在冷却、一个不在',
+);
+const coolingRows = elementsWithClass(COOLING_HTML, 'tracked__row');
+assert.equal(
+  coolingRows.length,
+  2,
+  `★ 探针：这一组要两行（冷却的那一行在前）—— 实测 ${String(coolingRows.length)} 行`,
+);
+const cooldownNotes = elementsWithClass(coolingRows[0] ?? '', 'tracked__cooldown');
+assert.equal(
+  cooldownNotes.length,
+  1,
+  '★★ 冷却中的那一行有**且只有一句**冷却提示（0 句 = 那个状态在界面上不存在了）',
+);
+assert.equal(
+  textOf(cooldownNotes[0] ?? ''),
+  t('tracked.cooldown', { until: localDateTime(CREATOR_COOLING.cooldownUntil, LANG) }),
+  `★★ 那一句是词条渲染的，时间那一格经 \`localDateTime\`（秒 ⇒ 毫秒）—— 实读「${textOf(
+    cooldownNotes[0] ?? '',
+  )}」`,
+);
+assert.notEqual(
+  t('tracked.cooldown', { until: 'X' }),
+  'tracked.cooldown',
+  '★★ 探针：这句词条在当前语言里必须有真值（缺词条时 `t()` 原样返回 key，上面那条就成了空跑）',
+);
+assert.deepEqual(
+  elementsWithClass(coolingRows[1] ?? '', 'tracked__cooldown'),
+  [],
+  '★★ `cooldownUntil: null` ⇒ 那一句**一个字都不画**（写「—」的话每一行都会多一句"没有值"）',
+);
+assert.deepEqual(
+  elementsWithClass(WITH_MANAGE_HTML, 'tracked__cooldown'),
+  [],
+  '★★ 对照：默认那两份夹具都不在冷却里 ⇒ 那整份产物里一个 `.tracked__cooldown` 都没有',
+);
+assert.equal(
+  rawText(COOLING_HTML).includes('1970'),
+  false,
+  '★★ 冷却死线也是**秒**：少乘 1000 就是这里冒出一个 1970（同一格上 `new Date(null)` 恰好也是 1970 —— 两种错法在这一格里长得一样）',
+);
+ok(
+  '冷却：冷却中的那一行有一句「冷却中，至 … 为止不再抓」（时间经 `toMillis`）；不冷却时一个字都不画（两个方向对照）',
 );
 
 // ---------------------------------------------------------------------------
@@ -2227,6 +2330,12 @@ const MUST_RENDER = [
   'tracked__synced',
   'tracked__err',
   'tracked__streak',
+  /*
+   * ⚠️ 迁移 022：冷却那一句（⑥·b）。它与 `tracked__streak` **分开一个类名** ——
+   *    共用一个的话，"不冷却时一个字都不许有"那条断言在产物里根本分不出来
+   *    （组件那一格的注释与 `styles.css` 上那一段都写着这件事）。
+   */
+  'tracked__cooldown',
   'tracked__total',
   'tracked__actions',
   'tracked__confirm',
@@ -2306,8 +2415,9 @@ console.log('     所以界面上没有任何位置需要说这句话 —— 记
  *    （`if (LANG === 'en')`）；两个数差 1 是**正常的**，别把它抹平。
  * ⚠️ 2026-09-16 的**修复波**：⑫…⑮ 之后又加了 ⑯（分区参数的读写），两个数各 +1
  *    （14/15 ⇒ 15/16）。
+ * ⚠️ 2026-09-17：又加了 ⑥·b（冷却窗口，迁移 022），两个数再各 +1（15/16 ⇒ 16/17）。
  */
-const expectedGroups = LANG === 'en' ? 16 : 15;
+const expectedGroups = LANG === 'en' ? 17 : 16;
 assert.equal(
   pass,
   expectedGroups,

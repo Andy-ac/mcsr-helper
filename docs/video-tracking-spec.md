@@ -655,6 +655,17 @@ track: 本轮 开始=<iso> 结束=<iso>
 | timer | 每 **10 分钟**，`OnCalendar=*:0/10`，`Persistent=true`，`flock -n` |
 | 增量口径 | `last_synced_at < now - 3600` |
 | 标签 v1 | `liveReplay` / `short`(≤60s) / `long`(≥1200s) |
+| 冷却（迁移 022，2026-09-17 加） | 连续失败 **3** 次（`COOLDOWN_AFTER_FAILURES`）⇒ `cooldown_until = now + 3600` 秒（`COOLDOWN_SEC`）；冷却中不被挑、死线不续期、成功即清 |
 | 能力 | `live.manage`（editor+） |
 | 凭据环境变量 | `MCSR_YOUTUBE_KEY` / `MCSR_TWITCH_ID` / `MCSR_TWITCH_SECRET` |
 | 不动的 | `videos` 表、`video.submit` 那条路、`live_channels`、任何直播相关 |
+
+**关于冷却那一行**（2026-09-17 冻结，依据是 `docs/pending.md` §5.98 那次实测）：生产的出口 IP
+被 bilibili 风控盯上之后，同一份代码在干净出口上 `code=0`、在服务器上 `-352`/`412`，而 timer
+每 10 分钟就叫同一个博主再打一次 —— 那些请求**不会成功**，只是持续给这个 IP 的分数添柴。
+⇒ 判据是"**连续 3 次失败**（任何错误类，不只是 bilibili 的）"而不是"见到了 `-352`"：
+按上游文案判会在它换错误码的那天**静默失效**（`services/api/src/tracked-videos.ts` 里
+`COOLDOWN_AFTER_FAILURES` 那两个常量的注释写着完整的理由）。
+⚠️ 冷却期的失败**不推死线**（否则一个被盯上的 IP 每 10 分钟把死线往后推一小时，永远出不来），
+而一次**成功**立刻清掉它 —— 这三个行为各有一条断言钉在
+`services/api/src/tracking-store.test.ts` 的 ⑦ 那一组里。

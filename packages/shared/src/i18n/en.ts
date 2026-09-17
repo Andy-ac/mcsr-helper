@@ -1975,6 +1975,25 @@ export const en: TranslationSchema = {
      *    identical in the logs.
      */
     failStreak: '{{count}} failures in a row',
+    /*
+     * ★★ The cooldown window (migration 022, the ruling recorded in
+     *    `docs/pending.md` §5.98): after `COOLDOWN_AFTER_FAILURES` (3) consecutive failures the
+     *    creator is **not picked for an hour** (frozen `COOLDOWN_SEC = 3600`; both constants live
+     *    in `services/api/src/tracked-videos.ts` and in the spec §10 table).
+     *
+     * ⚠️★ This sentence is the **only** place that state becomes visible: while a creator is
+     *    cooling down the sync sends **no request at all** (they are not even in the due list),
+     *    so the logs show not one failure — without this the symptom is "that column stopped
+     *    updating and nothing was recorded anywhere".
+     * ⚠️ `{{until}}` is an **already formatted** timestamp (the render site converts it from
+     *    **seconds** with `localDateTime`): this string must not format a date itself, and must
+     *    not build one with `new Date` — both are entrances to "forgot the ×1000 ⇒ 1970".
+     * ⚠️ One sentence, not two: it sits right under "last error" as a single small line.
+     * ⚠️ It does not replace `failStreak` — that one says how many times, this one says until
+     *    when. Past three failures both are shown, which is correct (the counter stops climbing
+     *    at 3+, while the deadline lives here).
+     */
+    cooldown: 'Cooling down until {{until}}',
     disable: 'Disable',
     enable: 'Enable',
     rebackfill: 'Re-backfill',
