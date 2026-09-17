@@ -75,6 +75,7 @@
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import type { SeedRecord } from '@mcsr/shared';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import {
   displayWeekNo,
@@ -117,6 +118,7 @@ import {
   RankedLiveView,
   type RankedLiveViewProps,
   type RankedLookup,
+  type RankedSeedStates,
   RankedStatusView,
   type RankedStatusViewProps,
   RankedTabBar,
@@ -899,20 +901,24 @@ const ELO_MATCHES: RankedMatch[] = [
  * ⚠️ 这几格全给真值：下面要逐格断言"这一格印的是**它自己**那个数"，缺一格的话
  *    那一条只能断言「—」（那与"没渲染"分不开）。
  * ⚠️ `season.bestTimeMs` 是**毫秒**（上游给的就是毫秒：387772 = 6:27.772）。
- * ⚠️★ 这里**没有** `seasonHighest`：修复轮（T4）把那格从形状/解析/测试里删掉了
- *    （它没有任何渲染点 ⇒ 一条没有消费者的数据通路）。
- *    ⚠️ 但"删干净"的判据**不在这个文件上**：`apps/web/tsconfig.json` 的 `include` 只有
- *    `src/**`（外加 `packages/ui/src`），本脚本是 `tsx` 直接跑的（类型剥掉、不查）
- *    ⇒ 这里多写一格 `seasonHighest` **不会有任何门禁红**（`tsc --listFiles` 里
- *    `scripts/**` 一个文件都不在）。那条判据住在 `packages/shared`（形状）与
- *    `services/api` 那两个测试文件里 —— 少删一处，那边就编译不过/测试红。
- *    这份夹具跟着一起改，是因为它是**照着 `RankedPlayerDetail` 写的**，不是因为有人会拦。
+ * ⚠️★ 这里**有** `seasonHighest` 与 `seasonPhasePoint`（2026-09-19 第四轮加回来/新增）：
+ *    上面那段"没有 `seasonHighest`"的说明是**修复轮（T4）当期**的事实，而这一轮它**有了**
+ *    渲染点 —— 查到的玩家成了表格里的第一行，第四列「最高」印的就是它，
+ *    第五列「阶段分」印的是 `seasonPhasePoint`。
+ *    ⚠️ 这两格**只**服务表格那两列：卡片那五格读数**不**印它们（两处混用会让"卡片有几格"漂）。
+ *    ⚠️ 四个数（1 / 2349 / 2385 / 0）**互不相同**、昵称也另是一串：五格逐格断言要能发现
+ *    "格与格串位"，同值的话那种实现照样绿（与 `ELO_SEARCH` 那两位共享前缀同一条纪律）。
+ *    ⚠️ `seasonPhasePoint: 0` 是**照实测**的（账本 `ranked-round4/progress.md`：
+ *    `edcr` 的 `seasonResult.last.phasePoint` 实测就是 **0**）⇒ 这一行同时钉着
+ *    "0 印 0、**不是**占位符"（榜上那一档由 `Charlie` 那行钉着）。
  */
 const ELO_DETAIL_USER: RankedPlayerDetail = {
   uuid: ELO_SELF_UUID,
   nickname: 'edcr',
   eloRate: 2349,
   eloRank: 1,
+  seasonHighest: 2385,
+  seasonPhasePoint: 0,
   season: { wins: 96, loses: 12, playedMatches: 108, bestTimeMs: 387_772 },
   total: { wins: 800, loses: 700, playedMatches: 1500, bestTimeMs: 361_000 },
 };
@@ -949,6 +955,47 @@ const ELO_LOOKUP_CASED: RankedLookup = {
   kind: 'found',
   user: { ...ELO_DETAIL_USER, nickname: 'Edcr' },
 };
+
+/*
+ * ===========================================================================
+ * ★★ 第四轮：每一场比赛那三格种子（`seeds` / `onToggleSeed`）的夹具
+ * ===========================================================================
+ * ⚠️ 键是**字符串**（`RankedSeedStates` 的类型注释写着为什么）：JS 对象的键只能是字符串，
+ *    而视图那一侧查表时写的是 `String(match.id)` —— 一边写一边不写，表现是"点了按钮
+ *    什么都不出现"（查表永远落空），每一格都合法、没有任何报错。这里就用 `String()`。
+ * ⚠️ 那一场的 id 用**实测的那一场**（`13304815`：账本 `ranked-round4/progress.md` 里
+ *    `GET /api/ranked-seeds/match/13304815` 那一条 200 就是它）—— 它正好是
+ *    `ELO_MATCH_PRIVATE`（三场夹具里的第 3 场）。
+ */
+const ELO_SEED_MATCH_ID = 13_304_815;
+const ELO_SEED_KEY = String(ELO_SEED_MATCH_ID);
+/**
+ * 一份 `SeedRecord`（形状照账本里那次实测的 200）。
+ * ⚠️ `matchDate` 是**毫秒**（实测 1789242779323）—— 这一轮**不印**它，但形状照实。
+ * ⚠️★ 三个值**必须互不相同**，否则"第 3 格印的是第 1 格"这件事测不出来
+ *    （与 `ELO_SEARCH` 那两位共享前缀、`ELO_DETAIL_USER` 那五格互不相同是同一条纪律）。
+ *    ⚠️ 而实测里 `theEndSeed` 与 `overworldSeed` **恰好同值** ⇒ 这里把末地那一格
+ *    换成另一个 19 位串。三个值都必须是**长数字串**：短值上"被当成数字格式化"那类错
+ *    根本不会现形（`Number()` 只对超过 2^53 的整数丢精度）。
+ */
+const ELO_SEED: SeedRecord = {
+  matchId: ELO_SEED_MATCH_ID,
+  matchDate: 1_789_242_779_323,
+  overworldSeed: '8813544817493859226', // 实测值（19 位，超过 2^53）
+  netherSeed: '234370381031116', // 实测值
+  theEndSeed: '7777777777777777777', // ⚠️ 实测与主世界同值 ⇒ 换成另一个 19 位值
+};
+/** `ready`（三格都有值）。 */
+const ELO_SEEDS_READY: RankedSeedStates = {
+  [ELO_SEED_KEY]: { kind: 'ready', seed: ELO_SEED },
+};
+/** `ready` 而末地那一格是 `null`（上游的形状就是可空的）⇒ 那一格印「—」。 */
+const ELO_SEEDS_THE_END_NULL: RankedSeedStates = {
+  [ELO_SEED_KEY]: { kind: 'ready', seed: { ...ELO_SEED, theEndSeed: null } },
+};
+const ELO_SEEDS_LOADING: RankedSeedStates = { [ELO_SEED_KEY]: { kind: 'loading' } };
+const ELO_SEEDS_NOT_FOUND: RankedSeedStates = { [ELO_SEED_KEY]: { kind: 'not_found' } };
+const ELO_SEEDS_FAILED: RankedSeedStates = { [ELO_SEED_KEY]: { kind: 'failed' } };
 
 const WEEK_SEED = {
   overworld: '1234567890123456789',
@@ -1007,6 +1054,17 @@ const VIEW_KEYS = {
    *    `query.trim()`；T2 落地后、本轮收尾前的真实读数就是一个 `TypeError`）。
    *    崩比静默好，但它红在一条栈上、而不是一条带人话的断言上；六格进了这张表之后，
    *    "容器忘了接线"才是这条守卫该说的那句话（下面还有一条"六格缺任何一个都要能命中"的探针）。
+   *
+   * ⚠️★ 2026-09-19 **第四轮**又加了两格（`seeds` / `onToggleSeed`，名字**冻结**）：
+   *    它们是"每一场比赛右侧那颗按钮 + 它下面那三格种子"的全部接线。
+   *    · `seeds` 缺了是**当场崩**（`RankedDetailBody` 里 `seeds[String(match.id)]`
+   *      读 `undefined` —— T1 实测的原文在它的报告 §2.2，`RankedPanels.tsx:1415`）；
+   *    · `onToggleSeed` 缺了**不崩**：按钮照旧画出来、产物一个字节都不差，
+   *      而点下去什么都不发生 —— 只有这道守卫抓得到（`on` 前缀 ⇒ 自动按"必须是函数"查）。
+   *    ⇒ 两格都进下面这张表，并且各有一条"缺了也要能命中"的探针（与那两条同形）。
+   *    ⚠️ 类型是 `RankedSeedStates | null`（`null` = 这一页还没点开过任何一场，是**合法值**）：
+   *      `null` 的产物与"没传"的产物**一模一样**，所以"传了 `null`"这件事只能由
+   *      下面那些产物级断言证明（它们就是干这个的）。
    */
   elo: [
     'elo',
@@ -1017,6 +1075,8 @@ const VIEW_KEYS = {
     'lookup',
     'detail',
     'onToggleDetail',
+    'seeds',
+    'onToggleSeed',
   ],
   /*
    * ⚠️★ 2026-09-19 加的四格是 ④ 的手输跳转与「本周」（同一类理由：视图是纯视图，
@@ -1174,6 +1234,8 @@ assert.throws(
         lookup: null,
         detail: null,
         onToggleDetail: 'nope',
+        seeds: null,
+        onToggleSeed: noop,
       } as unknown as Record<string, unknown>,
       [...CHROME_KEYS, ...VIEW_KEYS.elo],
       '探针',
@@ -1181,6 +1243,64 @@ assert.throws(
   },
   /onToggleDetail/,
   '★★ 探针：`onToggleDetail` 不是函数也要能命中（产物里与接好线的**一模一样**，点下去什么都不发生）',
+);
+/*
+ * ★★ 探针：第四轮那两格（`seeds` / `onToggleSeed`）也要能被这道守卫抓到 —— 形状与上面两条
+ *    逐字相同，只是砍的格子换了：一条砍"少传一格"、一条砍"传了不是函数的东西"。
+ * ⚠️★ 两条都不是形式主义，它们各对应 T1 报告 §3.1 里实测到的**两种不同缺法**：
+ *    · 少传 `seeds` ⇒ 视图**当场抛**（`TypeError: Cannot read properties of undefined
+ *      (reading '13304815')`，`RankedPanels.tsx:1415`）—— 崩比静默好，但它是一条**栈**，
+ *      不是一句带人话的断言；这一条把"这个栏目少接了一格线"说清楚；
+ *    · 少传 `onToggleSeed` ⇒ **什么都不崩**（T1 实测：产物 2227 字节，一个字节不差），
+ *      而那颗按钮点下去什么都不发生 ⇒ 只有这道守卫看得见。
+ * ⚠️ 夹具把**除那一格之外**的九格全给齐：守卫是按顺序查的，少给别的格子的话它会先在
+ *    那一格上失败，这条探针就成了"报错信息里有没有 seeds"的巧合
+ *    （上面 `origin` / `onSearchChange` 两条同理）。
+ */
+assert.throws(
+  () => {
+    assertPropsGiven(
+      {
+        ...chrome(),
+        elo: ELO_DATA,
+        phase: ELO_PHASE,
+        searchText: '',
+        onSearchTextChange: noop,
+        onSearchSubmit: noop,
+        lookup: null,
+        detail: null,
+        onToggleDetail: noop,
+        onToggleSeed: noop,
+      } as unknown as Record<string, unknown>,
+      [...CHROME_KEYS, ...VIEW_KEYS.elo],
+      '探针',
+    );
+  },
+  /seeds/,
+  '★★ 探针：`seeds` 没传要能命中（缺了它视图当场抛 —— 本栏目"容器忘了接线"的第二种缺法）',
+);
+assert.throws(
+  () => {
+    assertPropsGiven(
+      {
+        ...chrome(),
+        elo: ELO_DATA,
+        phase: ELO_PHASE,
+        searchText: '',
+        onSearchTextChange: noop,
+        onSearchSubmit: noop,
+        lookup: null,
+        detail: null,
+        onToggleDetail: noop,
+        seeds: null,
+        onToggleSeed: 'nope',
+      } as unknown as Record<string, unknown>,
+      [...CHROME_KEYS, ...VIEW_KEYS.elo],
+      '探针',
+    );
+  },
+  /onToggleSeed/,
+  '★★ 探针：`onToggleSeed` 不是函数也要能命中（产物里与接好线的**一模一样**，那颗按钮点下去什么都不发生）',
 );
 
 /** 四支共用的那几格（容器给的是**同一个对象**的四个字面量，见 `routes/Ranked.tsx`）。 */
@@ -1291,6 +1411,15 @@ const renderElo = (o: Partial<RankedEloViewProps> = {}, where = '排行榜'): st
     lookup: null,
     detail: null,
     onToggleDetail: noop,
+    /*
+     * ★★ 第四轮那两格的默认值（2026-09-19）：`seeds: null` 就是容器初始态给的那一份
+     *    （"这一页还没点开过任何一场"），而它**不是**可选 prop 的兜底 ——
+     *    视图那一侧写死"缺传就抛"（`RankedEloViewProps.seeds` 上写着为什么）。
+     *    ⚠️ 这两行不是"让崩溃消失"：补它们之前，`check:all` 从第一个 `renderElo()`
+     *    起就断（`check:all` 是 `&&` 串起来的 ⇒ 后面十一个自检一个都不跑）。
+     */
+    seeds: null,
+    onToggleSeed: noop,
     ...o,
   };
   assertPropsGiven(
@@ -2244,9 +2373,26 @@ assert.deepEqual(
  */
 const cellsOfRow = (row: string): string[] =>
   [...row.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((c) => textOf(c[1] ?? ''));
-const eloRows = [...eloTable.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
-  .slice(1) // 第一行是表头
-  .map((m) => cellsOfRow(m[1] ?? ''));
+/**
+ * ★★ 表格里的**玩家行**（2026-09-19 第四轮改：榜上的行加了 `class="ranked__row"`）。
+ *
+ * ⚠️★ 改之前是 `/<tr>([\s\S]*?)<\/tr>/g` + `.slice(1)`（"裸 `<tr>` 减去表头"），
+ *    而那个正则只认**不带属性**的 `<tr>` ⇒ 榜上的行一带上类名，它**一个都匹配不到**：
+ *    实测原文 `★ 每一行一个玩家（5 行）` / `0 !== 5`。
+ * ⚠️★ 判据的**强度**一点没减：数的仍然是**行本身**，不是"产物里包含某串字" ——
+ *    把夹具里的一行删掉，下面每一条"几行"的断言照旧当场掉一个数（能红的证明见报告）。
+ * ⚠️★ 为什么判据锚在 `ranked__row` 上：这一轮三种 `<tr>` 各占一个位置 ——
+ *    表头那一行**没有类名**、玩家行（榜上的每一行与"固定在最上面"那一行）都是
+ *    `ranked__row`、展开那一行是 `ranked__detailrow`（视图里那两段注释写着这件事）。
+ *    ⇒ 这个选择器恰好等于"数据行"，而"展开出来的行"不会被当成一个玩家
+ *    （旧写法靠"裸 `<tr>`"达到同一件事，这一版靠类名，两者的等价性由下面
+ *    `★ 每一行一个玩家` 与 `★★ 渲染出来的是 N 行数据行` 这两条各自钉着）。
+ * ⚠️ 用 `elementsWithClass`（本文件那个有探针的提取器）而不是再写一个正则：
+ *    "类名要整个词相等"这件事只在它一处定义，`ranked__row--lookup` **算** `ranked__row`
+ *    （它就是同一个词 + 一个修饰），而 `ranked__detailrow` 不算。
+ */
+const eloRowsOf = (table: string): string[] => elementsWithClass(table, 'ranked__row');
+const eloRows = eloRowsOf(eloTable).map((row) => cellsOfRow(row));
 assert.equal(
   eloRows.length,
   ELO_USERS.length,
@@ -2416,10 +2562,11 @@ assert.equal(
  *    同一条断言原样抄了两遍 —— 第二遍一个字都不会多发现）。
  * ⚠️ 两件事真的不等价：一个"149 行、其中一行多印了 5 个格子"的实现
  *    格子总数照样是 750，只有行数这条会红。⇒ 上一条管总量、这一条管行数。
- * ⚠️ 减掉的 1 是表头那一行（`<tr>` 一共 151 个）。
+ * ⚠️ 行数走 `eloRowsOf()`（`ranked__row` 那些行），所以它**不含**表头那一行、
+ *    也**不含**展开那一行（`ranked__detailrow`）—— 判据是"玩家行的条数"。
  */
 assert.equal(
-  [...eloManyTable.matchAll(/<tr>/g)].length - 1,
+  eloRowsOf(eloManyTable).length,
   RANKED_ELO_TOP,
   `★★ 渲染出来的是 ${String(RANKED_ELO_TOP)} 行**数据行**（夹具 160 条，多的一条都不渲染）`,
 );
@@ -2637,17 +2784,18 @@ ok(
 
 /* ---- ② 本地筛选：打字 ⇒ 在**已经取到的那份榜**上筛（上游没有搜索端点，findings §7）---- */
 /**
- * 产物里**数据行**的条数：`<tr>`（**不带属性**的那些）减去表头那一行。
+ * 产物里**数据行**的条数（`ranked__row` 那些行 —— 见 `eloRowsOf()` 上那一段）。
  *
  * ⚠️★ 判据必须数**行**，不能写成"产物里包含某串字"：后者对"印了 4 行"与"印了 2 行"
  *    完全一样 —— 那正是本仓最贵的一类缺陷（简报开头那句）。
- * ⚠️ 展开那一行是 `<tr class="ranked__detailrow">`（**带属性**），本函数不数它 ——
- *    "数据行"说的不是它（既有那条 150 行的断言用的也是这个写法）。
+ * ⚠️ 展开那一行是 `<tr class="ranked__detailrow">`，本函数不数它；
+ *    "固定在最上面"那一行（`ranked__row--lookup`）**算**数据行 —— 它就是用户要的
+ *    "搜索到的玩家是表里的一行"（这一轮 ① 那一条断言按这个口径数）。
  * ⚠️ 没有表时是 0：筛没了那一档**整张表都不渲染**（见视图里那两段注释），不是"渲染一张空表"。
  */
 const eloDataRows = (html: string): number => {
   const table = elementsWithClass(html, 'ranked__table')[0];
-  return table === undefined ? 0 : [...table.matchAll(/<tr>/g)].length - 1;
+  return table === undefined ? 0 : eloRowsOf(table).length;
 };
 /** 表格里每一行的昵称（昵称那一格是一颗按钮）。 */
 const eloRowNicknames = (html: string): string[] =>
@@ -2739,43 +2887,163 @@ assert.equal(
 );
 ok('④b② 本地筛选：行数与每行的昵称逐条（两位共享前缀）+ 忽略大小写 + 筛没了那一句 + 空榜的优先级');
 
-/* ---- ③ 三档查询：每一档只说自己的那一句，`lookup: null` 那一块整个不渲染 ---- */
+/* ---- ③ 三档查询：命中那一档成了**表里的一行**；没命中那两档照旧只说自己那一句 ---- */
+/*
+ * ★★ 2026-09-19 第四轮：**命中**（`lookup.kind === 'found'`）那一档的界面整体换了位置 ——
+ *    查到的玩家从"表格**外面**的一块读数行"变成了**表格里的第一行**（`.ranked__row--lookup`）。
+ *    用户原话：「自行搜索的玩家**页面布局和排行榜玩家相同**（无论是展开前还是展开后）」
+ *    ⇒ 这一节的判据跟着换：不再是"那一块在不在"，而是"**那一行**在不在、长什么样、排在哪儿"。
+ * ⚠️ 三档仍然是三档：`found` 走"行"，另外两档照旧渲染在表格**上面**（它们没有玩家可以变成一行）。
+ */
 assert.deepEqual(
   elementsWithClass(eloBase, 'ranked__lookup'),
   [],
   '★★ `lookup: null`（这一页还没查过）⇒ 那一块**整个不渲染**（不是渲染一个空框：多一行空白会让人以为上面那一步失败了）',
 );
+/**
+ * `<tbody>` 里**每一行**的开标签（表头在 `<thead>` 里，所以它不在里面）。
+ *
+ * ⚠️★ 它与 `eloRowsOf()` 是**两条独立的取法**：一条**按类名**取元素，一条**按位置**扫标签。
+ *    下面两条判据故意各用一条 —— "每一行都带 `ranked__row`"这件事**只能**从原始标签上
+ *    看出来：拿类名当筛选条件、再断言"被筛出来的都有那个类名"是**同义反复**
+ *    （一条不可能红的守卫比没有守卫更坏，`pending.md §5.63`）。
+ */
+const tbodyRowTags = (table: string): string[] => {
+  const at = table.indexOf('<tbody>');
+  const end = table.indexOf('</tbody>');
+  assert.ok(
+    at > 0 && end > at,
+    '★ 探针：表体那一格在产物里（否则下面按 tbody 取的几条会静默空跑）',
+  );
+  return [...table.slice(at, end).matchAll(/<tr\b[^>]*>/g)].map((m) => m[0]);
+};
+/** 一个元素的开标签（`elementsWithClass` 取回来的片段**以它自己的开标签开头**）。 */
+const openTagOf = (el: string): string => /^<[a-zA-Z][^>]*>/.exec(el)?.[0] ?? '';
 const eloLookupFound = renderElo({ lookup: ELO_LOOKUP_FOUND }, '排行榜·查询命中');
-assert.equal(
-  elementsWithClass(eloLookupFound, 'ranked__lookup').length,
-  1,
-  '★★ 命中 ⇒ 那一块在、且只有一处',
+const foundTable = elementsWithClass(eloLookupFound, 'ranked__table')[0] ?? '';
+assert.notEqual(
+  foundTable,
+  '',
+  '★ 探针：命中那一档表还在（下面五条都在那张表上做 —— 表没了它们会静默空跑）',
 );
-const lookupBox = elementsWithClass(eloLookupFound, 'ranked__lookup')[0] ?? '';
-const lookupButtons = elementsWithClass(lookupBox, 'ranked__playerbtn');
-assert.equal(lookupButtons.length, 1, '★★ 命中 ⇒ 恰好一颗昵称按钮（点它展开这位玩家）');
+const foundRowTags = tbodyRowTags(foundTable);
+/*
+ * ★★★ ① 查到的玩家 = **表里的一行**，而且是**最前面**那一行。
+ *
+ * ⚠️★ 位置判据不能写成"表里有这么一行"：那样的写法对一个把这一行渲染到表尾、或者
+ *    渲染了一张表**外面**的"单行表"的实现完全一样绿 —— 用户要的恰恰是"**固定在最上面**"。
+ */
+const foundLookupTags = foundRowTags.filter((tag) => hasClassOf(tag, 'ranked__row--lookup'));
 assert.equal(
-  textOf(lookupButtons[0] ?? ''),
-  flat(ELO_DETAIL_USER.nickname),
-  '★★ 那一格印的是**响应里**那个昵称（上游回的是规范写法，findings §6）',
+  foundLookupTags.length,
+  1,
+  `★★ ① 固定那一行**恰好一行**（找到 ${String(foundLookupTags.length)} 个）—— 两行就是"查到的玩家"被画了两遍`,
+);
+assert.equal(
+  foundRowTags[0],
+  foundLookupTags[0],
+  '★★★ ① 它就是 `<tbody>` 的**第一行**（"固定在最上面"的可断言形式：位置，不是"存在"）',
+);
+assert.equal(
+  foundTable.indexOf('<tbody>') < foundTable.indexOf('ranked__row--lookup'),
+  true,
+  '★★ ① 那一行在**表体里面**（`<tbody>` 之后）—— 它是一行表格行，不是表格上面多出来的一段',
 );
 /*
- * ★★ 三格读数**逐格**断言（用户说的"数据"就是这三样）。
- * ⚠️ 期望值写**字面量**（2349 / 1 / 96·12）：从夹具现算的话，"印的是同一个数"就变成了
- *    同义反复 —— 夹具改了而实现没跟上时，两边会一起变。
+ * ★★★ ① 数据行数 = **1 + 榜上那些行**。
+ * ⚠️ 数的是**行**（`<tbody>` 里每一个 `<tr>` 的开标签），不是"产物里包含某串字"。
+ * ⚠️★ 这一条同时是"固定那一行没有把榜挤掉一行 / 没有被渲染成两行"的判据：
+ *    少一行（榜被吃了一口）或多一行（他自己在榜上、而这是另一档夹具）都会红。
  */
+assert.equal(
+  foundRowTags.length,
+  1 + ELO_USERS.length,
+  `★★★ ① 数据行数 = 固定那一行 + 榜上那 ${String(ELO_USERS.length)} 行（数行，不是数"某串字出现过"）`,
+);
+/*
+ * ★★★ ① 榜上的那些普通行**也有** `ranked__row`（"两种行同一套标记"）。
+ * ⚠️★ 判据必须是**逐行**的（每一个 `<tr>` 各自查一次），不能是"产物里有 `ranked__row` 这个词"：
+ *    后者对"只有固定那一行有类名、榜上五行都没有"完全一样绿 —— 而那正好是这一轮要防的
+ *    那种半成品（用户看到的是"两行长得不一样"，而没有任何门禁说得出来）。
+ */
+for (const [i, tag] of foundRowTags.entries()) {
+  assert.equal(
+    hasClassOf(tag, 'ranked__row'),
+    true,
+    `★★★ ① 第 ${String(i + 1)} 行的标签是 \`${tag}\` —— 它**没有** \`ranked__row\`（两种行共用同一套标记：用户要的"布局相同"就落在这一条上）`,
+  );
+}
+/*
+ * ★★★ ① 两行的类名集合**除 `--lookup` 之外逐字相同**。
+ *
+ * ⚠️★ 这是一条**正面对照**：不是把每一行各自与一个字面量比，而是把"固定那一行"与
+ *    "榜上第一行"**互相比** —— 两处各写一套类名（`row` / `row--pinned` 那种）时，
+ *    与字面量的比较会一起改成新的字面量（两条断言同时被改写、照样绿），而这一条会红。
+ * ⚠️ `--lookup` 必须在**同一行里**真的存在（下面那条探针）：不然"过滤掉它之后两边相等"
+ *    会退化成"两个都没有修饰的那个词"—— 一个把修饰类名整个丢掉的实现照样绿。
+ */
+const foundLookupTag = foundLookupTags[0] ?? '';
+assert.equal(
+  hasClassOf(foundLookupTag, 'ranked__row--lookup'),
+  true,
+  '★ 探针：固定那一行真的带 `--lookup`（否则下面那条"除它之外逐字相同"是空跑）',
+);
+const foundLookupBaseClasses = classOf(foundLookupTag)
+  .split(/\s+/)
+  .filter((cls) => cls !== '' && cls !== 'ranked__row--lookup');
+const foundBoardClasses = classOf(foundRowTags[1] ?? '')
+  .split(/\s+/)
+  .filter((cls) => cls !== '');
+assert.notEqual(
+  foundBoardClasses.length,
+  0,
+  '★ 探针：榜上第一行**有**类名（它是"另一种行"的代表；空集合会让下面那条恒真）',
+);
 assert.deepEqual(
-  [
-    ...(elementsWithClass(lookupBox, 'ranked__lookupstats')[0] ?? '').matchAll(
-      /<span>([\s\S]*?)<\/span>/g,
-    ),
-  ].map((m) => textOf(m[0])),
-  [
-    fresh('ranked.detailElo', { elo: 2349 }),
-    fresh('ranked.detailRank', { rank: 1 }),
-    fresh('ranked.detailSeasonRecord', { wins: 96, loses: 12 }),
-  ],
-  '★★ 查询结果的三格读数逐格：elo 2349 / 排名 1 / 本赛季 96 胜 12 负（三个数都来自响应）',
+  foundLookupBaseClasses,
+  foundBoardClasses,
+  '★★★ ① 两行的类名集合**除 `--lookup` 之外逐字相同**（同一个夹具里互相比，不是各自与一个字面量比）',
+);
+/*
+ * ★★★ ① 五格逐格：排名 / 昵称 / elo / 最高 / 阶段分。
+ * ⚠️ 期望值写**字面量**：从夹具现算（`String(ELO_DETAIL_USER.eloRank)` 那种）会让
+ *    "印的是同一个数"变成**同义反复** —— 夹具改了而实现没跟上时两边一起变。
+ * ⚠️★ 四个数与昵称**互不相同**（1 / `edcr` / 2349 / 2385 / 0）：同值的话
+ *    "第 5 格印的是第 3 格那个数"照样绿，而那是这一条存在的理由。
+ */
+const foundLookupRowEl = elementsWithClass(foundTable, 'ranked__row--lookup')[0] ?? '';
+assert.notEqual(foundLookupRowEl, '', '★ 探针：那一行取得到（否则下面两条是空跑）');
+const foundLookupCells = cellsOfRow(foundLookupRowEl);
+assert.equal(
+  foundLookupCells.length,
+  5,
+  `★★★ ① 固定那一行**恰好五个格子**（五个列头 ⇒ 五格；找到 ${String(foundLookupCells.length)} 个）`,
+);
+assert.deepEqual(
+  foundLookupCells,
+  ['1', 'edcr', '2349', '2385', '0'],
+  '★★★ ① 五格逐格 = 排名 1 / 昵称 edcr / elo 2349 / 最高 2385 / 阶段分 0（**顺序**也是判据：串位就是用户看到的"布局不同"）',
+);
+assert.equal(
+  cellsOfRow(eloRowsOf(foundTable)[1] ?? '').length,
+  5,
+  '★ ① 对照：榜上的第一行同样是五个格子（同一套标记 ⇒ 同样的格数）',
+);
+const foundLookupButtons = elementsWithClass(foundLookupRowEl, 'ranked__playerbtn');
+assert.equal(
+  foundLookupButtons.length,
+  1,
+  '★★ ① 那一行的昵称格里**恰好一颗**昵称按钮（点它展开这位玩家 —— 与榜上那些行同一个入口）',
+);
+assert.equal(
+  textOf(foundLookupButtons[0] ?? ''),
+  'edcr',
+  '★★ ① 那一格印的是**响应里**那个昵称（上游回的是规范写法，findings §6）',
+);
+assert.equal(
+  attrOf(openTagOf(foundLookupButtons[0] ?? ''), 'aria-expanded'),
+  'false',
+  '★ ① 没有展开时它是 `aria-expanded="false"`（这一档没有 `detail`）',
 );
 /*
  * ★ 印的是**响应里**那个昵称，不是用户敲进去那串：搜索词是 `edcr`，响应里是 `Edcr`
@@ -2786,16 +3054,28 @@ const eloLookupCased = renderElo(
   { searchText: 'edcr', lookup: ELO_LOOKUP_CASED },
   '排行榜·查询命中（响应里是 Edcr）',
 );
+const casedLookupRow =
+  elementsWithClass(
+    elementsWithClass(eloLookupCased, 'ranked__table')[0] ?? '',
+    'ranked__row--lookup',
+  )[0] ?? '';
+assert.notEqual(casedLookupRow, '', '★ 探针：`Edcr` 那一档的固定行在（否则下面两条是空跑）');
 assert.equal(
-  textOf(
-    elementsWithClass(
-      elementsWithClass(eloLookupCased, 'ranked__lookup')[0] ?? '',
-      'ranked__playerbtn',
-    )[0] ?? '',
-  ),
+  textOf(elementsWithClass(casedLookupRow, 'ranked__playerbtn')[0] ?? ''),
   'Edcr',
   '★★ 印的是响应里那个昵称（`Edcr`），不是用户敲进去的那串（`edcr`）',
 );
+assert.equal(
+  textOf(casedLookupRow).includes('edcr'),
+  false,
+  '★★ 而用户敲进去那串（`edcr`）**一个字符都不在**这一行里（印查询词的实现会在这里红，另一条在昵称那一格上）',
+);
+/*
+ * ★★ 没命中的那两档：各自只说自己的那一句，而且**不为"查到的玩家"多渲染一行**。
+ * ⚠️★ 三档的**互斥**在下面（每一档都断言另外那两句**不在**产物里）。
+ * ⚠️★ 少了这一条，一个"永远印同一句"的实现会把上面三条全喂绿（第一句对、第二条也在，
+ *    而"两句都在"比"少一句"更难被肉眼看见）。
+ */
 const eloLookupNotFound = renderElo({ lookup: ELO_LOOKUP_NOT_FOUND }, '排行榜·查无此人');
 assert.equal(
   textOf(elementsWithClass(eloLookupNotFound, 'ranked__lookupmsg')[0] ?? ''),
@@ -2808,12 +3088,6 @@ assert.equal(
   fresh('ranked.lookupInvalid'),
   '★★ 昵称不合法 ⇒ 「这个昵称不合法（太长或格式不对）。」',
 );
-/*
- * ★★ 三档**互斥**：每一档都断言另外那两句**不在**产物里，而且"命中"那一档还要求
- *    没有 `lookupmsg`、"没命中"那两档要求没有读数格。
- * ⚠️★ 少了这一条，一个"永远印同一句"的实现会把上面三条全喂绿（第一句对、第二条也在，
- *    而"两句都在"比"少一句"更难被肉眼看见）。
- */
 assert.equal(
   textOf(eloLookupFound).includes(fresh('ranked.lookupNotFound')),
   false,
@@ -2850,17 +3124,54 @@ for (const [where, html] of [
   const missBox = elementsWithClass(html, 'ranked__lookup')[0] ?? '';
   assert.notEqual(missBox, '', `★ ${where}：那一块在产物里（否则下面两条是空跑）`);
   assert.equal(
-    elementsWithClass(missBox, 'ranked__lookupstats').length,
-    0,
-    `★★ ${where}：那一档**不渲染读数格**（没有命中的人，读数格就是一句我们并不知道的话）`,
-  );
-  assert.equal(
     elementsWithClass(missBox, 'ranked__playerbtn').length,
     0,
-    `★★ ${where}：也**不给**昵称按钮（一颗点下去只会得到同一句话的按钮比没有按钮更坏）`,
+    `★★ ${where}：**不给**昵称按钮（一颗点下去只会得到同一句话的按钮比没有按钮更坏）`,
+  );
+  /*
+   * ★★★ ④ 失败那两档**不为"查到的玩家"多渲染一行**：`<tbody>` 里一行都不多、也没有固定行。
+   * ⚠️★ 判据是**行数**（不是"没有 `--lookup` 这个词"）：榜上那五行照旧在
+   *    （"上游没有这个人"与"榜没了"是两件事），⇒ 行数必须**恰好等于榜上的行数**。
+   */
+  assert.equal(
+    eloDataRows(html),
+    ELO_USERS.length,
+    `★★★ ④ ${where}：数据行数 = 榜上那 ${String(ELO_USERS.length)} 行（这一档**一行都不多**）`,
+  );
+  assert.equal(
+    elementsWithClass(html, 'ranked__row--lookup').length,
+    0,
+    `★★★ ④ ${where}：也没有"固定在最上面"那一行（没有命中的人，就没有那一行可画）`,
+  );
+  assert.equal(
+    elementsWithClass(html, 'ranked__detail').length,
+    0,
+    `★★ ④ ${where}：也没有任何展开的卡片（这一档连"展开谁"都谈不上）`,
   );
 }
-ok('④b③ 三档查询：三句各自说自己的 + 互斥（含"没有读数格"那一半）+ lookup: null 整块不渲染');
+/*
+ * ★★ ④ 的另一种形态：榜被搜索词**筛空** + 没命中 ⇒ 连表都没有，所以"一行都没有"是**字面**的。
+ * ⚠️ 这一档是"主路径"的反面（`lookup: found` 时表要为那一行照样渲染，见 ⑥）：
+ *    上游对这个人没有答案 ⇒ 表**整个不渲染**，而这与"榜被人筛没了"是同一屏上的两句话。
+ */
+const eloLookupNoneFiltered = renderElo(
+  { elo: ELO_SEARCH, searchText: 'zzz', lookup: ELO_LOOKUP_NOT_FOUND },
+  '排行榜·筛没了 + 查无此人',
+);
+assert.equal(
+  eloDataRows(eloLookupNoneFiltered),
+  0,
+  '★★★ ④ 筛空 + 没命中：**一个数据行都没有**（这一档连表都不渲染）',
+);
+assert.equal(
+  elementsWithClass(eloLookupNoneFiltered, 'ranked__table').length,
+  0,
+  '★ ④ 而那一句空态照旧（「没有匹配「zzz」的玩家。」）—— 见 ④b② 那一条',
+);
+assert.deepEqual(elementsWithClass(eloLookupNoneFiltered, 'ranked__detail'), [], '★ ④ 也没有卡片');
+ok(
+  '④b③ 三档查询：命中那一档是**表里第一行**（五格逐格 + 两行类名互比）+ 没命中那两档不为它多一行 + 三句互斥',
+);
 
 /* ---- ④ 展开的四个画面：loading / failed / ready 空 / ready 非空 ---- */
 const eloDetailLoading = renderElo(
@@ -3243,32 +3554,76 @@ assert.equal(
   '★★ 它是 `aria-expanded="true"`：这一块真的开着（另外两处各自已有一颗控件管着它，这里再放一颗会让读屏软件念出两个长得一样、管的东西却不同的控件）',
 );
 /*
- * 判据②（那一次查询命中的正好就是他 ⇒ 卡片渲染在 `.ranked__lookup` **里面**）。
- * ⚠️ 表里没有 `edcr`（他不是榜上前 150 里的人）⇒ 判据① 不成立，而查询结果里正好有他。
+ * ★★★ ② 展开之后是**同一张卡片**（`RankedDetailBlock`），而且位置判据与榜上那些行一致：
+ *    **紧跟固定那一行之后**、同一个 `<tr class="ranked__detailrow">`、`colSpan="5"`。
+ *
+ * 用户原话是「页面布局和排行榜玩家相同（无论是**展开前还是展开后**）」⇒ 展开这一半的
+ * 判据不是"卡片在不在"（那对"卡片长在表格外面"照样绿），而是**它是哪一行下面的那一行**。
+ * ⚠️ 表里没有 `edcr`（他不是榜上前 150 里的人）⇒ 判据① 不成立，而"查到的就是他"成立
+ *    ⇒ 卡片按**判据②**落在**固定那一行**后面。
  */
 const eloInLookup = renderElo(
   { lookup: ELO_LOOKUP_FOUND, detail: { nickname: 'edcr', state: ELO_DETAIL_READY } },
-  '排行榜·展开·落在查询结果里',
+  '排行榜·展开·落在固定那一行里',
+);
+const inLookupTable = elementsWithClass(eloInLookup, 'ranked__table')[0] ?? '';
+assert.notEqual(inLookupTable, '', '★ 探针：表在产物里（下面几条的位置比较都以它里面的行为锚点）');
+const inLookupPinned = elementsWithClass(inLookupTable, 'ranked__row--lookup')[0] ?? '';
+assert.notEqual(inLookupPinned, '', '★ 探针：固定那一行在（它是判据②的锚点）');
+assert.equal(
+  eloRowsOf(inLookupTable)[0],
+  inLookupPinned,
+  '★★ ② 展开**不会**把固定那一行挪走：它仍然是 `<tbody>` 的第一行',
+);
+const inLookupPinnedEnd = inLookupTable.indexOf(inLookupPinned) + inLookupPinned.length;
+const inLookupDetailAt = inLookupTable.indexOf('<tr class="ranked__detailrow">');
+assert.notEqual(inLookupDetailAt, -1, '★ 探针：展开那一行在产物里（否则下面两条是空跑）');
+assert.ok(
+  inLookupDetailAt >= inLookupPinnedEnd,
+  '★★★ ② 展开那一行在固定那一行**之后**（不是渲染到表尾、也不是表格外面）',
 );
 assert.equal(
-  elementsWithClass(elementsWithClass(eloInLookup, 'ranked__lookup')[0] ?? '', 'ranked__detail')
-    .length,
-  1,
-  '★★ 判据②：那一块落在 `.ranked__lookup` **里面**（查到的就是他，卡片贴着他的读数）',
+  /<tr\b/.test(inLookupTable.slice(inLookupPinnedEnd, inLookupDetailAt)),
+  false,
+  '★★★ ② 而且是**紧跟**（两者之间一个 `<tr` 都没有 —— 这一条把"渲染到表尾"与"紧跟"分开）',
 );
 assert.equal(
   elementsWithClass(eloInLookup, 'ranked__detailrow').length,
-  0,
-  '★ 判据②：而且表里没有他那一行（`edcr` 不在榜上）',
+  1,
+  '★★ ② 表格里**恰好一行**展开行（两行就是同一张卡片被画了两遍）',
+);
+const inLookupDetailRowEl = elementsWithClass(inLookupTable, 'ranked__detailrow')[0] ?? '';
+assert.notEqual(inLookupDetailRowEl, '', '★ 探针：那一行取得到（下面两条在它上面做）');
+/*
+ * ⚠️★★ 那一格跨五列：产物里是 `colSpan="5"`（**照 JSX 原样**，不是 `colspan`）——
+ *    本机 React 19.3 的 `renderToStaticMarkup` 实测如此（视图那一格上写着同一条）。
+ *    HTML 的属性名不区分大小写，浏览器照样当 `colspan` 解；**按 `colspan` 写断言会恒假**
+ *    —— 那不是"另一个写法"，是一条永远不会红的守卫（`pending.md §5.63`）。
+ */
+assert.equal(
+  /\bcolSpan="5"/.test(inLookupDetailRowEl),
+  true,
+  '★★ ② 那一格是 `colSpan="5"`（五列 ⇒ 跨满；少一列会让整行挤在第一列里，而表格本身不会报错）',
+);
+assert.equal(
+  elementsWithClass(inLookupTable, 'ranked__detail').length,
+  1,
+  '★★ ② 那一块卡片在**表格里面**（与榜上那些行的卡片同一个位置口径）',
+);
+assert.equal(
+  elementsWithClass(inLookupDetailRowEl, 'ranked__detail').length,
+  1,
+  '★ ② 而且就在那一行里',
 );
 /*
- * ★★ 2026-09-19 终审的 Minor：查到的这位**同时**也在榜上（`Bravo` 是 `ELO_DATA` 的第 2 名）。
- *    卡片按**判据①**落在表格那一行里 ⇒ 用户刚点的那一颗（`.ranked__lookup` 里那颗）也必须念
- *    "展开"。⚠️★ 判据不是"卡片开在**我这一块**里没有"：只按 `inLookup` 判时它是 `false`，
- *    读屏软件会说一件假事（"已收起"），而屏幕上卡片长在**下面的表里** —— 用户会以为
- *    那一下没生效、再点一次（而这一颗按钮在他的视线里）。
- * ⚠️ 这一档今天**没有别的产物**：上面那两屏各占一半（表里有他但没查过 / 查到他但不在表里），
- *    而"查到的就是他、他又在表里"是第三种组合，只有这里能到。
+ * ★★★ ② 的**第二档**（T1 报告 §3.5 第 4 条点名要的夹具）：查到的这位**同时**也在榜上。
+ *
+ * ⚠️★ 这一档上一轮**没有**夹具（"表里有他但没查过"与"查到他但不在表里"各占一半），
+ *    而它正是用户当场拍的那个口径的代价所在：**同一屏两行同名**。
+ * ⚠️★ 判据仍然是"恰好一块" + "卡片落在**榜上那一行**下面"（判据①优先）：
+ *    一个把卡片挪到固定那一行下面的实现，屏幕上看着也挺合理（两行都是他），
+ *    但它会**违反**已经裁过的那条判据 —— 所以下面两条位置断言是**成对**的
+ *    （"紧跟榜上那一行"与"**不是**紧跟固定那一行"）。
  */
 const eloFoundInTable = renderElo(
   {
@@ -3277,24 +3632,65 @@ const eloFoundInTable = renderElo(
   },
   '排行榜·展开·查到的就是他、而且在表里',
 );
-const foundInTableLookup = elementsWithClass(eloFoundInTable, 'ranked__lookup')[0] ?? '';
-assert.notEqual(foundInTableLookup, '', '★ 查询结果那一块在产物里（否则下面那两条是空跑）');
-const foundInTableButtons = elementsWithClass(foundInTableLookup, 'ranked__playerbtn');
-assert.equal(foundInTableButtons.length, 1, '★ 那一块里恰好一颗昵称按钮');
+const foundInTableTable = elementsWithClass(eloFoundInTable, 'ranked__table')[0] ?? '';
+assert.notEqual(foundInTableTable, '', '★ 探针：表在产物里（否则下面几条是空跑）');
+const foundInTableRows = eloRowsOf(foundInTableTable);
 assert.equal(
-  attrOf(foundInTableButtons[0] ?? '', 'aria-expanded'),
-  'true',
-  '★★ 卡片开在表格那一行里 ⇒ 这一颗也必须念"展开"（只判 `inLookup` 时它是 `false`：读屏软件念"已收起"）',
+  foundInTableRows.length,
+  1 + ELO_USERS.length,
+  `★★ ② 固定那一行**没有**把榜上那一行顶掉：仍然是 1 + ${String(ELO_USERS.length)} 行`,
+);
+const foundInTableBravo = foundInTableRows.filter(
+  (row) => textOf(elementsWithClass(row, 'ranked__playerbtn')[0] ?? '') === 'Bravo',
 );
 assert.equal(
-  elementsWithClass(eloFoundInTable, 'ranked__detailrow').length,
-  1,
-  '★ 而卡片确实在表格那一行里（判据①：他在表里）',
+  foundInTableBravo.length,
+  2,
+  `★★★ ② 用户拍的口径的代价在这里：**两行同名**（找到 ${String(foundInTableBravo.length)} 行叫 Bravo）—— 榜上那一行 + 固定那一行`,
+);
+const foundInTablePinned = foundInTableBravo[0] ?? '';
+const foundInTableBoard = foundInTableBravo[1] ?? '';
+assert.equal(
+  hasClassOf(openTagOf(foundInTablePinned), 'ranked__row--lookup'),
+  true,
+  '★ 探针：两行里**第一行**是固定那一行（`--lookup`）—— 顺序反了的话下面两条位置断言的锚点就错了',
+);
+assert.equal(
+  hasClassOf(openTagOf(foundInTableBoard), 'ranked__row--lookup'),
+  false,
+  '★ 探针：第二行是**榜上**那一行（没有 `--lookup`）',
+);
+const foundInTableBoardEnd =
+  foundInTableTable.indexOf(foundInTableBoard) + foundInTableBoard.length;
+const foundInTablePinnedEnd =
+  foundInTableTable.indexOf(foundInTablePinned) + foundInTablePinned.length;
+const foundInTableDetailAt = foundInTableTable.indexOf('<tr class="ranked__detailrow">');
+assert.notEqual(foundInTableDetailAt, -1, '★ 探针：展开那一行在产物里（否则下面三条是空跑）');
+assert.ok(
+  foundInTableDetailAt >= foundInTableBoardEnd,
+  '★★★ ② 卡片落在**榜上那一行**之后（判据①优先：与终审那条 Minor 的裁决逐字一致）',
+);
+assert.equal(
+  /<tr\b/.test(foundInTableTable.slice(foundInTableBoardEnd, foundInTableDetailAt)),
+  false,
+  '★★★ ② 而且是**紧跟**榜上那一行',
+);
+assert.equal(
+  /<tr\b/.test(foundInTableTable.slice(foundInTablePinnedEnd, foundInTableDetailAt)),
+  true,
+  '★★★ ② 而**不是**紧跟固定那一行（两行都能"展开"、卡片却只放在一处的实现会在这里红）',
 );
 assert.equal(
   elementsWithClass(eloFoundInTable, 'ranked__detail').length,
   1,
-  '★★ 三块仍然只有一块（同一个人的两颗按钮指向的是**同一块**内容）',
+  '★★★ ② 两行同名的那一档里仍然**恰好一块**卡片（同一个人的两颗按钮指向的是**同一块**内容）',
+);
+assert.deepEqual(
+  elementsWithClass(eloFoundInTable, 'ranked__playerbtn')
+    .filter((button) => textOf(button) === 'Bravo')
+    .map((button) => attrOf(openTagOf(button), 'aria-expanded')),
+  ['true', 'true'],
+  '★★ ② 而**两颗**都念"展开"：判据是"**他**的卡片开着没有"，不是"卡片开在**我这一行**下面没有"（只说一颗会让读屏软件念"已收起"，用户于是再点一次 —— 而那次点击把卡片收起来）',
 );
 /*
  * ★★ 三条判据**互斥**：同一个产物里 `.ranked__detail` 恰好**一块**。
@@ -3303,7 +3699,8 @@ assert.equal(
  */
 for (const [where, html] of [
   ['① 表里', eloInTable],
-  ['② 查询结果里', eloInLookup],
+  ['② 固定那一行后面', eloInLookup],
+  ['② 两行同名那一档', eloFoundInTable],
   ['③ 表格下面', eloFilteredAway],
 ] as const) {
   assert.equal(
@@ -3314,9 +3711,11 @@ for (const [where, html] of [
 }
 /*
  * ★★ ⑦ 那条既有断言（`.ranked__meta` 只有赛季那一行，上面 ④ 那一节）在这一屏上的延伸：
- *    它现在**同时**是"新加的块不许复用 `.ranked__meta`"的守卫 —— 详情与查询各自有自己的
- *    读数类（`ranked__detailstats` / `ranked__lookupstats`），谁把一行读数塞进 `.ranked__meta`，
+ *    它现在**同时**是"新加的块不许复用 `.ranked__meta`"的守卫 —— 详情有自己的一套类名
+ *    （`ranked__detailstats` 那五格读数），谁把一行读数塞进 `.ranked__meta`，
  *    "赛季与赛段在同一行"那句话就变成两句都成立、而其中一句是别人的话。
+ *    ⚠️ 2026-09-19 第四轮之后这里只剩**一条**读数类名：查询结果那三格
+ *    （`ranked__lookupstats`）跟着"查到的玩家变成表里一行"一起退役了（见 ④b⑧）。
  */
 assert.equal(
   metaOf(eloDetailReady).length,
@@ -3324,7 +3723,9 @@ assert.equal(
   '★★ 展开那一屏里 `.ranked__meta` 仍然只有赛季那一行（新块用自己的类名）',
 );
 assert.equal(metaOf(eloLookupFound).length, 1, '★★ 查询命中那一屏同理');
-ok('④b⑥ 三条兜底位置：紧跟那一行（含 colSpan）/ 表格下面 / 查询结果里 + 三屏各恰好一块详情');
+ok(
+  '④b⑥ 位置判据：①紧跟榜上那一行（colSpan=5）②紧跟固定那一行 + 两行同名那一档仍恰好一块 ③表格下面',
+);
 
 /* ---- ⑦ 两族**从表里取**的词条（结果的四档 + 比赛类型的四种）---- */
 /*
@@ -3371,6 +3772,408 @@ for (const key of [...Object.values(OUTCOME_KEYS), ...Object.values(MATCH_TYPE_K
   }
 }
 ok('④b⑦ 结果四档与比赛类型四种：两张表逐格 + 八条词条两种语言都在');
+
+/* ---- ⑧ ★★ ③ 那条读数行真的没了，而且没有词条因此变成孤儿（两个方向都要断） ---- */
+/*
+ * ★★ 2026-09-19 第四轮：命中那一档的**三格读数行**（`.ranked__lookupstats`）跟着
+ *    "查到的玩家变成表里的一行"一起消失了 —— 那一行现在是**五格表格行**，
+ *    而 elo / 排名 / 本赛季那三格仍然印得出来：它们住在**卡片**里
+ *    （`.ranked__detailstats` 那五格读数的一部分）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 两个方向都必须断，而且**都不能省**
+ * ---------------------------------------------------------------------------
+ *   · 只断"没了" ⇒ 一个**顺手把 `ranked.detailSeasonRecord` 也删掉**的实现照样绿
+ *     （词条变成孤儿，而"孤儿"正是本仓 §5.70 那一族：`weeklySeed` 差点因此被删）；
+ *   · 只断"还在" ⇒ 一个把那一行读数**留在固定那一行上面**的实现照样绿
+ *     （屏幕上多一行，而用户要的是"布局相同"）。
+ * ⚠️★ "词条有没有孤儿"的判据只能落在**产物**上：`services/api/src/i18n-keys.test.ts`
+ *    扫的是源码里的字面量 `t('…')`，它证明的是**另一个方向**（用到的 key 在不在字典里），
+ *    "字典里有、但没人在渲染"它一个字都看不见。
+ * ⚠️ 下面三条读的都是**卡片里**那一块（`.ranked__detail`）：这是"查到的玩家展开之后"
+ *    那一屏（`eloInLookup`）—— 卡片与那一行在**同一个产物**里，所以"在卡片里而不在行里"
+ *    这件事才分得开。
+ */
+const inLookupCard = elementsWithClass(eloInLookup, 'ranked__detail')[0] ?? '';
+assert.notEqual(inLookupCard, '', '★ 探针：卡片在产物里（否则下面几条是空跑）');
+const inLookupCardText = textOf(inLookupCard);
+assert.ok(
+  inLookupCardText.includes(fresh('ranked.detailSeasonRecord', { wins: 96, loses: 12 })),
+  '★★★ ③ 卡片里**仍然印着**本赛季战绩（`ranked.detailSeasonRecord`）—— 读数行没了，但词条没有变成孤儿（96 胜 12 负来自响应）',
+);
+assert.ok(
+  inLookupCardText.includes(fresh('ranked.detailElo', { elo: 2349 })),
+  '★★ ③ 同一批里 elo 那一格也在（`ranked.detailElo`：它原来与战绩住在同一行读数里）',
+);
+assert.ok(
+  inLookupCardText.includes(fresh('ranked.detailRank', { rank: 1 })),
+  '★★ ③ 排名那一格同理（`ranked.detailRank`）—— 三条词条一条都没变成孤儿',
+);
+assert.equal(
+  textOf(inLookupPinned).includes(fresh('ranked.detailSeasonRecord', { wins: 96, loses: 12 })),
+  false,
+  '★★★ ③ 而**固定那一行**里没有它（那一行是五格表格行；读数留在上面就是用户说的"布局不同"）',
+);
+assert.equal(
+  elementsWithClass(inLookupPinned, 'ranked__lookupstats').length,
+  0,
+  '★★★ ③ `.ranked__lookupstats` 一个都不许出现在那一行里（这一轮**退役**的类名）',
+);
+assert.equal(
+  eloDataRows(eloInLookup),
+  1 + ELO_USERS.length,
+  '★ ③ 而固定那一行**还在**（退役的是读数行，不是那一行本身）',
+);
+/*
+ * ⚠️★ "全产物都不许出现"那一半不在这里：`products` 是**边渲染边长**的，就地扫只会覆盖
+ *    到这一节之前渲染过的那些产物（⑧ 那一段写着同一个坑的实测记录）⇒ 它落在
+ *    `assertRankedClassesHaveRules()` 里（最后一次渲染之后）。
+ */
+ok('④b⑧ ③ 读数行退役：卡片里三格读数照旧（没有词条变成孤儿）+ 固定那一行里没有它 + 那一行本身还在');
+
+/* ---- ⑨ ★★★ 每一场比赛右侧那颗按钮 + 它下面那三格种子（四档各一套夹具） ---- */
+/*
+ * 用户原话：「每个对局**右侧设置按钮**，点击**根据 api 查询种子**展示在**对应比赛信息的下方**」。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 这一节证得了什么、证不了什么
+ * ---------------------------------------------------------------------------
+ * 这里钉的是"**视图拿着那一格 `seeds` 渲染成什么样**"：按钮在不在、是不是最后一个、
+ * `aria-expanded` 对不对、面板落在哪一场下面、四档各说哪一句话、三个值是不是原样。
+ * ⚠️★ 「点一下真的发一次请求」「第二次点同一场不发」「`failed` 不进缓存」是**容器**的事
+ *    （`routes/Ranked.tsx` 的 `toggleSeed`）—— `renderToStaticMarkup` 不点击、不跑 effect，
+ *    这几条逐条写在 `docs/pending.md §5.101`（每条都写着要人做什么）。
+ */
+/**
+ * 那个元素之后、这一行结束之前剩下的那一段。
+ *
+ * ⚠️★ 判据是"**它是不是最后一个**"，而这件事只能从"它后面还有没有别的元素"上读出来 ——
+ *    "行里有没有 X"那种写法对"按钮在中间"与"按钮在最右边"完全一样绿。
+ * ⚠️ 先把这一行自己的 `</div>` 收尾摘掉：剩下的东西里只要出现**任何一个元素的开标签**，
+ *    就说明按钮后面还有东西（`<` + 字母）。
+ */
+const tailAfter = (row: string, child: string): string => {
+  const at = row.indexOf(child);
+  assert.notEqual(
+    at,
+    -1,
+    '★ 探针：那个元素在那一行里（否则"它后面还有没有别的东西"这条判据是空跑）',
+  );
+  return row.slice(at + child.length).replace(/<\/div>\s*$/, '');
+};
+/** 种子面板里那三对 `<dt>`/`<dd>`（标签与值各自成串，顺序 = 产物里的顺序）。 */
+const seedCellsOf = (match: string): { labels: string[]; values: string[] } => {
+  const dl = elementsWithClass(match, 'ranked__seeds')[0];
+  assert.notEqual(dl, undefined, '★ 探针：种子那一块（`<dl class="ranked__seeds">`）在这一场里');
+  return {
+    labels: [...(dl ?? '').matchAll(/<dt>([\s\S]*?)<\/dt>/g)].map((m) => textOf(m[0])),
+    values: [...(dl ?? '').matchAll(/<dd>([\s\S]*?)<\/dd>/g)].map((m) => textOf(m[0])),
+  };
+};
+/*
+ * ★★ 一把**没点开任何一场**的默认态（`seeds: null`，`renderElo()` 的默认值）。
+ * ⚠️ `detailMatches` 就是 ④b④ 那一份（同一个夹具：`ELO_DETAIL_READY`，四场）。
+ *    ⚠️★ 四场**都要**各有一颗按钮：只断"产物里有一颗"会漏掉"只在第一场渲染"的实现。
+ */
+assert.equal(
+  detailMatches.length,
+  ELO_MATCHES.length,
+  '★ 探针：四场都在产物里（否则下面按场数的断言是空跑）',
+);
+const closedSeedButtons = detailMatches.map((match, i) =>
+  /*
+   * ⚠️ 用 `assertClickable`（本文件现成的那个）：它同时钉着"**恰好一颗**"与"它**不是** disabled"
+   *    —— 一颗灰着的按钮"在"，但按不动，而产物级断言光看"在不在"是分别不出来的。
+   */
+  assertClickable(match, t('ranked.seedButton'), `排行榜·展开·第 ${String(i + 1)} 场的种子入口`),
+);
+assert.equal(
+  elementsWithClass(eloDetailReady, 'ranked__seedbtn').length,
+  ELO_MATCHES.length,
+  `★★★ ⑤ 每一场**恰好一颗** \`.ranked__seedbtn\`：夹具 ${String(ELO_MATCHES.length)} 场 ⇒ 产物里 ${String(elementsWithClass(eloDetailReady, 'ranked__seedbtn').length)} 颗（多一颗少一颗都是"某些场查不了种子"）`,
+);
+assert.equal(
+  elementsWithClass(eloDetailReady, 'ranked__seedline').length,
+  0,
+  '★★★ ⑤ 一场都没点开 ⇒ **没有任何面板**（`.ranked__seedline` 一个都不渲染）',
+);
+/*
+ * ★ ⑤ `type="button"`：这一颗**不带** `submit` 语义。
+ * ⚠️ 它不是形式主义：`<button>` 落在一个 `<form>` 里时默认类型是 **submit** ⇒ 哪天这一行
+ *    被挪进一个表单（比如将来给战绩加个筛选框），点一下会**顺手提交那个表单**
+ *    （整页刷新，SPA 里的状态全丢），而画面上完全看不出来。
+ */
+for (const [i, attrs] of closedSeedButtons.entries()) {
+  assert.ok(
+    /(?:^|\s)type="button"/.test(attrs),
+    `★ ⑤ 第 ${String(i + 1)} 场的按钮是 \`type="button"\`（缺了它落进某个 <form> 时会顺手提交那个表单）`,
+  );
+}
+assert.deepEqual(
+  detailMatches.map((match) => {
+    const button = elementsWithClass(match, 'ranked__seedbtn')[0] ?? '';
+    return attrOf(openTagOf(button), 'aria-expanded');
+  }),
+  ['false', 'false', 'false', 'false'],
+  '★★ ⑤ 四颗都念"已收起"（`aria-expanded="false"`）—— 面板一个都没开',
+);
+/*
+ * ★★★ ⑤ "右侧"= **DOM 顺序**：按钮是那一行里的**最后一个**元素。
+ * ⚠️★ 判据不能写成"行里有那颗按钮"（那对"按钮排在对手后面"照样绿）——
+ *    用户说的"右侧"在这一层唯一可断的形式就是"它后面没有别的东西了"。
+ * ⚠️ "后面没有别的东西"由**格数**再兜一层：8 个格子都在（对手/结果/用时/elo/类型/种子/录像/按钮）
+ *    ⇒ 按钮最后 ≠ 别的格子被挤掉了。
+ */
+for (const [i, match] of detailMatches.entries()) {
+  const button = elementsWithClass(match, 'ranked__seedbtn')[0] ?? '';
+  assert.equal(
+    /<[a-zA-Z]/.test(tailAfter(match, button)),
+    false,
+    `★★★ ⑤ 第 ${String(i + 1)} 场：那颗按钮之后**没有别的元素**（"右侧"这件事在这一层的唯一判据）`,
+  );
+}
+/*
+ * ★ ⑤ 对照：按钮最后 ≠ "别的格子被挤掉了" —— 那八格里最容易少的一格是**种子**
+ *   （`seedType · bastionType`，私人房两格都是 null ⇒ 它印的是「—」，但那一格**在**）。
+ */
+assert.equal(
+  elementsWithClass(detailMatches[2] ?? '', 'ranked__detailseed').length,
+  1,
+  '★ ⑤ 对照：私人房那一场的"种子结构"格照旧在（它印「—」，但格子没被按钮挤掉）',
+);
+assert.equal(
+  elementsWithClass(detailMatches[2] ?? '', 'ranked__detailopp').length,
+  1,
+  '★ ⑤ 对照：对手那一格也在（按钮是最右那一格，不是"唯一的格子"）',
+);
+/*
+ * ★★★ ⑤ `ready`：三条 label 词条 + **三个值原样**。
+ *
+ * ⚠️★ 值必须是**逐字相等**：种子是 64 位整数（19 位数字），`Number()` 会静默改值
+ *    （`Number('8813544817493859226')` 实测是 **8813544817493859000**）——
+ *    而"改过的值"在屏幕上看不出来（还是十九个数字）。
+ * ⚠️★ 三个值**互不相同**（夹具那一段写着为什么）：同值时"第 3 格印的是第 1 格"测不出来。
+ * ⚠️ 标签那三条是**复用**周赛那一组（`ranked.seedOverworld` / `seedNether` / `seedEnd`）：
+ *    视图里走的是 `WEEKLY_SEED_LABEL_KEYS`（**表驱动的 key**）⇒
+ *    `i18n-keys.test.ts` 的字面量扫描**够不着**这三条，只有这里查得到。
+ */
+const eloSeedReady = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY }, seeds: ELO_SEEDS_READY },
+  '排行榜·展开·第 3 场查到了种子',
+);
+const seedReadyMatches = elementsWithClass(eloSeedReady, 'ranked__detailmatch');
+assert.equal(
+  seedReadyMatches.length,
+  ELO_MATCHES.length,
+  '★ 探针：四场都在（按第 3 场那一格做断言）',
+);
+assert.equal(
+  elementsWithClass(eloSeedReady, 'ranked__seedline').length,
+  1,
+  '★★★ ⑤ 点开**一场** ⇒ 恰好**一块**面板（多一块就是"面板渲染到了别的对局下面"）',
+);
+assert.deepEqual(
+  seedReadyMatches.map((match) => elementsWithClass(match, 'ranked__seedline').length),
+  [0, 0, 1, 0],
+  `★★★ ⑤ 面板落在**点开的那一场**下面（第 ${String(ELO_MATCHES.indexOf(ELO_MATCH_PRIVATE) + 1)} 场 = id ${String(ELO_SEED_MATCH_ID)}），其余三场一个都没有`,
+);
+assert.deepEqual(
+  seedReadyMatches.map((match) => {
+    const button = elementsWithClass(match, 'ranked__seedbtn')[0] ?? '';
+    return attrOf(openTagOf(button), 'aria-expanded');
+  }),
+  ['false', 'false', 'true', 'false'],
+  '★★★ ⑤ `aria-expanded="true"` **只在打开的那一场**上（其余三场 `"false"`）—— 判据是"这一场自己的状态"',
+);
+const seedOpenMatch = seedReadyMatches[2] ?? '';
+const seedOpenLine = elementsWithClass(seedOpenMatch, 'ranked__seedline')[0] ?? '';
+assert.notEqual(seedOpenLine, '', '★ 探针：那一块面板取得到（下面几条在它上面做）');
+assert.equal(
+  /<[a-zA-Z]/.test(tailAfter(seedOpenMatch, seedOpenLine)),
+  false,
+  '★★★ ⑤ 面板是这一场的**最后一个**孩子：它落在"对应比赛信息的下方"（后面没有别的格子了）',
+);
+assert.ok(
+  seedOpenMatch.indexOf(elementsWithClass(seedOpenMatch, 'ranked__seedbtn')[0] ?? '') <
+    seedOpenMatch.indexOf(seedOpenLine),
+  '★★ ⑤ 而且它在**那颗按钮之后**（面板是从那一行的最右一列换行下来的一块，不是插在中间）',
+);
+const seedOpenCells = seedCellsOf(seedOpenMatch);
+assert.deepEqual(
+  seedOpenCells.labels,
+  ['ranked.seedOverworld', 'ranked.seedNether', 'ranked.seedEnd'].map((key) => fresh(key)),
+  '★★★ ⑤ 三格标签 = 主世界 / 下界 / 末地（**复用**周赛那三条 key：同一个东西没有第二个说法）',
+);
+assert.deepEqual(
+  seedOpenCells.values,
+  ['8813544817493859226', '234370381031116', '7777777777777777777'],
+  '★★★ ⑤ 三个种子值**逐字**（字面量；三格互不相同 ⇒ "第 3 格印的是第 1 格"也会在这里红）',
+);
+/*
+ * ★★★ ⑤ 反方向：值**没有被当成数字**。
+ *
+ * ⚠️★ 这是"数字被格式化"那类错的**唯一**判据（本仓 `SeedResultCard.tsx` 的文件头记着
+ *    `Number()` 会静默改 64 位整数这件事）：`textOf` 会把 `<dd>` 里的字取出来，
+ *    而一个走过 `Number()` / `toLocaleString()` 的实现印出来的是
+ *    8813544817493859000 或 8,813,544,817,493,859,226 —— 两种都**看起来像十九个数字**。
+ * ⚠️ 三条判据各管一种写法，缺一条就漏一类：
+ *   · 千分位（`toLocaleString()`）；
+ *   · 科学计数法（`Number.prototype.toString()` 对超大数是 `8.81e+18`）；
+ *   · `Number()` 的**舍入**（19 位超过 2^53 ⇒ 末几位被抹平）。
+ */
+assert.equal(
+  seedOpenCells.values.join('|').includes('8,813,544,817,493,859,226'),
+  false,
+  '★★★ ⑤ 值**不许**带千分位（`toLocaleString()` 的产物：每一格都还是"数字"，只是被分了组）',
+);
+assert.equal(
+  /[0-9],[0-9]{3}/.test(seedOpenCells.values.join('|')),
+  false,
+  '★★★ ⑤ 任何三位分组都不许出现（上面那条只钉着主世界那一个值；这一条管三个）',
+);
+assert.equal(
+  /e\+?\d/i.test(textOf(seedOpenLine)),
+  false,
+  '★★ ⑤ 也不许出现科学计数法（`Number()` 转字符串对大整数的形状）',
+);
+assert.equal(
+  seedOpenCells.values.includes('8813544817493859000'),
+  false,
+  '★★★ ⑤ 更不许出现 `Number("8813544817493859226")` 那个**舍入后**的值（末几位被抹平，而它看起来仍然像十九个数字）',
+);
+/*
+ * ★★★ ⑤ `theEndSeed: null` ⇒ 那一格印「—」，**不是** 0、**不是**空串。
+ *
+ * ⚠️★ 这是本仓那条"**绝不为缺失值填 0**"在这一格上的落点（T1 报告的 mutation M3 就是这一刀，
+ *    而它当时的判据只是一个临时探针 —— 它的永久归宿是这里）。
+ * ⚠️ 空串也要单独断：`<dd></dd>` 在屏幕上与"上游给了个空种子"长得一样，而它是"我们没印"。
+ */
+const eloSeedNoEnd = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY }, seeds: ELO_SEEDS_THE_END_NULL },
+  '排行榜·展开·末地种子缺失',
+);
+const seedNoEndCells = seedCellsOf(elementsWithClass(eloSeedNoEnd, 'ranked__detailmatch')[2] ?? '');
+assert.equal(
+  seedNoEndCells.values[2],
+  fresh('ranked.unknown'),
+  '★★★ ⑤ `theEndSeed: null` ⇒ 那一格印「—」（**绝不**填 0）',
+);
+assert.notEqual(
+  seedNoEndCells.values[2],
+  '0',
+  '★★★ ⑤ 而它**不是** `0`（0 是一个真种子，缺失不是它）',
+);
+assert.notEqual(
+  seedNoEndCells.values[2],
+  '',
+  '★★★ ⑤ 也**不是**空串（空格子看起来像"上游给了个空种子"）',
+);
+assert.deepEqual(
+  [seedNoEndCells.values[0], seedNoEndCells.values[1]],
+  ['8813544817493859226', '234370381031116'],
+  '★ ⑤ 而另外两格**照旧有值**（一格缺失不许把整块面板弄空）',
+);
+/*
+ * ★★★ ⑤ `not_found` 与 `failed` 是**两句不同的话**，而且两者**互斥**。
+ *
+ * ⚠️★ 这是这一轮最要紧的一句话，因为它说的是**一件常态的事**：种子库只覆盖约 **80%**
+ *    的比赛（账本 `ranked-round4/progress.md` 与 `routes/seeds.ts` 的 404 都写着）
+ *    ⇒ "这场没有种子"不是故障，而"这一次没读到"值得再点一次。两句合成一句时，
+ *    用户会对着一场永远查不到的 id 反复点，而**没有任何门禁看得出来**。
+ */
+assert.notEqual(
+  fresh('ranked.seedNotFound'),
+  fresh('ranked.seedUnavailable'),
+  '★★★ 探针：那两句词条本身不同（否则下面那两条互斥是空跑）',
+);
+const eloSeedNotFound = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY }, seeds: ELO_SEEDS_NOT_FOUND },
+  '排行榜·展开·种子不在库里',
+);
+const seedNotFoundNote = elementsWithClass(eloSeedNotFound, 'ranked__seednote');
+assert.equal(
+  seedNotFoundNote.length,
+  1,
+  `★★ ⑤ \`not_found\` ⇒ 恰好一句提示（找到 ${String(seedNotFoundNote.length)} 句）`,
+);
+assert.equal(
+  textOf(seedNotFoundNote[0] ?? ''),
+  fresh('ranked.seedNotFound'),
+  '★★★ ⑤ `not_found` ⇒ 「这场比赛的种子不在库里。」（**常态**，不是故障）',
+);
+assert.equal(
+  hasClassOf(openTagOf(seedNotFoundNote[0] ?? ''), 'ranked__seednote--failed'),
+  false,
+  '★ ⑤ 而它不是"故障"那一档（类名也不带 `--failed`：颜色说的是同一件事）',
+);
+assert.equal(
+  textOf(eloSeedNotFound).includes(fresh('ranked.seedUnavailable')),
+  false,
+  '★★★ ⑤ `not_found` 那一档**不许**同时说「种子暂时读不到。」',
+);
+assert.equal(
+  elementsWithClass(eloSeedNotFound, 'ranked__seeds').length,
+  0,
+  '★ ⑤ 也不许印那三格（没有种子可印 —— 印「—」三格会让用户以为上游给了三个空值）',
+);
+const eloSeedFailed = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY }, seeds: ELO_SEEDS_FAILED },
+  '排行榜·展开·种子读不到',
+);
+const seedFailedNote = elementsWithClass(eloSeedFailed, 'ranked__seednote');
+assert.equal(seedFailedNote.length, 1, '★★ ⑤ `failed` 那一档也只有**一句**提示');
+assert.equal(
+  textOf(seedFailedNote[0] ?? ''),
+  fresh('ranked.seedUnavailable'),
+  '★★★ ⑤ `failed` ⇒ 「种子暂时读不到。」（**值得再点一次**，与上一档的下一步相反）',
+);
+assert.equal(
+  hasClassOf(openTagOf(seedFailedNote[0] ?? ''), 'ranked__seednote--failed'),
+  true,
+  '★★ ⑤ 而这一句带 `--failed`（颜色把"值得重试"这件事再说一遍）',
+);
+assert.equal(
+  textOf(eloSeedFailed).includes(fresh('ranked.seedNotFound')),
+  false,
+  '★★★ ⑤ `failed` 那一档**不许**同时说「这场比赛的种子不在库里。」',
+);
+assert.equal(
+  elementsWithClass(eloSeedFailed, 'ranked__seeds').length,
+  0,
+  '★ ⑤ 也不许印那三格（没读到就是没读到）',
+);
+/*
+ * ★★ ⑤ `loading`：**复用**既有的「加载中…」（不新写一句）。
+ * ⚠️ 判据是"那一句在**那一场**的面板里"（不是"产物里有'加载中'"：展开那一档自己的
+ *    loading 也印同一句话 ⇒ 不划范围的话这一条对"面板根本没渲染"照样绿）。
+ */
+const eloSeedLoading = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY }, seeds: ELO_SEEDS_LOADING },
+  '排行榜·展开·种子加载中',
+);
+const seedLoadingLine = elementsWithClass(
+  elementsWithClass(eloSeedLoading, 'ranked__detailmatch')[2] ?? '',
+  'ranked__seedline',
+)[0];
+assert.notEqual(seedLoadingLine, undefined, '★ 探针：那一场的面板在（否则下面那条是空跑）');
+assert.equal(
+  hasText(seedLoadingLine ?? '', t('common.loading')),
+  true,
+  '★★ ⑤ 还在读 ⇒ 既有的「加载中…」那一句（复用，不新写词条）',
+);
+assert.equal(
+  elementsWithClass(eloSeedLoading, 'ranked__seeds').length,
+  0,
+  '★ ⑤ 而三格一个都不印（还没读到值）',
+);
+assert.equal(
+  elementsWithClass(eloSeedLoading, 'ranked__seednote').length,
+  0,
+  '★★ ⑤ 也**不说**"不在库里"/"读不到"（"慢"与那两档是三个不同的处境）',
+);
+ok(
+  '④b⑨ ⑤ 每场一颗按钮（最后一格 + aria-expanded 逐场）+ 四档：ready 三值逐字（无千分位/科学计数法/舍入）+ null ⇒ — + not_found/failed 互斥 + loading 复用',
+);
 
 // ---------------------------------------------------------------------------
 console.log('⑤ 周赛榜单：第 0 周 + 四个种子 + 翻页的"链接 / 不是链接"正反配对');
@@ -4381,6 +5184,110 @@ assert.equal(
 );
 
 /*
+ * ===========================================================================
+ * ★★★ ⑧b 列的**轨道**：`.ranked__detailmatch` 不许出现"按内容算宽"的轨道
+ * ===========================================================================
+ * 用户原话「展开后的卡片对应信息版面**尽量对齐**」，而**"列真的对齐了没有"这件事
+ * 静态渲染证明不了** —— 看的是 CSS 轨道的宽度，不是产物里的标记（那一条进
+ * `docs/pending.md §5.101` 的人工清单）。
+ *
+ * ⚠️★ 但**有一半是断得了的**：`grid-template-columns` 里一旦出现 `auto` /
+ *    `max-content` / `min-content`，轨道就是**逐行按内容算**的（十来行战绩**各自**
+ *    是一个 grid）⇒ 对齐当场消失，而画面上只是"看起来有点乱"，没有任何门禁看得见。
+ *    ⇒ 这一条是"对齐"这件事在**静态**这一层唯一能守的东西：**源码级守卫**，
+ *    形状照本仓既有的 `formPreventsDefault`（只读那一条规则、配一条"改坏就红"的证明）。
+ * ⚠️★ 判据只读**那一个选择器的规则体**（不是整份 CSS）：整份扫的话，
+ *    别处（比如 `.ranked__live` 那种自由流）合法的 `auto` 会让这一条恒假 ——
+ *    "看起来在断言 A、其实断言了 B"正是本仓最贵的那一类（§5.63）。
+ */
+/** 一份**剥掉注释**的样式表（注释里逐字写着选择器 ⇒ 不剥的话下面可能命中注释那一段）。 */
+const CSS_NO_COMMENTS = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+assert.notEqual(
+  CSS_NO_COMMENTS,
+  CSS,
+  '★ 探针：注释真的被剥掉了（`styles.css` 里那段说明逐字写着 `.ranked__detailmatch`）',
+);
+/** 把一份 CSS 里某个选择器的**每一个**规则体取出来（含 `@media` 里那一支）。 */
+const ruleBodiesOf = (css: string, selector: string): string[] => {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bodies: string[] = [];
+  for (const m of css.matchAll(new RegExp(`${escaped}(?![A-Za-z0-9_-])\\s*\\{`, 'g'))) {
+    const open = m.index + m[0].length - 1;
+    const close = css.indexOf('}', open);
+    if (close > open) bodies.push(css.slice(open + 1, close));
+  }
+  return bodies;
+};
+/**
+ * 这一段声明里有没有"按内容算宽"的轨道关键字。
+ *
+ * ⚠️★ `auto-fit` / `auto-fill` **不算**：它们是**重复次数**的关键字（
+ *    `repeat(auto-fit, minmax(13rem, 1fr))` 正是本栏目要的那种写法），
+ *    前后加"不是词字符也不是 `-`"的边界才分得开 —— `\bauto\b` 会把 `auto-fit` 一起咬住。
+ */
+const CONTENT_SIZED_TRACK = /(?<![\w-])(?:auto|max-content|min-content)(?![\w-])/;
+const trackBodies = ruleBodiesOf(CSS_NO_COMMENTS, '.ranked__detailmatch');
+assert.notEqual(
+  trackBodies.length,
+  0,
+  '★ 探针：那个选择器**至少有一条规则**（否则下面那个循环一次都不跑：恒真的是空跑）',
+);
+assert.equal(
+  trackBodies.some((body) => body.includes('grid-template-columns')),
+  true,
+  '★ 探针：其中至少有一条声明了 `grid-template-columns`（对齐靠的就是它）',
+);
+/*
+ * ⚠️★ "改坏就红"的证明：同一个判据喂两份**造的**规则体 —— 一份带 `auto`（必须判假）、
+ *    一份只有 `minmax()`（必须判真）。少了它，上面那个 `some()` 可能只是"字符串里
+ *    恰好没有那个词"的巧合（本仓那条 `formPreventsDefault` 的探针同形）。
+ */
+assert.equal(
+  CONTENT_SIZED_TRACK.test('grid-template-columns: minmax(5rem, 1.2fr) auto;'),
+  true,
+  '★ 能红证明：`auto` 那一支会被判成"按内容算宽"',
+);
+assert.equal(
+  CONTENT_SIZED_TRACK.test('grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));'),
+  false,
+  '★★ 能红证明：`repeat(auto-fit, …)` **不**算（它是重复次数，不是轨道尺寸）—— 判据分得开这一对',
+);
+assert.equal(
+  CONTENT_SIZED_TRACK.test('grid-template-columns: minmax(5rem, 1.2fr) max-content;'),
+  true,
+  '★ 能红证明：`max-content` 也被咬住（`min-content` 同理，同一个词表里的第三格）',
+);
+for (const [i, body] of trackBodies.entries()) {
+  assert.equal(
+    CONTENT_SIZED_TRACK.test(body),
+    false,
+    `★★★ ⑧b 第 ${String(i + 1)} 条 \`.ranked__detailmatch\` 的规则体里有"按内容算宽"的轨道（\`auto\` / \`max-content\` / \`min-content\`）—— 那是**逐行**算宽，而"对齐"正是这一轮要的东西：列会对不上，而屏幕上只是"有点乱"`,
+  );
+  assert.equal(
+    body.includes('minmax('),
+    true,
+    `★★★ ⑧b 第 ${String(i + 1)} 条 \`.ranked__detailmatch\` 的轨道没用 \`minmax()\` 夹住上下界（下界保证列不塌、上界按比例分剩余宽度：这是"同一个容器宽度 ⇒ 同一组轨道"的全部机制）`,
+  );
+}
+/*
+ * ★★ 同一件事在卡片第一行那五格上（`.ranked__detailstats`）也要成立 ——
+ *    它是这一轮**另一处**从自由流改成 grid 的地方，而它的写法里有一个**合法**的 `auto-fit`
+ *    （上面那条探针钉的就是"判据分得开这一对"）。两处共用同一个判据，不抄第二份。
+ */
+const statBodies = ruleBodiesOf(CSS_NO_COMMENTS, '.ranked__detailstats');
+assert.notEqual(statBodies.length, 0, '★ 探针：`.ranked__detailstats` 至少有一条规则');
+for (const [i, body] of statBodies.entries()) {
+  assert.equal(
+    CONTENT_SIZED_TRACK.test(body),
+    false,
+    `★★★ ⑧b 第 ${String(i + 1)} 条 \`.ranked__detailstats\` 的规则体里也有"按内容算宽"的轨道（五格读数同样要对齐）`,
+  );
+}
+ok(
+  `⑧b 轨道守卫：\`.ranked__detailmatch\` ${String(trackBodies.length)} 条规则 + \`.ranked__detailstats\` ${String(statBodies.length)} 条规则里没有 \`auto\` / \`max-content\` / \`min-content\`（"列是否真的对齐"证不了 ⇒ \`pending.md §5.101\`）`,
+);
+
+/*
  * ★★ 收集 + 门禁本体写成**一个函数**，调用点在 ⑨ 之后（这一节末尾写着为什么）。
  *
  * ⚠️★ 为什么不能就地收集（2026-09-16 终审量到）：`products` 是**边渲染边长**的数组，
@@ -4464,7 +5371,13 @@ const MUST_RENDER = [
   'ranked__searchhint',
   'ranked__lookup',
   'ranked__playerbtn',
-  'ranked__lookupstats',
+  /*
+   * ⚠️★ `ranked__lookupstats` **不在这里**（2026-09-19 第四轮**退役**）：命中那一档的
+   *    三格读数行跟着"查到的玩家变成表里的一行"一起没了（读数搬进了卡片里的
+   *    `ranked__detailstats`）。它进 `RETIRED_CLASSES`（见下面那一张表）——
+   *    在"产物里应当出现"这张表里留一行，会让本脚本**永远红**；而删掉之后没人再管它，
+   *    所以它换了一张表继续被管着。
+   */
   'ranked__lookupmsg',
   'ranked__detailrow',
   'ranked__detail',
@@ -4484,6 +5397,40 @@ const MUST_RENDER = [
   'ranked__detailseed',
   'ranked__detailvod',
   'ranked__detailfailed',
+  /*
+   * ★★ 2026-09-19 **第四轮**（`b7d6487` 的视图 / `5f088f7` 之后的收尾）加的**六**个类名。
+   *
+   * ⚠️★ 四个是"搜索到的玩家 = 表里的一行"：`ranked__row` 是**两种行共用**的那一格
+   *    （榜上的每一行与固定那一行），`ranked__row--lookup` 是固定那一行**唯一**的差别
+   *    （一条 2px 的左侧强调线）；另两个是本轮新增的排版对象。
+   * ⚠️★ 另外两个是"每一场比赛右侧那颗按钮 + 它下面那一格面板"。
+   * ⚠️ 每一个都由 ④b 那一节产出：`ranked__row` / `ranked__row--lookup` 由 ④b③（那一行）
+   *    与 ④b⑥（展开的位置）产出，`ranked__seedbtn` / `ranked__seedline` 由 ④b⑨ 产出，
+   *    而 `ranked__seednote` / `ranked__seednote--failed` **只有** ④b⑨ 那两档
+   *    （`not_found` / `failed`）到得了 —— 少了夹具它们就是"有规则、有词条、没人验过"
+   *    的那一族（与 `ranked__detailoutcome--unknown` 同一条理由）。
+   * ⚠️ 同一份清单里**不许**再出现 `ranked__lookupstats`（退役的那个，见下面那张表）。
+   */
+  'ranked__row',
+  'ranked__row--lookup',
+  'ranked__seedbtn',
+  'ranked__seedline',
+  'ranked__seednote',
+  'ranked__seednote--failed',
+] as const;
+/*
+ * ★★ **退役**的类名：它们**不许**再出现在任何产物里（2026-09-19 第四轮）。
+ *
+ * ⚠️★ 为什么不只是"从 `MUST_RENDER` 里删掉"：那张表管的是"应当出现"，
+ *    删掉之后**没有任何东西**管这个类名了 —— 谁把那一行读数加回来（标记 + CSS 规则一起），
+ *    两边都会静默通过（`hasCssRule` 看见规则、标记也渲染得出来）。
+ * ⚠️★ 与 `hasCssRule` 那一条**不是**重复的：那条断言的是"渲染出来的类名有规则"，
+ *    所以"类名回来了、规则没回来"会被它抓到 —— 而"类名与规则**一起**回来"只有这里抓得到。
+ * ⚠️ 判据是**逐份产物**扫（`products` 在最后一次渲染之后才是完整的，见上面那段）。
+ */
+const RETIRED_CLASSES = [
+  /* 命中那一档的三格读数行 —— 读数搬进了卡片里的 `ranked__detailstats`（④b⑧ 钉着那个方向） */
+  'ranked__lookupstats',
 ] as const;
 /*
  * ★★ ⑧ 的本体：调用点在 ⑨ 结束处（`assertRankedClassesHaveRules()`）——
@@ -4510,8 +5457,15 @@ const assertRankedClassesHaveRules = (): void => {
       `★★★ \`.${cls}\` 在 \`apps/web/src/styles.css\` 里没有规则 —— 这是一个**渲染得出来、但什么都不生效**的类名（§5.70）`,
     );
   }
+  for (const cls of RETIRED_CLASSES) {
+    assert.equal(
+      rankedClasses.includes(cls),
+      false,
+      `★★★ \`.${cls}\` 已经**退役**，而它又出现在了产物里（标记与 CSS 规则要同生同死：留一条没人渲染的规则会让下一个读代码的人以为那一块界面还在，反之亦然）`,
+    );
+  }
   ok(
-    `⑧ 类名↔CSS：${String(rankedClasses.length)} 个 \`ranked*\` 类名逐个在 styles.css 里有规则（收集自 ${String(products.length)} 份产物）`,
+    `⑧ 类名↔CSS：${String(rankedClasses.length)} 个 \`ranked*\` 类名逐个在 styles.css 里有规则（收集自 ${String(products.length)} 份产物）+ ${String(RETIRED_CLASSES.length)} 个退役类名一个都没回来`,
   );
 };
 
@@ -4799,6 +5753,39 @@ console.log(
 console.log(
   '     函数（`assertPropsGiven`）。逐条代价与"要人做什么"写在 `docs/pending.md §5.100`。',
 );
+console.log(
+  '   ·★★ **第四轮那三件事的交互本身**（2026-09-19）：点那一行真的展开了、点「查种子」真的发起了',
+);
+console.log(
+  '     那次**同源**请求（`GET /api/ranked-seeds/match/:matchId`）、同一场第二次点**一发都不发**',
+);
+console.log(
+  '     （缓存命中）、`failed` 不进缓存 ⇒ 再点一次是重试、切页时那一格被 `abortSeed()` 收掉 ——',
+);
+console.log(
+  '     这几件事全在容器里（`routes/Ranked.tsx` 的第四格状态），`renderToStaticMarkup` 一件都跑不到。',
+);
+console.log(
+  '     本脚本钉的是"视图拿着那一格 `seeds` 渲染成什么样"（④b⑨ 四档 + 按钮的位置与 `aria-expanded`）',
+);
+console.log(
+  '     与那两格 `on*` 是不是函数。逐条代价与"要人做什么"写在 `docs/pending.md §5.101`。',
+);
+console.log(
+  '   ·★★ **"列真的对齐了没有"**（第四轮，用户原话「版面尽量对齐」）：这是**CSS 轨道宽度**的事，',
+);
+console.log('     本脚本证不了。它证得了的只有两半：每个类名在 `styles.css` 里有规则（⑧），');
+console.log(
+  '     以及 `.ranked__detailmatch` / `.ranked__detailstats` 的轨道里**没有** `auto` / `max-content`',
+);
+console.log(
+  '     这类"逐行按内容算宽"的写法（⑧b 那条源码级守卫）。窄屏会不会溢出、同一个标签在两张',
+);
+console.log('     卡片里是不是落在同一条竖线上，只能肉眼看（`pending.md §5.101`）。');
+console.log(
+  '   ·★ **`--lookup` 那条强调线在两种主题 / 两种语言下的可辨识度**（第四轮）：颜色对比度与',
+);
+console.log('     那 2px 的宽度是**眼睛**的事，产物里只有那个类名（`pending.md §5.101`）。');
 console.log('   ·★ **那两个新端点的生产环境 CORS / 缓存行为**：本机实测过（findings §4 / §6），');
 console.log('     线上出口没测过 —— 与 T1 报告里同一条遗留（`pending.md §5.100` 也记着）。');
 console.log(
@@ -4822,8 +5809,14 @@ console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
  *    （① 搜索框 / ② 本地筛选 / ③ 三档查询 / ④ 四个画面 / ⑤ 那条红线 / ⑥ 三条位置 /
  *    ⑦ 两族表驱动的词条）。⇒ 16+7=**zh 23**、17+7=**en 24**
  *    （⚠️ 下一行那个三元的两个数就是这两个，改脚本时一起改）。
+ * ⚠️ 2026-09-19（**第四轮**，`b7d6487` 的视图）：两边再各 **+3**（zh 26 / en 27）：
+ *    · ④b⑧ —— 退役的读数行（`.ranked__lookupstats`）与"词条没变成孤儿"那两半；
+ *    · ④b⑨ —— 每场一颗种子按钮 + 四档面板（含 `theEndSeed: null ⇒ —`）；
+ *    · ⑧b —— 轨道守卫（`.ranked__detailmatch` 不许用 `auto` / `max-content`）。
+ *    ⚠️ ④b③ 与 ④b⑥ 是**改写**不是新增（它们的 `ok()` 各自只有一处，数量没动），
+ *      ⑦ 那一组一个字没动。
  */
-const expectedGroups = LANG === 'en' ? 24 : 23;
+const expectedGroups = LANG === 'en' ? 27 : 26;
 assert.equal(
   pass,
   expectedGroups,

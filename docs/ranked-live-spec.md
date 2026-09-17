@@ -360,9 +360,40 @@ connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com;
 | 点一个昵称（第一次） | `/users/{昵称}` + `/users/{昵称}/matches?count=10` | **2** | `Promise.all` 一次拉齐，两份都到齐才算 ready |
 | 收起再点**同一个**昵称 | — | **0** | 成功的结果按昵称缓存在 `useRef(Map)` 里；⚠️ **失败不进缓存** ⇒ 那就是一次重试 |
 | 点**另一个**昵称 | 同上两条 | **2** | |
+| 点某一场右侧那颗「查种子」（第一次） | **我们的** `/api/ranked-seeds/match/{matchId}` | **1 次同源**（上游那 500 那笔**不是**这一次的账） | 见下面那一段 |
+| 收起再点**同一场** | — | **0** | `ready` 与 `not_found` 都进会话内缓存（`seedCache`） |
+| 点**另一场** | 同上一行 | **1** | ⚠️ 一发同时只有一发在飞：起新的一发之前先 abort 旧那一发 |
 
 ⚠️★ **一个具体的数**：连续展开**十个不同**的玩家 = **20 次**，也就是 500 的 **4%**。
 它是这一栏**新的**额度成本，而且它是**用户动作驱动**的（不是定时器）。
+
+**★★ 2026-09-19 第四轮：那颗「查种子」按钮的真实代价（**不在上面那 500 的账上**）**
+
+用户原话：「每个对局右侧设置按钮，点击**根据 api 查询种子**」。它走的是**我们自己的**
+路由，不是直连上游：
+
+- 前端 fetcher：`apps/web/src/lib/api.ts` 的 **`fetchSeedByMatchId(matchId, signal)`** ——
+  **同源**（`GET /api/ranked-seeds/match/:matchId`）⇒ 没有 CORS、没有混合内容的问题
+  （运维那台上游是**明文 HTTP、无 CORS 头、无缓存头**）。
+- 我们的服务端：`routes/seeds.ts` → `seeds/upstream.ts` 的 `fetchSeedByMatchId()` →
+  `http://…:8001/api/v2/seed/{matchId}`，**服务端缓存 1 小时**
+  （README/spec 那条 `cached: true` 的实现在 `routes/seeds.ts`）。实测一次 ~0.10–0.13 秒、233 字节。
+- 限流（**访客真正要心疼的那一笔**）：`routes/seeds.ts` 的 `upstreamGate` ——
+  **每 IP 20 次/分钟**、并且**全局 5 次/秒**。
+  ⚠️ 20 次/分钟比 mcsrranked 那 500/10 分钟**紧得多**：连点十来场就会碰到它
+  ⇒ 这就是"`ready` 与 `not_found` 都进会话内缓存、`failed` 不进"这条设计的经济学理由。
+- ⚠️★ **种子库只覆盖约 80% 的比赛** ⇒ `not_found`（HTTP 404 `seed_not_found`）是**常态**，
+  **不是**故障。界面上那两档因此是**两句不同的话**（§6.4.1 那四档表）。
+- ⚠️★ **判据只按状态码**：`fetchSeedByMatchId` 走的是 `lib/api.ts` 的公共 `request()`，
+  而它**不读响应体**（`api.ts` 里那一段逐字写着为什么、以及"让所有 GET 都读体"为什么被否决过）
+  ⇒ **所有 GET** 的 `ApiError.code` 恒为 `undefined`。种子这条读路径上"不在库里"的**唯一**
+  回答就是 404 ⇒ `apps/web/src/lib/seedErrors.ts` 那一处把 `status === 404` 补进了判据。
+  ⚠️★ 代价：**任何一个"同一个状态码下有两种含义"的读端点都不能靠这条路** ——
+  那时必须像 `fetchRankedStatus` 一样显式走 `requestWithErrorCode()`（那是一次有自己评审的决定）。
+  这一条的自动化判据在 `services/api/src/ranked-seed-errors.test.ts`（跨包读 `seedErrors.ts`），
+  以及同文件里那条"调用点不许自己再写一遍 `status === 404`"的源码级守卫。
+- ⚠️ 路径 `400 bad_match_id`（`matchId < 3 650 001`，即 2025-11-13 之前）落在 `failed` 上：
+  四档形状冻结、没有第五档，而"最近 10 场"那条路上到不了它（最近的比赛 id 恒大于下界）。
 
 **为什么绝不做预取（三条，逐条给理由）**：
 
@@ -741,9 +772,10 @@ DOM 顺序（**新增的只有搜索框那一块**；赛季那一行与表格的
 <h2 class="ranked__title">Elo 排行榜</h2>
 <form class="ranked__search" role="search">      ← 搜索框：<label class="sr-only" for> + <input id> + <button type="submit">
 <p class="ranked__searchhint">…</p>              ← 两个入口各自代价的说明书
-<div class="ranked__lookup">…</div>              ← 只有查过才渲染（lookup !== null）
+<div class="ranked__lookup">…</div>              ← ⚠️ 第四轮起**只有"没命中"那两档**（见下）
 <p class="ranked__meta">…赛季四格…</p>            ← 一个字都没动（仍是**唯一**一个 .ranked__meta）
 <div class="ranked__tablescroll"><table class="ranked__table">…</table></div>
+                                                  ↑ 命中那一档是这张表里的**第一行**（第四轮）
 ```
 
 - ★★ **搜索框有两半，它们是两件不同的事**（所以词条分成两组、提示那一句分开写）：
@@ -758,6 +790,8 @@ DOM 顺序（**新增的只有搜索框那一块**；赛季那一行与表格的
   `not_found` ⇒「没有这个玩家。」；`invalid_identifier` ⇒「这个昵称不合法（太长或格式不对）。」。
   ⚠️★ 后两档**不是**"请求失败"（重试永远是白试一次 ⇒ 没有重试按钮），而 `lookup: null` ⇒
   那一块**整个不渲染**（不是渲染一个空框）。
+  ⚠️★ **2026-09-19 第四轮起**，上面这一条只对**后两档**成立：命中的那一档不再是这一块，
+  而是表格里的**第一行**（见下面「第四轮」那一节）。
 - **点开 = 行内展开**（不是新路由、不是弹窗）：可点的是**昵称那一格里的按钮**
   （`<tr>` 上没有可点语义），展开时**紧跟那一行之后**插一行
   `<tr class="ranked__detailrow"><td colSpan={5}>`。
@@ -769,6 +803,8 @@ DOM 顺序（**新增的只有搜索框那一块**；赛季那一行与表格的
   - 每一场**可能要两个端点**、**点开才发**（额度账在 §3.2）；
   - `result.uuid === null` ⇒「平」（**不是**「负」）；`changes: []`（私人房实测）⇒「—」（**不是 0**）；
   - `vod: []` ⇒ **没有**录像入口（一条指向空地址的「录像」比没有入口更坏）。
+  - ⚠️★ **2026-09-19 第四轮**：那一场从七格变成**八格**（最右多一颗「查种子」按钮，
+    见下面那一节），而七格**一个都没少**（渲染自检逐场核）。
 - ★★★ **红线（本栏最贵的一条）**：`players[].eloRate` / `eloRank` 是**请求那一刻的现值**，
   **不是**那一场当时的值（findings §2.1 底部三场实测：一场 season 11 的比赛里它印的仍是
   本赛季**现在**的 elo）⇒ 详情里**任何位置**都不许把它当成"当时的 elo"渲染；
@@ -777,12 +813,106 @@ DOM 顺序（**新增的只有搜索框那一块**；赛季那一行与表格的
   凭空造一个数出来 ⇒ 我们**不推算**。
 - **三条兜底位置**（同一个产物里 `.ranked__detail` 恰好**一块**，三条互斥）：
   1. 表里**有**这一行（而且没被筛掉）⇒ 紧跟那一行之后（`<tr class="ranked__detailrow">`）；
-  2. 否则，那一次查询命中的正好是他 ⇒ 渲染在 `.ranked__lookup` **里面**；
+  2. 否则，那一次查询命中的正好是他 ⇒ **紧跟固定那一行**（表格里的第一行，见第四轮那一节）；
   3. 否则 ⇒ 表格**下面**单独一块（第一行仍是可点收起的昵称按钮）。
   ⚠️ 为什么非要有②③：60 秒的轮询会**整份换掉**这张榜，那位玩家可能**掉出前 150**；
   搜索框又会把榜筛小 —— 静默消失会让用户以为自己那一下没生效。
-- 渲染自检：`apps/web/scripts/rankedrender.tsx` 的 **④b 七组**（搜索框结构 / 本地筛选 /
-  三档查询 / 四个画面 / 那条红线 / 三条位置 / 两族表驱动词条）。
+  ⚠️ ① 与 ② 谁优先是**有意的**：①（榜上那一行）赢；他既要被查到又在榜上时会出现两行，
+  代价写在第四轮那一节。
+- 渲染自检：`apps/web/scripts/rankedrender.tsx` 的 **④b 十组**（搜索框结构 / 本地筛选 /
+  三档查询 + 固定那一行 / 四个画面 / 那条红线 / 位置判据 / 两族表驱动词条 /
+  退役读数行 / 每场种子按钮与四档面板）+ **⑧b** 轨道守卫。
+
+#### 6.4.1 ★★ 2026-09-19 第四轮（`b7d6487`）：搜索到的那一行、卡片列对齐、每场的种子按钮
+
+用户原话：
+
+> 「ranked实时信息排行榜中自行搜索的玩家**页面布局和排行榜玩家相同**（无论是**展开前还是
+> 展开后**），**展开后的卡片对应信息版面尽量对齐**，每个对局**右侧设置按钮**，点击
+> **根据 api 查询种子**展示在**对应比赛信息的下方**。」
+
+用户当场拍的口径（**不许改**）：① 搜索到的玩家 = **表格里的一行**（同样五列，**固定在最上面**，
+点开是**同一张卡片**）；② 种子的来源**不是** mcsrranked 的 `/matches/{id}`（那一条给的是
+**结构代码** `seedType` / `bastionType`，而且已经印在同一行里了），而是运维那台种子服务的
+**`GET /api/v2/seed/{matchId}`**，经我们**既有的同源路由**取（§3.2）。
+
+**（一）搜索到的那一行**——`lookup.kind === 'found'` 时，`<tbody>` 的**最前面**多一行：
+
+```
+<tr class="ranked__row ranked__row--lookup">
+  <td>1</td>                       ← eloRank（上游的，不是下标 + 1）
+  <td><button class="ranked__playerbtn">edcr</button></td>   ← 昵称（响应里的规范写法）
+  <td>2349</td>                    ← eloRate
+  <td>2385</td>                    ← seasonResult.highest
+  <td>0</td>                       ← seasonResult.last.phasePoint（**0 是真值**，不是占位符）
+</tr>
+```
+
+- ⚠️★ 五列与榜上那些行**逐个同名同序** ⇒ 渲染自检的判据是"**两行互相比**"：
+  同一个夹具里把固定那一行与榜上第一行的**类名集合**取出来比一次，除 `--lookup` 之外
+  **逐字相同**（不是各自与一个字面量比 —— 那种写法两处一起改就一起绿）。
+- ⚠️★ **两种行共用** `ranked__row`（"布局相同"这件事在 `styles.css` 里只有一处定义），
+  而 `--lookup` 是**唯一**的差别：一条 2px 的左侧强调线（`box-shadow: inset`，**不占布局**
+  —— 用 `border-left` 会把格子往右推 2px，两行的昵称就不在同一列上了）。它**不加文字、
+  不改内边距/字号/列宽**。
+- ⚠️★ **代价（用户选的口径）**：查到的这位**本来就在榜上**时，表格里会出现**两行同名**
+  （固定那一行 + 他自己那一行），区分它们的**只有**那条线。要改是产品决定，不是缺陷修复
+  （`docs/pending.md §5.101` 记着）。
+- ⚠️★ 值缺失时印「—」（`seasonHighest` / `seasonPhasePoint` 各自可空），**不是**空串、**不是** 0。
+- ⚠️★ 上榜那一档的**三格读数行**（`.ranked__lookupstats`，elo / 排名 / 本赛季战绩）
+  **连同 CSS 规则一起删掉**了：它们本来就在卡片里（`.ranked__detailstats`），
+  而那一块"表格之外的读数行"正是"布局不同"的来源。**没有词条因此变成孤儿**
+  （`ranked.detailSeasonRecord` 等五条仍有渲染点，渲染自检两个方向都断）。
+- ⚠️ 没命中的两档（`not_found` / `invalid_identifier`）**照旧**渲染在表格**上面**
+  （`.ranked__lookup` + `.ranked__lookupmsg`）：上游对这个人没有答案，没有玩家可以变成一行。
+
+**（二）展开之后是同一张卡片**——`<tr class="ranked__detailrow"><td colSpan={5}>` 里的
+`RankedDetailBlock` 与榜上那些行**是同一个组件**，位置判据也一致（紧跟那一行之后）。
+
+**（三）卡片里的两处排版：自由流 → 固定轨道 grid**
+
+- `.ranked__detailstats`（五格读数）：`repeat(auto-fit, minmax(13rem, 1fr))`，
+  换行也从同一条竖线开始；
+- `.ranked__detailmatch`（八格：对手 / 结果 / 用时 / elo 变化 / 类型 / 种子 / 录像 / **按钮**）：
+  ```css
+  grid-template-columns:
+    minmax(5rem, 1.2fr) minmax(2.5rem, 0.4fr) minmax(4.5rem, 0.6fr) minmax(4rem, 0.5fr)
+    minmax(4.5rem, 0.6fr) minmax(6rem, 1fr) minmax(2.5rem, 0.4fr) minmax(5rem, 0.5fr);
+  ```
+  ⚠️★ **不许**用 `auto` / `max-content` / `min-content`：那是**逐行**按内容算宽
+  （每一行是一个独立的 grid）⇒ 对齐当场消失。渲染自检 **⑧b** 是这条的**源码级守卫**
+  （只读那一条规则、配三条"改坏就红"的证明）。
+- ⚠️★ **代价与它证不了的那一半**：轨道的**写法**断得了（⑧b），而"列**真的**对齐了没有"
+  看的是**渲染出来的轨道宽度** —— 静态渲染证不了，窄屏那条 `@media (max-width: 900px)`
+  换四条轨道的断点也**没有实测过** ⇒ `docs/pending.md §5.101` 的人工清单。
+  卡片在 `<td>` 里（可用宽度与表格外面不同）时靠 `.ranked__detail { min-width: 0 }`
+  挡"表格自己变宽"（`.ranked__tablescroll` 只管"整页滚动"）。
+
+**（四）每一场右侧的按钮 + 它下面那三格种子**
+
+- 最右那一格是一颗按钮（`.ghostbtn .ranked__seedbtn`，文字 `ranked.seedButton`），
+  `aria-expanded` 的判据是**这一场自己的状态**（开着就是 `"true"`，四档都算开着）。
+- 点开之后，**紧跟这一场的信息之下**渲染一块 `.ranked__seedline`（在同一个 grid 里
+  `grid-column: 1 / -1` ⇒ 横跨整行）。四档各有各的话：
+
+| 档 | 渲染 | 词条 |
+|---|---|---|
+| `loading` | 既有的「加载中…」那一句 | `common.loading`（**复用**） |
+| `ready` | 三格 label/value：主世界 / 下界 / 末地 + 三个值 | `ranked.seedOverworld` / `seedNether` / **`seedEnd`**（三条**都是复用**周赛那一组） |
+| `not_found` | 「这场比赛的种子不在库里。」 | `ranked.seedNotFound`（★ **新增**） |
+| `failed` | 「种子暂时读不到。」 | `ranked.seedUnavailable`（★ **新增**） |
+
+- ⚠️★ `not_found` 与 `failed` **必须是两句不同的话**：前者是**常态**（库里只有约 80%），
+  后者**值得再点一次** —— 合成一句时没有人看得出来，而用户的下一步是相反的。
+- ⚠️★ 三个值**原样**（19 位数字串）：`Number()` 会静默改值
+  （实测 `Number('8813544817493859226')` = `8813544817493859000`）⇒ 渲染自检同时断言
+  "逐字相等"与**三个反方向**（无千分位、无科学计数法、无 `Number()` 的舍入值）。
+- ⚠️★ `theEndSeed` 是 `string | null` ⇒ 那一格印「—」，**绝不**填 0、**绝不**印空串。
+- ⚠️ 一次只点开一场也好、同时开着几场也好，都由容器决定（§3.2 记着额度的真实代价）；
+  **一发同时只有一发在飞**（起新的一发之前先 abort 旧那一发，被取消的那一格会被收掉）。
+- ⚠️★ 静态渲染证不了：点击真的发一次请求 / 同一场第二次点**不发** / `failed` 不进缓存 /
+  切页时那一格被 `abortSeed()` 收掉 —— 逐条在 `docs/pending.md §5.101`。
+
 
 ### 6.5 ④ 周赛榜单 `/ranked/weekly` ★★ 修订（2026-09-19）
 
@@ -956,6 +1086,34 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.outcomeWin` / `outcomeLoss` / `outcomeDraw` / `outcomeUnknown` | 「胜」/「负」/「平」/「—」（★ 四档来自导出的 `OUTCOME_KEYS`） | "Win" / "Loss" / "Draw" / "—" |
 | `ranked.detailVod` | 「录像」 | "VOD" |
 | `ranked.matchTypeCasual` / `matchTypeRanked` / `matchTypePrivate` / `matchTypeEvent` | 「休闲」/「排位」/「私人房」/「活动」（★ 来自导出的 `MATCH_TYPE_KEYS`：1/2/3/4） | "Casual" / "Ranked" / "Private" / "Event" |
+
+**★★ 2026-09-19 第四轮（`b7d6487`）新增的 3 条**——⚠️ 英文侧照实现抄（英文侧不许出现汉字，有一条门禁在扫）：
+
+| key | 中文 | English |
+|---|---|---|
+| ★ `ranked.seedButton` | 「查种子」（★ 是**按钮上的字**，不是标题：一屏可能有十来颗一模一样的它） | "Seeds" |
+| ★ `ranked.seedNotFound` | 「这场比赛的种子不在库里。」（★ **常态**：库里只有约 80%，不是故障） | "The seeds for this match are not in the library." |
+| ★ `ranked.seedUnavailable` | 「种子暂时读不到。」（★ 与上一句**必须是两句不同的话**：这一句值得再点一次） | "Seeds cannot be read right now." |
+
+**复用（⚠️ 这一轮**没有**新增这几条）**：
+
+| key | 从哪来 | 为什么复用 |
+|---|---|---|
+| `ranked.seedOverworld` / `seedNether` / **`seedEnd`** | 周赛那四格的标签（§6.5） | 同一个东西（世界种子）在同一栏目里没有第二个说法；**再写三条同值的键**＝两份会各自漂的真相（本仓为这种事删过重复词条） |
+| `common.loading` | 全站那一句 | 种子面板的 `loading` 那一档（不新写一句） |
+
+⚠️★ **`ranked.seedTheEnd` 这个键**：T1 的简报建议加、T1 **裁决不加**（它与既有的 `ranked.seedEnd`
+同值 ⇒ 加了就是两份会漂的真相），`git grep seedTheEnd` 在**全仓 0 命中**。⇒ 末地那一格
+**复用 `seedEnd`**，上面那张表就是这一轮词条账的全部。
+⚠️ 这三条标签在视图里走的是 `WEEKLY_SEED_LABEL_KEYS`（**表驱动的 key**，不是字面量）
+⇒ `services/api/src/i18n-keys.test.ts` 的字面量扫描**够不着**它们；查得到它们的是
+渲染自检 **④b⑨**（逐条 `fresh(key)` 比产物里的 `<dt>`，中英各一遍）。
+
+⚠️★ **这一轮删掉的词条：0 条** —— 但**删掉了一整块界面**（`.ranked__lookupstats`，命中那一档的
+三格读数行）。那三格用的是**既有**的 `ranked.detailElo` / `detailRank` / `detailSeasonRecord`，
+它们**在卡片里另有渲染点**（`.ranked__detailstats` 那五格的一部分）⇒ **一条词条都没有变成孤儿**。
+渲染自检 **④b⑧** 把这件事**两个方向都断了**（卡片里印得出来 + 固定那一行里没有它）；
+⚠️ 只说"没了"会让一个顺手删掉 `detailSeasonRecord` 的实现照样绿（孤儿 key 正是 §5.70 那一族）。
 
 ⚠️★ 这一轮的词条账要**分三笔**才闭合（旧句写的是"这一轮**加了 24 条、删了 2 条**"，
 把三个提交混成了一笔 ⇒ 怎么算都对不上）：
@@ -1146,20 +1304,45 @@ nickname."）；`lookupInvalid` 与 `errInvalidIdentifier` 才是**两侧都不�
             且那一句是 `eloFilterEmpty`（配"两句词条不同"的探针）；
             ★ 还有**两句空态的优先级**：上游本身就空而搜索框里有字时仍说 `eloEmpty`
             （顺序反了会把"上游没人"说成"你筛没了"）
-      - [ ] ④b③ 三档查询：命中 ⇒ 响应里那个昵称（`Edcr`，**不是**用户敲的 `edcr`）+ 逐格读数；
-            `not_found` / `invalid_identifier` 各说各的；**三档互斥**（另外两句与读数格/按钮都不在）；
-            `lookup: null` ⇒ 那一块**整个不渲染**
+      - [ ] ④b③ 三档查询（★★ 第四轮改写）：**命中**那一档现在是**表里的一行** ——
+            `<tbody>` 的**第一行**是 `.ranked__row--lookup`、它**恰好五格**且逐格是
+            `['1','edcr','2349','2385','0']`（四个数与昵称**互不相同**，串位才看得见）、
+            数据行数 = **1 + 榜上行数**、**榜上每一行也都带** `.ranked__row`（逐行查原始标签，
+            不是"产物里有这个词"）、两行的**类名集合除 `--lookup` 之外逐字相同**（互相比，
+            不是各自与字面量比）；印的是**响应里**那个昵称（`Edcr`，**不是**用户敲的 `edcr`）；
+            `not_found` / `invalid_identifier` **各说各的**、**不为它多渲染一行**、
+            没有 `.ranked__detail`；**三档互斥**；`lookup: null` ⇒ 那一块**整个不渲染**
       - [ ] ④b④ 四个画面：加载中（复用那一句）/ 读不到（`ranked__detailfailed`，与"最近没有比赛"
             **互斥**）/ 0 场（`ranked__detailNoMatches` + 标题那个 N 是**数组长度**）/ 四场
             （**数节点** + 对手/结果/用时/elo/类型/种子/录像**逐格**）
       - [ ] ④b⑤ ★★★ 那条红线：五个产物里**一个字符都没有** `players[].eloRate` 的哨兵值
             （扫**原文含属性**：T2 的第三刀就是把它塞进 `title=`），而 elo 变化那一格是
             `changes[].change` 那个数；⚠️ 它防不了"印成赛后值"，那一半由逐值断言兜着
-      - [ ] ④b⑥ 三条兜底位置：表里 ⇒ **紧跟**那一行（顺序断言）+ `colSpan="5"`（**camelCase**）；
-            被筛掉 ⇒ 落在 `</table>` 之后；查询命中的就是他 ⇒ 落在 `.ranked__lookup` 里；
-            三屏各自**恰好一块** `.ranked__detail`；`.ranked__meta` 仍只有赛季那一行
+      - [ ] ④b⑥ 位置判据（★★ 第四轮改写）：① 表里 ⇒ **紧跟那一行**（顺序断言）+
+            `colSpan="5"`（**camelCase**）；② 查到的就是他 ⇒ **紧跟固定那一行**（表格**里面**、
+            两者之间一个 `<tr` 都没有）；② 的**第二档**（他既被查到又在榜上 ⇒ 两行同名、
+            卡片仍**恰好一块**、而且落在**榜上那一行**下面、**不是**固定那一行下面、
+            两颗按钮都念 `aria-expanded="true"`）；③ 被筛掉 ⇒ 落在 `</table>` 之后；
+            **四屏**各自恰好一块 `.ranked__detail`；`.ranked__meta` 仍只有赛季那一行
       - [ ] ④b⑦ 两族**表驱动**的词条（`OUTCOME_KEYS` 4 + `MATCH_TYPE_KEYS` 4）：两张表逐格
             `deepEqual`（对调两行是静默的）+ 八条 key × 两种语言都在（字面量扫描够不着它们）
+      - [ ] ★★ ④b⑧ **退役的读数行**（第四轮加）：`.ranked__lookupstats` 在**任何产物里**
+            都不许再出现（`RETIRED_CLASSES`，在最后一次渲染之后扫全部产物）+ **两个方向**：
+            卡片里 `ranked.detailSeasonRecord` / `detailElo` / `detailRank` **照旧印得出来**
+            （一条词条都没变成孤儿），而**固定那一行**里没有它
+      - [ ] ★★★ ④b⑨ **每场一颗种子按钮 + 四档面板**（第四轮加）：每一场**恰好一颗**
+            `.ranked__seedbtn`（用 `assertClickable`：恰好一颗**且**不是 disabled）、
+            它是那一行里的**最后一个元素**（"右侧"的唯一判据）、未点开时四颗都 `"false"`；
+            `ready` ⇒ **恰好一块**面板、`aria-expanded` **只在**打开的那一场上是 `"true"`
+            （逐场数组 `['false','false','true','false']`）、面板是那一场的**最后一个孩子**、
+            三个值**逐字**（三个反方向：无千分位 / 无科学计数法 / 无 `Number()` 的舍入值）；
+            `theEndSeed: null` ⇒ `—`（**不是** 0、**不是**空串）；`not_found` 与 `failed`
+            **两句不同的话**、两者互斥（每一档都断言另一句不在产物里）；`loading` 复用
+            `common.loading`；未点开的场次**没有** `.ranked__seedline`
+      - [ ] ★★ ⑧b **轨道守卫**（第四轮加）：`.ranked__detailmatch`（与 `.ranked__detailstats`）
+            的每一条规则体里**没有** `auto` / `max-content` / `min-content`
+            （逐行算宽 ⇒ 对齐消失），并且用 `minmax()` 夹住上下界；
+            配三条"改坏就红"的证明（含 `repeat(auto-fit, …)` **不算**那一半）
 - [ ] ④ 顶部：周数（**第 -1 周那份渲染成「第 0 周」**）、4 个种子、截止时间；五列；
       `id >= latestId` ⇒「下一周」**禁用**；`id === -1` ⇒「上一周」**禁用**（正反两半）
 - [ ] ★★ ④ **导航在顶部**（位置断言：在周数那一行 / 四格种子 / 成绩表之**前**，且在面板标题之**后**）
@@ -1222,8 +1405,7 @@ nickname."）；`lookupInvalid` 与 `errInvalidIdentifier` 才是**两侧都不�
       （`ranked__detailelo` 那一格的 `dash` 换成 `'0'`）⇒ ④b④ 那条逐值断言必须**红**
       （实测：`actual [ '+12', '-8', '0', '0' ]` / `expected [ '+12', '-8', '—', '—' ]`）
 - [ ] ★ mutation ⑳（★ 2026-09-19 第三轮）：`filterEloUsers` 去掉 `toLowerCase()`
-      （大小写敏感）⇒ ④b② 的「`alphatwo` ⇒ 1 行」必须**红**（另外三条照样绿 —— 说明它们不是同一条断言）
-- [ ] ★ mutation ㉑（★ 2026-09-19 第三轮）：详情**总是**渲染在表格下面（判据① 恒假）
+      （大小写敏感）⇒ ④b② 的「`alphatwo` ⇒ 1 行」必须**红**（另外三条照样绿 —— 说明它们不是同一条断言）- [ ] ★ mutation ㉑（★ 2026-09-19 第三轮）：详情**总是**渲染在表格下面（判据① 恒假）
       ⇒ ④b⑥ 的「紧跟那一行」「`colSpan="5"`」「恰好一块」必须**红**
 - [ ] ★ mutation ㉒（★ 2026-09-19 第三轮）：把对手的现值塞进**一个属性**
       （`title={opponent.eloRate}`，可见文字一格不差）⇒ ④b⑤ 那条红线必须**红**
@@ -1234,9 +1416,34 @@ nickname."）；`lookupInvalid` 与 `errInvalidIdentifier` 才是**两侧都不�
       收窄成"空榜 **且** 搜索框是空的"（空榜 + 有搜索词 ⇒ 落到 `eloFilterEmpty`）
       ⇒ ④b② 的「上游本身就空…」那一条必须**红**，而 ④ 那一节既有的"空集合"那条**照样绿**
       （⚠️ 这一刀是**"新加的断言不是既有那条的重复"**的判据：两句对调时最先红的是**既有**那条）
-- [ ] 每处 mutation 之后**字节级还原**并用哈希证明（本轮 ⑲–㉔ 逐条都实测跑过 —— 一共**八刀**：
+- [ ] ★ mutation ㉕（★ 2026-09-19 **第四轮**）：视图把 `theEndSeed` 的 `null` 印成 `'0'`
+      （`seedState.seed.theEndSeed ?? dash` ⇒ `?? '0'`）⇒ ④b⑨ 的
+      「`theEndSeed: null` ⇒ 那一格印「—」」必须**红**
+      （T1 那一刀只有一份临时探针 ⇒ 这几条断言就是它的**永久**归宿）
+- [ ] ★ mutation ㉖（★ 第四轮）：固定那一行的那一格写成 `lookedUp.seasonPhasePoint || dash`
+      （`??` 写成 `||` 的经典错）⇒ ④b③ 的**五格逐格**必须**红**（`0` 那一格被印成「—」）
+- [ ] ★ mutation ㉗（★ 第四轮）：视图给**每一场**都喂同一格种子
+      （`seeds[String(match.id)] ?? Object.values(seeds)[0] ?? null`）⇒ ④b⑨ 的
+      「恰好**一块**面板」与逐场数组 `[0,0,1,0]` 必须**红**（面板渲染到了**别的**对局下面）
+- [ ] ★ mutation ㉘（★ 第四轮）：**砍掉榜上的一行**（夹具删一个玩家）⇒ ④ 那条
+      「每一行一个玩家（5 行）」必须**红** —— ⚠️★ 这一刀是"**行提取的强度没有被削弱**"的证明：
+      这一轮把 `/<tr>([\s\S]*?)<\/tr>/g` 换成了按 `ranked__row` 取（旧写法在带类名的行上
+      一个都匹配不到），必须证明新的取法照样能红
+- [ ] ★ mutation ㉙（★ 第四轮）：榜上那一行的 `className="ranked__row"` **去掉**
+      ⇒ ④b③ 的「两行类名集合除 `--lookup` 之外**逐字相同**」与逐行「都带 `ranked__row`」必须**红**
+      （⚠️ 这是"两行互相比"那条**正面对照**的证明：各自与一个字面量比的写法在这一刀下容易一起改掉）
+- [ ] ★ mutation ㉚（★ 第四轮）：`styles.css` 的 `.ranked__detailmatch` 里一条轨道
+      `minmax(4.5rem, 0.6fr)` 改成 `auto` ⇒ ⑧b 的轨道守卫必须**红**
+      （⚠️ 它证明的是"**改坏对齐这件事有人管**"，**不是**"列真的对齐了" —— 后者在 §5.101）
+- [ ] ★ mutation ㉛（★ 第四轮）：`apps/web/src/lib/seedErrors.ts` 里把 `status === 404` 那一半
+      去掉（写成 `const code = error.code;`）⇒ `services/api/src/ranked-seed-errors.test.ts` 的
+      「404 ⇒ `kind: not_found`」必须**红**（⚠️ 这一档今天**只**由那一个文件咬得动：
+      渲染自检喂的是**算好的**状态，容器读 `window.location` 在 Node 里渲染不了）
+- [ ] 每处 mutation 之后**字节级还原**并用哈希证明（第三轮 ⑲–㉔ 逐条都实测跑过 —— 一共**八刀**：
       ㉑ 与 ㉔ 各砍了两种改法；红的原话与还原后的 `sha256` 写在 T3 的报告里。
       ⚠️ 报告住在 `.superpowers/`（不进版本管理）⇒ 这里的判据自己写全，别依赖那份报告的寿命）
+      ＋ **第四轮 ㉕–㉛ 也是七刀实测**（红的原话与还原后的 `sha256` 在 T2 的报告里，
+      同一条纪律：判据要自己写全）
 
 ### 11.5 收录作业：`services/api/src/ranked-streams.ts`（★ 2026-09-17 加）
 
