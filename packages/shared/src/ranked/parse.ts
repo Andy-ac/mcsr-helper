@@ -789,9 +789,12 @@ function parseRecord(
  * ---------------------------------------------------------------------------
  * `statistics` 缺了 ⇒ 两份战绩四格全 `null`。
  * 一处**整份失败都没有**：类型里每一格都表达得出"不知道"。
- * ⚠️★ `seasonResult`（上游给"本赛季最高 elo"那一块）**整个不读了**：修复轮（T4）
- *    删掉了它唯一的消费者 `seasonHighest`（没有渲染点、没有词条 ⇒ 见 `types.ts` 那段）。
- *    留着 `rec(data.seasonResult)` 会是一个**没有任何读者**的局部变量。
+ * ⚠️★ `seasonResult` 这一块**只读两格**（2026-09-19 第四轮加回来的）：
+ *    `highest` 与 `last.phasePoint` —— 它们分别是搜索行第四、第五列的数据来源
+ *    （`types.ts` 那两格上写着为什么是这两个位置）。⚠️ 别把整块 `seasonResult`
+ *    塞进我们的形状：那一份里还有 `lowest` / `percentile` / `phases` 这些
+ *    **没有渲染点**的东西，而"读进来但没人用"正是 2026-09-19 修复轮删掉
+ *    `seasonHighest` 时的理由（没有消费者的数据通路迟早被当成"还有人在用"）。
  */
 export function parsePlayerDetail(raw: unknown): RankedPlayerDetail | null {
   const data = envelope(raw);
@@ -802,12 +805,22 @@ export function parsePlayerDetail(raw: unknown): RankedPlayerDetail | null {
   if (uuid === null || nickname === null) return null;
 
   const statistics = rec(data.statistics);
+  /*
+   * ⚠️★ 两层都用 `rec(...)`：`seasonResult` 或它里面的 `last` 读不出来时
+   *    `num(undefined)` ⇒ `null`（"这一格没读到"），而**不是** 0。
+   * ⚠️ 这里**不许**写 `?? 0`：0 与"读不到"在界面上是两句不同的话
+   *    （赛季刚开始时真实的 phasePoint 就是 0，spec §2.3）。
+   */
+  const seasonResult = rec(data.seasonResult);
+  const seasonLast = rec(seasonResult?.last);
 
   return {
     uuid,
     nickname,
     eloRate: num(data.eloRate),
     eloRank: num(data.eloRank),
+    seasonHighest: num(seasonResult?.highest),
+    seasonPhasePoint: num(seasonLast?.phasePoint),
     season: parseRecord(statistics, 'season'),
     total: parseRecord(statistics, 'total'),
   };

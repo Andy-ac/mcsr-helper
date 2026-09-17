@@ -281,7 +281,36 @@ export function describeSeedQueryError(
 ): SeedQueryFailure {
   if (!(error instanceof ApiError)) return { kind: 'other', message: fallback(error) };
 
-  switch (error.code) {
+  /*
+   * ★★ 判据：**先看信封里的码，取不到时按状态码补一句 404**（2026-09-19 第四轮加）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 为什么必须有那一半：`error.code` 在这些端点上**恒为 undefined**
+   * ---------------------------------------------------------------------------
+   * `fetchSeedByMatchId` 走的是 `lib/api.ts` 的 `request()` ⇒ `requestCore(…, readErrorCode)`
+   * 传的是 `false`，而那一行写着"唯一的差额。不读体的那一路**连读体的调用都不发生**"
+   * （`api.ts:310`）⇒ **所有 GET** 的 `ApiError.code` 都是 `undefined`。
+   * 于是这一整张 `switch` 里的每一个 case 都只在 **POST**（`sendJson` 会读体）上打得中，
+   * 而"这场比赛不在种子库里"（404 `seed_not_found`，约 20% 的比赛）落到 `default:`，
+   * 调用方拿到的是**通用那句"出错了"** —— 与这个文件头写着的设计（"404 是常态，
+   * 界面要按补录来说"）正好相反，而且**没有任何门禁看得见**（每一档都渲染得出来）。
+   *
+   * ⚠️★ 为什么是 404 ⇒ `seed_not_found`，而不是"再读一遍响应体"：
+   *    `services/api/src/routes/seeds.ts` 在这几条读路径上**只**回两种 404，
+   *    而两种都是同一件事 —— `{"error":"seed_not_found"}`（`:292`）与
+   *    `{"error":"seed_not_found","reason":"no_match"}`（`:305`，检索条件没命中）。
+   *    让 `lib/api.ts` 去读体是**跨切面的改动**（那个文件自己写着为什么不做，见
+   *    `fetchRankedStatus` 那一段：全站约三十条 GET 的错误形状会一起变），
+   *    而写在这里的收益是**判据仍然只有一处**：谁要改"什么算 not_found"，
+   *    改的是这个函数，不是十几个调用点。
+   * ⚠️ 代价写在明面上：`apps/web/src/routes/Seeds.tsx` 的「按 ID 查」那一档
+   *    从今天起**会**走 `not_found` 分支（在此之前它拿到的是 `other` + 通用文案）——
+   *    那是这个文件头一直描述的行为，只是过去接不上（这一条**没有**自动化判据：
+   *    `apps/web` 没有测试运行器，渲染自检也不喂这条路径）。
+   */
+  const code = error.code ?? (error.status === 404 ? 'seed_not_found' : undefined);
+
+  switch (code) {
     /*
      * ★ 一个错误码，两种意思，只有 `reason` 能分开它们。
      *

@@ -87,6 +87,7 @@
  *    表里少一条，界面上会直接印出裸 key 而门禁全绿（2026-09-16 评审量到的正是这个）。
  *    ⇒ 只有渲染自检（Task 8）看得见它，在那之前得靠人。
  */
+import type { SeedRecord } from '@mcsr/shared';
 import { liveEmbedDecision } from '@mcsr/shared/live';
 import {
   displayWeekNo,
@@ -1071,6 +1072,42 @@ export type RankedDetailState =
   | { kind: 'ready'; data: RankedDetailData };
 
 /**
+ * 每一场比赛那一行**右侧那颗按钮**的**四档**状态（2026-09-19 第四轮）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 为什么"不在库里"是**自己的一档**，而不是 `failed` 的另一种说法
+ * ---------------------------------------------------------------------------
+ * 种子库只覆盖约 **80%** 的比赛（账本 `ranked-round4/progress.md` 与
+ * `services/api/src/routes/seeds.ts` 的 404 都写着这一条）⇒ "这场没有种子"是**常态**，
+ * 而"这一次没读到"是**故障**：两者的下一步相反（一个别再点了，一个值得再点一次）。
+ * 合成一档之后，界面上只有一句话，而**没有任何门禁看得出来**它说错了哪一半
+ * （`RankedSeedState` 的四档正是为此存在，两条词条 `seedNotFound` / `seedUnavailable`
+ * 也是）。
+ *
+ * ⚠️★ 它**不是**容器里那三格 `Held`/`Loaded` 的同类：那三格是"这一页取到了什么数据"，
+ *    这一格是"用户点开了哪一场、那一场读到了什么"。它与它们共用页章（`Held` + `mine()`）
+ *    **不是**因为它是数据，而是因为"换页之后它不该再渲染"这件事的判据只有一处实现。
+ * ⚠️ 这个形状是**冻结的**（容器与渲染自检都按它写）：多一档意味着两边都要改。
+ */
+export type RankedSeedState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; seed: SeedRecord }
+  | { kind: 'not_found' }
+  | { kind: 'failed' };
+
+/**
+ * **按 `String(matchId)` 存**的一份种子状态（容器给视图的那一格）：
+ * `null` = 这一页还没有任何一场被点开过。
+ *
+ * ⚠️★ 键必须是**字符串**（JS 对象的键只能是字符串）—— 所以视图这一侧查表时
+ *    也必须 `String(match.id)`：一边 `String()` 一边不写，表现是"点了按钮什么都不出现"
+ *    （查表永远落空），而每一格都合法、没有任何报错。
+ * ⚠️ 值是**四档**而不是 `SeedRecord | null`：见 `RankedSeedState` 那一段
+ *    （"不在库里"与"读不到"必须分得开）。
+ */
+export type RankedSeedStates = Record<string, RankedSeedState>;
+
+/**
  * 那一行 / 那一位玩家的「点开 / 收起」入口。
  *
  * ⚠️★ 它是**按钮**，不是"整行可点"：`<tr>` 上没有可点语义，读屏软件也念不出来
@@ -1114,8 +1151,33 @@ function RankedPlayerButton({
  *    私人房实测 `changes: []` ⇒「—」，**不是 0**（0 的意思是"打了这一场、分数没变"）。
  *    ⚠️ 代价写清：赛前 elo 上游**根本没给**（只有赛后值），我们不推算 —— 推算的算法会在
  *    私人房那 32 行上凭空造一个数出来。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 2026-09-19 第四轮：这一行变成**列对齐的 grid**，最右边多一颗「查种子」
+ * ---------------------------------------------------------------------------
+ * 用户原话「展开后的卡片对应信息版面**尽量对齐**」+「每个对局**右侧设置按钮**，
+ * 点击根据 api 查询种子，展示在**对应比赛信息的下方**」。
+ * ⚠️★ 八格**逐个占一条固定的轨道**（列宽写在 `styles.css` 的
+ *    `.ranked__detailmatch` 上，`minmax()` 夹住上下界）：之前是 `flex-wrap` 自由流，
+ *    每一场的"用时 / elo / 类型 / 种子"落在不同的横坐标上 —— 十来行战绩**读不出列**，
+ *    而那正是这一轮要的东西。⚠️ 所以这里**不许**给某一格加"长度随内容"的写法
+ *    （`auto` / `max-content`）：那等于把对齐逐行还原成"按内容算"。
+ * ⚠️ `seedState` 与 `onToggleSeed` 是**两格 props**（不是在这里读容器）：
+ *    视图是纯视图（`renderToStaticMarkup` 不跑 effect、不点击），状态住在容器里
+ *    （`RankedEloViewProps.seeds` 上写着完整理由）。
  */
-function RankedDetailMatch({ match, selfUuid }: { match: RankedPlayerMatch; selfUuid: string }) {
+function RankedDetailMatch({
+  match,
+  selfUuid,
+  seedState,
+  onToggleSeed,
+}: {
+  match: RankedPlayerMatch;
+  selfUuid: string;
+  /** 这一场的种子面板开着没有 / 开到哪一档。`null` = 没点开（那一格整个不渲染）。 */
+  seedState: RankedSeedState | null;
+  onToggleSeed: (matchId: number) => void;
+}) {
   const { t } = useTranslation();
   const dash = t('ranked.unknown');
   const opponent = opponentOf(match, selfUuid);
@@ -1179,18 +1241,82 @@ function RankedDetailMatch({ match, selfUuid }: { match: RankedPlayerMatch; self
         第三方地址，而 `noopener` 独自挡不住 referrer 泄漏。
         ⚠️ 地址在 `parse.ts` 就被筛过（只认 http(s)）⇒ 上游的一个字段进不了 `<a href>`
         的伪协议位（`javascript:` 那一类；测试钉着这一条）。
+        ⚠️★ 外层的 `<span>`（**无类名**）是 grid 需要的那一格：录像可以是 0 条、1 条或几条，
+        而它们必须占**同一条轨道** —— 不包起来的话，有两个录像的那一场会把后面两格
+        （以及那颗按钮）整体挤到下一行，于是"列"就只对齐到那一行为止。没有录像时
+        这个 `<span>` 仍然在产物里（一个空的格子），所以列不会塌。
       */}
-      {match.vod.map((vod) => (
-        <a
-          key={vod.uuid}
-          className="ranked__detailvod"
-          href={vod.url}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {t('ranked.detailVod')}
-        </a>
-      ))}
+      <span>
+        {match.vod.map((vod) => (
+          <a
+            key={vod.uuid}
+            className="ranked__detailvod"
+            href={vod.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t('ranked.detailVod')}
+          </a>
+        ))}
+      </span>
+      {/*
+        ★★ 最右那一列：**这一场**的种子按钮（用户原话「每个对局右侧设置按钮」）。
+        ⚠️★ `aria-expanded` 的判据是**这一场自己的状态**（`seedState !== null`），
+        不是"有没有别的场开着"：面板就渲染在这颗按钮下面那一行，读屏软件念错时
+        用户点下去会觉得没生效（再点一次又把刚开的那一块收起来）。
+        ⚠️ 这里**不**判 `loading` 之外的档：四档都算"开着"（`loading` 时面板里是
+        「加载中」那一句，那也是开着的）—— 漏掉任何一档，那一档点开之后读屏软件
+        会说"已收起"，而屏幕上明明长出了一块。
+      */}
+      <button
+        type="button"
+        className="ghostbtn ranked__seedbtn"
+        aria-expanded={seedState !== null}
+        onClick={() => onToggleSeed(match.id)}
+      >
+        {t('ranked.seedButton')}
+      </button>
+      {/*
+        ★★ 面板落在**这一场比赛信息的下方**（用户原话）：它是 grid 里的下一行，
+        并**横跨全部轨道**（`grid-column: 1 / -1`，写在 `styles.css` 上）——
+        不横跨的话它会被塞进按钮右边那一列里，而那一列只剩几十像素。
+        ⚠️★ 四档各有各的话（`RankedSeedState` 那一段写着为什么"不在库里"与"读不到"
+        必须分开）：`loading` 复用既有的「加载中」，`not_found` 与 `failed` 两句
+        **不同**，`ready` 才是三个种子值。
+        ⚠️ 三个标签复用周赛那一组（`WEEKLY_SEED_LABEL_KEYS` 的前三条）：同一个东西
+        （世界种子）在同一栏目里没有第二个说法，而**再写一张同值的表**等于两份会漂的真相。
+        ⚠️★ `theEndSeed` 是 `string | null` ⇒ 那一格印「—」，**绝不**填 0 或空串
+        （本仓那条"绝不为缺失值填 0"；空串会让三格里有一格看起来是"上游给了个空种子"）。
+      */}
+      {seedState === null ? null : (
+        <div className="ranked__seedline">
+          {seedState.kind === 'loading' ? <p className="state">{t('common.loading')}</p> : null}
+          {seedState.kind === 'not_found' ? (
+            <p className="ranked__seednote">{t('ranked.seedNotFound')}</p>
+          ) : null}
+          {seedState.kind === 'failed' ? (
+            <p className="ranked__seednote ranked__seednote--failed">
+              {t('ranked.seedUnavailable')}
+            </p>
+          ) : null}
+          {seedState.kind === 'ready' ? (
+            <dl className="ranked__seeds">
+              <div>
+                <dt>{t(WEEKLY_SEED_LABEL_KEYS.overworld)}</dt>
+                <dd>{seedState.seed.overworldSeed}</dd>
+              </div>
+              <div>
+                <dt>{t(WEEKLY_SEED_LABEL_KEYS.nether)}</dt>
+                <dd>{seedState.seed.netherSeed}</dd>
+              </div>
+              <div>
+                <dt>{t(WEEKLY_SEED_LABEL_KEYS.theEnd)}</dt>
+                <dd>{seedState.seed.theEndSeed ?? dash}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -1201,8 +1327,22 @@ function RankedDetailMatch({ match, selfUuid }: { match: RankedPlayerMatch; self
  * ⚠️ 它**只吃 state**（`selfUuid` 从 `state.data.user.uuid` 拿）：展开的两份数据是
  *    一次 `Promise.all` 拉回来的，分开传会让"用户是谁"有第二个来源 —— 而错的那一个
  *    会把对手的成绩算到他头上（`matchOutcome` / `opponentOf` / `eloChangeOf` 全靠它）。
+ * ⚠️ `seeds` / `onToggleSeed`（2026-09-19 第四轮）在这里**逐场**取那一格：
+ *    `seeds[String(match.id)]` —— 取不到就是 `undefined` ⇒ 当作"没点开"。
+ *    ⚠️★ `seeds` 是 `Record | null`（`null` = 这一页还没点开过任何一场），
+ *    **不是**可选 prop：它缺了（`undefined`）时 `seeds[key]` 会当场抛
+ *    `TypeError: Cannot read properties of undefined` —— 那是**故意的**
+ *    （渲染自检那一侧要看到它，见 `RankedEloViewProps.seeds`）。
  */
-function RankedDetailBody({ state }: { state: RankedDetailState }) {
+function RankedDetailBody({
+  state,
+  seeds,
+  onToggleSeed,
+}: {
+  state: RankedDetailState;
+  seeds: RankedSeedStates | null;
+  onToggleSeed: (matchId: number) => void;
+}) {
   const { t } = useTranslation();
 
   if (state.kind === 'loading') {
@@ -1224,8 +1364,15 @@ function RankedDetailBody({ state }: { state: RankedDetailState }) {
         （`parse.ts` 的事），读不到就是 `null`，**绝不填 0**。
         ⚠️★ 类名是 `.ranked__detailstats`，**不是** `.ranked__meta`：渲染自检有一条
         `metaOf(elo).length === 1`（"赛季与赛段并排"那一格），它同时是"别人不许往这一栏里
-        再塞一行读数"的守卫 ⇒ 视觉上照抄 `.ranked__meta` 那套（flex + gap + 13px + 弱色），
+        再塞一行读数"的守卫 ⇒ 度量取**同一档**（13px + `--fg-muted` + 同一条间隙），
         但类名必须不同。
+        ⚠️★ 2026-09-19 第四轮把它从 `flex` 改成 **grid**（列宽写在 `styles.css` 上）：
+        用户要"卡片对应信息版面尽量对齐"，而自由流下这五格在窄一点的地方换行之后，
+        第二行的起点落在第一行中间 —— 同一个标签在两张卡片里不在同一列。
+        ⚠️ 五格的**文字**仍然是那五条词条（`detailElo` 等，label 与 value 在同一条词条里，
+        是 spec §7.3 冻结的）：这一轮改的是**排版**，不是文案 —— 把标签与值拆成两条词条
+        会动到冻结的那张表（那是 T2 的文档 + 一次产品决定），收益只是"标签是 6rem 的
+        独立一栏"，而那与"五格各自成列"是两件事。
       */}
       <p className="ranked__detailstats">
         <span>{t('ranked.detailElo', { elo: user.eloRate ?? dash })}</span>
@@ -1261,7 +1408,13 @@ function RankedDetailBody({ state }: { state: RankedDetailState }) {
       ) : (
         matches.map((match) => (
           /* ⚠️ key 用 `match.id`（上游的比赛身份）：下标会让"上游删掉一场"整体错位一格 */
-          <RankedDetailMatch key={match.id} match={match} selfUuid={user.uuid} />
+          <RankedDetailMatch
+            key={match.id}
+            match={match}
+            selfUuid={user.uuid}
+            seedState={seeds === null ? null : (seeds[String(match.id)] ?? null)}
+            onToggleSeed={onToggleSeed}
+          />
         ))
       )}
     </>
@@ -1272,26 +1425,31 @@ function RankedDetailBody({ state }: { state: RankedDetailState }) {
  * 一块展开出来的卡片（`.ranked__detail`）—— 三个渲染位置**共用**它。
  *
  * ⚠️ `collapse` 只有**表格下面那一块**（判据③）才为真：另外两处（表格那一行里、
- *    `.ranked__lookup` 里）都已经有一颗 `aria-expanded` 的昵称按钮（就是用户点的那一颗），
+ *    固定在最上面那一行里）都已经有一颗 `aria-expanded` 的昵称按钮（就是用户点的那一颗），
  *    再放一颗会让读屏软件念出两个长得一样的控件，而它们各自管的东西不同。
+ * ⚠️ `seeds` / `onToggleSeed` 原样往下传（`RankedDetailBody` 那一段写着它们是什么）。
  */
 function RankedDetailBlock({
   nickname,
   state,
   collapse,
   onToggleDetail,
+  seeds,
+  onToggleSeed,
 }: {
   nickname: string;
   state: RankedDetailState;
   collapse: boolean;
   onToggleDetail: (nickname: string) => void;
+  seeds: RankedSeedStates | null;
+  onToggleSeed: (matchId: number) => void;
 }) {
   return (
     <div className="ranked__detail">
       {collapse ? (
         <RankedPlayerButton nickname={nickname} expanded onToggleDetail={onToggleDetail} />
       ) : null}
-      <RankedDetailBody state={state} />
+      <RankedDetailBody state={state} seeds={seeds} onToggleSeed={onToggleSeed} />
     </div>
   );
 }
@@ -1337,6 +1495,24 @@ export type RankedEloViewProps = RankedChromeProps & {
   /** 正在展开的那一位玩家；`null` = 没有展开。 */
   detail: { nickname: string; state: RankedDetailState } | null;
   onToggleDetail: (nickname: string) => void;
+
+  // -------------------------------------------------------------------------
+  // ★★ 每一场比赛的种子（2026-09-19 第四轮）—— 一格状态 + 一个动作，**都必填**
+  // -------------------------------------------------------------------------
+  /*
+   * ⚠️★ 名字是**冻结的**（渲染自检按它们写）：`seeds` / `onToggleSeed`。
+   * ⚠️★ 为什么也是 props 而不是视图里的 `useState`：与上面那六格逐字相同
+   *    （状态住在视图里的话，自检看到的**只有初始值** ⇒ 四档画面一个都断言不到）。
+   * ⚠️★ `seeds` 的类型是 `RankedSeedStates | null`（**不是可选**）：
+   *    `null` = 这一页还没点开过任何一场；**缺传**（`undefined`）时视图里
+   *    `seeds[String(match.id)]` 会当场抛 `TypeError`（面板里那一行写着这件事）——
+   *    这是**故意的**：`apps/web/scripts/**` 不受类型检查，少了这道运行时声响，
+   *    "容器忘了接线"在产物里与接好线的**一模一样**（按钮点下去什么都没有）。
+   */
+  /** 按 `String(matchId)` 存的种子状态（容器已按页章过滤）；`null` = 这一页还没点开过。 */
+  seeds: RankedSeedStates | null;
+  /** 点某一场右侧那颗按钮：面板开着 ⇒ 收起；否则去取（同源，一次请求）。 */
+  onToggleSeed: (matchId: number) => void;
 };
 
 /**
@@ -1363,6 +1539,8 @@ export function RankedEloView(props: RankedEloViewProps) {
     lookup,
     detail,
     onToggleDetail,
+    seeds,
+    onToggleSeed,
     ...c
   } = props;
 
@@ -1396,10 +1574,25 @@ export function RankedEloView(props: RankedEloViewProps) {
   const phaseEndsAt = phase?.endsAt ?? null;
 
   /*
-   * ★★ 展开的那一位渲染在**哪里**（三条判据，**按顺序**；用户点了一下，就必须看得见结果）：
+   * ★★ 2026-09-19 第四轮：**查到的玩家**（`lookup.kind === 'found'`）现在是**表里的一行**
+   *    （固定在最上面，见下面 `<tbody>` 里那一行），所以展开的位置从"查询结果那一块里"
+   *    变成了"**那一行之后**"。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 判据仍然是三条、**按顺序**，而且是**互斥**的（同一屏恰好一块 `.ranked__detail`）
+   * ---------------------------------------------------------------------------
    *   ① 表里有这一行（而且没被筛掉）⇒ 紧跟那一行之后（`<tr class="ranked__detailrow">`）；
-   *   ② 否则，查人那一次正好查的是他 ⇒ 渲染在 `.ranked__lookup` 里面；
+   *   ② 否则，查到的正好是他 ⇒ 紧跟**固定那一行**之后（同一个 `<tr>`，同一张卡片）；
    *   ③ 否则 ⇒ 表格**下面**单独一块 `.ranked__detail`（第一行是可点收起的昵称按钮）。
+   *
+   * ⚠️★ 他**既被查到又在榜上**时会出现**两行**（固定那一行 + 他自己那一行）：
+   *    这是用户当场拍的口径（"固定在最上面"）。两条判据谁赢是**有意的**：
+   *    ①（榜上那一行）优先 —— 与 2026-09-19 终审那条 Minor 的裁决逐字一致
+   *    （"卡片按**判据①**落在表格那一行里"），代价写在下面：
+   *    **固定那一行上的按钮也会念"展开"**（`aria-expanded` 的判据是"他的卡片开着没有"，
+   *    不是"卡片开在我这一块里没有"），而卡片长在下面那一行里。
+   *    ⚠️ 反过来的排法（②优先）会让"点榜上那一行、卡片却长到表格最上面"，
+   *    两处都躲不掉"卡片不在你点的那一行下面"，而这一版**不动**已经裁过的判据。
    *
    * ⚠️★ 为什么非要有②③（而不是"表里没有就不渲染"）：轮询每 60 秒**整份换掉** `elo`，
    *    那位玩家可能**掉出前 150**；搜索框又会把整张榜筛小。两种情况下他都可能不在表里 ——
@@ -1407,18 +1600,161 @@ export function RankedEloView(props: RankedEloViewProps) {
    * ⚠️ 反过来，"被筛选筛掉了却还留在页面上"确实会让过滤看起来坏了 —— 两个方向都有代价；
    *    这里选**不消失**：这一块讲的是**那一位玩家**（不是这张榜的一部分），而一块
    *    点一下就凭空消失、又没有任何入口找回来的界面，比一次"过滤看起来没生效"更糟。
-   * ⚠️ 三条**互斥**（同一个产物里 `.ranked__detail` 恰好一个；渲染自检钉着它）。
    */
   const open = detail;
   const openNickname = open === null ? null : open.nickname;
+  /** 那一次查询查到的那位（`null` = 没查过 / 没命中）—— 固定那一行的数据来源。 */
+  const lookedUp = lookup !== null && lookup.kind === 'found' ? lookup.user : null;
   const inTable = openNickname !== null && shown.some((user) => user.nickname === openNickname);
   const inLookup =
-    !inTable &&
-    openNickname !== null &&
-    lookup !== null &&
-    lookup.kind === 'found' &&
-    lookup.user.nickname === openNickname;
+    !inTable && openNickname !== null && lookedUp !== null && lookedUp.nickname === openNickname;
   const belowTable = openNickname !== null && !inTable && !inLookup;
+
+  /*
+   * ★★ 表体本身（榜上的行 + **固定在最上面**的那一行）。
+   *
+   * ⚠️★ 抽成一个变量是**必须**的：它有两个渲染点（榜上有行时、以及"榜被搜索词筛空
+   *    但查到的那位还要有自己那一行"时），而五列表格这一大块抄两遍必然会漂
+   *    （本仓为"同一件事两份实现"吃过不止一次）。
+   * ⚠️★ 外面这一层是**窄屏兜底**（2026-09-16 终审）：五列 + 每格 12px 的左右内边距
+   *    在 ~320px 上装不下，一个长昵称就够把**整页**顶出一条横向滚动条。
+   *    规则写在 `styles.css` 的 `.ranked__tablescroll` 上（本仓样式是全局的，
+   *    渲染了一个没有规则的类名不会有任何报错 —— 本栏目的渲染自检 ⑧ 逐个断言）。
+   */
+  const table = (
+    <div className="ranked__tablescroll">
+      <table className="ranked__table">
+        <thead>
+          <tr>
+            <th>{t('ranked.colRank')}</th>
+            <th>{t('ranked.colNickname')}</th>
+            <th>{t('ranked.colElo')}</th>
+            <th>{t('ranked.colHighest')}</th>
+            <th>{t('ranked.colPhasePoint')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {/*
+            ★★ 2026-09-19 第四轮：查到的玩家 = **表格里的一行**，而且是**最前面**那一行。
+            ⚠️★ 五列与榜上的行**逐个同名同序**（排名 / 昵称 / elo / 最高 / 阶段分）——
+            用户原话「页面布局和排行榜玩家相同（无论是展开前还是展开后）」：
+            这就是"相同"可被检查的地方（多一列少一列、或者换一套标记，都还是"看得见"的
+            差别，而这一行与那些行在 `styles.css` 里**共用同一条规则**）。
+            ⚠️★ 值是 `null` 时印「—」（`dash`），**不是**空串、**不是** 0：
+            那两列今天**各自**可空（`seasonHighest` / `seasonPhasePoint` 都能读不到）。
+            ⚠️★ 判据②在展开那一块：他**不在**榜上时卡片就紧跟这一行（与榜上那三行同一套
+            `<tr class="ranked__detailrow">` + `colSpan={5}`）；他在榜上时卡片归榜上那一行
+            （见上面那三条判据的注释）。
+            ⚠️★ 这一行**不是** `key` 化的列表项：它永远只有一行（那一次查询的结果），
+            所以没有 React 的"错位一格"问题 —— 而它与榜上同一个人出现的两行是**两件事**
+            （用户当场拍的口径："固定在最上面"）。
+          */}
+          {lookedUp === null ? null : (
+            <Fragment>
+              <tr className="ranked__row ranked__row--lookup">
+                <td>{lookedUp.eloRank ?? dash}</td>
+                <td>
+                  <RankedPlayerButton
+                    nickname={lookedUp.nickname}
+                    /*
+                     * ★★ 判据是"**他**的卡片开着没有"，不是"卡片开在**我这一行**下面没有"：
+                     * 他在榜上时卡片按判据① 落在榜上那一行里 ⇒ 只按 `inLookup` 判的话
+                     * 这一颗会念"已收起"，而用户刚点的那一下**就在这一行上**
+                     * （读屏软件说一件假事，他会再点一次 —— 而那次点击把卡片收起来）。
+                     * ⚠️ 同一个人的两颗按钮**都念"展开"**是对的：它们指向**同一块**内容
+                     * （`.ranked__detail` 仍然恰好一块）。
+                     */
+                    expanded={openNickname === lookedUp.nickname}
+                    onToggleDetail={onToggleDetail}
+                  />
+                </td>
+                <td>{lookedUp.eloRate ?? dash}</td>
+                <td>{lookedUp.seasonHighest ?? dash}</td>
+                <td>{lookedUp.seasonPhasePoint ?? dash}</td>
+              </tr>
+              {/* 判据②：展开的那一位**正好就是查到的这一位**（而且不在榜上）⇒ 紧跟这一行 */}
+              {inLookup && open !== null ? (
+                <tr className="ranked__detailrow">
+                  {/* ⚠️ 五列 ⇒ `colSpan={5}`，与榜上那一行里的展开行**逐字相同** */}
+                  <td colSpan={5}>
+                    <RankedDetailBlock
+                      nickname={open.nickname}
+                      state={open.state}
+                      collapse={false}
+                      onToggleDetail={onToggleDetail}
+                      seeds={seeds}
+                      onToggleSeed={onToggleSeed}
+                    />
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          )}
+          {shown.map((user) => (
+            /*
+             * ⚠️ key 不取下标：`eloRank` 会**并列**（同一名次两行），所以名次自己
+             * 也唯一不了 —— 加上昵称之后才唯一（同一份榜单里一个玩家只出现一次）。
+             * ⚠️ `highest` / `phasePoint` 在赛季刚开时是 0 或 `null`：
+             *    `null` 印占位符，`0` 是**真的值**（spec §10 第 7 条）。
+             * ⚠️★ 外层是 `Fragment key=…`（不是 `<tr key=…>`）：展开时**紧跟那一行之后**
+             *    要多出一个 `<tr class="ranked__detailrow">`，而一个 map 只能返回一个元素
+             *    —— 两条 `<tr>` 必须共用同一把 key 才不会让 React 把展开那一行当成
+             *    另一行的兄弟（表现是"点开之后行整体错位一格"）。
+             * ⚠️★ `className="ranked__row"`（2026-09-19 第四轮加）贴在**榜上的每一行**上：
+             *    与固定那一行的类名同一套（`ranked__row` / `ranked__row--lookup`），
+             *    于是"两种行长得一样"这件事在 `styles.css` 里**只有一处**定义，
+             *    而 `--lookup` 是**唯一**的差别（一条细细的左侧强调线）。
+             */
+            <Fragment key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
+              <tr className="ranked__row">
+                <td>{user.rank ?? dash}</td>
+                <td>
+                  {/*
+                    ⚠️★ 可点的是**昵称那一格里的按钮**，不是整行（`<tr>` 上没有可点语义，
+                    读屏软件也念不出来）—— 用户点开的是"这一位玩家"。
+                    ⚠️ `nickname` 是 `| null`（形状如此）⇒ 那一格印「—」且**没有入口**：
+                    上游那条查人的路径要的就是昵称，一个没有名字的玩家查不出任何东西
+                    （做成按钮的话，点下去只会得到一次"没有这个玩家"）。
+                  */}
+                  {user.nickname === null ? (
+                    dash
+                  ) : (
+                    <RankedPlayerButton
+                      nickname={user.nickname}
+                      expanded={openNickname === user.nickname}
+                      onToggleDetail={onToggleDetail}
+                    />
+                  )}
+                </td>
+                <td>{user.eloRate ?? dash}</td>
+                <td>{user.highest ?? dash}</td>
+                <td>{user.phasePoint ?? dash}</td>
+              </tr>
+              {/* 判据①：展开的那一位**就在表里**（而且没被筛掉）⇒ 紧跟这一行 */}
+              {open !== null && openNickname === user.nickname ? (
+                <tr className="ranked__detailrow">
+                  {/* ⚠️ 五列 ⇒ `colSpan={5}`：少一列会让整行挤在第一列里，而表格本身不会报错。
+                      ⚠️ 实测（本机 React 19.3 的 `renderToStaticMarkup`）：产物里就是
+                      `colSpan="5"`（**大小写照 JSX 原样**，不是 `colspan`）—— HTML 的属性名
+                      不区分大小写，浏览器照样当 `colspan` 解；断言要按产物里那一串写。 */}
+                  <td colSpan={5}>
+                    <RankedDetailBlock
+                      nickname={open.nickname}
+                      state={open.state}
+                      collapse={false}
+                      onToggleDetail={onToggleDetail}
+                      seeds={seeds}
+                      onToggleSeed={onToggleSeed}
+                    />
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
     <RankedChrome {...c}>
@@ -1477,63 +1813,28 @@ export function RankedEloView(props: RankedEloViewProps) {
       {/* ⚠️ 说明书（两个入口各自的代价不同），紧贴在框下面 —— 见上面那一段 */}
       <p className="ranked__searchhint">{t('ranked.searchHint')}</p>
       {/*
-        ★★ 那一次精确查询的结果（`null` ⇒ **整个不渲染**，不是渲染一个空框：
-        用户还没查过的时候，多一行空白只会让人以为上面那一步失败了）。
-        ⚠️ 命中时印的是**响应里那个昵称**（上游回的是规范写法：敲 `voxio` 回 `Voxio`），
-        而不是用户敲进去的那串大小写 —— findings §6 最后一段。
-        ⚠️ 没命中/不合法那两档是**两句不同的话**，而且**没有重试按钮**：上游的查询是
-        精确匹配，重试一万次还是这个结果（与 `errorText` 那一档的区别写在
-        `RankedLookup` 的形状注释上）。
+        ★★ 那一次精确查询的结果。
+        ⚠️★ 2026-09-19 第四轮：**命中**（`found`）时这一块**整个没有**了 ——
+        查到的玩家变成了**表格里的一行**（固定在最上面，见下面 `<tbody>` 的第一行），
+        而"点开是同一张卡片"由那一行后面的 `ranked__detailrow` 负责。
+        用户原话：「自行搜索的玩家**页面布局和排行榜玩家相同**（无论是展开前还是展开后）」，
+        而一块**表格之外**的读数行（elo / 排名 / 本赛季战绩）正是"布局不同"的来源：
+        它有自己的一套标记与度量，而卡片还有第三套。
+        ⚠️★ 后果写清（用户当场拍的口径）：查到的这位**本来就在榜上**时会出现**两行**
+        （固定那一行 + 他自己那一行），两行的昵称都印得出来、都能点开同一张卡片 ——
+        区分只有 `.ranked__row--lookup` 那条细细的左侧强调线。
+        ⚠️ `null`（这一页还没查过）⇒ **整个不渲染**，不是渲染一个空框：多一行空白
+        会让人以为上面那一步失败了。
+        ⚠️★ **没命中 / 昵称不合法**那两档**照旧**渲染在这里（表格**上面**）：
+        它们没有玩家可以变成一行（上游对这个人没有答案），所以与"行"无关；
+        而且它们是**两句不同的话**、**没有重试按钮**（上游的查询是精确匹配，
+        重试一万次还是这个结果 —— `RankedLookup` 的形状注释上写着这条）。
       */}
-      {lookup === null ? null : (
+      {lookup === null || lookup.kind === 'found' ? null : (
         <div className="ranked__lookup">
-          {lookup.kind === 'found' ? (
-            <>
-              <RankedPlayerButton
-                nickname={lookup.user.nickname}
-                /*
-                 * ★★ 2026-09-19 终审的 Minor（判据②那一半的反面）：查到的这位**同时**也在榜上时，
-                 * 卡片按判据① 渲染在**表格那一行**里 ⇒ 只写 `inLookup` 的话这一颗是 `false`，
-                 * 而用户刚点的就是**这一颗**（读屏软件念"已收起"、以及屏幕上看不到卡片长出来，
-                 * 都会让他以为那一下没生效）。
-                 * ⚠️ 判据是"**他**的卡片开着没有"（`openNickname === lookup.user.nickname`），
-                 * 不是"卡片开在**我这一块**里没有" —— 同一个人的两张按钮都念"展开"是对的，
-                 * 它们指向**同一块**内容（`.ranked__detail` 仍然恰好一块，⑥ 那条钉着它）。
-                 * ⚠️ 夹具：这一档（`found` **且** 在表里）今天在渲染自检里有一个专门的产物。
-                 */
-                expanded={inLookup || (inTable && openNickname === lookup.user.nickname)}
-                onToggleDetail={onToggleDetail}
-              />
-              {/*
-                ⚠️ 这一格用 `.ranked__lookupstats`（**不是** `.ranked__meta`）：见
-                `RankedDetailBody` 那段注释 —— "赛季与赛段并排"那条断言同时钉着
-                "这一栏里不许有第二个 `.ranked__meta`"。
-              */}
-              <span className="ranked__lookupstats">
-                <span>{t('ranked.detailElo', { elo: lookup.user.eloRate ?? dash })}</span>
-                <span>{t('ranked.detailRank', { rank: lookup.user.eloRank ?? dash })}</span>
-                <span>
-                  {t('ranked.detailSeasonRecord', {
-                    wins: lookup.user.season.wins ?? dash,
-                    loses: lookup.user.season.loses ?? dash,
-                  })}
-                </span>
-              </span>
-              {/* 判据②：展开的那一位正好就是查到的这一位 ⇒ 卡片落在这里 */}
-              {inLookup && open !== null ? (
-                <RankedDetailBlock
-                  nickname={open.nickname}
-                  state={open.state}
-                  collapse={false}
-                  onToggleDetail={onToggleDetail}
-                />
-              ) : null}
-            </>
-          ) : (
-            <p className="ranked__lookupmsg">
-              {lookup.kind === 'not_found' ? t('ranked.lookupNotFound') : t('ranked.lookupInvalid')}
-            </p>
-          )}
+          <p className="ranked__lookupmsg">
+            {lookup.kind === 'not_found' ? t('ranked.lookupNotFound') : t('ranked.lookupInvalid')}
+          </p>
         </div>
       )}
       {/*
@@ -1587,89 +1888,25 @@ export function RankedEloView(props: RankedEloViewProps) {
          *    而该做的只是把搜索框里那个词删掉（与 ② 的 `liveNoMatch` / `liveEmpty` 同一口径）。
          * ⚠️ `users.length === 0` 那一支**照旧**用 `eloEmpty`：上游本身就空的时候，
          *    说"没有匹配的玩家"会把一件上游的事说成用户自己筛出来的。
-         * ⚠️ 因此这里**不渲染表**（与上面空集合那一支同一条：一张只有表头的空表看起来像坏了）。
+         *
+         * ⚠️★ 2026-09-19 第四轮：这一支现在**也**可能要把表画出来（只要查到的那位有那一行）。
+         *    原因是"打字筛榜 + 回车查人"这条路上，两个动作用的是**同一个**搜索词 ——
+         *    要查的人本来就不在前 150 里（这正是查他的理由）⇒ 那个词把整张榜筛空，
+         *    于是"固定在最上面那一行"没有表可待，卡片只能掉到表格下面去。
+         *    而用户要的恰恰是「自行搜索的玩家**页面布局和排行榜玩家相同**」。
+         *    ⚠️ 那两句空态话（`eloEmpty` / `eloFilterEmpty`）**照旧**渲染：它们说的是
+         *    榜上没有行，而固定那一行**不是榜上的行**（它是"你查的这个人"）。
+         *    ⚠️ 反过来（榜上有行时）表照常渲染，固定那一行排在它前面。
          */
-        <p className="ranked__empty">{t('ranked.eloFilterEmpty', { q: searchText.trim() })}</p>
+        <>
+          <p className="ranked__empty">{t('ranked.eloFilterEmpty', { q: searchText.trim() })}</p>
+          {lookedUp === null ? null : table}
+        </>
       ) : (
-        /*
-         * ⚠️★ 外面这一层是**窄屏兜底**（2026-09-16 终审）：五列 + 每格 12px 的左右内边距
-         *    在 ~320px 上装不下，一个长昵称就够把**整页**顶出一条横向滚动条。
-         *    规则写在 `styles.css` 的 `.ranked__tablescroll` 上（本仓样式是全局的，
-         *    渲染了一个没有规则的类名不会有任何报错 —— 本栏目的渲染自检 ⑧ 逐个断言）。
-         */
-        <div className="ranked__tablescroll">
-          <table className="ranked__table">
-            <thead>
-              <tr>
-                <th>{t('ranked.colRank')}</th>
-                <th>{t('ranked.colNickname')}</th>
-                <th>{t('ranked.colElo')}</th>
-                <th>{t('ranked.colHighest')}</th>
-                <th>{t('ranked.colPhasePoint')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((user) => (
-                /*
-                 * ⚠️ key 不取下标：`eloRank` 会**并列**（同一名次两行），所以名次自己
-                 * 也唯一不了 —— 加上昵称之后才唯一（同一份榜单里一个玩家只出现一次）。
-                 * ⚠️ `highest` / `phasePoint` 在赛季刚开时是 0 或 `null`：
-                 *    `null` 印占位符，`0` 是**真的值**（spec §10 第 7 条）。
-                 * ⚠️★ 外层是 `Fragment key=…`（不是 `<tr key=…>`）：展开时**紧跟那一行之后**
-                 *    要多出一个 `<tr class="ranked__detailrow">`，而一个 map 只能返回一个元素
-                 *    —— 两条 `<tr>` 必须共用同一把 key 才不会让 React 把展开那一行当成
-                 *    另一行的兄弟（表现是"点开之后行整体错位一格"）。
-                 */
-                <Fragment key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
-                  <tr>
-                    <td>{user.rank ?? dash}</td>
-                    <td>
-                      {/*
-                        ⚠️★ 可点的是**昵称那一格里的按钮**，不是整行（`<tr>` 上没有可点语义，
-                        读屏软件也念不出来）—— 用户点开的是"这一位玩家"。
-                        ⚠️ `nickname` 是 `| null`（形状如此）⇒ 那一格印「—」且**没有入口**：
-                        上游那条查人的路径要的就是昵称，一个没有名字的玩家查不出任何东西
-                        （做成按钮的话，点下去只会得到一次"没有这个玩家"）。
-                      */}
-                      {user.nickname === null ? (
-                        dash
-                      ) : (
-                        <RankedPlayerButton
-                          nickname={user.nickname}
-                          expanded={openNickname === user.nickname}
-                          onToggleDetail={onToggleDetail}
-                        />
-                      )}
-                    </td>
-                    <td>{user.eloRate ?? dash}</td>
-                    <td>{user.highest ?? dash}</td>
-                    <td>{user.phasePoint ?? dash}</td>
-                  </tr>
-                  {/* 判据①：展开的那一位**就在表里**（而且没被筛掉）⇒ 紧跟这一行 */}
-                  {open !== null && openNickname === user.nickname ? (
-                    <tr className="ranked__detailrow">
-                      {/* ⚠️ 五列 ⇒ `colSpan={5}`：少一列会让整行挤在第一列里，而表格本身不会报错。
-                          ⚠️ 实测（本机 React 19.3 的 `renderToStaticMarkup`）：产物里就是
-                          `colSpan="5"`（**大小写照 JSX 原样**，不是 `colspan`）—— HTML 的属性名
-                          不区分大小写，浏览器照样当 `colspan` 解；断言要按产物里那一串写。 */}
-                      <td colSpan={5}>
-                        <RankedDetailBlock
-                          nickname={open.nickname}
-                          state={open.state}
-                          collapse={false}
-                          onToggleDetail={onToggleDetail}
-                        />
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        table
       )}
       {/*
-        ★★ 判据③：他**不在**这张表里（掉出前 150、或者被搜索词筛掉了）——
+        ★★ 判据③：他**不在**这张表里（掉出前 150、而且不是查到的那位）——
         卡片落在表格**下面**，而且第一行仍是那颗可点收起的昵称按钮（不然用户没有任何
         办法把它关掉，只能刷新整页）。为什么"不消失"这件事见上面那三条判据的注释。
         ⚠️ 它渲染在 `</table>` **外面**（不是某一行下面）："他在表里"这件事不成立，
@@ -1682,6 +1919,8 @@ export function RankedEloView(props: RankedEloViewProps) {
           state={open.state}
           collapse
           onToggleDetail={onToggleDetail}
+          seeds={seeds}
+          onToggleSeed={onToggleSeed}
         />
       ) : null}
     </RankedChrome>

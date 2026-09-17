@@ -3552,6 +3552,49 @@ export const en: TranslationSchema = {
     matchTypePrivate: 'Private',
     matchTypeEvent: 'Event',
 
+    /*
+     * ---- The "seeds" button on the right of every match row, and the panel
+     *      it opens underneath it (2026-09-19, fourth round) ----
+     *
+     * ★ The user's words: "put a button on the right of every match; clicking it
+     *   queries the seeds via the api and shows them below that match's
+     *   information". The seeds come from a **separate service** (the ops box's
+     *   `/api/v2/seed/{matchId}`, through our existing same-origin route
+     *   `GET /api/ranked-seeds/match/:matchId`), which is **not** the same thing
+     *   as `matchTypeEvent`'s row above (`seedType` / `bastionType`, structure
+     *   codes): that one says which structure the match had, these three are the
+     *   **world seed values**. Both end up under the same match, so the wording
+     *   has to keep them apart.
+     *
+     * ⚠️★ `seedButton` is **button text**, not a heading: a screen can hold a
+     *    dozen identical ones, and a screen reader reads them as "Seeds, button,
+     *    collapsed" (the real `aria-expanded` sits on the button and comes from
+     *    that match's own state).
+     * ⚠️ The three labels **reuse the three above** (`seedOverworld` /
+     *    `seedNether` / `seedEnd`, the same group the weekly race uses): the same
+     *    thing has no reason to be worded twice inside one section, and three
+     *    more keys with identical values would be two sources of truth that drift
+     *    (this repo has deleted duplicate keys for exactly that). Only the
+     *    **count** differs: the weekly race has four (including RNG), here there
+     *    are the three the upstream gives.
+     */
+    seedButton: 'Seeds',
+    /*
+     * ★★ This sentence describes the **normal** case: the seed library only
+     *    covers about 80% of matches (the ledger and the 404 in
+     *    `routes/seeds.ts` both say so), so it is **not** a failure and must not
+     *    sound like one worth retrying.
+     * ⚠️★ It and `seedUnavailable` below **must be two different sentences**:
+     *    one is "this one is not in the library" (retrying changes nothing), the
+     *    other is "we could not read it this time" (worth one more click).
+     *    Merging them either sends the user clicking forever on an id that can
+     *    never be found, or turns a network blip into "this match will never have
+     *    seeds".
+     */
+    seedNotFound: 'The seeds for this match are not in the library.',
+    /** ⚠️ Paired with the sentence above (one permanent, one retryable) -- see that block. */
+    seedUnavailable: 'Seeds cannot be read right now.',
+
     // ---- (4) Weekly race (`RankedWeeklyView`, spec §6.5) ----
     weeklyTitle: 'Weekly race',
     weeklyNumber: 'Week {{n}}',

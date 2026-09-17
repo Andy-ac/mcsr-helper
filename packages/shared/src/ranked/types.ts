@@ -350,12 +350,16 @@ export interface RankedPlayerRecord {
  * ---------------------------------------------------------------------------
  * 用户要的是"展开后看得到这位玩家的数据"，而这一栏的语义是**ranked 排位**：
  * 拿得出手的就是"现在多少分 / 排第几 / 本赛季与历史战绩"这几样。
- * ⚠️★ 2026-09-19 修复轮（T4）还删掉了**第六格** `seasonHighest`
- *    （`seasonResult.highest`，2026-09-19 终审的 Minor）：它**没有任何渲染点**、
- *    也没有对应的词条 ⇒ 一条没有消费者的数据通路（卡片上已经有 elo / 排名 /
- *    本赛季战绩 / 本赛季最佳用时四样）。⚠️ 想要的话加回来是**一个字段**：
- *    `types` 一格 + `parse.ts` 那一行 + 一个渲染点 + 一条词条，
- *    这件事记在 `docs/pending.md §5.100`。
+ * ⚠️★ 2026-09-19 修复轮（T4）删掉过 `seasonHighest`（`seasonResult.highest`）：
+ *    它那时候**没有任何渲染点**、也没有对应的词条 ⇒ 一条没有消费者的数据通路
+ *    （卡片上已经有 elo / 排名 / 本赛季战绩 / 本赛季最佳用时四样）。当时那句
+ *    "想要的话加回来是**一个字段**"就是**这一次**（第四轮）：搜索到的玩家变成
+ *    榜上的一行之后，"最高"与"阶段分"这两列**必须**有值 —— 否则它们只能印「—」，
+ *    而"页面布局和排行榜玩家相同"（用户原话）就是一句空话。
+ * ⚠️ 于是这一版有**两格**是给那一行用的（`seasonHighest` / `seasonPhasePoint`）：
+ *    它们是**表格列**的数据来源，扫描点只有一处（`RankedEloView` 里那一行）。
+ *    卡片（`.ranked__detailstats`）**不**印这两格 —— 那五格是另一件事
+ *    （见下面 `RankedPlayerRecord` 与词条表），两处混用会让"卡片有几格"漂。
  * `achievements` / `connections` / `weeklyRaces` / `timestamp` / `roleType` / `country`
  * **不进这个形状** —— 不进 = 界面不可能顺手印出来，这一层不为它们写兜底
  * （要加的人请连着这一段的理由一起改，别只加一格）。
@@ -371,6 +375,28 @@ export interface RankedPlayerDetail {
   /** 未定级玩家实测就是 `null`（**是真实状态**，不是缺数据）。 */
   eloRate: number | null;
   eloRank: number | null;
+  /**
+   * ★★ 本赛季**最高** elo（`seasonResult.highest`）—— 搜索行第四列的数据来源。
+   *
+   * ⚠️★ 它**只有** `seasonResult` 有（那一份响应的外层没有这一格，实测），
+   *    所以读法只有一条，没有"两处取哪个"的问题。
+   * ⚠️ 与 `RankedEloEntry.highest`（榜上那一列）**同源同义**：两处都读
+   *    `seasonResult.highest` ⇒ 同一个人在榜上与他被搜出来时，这一列印的是同一个数
+   *    （这一条正是"两种行的布局相同"要的东西，也是它可被断言的地方）。
+   */
+  seasonHighest: number | null;
+  /**
+   * ★★ 本赛季**当前赛段**的积分（`seasonResult.last.phasePoint`）—— 搜索行第五列。
+   *
+   * ⚠️★★ 上游把它埋在两层的里面（`seasonResult.last.phasePoint`），而榜上那一列读的是
+   *    `seasonResult.phasePoint`（`parseEloEntry`）—— 两个位置都是在**实测的响应**里
+   *    看着取的（账本 `ranked-round4/progress.md` 的 `seasonResult` 读数），
+   *    不是抄文档。⚠️ 换位置之前先看一眼那两条读数：读错了的表现是**整列 0 或整列「—」**，
+   *    而这两者都不是故障，没有任何门禁看得见。
+   * ⚠️★ `0` 是**真的值**（赛季刚开始时整列都是 0，spec §2.3），缺才是 `null`
+   *    ⇒ 解析层绝不许把 0 折成 `null`（那会让"这个赛段才刚开始"变成"我们没读到"）。
+   */
+  seasonPhasePoint: number | null;
   season: RankedPlayerRecord;
   total: RankedPlayerRecord;
 }

@@ -1656,6 +1656,9 @@ function firstMatchOf(raw: unknown): RankedMatch {
  * ⚠️ `statistics` 只抄了我们要读的四格，但每一格的**两个格子都留着**（`{ranked, casual}`）：
  *    "取哪一个"正是判据本身 —— 取 `casual` 的实现在 `loses` 上会拿到 `1`（total 那一块）
  *    而不是 `1809`，而那个数看起来完全正常。
+ * ⚠️★ `seasonResult` 照**实测**抄（账本 `ranked-round4/progress.md` 的读数）：
+ *    `last.phasePoint` 实测就是 **0**（不是缺），所以夹具里也必须是 0 ——
+ *    "0 与 null 必须分开"这条如果夹具里没有 0，就永远验不到。
  */
 const PLAYER_DETAIL_FIXTURE = {
   status: 'success',
@@ -1666,7 +1669,12 @@ const PLAYER_DETAIL_FIXTURE = {
     eloRate: 2349,
     eloRank: 1,
     country: 'gb',
-    seasonResult: { last: { eloRate: 2349, eloRank: 1 }, highest: 2385, lowest: 1670, phases: [] },
+    seasonResult: {
+      last: { eloRate: 2349, eloRank: 1, phasePoint: 0, percentile: 0 },
+      highest: 2385,
+      lowest: 1670,
+      phases: [],
+    },
     statistics: {
       season: {
         bestTime: { ranked: 387772, casual: null },
@@ -1886,6 +1894,68 @@ describe('parsePlayerDetail：五格 / 一格坏 / 整份不成形状', () => {
     assert.equal(detail.nickname, 'edcr');
     assert.equal(detail.eloRate, 2349);
     assert.equal(detail.eloRank, 1);
+  });
+
+  /*
+   * ★★ 搜索到的玩家是**榜上的一行**（2026-09-19 第四轮）⇒ 那五列里有两列的数据
+   *    必须来自这一份详情：`highest` 与 `last.phasePoint`。
+   * ⚠️★ 这两格的期望值写**字面量**（2385 / 0）：从夹具现算的话，"印的是同一个数"
+   *    就成了同义反复（夹具改了而实现没跟上时，两边会一起变）。
+   * ⚠️★ 第三刀是非空断言：`0` 与 `null` 必须分开 —— 实现里写 `?? null` 之类的
+   *    "顺手归一"时，`0` 会变成 `null`，而界面上只是一个小小的「—」。
+   */
+  it('★★ 第四、第五列那两格：`seasonHighest` 与 `seasonPhasePoint`（0 是**真的值**）', () => {
+    const detail = parsePlayerDetail(PLAYER_DETAIL_FIXTURE);
+    assert.ok(detail);
+    assert.equal(detail.seasonHighest, 2385, '★ 最高那一列读的是 `seasonResult.highest`');
+    assert.equal(
+      detail.seasonPhasePoint,
+      0,
+      '★★ 阶段分那一列读的是 `seasonResult.last.phasePoint`，实测就是 0 —— **不许折成 null**',
+    );
+    assert.notEqual(
+      detail.seasonPhasePoint,
+      null,
+      '★★ 探针方向的另一刀：0 不是"读不到"（把 0 折成 null 的实现过不了上面那条，也过不了这条）',
+    );
+  });
+
+  it('★★ 两格各自可空：`last` 缺省 ⇒ 阶段分 null，而**最高那一格照旧**', () => {
+    /*
+     * ⚠️ 判据是**逐格**的（与 `parseEloEntry` 那三格同一条）：上游少了 `last` 时，
+     *    `highest` 还在，那时把整块判成"读不到"会让排行榜那一行少印一个真数。
+     */
+    const noLast = parsePlayerDetail({
+      ...PLAYER_DETAIL_FIXTURE,
+      data: {
+        ...PLAYER_DETAIL_FIXTURE.data,
+        seasonResult: { highest: 2385, lowest: 1670, phases: [] },
+      },
+    });
+    assert.ok(noLast);
+    assert.equal(noLast.seasonPhasePoint, null, '★ `last` 不在 ⇒ null（不是 0）');
+    assert.equal(noLast.seasonHighest, 2385, '★ 同一块里的 `highest` 不受影响');
+  });
+
+  it('★ 整块 `seasonResult` 缺省 ⇒ 两格都是 null（详情**照样成立**）', () => {
+    /*
+     * ⚠️ 它不是整份的骨架（骨架是 uuid + nickname）：缺了这一块时，
+     *    这一行的 elo / 排名 / 战绩照旧，只有这两列印「—」。
+     */
+    const noSeason = parsePlayerDetail({
+      status: 'success',
+      data: {
+        uuid: SELF_UUID,
+        nickname: 'edcr',
+        eloRate: 2349,
+        eloRank: 1,
+        statistics: PLAYER_DETAIL_FIXTURE.data.statistics,
+      },
+    });
+    assert.ok(noSeason, '★ 缺 `seasonResult` **不是**整份失败');
+    assert.equal(noSeason.seasonHighest, null);
+    assert.equal(noSeason.seasonPhasePoint, null);
+    assert.equal(noSeason.season.wins, 96, '★ 同一份里的战绩照旧');
   });
 
   it('★★ 战绩取的是 `ranked` 那一半，**不是** `casual`（两个格子都在夹具里）', () => {

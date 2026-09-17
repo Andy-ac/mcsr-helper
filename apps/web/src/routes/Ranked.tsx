@@ -71,12 +71,14 @@ import {
   RankedEloView,
   RankedLiveView,
   type RankedLookup,
+  type RankedSeedState,
+  type RankedSeedStates,
   RankedStatusView,
   RankedTabBar,
   RankedWeeklyView,
   WEEK_INPUT_ERROR_KEYS,
 } from '@/components/RankedPanels';
-import { fetchRankedStatus } from '@/lib/api';
+import { fetchRankedStatus, fetchSeedByMatchId } from '@/lib/api';
 import { useApiErrorText } from '@/lib/auth';
 import {
   fetchRankedElo,
@@ -88,6 +90,7 @@ import {
   RankedLookupError,
 } from '@/lib/rankedDirect';
 import { describeRankedError } from '@/lib/rankedErrors';
+import { describeSeedQueryError } from '@/lib/seedErrors';
 import { NotFound } from '@/routes/NotFound';
 
 /** 本地计时的一拍（与 `routes/ShareBoard.tsx` 的 `TICK_MS` 同一条；「N 秒前更新」靠它往前走）。 */
@@ -332,12 +335,33 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
     state: RankedDetailState;
   }> | null>(null);
 
+  /**
+   * ★★ ③ 的**第四格**状态（2026-09-19 第四轮）：每一场比赛的种子，按 `String(matchId)` 存。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 它为什么与前两格是**同一种持有者**（`Held` + 同一个 `mine()`）
+   * ---------------------------------------------------------------------------
+   * 前两格是"用户查了谁 / 点开了谁"，这一格是"用户点开了哪几场、那几场读到了什么"。
+   * 三者都不是"这一页取到了什么数据"（那一批是 `Loaded`，还带 `atMs`），但**都属于某一页**：
+   * 换到别的标签页之后，`mine()` 让它们一个字都不渲染，而"属于不属于这一页"在全文件里
+   * **只有那一处判据**（两份判据会漂，漂掉的表现是"上一页点开的那一场在别的页上还开着"）。
+   *
+   * ⚠️★ 它是**一格记录**（不是"当前点开的那一场"）：用户可以点开 A 再点开 B，
+   *    而 A 的面板**留着**（那是他自己的决定，收回去等于让他重复点一遍）。
+   *    代价写清：一发同时只有一发在飞（下面 `seedInflight` 只留一个句柄），
+   *    所以点开 B 会把 A 那一发取消掉 —— 而**取消的那一格会被收掉**（见 `abortSeed`），
+   *    它不会永远停在「加载中」（那正是 2026-09-19 终审 Critical 1 的形状）。
+   */
+  const [eloSeeds, setEloSeeds] = useState<Held<RankedSeedStates> | null>(null);
+
   /** 搜索框里的字（**只**认属于这一页的那一份；别的页面上回空串 ⇒ 不筛）。 */
   const searchText = mine(eloSearch, page) ?? '';
   /** 那一次精确查询的结果（属于这一页的那一份）。 */
   const lookup = mine(eloLookup, page);
   /** 正在展开的那一位（属于这一页的那一份）。 */
   const detail = mine(eloDetail, page);
+  /** 那几场比赛的种子（属于这一页的那一份）；`null` = 这一页还没点开过任何一场。 */
+  const seeds = mine(eloSeeds, page);
 
   /**
    * ★ 点击触发的**两次**请求各自的在飞句柄（查人 / 展开）。
@@ -376,6 +400,103 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
    *    这个事实，不属于任何一页。
    */
   const detailCache = useRef(new Map<string, RankedDetailData>());
+
+  /**
+   * ★★ 种子的两件家什（2026-09-19 第四轮）：一发在飞 + 一张**会话内**的答案缓存。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 为什么还要自己缓存：服务端已经缓存 1 小时了
+   * ---------------------------------------------------------------------------
+   * 服务端那 1 小时缓存省的是**上游**那一跳（种子值本身永远不变），而**访客自己那一发**
+   * 请求照样发出去。`GET /api/ranked-seeds/*` 上挂着 `upstreamGate`：全局 5 次/秒 +
+   * **每 IP 20 次/分钟**（账本 `ranked-round4/progress.md` 的限流那一行）。
+   * 一张十场的卡片挨个点开就是十发 —— 收起再点开又是十发，而**两次的答案一模一样**。
+   * ⇒ 缓存的是"这一场我们已经问过了"，键与状态记录**同一把**（`String(matchId)`）：
+   *   两处各写一种键（一处 `String`、一处数字）迟早会漂，而漂掉的表现是"缓存永远不命中"
+   *   —— 画面上完全看不出来（只是额度在掉），与 `latestIdRef` 那条同一种形状。
+   *
+   * ⚠️★ 只有 `ready` 与 `not_found` 进缓存：前者的种子值永远不会变，后者是**上游的确定回答**
+   *    （"这场不在库里"重试一万次还是这个答案）。
+   * ⚠️★ `failed` **绝不进缓存**：它是"这一次没读到"（网络抖动 / 429 / 上游 502），
+   *    不进缓存 ⇒"再点一次"就是一次**重试**。把它也缓存起来的话，一次抖动会变成
+   *    "这一场永远读不到"，而且界面上与真的不在库里长得一模一样。
+   * ⚠️ 换页**不清**它（与 `detailCache` 同一条）：这是"这一场我们已经问过了"这个事实，
+   *    不属于任何一页；而它省下的正是访客自己的配额。
+   */
+  const seedCache = useRef(new Map<string, RankedSeedState>());
+
+  /**
+   * ★★ 种子那一发**正在飞**的请求（连同它属于哪一场）。
+   *
+   * ⚠️★ 与另外三个 `*Inflight` 一样不能共用：共用的话一次轮询会把用户刚点开的种子面板掐掉。
+   * ⚠️★ 它多带了 `key`（另外三个只存 controller）：取消之后**必须知道要把哪一格收掉**
+   *    （`abortSeed` 里那条，与 2026-09-19 终审 Critical 1 的修法同一件事）——
+   *    只知道 controller、不知道它属于谁的话，收回来的状态就没有落点。
+   */
+  const seedInflight = useRef<{ key: string; controller: AbortController } | null>(null);
+
+  /**
+   * 把**某一格**从这一页的种子记录里收掉。
+   *
+   * ⚠️★ `onlyLoading` 那一半**就是** Critical 1 的判据：只有"一个请求还在飞"的那一格
+   *    该被收掉，而 `ready` / `not_found` / `failed` 是**已经落地**的结果
+   *    （与"换页不清旧数据"同一条口径：回到刚看过的一页时，上面已经画着的东西不该被
+   *    自己抹掉）。整格无差别删掉的话，用户切一次标签页回来，刚才读到的三个种子就没了
+   *    —— 而那看起来与"我点开了吗"分不开。
+   * ⚠️ 判据用 `mine(held, page)`：**别的页面的那一份不碰**（它就是"属于哪一页"的判据本身）。
+   * ⚠️ 写成"重建一个对象"而不是 `delete data[key]`：state 里的对象不许就地改
+   *    （就地改的话 React 拿到的还是同一个引用，界面不会重画 —— 表现是"点了收起没反应"）。
+   */
+  const dropSeedState = useCallback(
+    (key: string, onlyLoading: boolean): void => {
+      setEloSeeds((held) => {
+        const data = mine(held, page);
+        if (data === null) return held;
+        if (onlyLoading && data[key]?.kind !== 'loading') return held;
+        if (data[key] === undefined) return held;
+        const rest: RankedSeedStates = {};
+        for (const [each, state] of Object.entries(data)) {
+          if (each !== key) rest[each] = state;
+        }
+        return { key: page, data: rest };
+      });
+    },
+    [page],
+  );
+
+  /**
+   * ★★ 取消种子那一发，**并且把它留在状态里那一格 `loading` 收掉**。
+   *
+   * ⚠️★ 两件事必须成对（这是 2026-09-19 终审 Critical 1 的形状）：
+   *    只 `abort()` 不收状态的话，那一格会永远停在 `loading` —— 视图照旧渲染
+   *    「加载中」，而没有请求、没有重试、也没有第二个人会把它推到下一档
+   *    （用户唯一的出路是"再点一次"，而他根本不知道要这么干）。
+   * ⚠️ 它有两个调用点，两处都**必须**走这一个函数：
+   *    · `[page]` 的 cleanup（换 tab / 换周 / 卸载）；
+   *    · `toggleSeed` 起新的一发之前（一发同时只有一发）以及"收起"那一支。
+   *    各写一遍的话迟早有一处漏掉收状态的那半句，而那一处**没有任何自动判据**
+   *    （`[page]` 那个 effect 在静态渲染里根本不跑）。
+   */
+  const abortSeed = useCallback((): void => {
+    const flying = seedInflight.current;
+    seedInflight.current = null;
+    if (flying === null) return;
+    flying.controller.abort();
+    dropSeedState(flying.key, true);
+  }, [dropSeedState]);
+
+  /**
+   * 把某一场比赛的种子状态写进这一页的记录（**盖同一个页章**）。
+   *
+   * ⚠️ 合并的是 `mine(held, page)` 那一份（不是整个 `held.data`）：少了这一步，
+   *    "换页之后第一次点击"会把**上一页**那几格原样带过来。
+   */
+  const putSeedState = useCallback(
+    (key: string, state: RankedSeedState): void => {
+      setEloSeeds((held) => ({ key: page, data: { ...(mine(held, page) ?? {}), [key]: state } }));
+    },
+    [page],
+  );
 
   /**
    * 取一轮数据。**成功才替换 `loaded`，失败一个字都不清**（规则 6）。
@@ -700,10 +821,23 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
        *    `RankedLookup` 只有 `found` / `not_found` / `invalid_identifier` **三档、
        *    没有 `loading`**（`submitLookup` 发请求前一个状态都不设）⇒ 被取消时留在手上的
        *    是"上一次的回答"（或者 `null`），那是一个**已经落地**的结果，不会转圈。
+       *
+       * ---------------------------------------------------------------------
+       * ⚠️★ 2026-09-19 第四轮：**种子那一发**是同一个形状的第二份实例
+       * ---------------------------------------------------------------------
+       * 「按页章取消 + 带 `loading` 档 + 点击触发」这三件事它都有（`eloSeeds` 那一格），
+       * 所以"切走再切回时永远转圈"在原样搬过来的写法上**同样会发生**。
+       * ⇒ 这里调的是 `abortSeed()`：它**成对**做两件事（abort + 把那一格 `loading` 收掉），
+       * 调用点在**同一个** cleanup 里（不是散在两处 —— 那样迟早只改一半）。
+       * ⚠️ 代价与上面那条逐字相同：切走再切回来时，那一格**还在飞**的种子面板会
+       * **消失**（不是接着转圈），用户再点一下才是真的会发请求。
+       * ⚠️ 它**不碰**已经落地的 `ready` / `not_found` / `failed`（`dropSeedState` 的
+       * `onlyLoading` 那一半）：回到刚看过的一页时，刚才读到的三个种子还在。
        */
       setEloDetail((held) => (held?.data.state.kind === 'loading' ? null : held));
+      abortSeed();
     };
-  }, [page]);
+  }, [abortSeed, page]);
 
   /*
    * 当前这一页手上**属于它**的那几份数据的时刻（`key` 相符）。用它算一个**唯一**的"有多旧"。
@@ -876,6 +1010,93 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
     })();
   };
 
+  /**
+   * ★★ 「点这一场右侧那颗按钮 ⇒ 查 / 收起它的三个种子」（2026-09-19 第四轮）。
+   *
+   * ---------------------------------------------------------------------------
+   * ★ 数据来自**既有的同源路由**（这一轮零服务端改动）
+   * ---------------------------------------------------------------------------
+   * `fetchSeedByMatchId(matchId)` → `GET /api/ranked-seeds/match/:matchId`
+   * ⇒ 我们自己的服务端去问运维那台种子服务（`/api/v2/seed/{matchId}`）。
+   * ⚠️★ **不是** `api.mcsrranked.com` 的 `/matches/{id}`：那一条给的是**结构代码**
+   *    （`seedType` / `bastionType`），而它**已经**印在同一行的 `.ranked__detailseed` 里了；
+   *    用户要的是三个**世界种子值**（账本 `ranked-round4/progress.md` 写着这件事）。
+   * ⚠️ **同源**也意味着没有 CORS / 混合内容的问题（那台上游是明文 HTTP、无 CORS 头）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 四件事的判据各只有一处
+   * ---------------------------------------------------------------------------
+   * ① **开着没有**：`seeds[key] !== undefined`（`seeds` 是过了页章的那一份）。
+   *    开着 ⇒ 收起：取消那一发（如果还在飞）+ 把这一格删掉。
+   * ② **缓存**（`seedCache`）：`ready` / `not_found` 命中就**一次请求都不发**。
+   * ③ **取消**：起新的一发之前先 `abortSeed()` —— 一发同时只有一发，而且被取消的
+   *    那一格会被收掉（不会停在「加载中」）。
+   * ④ **错误分类**：交给 `describeSeedQueryError`（`lib/seedErrors.ts`），
+   *    这里**不许**再写一遍 `status === 404` 或 `code === 'seed_not_found'` 的分支 ——
+   *    两份判据会漂，而漂掉的表现是"不在库里的 20% 显示成故障"（或者反过来）。
+   *    ⚠️★ 那一档只认 `kind === 'not_found'`：其余一律 `failed`（可重试）。
+   * ⑤ **失败不写 `errorText` / 不写 `setError`**：那是"这一页的数据读不到"那一格
+   *    （顶上那句 + 重试），而这里失败的是**这一场**的种子 —— 一次 429 不该把整张榜
+   *    变成错误页（与 `toggleDetail` / 赛段那一路的 `{ fatal: false }` 同一条取舍）。
+   */
+  const toggleSeed = (matchId: number): void => {
+    /*
+     * ⚠️★ 键**只在这里**算一次（`String(matchId)`）：状态记录、缓存、在飞句柄三处都用它 ——
+     *    三处各写一遍（一处 `String`、一处数字）迟早会漂，而漂掉的表现是"点了按钮
+     *    什么都不出现"（查表永远落空），每一格都合法、没有任何报错。
+     */
+    const key = String(matchId);
+    const open = seeds !== null && seeds[key] !== undefined;
+    if (open) {
+      abortSeed();
+      dropSeedState(key, false);
+      return;
+    }
+    const cached = seedCache.current.get(key);
+    if (cached !== undefined) {
+      putSeedState(key, cached);
+      return;
+    }
+    abortSeed();
+    const controller = new AbortController();
+    seedInflight.current = { key, controller };
+    putSeedState(key, { kind: 'loading' });
+    void (async () => {
+      try {
+        const { seed } = await fetchSeedByMatchId(matchId, controller.signal);
+        if (controller.signal.aborted) return;
+        const state: RankedSeedState = { kind: 'ready', seed };
+        seedCache.current.set(key, state);
+        putSeedState(key, state);
+      } catch (error) {
+        // ⚠️ 取消不是失败（与另外三路同形）：切页/收起时被 abort，状态由 `abortSeed` 收掉
+        if (isAbort(error) || controller.signal.aborted) return;
+        /*
+         * ⚠️★ 分类走 `describeSeedQueryError`（`context: 'lookup'` —— 这一条路就是
+         *    "按 ID 查一场"）：它把 404 / `seed_not_found` 判成 `not_found`，
+         *    其余（429 / 5xx / 网络）判成别的档 ⇒ 这里只分"是不是不在库里"。
+         * ⚠️ 它返回的 `message` 我们**不用**：界面上那两句话是 `ranked.seedNotFound` /
+         *    `ranked.seedUnavailable`（视图渲染的，词条注释写着为什么必须是两句）。
+         *    代价写清：这一次调用会白算一条词条（两三个字符串查找）——
+         *    换来的是"什么算 not_found"只在一处定义。
+         */
+        const failure = describeSeedQueryError(error, t, errorText, 'lookup');
+        if (failure.kind === 'not_found') {
+          /*
+           * ⚠️★ "不在库里"是**上游的确定回答**（种子库只覆盖约 80%）⇒ 它也进缓存：
+           *    再点一次是同一个答案，而访客那 20 次/分钟的配额是真金白银。
+           */
+          const state: RankedSeedState = { kind: 'not_found' };
+          seedCache.current.set(key, state);
+          putSeedState(key, state);
+          return;
+        }
+        // ⚠️ `failed` **不进缓存**（见 `seedCache`）：再点一次就是一次真的重试。
+        putSeedState(key, { kind: 'failed' });
+      }
+    })();
+  };
+
   /** 四个面板共用的那几格（`RankedChromeProps`）。⚠️ 四处必须**逐字相同**，见上面那个 N。 */
   const chrome: RankedChromeProps = {
     errorText: error,
@@ -942,6 +1163,19 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
           lookup={lookup}
           detail={detail}
           onToggleDetail={toggleDetail}
+          /*
+           * ★ ④ 那一格（2026-09-19 第四轮）—— 每一场比赛的种子。
+           * ⚠️★ 名字**冻结**（`seeds` / `onToggleSeed`，渲染自检按它们写）。
+           * ⚠️ `seeds` 走 `mine(…, page)`（不是直接把 state 交出去）：别的页面上它是
+           *    `null` ⇒ 视图连"点开过哪几场"都不知道，那一格一个字节都不渲染 ——
+           *    与另外两格交互状态逐字相同的一条（"属于哪一页"只有那一处判据）。
+           * ⚠️**不许**写成 `seeds={seeds ?? {}}` 之类：`null` 与"空记录"在这里是**两句不同
+           *    的话**（前者是"这一页还没点开过"，后者是"点开过、但没有一格留下"），
+           *    而视图那一侧对 `null` 与"查不到这一场"的处理本来就一样 —— 多一层兜底
+           *    只会把"容器忘了接线"这件事重新藏起来。
+           */
+          seeds={seeds}
+          onToggleSeed={toggleSeed}
         />
       ) : null}
       {tab === 'weekly' ? (
