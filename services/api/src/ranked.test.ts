@@ -35,6 +35,10 @@ import type { TestContext } from 'node:test';
 import { after, beforeEach, describe, it } from 'node:test';
 import { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware';
+// ⚠️ `import type` 会在编译期被完全擦掉（运行时**不会**执行那个模块），
+//    所以它可以放在这一堆 "先设好 env 再 import" 的上面 —— 别的 import 都不行。
+import type { RankedIngestResult } from './ranked/ingest';
+import type { RunDeps } from './ranked-streams';
 
 process.env.DB_PATH = ':memory:';
 process.env.NODE_ENV = 'test';
@@ -43,7 +47,7 @@ process.env.MCSR_SCRYPT_TEST_PARAMS = 'N=1024,r=8,p=1';
 // ★ 不可解析的 TLD，见文件头第 1 道防线
 process.env.MCSR_RANKED_STATUS_URL = 'https://upstream.invalid/status';
 /*
- * ⚠️ 第二个上游（`GET /api/ranked/live`，收录那一支的原料）同样指向 `.invalid`：
+ * ⚠️ 第二个上游（`ranked-streams.js` 那一轮里那一次 GET）同样指向 `.invalid`：
  *    这一栏从此有**两个**服务端上游，两条都必须在测试里被钉死，
  *    漏一条就会以**服务器的 IP** 打到真上游（文件头那段代价对两条都成立）。
  */
@@ -66,6 +70,10 @@ const { closeDb, getDb } = await import('./db');
 const { resetAll } = await import('./auth/ratelimit');
 const { resetRankedLiveFeed } = await import('./ranked/live-feed');
 const { ingestRankedLiveChannels, RANKED_INGEST_SORT_ORDER } = await import('./ranked/ingest');
+// ★ 这一轮的主角：那个 oneshot 作业。它由 timer 拉起，但**同一个 `main`** 测试直接调
+//   （所以 `ranked-streams.ts` 才必须有 `if (isMain)`，见那里文件头第六节）。
+const { main: rankedStreamsMain, runOnce: rankedStreamsRunOnce } = await import('./ranked-streams');
+const { parseLive } = await import('@mcsr/shared/ranked');
 const { SITE } = await import('@mcsr/shared');
 
 /**
@@ -337,34 +345,52 @@ function numField(body: Record<string, unknown>, key: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// 自动收录（`GET /api/ranked/live`）的夹具与读取器
+// 自动收录（`ranked-streams.js` 那一轮）的夹具与读取器
 // ---------------------------------------------------------------------------
 
-let liveIpSeq = 0;
+/**
+ * 这一轮注入的假时钟，**毫秒**（`live_channels` 那一族的单位）。
+ *
+ * ⚠️ 用固定值而不是 `Date.now()`：那一行摘要里印的就是它换算出来的 ISO，
+ *    于是"摘要长什么样"是可断言的（真实时钟只能断言正则，比较不出数）。
+ */
+const JOB_NOW = 1_788_600_000_000;
 
 /**
- * 打 `GET /api/ranked/live` 的那一个请求。
+ * 把 stdout 与 stderr 都换成记录器 —— 这个作业"一轮恰好一行"的判据就是它们。
  *
- * ⚠️ 它多带一个 `text`：有一条判据是**响应逐字节没变**，而那只比 `text` 才算数
- *    （比 `body` 测的是"字段一样"，不是"连键序与空白都一样"）。
+ * ⚠️ 走 `t.mock.method`（node:test 自动还原），与 `captureErrors` 同一个做法；
+ *    两者都用时后装的那个会把先装的那个换掉，所以本文件里**不要**同时用它们。
  */
-async function callLive(options: { ip?: string } = {}) {
-  const headers: Record<string, string> = { origin: SITE.productionOrigin };
-  headers['x-real-ip'] = options.ip ?? `10.8.0.${String(++liveIpSeq % 250)}`;
+function captureOutput(t: TestContext): { out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => {
+    out.push(args.map((arg) => String(arg)).join(' '));
+  });
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    err.push(args.map((arg) => String(arg)).join(' '));
+  });
+  return { out, err };
+}
 
-  const response = await app.request('/api/ranked/live', { method: 'GET', headers });
-  const text = await response.text();
-  let body: Record<string, unknown> = {};
-  try {
-    body = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    body = {};
-  }
+/**
+ * 注入一个假的取数层：`load` 直接回一份**已经解析好的**载荷 ⇒ **结构上**打不到网络。
+ *
+ * ⚠️ 走的仍然是**真的** `runOnce` / `main` / 真的 SQL（只是上游那一跳被换掉了），
+ *    所以"写没写库、写了几条、退出码几"全都是真的（与 `mockUpstream` 的分工：
+ *    那一个换的是 `globalThis.fetch`，用来测"真路径整条通不通"）。
+ */
+function depsFor(
+  payload: Record<string, unknown>,
+  extra: { now?: number; fromUpstream?: boolean } = {},
+): RunDeps {
+  const data = parseLive(payload);
+  // 夹具解析不出来就当场失败：否则测的是 `parseLive`，而不是收录。
+  assert.ok(data, '夹具必须解析得出来');
   return {
-    status: response.status,
-    body,
-    text,
-    cacheControl: response.headers.get('cache-control'),
+    load: async () => ({ ok: true, data, fromUpstream: extra.fromUpstream ?? true }),
+    now: () => extra.now ?? JOB_NOW,
   };
 }
 
@@ -461,17 +487,6 @@ function liveRowIds(): string[] {
     .prepare('SELECT id FROM live_channels ORDER BY handle ASC')
     .all() as unknown as Array<{ id: string }>;
   return rows.map((row) => row.id);
-}
-
-/**
- * 本次用例里打出来的 `[ranked-live]` 行。
- *
- * ⚠️ 前缀与心跳的 `[ranked]` **不同**，所以这里必须自己筛一遍：用同一个前缀的话，
- *    "一次心跳故障有且只有一行日志"那些断言会被这一层的行数搅红 ——
- *    那是两个子系统的两件事（`ingest.ts` 里写着这条理由）。
- */
-function liveLogLines(errors: string[]): string[] {
-  return errors.filter((line) => line.includes('[ranked-live]'));
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,15 +1164,23 @@ describe('★ 心跳端点：失败也要节流（两个时刻）', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * 用户要求 3：「从现在开始抓取 ranked 实时信息的 twitch 直播链接，自动添加至本应用的
+ * 用户要求：「从现在开始抓取 ranked 实时信息的 twitch 直播链接，自动添加至本应用的
  * 『直播』频道」。四条裁决：只要 twitch；`displayName` **就是** login（不是 MCSR 昵称）；
- * 标签是 `ranked`（不加额外标记）；在**请求路径**里做（不新开定时任务）。
+ * 标签是 `ranked`（不加额外标记）；**由 systemd 的 oneshot + 5 分钟 timer 驱动**
+ * （最后那一条 2026-09-17 改过一次：上一版挂在 `GET /api/ranked/live` 上，而那个端点
+ * **没有调用者** ⇒ 线上一个频道都不会被收录；见 `ranked-streams.ts` 文件头第一节）。
  *
- * ⚠️ 这一节同时钉住两件**运维性质**的事（它们不是实现细节，是"下次该怎么做"）：
- *   · 编辑**隐藏**掉一行之后，再来多少次请求它都还是隐藏的（只插不改）；
- *   · 编辑**删掉**一行之后，下一个 30 秒窗口会把它**原样加回来** —— 所以正确的动作是隐藏。
+ * ⚠️ 这一节钉三件事。前两件是**运维性质**的（不是实现细节，是"下次该怎么做"）；
+ *    第三件是这一版新增的纪律（失败必须响）：
+ *   · 编辑**隐藏**掉一行之后，再跑多少轮它都还是隐藏的（只插不改）；
+ *   · 编辑**删掉**一行之后，下一轮会把它**原样加回来** —— 所以正确的动作是隐藏；
+ *   · **一轮失败 ⇒ 退出码非零 + 一行失败日志**（systemd 于是把这一轮记成 `failed`）。
+ *
+ * ⚠️ 上游一律是桩，两条路都钉死了：`depsFor` 注入一个假的取数层（结构上打不到网络），
+ *    `mockUpstream` 换掉 `globalThis.fetch` 而 URL 指向 `.invalid`（测"真路径整条通不通"）。
+ *    这个文件里**没有**任何连通性测试（那种测试的性质是"我的测试能不能打到真上游"）。
  */
-describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直播」频道', () => {
+describe('★★ ranked-streams（systemd oneshot）：twitch 直播链接自动收录进「直播」频道', () => {
   /** 一份"典型"载荷：一场有 twitch 的 + 一场 youtube/bilibili/没链接的。 */
   function mixedPayload(): Record<string, unknown> {
     return livePayload([
@@ -1176,24 +1199,46 @@ describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直
     ]);
   }
 
-  it('★ 只收 twitch：**一行**、字段逐格照裁决；youtube / bilibili / 没有链接的都不收', async (t) => {
-    const errors = captureErrors(t);
-    mockUpstream(t, () => jsonResponse(mixedPayload()));
+  /** 两个 twitch 频道，**顺序固定**（alpha 先、beta 后）：写库失败那条用例靠它。 */
+  function twoTwitchPayload(): Record<string, unknown> {
+    return livePayload([
+      liveMatchFixture([
+        { uuid: 'a1', nickname: 'A', liveUrl: 'https://twitch.tv/alpha' },
+        { uuid: 'a2', nickname: 'B', liveUrl: 'https://twitch.tv/beta' },
+      ]),
+    ]);
+  }
 
-    const res = await callLive();
-
-    assert.equal(res.status, 200);
-    assert.equal(
-      res.cacheControl,
-      'no-store',
-      '这条响应不能被任何一层缓存：请求到不了我们这里，收录就被**静默**关掉了',
+  /**
+   * 摘要那一行的正则：**形状**与**那三个数**一次钉死。
+   *
+   * ⚠️ 三个数一起给（而不是只断言某一格）是有意的：`载荷 N = 新增 M + 已在库 K` 是这一行的
+   *    自洽性判据（`RoundSummary` 的注释），单独断言某一格会漏掉"两个数都错、看起来却对"
+   *    那一种（本仓对"看起来对的计数"有记录，§5.47）。
+   */
+  function summaryPattern(candidates: number, inserted: number, existing: number): RegExp {
+    return new RegExp(
+      `^ranked-streams: 开始=\\S+ 结束=\\S+ 载荷 ${String(candidates)} 个 twitch 频道 / ` +
+        `新增 ${String(inserted)} 条 / 已在库 ${String(existing)} 条$`,
     );
-    // ★ 载荷原样回去：这一层不许为了收录改动响应（面板与它是逐字段一致的形状）
-    assert.equal(res.body.players, 1257);
-    assert.equal((res.body.matches as unknown[]).length, 2);
+  }
+
+  it('★ 只收 twitch：**一行**、字段逐格照裁决；youtube / bilibili / 没有链接的都不收', async (t) => {
+    const { out, err } = captureOutput(t);
+
+    const code = await rankedStreamsMain([], depsFor(mixedPayload()));
+
+    assert.equal(code, 0, '正常路径退出码是 0');
+    assert.deepEqual(err, [], '正常路径一个字节都不该进 stderr');
+    assert.equal(out.length, 1, '★ 一轮**恰好一行**（成功走 stdout）');
+    assert.match(out[0] ?? '', summaryPattern(1, 1, 0));
 
     const rows = liveRows();
-    assert.equal(rows.length, 1, `只该有 twitch 那一行：${JSON.stringify(rows)}`);
+    assert.deepEqual(
+      rows.map((row) => row.handle),
+      ['hufterl'],
+      `★ 只有 twitch 那一行：youtube / bilibili / 没有链接的都不收（实际 ${JSON.stringify(rows)}）`,
+    );
     assert.deepEqual(rows[0], {
       platform: 'twitch',
       handle: 'hufterl',
@@ -1209,55 +1254,91 @@ describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直
       status: 'visible',
     });
     assert.equal(RANKED_INGEST_SORT_ORDER, 1000, '★ 冻结值：排在编辑那一批（表单默认 100）后面');
-    assert.deepEqual(errors, [], '正常路径一个字都不该写进日志');
   });
 
-  it('★★ 同一份载荷请求两次（两次都真的重取）：仍然**一行**，而且两次响应逐字节一样', async (t) => {
-    captureErrors(t);
-    // ★ TTL=0 让第二次也真的重取一次（与"时间推过 30 秒"走的是**同一支**判断）
-    process.env.MCSR_RANKED_LIVE_TTL_MS = '0';
-    const fetchMock = mockUpstream(t, () => jsonResponse(mixedPayload()));
+  it('★ 摘要那一行的单位是**毫秒**：印出来的两个时刻就是这一轮注入的那个时钟', async (t) => {
+    const { out } = captureOutput(t);
 
-    const first = await callLive();
-    const second = await callLive();
+    assert.equal(await rankedStreamsMain([], depsFor(mixedPayload())), 0);
 
-    assert.equal(first.status, 200);
-    assert.equal(second.status, 200);
-    assert.equal(upstreamCallCount(fetchMock), 2, 'TTL=0 ⇒ 两次都该真的打上游');
-    assert.equal(
-      second.text,
-      first.text,
-      '★★ 响应必须逐字节一样：收录是副作用，不许在响应上留下任何一个字节',
+    /*
+     * ⚠️ 这一条钉的是**单位**，不是排版：`live_channels.created_at/updated_at` 那一族是
+     *   毫秒（`routes/live.ts` 全是 `Date.now()`），而 `track.ts` 那个作业的时钟是**秒**。
+     *   传成秒的话这里会是 `1970-01-21T…`，而库里那两列会与编辑写进去的差一千倍 ——
+     *   两个方向都**不报错**（`ranked-streams.ts` 文件头第五节）。
+     */
+    assert.ok(
+      (out[0] ?? '').includes(`开始=${new Date(JOB_NOW).toISOString()}`),
+      `摘要里的开始时刻应当是注入时钟的 ISO：${out[0] ?? '(空)'}`,
     );
+  });
+
+  it('★★ 同一份载荷跑两轮：仍然**一行**，而且是同一行（NULL 三列去重靠 `IS ?`，不靠 UNIQUE）', async (t) => {
+    const { out } = captureOutput(t);
+    const deps = depsFor(mixedPayload());
+
+    assert.equal(await rankedStreamsMain([], deps), 0);
+    const before = liveRowIds();
+    assert.equal(before.length, 1);
+
+    assert.equal(await rankedStreamsMain([], deps), 0);
+
     assert.equal(
       liveRows().length,
       1,
-      '★ 幂等：第二次不许再插一行（`ON CONFLICT … DO NOTHING` 做不到这件事，见 live.ts）',
+      '★ 幂等：第二轮不许再插一行（`ON CONFLICT … DO NOTHING` 做不到这件事 —— 见 live.ts）',
     );
+    assert.deepEqual(liveRowIds(), before, '而且必须是**同一行**，不是"删了重插"');
+    assert.match(out[1] ?? '', summaryPattern(1, 0, 1), '第二轮是"新增 0 / 已在库 1"');
   });
 
-  it('★★ 编辑**隐藏**过的行：再一次请求之后仍然是隐藏的，而且仍然只有一行', async (t) => {
-    captureErrors(t);
-    process.env.MCSR_RANKED_LIVE_TTL_MS = '0';
-    mockUpstream(t, () => jsonResponse(mixedPayload()));
+  it('★★ 编辑**隐藏**过的行：再跑一轮之后仍然是隐藏的，而且仍然只有一行', async (t) => {
+    captureOutput(t);
+    const deps = depsFor(mixedPayload());
 
-    await callLive();
-    assert.equal(liveRows()[0]?.status, 'visible', '先确认第一次真的收进去了');
+    assert.equal(await rankedStreamsMain([], deps), 0);
+    assert.equal(liveRows()[0]?.status, 'visible', '先确认第一轮真的收进去了');
 
     // 编辑隐藏它（编辑界面改的就是这一列）
     getDb().prepare("UPDATE live_channels SET status = 'hidden' WHERE handle = ?").run('hufterl');
 
-    await callLive();
+    assert.equal(await rankedStreamsMain([], deps), 0);
 
     const rows = liveRows();
-    assert.equal(rows.length, 1, '仍然只有一行（不许插第二行，也不许把它变成两行）');
+    assert.equal(rows.length, 1, '仍然只有一行（不许插第二行）');
     assert.equal(rows[0]?.status, 'hidden', '★ "编辑说过它不该出现"比收录强：只插不改');
   });
 
-  it('★ 认不出平台（kick）⇒ 一行都不加（但那个 kick 选手照常渲染）', async (t) => {
-    const errors = captureErrors(t);
-    mockUpstream(t, () =>
-      jsonResponse(
+  it('★★ 删掉那一行之后，下一轮会把它**加回来**（所以正确动作是隐藏，不是删）', async (t) => {
+    captureOutput(t);
+    const deps = depsFor(mixedPayload());
+
+    assert.equal(await rankedStreamsMain([], deps), 0);
+    const before = liveRowIds();
+    assert.equal(before.length, 1);
+
+    // 编辑**删**掉它（不是隐藏）
+    getDb().prepare('DELETE FROM live_channels WHERE handle = ?').run('hufterl');
+    assert.equal(liveRows().length, 0);
+
+    assert.equal(await rankedStreamsMain([], deps), 0);
+
+    const rows = liveRows();
+    assert.equal(rows.length, 1, '★ 三列被腾空 ⇒ 它不再"已经记过"，于是又被收进来了');
+    assert.equal(rows[0]?.status, 'visible', '新那一行是可见的（编辑要再隐藏一次）');
+    assert.notEqual(
+      liveRowIds()[0],
+      before[0],
+      '它是一行**新的**记录（新 id）—— 这就是"删掉不等于不要它"的意思',
+    );
+  });
+
+  it('★ 认不出平台（kick）⇒ 一行都不加（twitch 那个照收）', async (t) => {
+    const { out, err } = captureOutput(t);
+
+    const code = await rankedStreamsMain(
+      [],
+      depsFor(
         livePayload([
           liveMatchFixture([
             { uuid: 'aaa', nickname: 'StreamerA', liveUrl: 'https://kick.com/someone' },
@@ -1267,20 +1348,21 @@ describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直
       ),
     );
 
-    const res = await callLive();
-
-    assert.equal(res.status, 200);
+    assert.equal(code, 0);
+    assert.deepEqual(err, [], '认不出的平台不是错误：那一栏的裁决就是"只要 twitch"');
     const rows = liveRows();
     assert.equal(rows.length, 1, '★ kick 不收，twitch 那个照收');
     assert.equal(rows[0]?.handle, 'other');
-    assert.deepEqual(errors, []);
+    assert.match(out[0] ?? '', summaryPattern(1, 1, 0));
   });
 
   it('★ 同一份载荷里同一个 login 出现两次 ⇒ 只加一行', async (t) => {
-    captureErrors(t);
+    captureOutput(t);
     const url = 'https://twitch.tv/hufterl';
-    mockUpstream(t, () =>
-      jsonResponse(
+
+    const code = await rankedStreamsMain(
+      [],
+      depsFor(
         livePayload([
           liveMatchFixture([
             { uuid: 'aaa', nickname: 'A', liveUrl: url },
@@ -1294,81 +1376,54 @@ describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直
       ),
     );
 
-    assert.equal((await callLive()).status, 200);
-    assert.equal(liveRows().length, 1, '同一个人出现在两场里 ⇒ 只收一行');
+    assert.equal(code, 0);
+    assert.equal(liveRows().length, 1, '同一个人出现在两场里 ⇒ 只收一行（按 handle 去重）');
   });
 
-  it('★★ 收录只发生在**真的从上游取回来**的那一次：TTL 内（缓存命中）不入库', async (t) => {
-    const errors = captureErrors(t);
+  it('★★ 真路径（真的 `loadRankedLive` + fetch 桩）：一轮 = 一次上游 + 一次入库 + 一行摘要', async (t) => {
+    const { out, err } = captureOutput(t);
     const fetchMock = mockUpstream(t, () => jsonResponse(mixedPayload()));
 
-    // 默认 TTL（30 秒）：第二次请求**不会**再打上游
-    assert.equal((await callLive()).status, 200);
-    assert.equal(liveRows().length, 1);
+    // ★ 不注入 deps：走的就是生产那一条路（`productionDeps()`）。
+    const code = await rankedStreamsMain([]);
 
-    // 把那一行删掉（模拟"编辑真的删了"），然后在 TTL 内再请求一次
-    getDb().exec('DELETE FROM live_channels');
-
-    const second = await callLive();
-
-    assert.equal(second.status, 200);
-    assert.equal(upstreamCallCount(fetchMock), 1, 'TTL 内不该再打上游');
+    assert.equal(code, 0);
+    assert.deepEqual(err, []);
     assert.equal(
-      liveRows().length,
-      0,
-      '★ 缓存命中的那一次**不入库** —— 否则"最多每 30 秒一个入库窗口"就是一句假话',
+      upstreamCallCount(fetchMock),
+      1,
+      '★ 一轮**恰好一次** GET —— 这就是 spec §3 那笔账（0.4%）的分子',
     );
-    assert.deepEqual(errors, []);
+    assert.equal(out.length, 1);
+    assert.match(out[0] ?? '', summaryPattern(1, 1, 0));
+    assert.equal(liveRows()[0]?.handle, 'hufterl', '整条路真的通了：桩 → parseLive → 入库 → 摘要');
   });
 
-  it('★★ 删掉那一行之后，下一个窗口会把它**加回来**（所以正确动作是隐藏，不是删）', async (t) => {
-    captureErrors(t);
-    process.env.MCSR_RANKED_LIVE_TTL_MS = '0';
-    mockUpstream(t, () => jsonResponse(mixedPayload()));
-
-    await callLive();
-    const before = liveRowIds();
-    assert.equal(before.length, 1);
-
-    // 编辑**删**掉它（不是隐藏）
-    getDb().prepare('DELETE FROM live_channels WHERE handle = ?').run('hufterl');
-    assert.equal(liveRows().length, 0);
-
-    await callLive();
-
-    const rows = liveRows();
-    assert.equal(rows.length, 1, '★ 三列被腾空 ⇒ 它不再"已经记过"，于是又被收进来了');
-    assert.equal(rows[0]?.status, 'visible', '新那一行是可见的（编辑要再隐藏一次）');
-    assert.notEqual(
-      liveRowIds()[0],
-      before[0],
-      '它是一行**新的**记录（新 id）—— 这就是"删掉不等于不要它"的意思',
-    );
-  });
-
-  it('★ 上游 500 ⇒ 503 upstream_unavailable，且一行都不加', async (t) => {
-    const errors = captureErrors(t);
+  it('★★ 上游 500 ⇒ 一行都不写、stderr 一行失败、退出码 1（systemd 于是记 failed）', async (t) => {
+    const { out, err } = captureOutput(t);
     const fetchMock = mockUpstream(t, () => jsonResponse({ detail: 'boom' }, 500));
 
-    const res = await callLive();
+    const code = await rankedStreamsMain([]);
 
-    assert.equal(res.status, 503);
-    assert.deepEqual(res.body, { error: 'upstream_unavailable' });
-    assert.equal(res.cacheControl, 'no-store', '失败响应也要 no-store');
+    assert.equal(code, 1, '★ 非零退出是"静默坏掉"唯一的护栏（`ranked-streams.ts` 文件头第三节）');
+    assert.deepEqual(out, [], '失败时 stdout 一个字节都不该有（成功/失败各走一条流）');
+    assert.equal(err.length, 1, `一轮**恰好一行**（不是一次故障两行）：${err.join(' | ')}`);
+    assert.equal(
+      err[0],
+      'ranked-streams: 本轮失败（unavailable）：HTTP 500 —— 一条都没写，直播名单保持原样',
+    );
     assert.equal(liveRows().length, 0, '取不到就什么都不收');
-    assert.equal(upstreamCallCount(fetchMock), 1);
-    assert.equal(liveLogLines(errors).length, 1, `一次尝试一行日志：${errors.join(' | ')}`);
-    assert.ok(liveLogLines(errors)[0]?.includes('unavailable'), '日志要带上那一档');
+    assert.equal(upstreamCallCount(fetchMock), 1, '失败也要恰好一次上游（不许重试打第二枪）');
   });
 
-  it('★ 超时（真的 abort）⇒ 503 upstream_unavailable，且一行都不加', async (t) => {
+  it('★ 超时（真的 abort）⇒ unavailable 那一档 + 退出码 1，且一行都不写', async (t) => {
     process.env.MCSR_RANKED_LIVE_TIMEOUT_MS = '20';
-    const errors = captureErrors(t);
+    const { err } = captureOutput(t);
     mockUpstream(
       t,
       (call) =>
         /*
-         * ★ 同样挂住不返回、等**我们真的**把它 abort 掉（同心跳那条用例的理由：
+         * ★ 挂住不返回、等**我们真的**把它 abort 掉（同心跳那条用例的理由：
          *   自己抛一个"超时错误"测的是"我们会不会处理超时"，而不是"超时会不会发生"）。
          */
         new Promise<Response>((_resolve, reject) => {
@@ -1383,96 +1438,150 @@ describe('★★ GET /api/ranked/live：twitch 直播链接自动收录进「直
         }),
     );
 
-    const res = await callLive();
+    const code = await rankedStreamsMain([]);
 
-    assert.equal(res.status, 503);
-    assert.deepEqual(res.body, { error: 'upstream_unavailable' });
+    assert.equal(code, 1);
     assert.equal(liveRows().length, 0);
-    assert.equal(liveLogLines(errors).length, 1);
-    assert.ok(
-      liveLogLines(errors)[0]?.includes('TimeoutError'),
-      `日志要说得清是超时：${errors.join(' | ')}`,
-    );
+    assert.equal(err.length, 1, `一轮恰好一行：${err.join(' | ')}`);
+    assert.ok(err[0]?.includes('本轮失败（unavailable）'), `档位要写清楚：${err[0] ?? '(空)'}`);
+    assert.ok(err[0]?.includes('TimeoutError'), `失败原文要说得清是超时：${err[0] ?? '(空)'}`);
   });
 
-  it('★ 形状不对（200 但读不出对局）⇒ 502 upstream_bad_response，且一行都不加', async (t) => {
-    const errors = captureErrors(t);
+  it('★ 形状不对（200 但读不出对局）⇒ bad_response 那一档 + 退出码 1，且一行都不写', async (t) => {
+    const { err } = captureOutput(t);
     mockUpstream(t, () => jsonResponse({ status: 'success', data: { players: 1257 } }));
 
-    const res = await callLive();
+    const code = await rankedStreamsMain([]);
 
     /*
-     * ⚠️ 502 与 503 的区别是这一栏的**核心口径**（spec §4.2）：形状不对 = "我们的适配层要改"，
-     *    上游抖了 = "等一下再试"。合并成一个码，排查方向就没了。
+     * ⚠️ `bad_response` 与 `unavailable` 分开是这一栏固有的口径（spec §4.2）：
+     *   一个说"**我们的适配层要改**"（不会自愈），一个说"上游抖了、下一轮就好"。
+     *   合并成一个码，排查方向就没了 —— 而这里是**唯一**能说出这句话的地方
+     *   （面板直连上游，它的失败在我们这边一个字都没有）。
      */
-    assert.equal(res.status, 502);
-    assert.deepEqual(res.body, { error: 'upstream_bad_response' });
+    assert.equal(code, 1);
     assert.equal(liveRows().length, 0);
-    assert.equal(liveLogLines(errors).length, 1);
-    assert.ok(liveLogLines(errors)[0]?.includes('bad_response'));
+    assert.equal(err.length, 1);
+    assert.ok(err[0]?.includes('本轮失败（bad_response）'), `档位要写清楚：${err[0] ?? '(空)'}`);
   });
 
-  it('★★ 写库失败（触发器拦住）⇒ 这次 GET 仍然正常，而且与没失败那次**逐字节一样**', async (t) => {
-    const errors = captureErrors(t);
-    process.env.MCSR_RANKED_LIVE_TTL_MS = '0';
-    mockUpstream(t, () => jsonResponse(mixedPayload()));
+  it('★★ 写库失败（触发器在第 2 条上拦住）⇒ 退出码 1、那一行说的是 db、并报出**已经写进去几条**', async (t) => {
+    const { out, err } = captureOutput(t);
 
     /*
-     * ★ 把库真的弄坏：一个 `BEFORE INSERT` 触发器直接 ABORT。
-     *   ⚠️ 用它而不是"把 `db.prepare` mock 掉"：这是**真的**写不进去（走的还是那条真实的
-     *   SQL 与真实的错误类型），而 mock 掉一个原生对象的方法测的只是"我们以为自己处理了异常"。
+     * ★ 让**第二条**插入失败（第一条是真的写进去了）：钉住"失败行必须照实报数"——
+     *   说"一条都没写"而实际写进去一条，会让下一次排查从一个错的事实开始。
+     * ⚠️ 用它而不是把 `db.prepare` mock 掉：这是**真的**写不进去（走的是真实的 SQL
+     *   与真实的错误类型），而 mock 掉一个原生对象的方法测的只是"我们以为自己处理了异常"。
      */
     getDb().exec(
-      "CREATE TRIGGER test_block_live_insert BEFORE INSERT ON live_channels BEGIN SELECT RAISE(ABORT, 'boom'); END",
+      'CREATE TRIGGER test_block_second_channel BEFORE INSERT ON live_channels ' +
+        "WHEN NEW.handle = 'beta' BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
 
-    let brokenStatus = 0;
-    let brokenText = '';
+    let code: number;
     try {
-      const res = await callLive();
-      brokenStatus = res.status;
-      brokenText = res.text;
+      code = await rankedStreamsMain([], depsFor(twoTwitchPayload()));
     } finally {
-      // ⚠️ 一定要拆掉：留着它，这个文件里之后每一条用例都会写不进去
-      getDb().exec('DROP TRIGGER test_block_live_insert');
+      // ⚠️ 一定要拆掉：留着它，这个文件里之后每一条用例都会少写一行
+      getDb().exec('DROP TRIGGER test_block_second_channel');
     }
 
-    assert.equal(brokenStatus, 200, '★ 一次 GET 绝不许因为这次写库而失败');
-    assert.equal(liveRows().length, 0, '这一次确实一行都没写进去（前提成立）');
     assert.equal(
-      liveLogLines(errors).length,
+      code,
       1,
-      `要**正好一行** [ranked-live] 日志（吞掉，但不是静默）：${errors.join(' | ')}`,
+      '★ 写库失败也是失败：日志打过了而退出码还是 0，等于 systemd 眼里这一轮是**成功的**',
+    );
+    assert.deepEqual(out, []);
+    assert.equal(err.length, 1, `一轮恰好一行：${err.join(' | ')}`);
+    assert.ok(
+      err[0]?.startsWith('ranked-streams: 本轮失败（db）：'),
+      `档位是 db：${err[0] ?? '(空)'}`,
+    );
+    assert.ok(
+      err[0]?.includes('已经写进去 1 条'),
+      `那一行要照实报数（候选 2 个、写进去 1 个）：${err[0] ?? '(空)'}`,
     );
 
-    // ★★ 库好着的时候再打一次同样的请求：两份响应必须一模一样
-    const healthy = await callLive();
-    assert.equal(healthy.status, 200);
-    assert.equal(healthy.text, brokenText, '★★ 入库失败不许在响应上留下任何一个字节的痕迹');
-    assert.equal(liveRows().length, 1, '库好着的时候那一行照常进去（上面那次失败没有留下副作用）');
+    const rows = liveRows();
+    assert.equal(rows.length, 1, '第一条是真的进去了（上面那一行报的数也必须是 1）');
+    assert.equal(rows[0]?.handle, 'alpha');
   });
 
-  it('★ ingest 自己**不抛**：写库失败时它 resolve(0)，而不是 reject（契约写在被调用方）', async (t) => {
-    const errors = captureErrors(t);
-    const { parseLive } = await import('@mcsr/shared/ranked');
+  it('★ ingest 自己**不抛**：写库失败时它把错误**返回**（inserted=0、error 非空），而不是 reject', async (t) => {
+    const { err } = captureOutput(t);
     const data = parseLive(mixedPayload());
     assert.ok(data, '夹具必须解析得出来');
 
     getDb().exec(
       "CREATE TRIGGER test_block_live_insert BEFORE INSERT ON live_channels BEGIN SELECT RAISE(ABORT, 'boom'); END",
     );
-    let inserted = -1;
+    let result: RankedIngestResult;
     try {
       /*
-       * ⚠️ 这里**故意没有** try/catch：有的话它就变成"路由那一层也负责吞"，
+       * ⚠️ 这里**故意没有** try/catch：有的话它就变成"调用方也负责吞"，
        *    而"谁负责吞"有两个答案时，就一定会有第三种情况没人管。
        */
-      inserted = await ingestRankedLiveChannels(data, Date.now());
+      result = await ingestRankedLiveChannels(data, JOB_NOW);
     } finally {
       getDb().exec('DROP TRIGGER test_block_live_insert');
     }
 
-    assert.equal(inserted, 0);
-    assert.equal(liveLogLines(errors).length, 1);
+    assert.equal(result.inserted, 0);
+    assert.equal(result.candidates, 1, '候选数照报（"上游说了多少"与"写进去多少"是两个问题）');
+    assert.ok(result.error !== null && result.error.length > 0, '失败原文要**返回**给调用方');
+    assert.deepEqual(err, [], '★ 它自己一个字都不打：打印只在 `main` 那一处（一轮恰好一行）');
+  });
+
+  it('★ 载荷来自缓存（`fromUpstream: false`）⇒ 一行都不写，那一行说明原因，退出码 0', async (t) => {
+    const { out, err } = captureOutput(t);
+
+    const code = await rankedStreamsMain([], depsFor(mixedPayload(), { fromUpstream: false }));
+
+    assert.equal(code, 0, '它不是失败：只是这一份载荷已经有人为它入过库了');
+    assert.deepEqual(err, []);
+    assert.equal(
+      liveRows().length,
+      0,
+      '★ 只有**真的从上游取回来**的那一份才入库（`live-feed.ts` 那句不变量）',
+    );
+    assert.equal(out.length, 1, '一轮恰好一行 —— 而"什么都没做"必须是**说出来**的，不是沉默的');
+    assert.ok(out[0]?.includes('本轮跳过'), `那一行要说清原因：${out[0] ?? '(空)'}`);
+  });
+
+  it('★ `runOnce` 一个字节都不打（打印只在 `main`）：于是"一轮恰好一行"是**结构上**成立的', async (t) => {
+    const { out, err } = captureOutput(t);
+
+    const outcome = await rankedStreamsRunOnce(depsFor(mixedPayload()));
+
+    assert.equal(outcome.ok, true);
+    assert.match(outcome.line, summaryPattern(1, 1, 0));
+    assert.deepEqual([...out, ...err], [], '它只**返回**那一行，不打印');
+    assert.equal(liveRows().length, 1, '但它照样真的写库了（这一条不是"什么都没发生"）');
+  });
+
+  it('★ 不认识的参数 ⇒ 退出码 2，而且**连取数层都不碰**（一个字节都没写）', async (t) => {
+    const { out, err } = captureOutput(t);
+    let loadCalls = 0;
+    const deps: RunDeps = {
+      load: async () => {
+        loadCalls += 1;
+        throw new Error('参数不对时不该走到取数层');
+      },
+      now: () => JOB_NOW,
+    };
+
+    const code = await rankedStreamsMain(['--dry-run'], deps);
+
+    /*
+     * ⚠️ 这一条防的是一个具体的形状：管理员带着 `track.js --dry-run` 的习惯来敲，
+     *   而被忽略的多余参数看起来像"跑了一轮干活的"，他以为自己在预演 ——
+     *   代价是**真的写了一次库**，而屏幕上什么区别都看不出来。
+     */
+    assert.equal(code, 2, '用法错误是 2（`track.js` 同一个约定）');
+    assert.equal(loadCalls, 0, '★ 参数不对时连取数层都不碰（更不会打上游、写库）');
+    assert.deepEqual(out, [], '用法提示走 stderr');
+    assert.equal(err.length, 2);
+    assert.equal(liveRows().length, 0);
   });
 });

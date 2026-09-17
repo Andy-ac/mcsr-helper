@@ -1,0 +1,39 @@
+# deploy/mcsr-helper-ranked-streams.timer
+#
+# 安装（deploy.sh 会做）：
+#   sudo install -m 0644 deploy/mcsr-helper-ranked-streams.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-ranked-streams.timer
+#   systemctl list-timers mcsr-helper-ranked-streams.timer    # 看下一次什么时候跑
+#
+# ⚠️ 这个文件名必须与 service 那个**同名**（只是后缀不同）：这里没有写 `Unit=`，
+#    systemd 就是按同名的 service 去找的。
+# ⚠️ 手动触发一轮（排查时用，不影响定时）：
+#   sudo systemctl start mcsr-helper-ranked-streams.service
+#   journalctl -u mcsr-helper-ranked-streams -n 20 --no-pager
+
+[Unit]
+Description=MCSR Helper — ranked live twitch channels ingest, every five minutes
+
+[Timer]
+# 每小时的 0/5/10/…/55 分（秒位是 0）。
+# ⚠️ 为什么是 5 分钟、而不是 track 那一个的 10 分钟：这一条要跟的**不是**"某个博主的
+#    历史视频"，而是"谁**现在**在直播" —— 时间尺度就是十几分钟到几小时，
+#    5 分钟一轮让"刚开播的人"最多晚 5 分钟出现在名单上（10 分钟的那个延迟是能感觉到的）。
+#    ⚠️ 代价也量过：每轮**恰好 1 次** GET ⇒ 0.2 次/分钟，占上游额度（500 次/10 分钟）
+#    的 **0.4%**（`ranked-streams.ts` 文件头第八节的账）。⇒ 便宜到可以按体感来定这个数，
+#    真要更密也不必先算配额。
+OnCalendar=*:0/5
+# 机器关机期间错过的那些点，开机后**补跑一次**（不是补跑全部）。
+# ⚠️ 少了它，一次重启会把"刚开播的人多快出现在名单上"这件事整整推后 5 分钟 ——
+#    而这是本作业唯一的时效承诺（track.timer 里那一条是同一个理由）。
+Persistent=true
+# 抖动最多 30 秒：这台机器上不止一个 timer，而上游（ranked）那边也有一条按 IP 的额度 ——
+# 让每次落点略有不同，比整点齐刷刷打过去更不容易和别的东西撞在一起。
+# ⚠️ 代价：实际跑的时刻可能是 10:05:27 这种，所以看日志时别拿整点去对
+#    （所以那一行摘要里印的是**真实的开始/结束时刻**，不是计划时刻）。
+RandomizedDelaySec=30
+
+[Install]
+# ⚠️ 是 `timers.target`，不是 `multi-user.target`：timer 归 systemd 的 timer 那一套管。
+WantedBy=timers.target

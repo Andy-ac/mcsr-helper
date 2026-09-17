@@ -152,6 +152,7 @@ scp "${SCP_OPTS[@]}" -q \
   content/resources.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
+  deploy/mcsr-helper-ranked-streams.service deploy/mcsr-helper-ranked-streams.timer \
   "$TMP/caddy-domain.conf" \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
@@ -306,6 +307,41 @@ fi
 \$SUDO systemctl enable --now mcsr-helper-track.timer
 echo "    追踪 timer 已启用（systemctl list-timers mcsr-helper-track.timer 看下一次）"
 
+# ---- ranked 直播链接收录的 timer（每 5 分钟一轮）----
+#
+# 与上面那一段**逐字同一个形状**（\`cmp\` 判断未变就跳过 + install + daemon-reload +
+# \`enable --now\`），只有三处不一样，都是这个作业自己的性质：
+#   · **没有凭据模板** —— 上游是公开端点、这个作业一个密钥都不用，
+#     所以单元里**故意没有** \`EnvironmentFile\`（理由写在那个 .service 里）；
+#   · **RuntimeDirectory 换成了它自己的名字**（\`/run/mcsr-helper-ranked-streams\`）——
+#     两个作业的锁不能共用一个目录，否则"同时跑"会被误判成"重叠"；
+#     那一条同样**不在这里建**（tmpfs，重启即空，理由与上面一段逐字相同）；
+#   · 5 分钟而不是 10 分钟（时效：跟的是"现在谁在直播"）。
+# ⚠️ 这一段**故意与上面那段分开写**，不合并成一个循环：两段的注释各自解释自己的单元，
+#    而"共用一个循环"会把那句"凭据模板"的注释变成一半对一半错（上面那一个要，这个不要）。
+RANKED_STREAMS_UNITS_CHANGED=0
+for unit in mcsr-helper-ranked-streams.service mcsr-helper-ranked-streams.timer; do
+  if [ -f "/tmp/\$unit" ]; then
+    if ! \$SUDO cmp -s "/tmp/\$unit" "/etc/systemd/system/\$unit"; then
+      \$SUDO install -m 0644 "/tmp/\$unit" "/etc/systemd/system/\$unit"
+      RANKED_STREAMS_UNITS_CHANGED=1
+      echo "    \$unit 有变化，已安装"
+    else
+      echo "    \$unit 未变"
+    fi
+  fi
+done
+if [ "\$RANKED_STREAMS_UNITS_CHANGED" = "1" ]; then
+  \$SUDO systemctl daemon-reload
+fi
+# ⚠️ 同上面那一条：这一句**故意不吞错误** —— 装不上 timer 就等于这一轮的功能
+#    一次都不会跑（而它正是这一轮唯一新增的"自动"行为）。
+# ⚠️ 部署不校验 \`dist/ranked-streams.js\` 在不在：整个 dist/ 都在 api.tgz 里，
+#    而"缺文件"的表现是 journal 里一行 \`Cannot find module\` + 退出码非零
+#    （**响的**，不是静默的），不值得在这里再加一段跨主机的一致性检查。
+\$SUDO systemctl enable --now mcsr-helper-ranked-streams.timer
+echo "    直播收录 timer 已启用（systemctl list-timers mcsr-helper-ranked-streams.timer 看下一次）"
+
 # ---------- 桌面安装包 ----------
 #
 # 解到 /srv/mcsr-helper/releases/，由 Caddy 从 /installer/* 提供
@@ -368,7 +404,7 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer
 REMOTE
 ok "部署完成"
 

@@ -36,6 +36,15 @@ await esbuild.build({
     //    （`tar -czf api.tgz -C services/api/dist .`），所以这一行加完，
     //    dist/track.js 就自动跟着上线了。
     track: path.join(root, 'src/track.ts'),
+    // Ranked 实时信息里那些 twitch 直播链接的收录。与 track 同一个形状的第三条路：
+    // 也是"在服务器上跑、不经 HTTP"，但它**比 track 更窄** —— 一轮只有一次 GET、
+    // 一次写库，然后打**一行**摘要就退。它由 systemd 每 5 分钟拉起一次
+    // （deploy/mcsr-helper-ranked-streams.{service,timer}），所以同样必须能独立启动。
+    // 为什么不是 HTTP 请求路径（上一版的做法）、也不是长驻 worker，见
+    // src/ranked-streams.ts 的文件头第一节。
+    // ⚠️ 与 track 一样**不用改 deploy.sh 的产物清单**（整个 dist/ 都会上传），
+    //    要改的是那一份 scp/install 的**单元文件**列表（见 deploy/deploy.sh）。
+    'ranked-streams': path.join(root, 'src/ranked-streams.ts'),
   },
   outdir: path.join(root, 'dist'),
   bundle: true,

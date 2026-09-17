@@ -259,6 +259,53 @@ connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com;
    而且是一条**几乎不会被走到**的代码（本仓对"没人走的代码会烂掉"有记录）。
    真到了那一天（上游把 CORS 撤掉），那是**一次独立改动**，不是这一轮的范围。
 
+### 3.1 ★ 2026-09-17：面板**一个字都没改**，多的是一个后台作业
+
+上面那张表与三条代价**原样有效**。这一节只记一件**新增**的事，免得下一个人把它读成"B 又回来了"：
+
+**用户的新裁决**：把「抓取 ranked 实时信息的 twitch 直播链接，自动添加至本应用的『直播』频道」
+做成一个**小的 systemd 作业** —— `oneshot` + 5 分钟 timer，
+`deploy/mcsr-helper-ranked-streams.{service,timer}`，代码 `services/api/src/ranked-streams.ts`，
+与视频追踪那一对（`mcsr-helper-track.{service,timer}`）同形。
+
+**它取的是什么**：上游**同一个公开** `/live`（`api.mcsrranked.com/live`，与面板直连的是同一个入口），
+用**我们服务器自己的 IP**，**每轮恰好一次 GET**（一个进程跑完就退）。
+
+**额度账（§2.1 的 500 次 / 10 分钟 / IP）**：
+
+| 谁 | 节拍 | 占额度 |
+|---|---|---|
+| 心跳（`/api/ranked/status`，唯一被迫过我们的端点） | 30 秒 TTL ⇒ ≤2 次/分钟 | **4%** |
+| **新增**：直播链接收录作业 | 5 分钟一轮 ⇒ 0.2 次/分钟 | **0.4%** |
+| 合计 | | **≈ 4.4%** |
+
+⚠️★ **这里刻意不写"约 8%"**：那个数是"最多每 30 秒一次"那一版设计的账 ——
+也就是把收录挂在**请求路径**上的 `GET /api/ranked/live`（commit `a0a597f`）。
+那条路**已经被这次裁决否掉**（它依赖的那个端点**没有调用者**：面板是浏览器直连的，
+所以线上一个频道都不会被收录），5 分钟一版的作业比它**便宜十倍**。
+⇒ 别照抄那 8%：写错的那个数会让下一个人以为额度快满了，而去优化一件不需要优化的事。
+
+**为什么这不算把被否决的 B 方案又建一遍（三条判据，缺一条都不成立）**：
+
+1. **没有任何访客可见的东西经过我们**：② 的对局面板仍旧浏览器直连，我们这边**一个新端点都没有加** ——
+   反而**删掉了一个**（`GET /api/ranked/live`，见 §13 那张表）。作业的产物只进
+   `live_channels`（「直播」栏目已有的那张表），不当任何响应的原料。
+2. **它不在任何请求路径上**：访客的一次 GET 与它无因果关系，也不会等它
+   （`live-feed.ts` 那 351 ms 的延迟今天只让作业多跑一会儿，没有人等）。
+3. **它的量是常数**：0.2 次/分钟，**与访客数无关**。被否决的 B 恰恰是"量随访客数放大"
+   （几十个人同时开着页面就把 500/10min 打满）—— 这两件事的形状不同，不是因为"量小"就都算数。
+
+**失败怎么被人看到**（这一条同时是运维说明）：那一轮打**一行**到 stderr（journald 里是 err 级）
+并**退出码 1** ⇒ systemd 把这一轮记成 `failed`。四档（上游 `unavailable` / `busy` / `bad_response`
++ 写库 `db`）的完整说法在 `ranked-streams.ts` 文件头第三节与那个 `.service` 的诊断表里。
+
+**收录的规则是冻结的**（用户裁决，逐条）：只要 **twitch**；`display_name` **就是** twitch login
+（不是选手的 MCSR 昵称）；标签 `["ranked"]`（**不加**任何额外字段标记来源）；
+`sort_order = 1000`（排在编辑录的那些后面）；`live_video_id = NULL`；**只插不改**
+（`DO NOTHING` 的 NULL 安全版本 —— `UNIQUE (platform, handle, live_video_id)` 对 NULL 不生效，
+那是本仓踩过的坑）。⚠️★ 因此编辑想让某个自动收录的频道消失，正确的动作是**隐藏**，不是删除：
+删掉会把三列腾空，下一轮它就回来了。完整版（含两条诚实的边界）在 `pending.md §5.97`。
+
 ---
 
 ## 4. 数据形状（冻结）
@@ -788,7 +835,35 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
       搜索与 AND 组合那几条必须**红**（而"不筛"那几条照样绿 —— 说明它们不是同一条断言）
 - [ ] ★ mutation ⑩（★ 2026-09-19）：`sliceLiveMatches` 的可见段改成 `matched`（忽略 `shown`）⇒
       「加载更多（还有 7 场）」与 `shown: 5` 那几条必须**红**
+- [ ] ★ mutation ⑪（★ 2026-09-17）：把 `insertLiveChannelIfAbsent` 的 `live_video_id IS ?`
+      改回 `= ?`（NULL trap 本身）⇒ 「同一份载荷跑两轮仍然一行」与「隐藏过的行还是隐藏的」
+      必须**红**（实测：39 条里红 2 条）
+- [ ] ★ mutation ⑫（★ 2026-09-17）：去掉 `rankedTwitchChannels` 里那句 `platform !== 'twitch'`
+      ⇒ 「只收 twitch」与摘要那三个数必须**红**（实测：红 7 条）
+- [ ] ★ mutation ⑬（★ 2026-09-17）：`ranked-streams.ts` 的失败分支改成 `return 0`
+      ⇒ 四条「失败 ⇒ 退出码 1」的用例必须**红**（实测：红 4 条）
 - [ ] 每处 mutation 之后**字节级还原**并用哈希证明
+
+### 11.5 收录作业：`services/api/src/ranked-streams.ts`（★ 2026-09-17 加）
+
+⚠️ 与 §11.1 同一条纪律：上游一律用桩。两条路都要钉死 ——
+`depsFor()` 注入假的取数层（**结构上**打不到网络），`mockUpstream()` 换掉 `globalThis.fetch`
+而 URL 指向 `.invalid`（测"真路径整条通不通"）。用例都在 `services/api/src/ranked.test.ts` ⑥。
+
+- [ ] 只有 twitch：一行、`display_name` = login、`tags = ["ranked"]`、`sort_order = 1000`、
+      `live_video_id = NULL`；youtube / bilibili / 没有链接的都不收
+- [ ] 摘要那一行的**形状与三个数**：`载荷 N 个 twitch 频道 / 新增 M 条 / 已在库 K 条`（N = M + K），
+      且印出来的时刻是注入时钟的 ISO（**毫秒**单位的那条判据）
+- [ ] 同一份载荷跑两轮 ⇒ 仍然一行、而且是同一行；隐藏过的行还是隐藏的；
+      **删掉**之后下一轮会以**新 id** 回来（所以正确动作是隐藏）
+- [ ] 一轮 = **恰好一次**上游调用（桩计数 1）—— 这就是 §3.1 那笔 0.4% 的分子
+- [ ] 上游四档都要**响**：`unavailable`（500 / 超时）/ `bad_response`（200 但读不出对局）/
+      `db`（触发器拦住写库）⇒ **零写入 + 一行 stderr + 退出码 1**；
+      写库失败那一行还要照实报"**已经写进去几条**"（不是笼统的"失败了"）
+- [ ] `ingestRankedLiveChannels` **不抛**：写库失败时把错误**返回**（`inserted` / `candidates` / `error`）
+- [ ] 载荷来自缓存（`fromUpstream: false`）⇒ 零写入、退出码 0、那一行说明原因
+- [ ] 不认识的参数 ⇒ 退出码 2，且**连取数层都不碰**
+- [ ] `runOnce` 一个字节都不打（"一轮恰好一行"是**结构上**成立的，打印只在 `main`）
 
 ---
 
@@ -816,7 +891,8 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `block` 短名 | `ranked` |
 | 词条命名空间 | `ranked.*`（+ `nav.ranked` + `home.desc.ranked`） |
 | 英文栏目名 | **"Ranked now"** |
-| 我们**唯一**的端点 | `GET /api/ranked/status`（**心跳**；CORS 所迫） |
+| 我们**唯一**的端点 | `GET /api/ranked/status`（**心跳**；CORS 所迫）。★ 2026-09-17：`GET /api/ranked/live` **已删除**（它**没有调用者** —— 面板是浏览器直连的；收录那一件事改走 systemd 作业，见 §3.1） |
+| 服务器出网（ranked 上游） | 心跳 ≤2 次/分钟（**4%**）+ 直播链接收录作业 0.2 次/分钟（**0.4%**）⇒ 合计 **≈4.4%**（口径：500 次 / 10 分钟 / IP，§2.1）。⚠️ §3.1 说明了为什么**不**照抄那个"约 8%" |
 | 浏览器直连的上游 | `api.mcsrranked.com` 的 `/live`、`/leaderboard`、`/weekly-race{,/{id}}`（**主入口**）；`mcsrranked.com/api` 同路径（**兜底**，只在网络错误时） |
 | 直连请求选项 | `cache: 'no-store'`、`credentials: 'omit'`、`referrerPolicy: 'no-referrer'`、**不带自定义头** |
 | 心跳缓存 | TTL 30 秒 + single-flight + 兜底 ≤10 分钟 |
@@ -835,4 +911,4 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | 时间单位 | 上游 `Date` = **秒**（赛季起止、心跳、周赛 endsAt）；`Time` = **毫秒**（对局时间、周赛成绩） |
 | CSP | `connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com`（**只改这一处**）；`frame-src` 不动 |
 | 渲染自检 | `apps/web/scripts/rankedrender.tsx` → `check:ranked`，进 `check:all` |
-| 迁移 | **没有**（不落库） |
+| 迁移 | **没有**（ranked 的四个面板都不落库）。★ 2026-09-17：收录作业写的是 `live_channels` —— **「直播」栏目已有的那张表**（迁移 012/015/016 建的），不是 ranked 的表，所以**仍然没有新迁移** |
