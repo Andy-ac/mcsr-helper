@@ -169,7 +169,10 @@ export class RankedDirectError extends Error {
  *
  * ⚠️ 上游对"查无此人"回的是 **400 而不是 404**（实测，findings §6），
  *    而两种 400 的 body **完全不一样**（判据写在 `lookupErrorFromResponse` 上）——
- *    它们在界面上是两句话（「没有这个玩家」/「这个昵称不合法」，见 `lib/rankedErrors.ts`）。
+ *    它们在界面上是两句话（「没有这个玩家」/「这个昵称不合法」），那两句住在
+ *    `ranked.lookupNotFound` / `ranked.lookupInvalid`（渲染在 `.ranked__lookup` 里，
+ *    `RankedPanels.tsx` 的查询结果那一块）—— ⚠️ **不是** `lib/rankedErrors.ts` 那一层：
+ *    它只管"这一次请求没成功"那七格（修复轮 T4 删掉的那两张重复词条曾在那里）。
  */
 export type RankedLookupKind = 'not_found' | 'invalid_identifier';
 

@@ -1075,9 +1075,14 @@ export type RankedDetailState =
  *
  * ⚠️★ 它是**按钮**，不是"整行可点"：`<tr>` 上没有可点语义，读屏软件也念不出来
  *    （用户点开的是"这一位玩家"，不是"这一行"）。
- * ⚠️ `aria-expanded` 说的是**这个控件自己管着的那一块**开着没有（三个渲染位置各自一颗
- *    按钮，只有真的渲染了详情的那一颗是 `true`）—— 三颗都写"这位玩家展开了"会让
- *    读屏软件念出两个都展开、却只有一块内容的界面。
+ * ⚠️★ `aria-expanded` 说的是"**这位玩家**的卡片开着没有"，不是"卡片开在**我这个位置**没有"
+ *    （2026-09-19 终审的 Minor 订正的）：同一个人的卡片只渲染在**一处**（⑥ 钉着"恰好一块
+ *    `.ranked__detail`"），但它可能不在**用户刚点的那颗按钮**旁边 —— 查到的玩家**同时**
+ *    在榜上时，卡片落在**表格那一行**里，而 `.ranked__lookup` 里那颗按钮如果照旧念
+ *    "已收起"，读屏软件会说一件假事（用户会以为那一下没生效，再点一次）。
+ *    ⇒ 判据是"开着的**那个人**是不是我"，所以同一个人的两颗按钮会**都是 `true`** ——
+ *    它们指向的是同一块内容，不是两块（三颗都写 `true` 才是要防的那件事：那意味着
+ *    读屏软件以为有三块详情，而屏幕上只有一块）。
  * ⚠️ `type="button"`：万一哪天它被挪进某个 `<form>` 里，默认的 `submit` 会顺手提交那个表单。
  */
 function RankedPlayerButton({
@@ -1486,7 +1491,17 @@ export function RankedEloView(props: RankedEloViewProps) {
             <>
               <RankedPlayerButton
                 nickname={lookup.user.nickname}
-                expanded={inLookup}
+                /*
+                 * ★★ 2026-09-19 终审的 Minor（判据②那一半的反面）：查到的这位**同时**也在榜上时，
+                 * 卡片按判据① 渲染在**表格那一行**里 ⇒ 只写 `inLookup` 的话这一颗是 `false`，
+                 * 而用户刚点的就是**这一颗**（读屏软件念"已收起"、以及屏幕上看不到卡片长出来，
+                 * 都会让他以为那一下没生效）。
+                 * ⚠️ 判据是"**他**的卡片开着没有"（`openNickname === lookup.user.nickname`），
+                 * 不是"卡片开在**我这一块**里没有" —— 同一个人的两张按钮都念"展开"是对的，
+                 * 它们指向**同一块**内容（`.ranked__detail` 仍然恰好一块，⑥ 那条钉着它）。
+                 * ⚠️ 夹具：这一档（`found` **且** 在表里）今天在渲染自检里有一个专门的产物。
+                 */
+                expanded={inLookup || (inTable && openNickname === lookup.user.nickname)}
                 onToggleDetail={onToggleDetail}
               />
               {/*

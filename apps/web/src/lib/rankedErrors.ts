@@ -86,7 +86,7 @@
  *   两半必须从**同一个判断**出来，否则就是那种会漂移的第二份规则。
  */
 import { ApiError } from '@/lib/api';
-import { RankedDirectError, RankedLookupError, type RankedLookupKind } from '@/lib/rankedDirect';
+import { RankedDirectError } from '@/lib/rankedDirect';
 
 /** `t()` 的最小形状（与 `lib/shareErrors.ts` 里那一个同形，各自独立、不互相 import）。 */
 export type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -94,12 +94,15 @@ export type Translate = (key: string, options?: Record<string, unknown>) => stri
 /**
  * 这一栏**全部**的失败来源 —— 七个，一个不多一个不少。
  *
- * ⚠️★ 2026-09-19 起这一栏还多了**另一族**失败：「**这个昵称**不行」的两种 400
+ * ⚠️★ 2026-09-19 这一栏还多过**另一族**失败：「**这个昵称**不行」的两种 400
  *    （查无此人 / 昵称不合法，`rankedDirect.ts` 的 `RankedLookupError`）。
- *    它**不进这个联合类型**、也不进 `RANKED_ERROR_KEYS` —— 理由两条，写在
- *    `RANKED_LOOKUP_ERROR_KEYS` 上面（一族 vs 两格；以及那张七格表被渲染自检 `deepEqual` 断言）。
- *    ⇒ 读这个文件时的心智模型是：**这里有两张表、两族失败**，
- *    而"失败源是七个"这句说的是 `RankedErrorSource` 这一族。
+ *    它**不进这个文件**：容器把那两档直接渲染成 `.ranked__lookup` 里的
+ *    `lookupNotFound` / `lookupInvalid`（上游对那两个 400 的回答是**确定的**、重试没用，
+ *    而这一层每一句说的都是"这一次请求没成功，稍后再试"——两族的方向正好相反）。
+ *    ⇒ T1 曾在这里放过一张 `RANKED_LOOKUP_ERROR_KEYS` 加一支派发，修复轮（T4）把它们
+ *    **删掉了**：它们从落地起就没有任何生产调用者（"没有消费者的 key 不留"）。
+ *    ⚠️ 所以读这个文件时的心智模型是**一张表、一族失败**。下次想"顺手加一条查人错误"的人
+ *    请先去看容器与 `RankedPanels.tsx`：那一档住在 `.ranked__lookup` 里，不在这一层。
  *
  * 前四个（`network` / `http` / `not_found` / `bad_response`）来自**直连**
  * （`RankedDirectError` 五个原因里除去 `rated` 的那四个），后三个（`busy` / `unavailable` /
@@ -152,37 +155,15 @@ export const RANKED_ERROR_KEYS: Record<RankedErrorSource, string> = {
   rated: 'ranked.errRateLimited',
 };
 
-/**
- * ★★ 「**这个昵称**有问题」那一族 —— 两条词条，**单独一张表**（2026-09-19 加）。
- *
- * ---------------------------------------------------------------------------
- * 它为什么**不**并进上面那张七格表（这是一处刻意的偏差，理由两条）
- * ---------------------------------------------------------------------------
- * ① **它是另一族失败，不是另两格**：七格里的每一句说的都是"**这一次请求**没成功，
- *    稍后再试"（上游忙 / 连不上 / 看不懂 / 被限流）；而这两句说的是
- *    "**这个昵称**不存在 / 上游不收"，重试是**永远**白试一次
- *    （上游的查询是精确匹配：`lowk3y` 查不到 `lowk3y_`）。
- *    并进七格表会让"用户下一步做什么"这件事在那张表里失去意义（四个格子说等，两个说别等）。
- * ② **那张七格表被渲染自检逐格断言**（`apps/web/scripts/rankedrender.tsx` 的 ⑥b
- *    用 `deepEqual` 断言整张表的值，并把七条 key 在两种语言里各查一次存在性）。
- *    它是 T3 的文件 —— 在本轮（T1 契约层）里往表里加两行会让那条断言**当场变红**，
- *    而那会把"契约层没坏"这件事与"视图层还没跟上"混在一起。
- *    ⇒ 这一族从第一天起就带着**自己的一条断言**（`services/api/src/ranked-direct.test.ts`
- *    从源码里抽出这张表的两条映射，再逐条查两种语言里有没有那条词条）——
- *    形状与 ⑥b 对七格表做的那一圈相同，只是跑在本仓唯一有测试运行器的地方。
- * ⚠️ 两条 key 的**值**住在 `packages/shared/src/i18n/`（`zh-CN.ts` / `en.ts`），
- *    与七格表同一条处境：它们不是字面量 `t('…')` 调用点，任何字面量扫描都够不着它们。
- * ⚠️★ 两族的**词条 key** 必须不同：`ranked.errNotFound` 说的是"没有**这一周**"
- *    （上游对不存在的周号回 400 那句话），而这一族说的是"没有**这个玩家**"。
- *    共用一条词条会让界面上用「没有这一周。」来回答一次查人 —— 一句**方向完全错了**的话。
- *    ⚠️ 反过来，两个**类型空间**里的名字（`RankedErrorSource` 与 `RankedLookupKind`）
- *    反而**可以**同名：它们互不相干，各自表里的 `not_found` 只在各自的表里被查。
- *    ⇒ 这条判据管的是 **key**，`services/api/src/ranked-direct.test.ts` 逐条钉着它。
+/*
+ * ⚠️★ 这里曾经有一张 `RANKED_LOOKUP_ERROR_KEYS`（`ranked.errUserNotFound` /
+ * `ranked.errInvalidIdentifier`）与 `describeRankedError` 里对应的一支，**2026-09-19
+ * 修复轮（T4）删掉了**：那是**另一族**失败（"这个昵称不行"，重试没用），而容器从来没有
+ * 把它交给这一层 —— 那一档渲染在 `.ranked__lookup` 里（`ranked.lookupNotFound` /
+ * `lookupInvalid`）⇒ 两条词条 + 一张表 + 一支派发**没有一个生产调用者**，
+ * 正是本仓"没有消费者的 key 不留"那条纪律要删的东西。
+ * **别再加回来**：要加之前先指出一个会走它的调用点。
  */
-export const RANKED_LOOKUP_ERROR_KEYS: Record<RankedLookupKind, string> = {
-  not_found: 'ranked.errUserNotFound',
-  invalid_identifier: 'ranked.errInvalidIdentifier',
-};
 
 /**
  * 我们那个端点回的码 → source。**认不出来的码回 `null`**（交给状态码兜底）。
@@ -303,22 +284,19 @@ export function rankedErrorSource(error: unknown): RankedErrorSource | null {
  *    下一个改文案的人会去文件里找"它们该填什么"，而那两个变量**不存在**。
  * ⚠️ 认不出来的失败走 `fallback`（`useApiErrorText()` 的结果）——见文件头最后一节：
  *    "我们自己的服务器连不上"那一档**只有**它能说对。
- * ⚠️★ 「这个昵称有问题」那一族**先判**（`RankedLookupError`）：它的 `kind` 与七格里
- *    那个 `not_found` 名字相近而意思完全不同（"没有**这一周**" vs "没有**这个玩家**"），
- *    从这一句起往下读的人最容易把它们弄混 —— 所以它在这里被**显式**摆在前头，
- *    而且**不走** `fallback`（兜底那句说的是"稍后再试"，而这两档重试没用）。
+ * ⚠️★ 这里曾经**先判**「这个昵称有问题」那一族（`RankedLookupError`）—— 修复轮（T4）
+ *    把那一支删掉了，理由与那张表同一条：**没有任何生产调用点**。它的 `kind` 里的
+ *    `not_found` 与七格里那个 `not_found` 名字相近而意思完全不同（"没有**这一周**" vs
+ *    "没有**这个玩家**"）：真把 `RankedLookupError` 递进来的话，它今天既不是
+ *    `RankedDirectError` 也不是 `ApiError` ⇒ 落进 `fallback`，说的是一句**笼统但方向不歪**的话
+ *    （"稍后再试"）—— 而那正是这一层对"我不认识这个失败"的一贯处置，不是一句假话。
+ *    ⚠️ 走这一条的人是写错了调用点：容器把那一族渲染在 `.ranked__lookup` 里。
  */
 export function describeRankedError(
   error: unknown,
   t: Translate,
   fallback: (error: unknown) => string,
 ): string {
-  /*
-   * ⚠️ 这一支必须**在 `rankedErrorDetail` 之前**：`RankedLookupError` 不继承
-   *    `RankedDirectError`（见那个类的注释），但将它放在前面是**刻意的顺序**——
-   *    下一个给 `RankedLookupError` 加父类的人不会因此把它静默地并进 `http` 那一档。
-   */
-  if (error instanceof RankedLookupError) return t(RANKED_LOOKUP_ERROR_KEYS[error.kind]);
   const detail = rankedErrorDetail(error);
   if (detail === null) return fallback(error);
   return detail.source === 'http'

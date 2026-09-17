@@ -22,8 +22,6 @@
  *    与 `ranked-shared.test.ts` 的文件头同一条规矩）。
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { RANKED_UPSTREAM_ALT, RANKED_UPSTREAM_PRIMARY } from '@mcsr/shared/ranked';
 
@@ -36,8 +34,6 @@ const {
   rankedUserPath,
   setUpstreamFetchForTests,
 } = await import('../../../apps/web/src/lib/rankedDirect');
-
-const { en, zhCN } = await import('@mcsr/shared/i18n');
 
 /* ---------------------------------------------------------------------------
  * 桩：记录每一次请求，按 URL 回答
@@ -268,7 +264,6 @@ describe('fetchRankedUser：200 ⇒ 详情', () => {
     assert.equal(detail.uuid, '635f35ee69ed4f0c94ff26ece4818956');
     assert.equal(detail.eloRate, 2349);
     assert.equal(detail.eloRank, 1);
-    assert.equal(detail.seasonHighest, 2385, '★ `seasonResult.highest`（本赛季最高）');
     assert.equal(detail.season.wins, 96);
     assert.equal(detail.season.loses, 14);
     assert.equal(detail.total.playedMatches, 5357);
@@ -309,7 +304,8 @@ describe('fetchRankedUser：400 的**两种** body 各自成一类', () => {
     assert.equal(error.name, 'RankedLookupError');
     /*
      * ★★ 它不是 `RankedDirectError`：那一族的每一档在界面上都说"重试可能有用"，
-     *    而"这个人不存在"重试一百次也是同一个答案（那一句由 `RANKED_LOOKUP_ERROR_KEYS` 说）。
+     *    而"这个人不存在"重试一百次也是同一个答案（那一句由 `ranked.lookupNotFound` 说，
+     *    渲染在搜索框下面的 `.ranked__lookup` 里，**不是**面板顶上那句失败提示）。
      */
     assert.ok(!(error instanceof RankedDirectError), '★★ 不许落进"上游回了个错误"那一族');
     assert.deepEqual(
@@ -488,90 +484,22 @@ describe('fetchRankedMatches：200 ⇒ 比赛数组', () => {
 });
 
 /* ---------------------------------------------------------------------------
- * ★★ 两条新词条：两族失败 × 两份字典（这一圈在仓里**没有第二处**）
+ * ★★ 值班的哨兵：本文件"绝不出真实网络"那句话的**证据**
  * ------------------------------------------------------------------------- */
 
-/**
- * `apps/web/src/lib/rankedErrors.ts` 的源码。
- *
- * ⚠️★ 为什么这一节要**读源码**而不是 import 那个模块：`rankedErrors.ts` 里有一句
- *    `@/lib/api`（Vite 的路径别名），在 `services/api` 里**解析不了**
- *    （tsx 从本包的 `tsconfig.json` 取 paths，那里没有 `@/*`）⇒ 它进不了本仓唯一有
- *    测试运行器的这个包。而"两族失败 → 两种词条"这条映射必须有人守：
- *    `RANKED_ERROR_KEYS` 那一族由渲染自检 ⑥b 用 `deepEqual` 守着，
- *    而这一族是 2026-09-19 才加的、渲染自检里**还没有**它。
- * ⇒ 从源码里抽出这张表的两条映射，再拿它们去**两份字典**里逐条查存在性 ——
- *    形状与 ⑥b 对七格表做的那一圈完全相同（存在性 + 真值 + 非空）。
- * ⚠️ 判据里那句 `assert.equal(pairs.length, 2)` 是这一圈的**探针**：
- *    没有它，正则哪天匹配不到东西时下面那些循环会**空跑**（一条都没查，却全绿）。
+/*
+ * ⚠️★ 这一节原来还有两圈**源码层的表断言**（`RANKED_LOOKUP_ERROR_KEYS` 的两条映射 ×
+ *    两份字典；以及"两族不许重名"的探针），**2026-09-19 修复轮（T4）连表一起删掉了**：
+ *    那张表与 `describeRankedError` 里对应的一支**没有任何生产调用者**
+ *    （渲染点在 `.ranked__lookup` 里的 `lookupNotFound` / `lookupInvalid`）。
+ *    ⚠️ 别把删掉的那两圈读成"少了两条守卫"：**`RANKED_ERROR_KEYS` 那七格一圈都没少** ——
+ *    它由渲染自检 ⑥b 用 `deepEqual` 逐格断言、七条 key 照样在两份字典里逐条查存在性
+ *    （`apps/web/scripts/rankedrender.tsx`），那才是"表里的数据不再是 `t('…')` 调用点"
+ *    这条处境的守卫。
  */
-function rankedErrorsSource(): string {
-  const here = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
-  const repo = resolve(here, '..', '..', '..');
-  return readFileSync(join(repo, 'apps/web/src/lib/rankedErrors.ts'), 'utf8');
-}
 
-/** 一张表里的**词条 key 字面量**（按源码顺序）。 */
-function keysInTable(src: string, table: string): string[] {
-  const block = new RegExp(`export const ${table}[^{]*\\{([^}]*)\\}`).exec(src)?.[1];
-  if (block === undefined) return [];
-  return [...block.matchAll(/'([^']+)'/g)].map((m) => m[1] as string);
-}
-
-/** 按 'a.b' 取值；取不到返回 `undefined`（与 `i18n-keys.test.ts` 里那个同形）。 */
-function lookup(dict: unknown, key: string): unknown {
-  let node: unknown = dict;
-  for (const part of key.split('.')) {
-    if (typeof node !== 'object' || node === null) return undefined;
-    node = (node as Record<string, unknown>)[part];
-  }
-  return node;
-}
-
-describe('两族失败的两张表：查无此人 / 昵称不合法', () => {
-  it('★★ `RANKED_LOOKUP_ERROR_KEYS` 的每一条 × 两份字典都存在、有真值、非空', () => {
-    const src = rankedErrorsSource();
-    const keys = keysInTable(src, 'RANKED_LOOKUP_ERROR_KEYS');
-    // ★ 探针：一条都没抽到时下面的循环会空跑（"一条都没查"与"全都查过了"都绿）
-    assert.equal(keys.length, 2, `★★ 这张表必须恰好两条词条（实测抽到 ${String(keys.length)} 条）`);
-    assert.deepEqual(
-      keys,
-      ['ranked.errUserNotFound', 'ranked.errInvalidIdentifier'],
-      '★★ 两个 `kind` 的映射就是这两条（对调/改名都会在这里红）',
-    );
-
-    for (const key of keys) {
-      for (const [lng, dict] of [
-        ['zh-CN', zhCN],
-        ['en', en],
-      ] as const) {
-        const value = lookup(dict, key);
-        assert.equal(
-          typeof value,
-          'string',
-          `★★ 词条 ${key} 在【${lng}】里不存在（界面上会印出裸 key）`,
-        );
-        assert.notEqual(value, '', `★★ 词条 ${key} 在【${lng}】里是空的（空格子看起来像渲染坏了）`);
-      }
-    }
-  });
-
-  it('★★ 两族**不许重名**：`not_found` 是"没有这一周"，新那两条是"没有这个玩家"', () => {
-    /*
-     * ⚠️★ 这一条钉的是一件很容易搞混的事：七格表里已经有一个 `not_found`
-     *    （上游对不存在的周号回 400 那句话），新的那一族里也有一个 `not_found`
-     *    （`RankedLookupError.kind`）。它们是**两件不同的事** ⇒ 两张表的**词条 key**
-     *    必须不同 —— 撞车的话，界面上会用「没有这一周。」来回答"这个玩家不存在"。
-     */
-    const src = rankedErrorsSource();
-    const weekKeys = keysInTable(src, 'RANKED_ERROR_KEYS');
-    assert.equal(weekKeys.length, 7, '★ 那张表还是七格（本节只关心它有没有与新的两条撞车）');
-    for (const key of keysInTable(src, 'RANKED_LOOKUP_ERROR_KEYS')) {
-      assert.ok(!weekKeys.includes(key), `★★ 词条 ${key} 被两族共用（两句不同的话会变成一句）`);
-    }
-  });
-
-  it('★★ 值班的哨兵：桩漏复位时**任何**真实请求都会被记账并抛出', async (t) => {
+describe('★ 值班的哨兵', () => {
+  it('★★ 桩漏复位时**任何**真实请求都会被记账并抛出', async (t) => {
     /*
      * ⚠️★ 这一条就是"本文件绝不出真实网络"那句话的证据（文件头第②道保险）：
      *    复位之后 `upstreamFetch` 是 `null` ⇒ 下一次调用会走 `globalThis.fetch`。

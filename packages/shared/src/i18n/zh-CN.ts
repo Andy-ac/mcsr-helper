@@ -3132,15 +3132,18 @@ export const zhCN = {
      */
     searchHint: '输入即在已载入的名单里筛选；回车按昵称精确查询。',
     /*
-     * ★ 查人那一次的**两种"不行"**。⚠️★ 它们与 `errUserNotFound` / `errInvalidIdentifier`
-     *    不是一回事（虽然第一句的话几乎一样），也**不许**并成一条：
-     *   · 那两条走 `describeRankedError`（失败 → 一句话）那一族，渲染在面板**顶上**的失败
-     *     提示里，旁边还挂着一颗重试；
-     *   · 这两条是**那一次查询自己的回答**，渲染在搜索框下面的 `.ranked__lookup` 里，
-     *     而且**没有重试按钮** —— 上游是精确匹配，重试一万次还是这个结果。
-     * ⚠️ 措辞上的分歧是**有意的**：这一句说的是"太长**或格式不对**"（用户唯一能改的就是
-     *    换个写法），而 `errInvalidIdentifier` 说的是上游的**实测规则**（超过 20 个字符），
-     *    它回答的是"为什么被拒"。
+     * ★ 查人那一次的**两种"不行"**。它们渲染在搜索框下面的 `.ranked__lookup` 里，
+     *   是**那一次查询自己的回答**，而且**没有重试按钮** —— 上游是精确匹配，
+     *   重试一万次还是这个结果（与面板顶上那句失败提示 + 重试完全是两件事）。
+     * ⚠️★ 2026-09-19 修复轮（T4）删掉了与它们几乎重复的那一对
+     *   （`ranked.errUserNotFound` / `errInvalidIdentifier`，走 `describeRankedError` 那一族）：
+     *   那一对**从落地起就没有生产调用者**（容器把这两档交给这里，不是交给顶上那句失败提示）。
+     *   ⚠️ 顺手记一笔当时的实情，免得下一个人照着旧话再"复述"一遍：那两条里
+     *   `errUserNotFound` 的**中文值**与这里的 `lookupNotFound` **逐字节相同**
+     *   （都是「没有这个玩家。」），只有**英文侧**不同；而 `errInvalidIdentifier` 与
+     *   `lookupInvalid` 是**中英两侧都不同**的一对（前者说上游"拒收超过 20 个字符的标识符"，
+     *   这一句只说"太长或格式不对"）。
+     * ⚠️ 这一句说的是"**这个昵称**现在查不到"，与 `errNotFound`（「没有这一周。」）不是一件事。
      */
     lookupNotFound: '没有这个玩家。',
     lookupInvalid: '这个昵称不合法（太长或格式不对）。',
@@ -3304,20 +3307,16 @@ export const zhCN = {
     errRateLimited: '请求有点频繁，过一会儿再试。',
 
     /*
-     * ---- 「这个昵称不行」的两条（2026-09-19 加的，`RANKED_LOOKUP_ERROR_KEYS`）----
-     * ⚠️★ 它们**不并进**上面那七条，因为它们说的不是"这一次请求失败了"，
-     *    而是"**这个昵称**不存在 / 上游不收"—— 重试**永远**是白试一次：
-     *    上游的查询是**精确匹配**（实测：`lowk3y` 查不到 `lowk3y_`，
-     *    `/users/Ranked%20Bot` 查不到 `[Ranked Bot]`，findings §6 末段）。
-     *    混进 `loadFailed` / `errHttp` 会让用户以为"再点一次就好"，而答案永远一样。
-     * ⚠️ 上游对"查无此人"回的是 **400 而不是 404**（实测），而且两种 400 的 body 不一样：
-     *    `{"data":{"error":"User is not exists."}}` ⇒ 第一条；
-     *    `{"data":{"params":{"identifier":[…]}}}` ⇒ 第二条（实测：标识符超过 **20 个字符**时）。
-     *    ⚠️ 那 20 不是"昵称的通用上限"：`discord.338669823167037440`（26 字符）照样 200
-     *    —— 被拒的是"标识符这个写法"，所以我们只说上游拒了它，不说"昵称只能 20 字"。
+     * ⚠️★ 这里原来还有两条 `errUserNotFound` / `errInvalidIdentifier`（T1 加的，
+     * 走 `describeRankedError` 那一族），**2026-09-19 修复轮（T4）删掉了**：
+     * 它们从落地起**没有生产调用者**（"查无此人 / 昵称不合法"由上面那一对
+     * `lookupNotFound` / `lookupInvalid` 渲染），而本仓的口径是**没有消费者的 key 不留**。
+     * 别再加回来：要加之前先指出一个会走它的调用点（判据写在
+     * `apps/web/src/lib/rankedErrors.ts` 那张七格表下面那一段注释里）。
+     * ⚠️ 删的时候顺手核对过一件事，写在这里免得下一个人照旧话再"复述"一遍：
+     * 那两条里 `errUserNotFound` 的中文值**逐字节相同**于 `lookupNotFound`
+     * （都是「没有这个玩家。」），`errInvalidIdentifier` 与 `lookupInvalid` 才两侧都不同。
      */
-    errUserNotFound: '没有这个玩家。',
-    errInvalidIdentifier: '这个昵称不合法（上游拒收超过 20 个字符的标识符）。',
 
     /*
      * ⚠️ 占位符**也要有词条**（`eloRank` / `highest` / `phasePoint` / `timelineType`

@@ -3442,18 +3442,24 @@ export const en: TranslationSchema = {
     searchHint:
       'Typing filters the board already loaded; press Enter to look up one exact nickname.',
     /*
-     * ★ The two "no" answers to a lookup. ⚠️★ They are **not** the same thing as
-     *    `errUserNotFound` / `errInvalidIdentifier` (even though the first sentence
-     *    reads almost the same), and they must not be merged:
-     *   · those two go through `describeRankedError` (a failure -> one sentence) and
-     *     render at the **top** of the panel next to a retry button;
-     *   · these two are **the answer to that one lookup**, rendered inside
-     *     `.ranked__lookup` under the search box, with **no retry button** -- the
-     *     upstream match is exact, so retrying gives the same answer forever.
-     * ⚠️ The wording difference is deliberate: this one says "too long **or
-     *    malformed**" (the only thing the reader can change is how they spell it),
-     *    while `errInvalidIdentifier` states the upstream's **measured** rule
-     *    (identifiers longer than 20 characters) and answers "why was it rejected".
+     * ★ The two "no" answers to a lookup. They render inside `.ranked__lookup` under
+     *    the search box and they are **the answer to that one lookup**, with **no retry
+     *    button** -- the upstream match is exact, so retrying gives the same answer
+     *    forever (a completely different thing from the failure banner + retry at the
+     *    top of the panel).
+     * ⚠️★ The fix round (T4), 2026-09-19, deleted the near-duplicate pair that used to
+     *    sit here as well (`ranked.errUserNotFound` / `errInvalidIdentifier`, in the
+     *    `describeRankedError` family): they never had a production caller -- the
+     *    container hands both of those two answers to *these* keys, not to the failure
+     *    banner.
+     *    ⚠️ One fact checked while deleting them, so nobody re-states the old wording:
+     *    `errUserNotFound`'s **Chinese** value was byte-identical to `lookupNotFound`
+     *    (both 「没有这个玩家。」); the difference was on the **English** side only.
+     *    (`errInvalidIdentifier` vs `lookupInvalid` did differ on both sides: the former
+     *    quoted the upstream's "longer than 20 characters" rule, this one does not.)
+     * ⚠️ The wording that does matter is the **direction**: this one says "**this
+     *    nickname** cannot be found right now", which is not `errNotFound`
+     *    ("There is no such week.").
      */
     lookupNotFound: 'No player with that nickname.',
     lookupInvalid: 'That nickname is not valid (too long or malformed).',
@@ -3648,27 +3654,18 @@ export const en: TranslationSchema = {
     errRateLimited: 'That is a lot of requests — try again in a little while.',
 
     /*
-     * ---- The two "this nickname is no good" sentences (added 2026-09-19,
-     *      `RANKED_LOOKUP_ERROR_KEYS`) ----
-     * ⚠️★ They are deliberately **not** folded into the seven above: those say
-     *    "this request failed", these say "**this nickname** does not exist / the
-     *    upstream will not take it" -- and retrying is **always** a wasted attempt,
-     *    because the lookup is an **exact** match (measured: `lowk3y` does not find
-     *    `lowk3y_`, `/users/Ranked%20Bot` does not find `[Ranked Bot]`, findings §6).
-     *    Folding them into `loadFailed` / `errHttp` would tell the reader "just click
-     *    again", while the answer will never change.
-     * ⚠️ The upstream answers **400, not 404**, for an unknown player (measured), and
-     *    the two 400 bodies differ:
-     *    `{"data":{"error":"User is not exists."}}` => the first one;
-     *    `{"data":{"params":{"identifier":[…]}}}` => the second (measured: identifiers
-     *    longer than **20 characters**).
-     *    ⚠️ That 20 is not a general nickname limit: `discord.338669823167037440`
-     *    (26 chars) still answers 200 -- what gets rejected is that identifier *form*,
-     *    so we only say the upstream rejected it, never "nicknames are 20 chars max".
+     * ⚠️★ There used to be two more rows here -- `errUserNotFound` / `errInvalidIdentifier`
+     * (added by T1, in the `describeRankedError` family). **Deleted by the fix round (T4),
+     * 2026-09-19**: they never had a production caller ("no such player" / "invalid
+     * nickname" is rendered by the `lookupNotFound` / `lookupInvalid` pair above), and
+     * this repo's rule is that **a key with no consumer does not stay**.
+     * Do not add them back without pointing at a call site that would reach them
+     * (the reasoning lives under the seven-row table in
+     * `apps/web/src/lib/rankedErrors.ts`).
+     * ⚠️ One fact checked while deleting them, recorded so nobody re-states the old
+     * wording: on the **Chinese** side `errUserNotFound` was byte-identical to
+     * `lookupNotFound` (both 「没有这个玩家。」) -- only the English strings differed.
      */
-    errUserNotFound: 'There is no player with that nickname.',
-    errInvalidIdentifier:
-      'That nickname is not valid (the upstream rejects identifiers longer than 20 characters).',
 
     /*
      * ⚠️ The placeholder gets a key too (`eloRank` / `highest` / `phasePoint` /

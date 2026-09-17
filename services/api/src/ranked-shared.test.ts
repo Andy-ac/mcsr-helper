@@ -1757,8 +1757,12 @@ describe('parseMatches：三行 / 行级丢弃 / 整份不成形状', () => {
 
   it('★★ 坏行被丢掉、好行照旧（`id` 不是有限数字的行没有身份）', () => {
     /*
-     * ⚠️ 丢掉的理由：没有 id 的行不能做 React key、也不能展开（展开会去打 `/matches/NaN`），
-     *    而"第几行"是我们**编**出来的编号（编出来的 key 在重排时会把两场比赛的状态串在一起）。
+     * ⚠️ 丢掉的理由：没有 id 的行**没有身份** —— 它是展开那几场比赛的 React key
+     *    （`RankedDetailBody` 里 `key={match.id}`），而"第几行"是我们**编**出来的编号
+     *    （编出来的 key 在"上游删掉一场"时会整体错位一格）。
+     *    ⚠️ 早先这里写的是"展开会去打 `/matches/NaN`"—— **那句话是错的**：全仓没有任何地方
+     *    请求 `/matches/{id}`（`grep` 过，`rankedDirect.ts` 只有 `/users/…` 那几条路径）
+     *    ⇒ 真实的代价是**身份**（React key / 任何按比赛去重的算法），不是一次坏请求。
      * ⚠️ 代价：这几行在界面上**消失**（不是整份"读不到"，也不是一个假数字）——
      *    所以界面上那句「最近 N 场」要读**返回值**的长度，不是读请求里的 `count`。
      */
@@ -1874,15 +1878,14 @@ describe('parseMatches：三行 / 行级丢弃 / 整份不成形状', () => {
   });
 });
 
-describe('parsePlayerDetail：六格 / 一格坏 / 整份不成形状', () => {
-  it('★ 正常：`seasonHighest` 取的是 `seasonResult.highest`（不在外层）', () => {
+describe('parsePlayerDetail：五格 / 一格坏 / 整份不成形状', () => {
+  it('★ 正常：身份与 elo 三格逐格（`nickname` 取响应里的规范写法）', () => {
     const detail = parsePlayerDetail(PLAYER_DETAIL_FIXTURE);
     assert.ok(detail);
     assert.equal(detail.uuid, SELF_UUID);
     assert.equal(detail.nickname, 'edcr');
     assert.equal(detail.eloRate, 2349);
     assert.equal(detail.eloRank, 1);
-    assert.equal(detail.seasonHighest, 2385, '★ 本赛季最高（实测 2385）');
   });
 
   it('★★ 战绩取的是 `ranked` 那一半，**不是** `casual`（两个格子都在夹具里）', () => {
@@ -1944,7 +1947,6 @@ describe('parsePlayerDetail：六格 / 一格坏 / 整份不成形状', () => {
       playedMatches: null,
       bestTimeMs: null,
     });
-    assert.equal(noStats.seasonHighest, null, '★ 缺 seasonResult ⇒ 那一格 null');
   });
 
   it('★ 缺一格的战绩：`wins` 读得出、`loses` 读不出 ⇒ 只有那一格是 null', () => {

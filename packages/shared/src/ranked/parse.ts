@@ -706,10 +706,13 @@ function parseMatchRow(row: unknown): RankedMatch | null {
  * ---------------------------------------------------------------------------
  * 行级丢弃：**描述不完整的一行丢掉**（`id` 是其中最要紧的一条判据）
  * ---------------------------------------------------------------------------
- * `id` 不是有限数字的行为什么丢掉：没有 `id` 的行既不能做 React key，也不能展开
- * （展开会去打 `/matches/NaN` 那条路），而"第几行"这种编号是我们**编**出来的东西
- * （编出来的 key 在列表重排时会让 React 把两场比赛的状态串在一起，而那种错在控制台里
- * 只有一句警告）。⚠️ 另外几条行级判据（`type` / `date` / `forfeited` / `result` /
+ * `id` 不是有限数字的行为什么丢掉：没有 `id` 的行**没有身份** —— 它做不了 React key
+ * （展开那一行与它的卡片共用同一把 key），也进不了任何"按这一场分组/去重"的算法，
+ * 而"第几行"这种编号是我们**编**出来的东西（编出来的 key 在列表重排时会让 React
+ * 把两场比赛的状态串在一起）。⚠️ 早先这里写的是"展开会去打 `/matches/NaN`"——
+ * **那是错的**：全仓没有任何地方请求 `/matches/{id}`（`grep` 过：`rankedDirect.ts` 里
+ * 只有 `/users/…` 那几条路径，比赛详情端点从没被用过）⇒ 真实的代价是**身份**，不是一次坏请求。
+ * ⚠️ 另外几条行级判据（`type` / `date` / `forfeited` / `result` /
  * 空 `players`）逐条写在 `parseMatchRow` 上，它们的共同点是：
  * **那几格在类型里没有 `| null`，我们表达不出"不知道"**。
  * ⚠️ 代价写清：**上游哪天改了自己的形状，界面上的表现是这几行消失**
@@ -784,8 +787,11 @@ function parseRecord(
  * ---------------------------------------------------------------------------
  * 其余每一格都是宽容的（第②档）
  * ---------------------------------------------------------------------------
- * `seasonResult` 缺了 ⇒ `seasonHighest` 是 `null`；`statistics` 缺了 ⇒ 两份战绩四格全 `null`。
+ * `statistics` 缺了 ⇒ 两份战绩四格全 `null`。
  * 一处**整份失败都没有**：类型里每一格都表达得出"不知道"。
+ * ⚠️★ `seasonResult`（上游给"本赛季最高 elo"那一块）**整个不读了**：修复轮（T4）
+ *    删掉了它唯一的消费者 `seasonHighest`（没有渲染点、没有词条 ⇒ 见 `types.ts` 那段）。
+ *    留着 `rec(data.seasonResult)` 会是一个**没有任何读者**的局部变量。
  */
 export function parsePlayerDetail(raw: unknown): RankedPlayerDetail | null {
   const data = envelope(raw);
@@ -795,8 +801,6 @@ export function parsePlayerDetail(raw: unknown): RankedPlayerDetail | null {
   const nickname = str(data.nickname);
   if (uuid === null || nickname === null) return null;
 
-  // ⚠️ `seasonResult.highest` 是**本赛季最高** elo（实测 2385）；它不在上层（`data` 上没有）。
-  const seasonResult = rec(data.seasonResult);
   const statistics = rec(data.statistics);
 
   return {
@@ -804,7 +808,6 @@ export function parsePlayerDetail(raw: unknown): RankedPlayerDetail | null {
     nickname,
     eloRate: num(data.eloRate),
     eloRank: num(data.eloRank),
-    seasonHighest: num(seasonResult?.highest),
     season: parseRecord(statistics, 'season'),
     total: parseRecord(statistics, 'total'),
   };

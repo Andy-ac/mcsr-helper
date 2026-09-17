@@ -346,10 +346,16 @@ export interface RankedPlayerRecord {
  * **一位玩家的汇总**（`/users/{identifier}` 里我们真正要的那几格）。
  *
  * ---------------------------------------------------------------------------
- * ★ 为什么这里只有六格（上游那份响应有 12 个顶层键）
+ * ★ 为什么这里只有五格（上游那份响应有 12 个顶层键）
  * ---------------------------------------------------------------------------
  * 用户要的是"展开后看得到这位玩家的数据"，而这一栏的语义是**ranked 排位**：
- * 拿得出手的就是"现在多少分 / 排第几 / 本赛季最高 / 本赛季与历史战绩"这几样。
+ * 拿得出手的就是"现在多少分 / 排第几 / 本赛季与历史战绩"这几样。
+ * ⚠️★ 2026-09-19 修复轮（T4）还删掉了**第六格** `seasonHighest`
+ *    （`seasonResult.highest`，2026-09-19 终审的 Minor）：它**没有任何渲染点**、
+ *    也没有对应的词条 ⇒ 一条没有消费者的数据通路（卡片上已经有 elo / 排名 /
+ *    本赛季战绩 / 本赛季最佳用时四样）。⚠️ 想要的话加回来是**一个字段**：
+ *    `types` 一格 + `parse.ts` 那一行 + 一个渲染点 + 一条词条，
+ *    这件事记在 `docs/pending.md §5.100`。
  * `achievements` / `connections` / `weeklyRaces` / `timestamp` / `roleType` / `country`
  * **不进这个形状** —— 不进 = 界面不可能顺手印出来，这一层不为它们写兜底
  * （要加的人请连着这一段的理由一起改，别只加一格）。
@@ -365,8 +371,6 @@ export interface RankedPlayerDetail {
   /** 未定级玩家实测就是 `null`（**是真实状态**，不是缺数据）。 */
   eloRate: number | null;
   eloRank: number | null;
-  /** `seasonResult.highest`（本赛季最高 elo）。读不到 ⇒ `null`。 */
-  seasonHighest: number | null;
   season: RankedPlayerRecord;
   total: RankedPlayerRecord;
 }
