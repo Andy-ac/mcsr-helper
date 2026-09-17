@@ -557,13 +557,27 @@ export function RankedStatusView(props: RankedStatusViewProps) {
           </li>
         ))}
       </ul>
-      {/* 用户要的"下面显示当前在线人数"：大号数字 + 那一句说明，别的什么都没有 */}
-      {players === null ? (
-        <p className="ranked__big ranked__big--unknown">{t('ranked.unknown')}</p>
-      ) : (
-        <p className="ranked__big">{players}</p>
-      )}
-      <p className="ranked__meta">
+      {/*
+        ★★ ② 人数那一块（2026-09-19 **第二轮**用户裁决：「去掉大数字1119，
+        改为一个大标题『实时在线人数』，下面用加粗的绿色 mc 风格大字写上
+        『1119 人正在玩 Ranked』」）。
+        ⚠️★ 上一版是"一颗大号数字 + 下面一句说明"，这一版**把数字那一格删掉**、
+        换成**区域标题**（与 ① 的「服务状况」同一个 `<h2>` 档）：
+        数字与那句话本来就说着同一件事，而用户要的是一个**标题**——
+        两行同样的信息里少一行，剩下的那一行才有地方变粗变大变绿。
+        ⚠️ 标题与读数**是两条词条**（`playersTitle` / `players`）：标题答"这一块讲的是什么"，
+        读数答"现在有多少人"。合成一条，下一个人改数字那句时会把标题一起改掉。
+        ⚠️★ `null` 与 `0` 仍然是**两句不同的话**（这一条没被这次改版波及）：
+        读不到 ⇒ 那一行是「人数暂时读不到」，而且**不戴**绿色（`--unknown` 用弱色）——
+        绿色的"现在没有人在玩"与绿色的"读不到"长得一样时，用户会把我们没读到
+        当成"上游真的没人"。
+      */}
+      <h2 className="ranked__title">{t('ranked.playersTitle')}</h2>
+      <p
+        className={
+          players === null ? 'ranked__players ranked__players--unknown' : 'ranked__players'
+        }
+      >
         {players === null
           ? t('ranked.playersUnknown')
           : players === 0
@@ -1024,16 +1038,28 @@ export function RankedEloView(props: RankedEloViewProps) {
         ⚠️ 词条是四个（spec §7.3），合成一句就要自己拼一个分隔符 ——
         而分隔符是排版，不是文案（间隙就是分隔符）。
       */}
+      {/*
+        ⚠️★ 赛季那一行（2026-09-19 **第二轮**用户裁决）：
+        「赛季 12 2026/9/17 → 2026/12/30 **去掉起始时间**，改为
+        『赛季 12 结束时间 2026/12/30 赛段 1 结束时间 2026/9/30』」。
+        ⇒ 三处改动，**只有一处是排版**：
+          · `seasonRange`（「{{from}} → {{to}}」）整条词条删掉、换 `seasonEndsAt`；
+          · 赛段那一格从「结束 {{when}}」改成「结束时间 {{when}}」（两处同一个说法）；
+          · 「并排」这件事一个字没动 —— 四格仍在**同一个** `<p className="ranked__meta">` 里
+            （渲染自检 `metaOf(elo)[0]` + `metaOf(elo).length === 1` 钉着它）。
+        ⚠️ 上游那份响应里的 `startsAt` **照旧解析**（形状那一条没改），只是不再显示：
+        "不显示"与"不读"是两件事，改错一处会让 shared 的形状测试无谓地红。
+        ⚠️ 赛段那三格各自可空这件事同样没变（`number` / `endsAt` 上游就是可空的）。
+      */}
       <p className="ranked__meta">
         <span>{t('ranked.season', { n: elo.season.number })}</span>
         <span>
-          {t('ranked.seasonRange', {
+          {t('ranked.seasonEndsAt', {
             /*
              * ⚠️★ `i18n.language` 一路传进 `localDate`：日期的**语言**必须跟着界面走，
              *    不能跟宿主机器（见函数上方那段）。
              */
-            from: localDate(elo.season.startsAt, i18n.language),
-            to: localDate(elo.season.endsAt, i18n.language),
+            when: localDate(elo.season.endsAt, i18n.language),
           })}
         </span>
         {phaseNumber === null && phaseEndsAt === null ? (

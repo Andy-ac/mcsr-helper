@@ -3229,6 +3229,20 @@ export const en: TranslationSchema = {
      *    last update, and "last update" is the user's own word.
      */
     componentCheckedAt: 'Last update {{time}}',
+    /*
+     * ★★ The **section title** for the player-count block (user, 2026-09-19 round
+     *    two: "drop the big 1119 and make it a big title「实时在线人数」, with the
+     *    count written big, bold and Minecraft-green underneath").
+     * ⚠️★ A different sentence from `players` right below: this one is a heading
+     *    (what this block is about), that one is the **reading** (how many are
+     *    playing now). Merging them deletes the heading -- which is the very
+     *    thing that was asked for.
+     * ⚠️ It sits in the same panel as `statusTitle`: the four service rows answer
+     *    "are we up", this block answers "how many are playing", two facts with
+     *    one heading each. Avoid the bare word "Live" (the sidebar already owns
+     *    it -- the frozen §7.1 rule).
+     */
+    playersTitle: 'Players online right now',
     players: '{{n}} playing Ranked',
     /*
      * ⚠️★ A different sentence from `playersZero` ("Nobody is playing Ranked
@@ -3346,15 +3360,24 @@ export const en: TranslationSchema = {
     eloTitle: 'Elo leaderboard',
     season: 'Season {{n}}',
     /*
-     * ⚠️ The season range's **seconds to milliseconds** conversion happens in the
+     * ⚠️ The season window's **seconds to milliseconds** conversion happens in the
      *    view (`new Date(sec * 1000)`): the upstream sends seconds, and a unit
      *    mix-up does not throw here -- it prints an absurd date.
+     * ⚠️★ User, 2026-09-19 round two: "Season 12 2026/9/17 → 2026/12/30 -- **drop
+     *    the start date**, make it 'Season 12, ends 2026/12/30, Phase 1, ends
+     *    2026/9/30'". ⇒ `seasonRange` ("{{from}} → {{to}}") is **deleted** and
+     *    replaced by this key: of the two dates, only the end is worth reading
+     *    (it says how long the season still runs), while the start is a settled
+     *    historical fact. ⚠️ `startsAt` is still **parsed** (it is part of the
+     *    upstream shape); this change only stops it being **printed**.
+     *    ⚠️ A key with no consumer may not stay behind: the render self-check
+     *    pins its absence.
      */
-    seasonRange: '{{from}} → {{to}}',
+    seasonEndsAt: 'Ends {{when}}',
     /*
      * ★★ "Phase" — the user asked (2026-09-19) that the leaderboard show the
      *    season window **and, side by side**, the phase information.
-     * ⚠️★ These two sit in the **same row** as `season` / `seasonRange`
+     * ⚠️★ These two sit in the **same row** as `season` / `seasonEndsAt`
      *    (`.ranked__meta` is a flex row with a gap): a phase is a division
      *    **inside** a season, and splitting them over two lines makes them look
      *    unrelated.
@@ -3362,7 +3385,13 @@ export const en: TranslationSchema = {
      *    measured) because `/leaderboard` carries no phase object at all. That
      *    second request is the whole cost of this cell.
      * ⚠️ `{{when}}` is rendered in the **local** time zone, exactly like the
-     *    season range (the upstream sends **seconds**; the view multiplies).
+     *    season end (the upstream sends **seconds**; the view multiplies).
+     * ⚠️★ Round two (2026-09-19) reworded the **Chinese** side to 「结束时间
+     *    {{when}}」 so that both dates (season, phase) read the same way; this
+     *    English value is **unchanged** -- "Ends {{when}}" already said it, and
+     *    adding "time" here would only make the row longer. The two languages
+     *    are deliberately not word-for-word mirrors (the same call was made for
+     *    the four component names).
      */
     phase: 'Phase {{n}}',
     phaseEndsAt: 'Ends {{when}}',

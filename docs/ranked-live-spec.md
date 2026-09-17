@@ -559,7 +559,7 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
 | 状态徽章 | 四格各自的 `state` → `1` 正常 / `0` 故障 / `2` 等待 / `3` 维护 —— **四种都要有话说** |
 | 读不到那一格 | `state: null` ⇒ 徽章是 `—` + **中性配色**（`--unknown`），**不是**「故障」；时间也是 `—` |
 | 最后更新 | `checkedAt` **原样**（不做时区换算，§4.2）；词条是「最后更新 {{time}}」 |
-| 实时人数 | `players` → 大号数字 + 一句说明；`null` → 「—」+「人数暂时读不到」 |
+| 实时人数 | **第二块**：一个区域标题「实时在线人数」（`playersTitle`）+ 那一句话（`players` / `playersZero` / `playersUnknown`），绿色像素粗体大字（`.ranked__players`）。⚠️ 2026-09-19 第二轮：**大号数字那一格删掉了**（详见 §6.2.1） |
 | 新鲜度 | 「N 秒前更新」（本地计时每秒往前）——**这是"这份数据多旧"的唯一答案** |
 | 失败 | 有旧数据 ⇒ 旧数据 + 「上次刷新失败了…」+ 重试；没有 ⇒ 一句错误 + 重试 |
 
@@ -570,7 +570,28 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
 （没有消费者的 key 留着，下一个人会以为它还挂着某个渲染点）。
 
 ⚠️ **`players === 0` 与 `players === null` 是两件事**：前者印「现在没有人在玩 Ranked」（真话），
-后者印「—」+「人数暂时读不到」。两种都要有词条。
+后者印「人数暂时读不到」。两种都要有词条。
+⚠️★ `null` 那一条**不再是**「—」+一句话：2026-09-19 第二轮把"数字那一格"整个删掉了
+（见 §6.2.1），现在那一格直接是那句话本身，只是戴着弱色类名 `ranked__players--unknown`。
+
+### 6.2.1 ① 的第二块：人数那一格（★ 2026-09-19 第二轮裁决）
+
+**用户原话**：「Ranked 实时信息 → 状况 → 第二个大标题改为『实时在线人数』」，追问后给出完整口径：
+「**去掉大数字 1119**，改为一个大标题『实时在线人数』，下面用**加粗的绿色 mc 风格大字**
+写上『1119 人正在玩 Ranked』」。
+
+| 元素 | 规则 |
+|---|---|
+| 标题 | `<h2 class="ranked__title">` + `ranked.playersTitle`（「实时在线人数」）——与 ① 的「服务状况」**同一个档**（同一屏两个区域标题） |
+| 读数 | 一句话（`players` / `playersZero` / `playersUnknown`），三样都要：`--font-pixel` + `font-weight: 700` + `--grass-bright`（主题里的草绿，深浅两套主题各一份） |
+| `players: null` | 那句话外面加 `ranked__players--unknown`（弱色）——**绿色是"有人在玩"的颜色**，读不到不许用 |
+| 删掉的东西 | `.ranked__big` / `.ranked__big--unknown` **两个类名连同 CSS 一起删**；`flat(String(PLAYERS))` 那一格也从"整屏文字相等"的期望串里删掉 |
+
+⚠️★ 这一轮**为什么不是"再加一行"**：上一版是"大号 `1119`" + "「1119 人正在玩 Ranked」"两件，
+同一个数印两遍；合并成一件之后，"那个数字在这一屏里只出现一次"才是可断言的
+（渲染自检里那一条 `split(String(PLAYERS)).length - 1 === 1`）。
+⚠️ 标题与读数是**两条词条**：合成一条的话，下一个人改数字那句时会顺手把标题一起改掉。
+⛔ 这一块**不再长大**：§6.2 那条「这一屏不许再加东西」对它同样成立。
 
 ### 6.3 ② 实时高分对局 `/ranked/live`
 
@@ -623,8 +644,15 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
 ### 6.4 ③ Elo 排行榜 `/ranked/elo` ★★ 修订（2026-09-19）
 
 - 顶部**一行四格**（用户原话：「除了显示赛季时间，另外**并排**显示赛段信息」）：
-  **赛季 12** · 「2026-09-15 → 2026-12-30」 · **赛段 1** · **结束 2026-09-30**。
+  **赛季 12** · **结束时间 2026-12-30** · **赛段 1** · **结束时间 2026-09-30**。
   ⚠️★ "并排"= **同一个 `.ranked__meta`**（flex + gap 那一行），不是两行、不是两个 `<p>`。
+  ⚠️★ **2026-09-19 第二轮**（用户原话：「赛季 12 2026/9/17 → 2026/12/30 **去掉起始时间**，
+  改为『赛季 12 结束时间 2026/12/30 赛段 1 结束时间 2026/9/30』」）：
+  赛季那一格印**结束时间**（`seasonEndsAt`，`seasonRange` 整条删掉），
+  赛段那一格从「结束 {{when}}」改成「结束时间 {{when}}」（两处同一个说法）。
+  ⚠️ 上游响应里的 `startsAt` **照旧解析**（形状没改），只是不再显示 ——
+  "不显示"与"不读"是两件事。渲染自检有一条断言**起始日期不许出现在那一行**
+  （`seasonLine.includes(localDate(startsAt)) === false`，配一条"两个日期不是同一天"的探针）。
 - ⚠️★ **赛段来自第二次直连**（`/phase-leaderboard`，实测 93 字节）：`/leaderboard` 的响应里
   **没有** phase 对象（实测，只有每一行各自的 `seasonResult.phasePoint` / `phaseHighest`）。
   那一次失败时那一格说「赛段信息暂时读不到」，而**整张榜照常渲染**
@@ -772,7 +800,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | ★ `ranked.componentGameServer` / `componentApi` / `componentStore` / `componentWiki` | 「Game Server」/「API」/「Store」/「Wiki」—— ⚠️★ 这四个名字**不在任何 API 里**，来自状态页的 `preloadData`（§4.2）；两种语言同值（上游的专有名词） |
 | ★ `ranked.componentCheckedAt` | 「最后更新 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-17 11:16:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按**本机**时区解释 ⇒ 显示值随部署机器漂；本仓被一次静默的 8 小时偏移烧过）。它取代码表里的 `statusCheckedAt` |
 | ⛔ ~~`ranked.statusPing` / `statusPingUnknown` / `statusUptime` / `statusCheckedAt`~~ | **已删**（2026-09-19，用户口径「不加其他多余的信息」）：没有消费者的 key 留着，下一个人会以为它还挂着某个渲染点。渲染自检有一条断言"它们**不在**字典里" |
-| `ranked.players` / `playersUnknown` / `playersZero` | 「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
+| `ranked.playersTitle` / `players` / `playersUnknown` / `playersZero` | 「实时在线人数」/「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
 | `ranked.liveTitle` / `liveEmpty` | 「现在正在打的对局」/「现在没有直播中的对局。」—— ⚠️ `liveTitle` 早先写的是「正在直播的高分对局」（**2026-09-16 终审改掉**，英文同句改成 "Matches playing right now (top 10 by average elo)"）：一张卡片**可以完全没有直播**（"谁在直播"由每张卡片自己的 `liveExpand` 承载，夹具里榜首那张甚至就叫 `Nostream`），而"高分"也不是判据（判据是**平均** elo 的排序，未定级是常态 ⇒ §10 第 6 条）⇒ 标题只能说这一栏**真正在选择的东西**，排序口径由下面那行 `liveFrom` 说全。⚠️★ **2026-09-19** 又把括号里的「按平均 elo 排前 10」删掉了（用户要求全部展示）：那句"前 10"从这一天起是假话，而"按平均 elo 排"本来就由 `liveFrom` 说了一遍 |
 | `ranked.liveFrom` | 「共 {{total}} 场，按平均 elo 排序」（**2026-09-19 改写**，原为「{{total}} 场里按平均 elo 取前 10」）。⚠️ `{{total}}` 是**上游的总场次**（`sliceLiveMatches().total`），不是筛后场次 —— 后者由 `liveMatched` 说，两个数不许互相冒充 |
 | `ranked.liveSearch` | 「搜索选手」—— ★ 2026-09-19 加的搜索框：**同时**是占位符与 `<label class="sr-only">` 的文字（占位符在输入第一个字之后就没了，只给占位符等于控件没有名字）。⚠️ **不复用** `resources.searchPlaceholder`（跨栏目复用 = 改一栏的文案会顺手改掉另一栏） |
@@ -786,8 +814,8 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.statusStale` | 「服务端这份数据是兜底的旧数据。」—— ⚠️ 它对应响应里的 `stale: true`，与「上次刷新失败了」**不是**一件事：这一次**我们的**刷新是成功的，是**服务端**拿了兜底（上游那一刻读不到）。两者混成一句会让用户以为是自己网络的问题 |
 | `ranked.statusTitle` | 「服务状况」—— ① 那一栏的小标题。⚠️ 它**不是** `nav.ranked`：标签页那一行已经用了栏目名，这里再写一遍就是同一句话在同一个屏幕上出现两次；而 ②③④ 各自都有自己的 `<h2>`，① 没有的话它就成了唯一一个没有标题的面板 |
 | `ranked.matchTime` | 「已进行 {{time}}」 |
-| `ranked.eloTitle` / `season` / `seasonRange` | 「Elo 排行榜」/「赛季 {{n}}」/「{{from}} → {{to}}」 |
-| ★ `ranked.phase` / `phaseEndsAt` / `phaseUnknown` | 「赛段 {{n}}」/「结束 {{when}}」/「赛段信息暂时读不到」—— ⚠️ 前两条与赛季那两条在**同一行**里（"并排"，§6.4）；`phaseUnknown` 是**那一次 `/phase-leaderboard` 请求失败**那一档（与"上游给了但某一格空着 ⇒ 印 `—`"是两件事）。⚠️ `{{when}}` 是**秒**、按本地时区渲染（与赛季起止同一条规矩） |
+| `ranked.eloTitle` / `season` / `seasonEndsAt` | 「Elo 排行榜」/「赛季 {{n}}」/「结束时间 {{when}}」（★ 2026-09-19 第二轮：`seasonRange`「{{from}} → {{to}}」**整条删掉**——用户要「去掉起始时间」） |
+| ★ `ranked.phase` / `phaseEndsAt` / `phaseUnknown` | 「赛段 {{n}}」/「结束时间 {{when}}」/「赛段信息暂时读不到」—— ⚠️ 前两条与赛季那两条在**同一行**里（"并排"，§6.4）；`phaseUnknown` 是**那一次 `/phase-leaderboard` 请求失败**那一档（与"上游给了但某一格空着 ⇒ 印 `—`"是两件事）。⚠️ `{{when}}` 是**秒**、按本地时区渲染（与赛季截止同一条规矩）。⚠️ 2026-09-19 第二轮把「结束」改成「结束时间」（与 `seasonEndsAt` 对齐）；⚠️ **英文侧那一条一个字没改**（"Ends {{when}}" 本来就够，两种语言刻意不逐字对齐——**周赛那一格**（`weeklyEndsAt`）仍是「结束 {{when}}」，用户没点名它） |
 | `ranked.colRank/Nickname/Elo/Highest/PhasePoint` | 「排名」/「昵称」/「elo」/「最高」/「阶段分」 |
 | `ranked.eloEmpty` | 「这个赛季还没有人上榜。」 |
 | `ranked.weeklyTitle` / `weeklyNumber` / `weeklyEndsAt` / `weeklySeed` | 「周赛」/「第 {{n}} 周」/「截止 {{when}}」/「种子」 |

@@ -334,6 +334,18 @@ const isDisabled = (attrs: string): boolean => /(?:^|\s)disabled(?:\s|=|$)/.test
 const metaOf = (html: string): string[] =>
   elementsWithClass(html, 'ranked__meta').map((el) => textOf(el));
 
+/*
+ * 产物里那一格 `.ranked__players` 的可见文字。
+ *
+ * ⚠️★ 2026-09-19 **第二轮**起，人数那一格从「大号数字 + 一句话」合并成**一句话**
+ *    ⇒ 它不再是 `.ranked__meta` 那一档（那样 `metaOf` 会把它与四行读数混在一起，
+ *    而"人数那句住在哪一格"正是这一轮改动**唯一**的结构性判据）。
+ * ⚠️ 不把两者合并成一个"找出所有读数"的函数：它们回答的是两件事
+ *    （一行度量 vs 那一块自己的读数），合并之后上面那句话就无从断言了。
+ */
+const playersOf = (html: string): string[] =>
+  elementsWithClass(html, 'ranked__players').map((el) => textOf(el));
+
 /** 产物里的「重试」按钮（`common.retry`，spec §7.3 明确不复用新写的一句）。 */
 const retryButtons = (html: string): { attrs: string; text: string }[] =>
   buttons(html).filter((b) => b.text === flat(t('common.retry')));
@@ -1196,9 +1208,13 @@ for (const [i, row] of componentRows.entries()) {
  * ★★ 「别的什么都没有」—— 这一条是这次改版的**中心断言**，也是它最难写成"恒真"的地方：
  *
  * 判据是**整个面板的可见文字逐字等于**那几件的拼接（顺序 = DOM 顺序）：
- *    标题 → 四行（名字/状态/最后更新）×4 → 大号数字 → 人数那一句
+ *    ①标题 → 四行（名字/状态/最后更新）×4 → ②标题 → 人数那一句
  * 多任何一件（延迟、可用率、心跳历史、解释性文字）都会让这一条红，
  * 而"少一件"由上面那些逐格断言兜着 ⇒ 两个方向都钉住了。
+ * ⚠️★ 2026-09-19 **第二轮**：中间的「大号数字」那一件被删掉、换成**第二个大标题**
+ *    （`playersTitle`，用户原话：「去掉大数字1119，改为一个大标题『实时在线人数』」）
+ *    ⇒ 下面这一串里那两件（②标题 + 那一句）。多出来的话——比如谁把数字那格加回来
+ *    ——这一条会红，而那正是用户点名要去掉的东西。
  * ⚠️★ 为什么不用"不许出现某句话"那种写法：删除类的断言在**别人加了一句新话**时
  *    永远为真（新句子里没有那串字），而这次改版要防的恰恰是"再加一句"。
  */
@@ -1211,22 +1227,38 @@ assert.equal(
       fresh(STATUS_KEYS[COMPONENT_STATES[i] ?? 1]),
       fresh('ranked.componentCheckedAt', { time: COMPONENT_TIMES[i] ?? '' }),
     ]),
-    flat(String(PLAYERS)),
+    fresh('ranked.playersTitle'),
     fresh('ranked.players', { n: PLAYERS }),
     // ⚠️ 最后这一格是**外壳**那一行新鲜度（四个面板都有），不是状态栏自己的内容
     fresh('ranked.updatedAgo', { secs: UPDATED }),
   ].join(''),
-  '★★★ 状态栏这一屏**只有**四行 + 在线人数 + 外壳那一行新鲜度（延迟 / 可用率 / 心跳历史 / 解释性文字都被删掉了）',
+  '★★★ 状态栏这一屏**只有**两个标题 + 四行 + 人数那一句 + 外壳那一行新鲜度（延迟 / 可用率 / 心跳历史 / 解释性文字 / 那颗大号数字都被删掉了）',
+);
+/*
+ * ★★★ 那个数字在那一屏里**只许出现一次**。
+ *
+ * ⚠️★ 这是用户这一轮那句「**去掉大数字1119**」的**可断言形式**：上一版是
+ *    「大号 1119」+「1119 人正在玩 Ranked」两件，同一个数印两遍；
+ *    合并之后只剩一句话 ⇒ 计数必须恰好是 1。
+ * ⚠️ 上面那条**整屏文字相等**其实已经覆盖了它（多一件就红），但两条红的**话**不一样：
+ *    这一条说的是"用户点名的那个数字重复"，下一个人删掉的是哪一件一目了然。
+ * ⚠️ 用 `split` 而不是正则：`PLAYERS` 是一个数字字面量，拼进正则要转义，
+ *    而这里没有任何理由引入一个正则。
+ */
+assert.equal(
+  textOf(elementsWithClass(stNormal, 'ranked__panel')[0] ?? '').split(String(PLAYERS)).length - 1,
+  1,
+  `★★★ 人数那个数字（${String(PLAYERS)}）在这一屏里**只出现一次**（「去掉大数字」= 不再印两遍）`,
 );
 assert.equal(
-  textOf(elementsWithClass(stNormal, 'ranked__big')[0] ?? ''),
-  flat(String(PLAYERS)),
-  '★ 实时人数是那颗大号数字本身',
+  playersOf(stNormal)[0],
+  fresh('ranked.players', { n: PLAYERS }),
+  '★★ 人数那一格写的就是那句话本身（不是"一颗数字 + 下面一句说明"两行）',
 );
 assert.equal(
-  hasClassOf(elementsWithClass(stNormal, 'ranked__big')[0] ?? '', 'ranked__big--unknown'),
+  hasClassOf(elementsWithClass(stNormal, 'ranked__players')[0] ?? '', 'ranked__players--unknown'),
   false,
-  '★ 读到人数时**不**挂占位符那个配色类（正面对照是下面 `players: null` 那一份）',
+  '★ 读到人数时**不**挂弱色那个类（正面对照是下面 `players: null` 那一份）',
 );
 /*
  * ★★ 被删掉的那四条词条**不许**再留在字典里（2026-09-19 用户口径：
@@ -1314,12 +1346,7 @@ for (const [i, row] of missingRows.entries()) {
 const stZero = renderStatus({ players: 0 }, '状况·没人玩');
 const stPlayersNull = renderStatus({ players: null }, '状况·人数读不到');
 assert.equal(
-  textOf(elementsWithClass(stZero, 'ranked__big')[0] ?? ''),
-  flat('0'),
-  '★ `players: 0` ⇒ 大号数字就是 0（那是一个真的读数）',
-);
-assert.equal(
-  metaOf(stZero).at(-1),
+  playersOf(stZero)[0],
   fresh('ranked.playersZero'),
   '★★ `players: 0` ⇒ 「现在没有人在玩 Ranked」（真话）',
 );
@@ -1329,14 +1356,9 @@ assert.equal(
   '★★ 0 那一份**不许**说「读不到」',
 );
 assert.equal(
-  textOf(elementsWithClass(stPlayersNull, 'ranked__big')[0] ?? ''),
-  fresh('ranked.unknown'),
-  '★★ `players: null` ⇒ 大号数字是占位符 `—`（不是 0 —— 0 是一句谎话）',
-);
-assert.equal(
-  metaOf(stPlayersNull).at(-1),
+  playersOf(stPlayersNull)[0],
   fresh('ranked.playersUnknown'),
-  '★★ `players: null` ⇒ 「人数暂时读不到」（另一件事）',
+  '★★ `players: null` ⇒ 「人数暂时读不到」（另一件事，**不是** 0 —— 0 是一句谎话）',
 );
 assert.equal(
   metaOf(stPlayersNull).includes(fresh('ranked.playersZero')),
@@ -1349,8 +1371,22 @@ assert.notEqual(
   '★★ 探针：那两句本身必须不同（否则上面那一对比较是空跑）',
 );
 assert.ok(
-  hasClassOf(elementsWithClass(stPlayersNull, 'ranked__big')[0] ?? '', 'ranked__big--unknown'),
-  '★ 占位符那一格戴上它自己的配色类名（正面对照：读到人数时不戴）',
+  hasClassOf(
+    elementsWithClass(stPlayersNull, 'ranked__players')[0] ?? '',
+    'ranked__players--unknown',
+  ),
+  '★ 读不到那一格戴上弱色类名（正面对照：读到人数时不戴）—— 绿色是"有人在玩"的颜色，读不到不该用那个颜色',
+);
+/*
+ * ⚠️ 上面这条的**反面**同样要钉：读不到时那一格**不许**是绿色那一档。
+ *    样式表里"哪个类给绿色"是 CSS 的事，这里能断的是**类名**：
+ *    `--unknown` 挂着而绿色那条规则没有 `--unknown` 的例外 ⇒ 颜色由 CSS 决定；
+ *    这条断的是"两个画面拿到的类名不同"，也就是那件事的唯一可判定部分。
+ */
+assert.equal(
+  hasClassOf(elementsWithClass(stZero, 'ranked__players')[0] ?? '', 'ranked__players--unknown'),
+  false,
+  '★ 0 那一份**不戴**弱色类：它是一句真话（与"读不到"必须长得不一样）',
 );
 
 /** `stale: true`（服务端拿了兜底）与外壳那句「上次刷新失败了」**不是**一件事。 */
@@ -1939,20 +1975,37 @@ assert.ok(
   seasonLine.includes(fresh('ranked.season', { n: ELO_SEASON.number })),
   '★★ 顶部有**赛季号**（而且那个数字来自响应）',
 );
+/*
+ * ★★ 赛季那一行现在只说**结束时间**（2026-09-19 第二轮用户原话：
+ *    「赛季 12 2026/9/17 → 2026/12/30 **去掉起始时间**，改为『赛季 12 结束时间
+ *    2026/12/30 赛段 1 结束时间 2026/9/30』」）。
+ * ⚠️ 断的是**结束那一个**日期印出来了（秒 → 毫秒真的做了：忘了乘 1000 会印成 1970 年）。
+ */
 assert.ok(
-  seasonLine.includes(
-    fresh('ranked.seasonRange', {
-      from: localDate(ELO_SEASON.startsAt),
-      to: localDate(ELO_SEASON.endsAt),
-    }),
-  ),
-  '★★ 顶部有**起止两个日期**（秒 → 毫秒那一步真的做了：忘了乘 1000 会印成 1970 年）',
+  seasonLine.includes(fresh('ranked.seasonEndsAt', { when: localDate(ELO_SEASON.endsAt) })),
+  '★★ 顶部有**赛季结束时间**（秒 → 毫秒那一步真的做了：忘了乘 1000 会印成 1970 年）',
 );
 assert.equal(/1970/.test(rawText(elo)), false, '★★ 产物里不许出现 1970（秒当毫秒用就是这个症状）');
+/*
+ * ★★★ 而**起始时间一个字都不许出现**。
+ *
+ * ⚠️★ 这一条是用户那句「去掉起始时间」的**可断言形式**：`seasonRange`
+ *    （「{{from}} → {{to}}」）当时是**一条词条**，删掉它只是"今天没印"——
+ *    谁把两格日期加回来（或把 `seasonEndsAt` 写成"起止"），这一条会红。
+ * ⚠️ 判据用的是**起始日期那两个数字**（`localDate(startsAt)`），
+ *    而不是"那一行里有没有 `→`"：符号可以换（`-`、`至`、`, `），
+ *    而"用户不想看到的那个日期"只有一个身份。
+ * ⚠️ 探针：两个日期本身必须不同，否则这一条在起始 == 结束的夹具上恒假（空跑）。
+ */
+assert.notEqual(
+  localDate(ELO_SEASON.startsAt),
+  localDate(ELO_SEASON.endsAt),
+  '★★ 探针：夹具里赛季的开始与结束**不是同一天**（否则下面那条恒真）',
+);
 assert.equal(
-  seasonLine.includes(localDate(ELO_SEASON.startsAt + 86_400)),
+  seasonLine.includes(localDate(ELO_SEASON.startsAt)),
   false,
-  '★ 起止不是同一个数（把 endsAt 也印成 startsAt 之类的写法会在这里红）',
+  '★★★ 那一行里**没有**赛季起始日（用户点名去掉的那一半）',
 );
 
 /*
@@ -2580,7 +2633,7 @@ assertFiveStates({
   dataCount: (html) => elementsWithClass(html, 'ranked__badge').length,
   emptyCheck: (html) => {
     assert.ok(
-      metaOf(html).includes(fresh('ranked.playersZero')),
+      playersOf(html).includes(fresh('ranked.playersZero')),
       '★★ ① 的"空集合"就是 `players: 0` ⇒ 「现在没有人在玩 Ranked」',
     );
   },
@@ -3112,8 +3165,10 @@ const MUST_RENDER = [
   'ranked__compname',
   'ranked__meta',
   'ranked__updated',
-  'ranked__big',
-  'ranked__big--unknown',
+  /* ★ 2026-09-19 第二轮加的：人数那一格（大标题底下的绿色大字）。⚠️ 它取代了
+     `ranked__big` / `ranked__big--unknown` 那一对 —— 那两个类名连同 CSS 一起删掉了。 */
+  'ranked__players',
+  'ranked__players--unknown',
   'ranked__empty',
   'ranked__live',
   'ranked__match',
