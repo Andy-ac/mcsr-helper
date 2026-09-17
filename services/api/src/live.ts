@@ -123,7 +123,11 @@ function toChannel(row: LiveRow) {
  *
  * ⚠️ 索引：这一页一共 184 行（2026-09-18 生产快照实测），`EXPLAIN QUERY PLAN` 走
  *    `idx_live_listing (status, sort_order)` + `USE TEMP B-TREE FOR ORDER BY`，
- *    整条语句跑 20 次合计 **10.7–12.1 ms**（同一份快照上量的，两次读数）。
+ *    整条语句跑 20 次合计 **8.9 ms**（探针脚本 `probe-023-sqlite.mjs` 的 ④，
+ *    `.cache/videos-live-round/probe-023-sqlite.out.txt`）。⚠️ 同一份快照上，迁移演练
+ *    脚本 `rehearse-023.mjs` 另量到 **12.1 ms**（`rehearse-023.out.txt`）——
+ *    终审 M5 之前这里写的是"10.7–12.1"，而**那个 10.7 没有任何留档**；现在只留
+ *    两个有出处的读数，`023_live_status.ts` / `migrate.ts` 引的是同一对。
  *    ⇒ **不为它建索引**（要建就得建表达式索引，而每次写都要维护它）。理由与读数
  *    也写在 `023_live_status.ts` 的文件头第三节 —— 那儿是"决定不建"的地方。
  */

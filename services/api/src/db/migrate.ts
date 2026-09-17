@@ -191,7 +191,8 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    **不重建表** ⇒ 不需要 `PRAGMA foreign_keys`，**留在事务里**（不加 noTransaction），
    *    失败即整条回滚。
    * ⚠️ 为什么不建索引：这一页一共 184 行，新排序走 `idx_live_listing` + 临时 B 树，
-   *    实测 20 次合计 8.9 ms。读数与理由写在 `023_live_status.ts` 的文件头第三节。
+   *    实测 20 次合计 **8.9 ms**（探针；同一份快照上演练脚本另量到 12.1 ms，两个数
+   *    都留档）。读数、出处与理由写在 `023_live_status.ts` 的文件头第三节。
    */
   { name: '023_live_status', sql: m023LiveStatus },
 ];

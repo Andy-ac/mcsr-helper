@@ -50,16 +50,24 @@ Twitch   POST id.twitch.tv/oauth2/token（client_credentials）                 
 ⇒ 「凭据本身有效」这一格从"未知"变成"已测"。⚠️ 但**过期 VOD 在 `helix/videos?id=` 里的表现**
 仍然只是**文档**（§11）。
 
-### 2.2 三个平台的播放器页（Referer = 我们站点，实测）
+### 2.2 三个平台的播放器页（Referer = 我们站点；⚠️ 这一格证的是**地址回得来**）
 
 ```
 bilibili  https://player.bilibili.com/player.html?bvid=BV…&autoplay=0&danmaku=1 → 200
+          ⚠️ 这个 200 对参数**完全没有区分力**：那是一个静态壳，任何参数组合都回 200
+             且字节数完全相同（下一段是实测证据）—— 读它的时候只当"地址可达"
 YouTube   https://www.youtube.com/embed/FVkp6tc2rNY                                        → 200
 Twitch    https://player.twitch.tv/?video=335921245&parent=mcsrhelper.com                  → 200
           （响应头 Content-Security-Policy: frame-ancestors https://mcsrhelper.com
             —— parent 是**服务端强校验**的）
 Twitch    同一个地址**不带** parent → 302 /embed-error.html?errorCode=NoParent
 ```
+
+⚠️★ **这张表能证的只有一件事：这些地址在我们站点上回得来**（Referer / 可达性），
+外加 Twitch 那条 `parent` 服务端强校验。它**不**证明任何参数有效，也**不**证明播放器
+在浏览器里真的能放 —— 后两件事今天只有"播放器页源码级证据 + 生产上有人在看"。
+（终审 M10：这张表原来读起来像"三个平台的参数都实测通过了"，而 bilibili 那一行的 200
+对参数**完全无区分力** —— 下一段是证据，`danmaku=1` 与 `high_quality` 的裁决都不靠它。）
 
 ⚠️★ **这一格原来写着 `&page=1&high_quality=1&danmaku=0`，而那个"200"是一条假记录**
 （2026-09-19 订正，证据在 `.cache/videos-live-round/`）：

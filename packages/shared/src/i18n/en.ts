@@ -1878,9 +1878,14 @@ export const en: TranslationSchema = {
     // ---- Public section (everyone sees it) ----
     title: 'Tracked creators',
     /*
-     * ★ This sentence has to say **it is not the wall above**: two video blocks on one
-     *   page that are not explained read as duplicates (`live.relationToVideos` exists
-     *   for the same reason).
+     * ★ This sentence has to say **it is not the other tab, "Posted by users"**: two video
+     *   blocks on one page that are not explained read as duplicates
+     *   (`live.relationToVideos` exists for the same reason).
+     * ⚠️★ Wording corrected 2026-09-19: since user item 8 these two blocks are the
+     *   **two tabs at the top** (`videos.tabWall` / this section's `title`) and they
+     *   render **exclusively** — "the wall above" no longer points at anything
+     *   (that block is not on screen at all right now), and the value itself already
+     *   says "Posted by users".
      * ⚠️ It also says who maintains the list — a visitor who cannot find their own post
      *   here otherwise assumes it was lost.
      */
@@ -1975,6 +1980,25 @@ export const en: TranslationSchema = {
     sortNew: 'Newest first',
     sortViews: 'Most viewed first',
     creatorAll: 'All creators',
+    /*
+     * ★ The extra entry added when the roster has **no** row for the creator in the URL
+     *   (review I2).
+     *
+     * ⚠️★ Why it must exist: `?tcreator=<id>` is a filter that is **already in effect** —
+     *   the list really was filtered by it. When the roster failed to load, or an editor
+     *   deleted that creator, there is no matching `<option>`, and the browser paints a
+     *   `<select>` whose `value` matches nothing as its **first** option ("All creators")
+     *   ⇒ the reader gets a very short list plus a dropdown that says "All creators", with
+     *   **nothing on the page explaining why**. This entry makes the selected state match
+     *   the fact: a creator really is selected, we just cannot name them right now.
+     * ⚠️ It does not print the id: that is an internal key (`tracked_creators.id`) and means
+     *   nothing to a reader. Nor platform/count — the roster did not give them, so we do
+     *   **not** know (and 0 is not allowed to stand in).
+     * ⚠️ Cost (accepted): it can only say "some creator is selected", not who; naming them
+     *   would require a roster that contains them, and the roster is exactly what we could
+     *   not read. Recorded in `docs/pending.md §5.103`.
+     */
+    creatorUnknown: 'Selected creator',
     /*
      * ★ One entry of the creator dropdown: name · platform (count).
      * ⚠️ The count is the number of **publicly visible** videos
@@ -2672,14 +2696,6 @@ export const en: TranslationSchema = {
     // ---- Page shell ----
     title: 'Live',
     subtitle: 'MCSR streamer channels worth following.',
-    /*
-     * ★ The single most important line in this section.
-     *
-     * We do **not** detect liveness (no API keys, no polling — deliberately out
-     * of scope), so there is no "live now" badge. Wording that implies one is a
-     * lie the user notices within a week: a channel is clearly offline and we
-     * show nothing either way. Saying "these are channels" is always true.
-     */
     /*
      * ★★ The single most important line in this section — **rewritten 2026-09-18**,
      * because what it used to promise was overturned by the user's item 10.

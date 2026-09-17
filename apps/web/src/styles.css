@@ -4337,6 +4337,26 @@ textarea.mcsr-field__input {
   background: var(--surface-3);
   color: var(--grass-bright);
 }
+/* ★★ 第二排：登录后「全部视频 / 我贴的」那一组（终审 M9）。
+   ⚠️ 它和顶部那两个**栏目**标签页借的是同一套类名，而两者会挨着出现
+   （登录用户在 `?vtab=wall` 上）⇒ 不区分的话就是两排一模一样的胶囊，
+   读起来像同一个控件被画了两次。这里把它画成**明显更轻的次要控件**：
+   去掉胶囊的底色与边框、缩小一圈，选中态仍然靠 `.is-active` 的底色表达
+   （所以"当前在哪个视图"照样一眼看得见）。
+   ⚠️ 判据（谁在守它）`videorender.tsx` ⑰：登录那一份产物里 `.video-viewswitch`
+   恰好**两组**、第二组带 `--mine`、第一组不带、并且这个类名在 CSS 里有规则。
+   ⚠️ 纯观感（"是不是真的更好认了"）静态产物证明不了 —— 记在 `docs/pending.md §5.103`。 */
+.video-viewswitch--mine {
+  margin-bottom: 12px;
+  margin-left: 2px;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+.video-viewswitch--mine .video-viewswitch__item {
+  padding: 3px 10px;
+  font-size: var(--fs-px-sm);
+}
 
 /* 操作结果提示条上的关闭按钮。
    它长在 .notice 里面，所以自己得把那条细线的样式清掉 ——

@@ -256,10 +256,16 @@ export interface TrackedVideosSectionProps {
   /**
    * 博主下拉的名册（公开只读那一份，`GET /api/tracking/roster`）。
    *
-   * ⚠️ 空数组 = 只有「全部博主」那一项（名册还没取到、或者名单真的是空的）——
-   *    这是**能接受**的降级：下拉框仍然能表达"全部"，而列表本身照常显示。
-   *    组件不判断"是不是加载失败"（那是页面的事）：一个只有「全部博主」的下拉框
-   *    对访客和对编辑都是同一句话，不像空态那样会说假话。
+   * ⚠️ 空数组 = 名册还没取到、读失败、或者名单真的是空的。**这一格单独看**的降级是
+   *    "下拉框里只剩「全部博主」"，而那本身不假：用户什么都没筛的时候，
+   *    "全部"确实是当下的事实，列表也照常显示。
+   *    组件不判断"是不是加载失败"（那是页面的事）—— 两种情况下这一格画出来的东西一样。
+   * ⚠️★ 但**名册为空时不能说"这不说假话"**（终审 I2 的原话：那句话本身是假的）：
+   *    地址栏里带着 `tcreator=<id>`（列表**真的**按它筛过）而名册里没有这个 id
+   *    （读失败、或者那位博主已被删）时，`value` 匹配不上的 `<select>` 会被浏览器
+   *    画成第一项「全部博主」⇒ 界面上写着"全部"、列表却只有几行，**没有任何解释**。
+   *    ⇒ 处置见下面那个 `creatorUnknown` 选项：**补一项**让选中态与事实一致。
+   *    代价（认下）：那一项说不出名字，只说"选了某一位"。
    */
   creators: TrackedCreatorSummary[];
   /**
@@ -445,7 +451,9 @@ export function TrackedVideosSection({
           ⚠️ 条数一起画出来（`videoCount`，只数公开可见的）：它是"这个人有没有内容"
              唯一的线索 —— 名单里今天就有条数为 0 的博主，而选中他只会得到一句
              "这个筛选下没有视频"。
-          ⚠️ 空名册 ⇒ 只剩「全部博主」那一项（能接受的降级，见 props 的说明）。
+          ⚠️★ 空名册**不再**等于"只剩「全部博主」"（终审 I2）：地址栏里带着 `tcreator=<id>`
+             而这名字册里没有时，下面会补一项 `creatorUnknown` —— 否则浏览器会把选中态
+             画成第一项「全部博主」，而列表是筛过的（界面上写"全部"、内容却只有几行）。
         */}
         <select
           className="filters__select"
@@ -459,6 +467,17 @@ export function TrackedVideosSection({
           }
         >
           <option value="">{t('tracked.creatorAll')}</option>
+          {/*
+            ⚠️★ I2 那一项：**名册里没有地址栏里那位博主**时才画（读失败 / 博主被删）。
+            判据只看 `creators`，不看"名册取没取到" —— 那是页面的事，而这两种情况
+            在界面上要给出同一句话（"确实选了一位，只是说不出是谁"）。
+            ⚠️ 它的 `value` 就是地址栏里那个 id，所以选中态与事实一致；
+            `onChange` 之后走的是同一条 `onFilterChange`（选「全部博主」= undefined）。
+          */}
+          {filters.creatorId !== undefined &&
+          !creators.some((row) => row.id === filters.creatorId) ? (
+            <option value={filters.creatorId}>{t('tracked.creatorUnknown')}</option>
+          ) : null}
           {creators.map((row) => (
             <option key={row.id} value={row.id}>
               {t('tracked.creatorOption', {

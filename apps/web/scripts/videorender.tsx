@@ -2332,8 +2332,41 @@ assert.equal(
   1,
   '★ 探针：名册为空时**列表照常画**（把"名册空"读成"没有内容"会得到一屏空白）',
 );
+/*
+ * ★★ 终审 I2：地址栏里那位博主**不在名册里**时，选中态必须与事实一致。
+ *
+ * ⚠️★ 这一条存在的理由是一个浏览器行为：`value` 匹配不上任何 `<option>` 的
+ *    `<select>` 会被画成**第一项**（「全部博主」）—— 而列表是**真的按那位博主筛过的**
+ *    （名册读失败、或者那位博主被编辑删掉时就是这个样子）。用户于是看到几行内容
+ *    ＋一个写着「全部博主」的下拉框，页面上没有任何东西解释为什么。
+ * ⇒ 判据是**选项逐条 + 选中项**两半，缺一半都不够：只断言"多了那一项"不能证明
+ *    它被选中（浏览器照样可能停在第一项），只断言"选中项是那个 id"不能证明
+ *    那一项真的在（`selected` 属性写在一个不存在的选项上时读出来也是它）。
+ * ⚠️ 反面（"名册空就恒补一项"的实现）由**上面那一条**挡着：名册空 + 没筛博主 ⇒
+ *    仍然只剩「全部博主」。两条夹具只差 `filters.creatorId`。
+ */
+const GONE_CREATOR = 'tc-gone';
+const GONE_CREATOR_HTML = renderSection(
+  { creators: [], filters: { sort: 'new', creatorId: GONE_CREATOR } },
+  '地址栏里那位博主不在名册里',
+);
+assert.deepEqual(
+  optionsOf(selectsOf(GONE_CREATOR_HTML)[4] ?? '').map((o) => [o.value, o.label] as const),
+  [
+    ['', t('tracked.creatorAll')],
+    [GONE_CREATOR, t('tracked.creatorUnknown')],
+  ],
+  '★★ 终审 I2：`tcreator=<id>` 而名册里没有这个 id ⇒ 博主那一格要多出**一项** ' +
+    '（`tracked.creatorUnknown`）—— 没有它，浏览器把 `value` 匹配不上的 `<select>` ' +
+    '画成「全部博主」，而列表是筛过的（界面上写着"全部"、内容却只有几行）',
+);
+assert.equal(
+  selectedValueOf(selectsOf(GONE_CREATOR_HTML)[4] ?? ''),
+  GONE_CREATOR,
+  '★★ 而**选中项**必须还是地址栏里那个 id —— 选中态与事实一致（上面那条只证明选项在那儿）',
+);
 ok(
-  '五个下拉框：可访问名 + 逐条选项（取值与文字，含空显示名回落 handle、条数为 0 那一行）+ 五个选中项逐个等于 `filters`（默认那档四格停在「全部」、排序 `new`）+ 空名册降级',
+  '五个下拉框：可访问名 + 逐条选项（取值与文字，含空显示名回落 handle、条数为 0 那一行）+ 五个选中项逐个等于 `filters`（默认那档四格停在「全部」、排序 `new`）+ 空名册降级 + **名册里没有地址栏那位博主时补一项且被选中**（终审 I2）',
 );
 
 // ---------------------------------------------------------------------------
@@ -3131,8 +3164,53 @@ assert.equal(
   0,
   '★ 编辑器那一份同样满足"两块加起来一块"（登录之后顶部切换器仍然是那两个栏目）',
 );
+/*
+ * ★★ 终审 M9：登录用户在墙那一栏上会**挨着看到两排切换器**，而它们借的是同一套
+ *    类名（`.video-viewswitch`）⇒ 形状一模一样，看起来像同一个控件画了两次。
+ *
+ * ⚠️ 实测**不是**重复渲染：上一排切**栏目**（自己贴的 / 追踪的），下一排切**视图**
+ *    （全部视频 / 我贴的），两条不同的轴 —— 所以处置是"让它们能区分开"。
+ * ⇒ 判据三层（少一层都不够）：
+ *    ① 登录 + 墙那一栏 ⇒ `.video-viewswitch` **恰好两组**（匿名那两份产物只有一组，
+ *       上面 `topSwitchItems` 那条探针已经钉着它）；
+ *    ② 第二组带修饰类 `.video-viewswitch--mine`，第一组**不带** ——
+ *       只断"有那个类名"的话，把两组都改成一模一样的修饰类照样绿；
+ *    ③ 那个类名在 `styles.css` 里**有规则** —— 否则它只是"加了个名字、屏幕上一个像素
+ *       都没变"（§5.70 那一类：渲染得出来、什么都不生效）。
+ *    ⚠️ 纯观感（"是不是真的更好认了"）静态产物证明不了 —— 记在 `pending.md §5.103`。
+ */
+{
+  const groups = elementsWithClass(EDITOR_WALL_PAGE_HTML, 'video-viewswitch');
+  assert.equal(
+    groups.length,
+    2,
+    `★★ 登录 + 墙那一栏 ⇒ 切换器恰好**两组**（栏目那一排 + 视图那一排；实测 ${String(groups.length)}）`,
+  );
+  assert.equal(
+    hasClassIn(groups[1] ?? '', 'video-viewswitch--mine'),
+    true,
+    '★★ 第二组（全部视频 / 我贴的）必须带 `.video-viewswitch--mine` —— 两组长得一模一样时，' +
+      '读起来就是同一个控件被画了两次（终审 M9）',
+  );
+  assert.equal(
+    hasClassIn(groups[0] ?? '', 'video-viewswitch--mine'),
+    false,
+    '★★ 而顶部那一组（两个栏目）**不许**带它 —— 否则"区分开"这件事等于没做',
+  );
+  assert.deepEqual(
+    elementsWithClass(groups[1] ?? '', 'video-viewswitch__item').map((el) => textOf(el)),
+    [t('videos.viewAll'), t('videos.viewMine')],
+    '★ 第二组仍然是那两颗按钮（区分开 ≠ 换了一套控件）',
+  );
+  assert.equal(
+    hasCssRule(CSS, 'video-viewswitch--mine'),
+    true,
+    '★★ `.video-viewswitch--mine` 在 `apps/web/src/styles.css` 里必须有规则 —— ' +
+      '没有规则的话它是个"渲染得出来、但屏幕上一个像素都不变"的类名（§5.70）',
+  );
+}
 ok(
-  '两个栏目互斥：`?vtab=wall|tracked|认不出的值` 三档各数一次（两块加起来恰好一块）+ 顶部两颗按钮的文字与 `aria-pressed` 跟着走 + 管理面板只在追踪那一栏',
+  '两个栏目互斥：`?vtab=wall|tracked|认不出的值` 三档各数一次（两块加起来恰好一块）+ 顶部两颗按钮的文字与 `aria-pressed` 跟着走 + 管理面板只在追踪那一栏 + 登录那两排切换器能分得开（终审 M9）',
 );
 
 // ---------------------------------------------------------------------------

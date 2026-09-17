@@ -591,9 +591,20 @@ export function Videos() {
       */}
       {videosTab === 'wall' ? (
         <>
-          {/* 视图切换只在登录后出现 —— 没登录的人点"我贴的"只会被弹回来 */}
+          {/*
+            ⚠️★ 视图切换只在登录后出现 —— 没登录的人点"我贴的"只会被弹回来。
+            ⚠️★ 终审 M9：登录用户在墙这一栏上会看到**两排挨着的切换器**，而它们
+              借的是同一套类名（`.video-viewswitch`）⇒ 形状**一模一样**，只差文字，
+              很容易被当成同一个控件重复渲染了两次。
+              ⚠️ 实测**不是**重复渲染：上一排切**栏目**（自己贴的 / 追踪的），
+              这一排切**视图**（全部视频 / 我贴的），两者是两条不同的轴。
+              ⇒ 处置是"让它们能区分开"，不是删掉一个：这一排多一个修饰类
+              `video-viewswitch--mine`，`styles.css` 把它画成明显更轻的次要控件
+              （更小的尺寸、无底色无边框），且判据钉在 `videorender.tsx` 的 ⑰ 上
+              （登录那一份产物里恰好两组、第二组带那个修饰类、第一组不带）。
+          */}
           {auth.user ? (
-            <div className="video-viewswitch">
+            <div className="video-viewswitch video-viewswitch--mine">
               <button
                 type="button"
                 className={`video-viewswitch__item${mineView ? '' : ' is-active'}`}
@@ -837,8 +848,17 @@ export function Videos() {
              *    少传 `filters` 或 `creators` 会让五个下拉框静默停在"全部"
              *    （而列表其实是筛过的）—— 那种界面上写着"全部"、实际只显示一部分的
              *    状态**没有任何解释**。少传两个回调则是"拉不动、而且看起来完全正常"。
-             * ⚠️ 名册取数失败 ⇒ 空数组（降级成"只有全部博主"）—— 那**不是**假话：
-             *    下拉框里少几项不会让谁以为列表坏了，而视频列表自己有它那条 error。
+             * ⚠️★ 名册取数失败 ⇒ 空数组。终审 I2 订正了这里原来那句"那**不是**假话"
+             *    —— 那句话**本身是假的**，而真相分两半：
+             *      · 用户没筛任何博主时，空名册的降级确实不假（"全部"就是当下的事实）；
+             *      · 而地址栏里带着 `tcreator=<id>` 时，`<select>` 的 `value` 匹配不上
+             *        任何 `<option>` ⇒ 浏览器把它画成**第一项**「全部博主」，可列表是
+             *        **真的按那位博主筛过的** —— 用户看到一份很短的列表、下拉框却写着
+             *        "全部博主"，没有任何东西解释为什么。
+             *    ⇒ 第二半由 `TrackedVideos` 自己补一项解决（`tracked.creatorUnknown`），
+             *      页面这一侧只负责把名册**照实**传下去（`status === 'ok' ? items : []`）。
+             *    ⚠️ 代价（认下）：那一项说不出名字 —— 它要的名字正是这份读不到的名册给的，
+             *      所以它只说"选了某一位"。记在 `docs/pending.md §5.103`。
              */
             filters={trackedFilters}
             creators={rosterState.status === 'ok' ? rosterState.data.items : []}
