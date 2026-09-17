@@ -256,6 +256,30 @@ export const en: TranslationSchema = {
     tagsLabel: 'Tags',
     subTagsLabel: 'Category tags',
     tagFilterHint: 'Filter by tag:',
+    /*
+     * Deleting a tag (2026-09-17; user request: "editors may delete resource-library
+     * tags; the resources that carried a deleted tag stay, only the tag goes away").
+     *
+     * ⚠️ These only ever reach editors (`resource.moderate`: editor / admin / owner) —
+     *    the × button, the confirm step and the result line all live in
+     *    `components/TagCloud.tsx`, gated by `useCan('resource.moderate')`.
+     *
+     * ⚠️ Two things the wording must keep straight: how many resources this touches,
+     *    and that **the resources themselves stay** (the user asked for exactly that;
+     *    "delete the tag" reads like "delete the entries" far too easily).
+     *
+     * ⚠️ The two numbers in the result line come from the server (how many rows really
+     *    changed) — pending drafts and hidden entries lose the tag too, and they are
+     *    not in the tag cloud ⇒ those numbers can be larger than what the user sees.
+     */
+    tagDeleteAction: 'Delete the tag "{{tag}}"',
+    tagDeleteConfirm:
+      'Delete the tag "{{tag}}"? It affects {{count}} resources; the resources themselves stay.',
+    tagDeleteConfirmAction: 'Delete it',
+    tagDeleteWorking: 'Deleting…',
+    tagDeleteDone:
+      'Tag "{{tag}}" deleted: removed from {{resources}} resources and {{revisions}} pending revisions.',
+    tagDeleteFailed: 'Could not delete the tag.',
     loading: 'Loading…',
     loadFailed: 'Failed to load',
     retry: 'Retry',

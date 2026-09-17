@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useSearchParams } from 'react-router';
 import { ResourceCard } from '@/components/ResourceCard';
+import { TagCloud } from '@/components/TagCloud';
 import { fetchResources, fetchTags } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
@@ -85,12 +86,42 @@ export function ResourceList() {
   const [showHidden, setShowHidden] = useState(false);
   const includeHidden = canModerate && showHidden;
 
+  /*
+   * ★ 删标签之后的**回读**（2026-09-17，用户要求：「允许编辑者删除资源库标签」）。
+   *
+   * 一个计数器而不是布尔量，理由是**可重复**：每删一次都要重新拉一遍，
+   * 而 `setState(true)` 在第二次时不会引起渲染（浏览器于是什么都不做，
+   * 表现是"删第二个标签时列表不动"）。
+   *
+   * ⚠️ `fresh` 一旦为真就**一直是真**：这一页已经改过一次数据，之后所有列表请求
+   *    都绕开浏览器缓存。这与 `fetchResources` 里 `includeHidden` 那条注释是同一条
+   *    理由（治理者点完动作再读，命中的是 60 秒前的旧响应，于是"我明明删了，
+   *    怎么还在"），只是触发条件从"想看隐藏内容"变成"这一页已经动过手"。
+   */
+  const [dataVersion, setDataVersion] = useState(0);
+  const fresh = dataVersion > 0;
+
   const listQuery = JSON.stringify(query);
   const list = useAsync(
-    (signal) => fetchResources(query, signal, includeHidden),
-    [listQuery, includeHidden],
+    (signal) => fetchResources(query, signal, includeHidden, fresh),
+    [listQuery, includeHidden, dataVersion],
   );
-  const tags = useAsync((signal) => fetchTags(signal), []);
+  const tags = useAsync((signal) => fetchTags(signal, fresh), [dataVersion]);
+
+  /**
+   * 标签删掉了。
+   *
+   * 两件事都要做，少任何一件都会长得像"这个功能没做"：
+   *   ① 删的正是**当前筛选**的那个标签 ⇒ 先把 `?tag=` 摘掉。不摘的话列表会停在
+   *      "按一个已经不存在的标签筛选"上：结果一条都没有，看起来像整个资源库空了。
+   *   ② 让标签云**与列表**都绕开缓存重拉（`setDataVersion` 那个计数器）。
+   *      列表也要重拉：卡片上印着标签（`ResourceCard` 的 chip），不重拉的话
+   *      屏幕上那些卡片还挂着刚被删掉的那个标签。
+   */
+  function handleTagDeleted(tag: string) {
+    if (query.tag === tag) setParam('tag', undefined);
+    setDataVersion((version) => version + 1);
+  }
 
   const activeTabKey = query.kind ?? 'all';
   const tabIndicator = useTabIndicator(activeTabKey);
@@ -201,22 +232,27 @@ export function ResourceList() {
         ) : null}
       </div>
 
-      {/* 标签云。当前选中的标签高亮，再点一次取消。 */}
-      {tags.status === 'ok' && tags.data.tags.length > 0 ? (
-        <div className="tagcloud">
-          <span className="tagcloud__label">{t('resources.tagFilterHint')}</span>
-          {tags.data.tags.map(({ tag, count }) => (
-            <button
-              key={tag}
-              type="button"
-              className={`tagchip${query.tag === tag ? ' tagchip--on' : ''}`}
-              onClick={() => setParam('tag', query.tag === tag ? undefined : tag)}
-            >
-              {tag}
-              <span className="tagchip__count">{count}</span>
-            </button>
-          ))}
-        </div>
+      {/*
+        标签云（当前选中的标签高亮，再点一次取消）+ **编辑者的「✕」**。
+
+        ⚠️ 判权限与删标签那件事整个住在 `components/TagCloud.tsx` 里：这里只把
+           "标签从哪来""选中了谁""删完要干什么"给它，一个字的能力判断都不重复。
+           （那一块必须能单独被 `scripts/resourcerender.tsx` 渲染到 ——
+           页面自己取数，纯 SSR 下永远停在"加载中"。）
+
+        ⚠️★ 条件是 `tags.status === 'ok'`，**刻意不再要求"标签非空"**：
+           删掉最后一个标签之后，标签行本身会整行消失（那是设计），
+           而"已删除，N 条资源…"那句**结果提示**还要留在屏幕上 ——
+           它长在那个组件里，条件一收紧就会连同它一起消失，
+           而那正是唯一需要它的时刻。
+      */}
+      {tags.status === 'ok' ? (
+        <TagCloud
+          tags={tags.data.tags}
+          activeTag={query.tag}
+          onSelect={(tag) => setParam('tag', query.tag === tag ? undefined : tag)}
+          onDeleted={handleTagDeleted}
+        />
       ) : null}
 
       {/*

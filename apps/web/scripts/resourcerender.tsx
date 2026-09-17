@@ -81,7 +81,8 @@ import {
 } from '@/components/ContributorPanel';
 import { emText } from '@/components/Emphasis';
 import { ResourceCard } from '@/components/ResourceCard';
-import type { AdminUser } from '@/lib/api';
+import { TagCloud, TagCloudView, type TagCloudViewProps, tagCountOf } from '@/components/TagCloud';
+import type { AdminUser, TagCount } from '@/lib/api';
 import { AuthProvider } from '@/lib/auth';
 import { ResourceDetailPage } from '@/routes/ResourceDetail';
 
@@ -98,8 +99,8 @@ await i18n.use(initReactI18next).init({
   lng: LANG,
   /*
    * ⚠️ `false` 而不是 `'zh-CN'`：缺 en 词条时**原样返回 key**，于是下面
-   *    ⑨ 的裸 key 扫描能精确指出是哪一个 key（回退到中文的话，英文界面上
-   *    冒出来的是中文，只能靠 ⑩ 的汉字扫描间接发现"某处漏了英文"）。
+   *    ⑩ 的裸 key 扫描能精确指出是哪一个 key（回退到中文的话，英文界面上
+   *    冒出来的是中文，只能靠 ⑪ 的汉字扫描间接发现"某处漏了英文"）。
    */
   fallbackLng: false,
   resources: { 'zh-CN': { translation: zhCN }, en: { translation: en } },
@@ -244,7 +245,7 @@ function account(over: Partial<AdminUser>): AdminUser {
 }
 
 /*
- * ⚠️ 名字一律用 **ASCII**：⑩ 那一节要断言"英文界面里零汉字"，而这里的名字是
+ * ⚠️ 名字一律用 **ASCII**：⑪ 那一节要断言"英文界面里零汉字"，而这里的名字是
  *    **数据**（由夹具喂进去）—— 用中文夹具会让那条断言挂在夹具上，
  *    而不是挂在产品文案上（`calendarrender.tsx` 第 ⑥ 条踩过同一个坑）。
  */
@@ -955,7 +956,303 @@ for (const key of FROZEN_KEYS) {
 ok(`19 个 key 在【${LANG}】里都存在且有真值`);
 
 // ---------------------------------------------------------------------------
-console.log('⑨ 裸 key 泄漏 + 字面的 `**`（含探针）');
+console.log('⑨ ★★ 删标签：编辑者看得到那个 ✕，审核员 / 访客 / 未登录一个字都没有');
+// ---------------------------------------------------------------------------
+
+/*
+ * 用户原话：「允许编辑者删除资源库标签，被删除的标签对应的资源保留，只是去掉其标签」
+ * （2026-09-17）。
+ *
+ * ===========================================================================
+ * 这一节守的是那句话里的**两半**，而且两半都不会报错
+ * ===========================================================================
+ *   ① 「允许**编辑者**」—— 判据写成 `resource.moderate`（EDITOR_CAPS：editor /
+ *      admin / owner）。写宽了（比如换成 `can` 的兜底、或者干脆不判）**界面看起来
+ *      完全正常**，只是每个访客都能删掉全站的标签；写窄了（换成 `user.moderate`）
+ *      表现是"编辑点不动"，同样不报错。所以四种人各渲染一遍：
+ *      **编辑者**（有 ✕）、**审核员**（没有 —— 审核 ≠ 治理）、**访客**、**未登录**。
+ *   ② 「资源本身保留」—— 确认那一句必须说出影响几条、以及资源不会被删。
+ *      这句话写错的代价不是"报错"，而是**用户不敢按**或者**按了才发现删错了**。
+ *
+ * ===========================================================================
+ * ⚠️ 为什么四份登录态都要**真的过一遍 `useCan`**
+ * ===========================================================================
+ * 判据住在容器里（`TagCloud` 的 `useCan('resource.moderate')`）。如果自检只给组件
+ * 喂一个 `canDelete` 布尔量，那它验的是"给我 true 就会渲染 ✕"—— 而"编辑者拿到的是
+ * true、审核员拿到的是 false"这两件事**一个字都验不到**（那正是最容易写错的地方：
+ * 把 `resource.moderate` 写成 `can` 的兜底、或者写成 `user.moderate`，
+ * 两种写法都能让"给我 true 就渲染"那条断言保持绿色）。
+ * 所以这里用 `AuthProvider` 的 `initialUser` 注入**真角色**，渲染的是真容器。
+ *
+ * ⚠️ 覆盖边界：脚本只渲到"确认中/进行中/结果"这几屏的**静态样子**
+ *    （`renderToStaticMarkup` 不跑 effect、不派发事件）—— 点 ✕ 会不会真的进确认、
+ *    确认之后发出去什么、服务端改了哪几行，全在 `services/api/src/resource-tags.test.ts`。
+ */
+
+/** 标签云的固定输入。⚠️ 标签名一律 **ASCII**：⑪ 那一节要断言英文界面零汉字。 */
+const tagFixture: TagCount[] = [
+  { tag: 'tools', count: 3 },
+  { tag: 'video', count: 1 },
+];
+
+/** 产物里所有「删除标签」按钮的**开始标签**（判"那个 ✕ 在不在"）。 */
+function delButtons(html: string): string[] {
+  return [...html.matchAll(/<button[^>]*class="tagitem__del"[^>]*>/g)].map((m) => m[0] ?? '');
+}
+
+/** 把「删除标签」按钮整段抠掉（用来对照"编辑者与访客只差这几个 ✕"）。 */
+function withoutDelButtons(html: string): string {
+  return html.replace(/<button[^>]*class="tagitem__del"[^>]*>×<\/button>/g, '');
+}
+
+/* ⚠️ 两个提取器的**探针**：写坏时它们返回空数组/原串，下面那些"找不到"会全部假绿。 */
+assert.equal(
+  delButtons('<button type="button" class="tagitem__del">×</button>').length,
+  1,
+  '探针：「删除标签」按钮提取器本身必须能命中',
+);
+assert.equal(
+  withoutDelButtons('<i>a</i><button type="button" class="tagitem__del">×</button><i>b</i>'),
+  '<i>a</i><i>b</i>',
+  '探针：抠掉「删除标签」按钮的那一步本身必须有效',
+);
+
+/** 一个形状完整的用户（只换角色）—— 这里用来注入"编辑者 / 审核员 / 管理员"的登录态。 */
+function userAs(role: UserSelf['role']): UserSelf {
+  return { ...adminUser, id: `u-${role}`, role, email: `${role}@example.com` };
+}
+
+/** 渲染**真容器**（判据是它自己的 `useCan`），登录态由参数注入。 */
+const renderCloudAs = (user: UserSelf | null): string =>
+  renderToStaticMarkup(
+    createElement(
+      I18nextProvider,
+      { i18n },
+      createElement(
+        AuthProvider,
+        { initialUser: user },
+        createElement(TagCloud, {
+          tags: tagFixture,
+          activeTag: undefined,
+          onSelect: noop,
+          onDeleted: noop,
+        }),
+      ),
+    ),
+  );
+
+/** 纯视图的默认 props（渲染确认/进行中/结果那几屏用）。 */
+function cloudViewProps(over: Partial<TagCloudViewProps> = {}): TagCloudViewProps {
+  return {
+    tags: tagFixture,
+    activeTag: undefined,
+    onSelect: noop,
+    canDelete: true,
+    confirming: null,
+    busy: false,
+    notice: null,
+    onRequestDelete: noop,
+    onCancelDelete: noop,
+    onConfirmDelete: noop,
+    ...over,
+  };
+}
+
+const renderCloudView = (over: Partial<TagCloudViewProps> = {}): string =>
+  renderToStaticMarkup(
+    createElement(I18nextProvider, { i18n }, createElement(TagCloudView, cloudViewProps(over))),
+  );
+
+/* ---- ① 编辑者：两枚标签 ⇒ 两个 ✕，而且每个都能指名道姓 ---- */
+const cloudAsEditor = renderCloudAs(userAs('editor'));
+const editorDels = delButtons(cloudAsEditor);
+assert.equal(editorDels.length, 2, '★ 两枚标签 ⇒ 两个「删除标签」按钮（多一个少一个都是错的）');
+assert.ok(
+  ariaLabels(cloudAsEditor).includes(t('resources.tagDeleteAction', { tag: 'tools' })) &&
+    ariaLabels(cloudAsEditor).includes(t('resources.tagDeleteAction', { tag: 'video' })),
+  '★★ 每个 ✕ 的 `aria-label` 必须写出是**哪一个**标签 —— 一排一模一样的 ✕ 对读屏软件毫无信息',
+);
+assert.ok(
+  delButtons(cloudAsEditor).every((b) => b.includes('title=')),
+  '★ 鼠标悬停也要能看出删的是哪个标签（`title` 与 `aria-label` 同一句话）',
+);
+/* 探针：这一份产物必须**真的**渲染出了标签（否则上面几条是在验空气）。 */
+assert.ok(
+  textOf(cloudAsEditor).includes('tools') && cloudAsEditor.includes('tagchip'),
+  '探针：编辑者那一份必须真的渲染出了标签行',
+);
+
+/* ---- ② 审核员 / 访客 / 未登录：一个 ✕ 都没有，而标签行照常 ---- */
+const cloudAsReviewer = renderCloudAs(userAs('reviewer'));
+const cloudAsVisitor = renderCloudAs(userAs('user'));
+const cloudAsGuest = renderCloudAs(null);
+
+assert.equal(
+  delButtons(cloudAsReviewer).length,
+  0,
+  '★ 审核员**没有** `resource.moderate`（它属于 EDITOR_CAPS）⇒ 一个 ✕ 都不该有 —— ' +
+    '审核和治理是两种判断，能批一条内容不等于能清全站的标签',
+);
+for (const [who, html] of [
+  ['访客', cloudAsVisitor],
+  ['未登录', cloudAsGuest],
+] as const) {
+  assert.equal(delButtons(html).length, 0, `★ ${who}不该看到任何 ✕`);
+  /* ⚠️ 反向断言最容易假绿（整块没渲染时"找不到"也成立）⇒ 每条都跟一句正向对照。 */
+  assert.ok(
+    textOf(html).includes('tools') && html.includes('tagchip'),
+    `（正向对照）${who}照样要看到标签行本身 —— 浏览不设门槛，只是不能删`,
+  );
+}
+
+/*
+ * ★★ 三份产物之间的**唯一**差别就是那几个 ✕。
+ * ⚠️ 这条比"编辑者有、访客没有"更强：它把"编辑者那一份还多了/少了别的东西"
+ *    （比如多一句提示、少一个计数、类名不一样）也一起钉住了 ——
+ *    那种差别在界面上很难被看见，而它会让"同一份界面、只是多了个按钮"这句话变成假的。
+ */
+assert.equal(
+  withoutDelButtons(cloudAsEditor),
+  cloudAsVisitor,
+  '★★ 抠掉那几个 ✕ 之后，编辑者与访客的产物必须**逐字相同**',
+);
+
+/* ---- ③ 二次确认：说清影响几条 + 资源保留 ---- */
+const cloudConfirm = renderCloudView({ confirming: 'tools' });
+const confirmText = t('resources.tagDeleteConfirm', { tag: 'tools', count: 3 });
+assert.ok(
+  textOf(cloudConfirm).includes(textOf(confirmText)),
+  `★ 确认那一句要**逐字**出现（含标签名与条数）：${confirmText}`,
+);
+assert.ok(
+  textOf(cloudConfirm).includes(textOf(t('resources.tagDeleteConfirmAction'))),
+  '★ 确认键要在（只说一句提示、不给动作的话，用户会不知道下一步是什么）',
+);
+assert.ok(
+  textOf(cloudConfirm).includes(textOf(t('common.cancel'))),
+  '★ 取消键要在（只给一个"确认删除"等于逼人做那件事）',
+);
+/*
+ * ⚠️ 条数来自**这一枚 chip 自己的计数**（`tagCountOf`），不是前端另算的一个数：
+ *    界面上的数字与它旁边那枚 chip 上的数字不一致时，用户会以为其中一个是错的。
+ */
+assert.equal(tagCountOf(tagFixture, 'tools'), 3, '确认里的条数 = 那枚 chip 上的条数');
+assert.equal(tagCountOf(tagFixture, 'nope'), 0, '（对照）查不到的标签回 0，而不是 NaN/undefined');
+/* 反向：没有在确认时，那一句一个字都不该出现。 */
+assert.equal(
+  textOf(renderCloudView()).includes(textOf(confirmText)),
+  false,
+  '★ 没点 ✕ 时不该出现确认那一句（否则它就成了页面上的一段常驻文案）',
+);
+/*
+ * ★★ 且**非编辑者连"确认中"都渲染不出来**：`confirming` 有值但 `canDelete` 为假时，
+ *    确认那一段必须整块消失 —— 判据只有 `canDelete` 一个（不留第二条会漂移的路）。
+ */
+assert.equal(
+  textOf(renderCloudView({ canDelete: false, confirming: 'tools' })).includes(textOf(confirmText)),
+  false,
+  '★ 非编辑者（canDelete: false）即使处在"确认中"也不许渲染那一句',
+);
+
+/* ---- ④ 进行中：按钮说"删除中…"且不可重复点（与 liveManage 同一套做法） ---- */
+const cloudBusy = renderCloudView({ confirming: 'tools', busy: true });
+assert.ok(
+  textOf(cloudBusy).includes(textOf(t('resources.tagDeleteWorking'))),
+  '★ 删除进行中时要说明（"点了没反应"与"点对了"长得一样）',
+);
+assert.ok(
+  buttons(cloudBusy)
+    .filter((b) => b.text === t('resources.tagDeleteWorking'))
+    .every((b) => b.attrs.includes('disabled')),
+  '★ 进行中时确认键要禁用（不然会重复发请求）',
+);
+assert.equal(
+  delButtons(cloudBusy).every((b) => b.includes('disabled')),
+  true,
+  '★ 进行中时那一排 ✕ 也要禁用 —— 否则可以一边删一边点别的标签',
+);
+
+/* ---- ⑤ 结果：成功与失败都看得见（本仓"不许静默"的底线） ---- */
+const doneText = t('resources.tagDeleteDone', { tag: 'tools', resources: 2, revisions: 1 });
+const cloudDone = renderCloudView({ notice: { ok: true, text: doneText } });
+assert.ok(textOf(cloudDone).includes(textOf(doneText)), '★ 成功要说清改了几条资源、几个待审版本');
+assert.ok(cloudDone.includes('notice--ok'), '成功用普通提示条（不是错误色）');
+
+const cloudFailed = renderCloudView({
+  notice: { ok: false, text: `${t('resources.tagDeleteFailed')} 403` },
+});
+assert.ok(textOf(cloudFailed).includes(textOf(t('resources.tagDeleteFailed'))), '★ 失败要有那句话');
+assert.ok(
+  cloudFailed.includes('notice--bad') && cloudFailed.includes('403'),
+  '★★ 失败要用错误色，并且带上**具体原因**（403？连不上？）—— 只有一句笼统的"失败了"等于没说',
+);
+
+/*
+ * ★★ 删掉**最后一个**标签之后：标签行整行消失，而结果那句话必须还在。
+ *
+ * ⚠️ 这是唯一一个"提示会跟着内容一起消失"的地方（`ResourceList` 里那次条件原本是
+ *    `tags.length > 0`）：不留这一条的话，删最后一个标签的人看到的是**一片空白** ——
+ *    既没有标签行、也没有"删掉了什么"，最自然的解读是"刚才那一下把页面弄坏了"。
+ */
+const cloudEmptyAfterDelete = renderCloudView({ tags: [], notice: { ok: true, text: doneText } });
+assert.ok(cloudDone.includes('tagcloud'), '（正向对照）有标签时那一行必须在');
+assert.equal(
+  cloudEmptyAfterDelete.includes('tagcloud'),
+  false,
+  '★ 一个标签都没有时，标签行（连「按标签筛选：」那句）整行消失 —— 不留一行空的',
+);
+assert.ok(
+  textOf(cloudEmptyAfterDelete).includes(textOf(doneText)),
+  '★★ 但结果提示**必须留着**：那是唯一需要它的时刻（否则删完最后一个标签是一片空白）',
+);
+assert.equal(
+  delButtons(cloudEmptyAfterDelete).length,
+  0,
+  '★ 没有标签时不该有 ✕（渲染一个不存在的行的那种 bug）',
+);
+
+/* ---- ⑥ 新加的词条：两种语言都要有真值，且产物里不许出现裸 key ---- */
+const TAG_DELETE_KEYS = [
+  'tagDeleteAction',
+  'tagDeleteConfirm',
+  'tagDeleteConfirmAction',
+  'tagDeleteWorking',
+  'tagDeleteDone',
+  'tagDeleteFailed',
+] as const;
+for (const key of TAG_DELETE_KEYS) {
+  const full = `resources.${key}`;
+  assert.ok(i18n.exists(full), `★ 词条 ${full} 在【${LANG}】里不存在（界面上会原样印出这个 key）`);
+  assert.notEqual(t(full), full, `★ 词条 ${full} 在【${LANG}】里没有真值`);
+}
+
+const cloudProducts = [
+  cloudAsEditor,
+  cloudAsReviewer,
+  cloudAsVisitor,
+  cloudAsGuest,
+  cloudConfirm,
+  cloudBusy,
+  cloudDone,
+  cloudFailed,
+  cloudEmptyAfterDelete,
+].join('');
+/* ⚠️ 扫描器本身必须能命中（否则下面是恒真的空跑）。 */
+assert.notEqual(
+  /resources\.tag[A-Za-z]+/.test('resources.tagDoesNotExist'),
+  false,
+  '探针：裸 key 扫描器本身必须能命中',
+);
+const leakedTagKeys = [...new Set(cloudProducts.match(/resources\.tag[A-Za-z]+/g) ?? [])];
+assert.deepEqual(leakedTagKeys, [], `裸 key 泄漏：${leakedTagKeys.join(', ')}`);
+
+ok(
+  `编辑者有 ${String(editorDels.length)} 个 ✕（各带标签名）、审核员/访客/未登录一个都没有；` +
+    '确认那句话有标签名与条数、成功失败都看得见、删完最后一个标签时提示还在',
+);
+
+// ---------------------------------------------------------------------------
+console.log('⑩ 裸 key 泄漏 + 字面的 `**`（含探针）');
 // ---------------------------------------------------------------------------
 
 const everyProduct = [
@@ -977,6 +1274,16 @@ const everyProduct = [
   barHidden,
   barShown,
   barFail,
+  // ★ ⑨ 那一节（删标签）：编辑者/审核员/访客/未登录四份 + 确认与结果那几屏
+  cloudAsEditor,
+  cloudAsReviewer,
+  cloudAsVisitor,
+  cloudAsGuest,
+  cloudConfirm,
+  cloudBusy,
+  cloudDone,
+  cloudFailed,
+  cloudEmptyAfterDelete,
 ].join('');
 
 /*
@@ -1014,15 +1321,15 @@ ok(
 );
 
 /*
- * ⑩ ★ 英文模式：整个样本集里零汉字。
+ * ⑪ ★ 英文模式：整个样本集里零汉字。
  *
  * ⚠️ 这一节只在 `--en` 下有内容，所以标题也放在 `if` 里面 ——
  *    否则中文那一遍会印出一个**没有下文的小标题**，看起来像漏跑了一段。
  * ⚠️ 汉字扫描之所以有意义：`fallbackLng: false` 时缺英文词条会**原样返回 key**
- *    （由 ⑨ 抓），而这个扫描抓的是另一类 —— 有人把中文**写死在组件里**。
+ *    （由 ⑩ 抓），而这个扫描抓的是另一类 —— 有人把中文**写死在组件里**。
  */
 if (LANG === 'en') {
-  console.log('⑩ 英文界面里零汉字');
+  console.log('⑪ 英文界面里零汉字');
   const han = textOf(everyProduct).match(/[\u4e00-\u9fff]+/g) ?? [];
   assert.deepEqual(han, [], `英文界面里出现了中文：${han.slice(0, 8).join(' / ')}`);
   ok('英文界面里零汉字');

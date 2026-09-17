@@ -246,6 +246,32 @@ export const zhCN = {
     tagsLabel: '标签',
     subTagsLabel: '分类标签',
     tagFilterHint: '按标签筛选：',
+    /*
+     * ★ 删标签（2026-09-17，用户要求：「允许编辑者删除资源库标签，被删除的标签
+     *   对应的资源保留，只是去掉其标签」）。
+     *
+     * ⚠️ 这一组**只在编辑者（`resource.moderate`：editor / admin / owner）面前出现**：
+     *    ✕ 那个按钮、以及确认与结果那几句都由 `components/TagCloud.tsx` 渲染，
+     *    而那里的判据是 `useCan('resource.moderate')`。访客看到的标签行与本轮之前
+     *    一模一样（只有 chip，没有 ✕）。
+     *
+     * ⚠️ 措辞上有**两件事必须说清**，少一件就会把人误导到错的动作上：
+     *    ① 这一下会影响**几条**资源（`{{count}}` 是一枚 chip 上那个数 = 已上架的条数）；
+     *    ② **资源本身保留** —— 用户特意要求的是"只是去掉标签"，而"删除标签"
+     *       这四个字在中文里太容易被读成"把带这个标签的内容也删了"。
+     *       ⚠️ 这句不是客套：它是让人敢按下去的唯一依据。
+     *
+     * ⚠️ 结果那句里的两个数是**服务端回的**（真的改了几行），不是前端按 chip 上的
+     *    计数猜的：未上架的草稿与已下架的内容同样会被清掉（否则它们一上架那个标签
+     *    就回来了），而它们在标签云里本来就不出现 ⇒ 这两个数**可能大于**用户看得见的条数。
+     */
+    tagDeleteAction: '删除标签「{{tag}}」',
+    tagDeleteConfirm: '删除标签「{{tag}}」？会影响 {{count}} 条资源；资源本身保留。',
+    tagDeleteConfirmAction: '确认删除',
+    tagDeleteWorking: '删除中…',
+    tagDeleteDone:
+      '已删除标签「{{tag}}」：{{resources}} 条资源、{{revisions}} 条待审版本去掉了它。',
+    tagDeleteFailed: '删除标签失败。',
     loading: '加载中…',
     loadFailed: '加载失败',
     retry: '重试',

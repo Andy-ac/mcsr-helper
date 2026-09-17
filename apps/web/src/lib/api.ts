@@ -391,16 +391,23 @@ export function buildResourceQuery(query: Partial<ResourceQuery>, includeHidden 
  * 的就只有"看得见下架开关"的治理者（`ResourceList.tsx` 里 `showHidden`
  * 只在 `resource.moderate` 下出现），而**正是这条路**需要新鲜数据。
  * 访客那条路连 `includeHidden` 都是 false，依旧吃那 60 秒缓存。
+ *
+ * ★ 2026-09-17：多了一个 `fresh`（第四参），由**删标签**那一次动作用。
+ *   ⚠️ 它与 `includeHidden` 不是同一件事，所以不能合并：`includeHidden`
+ *   还带着"要不要把已下架的条目也查出来"的语义，而删完标签之后要的只是
+ *   "这一份数据别吃缓存"（列表里那些卡片上还挂着刚被删掉的标签）。
+ *   默认 `false` ⇒ 所有既有调用点一个字节的行为都没变。
  */
 export function fetchResources(
   query: Partial<ResourceQuery>,
   signal?: AbortSignal,
   includeHidden = false,
+  fresh = false,
 ): Promise<ResourceListResponse> {
   return request<ResourceListResponse>(
     `/api/resources${buildResourceQuery(query, includeHidden)}`,
     signal,
-    includeHidden ? 'no-store' : undefined,
+    includeHidden || fresh ? 'no-store' : undefined,
   );
 }
 
@@ -413,8 +420,50 @@ export interface TagCount {
   count: number;
 }
 
-export function fetchTags(signal?: AbortSignal): Promise<{ tags: TagCount[] }> {
-  return request<{ tags: TagCount[] }>('/api/resources/tags', signal);
+/**
+ * 标签云。**公开**，而且带 `public, max-age=60`（服务端那条 `PUBLIC_CACHE`）。
+ *
+ * ⚠️★ `fresh` 是**删标签之后回读**用的，默认 `false`（既有调用点行为不变）。
+ * 不传的话会撞上本文件里已经记过两次的那个坑（见 `fetchResources` 的
+ * `includeHidden` 与 `fetchLiveChannelsFresh`）：编辑点掉一个标签、页面回读，
+ * 命中的是 60 秒内那份**旧**响应 —— 那个标签还在，于是他以为"没删掉"，
+ * 再点一次（还是旧的）。服务端一直是对的。
+ */
+export function fetchTags(signal?: AbortSignal, fresh = false): Promise<{ tags: TagCount[] }> {
+  return request<{ tags: TagCount[] }>(
+    '/api/resources/tags',
+    signal,
+    fresh ? 'no-store' : undefined,
+  );
+}
+
+/**
+ * ★ 删掉一个标签（全局：所有资源 + 所有待审版本都去掉它，**不删任何一条内容**）。
+ *
+ * 判据在服务端（`resource.moderate`：editor / admin / owner），这里只是把意图发出去。
+ *
+ * ⚠️ `encodeURIComponent`：标签里可以有中文（`工具`）与点号（`1.16.1`），
+ *    而它现在是一个**路径段**。Hono 的 `param()` 会解码一次
+ *    （`routes/resources.ts` 那条路由的注释里写着为什么只能解这一次）。
+ */
+export function deleteResourceTag(tag: string): Promise<TagDeleteResult> {
+  return sendJson<TagDeleteResult>('DELETE', `/api/resources/tags/${encodeURIComponent(tag)}`);
+}
+
+/**
+ * 删标签的返回：**改了几行**（不是"删了几条"——一条都没删）。
+ *
+ * ⚠️ 两个数字都是"真的改了"的行数，界面那句「会影响 N 条资源，资源本身保留」
+ *    就是拿它们说的。`resources` 可能**大于**标签云上那个计数：标签云只数
+ *    `status='published'` 的行，而未上架的草稿与已下架的内容同样会被清掉
+ *    （否则它们一上架，那个标签就回来了）。
+ */
+export interface TagDeleteResult {
+  ok: true;
+  /** **规范化之后**的标签（trim + 小写）——界面回显要用它，别用自己发出去的那个串。 */
+  tag: string;
+  resources: number;
+  revisions: number;
 }
 
 // ---------------------------------------------------------------------------

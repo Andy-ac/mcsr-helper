@@ -331,6 +331,123 @@ export function listTopTags(limit = 30): Array<{ tag: string; count: number }> {
     .slice(0, limit);
 }
 
+/**
+ * ★ 全局删掉一个标签：把 `tag` 从**每一条资源**和**每一个待审版本**的 tags 里去掉。
+ *
+ * ---------------------------------------------------------------------------
+ * 用户要求（原话）
+ * ---------------------------------------------------------------------------
+ * 「允许编辑者删除资源库标签，被删除的标签对应的资源保留，只是去掉其标签」
+ * ⇒ 这个函数**一行都不删**：`resources` / `resource_revisions` 的行数在它跑完之后
+ *   一个字节都不变，只有 `tags` 那一列（JSON 文本）会变。所以它返回的是
+ *    "改了几行"，而不是"删了几条" —— 界面与审计要说的那句
+ *    「资源本身保留」就挂在这两个数字上。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么逐行读改写，而不是一条 UPDATE
+ * ---------------------------------------------------------------------------
+ * `tags` 是 **JSON 文本列**（见文件头的 `parseTags`）。在 SQL 侧只能做字符串替换，
+ * 而替换 `"tools"` 这个子串会**连 `"tools-extra"` 一起命中** —— 一次误伤就静默改坏了
+ * 别人的标签，而且拼出来的 JSON 还可能不合法。所以老实走 `parseTags`：
+ * 读出来 → 过滤 → `JSON.stringify` 写回。解析失败的行会走 `parseTags` 的兜底
+ * （记日志 + 当空数组），**绝不会**把那一列写成半个 JSON。
+ * 代价是 N 次读 + M 次写（M = 真的有这个标签的行数）。标签删除是低频的治理动作，
+ * 这个代价换的是"结构上不可能写坏 JSON"。
+ *
+ * ⚠️ **只写真的有这个标签的行**（过滤后长度没变就跳过）：否则每删一个标签都会把
+ *    全库的 `tags` 重写一遍 —— 既没有意义，又会让返回给界面与审计的那个数字
+ *    从"改了几行"变成"库里一共有几行"。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 哪一档 status 要动、哪一档**不能**动
+ * ---------------------------------------------------------------------------
+ *   · `resources` —— **不看 status，每一行都要清**。已上架的那些是标签云与筛选
+ *     实际在用的（`listTopTags` 只数 `published`），但**未上架的草稿同样要清**：
+ *     它一旦通过审核上架，那个"已经删掉的标签"就会跟着冒出来，而那时没有人
+ *     还会想起这次删除。
+ *   · `resource_revisions` —— **只动 `status = 'pending'`**。待审快照是"还没生效、
+ *     但将来会生效"的内容，与上面的草稿同理。`approved` / `rejected` 是**历史快照**
+ *     （005 迁移：这里是拍摄的那一刻的样子，之后不再变）—— 改写它们等于篡改历史，
+ *     事后查"这一版当时长什么样"就再也查不到了；而它们**不会**自己冒到线上
+ *     （线上那一版住在 `resources` 行上，上面已经清过了）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么**不动 `updated_at`**（与那两个改 resources 的函数刻意不同）
+ * ---------------------------------------------------------------------------
+ * `setResourceFlags` / `setResourceVisibility` 都会顺手推 `updated_at`，这里不推：
+ *   · 列表排序是 `featured DESC, updated_at DESC, id ASC` —— 推一次等于让
+ *     **全库重新洗一遍版**：用户只点了一个「✕」，半个资源库却冒到了列表最前面，
+ *     而且这件事在界面上看不出任何来源；
+ *   · `updated_at` 在这个库里说的是"这条**内容**最后一次被改"，而一次全局的
+ *     词汇表动作改的是**标签**、不是内容本身。
+ * 这次动作的痕迹在**审计**里（动作名 `resource.tagDelete`）—— 那也是事后唯一
+ * 需要它的地方。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 空标签**不在这里判**
+ * ---------------------------------------------------------------------------
+ * 判据在路由（那里要回 400，见 `routes/resources.ts`）。这里靠的是**精确相等**：
+ * 空串匹配不到任何合法标签（tag schema 是 `min(1)`），所以即使有人绕过路由
+ * 直接调它，也只会拿到 `{ resources: 0, revisions: 0 }`，**不会**变成一次全表清洗。
+ *
+ * ⚠️ 两侧都做 `trim().toLowerCase()`：写入路径（`normalizeResourceInput`）与小写化的
+ *    筛选路径（`listResources` 里的 `query.tag.toLowerCase()`）都是用这条规则对齐标签的，
+ *    这里跟它们一致 —— 否则 `Tools` 与 `tools` 会变成两个**只有删除才分得清**的东西。
+ */
+export function deleteTagEverywhere(tag: string): { resources: number; revisions: number } {
+  const db: DatabaseSync = getDb();
+  const target = tag.trim().toLowerCase();
+
+  /** 这一行的 tags 去掉目标后长什么样；**没有变化时返回 null**（调用方据此跳过写入）。 */
+  const stripped = (raw: string): string | null => {
+    const tags = parseTags(raw);
+    const kept = tags.filter((t) => t.trim().toLowerCase() !== target);
+    return kept.length === tags.length ? null : JSON.stringify(kept);
+  };
+
+  let resources = 0;
+  let revisions = 0;
+
+  /*
+   * 两条 UPDATE 必须在**同一个事务**里：删标签是一次动作，界面与审计都按
+   * "这一次一共改了几行"报数。分成两个事务的话，中间那一刻的库里是
+   * "资源已经没有这个标签、待审版本还挂着它"的状态 —— 而那时任何人拉一次
+   * 审核队列都会看到那个本该已经不存在的标签。
+   */
+  db.exec('BEGIN');
+  try {
+    const resourceRows = db.prepare('SELECT id, tags FROM resources').all() as unknown as Array<{
+      id: string;
+      tags: string;
+    }>;
+    const setResourceTags = db.prepare('UPDATE resources SET tags = ? WHERE id = ?');
+    for (const row of resourceRows) {
+      const next = stripped(row.tags);
+      if (next === null) continue;
+      setResourceTags.run(next, row.id);
+      resources += 1;
+    }
+
+    const revisionRows = db
+      .prepare("SELECT id, tags FROM resource_revisions WHERE status = 'pending'")
+      .all() as unknown as Array<{ id: string; tags: string }>;
+    const setRevisionTags = db.prepare('UPDATE resource_revisions SET tags = ? WHERE id = ?');
+    for (const row of revisionRows) {
+      const next = stripped(row.tags);
+      if (next === null) continue;
+      setRevisionTags.run(next, row.id);
+      revisions += 1;
+    }
+
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return { resources, revisions };
+}
+
 // ---------------------------------------------------------------------------
 // 写入（M1 只被导入脚本调用；M2 会加用户提交）
 // ---------------------------------------------------------------------------

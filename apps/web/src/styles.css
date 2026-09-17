@@ -1143,6 +1143,93 @@ html:not(.vt) .route-fade {
   background: var(--surface);
 }
 
+/*
+ * ===========================================================================
+ * 标签的**删除入口**（2026-09-17：用户要求「允许编辑者删除资源库标签」）
+ * ===========================================================================
+ * 一枚 chip 与它自己的「✕」是一**对**，所以外面套一层 `.tagitem` 把它们绑在一起：
+ *   · chip 是**筛选**开关、✕ 是**删除**，两个动作不能挤进同一个按钮里
+ *     （button 套 button 不是合法 HTML，浏览器会把里层拆出来）；
+ *   · 但它们又必须让人看出"属于同一枚标签"。
+ * ⚠️ 只有编辑者（`resource.moderate`）才渲染得出那个 ✕，所以这一组样式在
+ *    访客的页面上**根本用不到** —— 它们不会因此多出任何元素（见 TagCloud.tsx）。
+ *
+ * ⚠️ 间距 2px：再宽一点，一排标签就会被读成"两排按钮"（chip 与 ✕ 断开），
+ *    而"这枚 ✕ 属于哪一个标签"正是这里唯一要表达的东西。
+ */
+.tagitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/*
+ * ✕ 自己**不是**一枚胶囊，而是 chip 上的一个小挂件：刻意更矮、且没有边框。
+ * 给它边框的话整排会变成"每两枚一组"，而 ✕ 会被误读成"又一个可以点的标签"。
+ *
+ * ⚠️ 固定 20×20 而不是"随文字"：`×`（U+00D7）在像素字体里是一个**全角宽**的字，
+ *    不固定尺寸的话它会把这枚按钮撑得比 chip 还高，整排标签的基线就歪了。
+ * ⚠️ 静止时是 `--fg-faint`、hover 才转 `--redstone`：破坏性动作不该在静止状态
+ *    就喧宾夺主（与 `.dangerbtn` 只在 hover 时加强是同一条取向）。
+ */
+.tagitem__del {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-pill);
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.tagitem__del:hover:not(:disabled) {
+  color: var(--redstone);
+  background: rgba(232, 86, 74, 0.12);
+}
+.tagitem__del:focus-visible {
+  outline: 2px solid var(--grass-bright);
+  outline-offset: 2px;
+}
+.tagitem__del:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/*
+ * 二次确认那一行。⚠️ `flex-basis: 100%` 是刻意的：`.tagcloud` 是 flex-wrap，
+ * 这一项因此**独占一整行**、排在所有标签下面 —— "这一下会影响什么"需要有自己
+ * 的位置；接在最后一枚标签后面的话，它会被读成"又一个标签"。
+ *
+ * ⚠️ 红色只用在描边与底色上，与 `.dangerbtn` 同一条取向（整块填充会让人以为
+ *    这一下会把内容删掉 —— 而这里删的只是标签，资源一条都不少）。
+ */
+.tagitem__confirm {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(232, 86, 74, 0.45);
+  border-radius: var(--r-sm);
+  background: rgba(232, 86, 74, 0.08);
+}
+.tagitem__ask {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+
 /* ==================================================================
    卡片
    ================================================================== */

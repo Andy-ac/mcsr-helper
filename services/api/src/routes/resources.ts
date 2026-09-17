@@ -25,6 +25,7 @@ import { Hono } from 'hono';
 import { type AuthVariables, requireAuth, requireCapability } from '../auth/middleware';
 import { isContributor, listContributors, setContributors } from '../contributors';
 import {
+  deleteTagEverywhere,
   findResourceByUrl,
   getResource,
   getResourceAnyStatus,
@@ -69,6 +70,137 @@ function formatIssues(error: { issues: Array<{ path: PropertyKey[]; message: str
 resourcesRoute.get('/tags', (c) => {
   c.header('Cache-Control', PUBLIC_CACHE);
   return c.json({ tags: listTopTags() });
+});
+
+/**
+ * ★ 全局删掉一个标签（2026-09-17，用户要求）：
+ *   「允许编辑者删除资源库标签，被删除的标签对应的资源保留，只是去掉其标签」
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么是**一条自己的路由**，而不是"逐个资源 PATCH 一遍"
+ * ---------------------------------------------------------------------------
+ * 标签在这套模型里**不是实体**：`resources.tags` 是一列 JSON 文本，标签云
+ * （`listTopTags`）是**数出来的**，没有标签表、也没有词汇表。所以"删除标签"
+ * 这件事只能有一个落点 —— 一条覆盖全库的治理动作，而不是 N 次条目编辑：
+ *   · 逐个 PATCH 会走审核管线（每次改都是提一份待审快照）⇒ 删一个标签要
+ *     审 N 次、而且**线上在审核通过之前一个字都没变**，与用户要的"删掉"不符；
+ *   · 逐个 PATCH 还要求调用方先把"哪些条目带这个标签"查全 —— 而那个列表
+ *     在两次请求之间就会变（有人刚好在这个标签上提交了新条目）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 注册位置与 `GET /tags` 同一条理由
+ * ---------------------------------------------------------------------------
+ * 这两条 tags 路由（`GET /tags` 与本条）**必须挨在一起、而且都待在 `/:id` 那一族之前**。
+ * Hono 按注册顺序匹配，所以只要 `/tags/:tag` 排在前面，`tags` 这个字面段就永远
+ * 不会被当成某个条目的 id（今天本文件里 `DELETE /:id` 还不存在 —— 这正是要害：
+ * 哪天有人从 `routes/authoring.ts` 把真删那条路搬过来，`DELETE /tags` 会被它吃掉，
+ * 而症状是"删标签删掉了一条资源"，看起来完全不像路由顺序问题）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 判据：`resource.moderate` —— 用户说的「编辑者」就是它
+ * ---------------------------------------------------------------------------
+ * 它在矩阵里属于 `EDITOR_CAPS`（editor / admin / owner），也就是**网页上那三档
+ * "内容治理"的人**，而它表达的含义与本动作吻合：`resource.moderate` 管的是
+ * "已经上架的内容要不要先撤下来"这类**事后处置**，而删标签正是同一类动作 ——
+ * 影响的是**已在站上**的内容的分类方式，不是某一条内容的正文。
+ *
+ * ⚠️ 三个被否掉的候选，各自的代价都写在 shared/permissions.ts 里：
+ *   · `resource.editUnpublished` —— 它管的是**别人还没上架的草稿**，
+ *     与"全站的标签"根本不是一件事（一个编辑想清标签，不该顺带拿到草稿权）；
+ *   · `content.author`（直编）—— 它管的是**单条内容的原文本**、且绕开审核快照；
+ *     标签删除动的是很多行的**一列**，用直编权等于把一次批量动作当成一次编辑；
+ *   · `resource.feature`（精选/官方）—— 那是"能不能被推荐"的决定权，与标签无关。
+ *   ⚠️ 也不新造一个 `resource.tagDelete` **能力**：本仓的规矩是能力名要能被
+ *      `EDITOR_CAPS` 一层表达清楚，而"编辑及以上"已经被 `resource.moderate` 精确表达；
+ *     多一个永远同进同退的能力名，只会在矩阵里多一处会漂移的地方。
+ *
+ * ⚠️ reviewer **没有** `resource.moderate` —— 这正是要的：审核和治理是两种判断
+ *    （permissions.ts 的 `EDITOR_CAPS` 那一段写着理由）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 空标签必须是 400
+ * ---------------------------------------------------------------------------
+ * `DELETE /api/resources/tags/%20` 会被路由匹配到，而它**什么也不该做**。
+ * 关键在"什么也不该做"有两种：静默 200（调用方以为删掉了某个标签）与 400。
+ * 这里选 400：空标签**不是**一次成功的删除，它是一个不合法的入参 ——
+ * 与 `POST /api/resources` 对空字段的处理同形（`invalid_input` + `issues`）。
+ * ⚠️ 而且这一道必须在**碰数据库之前**：一个空串绝不该触发一次全表清洗，
+ *    "先删了再说、发现不对再回滚"在这里是拿数据安全赌一个 if 的位置。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 编码：`c.req.param()` 是**解码后**的值
+ * ---------------------------------------------------------------------------
+ * Hono 的 `param()` 走 `tryDecodeURIComponent`（`dist/request.js` 的
+ * `#getDecodedParam`），所以 `%E5%B7%A5%E5%85%B7` 到这里已经是「工具」。
+ * 客户端一律 `encodeURIComponent(tag)`（见 `lib/api.ts` 的 `deleteResourceTag`），
+ * 与筛选那条路（`?tag=` 走 URLSearchParams + `c.req.query()`）是同一种做法。
+ * ⚠️ 所以这里**不能**再解一次码：`deleteResourceTag` 发的是 `%2520` 这种
+ *    二次编码（标签本身是 `%20` 这样的串），再解一次就变成了一个空格 ——
+ *    于是"删掉那个标签"会变成一次删除**别的**标签（或者落到 400）。
+ *    `param()` 解不开编码时原样返回，所以这里宁可少解一次也不要多解一次。
+ *
+ * ---------------------------------------------------------------------------
+ * 响应：说清"改了什么"，因为它就是那句确认话术的来源
+ * ---------------------------------------------------------------------------
+ * `{ ok, tag, resources, revisions }`：
+ *   · `tag` —— **规范化之后**的那个（trim + 小写）；调用方拿它回显，
+ *     免得界面上写着「Tools」而库里存的是「tools」；
+ *   · `resources` —— 有变化的**资源行数**（含未上架的那些），
+ *   · `revisions` —— 有变化的**待审版本行数**。
+ * ⚠️ 两个数都是"**真的改了**几行"，不是"扫了几行" —— 界面那句
+ *    「会影响 N 条资源，资源本身保留」要的是前者。
+ * ⚠️ 它可能**大于**标签云上那个计数（那是 `listTopTags` 只数 `published` 的）：
+ *    未上架的草稿与下架的内容同样会被清掉（理由见数据层），而它们在标签云里
+ *    本来就不出现。报告的是"改了什么"，不是"你看见了什么"。
+ *
+ * ⚠️ 不存在的标签**不是 404**：标签是数出来的、没有词表，所以"从来没存在过"
+ *    与"刚刚被别人删掉了"在服务端看起来完全一样（都是 0 行）。回 404 只会让
+ *    前端去猜一个它猜不出的区别；回 `{ resources: 0, revisions: 0 }` 是同一件
+ *    事实的更准确说法，而且这个接口因此是**幂等**的（删两次不会出错）。
+ */
+resourcesRoute.delete('/tags/:tag', requireCapability('resource.moderate'), (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const tag = (c.req.param('tag') ?? '').trim().toLowerCase();
+  if (tag === '') {
+    return c.json(
+      {
+        error: 'invalid_input',
+        issues: [{ field: 'tag', message: '标签不能为空' }],
+      },
+      400,
+    );
+  }
+
+  const now = Date.now();
+  const counts = deleteTagEverywhere(tag);
+
+  /*
+   * 审计：**一条**记录，实体是那个**标签**（不是某一条资源）。
+   *
+   * ⚠️ `entityType: 'tag'` / `entityId: tag` —— 与"一次动作一条记录"的取向一致：
+   *    写成 N 条 `resource` 记录的话，事后想回答"这个标签是什么时候、被谁删掉的"
+   *    就得先把那 N 条重新聚起来，而那 N 条里没有一条写着标签名。
+   *    （`audit_log.entity_type` 是自由文本，管理界面的审计列表原样展示它。）
+   * ⚠️ reason 里把两个数字写全：`resources` / `revisions` 的**当时值**在库里
+   *    已经查不回来了（标签已经不在那些行上），而"这一次动了多少"恰恰是
+   *    事后唯一还能证明"这是一次批量动作、不是手滑改了一条"的东西。
+   */
+  writeAudit({
+    actorId: user.id,
+    action: 'resource.tagDelete',
+    entityType: 'tag',
+    entityId: tag,
+    reason: `删除标签「${tag}」：去掉 ${String(counts.resources)} 条资源的标签、${String(counts.revisions)} 条待审版本的标签（资源与版本都没有被删除）`,
+    ip: c.req.header('x-real-ip') ?? null,
+    now,
+  });
+
+  // ⚠️ `no-store`：这是一次写，回读当然要新鲜数据。标签云那条 GET 带
+  //    `public, max-age=60`，客户端回读时必须绕开缓存（见 `fetchTags` 的 `fresh`）。
+  c.header('Cache-Control', 'no-store');
+  return c.json({ ok: true, tag, resources: counts.resources, revisions: counts.revisions });
 });
 
 resourcesRoute.get('/', (c) => {
