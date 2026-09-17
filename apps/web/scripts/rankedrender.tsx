@@ -90,7 +90,9 @@ import {
   type RankedLiveData,
   type RankedLiveMatch,
   type RankedLivePlayer,
+  type RankedMatch,
   type RankedPhaseData,
+  type RankedPlayerDetail,
   type RankedStatusComponent,
   type RankedStatusResponse,
   type RankedTab,
@@ -106,11 +108,15 @@ import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
 import { emText } from '@/components/Emphasis';
 import {
+  MATCH_TYPE_KEYS,
+  OUTCOME_KEYS,
   type RankedChromeProps,
+  type RankedDetailState,
   RankedEloView,
   type RankedEloViewProps,
   RankedLiveView,
   type RankedLiveViewProps,
+  type RankedLookup,
   RankedStatusView,
   type RankedStatusViewProps,
   RankedTabBar,
@@ -735,6 +741,196 @@ const ELO_MANY: RankedEloData = {
   })),
 };
 
+/*
+ * ===========================================================================
+ * ★★ ④b 的夹具（2026-09-19 第三轮，`c70bb3f` 的视图）：③ 的搜索框 + 行内展开
+ * ===========================================================================
+ * ⚠️ 这里的字符串**全是 ASCII**：`--en` 那一遍会扫描产物里的汉字（⑪），
+ *    中文夹具会被它当成"英文界面上冒出了中文"。
+ * ⚠️★ 本脚本喂的是**已经解析好的形状**（`RankedEloData` / `RankedMatch` 字面量），
+ *    不是上游的原始响应 —— 所以"解析层永远产不出来"的东西在这里**到得了**：
+ *    下面第 4 场那个"`selfUuid` 不在 `players[]` 里"的行，`parseMatches` 会把它丢掉
+ *    （`types.ts` 的 `matchOutcome` 上写着），而它是
+ *    `ranked__detailoutcome--unknown` 与 `ranked.outcomeUnknown` 这两条
+ *    **今天唯一的消费者**（少了它，那份 CSS 规则与那条词条一条门禁都盖不到，
+ *    而 §5.70 那一族"渲染得出来却没有规则 / 有规则却没有渲染点"正是这么长出来的）。
+ */
+
+/**
+ * ★ ② 筛选的夹具：**四行**，其中两位昵称共享前缀 `Alpha`。
+ *
+ * ⚠️★ 为什么非要"四行 + 两位共享前缀"：下面的判据是**行数**与**每行的昵称**。
+ *    只有一个命中项时，"筛对了"与"筛过头了只剩一个"分不开；四行里命中两行 ⇒ `2` 这个数
+ *    与"没筛"（4）和"筛没了"（0）都不同，一个"永远印整张榜"或"永远印一行"的实现会当场红。
+ * ⚠️ 这四位**不在** `ELO_USERS` 里：那一份的四条既有断言（并列 `3,3,5`、`highest` 缺失…）
+ *    一个字都不许动 ⇒ 这里另起一份夹具，而不是往既有那份里塞人。
+ */
+const ELO_SEARCH: RankedEloData = {
+  season: ELO_SEASON,
+  users: [
+    { rank: 1, nickname: 'Alpha', eloRate: 2450, highest: 2500, phasePoint: 12 },
+    { rank: 2, nickname: 'AlphaTwo', eloRate: 2400, highest: null, phasePoint: 9 },
+    { rank: 3, nickname: 'Bravo', eloRate: 2350, highest: 2400, phasePoint: 0 },
+    { rank: 4, nickname: 'Charlie', eloRate: 2300, highest: 2350, phasePoint: 1 },
+  ],
+};
+
+/*
+ * 展开那一位的**两个 uuid**：判据（谁赢了 / 对手是谁 / 涨跌多少）全部以 `selfUuid` 为轴
+ * （`select.ts` 那三个纯函数的第一条判据），所以它们必须是**稳定的一组**，
+ * 而不是每场各写一遍。
+ */
+const ELO_SELF_UUID = '635f35ee69ed4f0c94ff26ece4818956';
+const ELO_RIVAL_UUID = '817a3f2e92da42ab89c64a787ce16d28';
+const ELO_THIRD_UUID = '0f1e2d3c4b5a69788796a5b4c3d2e1f0';
+
+/**
+ * ★★ 那条红线的**哨兵**：`players[].eloRate` 是**请求那一刻的现值**，
+ * 不是那一场当时的值（findings §2.1 底部三场实测）。
+ *
+ * ⚠️ 取一个"不可能出现在别处"的数：下面那条断言是"整个产物里**一个字符都没有**它"——
+ *    借用一个夹具里到处都是的数（比如 2349）会让那条断言**恒假**（它自己就把哨兵印出来了），
+ *    而恒假的守卫比没有守卫更坏（`docs/pending.md §5.63`）。
+ */
+const ELO_PRESENT_SENTINEL = 987654;
+
+/**
+ * ★ 一场比赛（展开那一栏的夹具工厂）。
+ *
+ * ⚠️★ 两位玩家的 `eloRate` **都是**哨兵：红线管的不只是"对手那一格" ——
+ *    把**自己**的现值印进某一行同样是错的（"他现在多少分"只该出现在卡片第一行那个 elo 里）。
+ * ⚠️ `changes[].eloRate`（赛后值）**刻意不是**哨兵：详情里印的是 `change`（涨跌量），
+ *    两者是不同的字段，让它们同值会让一条断言同时管两件不同的事。
+ * ⚠️ 两格种子、`vod`、`result`、`changes` 都可以整格换掉：下面四场各缺一样东西。
+ */
+function eloMatch(id: number, o: Partial<RankedMatch> = {}): RankedMatch {
+  return {
+    id,
+    type: 2,
+    season: 12,
+    date: 1_789_242_779,
+    players: [
+      { uuid: ELO_SELF_UUID, nickname: 'edcr', eloRate: ELO_PRESENT_SENTINEL, eloRank: 1 },
+      { uuid: ELO_RIVAL_UUID, nickname: 'Voxio', eloRate: ELO_PRESENT_SENTINEL, eloRank: 86 },
+    ],
+    result: { uuid: ELO_SELF_UUID, time: 387_772 }, // ⇒ 6:27.772（毫秒）
+    forfeited: false,
+    changes: [
+      { uuid: ELO_SELF_UUID, change: 12, eloRate: 2361 },
+      { uuid: ELO_RIVAL_UUID, change: -12, eloRate: 1745 },
+    ],
+    vod: [],
+    seedType: 'DESERT_TEMPLE',
+    bastionType: 'STABLES',
+    ...o,
+  };
+}
+
+/*
+ * ★★ 四场比赛 —— 四种**结果**与四种**比赛类型**各一次（附录 B.5 的要求）。
+ * ⚠️ 顺序就是产物里的顺序（下面那些逐格断言按**下标**比，所以顺序本身也是判据的一部分）。
+ * ⚠️ 结果与类型**不是**一一对应的（胜↔排位、平↔休闲、负↔私人房、读不到↔活动）：
+ *    一一对应的话，"结果那一格"与"类型那一格"互换了都能蒙过去。
+ */
+/** ① 胜（`result.uuid` 是他自己）+ 排位赛（type 2）+ 有涨跌 + 无录像 + 两个种子都在。 */
+const ELO_MATCH_WIN = eloMatch(13_279_218);
+/** ② 平（`result.uuid: null` —— 上游的写法，实测 3/100 行）+ 休闲（type 1）+ 跌 8 分 + **有**录像。 */
+const ELO_MATCH_DRAW = eloMatch(13_304_036, {
+  type: 1,
+  result: { uuid: null, time: 515_686 }, // ⇒ 8:35.686
+  changes: [{ uuid: ELO_SELF_UUID, change: -8, eloRate: 2341 }],
+  vod: [{ uuid: ELO_RIVAL_UUID, url: 'https://www.twitch.tv/videos/1', startsAt: 1_789_242_700 }],
+});
+/**
+ * ③ 负（`result.uuid` 是**对手**）+ 私人房（type 3）+ `changes: []` + 两个种子都 `null`。
+ * ⚠️ 这一场就是"那一格印 `—`、绝不印 `0`"的正例：私人房的 `changes[]` 实测恒为空数组
+ *    （32/32 行），而 `0` 的意思是"打了这一场、分数没变"—— 那是一句我们并不知道的话。
+ */
+const ELO_MATCH_PRIVATE = eloMatch(13_304_815, {
+  type: 3,
+  result: { uuid: ELO_RIVAL_UUID, time: 400_000 }, // ⇒ 6:40.000
+  changes: [],
+  seedType: null,
+  bastionType: null,
+  vod: [{ uuid: ELO_RIVAL_UUID, url: 'https://www.twitch.tv/videos/2', startsAt: 1_789_242_800 }],
+});
+/**
+ * ★★ ④ 读不到（`selfUuid` **不在** `players[]` 里）+ 活动（type 4）—— 这一档**解析层产不出来**
+ *    （`parseMatches` 会把这一行丢掉），只有手写的 `RankedMatch` 到得了它。
+ *
+ * ⚠️★ 为什么非要造它（本简报附录 B.4）：`ranked__detailoutcome--unknown` 有 CSS 规则、
+ *    `ranked.outcomeUnknown` 有词条，而今天**没有任何夹具**能走到那一档 ⇒
+ *    这一条规则与这一条词条是"两条没人验过的死代码"。判据必须是"他不在场 ⇒ 不编一句话"：
+ *    一个把兜底写成「负」的实现会在这里印出**一个假的败场**（而假的败场看起来完全正常）。
+ * ⚠️ `changes` 也跟着空：他不在 `players[]` 里却在 `changes[]` 里有记录，是一份自相矛盾的夹具。
+ */
+const ELO_MATCH_UNKNOWN = eloMatch(13_312_001, {
+  type: 4,
+  players: [
+    { uuid: ELO_RIVAL_UUID, nickname: 'Voxio', eloRate: ELO_PRESENT_SENTINEL, eloRank: 86 },
+    { uuid: ELO_THIRD_UUID, nickname: 'Thirdo', eloRate: ELO_PRESENT_SENTINEL, eloRank: 87 },
+  ],
+  result: { uuid: ELO_RIVAL_UUID, time: 61_000 }, // ⇒ 1:01.000
+  changes: [],
+});
+
+/** 展开出来的四场（顺序 = 产物里的顺序，逐格断言按下标比）。 */
+const ELO_MATCHES: RankedMatch[] = [
+  ELO_MATCH_WIN,
+  ELO_MATCH_DRAW,
+  ELO_MATCH_PRIVATE,
+  ELO_MATCH_UNKNOWN,
+];
+
+/**
+ * 展开那一位的汇总（`/users/{id}` 那份）。
+ * ⚠️ 六格全给真值：下面要逐格断言"这一格印的是**它自己**那个数"，缺一格的话
+ *    那一条只能断言「—」（那与"没渲染"分不开）。
+ * ⚠️ `season.bestTimeMs` 是**毫秒**（上游给的就是毫秒：387772 = 6:27.772）。
+ */
+const ELO_DETAIL_USER: RankedPlayerDetail = {
+  uuid: ELO_SELF_UUID,
+  nickname: 'edcr',
+  eloRate: 2349,
+  eloRank: 1,
+  seasonHighest: 2411,
+  season: { wins: 96, loses: 12, playedMatches: 108, bestTimeMs: 387_772 },
+  total: { wins: 800, loses: 700, playedMatches: 1500, bestTimeMs: 361_000 },
+};
+
+/** 「展开成功、四场比赛」那一屏（判据③ 与 ④、⑤ 都用它）。 */
+const ELO_DETAIL_READY: RankedDetailState = {
+  kind: 'ready',
+  data: { user: ELO_DETAIL_USER, matches: ELO_MATCHES },
+};
+
+/**
+ * 判据① 的夹具：展开的那一位**就在表里**（`ELO_DATA` 的第 2 名是 `Bravo`）。
+ * ⚠️ `data.user` 的昵称也跟着换成 `Bravo`（uuid 不动）：真实数据里 `detail.nickname`
+ *    与 `data.user.nickname` 是**同一个人**，让它们不一致等于让这份夹具替视图断言
+ *    一件不会发生的事。
+ */
+const ELO_READY_BRAVO: RankedDetailState = {
+  kind: 'ready',
+  data: { user: { ...ELO_DETAIL_USER, nickname: 'Bravo' }, matches: [ELO_MATCH_WIN] },
+};
+
+/** 判据② 的夹具：查询**命中**的就是他（`lookup.user.nickname === detail.nickname`）。 */
+const ELO_LOOKUP_FOUND: RankedLookup = { kind: 'found', user: ELO_DETAIL_USER };
+/** 三档里另外两档（它们**不是**"请求失败"，所以没有重试、也不清空榜）。 */
+const ELO_LOOKUP_NOT_FOUND: RankedLookup = { kind: 'not_found' };
+const ELO_LOOKUP_INVALID: RankedLookup = { kind: 'invalid_identifier' };
+
+/**
+ * ⚠️ 响应的昵称是 **`Edcr`**（首字母大写）：上游回的是**规范写法**（findings §6 最后一段，
+ *    `/users/voxio` 回 `Voxio`）⇒ 这一条能把"印**响应里**那个昵称"与"印用户敲进去那串"
+ *    分开 —— 后者是一个看起来完全正常的实现（两种写法都是真的，只是有一个不属于这一刻）。
+ */
+const ELO_LOOKUP_CASED: RankedLookup = {
+  kind: 'found',
+  user: { ...ELO_DETAIL_USER, nickname: 'Edcr' },
+};
+
 const WEEK_SEED = {
   overworld: '1234567890123456789',
   nether: '-4815162342',
@@ -783,9 +979,26 @@ const VIEW_KEYS = {
     'shown',
     'onLoadMore',
   ],
-  /* ⚠️★ `phase` 是 2026-09-19 加的（"并排显示赛段"）：少传它的表现是**静默**的
-     —— 排行榜照常渲染、只是顶上少一格，而"少了的那一格"与"上游没给"长得一样。 */
-  elo: ['elo', 'phase'],
+  /*
+   * ⚠️★ `phase` 是 2026-09-19 加的（"并排显示赛段"）：少传它的表现是**静默**的
+   *    —— 排行榜照常渲染、只是顶上少一格，而"少了的那一格"与"上游没给"长得一样。
+   * ⚠️★ 后面六格是 2026-09-19 **第三轮**（`c70bb3f` 的 ③ 搜索框 + 行内展开）加的，
+   *    它们与 `phase` **不是**同一种缺法：少传 `searchText` / `detail` 时这一节
+   *    不是"少画一块"，而是**当场崩**（`filterEloUsers(users, undefined)` 里的
+   *    `query.trim()`；T2 落地后、本轮收尾前的真实读数就是一个 `TypeError`）。
+   *    崩比静默好，但它红在一条栈上、而不是一条带人话的断言上；六格进了这张表之后，
+   *    "容器忘了接线"才是这条守卫该说的那句话（下面还有一条"六格缺任何一个都要能命中"的探针）。
+   */
+  elo: [
+    'elo',
+    'phase',
+    'searchText',
+    'onSearchTextChange',
+    'onSearchSubmit',
+    'lookup',
+    'detail',
+    'onToggleDetail',
+  ],
   /*
    * ⚠️★ 2026-09-19 加的四格是 ④ 的手输跳转与「本周」（同一类理由：视图是纯视图，
    *    框里的字与"上一句判定说了什么"必须由**本脚本用不同的 props** 喂进来 ——
@@ -897,6 +1110,59 @@ assert.throws(
   /onSearchChange/,
   '★★ 探针：`onSearchChange` 传了个不是函数的东西也要能命中（产物里看不出来，点下去什么都没有）',
 );
+/*
+ * ★★ 探针：③ 那六格（2026-09-19 第三轮）也要能被这道守卫抓到 —— 否则"六格都传了"
+ *    是一条永远不红的守卫，而这一节的红会重新变成一条**没有名字的 TypeError**
+ *    （本轮收尾前实测的就是它：`filterEloUsers` ← `RankedEloView`，见文件头与 ④ 那一节）。
+ * ⚠️★ 两刀，各砍一处，其余全给齐：
+ *   · `detail: undefined` ⇒ 抓"少传一格"（本栏目补这六格之前的真实形状就是它，只是那时
+ *     守卫的表里根本没有这几个键 ⇒ 它一个字都不查）；
+ *   · `onToggleDetail: 'nope'` ⇒ 抓"传了不是函数的东西"（`onToggleDetail: noop()` 那种写法）。
+ * ⚠️ 反过来，**没必要**给六格各写一条：守卫是逐个 key 查同一段代码，六条探针是同一条断言
+ *    抄六遍（本仓为这种"不可能红的重复"删过断言）。
+ */
+assert.throws(
+  () => {
+    assertPropsGiven(
+      {
+        ...chrome(),
+        elo: ELO_DATA,
+        phase: ELO_PHASE,
+        searchText: '',
+        onSearchTextChange: noop,
+        onSearchSubmit: noop,
+        lookup: null,
+        detail: undefined,
+        onToggleDetail: noop,
+      } as unknown as Record<string, unknown>,
+      [...CHROME_KEYS, ...VIEW_KEYS.elo],
+      '探针',
+    );
+  },
+  /detail/,
+  '★★ 探针：`detail` 没传要能命中（它是本轮六格里唯一一个"不传会静默少一整块界面"的）',
+);
+assert.throws(
+  () => {
+    assertPropsGiven(
+      {
+        ...chrome(),
+        elo: ELO_DATA,
+        phase: ELO_PHASE,
+        searchText: '',
+        onSearchTextChange: noop,
+        onSearchSubmit: noop,
+        lookup: null,
+        detail: null,
+        onToggleDetail: 'nope',
+      } as unknown as Record<string, unknown>,
+      [...CHROME_KEYS, ...VIEW_KEYS.elo],
+      '探针',
+    );
+  },
+  /onToggleDetail/,
+  '★★ 探针：`onToggleDetail` 不是函数也要能命中（产物里与接好线的**一模一样**，点下去什么都不发生）',
+);
 
 /** 四支共用的那几格（容器给的是**同一个对象**的四个字面量，见 `routes/Ranked.tsx`）。 */
 function chrome(o: Partial<RankedChromeProps> = {}): RankedChromeProps {
@@ -986,7 +1252,28 @@ const renderLive = (o: Partial<RankedLiveViewProps> = {}, where = '对局'): str
 };
 
 const renderElo = (o: Partial<RankedEloViewProps> = {}, where = '排行榜'): string => {
-  const props: RankedEloViewProps = { ...chrome(), elo: ELO_DATA, phase: ELO_PHASE, ...o };
+  const props: RankedEloViewProps = {
+    ...chrome(),
+    elo: ELO_DATA,
+    phase: ELO_PHASE,
+    /*
+     * ★★ ③ 那六格交互状态的**默认值**（2026-09-19 第三轮，`c70bb3f`）：空搜索词、
+     *    没查过、没展开 —— 也就是容器初始态给的那一份。
+     * ⚠️★ 不写这几格的话**这一节根本跑不到**：视图对 `searchText` 调 `filterEloUsers`，
+     *    而那个函数对 `undefined` 会 `query.trim()` 当场抛 `TypeError`
+     *    ⇒ `check:all` 从第一个 `renderElo()` 起就断，**后面十一个自检一个都不跑**
+     *    （`check:all` 是 `&&` 串起来的）。这正是本轮要收的那条尾。
+     * ⚠️ 下面每一个 `...o` 都要能把它们整格换掉：⑨ 的每一条断言都是"换一格 props、
+     *    看产物变成什么样"，所以默认值必须是**可以被覆盖**的，而不是合并进别的含义里。
+     */
+    searchText: '',
+    onSearchTextChange: noop,
+    onSearchSubmit: noop,
+    lookup: null,
+    detail: null,
+    onToggleDetail: noop,
+    ...o,
+  };
   assertPropsGiven(
     props as unknown as Record<string, unknown>,
     [...CHROME_KEYS, ...VIEW_KEYS.elo],
@@ -1928,9 +2215,19 @@ assert.deepEqual(
   ].map((key) => fresh(key)),
   '★★ 五个列头（排名 / 昵称 / elo / 最高 / 阶段分），顺序固定',
 );
+/*
+ * ⚠️★ 每一格取的是**可见文字**（`textOf` 剥掉标签），不是那一段原始 HTML。
+ *    2026-09-19 第三轮（`c70bb3f`）起昵称那一格从纯文本变成了
+ *    `<button class="ranked__playerbtn">`（用户点它展开这位玩家）⇒ 用 `flat()`
+ *    （它只还原实体、不剥标签）读那一格会拿到一串标记，下面那条"正向对照"就红在自己身上。
+ *    ⚠️ 这不是放宽判据：其余四格本来就没有标签，`textOf` 与 `flat` 对它们逐字同值，
+ *    而那几格原先的判据（`'1'` / `—` / `0`）一个字都没改、照旧绿 —— 等价性由它们自己证明。
+ */
+const cellsOfRow = (row: string): string[] =>
+  [...row.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((c) => textOf(c[1] ?? ''));
 const eloRows = [...eloTable.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
   .slice(1) // 第一行是表头
-  .map((m) => [...(m[1] ?? '').matchAll(/<td>([\s\S]*?)<\/td>/g)].map((c) => flat(c[1] ?? '')));
+  .map((m) => cellsOfRow(m[1] ?? ''));
 assert.equal(
   eloRows.length,
   ELO_USERS.length,
@@ -2031,6 +2328,14 @@ assert.equal(
   '★★ 赛季与赛段必须在**同一行**里（`.ranked__meta` 的那一格就是"并排"这件事的判据）',
 );
 /*
+ * ⚠️★ 上面那一条从 2026-09-19 第三轮（`c70bb3f` 的 ③）起**同时是另一件事的守卫**：
+ *    那一轮加的两块读数（展开的卡片 `ranked__detailstats`、查询结果的 `ranked__lookupstats`）
+ *    **不许**复用 `.ranked__meta` —— 谁把一行读数塞进来，"赛季与赛段在同一行"这句话就变成
+ *    两句都成立、而其中一句是别人的话（视图里那两处注释写着同一条）。
+ *    ⚠️ 它只管**这一屏**（正常态）；展开/查询那两屏上的同一件事由 ④b⑥ 末尾那两条钉着
+ *    （那两屏的产物只有 ④b 里渲染得出来）。
+ */
+/*
  * ★★ 赛段那一格读不到时**不许**让排行榜变空，也不许静默消失：
  *    说的是「赛段信息暂时读不到」，而赛季那一行与整张榜照旧。
  *    ⚠️ 这是容器走辅助路径（`fatal: false`）的那一半 —— 界面上要有话说，
@@ -2117,7 +2422,840 @@ assert.ok(
     .includes(fresh('ranked.season', { n: ELO_SEASON.number })),
   '★ 空集合时赛季那一行照常在（"空"是赛季的事，不是这一页坏了）',
 );
-ok('排行榜：五列逐行 + 并列 3,3,5 + 赛季起止 + highest 缺失 + 前 100 + 空态');
+ok(`排行榜：五列逐行 + 并列 3,3,5 + 赛季起止 + highest 缺失 + 前 ${String(RANKED_ELO_TOP)} + 空态`);
+
+// ---------------------------------------------------------------------------
+console.log('④b ★ Elo 排行榜（续）：搜索框 / 三档查询 / 展开的四个画面 / 三条兜底位置 / 那条红线');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一节是 2026-09-19 第三轮（`c70bb3f` 的视图）**唯一**的自动化判据。
+ *
+ * 用户原话（与 ② 的筛选条同一句需求的两半）：
+ *   「修改"ranked实时信息"的"排行榜"栏目，**点开后能查看最近比赛的情况/数据等**，
+ *     另外在**顶部设置搜索框允许用户自行搜索玩家**。」
+ *
+ * ⚠️★ 先写清它**证得了什么、证不了什么**（免得下一个人高估它）：
+ *   · 那三格状态（搜索词 / 那一次查询 / 展开那一位）**住在容器里**（`routes/Ranked.tsx`），
+ *     而容器读 `window.location` ⇒ 在 Node 里渲染不了（文件头第一节）⇒ 这里钉的是
+ *     "**视图拿着这三格状态渲染成什么样**"；
+ *   · 「打字真的筛了」「点昵称真的展开了」「回车真的查了」与「展开真的只发两次请求、
+ *     第二次点同一个人不再发」是**另一件事** —— `renderToStaticMarkup` 不跑 effect、
+ *     不点击、不打字，它们逐条写在 `docs/pending.md §5.100`（每条都写着要人做什么）；
+ *   · 这里能证的是：控件在不在、受控不受控（换一格 props 产物跟着换）、三档与四个画面
+ *     各说各的话且互斥、详情落在三条判据各自那一处、以及那条**红线**
+ *     （`players[].eloRate` 那个现值一个字符都没被印出来）。
+ */
+
+/* ---- ① 搜索框的结构（"打字真的筛了"证不了，见本节开头那一段） ---- */
+const eloBase = renderElo({}, '排行榜·搜索框（起点）');
+const searchForm = elementsWithClass(eloBase, 'ranked__search')[0] ?? '';
+assert.notEqual(
+  searchForm,
+  '',
+  '★★ 顶部有一个 `<form class="ranked__search">`（用户的"在顶部设置搜索框"）',
+);
+assert.equal(/^<form\b/.test(searchForm), true, '★ 它是一个 `<form>`（"回车能查"的结构前提）');
+assert.equal(
+  elementsWithClass(eloBase, 'ranked__search').length,
+  1,
+  '★★ 搜索框**只有一处**（两处会各自漂，而用户不知道该用哪一个）',
+);
+const searchFormTag = /<form\b[^>]*>/.exec(searchForm)?.[0] ?? '';
+assert.equal(
+  attrOf(searchFormTag, 'role'),
+  'search',
+  '★ `role="search"`：这一句是搜索地标（`biome-ignore` 那处豁免的理由写在视图里）',
+);
+const eloSearchInput = /<input\b[^>]*>/.exec(searchForm)?.[0] ?? '';
+assert.notEqual(eloSearchInput, '', '★★ 那个表单里有一个输入框');
+assert.equal(
+  attrOf(eloSearchInput, 'type'),
+  'text',
+  '★★ `type="text"`（number 那一类会把字母吃掉，而用户敲的就是昵称）',
+);
+const searchButtons = buttons(searchForm);
+assert.equal(
+  searchButtons.length,
+  1,
+  `★★ 那个表单里恰好一颗按钮（找到 ${String(searchButtons.length)} 颗）`,
+);
+assert.equal(searchButtons[0]?.text, fresh('ranked.searchSubmit'), '★★ 它的文字是「查询」');
+assert.equal(
+  /(?:^|\s)type="submit"(?:\s|$)/.test(searchButtons[0]?.attrs ?? ''),
+  true,
+  '★★ 它是 `type="submit"`：**回车提交表单**靠的就是它（`type="button"` 提交不了，而产物里看不出差别）',
+);
+/*
+ * ⚠️★ `sr-only` 的 label 必须用 `htmlFor`/`id` 与那个输入框**配对**：占位符在输入第一个字
+ *    之后就没了，label 是控件**唯一**的名字 —— 配错（`for` 指向别的 id）会让读屏软件念出
+ *    一个无名输入框，而产物里它与配对正确的**长得一模一样**。
+ */
+const searchId = attrOf(eloSearchInput, 'id') ?? '';
+assert.notEqual(searchId, '', '★★ 输入框有 `id`（label 靠它配对）');
+const searchLabel = /<label\b[^>]*>/.exec(searchForm)?.[0] ?? '';
+assert.equal(
+  attrOf(searchLabel, 'for'),
+  searchId,
+  '★★ `<label class="sr-only" for>` 与输入框的 `id` **成对**（配对错了读屏软件念不出名字）',
+);
+assert.equal(
+  hasClassOf(searchLabel, 'sr-only'),
+  true,
+  '★ 那颗 label 走 `sr-only`：可见文字交给占位符，标签不该再占一行',
+);
+assert.equal(
+  textOf(elementsWithClass(searchForm, 'sr-only')[0] ?? ''),
+  fresh('ranked.searchLabel'),
+  '★ 它的文字是 `ranked.searchLabel`（占位符不是它的替代品）',
+);
+/*
+ * ★★ 受控：`value` 就是传进来的 `searchText`（**正向对照**：换一个值，产物里那个 `value`
+ *    跟着换）。⚠️ 这是"打字真的进了容器、又真的回到输入框"在本脚本里能证的**一半**：
+ *    另一半（`onChange` 真的接到了容器）在 `pending.md §5.100`。
+ */
+assert.equal(attrOf(eloSearchInput, 'value'), '', '★ 初始态：`value` 是空串（容器给的就是它）');
+const eloTyped = renderElo({ searchText: 'Alph' }, '排行榜·框里打着 Alph');
+const typedInput =
+  /<input\b[^>]*>/.exec(elementsWithClass(eloTyped, 'ranked__search')[0] ?? '')?.[0] ?? '';
+assert.equal(
+  attrOf(typedInput, 'value'),
+  'Alph',
+  '★★ 输入框是**受控**的：`value` 就是传进来的 `searchText`（打了字界面上却不动是最坏的一种静默）',
+);
+assert.equal(
+  textOf(elementsWithClass(eloBase, 'ranked__searchhint')[0] ?? ''),
+  fresh('ranked.searchHint'),
+  '★★ 紧贴在框下面那一条说明书（它说的是两个入口**各自**的代价：打字=本地筛、回车=精确查）',
+);
+/*
+ * ★★ `onSubmit` + `preventDefault`：**产物里一个字都看不到**（SSR 不渲染事件处理器，
+ *    文件头那一节写着），所以这一条只能读**源码**的形状 —— 与 `liverender.tsx` 的 F2 守卫
+ *    （读 `routes/Live.tsx` 判"列表不再由 loading 状态决定画不画"）同一手法，不是第二套机制。
+ * ⚠️★ 为什么必须先**剥注释**：`RankedPanels.tsx` 里那段"为什么必须 preventDefault"的说明
+ *    逐字写着 `onSubmit` 与 `preventDefault` ⇒ 不剥注释的话，这一条会在"表单根本没接
+ *    `onSubmit`"的情况下照样绿（`liverender.tsx` 那一节踩过同一个坑，那里写着）。
+ * ⚠️ 判据两半 + 一条能红证明（喂一个没有 `onSubmit` 的样例，它**必须**判 false）。
+ */
+const PANELS_SOURCE = readFileSync(
+  new URL('../src/components/RankedPanels.tsx', import.meta.url),
+  'utf8',
+).replace(/\/\*[\s\S]*?\*\//g, '');
+/**
+ * ★ 某个 `<form>` 上挂着 `onSubmit`，而且那一格的 handler 里真的调了 `preventDefault()`。
+ *
+ * ⚠️ 判据锚在**类名**上（`anchor`），所以"另一个表单接好了、这一个没接"分得开。
+ * ⚠️ `[^}]*` 不肯跨过 `}`：它把 `preventDefault()` 钉在**那一格的块体里**，
+ *    而不是"这个表单里的某处恰好出现过这个词"。
+ */
+const formPreventsDefault = (source: string, anchor: string): boolean => {
+  const at = source.indexOf(anchor);
+  const end = source.indexOf('</form>', at);
+  if (at < 0 || end < at) return false;
+  return (
+    /onSubmit=\{/.test(source.slice(at, end)) &&
+    /onSubmit=\{[^}]*preventDefault\(\)/.test(source.slice(at, end))
+  );
+};
+assert.equal(
+  formPreventsDefault(PANELS_SOURCE, 'className="ranked__search"'),
+  true,
+  '★★ 搜索框那个 `<form>` 上有 `onSubmit`，且 handler 里 `preventDefault()` —— 不写的话表单会按默认行为导航到当前 URL（整页刷新，SPA 里的状态全丢）',
+);
+assert.equal(
+  formPreventsDefault(PANELS_SOURCE, 'className="ranked__weekjump"'),
+  true,
+  '★★ ④ 那个手输周数的框同理（源码级判据，产物里看不到 —— 本脚本末尾那段覆盖边界原来只说"结构前提"，这一条把它兑现）',
+);
+assert.equal(
+  formPreventsDefault(
+    '<form onSubmit={(event) => {\n event.preventDefault();\n foo();\n}}>',
+    'className="x"',
+  ),
+  false,
+  '★ 能红证明：锚点对不上时判 false（否则上面两条只是"源码里出现过这两个词"的巧合）',
+);
+assert.equal(
+  formPreventsDefault('<form className="x" onSubmit={() => foo()}>', 'className="x"'),
+  false,
+  '★★ 能红证明：有 `onSubmit` 但**没有** `preventDefault()` 的形态**不**被认出来（上面那半条判据真的有区分力）',
+);
+/*
+ * ★ "在顶部"这件事的判据只能是**位置**（产物里那几段文字与改版前一模一样）：
+ *   标题 → 搜索框 → 说明书 → 赛季那一行。
+ * ⚠️ 锚点必须**唯一**：这一屏（正常态、没有 errorText）里 `.ranked__meta` 只有一个
+ *    （失败那一屏上 `RankedRetry` 自己还会渲染一只）⇒ 先用 `metaOf` 数一遍再拿它当锚点。
+ */
+assert.equal(
+  metaOf(eloBase).length,
+  1,
+  '★ 探针：正常那一屏里 `.ranked__meta` 只有一处（否则下面那条位置比较会命中更靠前的另一处）',
+);
+for (const [what, anchor] of [
+  ['面板标题', '<h2 class="ranked__title">'],
+  ['搜索框', '<form class="ranked__search"'],
+  ['说明书', 'ranked__searchhint'],
+  ['赛季那一行', 'ranked__meta'],
+] as const) {
+  assert.ok(eloBase.indexOf(anchor) > 0, `★ ${what}在产物里（否则下面那几条位置比较是空跑）`);
+}
+assert.ok(
+  eloBase.indexOf('<form class="ranked__search"') > eloBase.indexOf('<h2 class="ranked__title">'),
+  '★ 搜索框在面板标题**之后**（标题是这一块的名字，搜索框是它的内容）',
+);
+assert.ok(
+  eloBase.indexOf('<form class="ranked__search"') < eloBase.indexOf('ranked__searchhint'),
+  '★★ 而且在它自己那句说明书**之前**（说明书紧贴在框下面）',
+);
+assert.ok(
+  eloBase.indexOf('ranked__searchhint') < eloBase.indexOf('ranked__meta'),
+  '★★ 整块搜索框都在赛季那一行与成绩表**之前** —— 用户要的是"**顶部**设置搜索框"',
+);
+ok(
+  '④b① 搜索框：form[role=search] + 输入框 + submit + sr-only label 配对 + 受控 + 源码里的 onSubmit/preventDefault + 在顶部',
+);
+
+/* ---- ② 本地筛选：打字 ⇒ 在**已经取到的那份榜**上筛（上游没有搜索端点，findings §7）---- */
+/**
+ * 产物里**数据行**的条数：`<tr>`（**不带属性**的那些）减去表头那一行。
+ *
+ * ⚠️★ 判据必须数**行**，不能写成"产物里包含某串字"：后者对"印了 4 行"与"印了 2 行"
+ *    完全一样 —— 那正是本仓最贵的一类缺陷（简报开头那句）。
+ * ⚠️ 展开那一行是 `<tr class="ranked__detailrow">`（**带属性**），本函数不数它 ——
+ *    "数据行"说的不是它（既有那条 150 行的断言用的也是这个写法）。
+ * ⚠️ 没有表时是 0：筛没了那一档**整张表都不渲染**（见视图里那两段注释），不是"渲染一张空表"。
+ */
+const eloDataRows = (html: string): number => {
+  const table = elementsWithClass(html, 'ranked__table')[0];
+  return table === undefined ? 0 : [...table.matchAll(/<tr>/g)].length - 1;
+};
+/** 表格里每一行的昵称（昵称那一格是一颗按钮）。 */
+const eloRowNicknames = (html: string): string[] =>
+  elementsWithClass(elementsWithClass(html, 'ranked__table')[0] ?? '', 'ranked__playerbtn').map(
+    (button) => textOf(button),
+  );
+const eloFilterBase = renderElo({ elo: ELO_SEARCH }, '排行榜·筛选夹具（不筛）');
+assert.equal(
+  eloDataRows(eloFilterBase),
+  ELO_SEARCH.users.length,
+  `★ 不筛时四行都在（下面每一条"筛出几行"的对照组；夹具里 ${String(ELO_SEARCH.users.length)} 行）`,
+);
+assert.deepEqual(
+  eloRowNicknames(eloFilterBase),
+  ['Alpha', 'AlphaTwo', 'Bravo', 'Charlie'],
+  '★★ 四行的昵称逐条、**照上游顺序**（筛选不重排：重排会让排名列与行序对不上）',
+);
+/*
+ * ★ 传**前缀** ⇒ 命中**两行**（`Alpha` / `AlphaTwo`，夹具里刻意让两位共享前缀）。
+ * ⚠️★ 判据是**行数**与**每行的昵称**，不是"产物里有 Alpha 这串字"：四行的表里本来就有一行
+ *    叫 Alpha ⇒ 那种写法对"筛完全没生效"与"筛对了"一视同仁。
+ * ⚠️ `2` 这个数与"没筛"（4）和"筛没了"（0）都不同 ⇒ 一个"永远印整张榜"或"永远印一行"
+ *    的实现会当场红。
+ */
+const eloFilterHit = renderElo({ elo: ELO_SEARCH, searchText: 'Alpha' }, '排行榜·筛 Alpha');
+assert.equal(
+  eloDataRows(eloFilterHit),
+  2,
+  '★★ 前缀命中 ⇒ 恰好 **2** 个数据行（四行里两位共享前缀）',
+);
+assert.deepEqual(
+  eloRowNicknames(eloFilterHit),
+  ['Alpha', 'AlphaTwo'],
+  '★★ 而且就是那两位（逐条比昵称，不是"某处有 Alpha"）',
+);
+const eloFilterCase = renderElo({ elo: ELO_SEARCH, searchText: 'alphatwo' }, '排行榜·筛 alphatwo');
+assert.equal(
+  eloDataRows(eloFilterCase),
+  1,
+  '★ 忽略大小写：`alphatwo` ⇒ 1 行（纯函数那一半逐值钉在 `services/api/src/ranked-shared.test.ts`，这里钉"视图真的把搜索词交给了它"）',
+);
+assert.deepEqual(eloRowNicknames(eloFilterCase), ['AlphaTwo'], '★ 那一行就是 `AlphaTwo`');
+const eloFilterNone = renderElo({ elo: ELO_SEARCH, searchText: 'zzz' }, '排行榜·筛没了');
+assert.equal(eloDataRows(eloFilterNone), 0, '★★ 谁都匹配不上 ⇒ **一个数据行都没有**');
+assert.deepEqual(
+  elementsWithClass(eloFilterNone, 'ranked__table'),
+  [],
+  '★★ 而且**整张表不渲染**（只剩表头的一张空表看起来像坏了，与空集合那一档同一条）',
+);
+assert.equal(
+  elementsWithClass(eloFilterNone, 'ranked__empty').length,
+  1,
+  '★ 恰好一句空态（"上游没人"与"你筛没了"不许同时出现）',
+);
+assert.equal(
+  textOf(elementsWithClass(eloFilterNone, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.eloFilterEmpty', { q: 'zzz' }),
+  '★★ 那一句是 `eloFilterEmpty`（"你筛没了"，而且带着那个搜索词）',
+);
+/*
+ * ★★ 探针：`eloFilterEmpty` 与 `eloEmpty`（「这个赛季还没有人上榜。」）**必须不是同一句话**。
+ * ⚠️ 少了它，上面那条在一个"上游本来就空"的夹具上也会绿 —— 而两句混用会让用户把
+ *    "自己筛没了"读成"上游没人"，于是去别处找问题（该做的只是把搜索框里那个词删掉）。
+ */
+assert.notEqual(
+  fresh('ranked.eloFilterEmpty', { q: 'zzz' }),
+  fresh('ranked.eloEmpty'),
+  '★★★ 探针：两句词条本身不同（否则上面那条判据分不开"筛没了"与"上游空了"）',
+);
+/*
+ * ★★ 「空榜 + 搜索词」这一档：两句空态的**优先级**（视图里是先判 `users.length === 0`）。
+ * ⚠️ 上面那两条各证一半，**都**证明不了"先判哪一个" —— 一个把两个分支调换的实现会在
+ *    "上游本来就空、而搜索框里恰好有字"时印出「没有匹配「…」的玩家。」，
+ *    也就是**把上游的事说成用户自己筛出来的**（用户于是去改搜索词，而榜本来就是空的）。
+ */
+const eloEmptyFiltered = renderElo(
+  { elo: ELO_EMPTY, searchText: 'Alpha' },
+  '排行榜·上游空了 + 搜索框里有字',
+);
+assert.equal(
+  textOf(elementsWithClass(eloEmptyFiltered, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.eloEmpty'),
+  '★★ 上游本身就空（这一屏还带着一个搜索词）⇒ 仍然说「这个赛季还没有人上榜。」',
+);
+assert.equal(
+  textOf(eloEmptyFiltered).includes(fresh('ranked.eloFilterEmpty', { q: 'Alpha' })),
+  false,
+  '★★ 而且**不许**说「没有匹配「Alpha」的玩家。」（那会把"上游没人"说成"你筛没了"）',
+);
+ok('④b② 本地筛选：行数与每行的昵称逐条（两位共享前缀）+ 忽略大小写 + 筛没了那一句 + 空榜的优先级');
+
+/* ---- ③ 三档查询：每一档只说自己的那一句，`lookup: null` 那一块整个不渲染 ---- */
+assert.deepEqual(
+  elementsWithClass(eloBase, 'ranked__lookup'),
+  [],
+  '★★ `lookup: null`（这一页还没查过）⇒ 那一块**整个不渲染**（不是渲染一个空框：多一行空白会让人以为上面那一步失败了）',
+);
+const eloLookupFound = renderElo({ lookup: ELO_LOOKUP_FOUND }, '排行榜·查询命中');
+assert.equal(
+  elementsWithClass(eloLookupFound, 'ranked__lookup').length,
+  1,
+  '★★ 命中 ⇒ 那一块在、且只有一处',
+);
+const lookupBox = elementsWithClass(eloLookupFound, 'ranked__lookup')[0] ?? '';
+const lookupButtons = elementsWithClass(lookupBox, 'ranked__playerbtn');
+assert.equal(lookupButtons.length, 1, '★★ 命中 ⇒ 恰好一颗昵称按钮（点它展开这位玩家）');
+assert.equal(
+  textOf(lookupButtons[0] ?? ''),
+  flat(ELO_DETAIL_USER.nickname),
+  '★★ 那一格印的是**响应里**那个昵称（上游回的是规范写法，findings §6）',
+);
+/*
+ * ★★ 三格读数**逐格**断言（用户说的"数据"就是这三样）。
+ * ⚠️ 期望值写**字面量**（2349 / 1 / 96·12）：从夹具现算的话，"印的是同一个数"就变成了
+ *    同义反复 —— 夹具改了而实现没跟上时，两边会一起变。
+ */
+assert.deepEqual(
+  [
+    ...(elementsWithClass(lookupBox, 'ranked__lookupstats')[0] ?? '').matchAll(
+      /<span>([\s\S]*?)<\/span>/g,
+    ),
+  ].map((m) => textOf(m[0])),
+  [
+    fresh('ranked.detailElo', { elo: 2349 }),
+    fresh('ranked.detailRank', { rank: 1 }),
+    fresh('ranked.detailSeasonRecord', { wins: 96, loses: 12 }),
+  ],
+  '★★ 查询结果的三格读数逐格：elo 2349 / 排名 1 / 本赛季 96 胜 12 负（三个数都来自响应）',
+);
+/*
+ * ★ 印的是**响应里**那个昵称，不是用户敲进去那串：搜索词是 `edcr`，响应里是 `Edcr`
+ *   （上游对 `/users/voxio` 回的正是 `Voxio`，findings §6 最后一段）⇒ 一个"印查询词"的
+ *   实现会在这里红，而它印出来的那串**看起来完全正常**。
+ */
+const eloLookupCased = renderElo(
+  { searchText: 'edcr', lookup: ELO_LOOKUP_CASED },
+  '排行榜·查询命中（响应里是 Edcr）',
+);
+assert.equal(
+  textOf(
+    elementsWithClass(
+      elementsWithClass(eloLookupCased, 'ranked__lookup')[0] ?? '',
+      'ranked__playerbtn',
+    )[0] ?? '',
+  ),
+  'Edcr',
+  '★★ 印的是响应里那个昵称（`Edcr`），不是用户敲进去的那串（`edcr`）',
+);
+const eloLookupNotFound = renderElo({ lookup: ELO_LOOKUP_NOT_FOUND }, '排行榜·查无此人');
+assert.equal(
+  textOf(elementsWithClass(eloLookupNotFound, 'ranked__lookupmsg')[0] ?? ''),
+  fresh('ranked.lookupNotFound'),
+  '★★ 查无此人 ⇒ 「没有这个玩家。」',
+);
+const eloLookupInvalid = renderElo({ lookup: ELO_LOOKUP_INVALID }, '排行榜·昵称不合法');
+assert.equal(
+  textOf(elementsWithClass(eloLookupInvalid, 'ranked__lookupmsg')[0] ?? ''),
+  fresh('ranked.lookupInvalid'),
+  '★★ 昵称不合法 ⇒ 「这个昵称不合法（太长或格式不对）。」',
+);
+/*
+ * ★★ 三档**互斥**：每一档都断言另外那两句**不在**产物里，而且"命中"那一档还要求
+ *    没有 `lookupmsg`、"没命中"那两档要求没有读数格。
+ * ⚠️★ 少了这一条，一个"永远印同一句"的实现会把上面三条全喂绿（第一句对、第二条也在，
+ *    而"两句都在"比"少一句"更难被肉眼看见）。
+ */
+assert.equal(
+  textOf(eloLookupFound).includes(fresh('ranked.lookupNotFound')),
+  false,
+  '★★ 命中那一档**不许**同时说「没有这个玩家。」',
+);
+assert.equal(
+  textOf(eloLookupFound).includes(fresh('ranked.lookupInvalid')),
+  false,
+  '★★ 命中那一档**不许**同时说「这个昵称不合法…」',
+);
+assert.equal(
+  elementsWithClass(eloLookupFound, 'ranked__lookupmsg').length,
+  0,
+  '★★ 命中那一档整条 `lookupmsg` 都不渲染（它只服务另外两档）',
+);
+assert.equal(
+  textOf(eloLookupNotFound).includes(fresh('ranked.lookupInvalid')),
+  false,
+  '★★ 查无此人那一档**不许**同时说「这个昵称不合法…」',
+);
+assert.equal(
+  textOf(eloLookupInvalid).includes(fresh('ranked.lookupNotFound')),
+  false,
+  '★★ 昵称不合法那一档**不许**同时说「没有这个玩家。」',
+);
+for (const [where, html] of [
+  ['查无此人', eloLookupNotFound],
+  ['昵称不合法', eloLookupInvalid],
+] as const) {
+  /*
+   * ⚠️ 下面两条都**只看 `.ranked__lookup` 那一块**：榜上每一行的昵称也是一颗
+   *    `.ranked__playerbtn`（五颗），不划范围的话这两条数的是"整张榜有没有按钮"。
+   */
+  const missBox = elementsWithClass(html, 'ranked__lookup')[0] ?? '';
+  assert.notEqual(missBox, '', `★ ${where}：那一块在产物里（否则下面两条是空跑）`);
+  assert.equal(
+    elementsWithClass(missBox, 'ranked__lookupstats').length,
+    0,
+    `★★ ${where}：那一档**不渲染读数格**（没有命中的人，读数格就是一句我们并不知道的话）`,
+  );
+  assert.equal(
+    elementsWithClass(missBox, 'ranked__playerbtn').length,
+    0,
+    `★★ ${where}：也**不给**昵称按钮（一颗点下去只会得到同一句话的按钮比没有按钮更坏）`,
+  );
+}
+ok('④b③ 三档查询：三句各自说自己的 + 互斥（含"没有读数格"那一半）+ lookup: null 整块不渲染');
+
+/* ---- ④ 展开的四个画面：loading / failed / ready 空 / ready 非空 ---- */
+const eloDetailLoading = renderElo(
+  { detail: { nickname: 'edcr', state: { kind: 'loading' } } },
+  '排行榜·展开·加载中',
+);
+assert.equal(
+  elementsWithClass(eloDetailLoading, 'ranked__detail').length,
+  1,
+  '★ 加载中那一档卡片也在（用户点过一下，屏幕上必须有回应）',
+);
+assert.equal(
+  hasText(eloDetailLoading, t('common.loading')),
+  true,
+  '★★ 加载中 ⇒ **复用**既有的「加载中…」那一句（不新写一句）',
+);
+assert.deepEqual(
+  elementsWithClass(eloDetailLoading, 'ranked__detailfailed'),
+  [],
+  '★ 而且**不**说"读不到"（"慢"与"挂了"必须分得开）',
+);
+const eloDetailFailed = renderElo(
+  { detail: { nickname: 'edcr', state: { kind: 'failed' } } },
+  '排行榜·展开·读不到',
+);
+assert.equal(
+  textOf(elementsWithClass(eloDetailFailed, 'ranked__detailfailed')[0] ?? ''),
+  fresh('ranked.detailFailed'),
+  '★★ 读不到 ⇒ `ranked__detailfailed` 那一句',
+);
+assert.equal(
+  elementsWithClass(eloDetailFailed, 'ranked__empty').length,
+  0,
+  '★★★ 而**不**说「最近没有比赛。」—— 一个该重试、一个是事实，两句必须互斥',
+);
+assert.notEqual(
+  fresh('ranked.detailFailed'),
+  fresh('ranked.detailNoMatches'),
+  '★★ 探针：那两句词条本身不同（否则上面那条互斥是空跑）',
+);
+assert.equal(
+  hasText(eloDetailFailed, t('common.loading')),
+  false,
+  '★ 也不说"加载中"（两个画面各自有话说）',
+);
+const eloDetailNoMatches = renderElo(
+  {
+    detail: {
+      nickname: 'edcr',
+      state: { kind: 'ready', data: { user: ELO_DETAIL_USER, matches: [] } },
+    },
+  },
+  '排行榜·展开·最近没有比赛',
+);
+assert.equal(
+  textOf(elementsWithClass(eloDetailNoMatches, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.detailNoMatches'),
+  '★★ 0 场 ⇒ 「最近没有比赛。」（复用既有空态类：这是"上游说他没有比赛"，不是"我们没读到"）',
+);
+assert.equal(
+  textOf(elementsWithClass(eloDetailNoMatches, 'ranked__detailtitle')[0] ?? ''),
+  fresh('ranked.detailRecent', { n: 0 }),
+  '★★ 那个 N 读的是**手上这份数组的长度**（不是请求里那个 `count`：用它会印出「最近 10 场」而下面只有 0 条）',
+);
+assert.deepEqual(
+  elementsWithClass(eloDetailNoMatches, 'ranked__detailmatch'),
+  [],
+  '★★ 而且一场都不渲染（数节点）',
+);
+assert.equal(
+  elementsWithClass(eloDetailNoMatches, 'ranked__detailfailed').length,
+  0,
+  '★★ 反方向也互斥：有话说的时候不说"读不到"',
+);
+const eloDetailReady = renderElo(
+  { detail: { nickname: 'edcr', state: ELO_DETAIL_READY } },
+  '排行榜·展开·四场',
+);
+const detailMatches = elementsWithClass(eloDetailReady, 'ranked__detailmatch');
+assert.equal(
+  detailMatches.length,
+  ELO_MATCHES.length,
+  `★★★ 场次数 === 夹具的场次数（**数节点**，不是"包含某串字"）：夹具 ${String(ELO_MATCHES.length)} 场，产物里 ${String(detailMatches.length)} 个 \`.ranked__detailmatch\``,
+);
+assert.equal(
+  textOf(elementsWithClass(eloDetailReady, 'ranked__detailtitle')[0] ?? ''),
+  fresh('ranked.detailRecent', { n: ELO_MATCHES.length }),
+  '★★ 标题那个 N 也是 4（它读的是同一个数组的长度）',
+);
+/**
+ * 一场里某一格的可见文字；那一格不存在时回一个**不可能印出来**的记号
+ * （回空串的话，"这一格没渲染"与"这一格渲染成空"就分不开了 —— 而后者才是真缺陷）。
+ */
+const cellOf = (matchHtml: string, cls: string): string => {
+  const el = elementsWithClass(matchHtml, cls)[0];
+  return el === undefined ? '(absent)' : textOf(el);
+};
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailopp')),
+  ['Voxio', 'Voxio', 'Voxio', fresh('ranked.unknown')],
+  '★★ 对手昵称逐条：三场是对手，第 4 场（他不在 `players[]` 里）⇒「—」，**不**顺手把第一个别人当成他的对手',
+);
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailoutcome')),
+  ['ranked.outcomeWin', 'ranked.outcomeDraw', 'ranked.outcomeLoss', 'ranked.outcomeUnknown'].map(
+    (key) => fresh(key),
+  ),
+  '★★★ 结果逐条：胜 / **平**（`result.uuid: null` ⇒「平」，**不是**「负」）/ 负 / 「—」（读不到 —— 一个"兜底成负"的实现会在这里红，而假的败场看起来完全正常）',
+);
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailtime')),
+  ['6:27.772', '8:35.686', '6:40.000', '1:01.000'],
+  '★★ 用时逐条（**毫秒** ⇒ `formatRaceTime`，错当秒会印出 `0:05`。⚠️ `result.time` 是**胜者**的成绩：负场那一行印的是**对手**的 —— 这条照实测写，不许断言成"都是他的用时"）',
+);
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailelo')),
+  ['+12', '-8', fresh('ranked.unknown'), fresh('ranked.unknown')],
+  '★★★ elo 变化逐条：`+12` / `-8` / **「—」**（私人房 `changes: []`）/「—」（他不在场）—— **绝不是 `+0` 或 `0`**（0 的意思是"打了这一场、分数没变"，那是一句我们并不知道的话）',
+);
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailtype')),
+  [
+    'ranked.matchTypeRanked',
+    'ranked.matchTypeCasual',
+    'ranked.matchTypePrivate',
+    'ranked.matchTypeEvent',
+  ].map((key) => fresh(key)),
+  '★★ 比赛类型逐条：四种各一次（私人房那一格解释了同一行里那两个「—」：它本来就没有 elo 变化与种子）',
+);
+assert.deepEqual(
+  detailMatches.map((m) => cellOf(m, 'ranked__detailseed')),
+  [
+    'DESERT_TEMPLE·STABLES',
+    'DESERT_TEMPLE·STABLES',
+    fresh('ranked.unknown'),
+    'DESERT_TEMPLE·STABLES',
+  ],
+  '★★ 种子逐条（上游的英文标识**原样**；私人房两格都是 `null` ⇒「—」，印空串会让那一格看起来像"这一场本来就没有种子这一栏"）',
+);
+/* ★★ 录像的**两个方向**都要断：`vod: []` 那两场**没有**链接，有 VOD 的那两场各一条。 */
+assert.deepEqual(
+  detailMatches.map((m) => elementsWithClass(m, 'ranked__detailvod').length),
+  [0, 1, 1, 0],
+  '★★ 录像逐条（`vod: []` ⇒ 没有入口 —— 一条指向空地址的「录像」比没有入口更坏；有的一条 ⇒ 恰好一条）',
+);
+const vodLink =
+  /<a\b[^>]*>/.exec(elementsWithClass(detailMatches[1] ?? '', 'ranked__detailvod')[0] ?? '')?.[0] ??
+  '';
+assert.equal(
+  attrOf(vodLink, 'href'),
+  'https://www.twitch.tv/videos/1',
+  '★★ 链接用的是 `vod[].url`（不是拼出来的、也不是另一条的）',
+);
+assert.equal(attrOf(vodLink, 'target'), '_blank', '★ 新窗口打开');
+assert.equal(
+  attrOf(vodLink, 'rel'),
+  'noopener noreferrer',
+  '★★ 第三方地址带 `noreferrer`（`noopener` 独自挡不住 referrer 泄漏）',
+);
+assert.equal(
+  textOf(elementsWithClass(detailMatches[1] ?? '', 'ranked__detailvod')[0] ?? ''),
+  fresh('ranked.detailVod'),
+  '★★ 它的文字是「录像」',
+);
+/*
+ * ★★ 卡片第一行那**五格读数**逐格。期望值写字面量（2349 / 1 / 96·12 / 800·700 / 6:27.772）：
+ *    从夹具现算会让"印的是同一个数"变成同义反复。
+ * ⚠️ 最佳成绩那一格是**毫秒**（`season.bestTimeMs` 实测 387772 = 6:27.772）。
+ */
+assert.deepEqual(
+  [
+    ...(elementsWithClass(eloDetailReady, 'ranked__detailstats')[0] ?? '').matchAll(
+      /<span>([\s\S]*?)<\/span>/g,
+    ),
+  ].map((m) => textOf(m[0])),
+  [
+    fresh('ranked.detailElo', { elo: 2349 }),
+    fresh('ranked.detailRank', { rank: 1 }),
+    fresh('ranked.detailSeasonRecord', { wins: 96, loses: 12 }),
+    fresh('ranked.detailTotalRecord', { wins: 800, loses: 700 }),
+    fresh('ranked.detailBestTime', { time: '6:27.772' }),
+  ],
+  '★★ 卡片第一行五格读数逐格：elo / 排名 / 本赛季 / 全时段 / 本赛季最佳（最后那一格是**毫秒** ⇒ formatRaceTime）',
+);
+ok(
+  '④b④ 展开四个画面：两个句话互斥 + 0 场 + 四场逐格（对手/结果/用时/elo/类型/种子/录像）+ 五格读数',
+);
+
+/* ---- ⑤ ★★★ 那条红线：`players[].eloRate` 是**现值**，不许当成那一刻的 elo 印出来 ---- */
+/*
+ * ⚠️★ 这一条是**本轮唯一"会静默错"的字段**的**唯一**可自动化判据（findings §2.1 底部三场
+ *    实测：一场 season 11 的比赛里 `players[].eloRate` 印的仍是本赛季**现在**的 elo）。
+ *    判据是"整个产物里**一个字符都没有**那个哨兵"，扫的是**原文（含属性）**：
+ *    ⚠️ 用可见文字扫会漏掉一整类实现 —— 本轮的 mutation ④ 实测：把现值塞进一个 `title=`
+ *       属性时，**每一格的可见文字一毫不差**（它前面那些逐格断言全绿），只有这一条当场红。
+ *       而每一格可见文字都一毫不差（那一刀正是这条断言抓到的）。
+ * ⚠️★ **它的代价写清楚**：它防的是"印了**现值**"，防不了"印错成**赛后值**"
+ *    （`changes[].eloRate` 那一类）—— 后者由上面那条逐值断言
+ *    （`['+12','-8','—','—']`）兜着，两条合起来才盖住这一格。
+ */
+assert.equal(
+  rawText('<p>987654</p>').includes(String(ELO_PRESENT_SENTINEL)),
+  true,
+  '★★ 能红证明：这个扫描器认得出哨兵（否则下面那几条恒真）',
+);
+for (const [where, html] of [
+  ['展开（四场）', eloDetailReady],
+  ['展开（0 场）', eloDetailNoMatches],
+  ['展开（加载中）', eloDetailLoading],
+  ['展开（读不到）', eloDetailFailed],
+  ['查询结果', eloLookupFound],
+] as const) {
+  assert.equal(
+    rawText(html).includes(String(ELO_PRESENT_SENTINEL)),
+    false,
+    `★★★ 红线（${where}）：产物里出现了 \`players[].eloRate\` 那个**现值**（${String(ELO_PRESENT_SENTINEL)}）—— 它不是那一场当时的值（findings §2.1）`,
+  );
+}
+/*
+ * ★ 正面对照：那一格印的数**就是**夹具 `changes[]` 里那一条。
+ * ⚠️ 从夹具现算（而不是再抄一遍 `'+12'`）：判据是"印出来那串 === `changes[].change` 的渲染"
+ *    ⇒ 一个"印对手涨跌"或"印赛后 elo（2361）"的实现会在这里红。
+ * ⚠️ 前面那条探针先钉住"夹具里那一条真的是 12"，否则下面那条是在比 `null`。
+ */
+const selfChange = ELO_MATCH_WIN.changes.find((change) => change.uuid === ELO_SELF_UUID)?.change;
+assert.equal(selfChange, 12, '★ 探针：夹具里他自己的那一条是 `+12`（否则下面那条在比 `null`）');
+assert.equal(
+  cellOf(detailMatches[0] ?? '', 'ranked__detailelo'),
+  `+${String(selfChange)}`,
+  '★★ 正面对照：那一格印的就是 `changes[].change`（正数带 `+`：不带号时读不出是涨还是跌，而负场印的是 `-8`）',
+);
+ok('④b⑤ ★★★ 红线：现值（哨兵 987654）在五个产物里一个字符都没有 + 变化量来自 changes[]');
+
+/* ---- ⑥ 展开的那一位渲染在**哪里**（三条兜底判据，按顺序；同一屏里恰好一块详情）---- */
+/*
+ * ⚠️★ 为什么非要有②③（"表里没有就不渲染"是不够的）：60 秒的轮询会**整份换掉** `elo`，
+ *    那位玩家可能**掉出前 150**；搜索框又会把整张榜筛小。两种情况下他都可能不在表里 ——
+ *    静默消失会让用户以为自己那一下没生效（他会再点一次，而那一下落在别的东西上）。
+ */
+assert.equal(
+  elementsWithClass(eloBase, 'ranked__detail').length,
+  0,
+  '★ 没有展开时一块详情都没有（下面三条的对照组）',
+);
+assert.equal(elementsWithClass(eloBase, 'ranked__detailrow').length, 0, '★ 也没有展开行');
+const eloInTable = renderElo(
+  { detail: { nickname: 'Bravo', state: ELO_READY_BRAVO } },
+  '排行榜·展开·表里有他',
+);
+/*
+ * 判据① `Bravo` 就在表里 ⇒ 详情紧跟**那一行**之后，是表格里的 `<tr class="ranked__detailrow">`。
+ * ⚠️★★ 判据是**顺序**（"紧跟"），不是"存在"：一个把详情行渲染到表尾、或者渲染到表格外面
+ *     的实现，用"表里有 `.ranked__detailrow`"这种写法照样绿（照既有"周赛导航在顶部"那条的写法）。
+ */
+const bravoRowAt = eloInTable.indexOf('>Bravo</button>');
+const eloDetailRowAt = eloInTable.indexOf('<tr class="ranked__detailrow">');
+assert.ok(bravoRowAt > 0, '★ `Bravo` 那一行的昵称按钮在产物里（否则下面那两条位置比较是空跑）');
+assert.ok(eloDetailRowAt > bravoRowAt, '★★ 判据①：详情那一行在 `Bravo` 那一行**之后**');
+assert.ok(
+  eloInTable.indexOf('</tr>', bravoRowAt) < eloDetailRowAt,
+  '★★★ 判据①：而且是**紧跟**（两者之间没有别的行）',
+);
+assert.equal(
+  elementsWithClass(eloInTable, 'ranked__detailrow').length,
+  1,
+  '★★ 判据①：表格里**恰好一行**展开行',
+);
+const eloDetailRowEl = elementsWithClass(eloInTable, 'ranked__detailrow')[0] ?? '';
+assert.equal(
+  elementsWithClass(elementsWithClass(eloInTable, 'ranked__table')[0] ?? '', 'ranked__detail')
+    .length,
+  1,
+  '★★ 判据①：那一块卡片在**表格里面**',
+);
+assert.equal(
+  elementsWithClass(eloDetailRowEl, 'ranked__detail').length,
+  1,
+  '★ 判据①：而且就在那一行里',
+);
+/*
+ * ⚠️★★ 那一格跨五列：产物里是 `colSpan="5"`（**照 JSX 原样**，不是 `colspan`）——
+ *    本机 React 19.3 的 `renderToStaticMarkup` 实测如此（视图那一格上写着同一条）。
+ *    HTML 的属性名不区分大小写，浏览器照样当 `colspan` 解；**按 `colspan` 写断言会恒假**
+ *    —— 那不是"另一个写法"，是一条永远不会红的守卫（`pending.md §5.63`）。
+ */
+assert.equal(
+  /\bcolSpan="5"/.test(eloDetailRowEl),
+  true,
+  '★★ 判据①：那一格是 `colSpan="5"`（五列 ⇒ 跨满；少一列会让整行挤在第一列里，而表格本身不会报错）',
+);
+/*
+ * 判据③（`Bravo` 被搜索词筛掉了 ⇒ 卡片落到**表格下面**）。
+ * ⚠️ 这一条同时是"筛选把他筛掉了却还留在表里"的反面：过滤看起来坏掉，比卡片消失更容易查到，
+ *    但"点一下凭空消失、又没有任何入口找回来"才是更糟的那一半（视图里写着这段权衡）。
+ */
+const eloFilteredAway = renderElo(
+  { searchText: 'Alpha', detail: { nickname: 'Bravo', state: ELO_READY_BRAVO } },
+  '排行榜·展开·被筛掉',
+);
+const eloBelowEl = elementsWithClass(eloFilteredAway, 'ranked__detail')[0] ?? '';
+assert.notEqual(eloBelowEl, '', '★★ 判据③：那一块在产物里（**不静默消失** —— 用户点过一下）');
+assert.ok(
+  eloFilteredAway.indexOf(eloBelowEl) > eloFilteredAway.indexOf('</table>'),
+  '★★★ 判据③：它落在整张表**之后**（`</table>` 之后、表格外面）—— "他在表里"这件事不成立，在表里给他找一行是自相矛盾的',
+);
+assert.equal(
+  elementsWithClass(eloFilteredAway, 'ranked__detailrow').length,
+  0,
+  '★★ 判据③：表里**没有**他那一行（他被筛掉了）',
+);
+const eloBelowButtons = elementsWithClass(eloBelowEl, 'ranked__playerbtn');
+assert.equal(
+  eloBelowButtons.length,
+  1,
+  '★★ 判据③：那一块第一行是一颗昵称按钮（不然用户**没有任何办法**把它收起来，只能刷新整页）',
+);
+assert.equal(textOf(eloBelowButtons[0] ?? ''), 'Bravo', '★ 那颗按钮上是他的名字');
+assert.equal(
+  attrOf(eloBelowButtons[0] ?? '', 'aria-expanded'),
+  'true',
+  '★★ 它是 `aria-expanded="true"`：这一块真的开着（另外两处各自已有一颗控件管着它，这里再放一颗会让读屏软件念出两个长得一样、管的东西却不同的控件）',
+);
+/*
+ * 判据②（那一次查询命中的正好就是他 ⇒ 卡片渲染在 `.ranked__lookup` **里面**）。
+ * ⚠️ 表里没有 `edcr`（他不是榜上前 150 里的人）⇒ 判据① 不成立，而查询结果里正好有他。
+ */
+const eloInLookup = renderElo(
+  { lookup: ELO_LOOKUP_FOUND, detail: { nickname: 'edcr', state: ELO_DETAIL_READY } },
+  '排行榜·展开·落在查询结果里',
+);
+assert.equal(
+  elementsWithClass(elementsWithClass(eloInLookup, 'ranked__lookup')[0] ?? '', 'ranked__detail')
+    .length,
+  1,
+  '★★ 判据②：那一块落在 `.ranked__lookup` **里面**（查到的就是他，卡片贴着他的读数）',
+);
+assert.equal(
+  elementsWithClass(eloInLookup, 'ranked__detailrow').length,
+  0,
+  '★ 判据②：而且表里没有他那一行（`edcr` 不在榜上）',
+);
+/*
+ * ★★ 三条判据**互斥**：同一个产物里 `.ranked__detail` 恰好**一块**。
+ * ⚠️ 少了这一条，一个"三条都渲染"的实现会同时通过上面三条（每一条看到的都是**另一处**），
+ *    而用户会看到两张一模一样的卡片、各自跟着不同的东西开合。
+ */
+for (const [where, html] of [
+  ['① 表里', eloInTable],
+  ['② 查询结果里', eloInLookup],
+  ['③ 表格下面', eloFilteredAway],
+] as const) {
+  assert.equal(
+    elementsWithClass(html, 'ranked__detail').length,
+    1,
+    `★★ 判据互斥（${where}）：同一屏里恰好一块 \`.ranked__detail\``,
+  );
+}
+/*
+ * ★★ ⑦ 那条既有断言（`.ranked__meta` 只有赛季那一行，上面 ④ 那一节）在这一屏上的延伸：
+ *    它现在**同时**是"新加的块不许复用 `.ranked__meta`"的守卫 —— 详情与查询各自有自己的
+ *    读数类（`ranked__detailstats` / `ranked__lookupstats`），谁把一行读数塞进 `.ranked__meta`，
+ *    "赛季与赛段在同一行"那句话就变成两句都成立、而其中一句是别人的话。
+ */
+assert.equal(
+  metaOf(eloDetailReady).length,
+  1,
+  '★★ 展开那一屏里 `.ranked__meta` 仍然只有赛季那一行（新块用自己的类名）',
+);
+assert.equal(metaOf(eloLookupFound).length, 1, '★★ 查询命中那一屏同理');
+ok('④b⑥ 三条兜底位置：紧跟那一行（含 colSpan）/ 表格下面 / 查询结果里 + 三屏各恰好一块详情');
+
+/* ---- ⑦ 两族**从表里取**的词条（结果的四档 + 比赛类型的四种）---- */
+/*
+ * ⚠️★ 这两张表的值对 `services/api/src/i18n-keys.test.ts` 是**看不见**的（它扫的是源码里的
+ *    字面量 `t('…')`），而这里用的是 `t(OUTCOME_KEYS[outcome])` ⇒ 表里少一条的表现是
+ *    界面上**直接印出裸 key**，而全仓所有门禁照样绿（与 ⑥b 那七格、⑨ 那张进度表同一条理由）。
+ * ⚠️ 下面那两条 `deepEqual` 是**手抄**的对照表（本仓惯例）：**对调两行在全仓是静默的**
+ *    （每格都是 `string`、类型照样过）——「胜」印成「负」在一张战绩列表里看起来完全正常，
+ *    而它会改掉用户对这位玩家水平的判断。
+ */
+assert.deepEqual(
+  OUTCOME_KEYS,
+  {
+    win: 'ranked.outcomeWin',
+    loss: 'ranked.outcomeLoss',
+    draw: 'ranked.outcomeDraw',
+    unknown: 'ranked.outcomeUnknown',
+  },
+  '★★ 「结果 → 词条」那张表被改了（对调两行在界面上看不出来）',
+);
+assert.deepEqual(
+  MATCH_TYPE_KEYS,
+  {
+    1: 'ranked.matchTypeCasual',
+    2: 'ranked.matchTypeRanked',
+    3: 'ranked.matchTypePrivate',
+    4: 'ranked.matchTypeEvent',
+  },
+  '★★ 「比赛类型 → 词条」那张表被改了（上游文档的四档：1 casual / 2 ranked / 3 private / 4 event）',
+);
+for (const key of [...Object.values(OUTCOME_KEYS), ...Object.values(MATCH_TYPE_KEYS)]) {
+  for (const lng of LANGUAGES) {
+    assert.ok(
+      i18n.exists(key, { lng }),
+      `★★ 词条 ${key} 在【${lng}】里不存在（那一格会印出裸 key，而字面量扫描够不着这张表）`,
+    );
+    const value = i18n.t(key, { lng }) as string;
+    assert.notEqual(value, key, `★★ 词条 ${key} 在【${lng}】里没有真值（i18next 会原样返回 key）`);
+    assert.notEqual(
+      flat(value),
+      '',
+      `★★ 词条 ${key} 在【${lng}】里是空的（空格子看起来像渲染坏了）`,
+    );
+  }
+}
+ok('④b⑦ 结果四档与比赛类型四种：两张表逐格 + 八条词条两种语言都在');
 
 // ---------------------------------------------------------------------------
 console.log('⑤ 周赛榜单：第 0 周 + 四个种子 + 翻页的"链接 / 不是链接"正反配对');
@@ -3193,6 +4331,44 @@ const MUST_RENDER = [
   /* ★ 2026-09-19 加的：周赛顶部那个手输框与它下面那一句提示 */
   'ranked__weekjump',
   'ranked__jumperror',
+  /*
+   * ★★ 2026-09-19 第三轮（`c70bb3f`）加的：③ 顶部的搜索框 + 行内展开的玩家卡片。
+   *
+   * ⚠️★ 这一份清单是"**产物里真的出现过**的类名"（本仓惯例，防的是"整块界面被摘掉"），
+   *    所以它只收**今天真的有夹具渲染出来**的那些 —— 下面每一条都由 ④b 那一节产出。
+   * ⚠️ `ranked__detailoutcome--unknown` **故意收在这里**：它有 CSS 规则、有词条
+   *    （`ranked.outcomeUnknown`），而**解析层永远产不出**那一档（`parseMatches` 会把
+   *    "玩家块读不出来"的行丢掉）⇒ 今天只有 ④b 那份手写的 `RankedMatch`（第 4 场：
+   *    `selfUuid` 不在 `players[]` 里）到得了它。不收它的话，那条 CSS 规则与那条词条
+   *    就是"两条没人验过的死代码"（`pending.md §5.70` 那一族正是这么长出来的）。
+   * ⚠️ `.ranked__detailrow` 是**展开那一行**（`<tr>`），`.ranked__detail` 是**卡片本体**
+   *    （`<div>`）：两个都在，因为"位置"那三条判据依赖它们同时存在。
+   */
+  'ranked__search',
+  'ranked__searchinput',
+  'ranked__searchhint',
+  'ranked__lookup',
+  'ranked__playerbtn',
+  'ranked__lookupstats',
+  'ranked__lookupmsg',
+  'ranked__detailrow',
+  'ranked__detail',
+  'ranked__detailstats',
+  'ranked__detailtitle',
+  'ranked__detailmatch',
+  'ranked__detailopp',
+  'ranked__detailoutcome',
+  'ranked__detailoutcome--win',
+  'ranked__detailoutcome--loss',
+  'ranked__detailoutcome--draw',
+  /* ★ 见上面那段：第四档只有手写的夹具到得了，而它**必须**留着被渲染过一次 */
+  'ranked__detailoutcome--unknown',
+  'ranked__detailtype',
+  'ranked__detailtime',
+  'ranked__detailelo',
+  'ranked__detailseed',
+  'ranked__detailvod',
+  'ranked__detailfailed',
 ] as const;
 /*
  * ★★ ⑧ 的本体：调用点在 ⑨ 结束处（`assertRankedClassesHaveRules()`）——
@@ -3485,8 +4661,31 @@ console.log(
   '   ·★ **④ 那个手输框的键盘路径本身**（2026-09-19 加的）：在框里按 **回车**会提交表单，',
 );
 console.log('     那是浏览器原生行为，SSR 里一次都不发生。本脚本钉的是那个结构前提（输入框与');
-console.log('     `type="submit"` 的那颗按钮**在同一个 `<form>` 里**、表单有 `onSubmit`），');
+console.log(
+  '     `type="submit"` 的那颗按钮**在同一个 `<form>` 里**）+ **源码级**的那一半（表单上挂着',
+);
+console.log(
+  '     `onSubmit`，且 handler 里 `preventDefault()` —— 见 ④b① 那条 `formPreventsDefault`），',
+);
 console.log('     以及"两种不合法的输入各说哪一句话"（⑤b）。真的按一次回车要人在浏览器里做。');
+console.log(
+  '   ·★★ **③ 那一轮（2026-09-19 第三轮）的全部交互本身**：打字真的筛了、点昵称真的展开了、',
+);
+console.log(
+  '     回车真的查了、展开真的**只发两次请求**（`/users/{id}` + `/users/{id}/matches`）、',
+);
+console.log(
+  '     第二次点同一个人**一发都不发**（缓存命中）、失败不进缓存 ⇒ 收起再点一次是重试 ——',
+);
+console.log('     这几件事全是**事件接线与请求计数**，`renderToStaticMarkup` 一件都跑不到；');
+console.log(
+  '     本脚本钉的是"**视图拿着那三格状态渲染成什么样**"（④b①–⑦），以及那六格 `on*` 是不是',
+);
+console.log(
+  '     函数（`assertPropsGiven`）。逐条代价与"要人做什么"写在 `docs/pending.md §5.100`。',
+);
+console.log('   ·★ **那两个新端点的生产环境 CORS / 缓存行为**：本机实测过（findings §4 / §6），');
+console.log('     线上出口没测过 —— 与 T1 报告里同一条遗留（`pending.md §5.100` 也记着）。');
 console.log(
   '   ·★ **③ 那第二次请求**（赛段 `/phase-leaderboard`）**本身**：它是容器的一个 `pull`，',
 );
@@ -3504,8 +4703,11 @@ console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
  *    （`if (LANG === 'en')`，见上面）；两个数差 1 是**正常的**，别把它抹平。
  * ⚠️ 2026-09-19：两边各 +1（③b 那一组：搜索 / 双方都在直播 / 加载更多）。
  * ⚠️ 2026-09-19（本轮）：两边再各 +1（⑤b 那一组：④ 的顶部导航 / 手输框 / 本周 / 两种提示）。
+ * ⚠️ 2026-09-19（第三轮，`c70bb3f` 的视图）：两边再各 **+7** —— ④b 那七组
+ *    （① 搜索框 / ② 本地筛选 / ③ 三档查询 / ④ 四个画面 / ⑤ 那条红线 / ⑥ 三条位置 /
+ *    ⑦ 两族表驱动的词条）。⇒ zh 16、en 17。
  */
-const expectedGroups = LANG === 'en' ? 17 : 16;
+const expectedGroups = LANG === 'en' ? 24 : 23;
 assert.equal(
   pass,
   expectedGroups,

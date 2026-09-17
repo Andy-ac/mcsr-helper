@@ -321,6 +321,45 @@ connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com;
 那是本仓踩过的坑）。⚠️★ 因此编辑想让某个自动收录的频道消失，正确的动作是**隐藏**，不是删除：
 删掉会把三列腾空，下一轮它就回来了。完整版（含两条诚实的边界）在 `pending.md §5.97`。
 
+### 3.2 ★★ 2026-09-19 第三轮：③ 多了两个端点，各花几次额度（**为什么绝不做预取**）
+
+用户这一轮要的是 ③ 排行榜的**搜索框**与**点开一位玩家看他的最近比赛**。它们**没有**加任何
+服务端代码（§3 那张表一个字没动：仍然是浏览器直连、仍然花访客自己的 IP 额度），
+但它们让这一栏的**请求种类**从 5 个变成一个更大的集合 —— 所以把账写清楚。
+
+**额度上限（实测，findings §5）**：每个 IP **500 次 / 10 分钟**。响应头逐字是
+`RateLimit-Policy: "500-in-10min"; q=500; w=600`（那时 `r=485; t=521`）。
+⚠️ 它按**请求**算，不按字节算：`count=10` 与 `count=100` 花的是同一笔钱
+（`RANKED_DETAIL_MATCHES = 10` 省的是**响应体积**，不是额度）。
+
+| 谁触发 | 打上游哪些路径 | 花几次 | 备注 |
+|---|---|---|---|
+| 打开 `/ranked/elo`（一次） | `/leaderboard` + `/phase-leaderboard` | **2** | 赛段那一次是 2026-09-19 第二轮加的（§6.4） |
+| 那一页每 60 秒轮询（`RANKED_POLL_MS.elo = 60_000`） | 同上两条 | **2 次/分钟 = 20 次/10 分钟** | 与流量无关，只与"开着几个标签页"有关 |
+| **在搜索框里打字** | — | **0** | 本地筛手上那 150 行（上游**没有**搜索端点，findings §7） |
+| 回车 / 点「查询」 | `/users/{昵称}` | **1** | ⚠️ **每次都发**：它**不查**展开那份缓存（另一半的语义是"再问一次上游现在怎么说"） |
+| 点一个昵称（第一次） | `/users/{昵称}` + `/users/{昵称}/matches?count=10` | **2** | `Promise.all` 一次拉齐，两份都到齐才算 ready |
+| 收起再点**同一个**昵称 | — | **0** | 成功的结果按昵称缓存在 `useRef(Map)` 里；⚠️ **失败不进缓存** ⇒ 那就是一次重试 |
+| 点**另一个**昵称 | 同上两条 | **2** | |
+
+⚠️★ **一个具体的数**：连续展开**十个不同**的玩家 = **20 次**，也就是 500 的 **4%**。
+它是这一栏**新的**额度成本，而且它是**用户动作驱动**的（不是定时器）。
+
+**为什么绝不做预取（三条，逐条给理由）**：
+
+1. **hover 预取**（划过一行就先把详情拉回来）：150 行里划过十行就是 20 次请求，
+   而用户**一个意图都没有表达过** —— 这正好是"点开才发"这条裁决要避免的那件事
+   （用户 2026-09-19 的原话：「**点开**后能查看最近比赛的情况/数据等」）。
+2. **给 150 行预先拉详情**：那是 300 次 = **一次页面打开就打满 60% 的额度**，
+   而其中绝大多数人用户根本不会点（这一栏的表格是"看排名"，不是"看每一个人"）。
+3. **"反正 CF 有 4 小时缓存，重复请求不要钱"**：那是**错的**前提。我们对上游那两个入口
+   **显式** `cache: 'no-store'`（§2.5：上游回 `max-age=14400`，不绕开就会冻在 4 小时前
+   那一份上）⇒ **每一次请求都真的打到上游**，不存在"重复请求不花额度"这回事。
+
+⚠️★ 这条纪律的**自动化判据**在渲染自检 ④b⑥（详情只有一处、而且只在用户点过的那个位置）、
+以及 `pending.md §5.100` 那两条要人做的计数（展开**真的只发两次**、第二次**一发都不发**）——
+静态渲染证明不了请求次数，所以它今天是一条**人在浏览器里数一次**的判据。
+
 ---
 
 ## 4. 数据形状（冻结）
@@ -337,6 +376,8 @@ connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com;
 | ② 对局 | 浏览器直连 | `/live` 的 `data.liveMatches` |
 | ③ 排行榜 | 浏览器直连 | `/leaderboard`（**前 150**，上游的硬上限） |
 | ③ 赛段 | 浏览器直连 | `/phase-leaderboard` 的 `data.phase`（★ 2026-09-19 加的第二次直连） |
+| ③ 查询一位玩家 | 浏览器直连 | `/users/{昵称}`（★ 2026-09-19 第三轮；回车/点「查询」那一下） |
+| ③ 展开一位玩家 | 浏览器直连 | `/users/{昵称}` + `/users/{昵称}/matches?count=10`（★ 2026-09-19 第三轮，`Promise.all` 两份一起） |
 | ④ 周赛 | 浏览器直连 | `/weekly-race` / `/weekly-race/{id}` |
 
 ### 4.2 我们唯一的端点（心跳）
@@ -670,6 +711,60 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
 - 空态：赛季刚开 ⇒ 「这个赛季还没有人上榜。」
 - 轮询：60 秒（两路请求在**同一轮**里发）。
 
+**★★ 2026-09-19 第三轮（`c70bb3f`）：顶部的搜索框 + 行内展开的玩家卡片**
+
+用户原话（同一句需求的两半）：「修改"ranked实时信息"的"排行榜"栏目，**点开后能查看最近
+比赛的情况/数据等**，另外在**顶部设置搜索框允许用户自行搜索玩家**。」
+
+DOM 顺序（**新增的只有搜索框那一块**；赛季那一行与表格的位置一个字没动）：
+
+```
+<h2 class="ranked__title">Elo 排行榜</h2>
+<form class="ranked__search" role="search">      ← 搜索框：<label class="sr-only" for> + <input id> + <button type="submit">
+<p class="ranked__searchhint">…</p>              ← 两个入口各自代价的说明书
+<div class="ranked__lookup">…</div>              ← 只有查过才渲染（lookup !== null）
+<p class="ranked__meta">…赛季四格…</p>            ← 一个字都没动（仍是**唯一**一个 .ranked__meta）
+<div class="ranked__tablescroll"><table class="ranked__table">…</table></div>
+```
+
+- ★★ **搜索框有两半，它们是两件不同的事**（所以词条分成两组、提示那一句分开写）：
+  - **打字 = 本地筛选**：在**已经取到的那 150 行**上按昵称子串（忽略大小写）筛，
+    **一个请求都不发**。⚠️ 上游**没有**搜索/前缀端点（findings §7：能查人的只有
+    `/users/{identifier}`，而且是**精确匹配**）⇒ 打字**永远**筛不出榜外的人（第 151 名打不出来）。
+  - **回车 / 点「查询」 = 精确查一位玩家**：直连 `/users/{identifier}`，花访客自己的额度。
+    ⚠️ 空串 ⇒ 清掉上一次查询、**一个请求都不发**（上游对空路径回 404）。
+  - 结构前提：输入框与 `type="submit"` 的那颗按钮**在同一个 `<form>` 里**（回车提交是浏览器
+    原生行为）+ `sr-only` 的 `label` 用 `htmlFor`/`id` 与输入框**成对**（占位符会消失）。
+- **查询结果三档**（`.ranked__lookup`）：`found` ⇒ 昵称（响应里那个规范写法）+ 三格读数；
+  `not_found` ⇒「没有这个玩家。」；`invalid_identifier` ⇒「这个昵称不合法（太长或格式不对）。」。
+  ⚠️★ 后两档**不是**"请求失败"（重试永远是白试一次 ⇒ 没有重试按钮），而 `lookup: null` ⇒
+  那一块**整个不渲染**（不是渲染一个空框）。
+- **点开 = 行内展开**（不是新路由、不是弹窗）：可点的是**昵称那一格里的按钮**
+  （`<tr>` 上没有可点语义），展开时**紧跟那一行之后**插一行
+  `<tr class="ranked__detailrow"><td colSpan={5}>`。
+  ⚠️★ 产物里那个属性是 **`colSpan="5"`（camelCase）**，不是 `colspan`（React 19.3 的
+  `renderToStaticMarkup` 照 JSX 原样印）⇒ 渲染自检按**产物里那一串**断言。
+- 卡片内容：第一行五格读数（elo / 排名 / 本赛季 / 全时段 / 本赛季最佳）+
+  「最近 N 场」（N = **手上这份数组的长度**，不是请求里的 `count`）+ 每一场七格
+  （对手 / 结果 / 用时 / elo 变化 / 比赛类型 / 种子 / 录像）。
+  - 每一场**可能要两个端点**、**点开才发**（额度账在 §3.2）；
+  - `result.uuid === null` ⇒「平」（**不是**「负」）；`changes: []`（私人房实测）⇒「—」（**不是 0**）；
+  - `vod: []` ⇒ **没有**录像入口（一条指向空地址的「录像」比没有入口更坏）。
+- ★★★ **红线（本栏最贵的一条）**：`players[].eloRate` / `eloRank` 是**请求那一刻的现值**，
+  **不是**那一场当时的值（findings §2.1 底部三场实测：一场 season 11 的比赛里它印的仍是
+  本赛季**现在**的 elo）⇒ 详情里**任何位置**都不许把它当成"当时的 elo"渲染；
+  那一局的 elo 只能用 `eloChangeOf()`（来自 `changes[]`），读不到就印「—」。
+  ⚠️ 代价写清：赛**前**的 elo 上游**根本没给**（只有赛后值），推算会在私人房那 32 行上
+  凭空造一个数出来 ⇒ 我们**不推算**。
+- **三条兜底位置**（同一个产物里 `.ranked__detail` 恰好**一块**，三条互斥）：
+  1. 表里**有**这一行（而且没被筛掉）⇒ 紧跟那一行之后（`<tr class="ranked__detailrow">`）；
+  2. 否则，那一次查询命中的正好是他 ⇒ 渲染在 `.ranked__lookup` **里面**；
+  3. 否则 ⇒ 表格**下面**单独一块（第一行仍是可点收起的昵称按钮）。
+  ⚠️ 为什么非要有②③：60 秒的轮询会**整份换掉**这张榜，那位玩家可能**掉出前 150**；
+  搜索框又会把榜筛小 —— 静默消失会让用户以为自己那一下没生效。
+- 渲染自检：`apps/web/scripts/rankedrender.tsx` 的 **④b 七组**（搜索框结构 / 本地筛选 /
+  三档查询 / 四个画面 / 那条红线 / 三条位置 / 两族表驱动词条）。
+
 ### 6.5 ④ 周赛榜单 `/ranked/weekly` ★★ 修订（2026-09-19）
 
 - 默认 `GET /weekly-race`（本周）。
@@ -818,6 +913,38 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | ★ `ranked.phase` / `phaseEndsAt` / `phaseUnknown` | 「赛段 {{n}}」/「结束时间 {{when}}」/「赛段信息暂时读不到」—— ⚠️ 前两条与赛季那两条在**同一行**里（"并排"，§6.4）；`phaseUnknown` 是**那一次 `/phase-leaderboard` 请求失败**那一档（与"上游给了但某一格空着 ⇒ 印 `—`"是两件事）。⚠️ `{{when}}` 是**秒**、按本地时区渲染（与赛季截止同一条规矩）。⚠️ 2026-09-19 第二轮把「结束」改成「结束时间」（与 `seasonEndsAt` 对齐）；⚠️ **英文侧那一条一个字没改**（"Ends {{when}}" 本来就够，两种语言刻意不逐字对齐——**周赛那一格**（`weeklyEndsAt`）仍是「结束 {{when}}」，用户没点名它） |
 | `ranked.colRank/Nickname/Elo/Highest/PhasePoint` | 「排名」/「昵称」/「elo」/「最高」/「阶段分」 |
 | `ranked.eloEmpty` | 「这个赛季还没有人上榜。」 |
+
+**★★ 2026-09-19 第三轮新增的 24 条（`ranked.*`，两份字典都已落地）**——⚠️ 英文侧的值是
+**按实现抄下来的**（英文侧不许出现汉字，有一条门禁在扫）：
+
+| key | 中文 | English |
+|---|---|---|
+| `ranked.searchLabel` | 「搜索玩家」 | "Search players" |
+| `ranked.searchPlaceholder` | 「输入玩家昵称」 | "Enter a player nickname" |
+| `ranked.searchSubmit` | 「查询」 | "Look up" |
+| `ranked.searchHint` | 「输入即在已载入的名单里筛选；回车按昵称精确查询。」 | "Typing filters the board already loaded; press Enter to look up one exact nickname." |
+| `ranked.lookupNotFound` | 「没有这个玩家。」 | "No player with that nickname." |
+| `ranked.lookupInvalid` | 「这个昵称不合法（太长或格式不对）。」 | "That nickname is not valid (too long or malformed)." |
+| `ranked.eloFilterEmpty` | 「没有匹配「{{q}}」的玩家。」（⚠️ 与 `eloEmpty` **不是**一句话） | "No player matches \"{{q}}\"." |
+| `ranked.detailElo` | 「elo {{elo}}」（★ 这是**现在**多少分） | "Elo {{elo}}" |
+| `ranked.detailRank` | 「排名 {{rank}}」 | "Rank {{rank}}" |
+| `ranked.detailSeasonRecord` | 「本赛季 {{wins}} 胜 {{loses}} 负」 | "Season {{wins}}W {{loses}}L" |
+| `ranked.detailTotalRecord` | 「全时段 {{wins}} 胜 {{loses}} 负」 | "All-time {{wins}}W {{loses}}L" |
+| `ranked.detailBestTime` | 「本赛季最佳 {{time}}」（⚠️ `{{time}}` 是**毫秒**） | "Season best {{time}}" |
+| `ranked.detailRecent` | 「最近 {{n}} 场比赛」（⚠️ N 是**数组长度**，不是 `count`） | "Last {{n}} matches" |
+| `ranked.detailNoMatches` | 「最近没有比赛。」 | "No recent matches." |
+| `ranked.detailFailed` | 「这位玩家的数据暂时读不到。」（⚠️ 与上一句**不是**一件事） | "Data for this player cannot be read right now." |
+| `ranked.outcomeWin` / `outcomeLoss` / `outcomeDraw` / `outcomeUnknown` | 「胜」/「负」/「平」/「—」（★ 四档来自导出的 `OUTCOME_KEYS`） | "Win" / "Loss" / "Draw" / "—" |
+| `ranked.detailVod` | 「录像」 | "VOD" |
+| `ranked.matchTypeCasual` / `matchTypeRanked` / `matchTypePrivate` / `matchTypeEvent` | 「休闲」/「排位」/「私人房」/「活动」（★ 来自导出的 `MATCH_TYPE_KEYS`：1/2/3/4） | "Casual" / "Ranked" / "Private" / "Event" |
+
+⚠️★ 这一轮**没有删掉任何词条**。但 `ranked.errUserNotFound` / `errInvalidIdentifier`
+（T1 那一族，走 `describeRankedError`）从 T2 起**没有生产调用者**（容器把"查无此人 /
+昵称不合法"交给了 `lookupNotFound` / `lookupInvalid`）—— 这件事记在 `pending.md §5.100`，
+裁决是交给**修复轮**去删（要么删那两条 key 与那一支派发，要么让视图改用它们）。
+⚠️ 第一句「没有这个玩家。」两族几乎同话是**有意**的，措辞分歧也是：`lookupInvalid` 说
+"太长**或格式不对**"（用户唯一能改的是写法），`errInvalidIdentifier` 说的是上游的**实测规则**
+（超过 20 个字符）。
 | `ranked.weeklyTitle` / `weeklyNumber` / `weeklyEndsAt` / `weeklySeed` | 「周赛」/「第 {{n}} 周」/「截止 {{when}}」/「种子」 |
 | `ranked.weeklyPrev` / `weeklyNext` | 「上一周」/「下一周」—— ★ 2026-09-19 起它们住在**顶部**那一行（§6.5） |
 | ★ `ranked.weeklyJump` / `weeklyJumpGo` / `weeklyThisWeek` | 「跳到某一周」/「跳转」/「本周」—— ⚠️ `weeklyJump` **同时**是占位符与 `<label class="sr-only">`（占位符在输入第一个字之后就没了）；`weeklyThisWeek` 是一条**真链接** |
@@ -972,6 +1099,31 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 - [ ] ★★ ③ **赛段并排在赛季那一行**（同一行四格：赛季号 / 起止 / 赛段号 / 赛段截止）；
       赛段是 `null` 时那一格说「赛段信息暂时读不到」而**整张榜一个格子都不少**、也**不**多一句"读不到数据"
 - [ ] ★★ ③ **150 行**（夹具给 160 条 ⇒ 渲染 150 行 = 750 个格子）+ 常量钉死 `RANKED_ELO_TOP === 150`
+- [ ] ★★ ③ **搜索框 + 行内展开（2026-09-19 第三轮，渲染自检 ④b 七组）**：
+      - [ ] ④b① 搜索框的结构：唯一的 `<form class="ranked__search" role="search">`、
+            里面有输入框与 `type="submit"` 的「查询」、`sr-only` 的 label 用 `for`/`id` **成对**、
+            受控（喂 `searchText: 'Alph'` ⇒ 产物里 `value="Alph"`）、在标题之后 / 说明书与赛季行之前；
+            ★ **`onSubmit` + `preventDefault` 只能读源码**（SSR 不渲染事件处理器）⇒
+            `formPreventsDefault()` 那条源码形状守卫（连④的手输框一起守，带两条能红证明）
+      - [ ] ④b② 本地筛选：**行数**与**每行昵称**逐条（夹具四行、两位共享前缀）——
+            不筛 4 行、筛前缀 2 行（就是那两位）、`alphatwo` 1 行、谁都不匹配 ⇒ 0 行 **且整张表不渲染**
+            且那一句是 `eloFilterEmpty`（配"两句词条不同"的探针）；
+            ★ 还有**两句空态的优先级**：上游本身就空而搜索框里有字时仍说 `eloEmpty`
+            （顺序反了会把"上游没人"说成"你筛没了"）
+      - [ ] ④b③ 三档查询：命中 ⇒ 响应里那个昵称（`Edcr`，**不是**用户敲的 `edcr`）+ 逐格读数；
+            `not_found` / `invalid_identifier` 各说各的；**三档互斥**（另外两句与读数格/按钮都不在）；
+            `lookup: null` ⇒ 那一块**整个不渲染**
+      - [ ] ④b④ 四个画面：加载中（复用那一句）/ 读不到（`ranked__detailfailed`，与"最近没有比赛"
+            **互斥**）/ 0 场（`ranked__detailNoMatches` + 标题那个 N 是**数组长度**）/ 四场
+            （**数节点** + 对手/结果/用时/elo/类型/种子/录像**逐格**）
+      - [ ] ④b⑤ ★★★ 那条红线：五个产物里**一个字符都没有** `players[].eloRate` 的哨兵值
+            （扫**原文含属性**：T2 的第三刀就是把它塞进 `title=`），而 elo 变化那一格是
+            `changes[].change` 那个数；⚠️ 它防不了"印成赛后值"，那一半由逐值断言兜着
+      - [ ] ④b⑥ 三条兜底位置：表里 ⇒ **紧跟**那一行（顺序断言）+ `colSpan="5"`（**camelCase**）；
+            被筛掉 ⇒ 落在 `</table>` 之后；查询命中的就是他 ⇒ 落在 `.ranked__lookup` 里；
+            三屏各自**恰好一块** `.ranked__detail`；`.ranked__meta` 仍只有赛季那一行
+      - [ ] ④b⑦ 两族**表驱动**的词条（`OUTCOME_KEYS` 4 + `MATCH_TYPE_KEYS` 4）：两张表逐格
+            `deepEqual`（对调两行是静默的）+ 八条 key × 两种语言都在（字面量扫描够不着它们）
 - [ ] ④ 顶部：周数（**第 -1 周那份渲染成「第 0 周」**）、4 个种子、截止时间；五列；
       `id >= latestId` ⇒「下一周」**禁用**；`id === -1` ⇒「上一周」**禁用**（正反两半）
 - [ ] ★★ ④ **导航在顶部**（位置断言：在周数那一行 / 四格种子 / 成绩表之**前**，且在面板标题之**后**）
@@ -1030,7 +1182,25 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
       要**两刀各砍一次**：只砍解析层时渲染自检**照旧绿**（实测），因为渲染脚本喂的是**已经解析好的**形状
 - [ ] ★ mutation ⑱（★ 2026-09-19）：`checkedAt` 改成 `new Date(...).toISOString()`
       ⇒ 「上游给的原样字符串」那几条必须**红**
-- [ ] 每处 mutation 之后**字节级还原**并用哈希证明
+- [ ] ★ mutation ⑲（★ 2026-09-19 第三轮）：视图把 `changes: []` 的 elo 变化印成 `0`
+      （`ranked__detailelo` 那一格的 `dash` 换成 `'0'`）⇒ ④b④ 那条逐值断言必须**红**
+      （实测：`actual [ '+12', '-8', '0', '0' ]` / `expected [ '+12', '-8', '—', '—' ]`）
+- [ ] ★ mutation ⑳（★ 2026-09-19 第三轮）：`filterEloUsers` 去掉 `toLowerCase()`
+      （大小写敏感）⇒ ④b② 的「`alphatwo` ⇒ 1 行」必须**红**（另外三条照样绿 —— 说明它们不是同一条断言）
+- [ ] ★ mutation ㉑（★ 2026-09-19 第三轮）：详情**总是**渲染在表格下面（判据① 恒假）
+      ⇒ ④b⑥ 的「紧跟那一行」「`colSpan="5"`」「恰好一块」必须**红**
+- [ ] ★ mutation ㉒（★ 2026-09-19 第三轮）：把对手的现值塞进**一个属性**
+      （`title={opponent.eloRate}`，可见文字一格不差）⇒ ④b⑤ 那条红线必须**红**
+      （⚠️ 它同时是"那条扫描必须作用在**原文含属性**上"的证明）
+- [ ] ★ mutation ㉓（★ 2026-09-19 第三轮）：`select.ts` 的 `matchOutcome` 去掉「平局」那一支
+      ⇒ ④b④ 的结果逐条必须**红**（「平」被印成「负」—— 假的败场看起来完全正常）
+- [ ] ★ mutation ㉔（★ 2026-09-19 第三轮）：两句空态的**优先级**被改坏 —— 把 `eloEmpty` 那一支
+      收窄成"空榜 **且** 搜索框是空的"（空榜 + 有搜索词 ⇒ 落到 `eloFilterEmpty`）
+      ⇒ ④b② 的「上游本身就空…」那一条必须**红**，而 ④ 那一节既有的"空集合"那条**照样绿**
+      （⚠️ 这一刀是**"新加的断言不是既有那条的重复"**的判据：两句对调时最先红的是**既有**那条）
+- [ ] 每处 mutation 之后**字节级还原**并用哈希证明（本轮 ⑲–㉔ 逐条都实测跑过 —— 一共**八刀**：
+      ㉑ 与 ㉔ 各砍了两种改法；红的原话与还原后的 `sha256` 写在 T3 的报告里。
+      ⚠️ 报告住在 `.superpowers/`（不进版本管理）⇒ 这里的判据自己写全，别依赖那份报告的寿命）
 
 ### 11.5 收录作业：`services/api/src/ranked-streams.ts`（★ 2026-09-17 加）
 
