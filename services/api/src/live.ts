@@ -181,6 +181,84 @@ export function createLiveChannel(
   return { ok: true, channel: created };
 }
 
+/**
+ * 「没有才插」要的几列 —— **窄**接口，不是 `LiveChannelInput`。
+ *
+ * ⚠️ 为什么不复用 `LiveChannelInput`：那个类型是**编辑表单的输出**，里面有一格
+ *    `url`，而 `live_channels` 表**根本没有这一列**（链接是按平台 + handle 拼出来的）。
+ *    ingest 没有"用户粘的那条链接"可以填，硬造一个出来只会让读的人以为它被存了。
+ */
+export interface LiveChannelInsert {
+  platform: LivePlatform;
+  handle: string;
+  displayName: string;
+  note?: string | null;
+  tags: readonly string[];
+  liveVideoId: string | null;
+  embedChannel: boolean;
+  sortOrder: number;
+}
+
+/**
+ * ★ 「没有才插」—— 机器收录（ingest）专用的插入路径。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 为什么**不能**写成 `INSERT … ON CONFLICT (platform, handle, live_video_id) DO NOTHING`
+ * ---------------------------------------------------------------------------
+ * 那是这件事里最容易顺手写下的形状，而它**在这里根本不成立**：SQLite 的唯一索引把
+ * **NULL 当成彼此不相同**（SQL 标准如此；本机 `node:sqlite` 3.53 实测：同一组
+ * `('twitch','foo',NULL)` 连插三次，加 `ON CONFLICT … DO NOTHING` 得到的是**三行**）。
+ * 而机器收录写的正是 `live_video_id = NULL` 的那些行 ⇒ 用它的话**每次请求都会多一行**，
+ * 而且门禁全绿（每次插入都"成功"了，没有任何地方报错）。
+ * ⇒ 判据必须**空值安全**：`WHERE NOT EXISTS (… live_video_id IS ?)`。
+ *    这与本文件 `findLiveChannelByHandle` 用 `IS ?` 是同一条理由、同一个坑。
+ *    （`ON CONFLICT` 那一句留着也没有意义：它只对三列全非 NULL 的行生效，
+ *     而那些行本来就走不到这里。）
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 为什么是**一条**语句，而不是 `createLiveChannel` 那种"先查再插"
+ * ---------------------------------------------------------------------------
+ * `INSERT … SELECT … WHERE NOT EXISTS` 由 SQLite **原子**执行：多进程 / 多连接并发时
+ * 不会出现"两边都查不到、两边都插进去"。`createLiveChannel` 的两段式是给**编辑表单**
+ * 写的 —— 它要把撞上的那一行**读回**给用户看，好说一句「这条已经记过了」；
+ * 而机器收录只需要"插进去了没有"这一个布尔，两段式在这里只是多一次查询和一个竞态。
+ *
+ * ⚠️ 它**只插不改**（没有 UPDATE、没有 DELETE、插入的行一律 `status='visible'`）：
+ *    ingest 绝不许覆盖或隐藏编辑动过的东西 —— 那条运维结论写在 `ranked/ingest.ts`。
+ *
+ * @returns 真的插进去了 `true`；那一组三列已经存在（或并发下被别人先插了）`false`。
+ */
+export function insertLiveChannelIfAbsent(input: LiveChannelInsert, now: number): boolean {
+  const inserted = getDb()
+    .prepare(
+      `INSERT INTO live_channels
+         (id, platform, handle, display_name, note, tags, live_video_id, embed_channel,
+          sort_order, status, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM live_channels
+           WHERE platform = ? AND handle = ? AND live_video_id IS ?
+        )`,
+    )
+    .run(
+      newId(),
+      input.platform,
+      input.handle,
+      input.displayName,
+      input.note ?? null,
+      tagsToColumn(input.tags),
+      input.liveVideoId,
+      input.embedChannel ? 1 : 0,
+      input.sortOrder,
+      now,
+      now,
+      input.platform,
+      input.handle,
+      input.liveVideoId,
+    );
+  return inserted.changes > 0;
+}
+
 /** 全量更新一行（编辑表单就是"把这一行改成这样"）。 */
 export function updateLiveChannel(
   id: string,
