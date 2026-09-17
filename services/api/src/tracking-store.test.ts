@@ -1356,6 +1356,28 @@ describe('追踪数据层：⑦ 冷却（连续失败 3 次 ⇒ 一小时不再�
     assert.equal(ids.includes(healthy), true, '★ 健康的那个照常被挑（冷却不是"整份名单停摆"）');
     assert.equal(ids.includes(cooling), false, '★ 冷却的那个不在里面');
     assert.equal(cooldownOf(healthy), null, '★ 他没冷却 ⇒ 那一格是 NULL，不是 0');
+
+    /*
+     * ★★ 最后两条读的是 `listCreators()`，不是 `cooldownOf` —— 这一层必须补，理由与
+     *    `hiddenCount` 那格（`tracked-videos.ts:371-374` 那段"占位 0"）是同一件事：
+     *    上面每一条断言（连同整组 ⑦）读的都是**库里那一列**（`cooldownOf` 自己发一句窄 SELECT），
+     *    而那一列走到面板去的路**只有一条** —— `toCreator` 里那行
+     *    `cooldownUntil: row.cooldown_until`。那一行写成 `null`、或者写成旁边另一列，
+     *    **编译得过、上面全部断言照样绿、渲染自检也照样绿**（它喂的是手搭的夹具），
+     *    而生产上的表现正是这一格存在的理由：名单永远不画那句"冷却中"，
+     *    同时预演还在报"冷却: 1 个博主"—— 两句话互相矛盾，却没有一样东西会红。
+     */
+    const roster = listCreators();
+    assert.equal(
+      roster.find((c) => c.id === cooling)?.cooldownUntil,
+      NOW + COOLDOWN_SEC,
+      '★★ 冷却中的博主经 `listCreators` 出来仍是同一条死线（那行 `toCreator` 是这一格唯一的出口）',
+    );
+    assert.equal(
+      roster.find((c) => c.id === healthy)?.cooldownUntil,
+      null,
+      '★ 健康的那个经 `listCreators` 出来是 NULL（不是 0 —— 0 秒是 1970，面板会画"冷却中，至 1970"）',
+    );
   });
 });
 
