@@ -1,12 +1,18 @@
 /**
  * Ranked 共享层（解析 / 派生 / 纯函数）的测试。
- * ⚠️ 夹具是**从真实响应裁下来的**（2026-09-16 实测），字段名逐个照抄 ——
- *    形状写错的话，这一层"宽容"会把整格变成 null，而界面上只表现为一个「—」。
+ * ⚠️ 夹具是**从真实响应裁下来的**（2026-09-16 与 **2026-09-17**（round 3：玩家详情与最近比赛）
+ *    两次实测），字段名逐个照抄 —— 形状写错的话，这一层"宽容"会把整格变成 null，
+ *    而界面上只表现为一个「—」。
  * ⚠️ 本文件里**不许出现真实域名**（上游一律用内联对象，不打网络）。
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { RankedLiveData, RankedLiveMatch, RankedLivePlayer } from '@mcsr/shared/ranked';
+import type {
+  RankedLiveData,
+  RankedLiveMatch,
+  RankedLivePlayer,
+  RankedMatch,
+} from '@mcsr/shared/ranked';
 
 const {
   parseLive,
@@ -14,6 +20,8 @@ const {
   parseWeekly,
   parseHeartbeat,
   parsePhase,
+  parseMatches,
+  parsePlayerDetail,
   parseWeekInput,
   sortLiveMatches,
   sliceLiveMatches,
@@ -21,6 +29,10 @@ const {
   bothStreaming,
   matchesNickname,
   topEloEntries,
+  filterEloUsers,
+  opponentOf,
+  matchOutcome,
+  eloChangeOf,
   rankedLiveChannel,
   displayWeekNo,
   prevWeekId,
@@ -1265,7 +1277,7 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
 });
 
 /* ---------------------------------------------------------------------------
- * 跨**五条**解析函数的判据（spec §11.2 第 1 条）
+ * 跨**七条**解析函数的判据（spec §11.2 第 1 条）
  * ------------------------------------------------------------------------- */
 
 describe('解析是纯函数（spec §11.2 第一条）', () => {
@@ -1276,12 +1288,19 @@ describe('解析是纯函数（spec §11.2 第一条）', () => {
     assert.ok(parseWeekly(WEEKLY_FIXTURE), '这个夹具必须解析得出来');
     assert.ok(parseHeartbeat(HEARTBEAT_FIXTURE), '这个夹具必须解析得出来');
     assert.ok(parsePhase(PHASE_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parseMatches(MATCHES_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parsePlayerDetail(PLAYER_DETAIL_FIXTURE), '这个夹具必须解析得出来');
 
     assert.deepEqual(parseLive(LIVE_FIXTURE), parseLive(LIVE_FIXTURE));
     assert.deepEqual(parseLeaderboard(LEADERBOARD_FIXTURE), parseLeaderboard(LEADERBOARD_FIXTURE));
     assert.deepEqual(parseWeekly(WEEKLY_FIXTURE), parseWeekly(WEEKLY_FIXTURE));
     assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), parseHeartbeat(HEARTBEAT_FIXTURE));
     assert.deepEqual(parsePhase(PHASE_FIXTURE), parsePhase(PHASE_FIXTURE));
+    assert.deepEqual(parseMatches(MATCHES_FIXTURE), parseMatches(MATCHES_FIXTURE));
+    assert.deepEqual(
+      parsePlayerDetail(PLAYER_DETAIL_FIXTURE),
+      parsePlayerDetail(PLAYER_DETAIL_FIXTURE),
+    );
   });
 
   it('★★ 解析与排序都不改上游那份原始响应（不改入参、不就地排序）', () => {
@@ -1304,19 +1323,29 @@ describe('解析是纯函数（spec §11.2 第一条）', () => {
     );
     assert.deepEqual(LIVE_FIXTURE, before, '上游那份原始响应必须一字未改');
 
-    // 另外四个入口同一类缺陷，一起钉：克隆在前、解析在后，逐个比对。
+    // 另外几个入口同一类缺陷，一起钉：克隆在前、解析在后，逐个比对。
     const lbBefore = structuredClone(LEADERBOARD_FIXTURE);
     const weekBefore = structuredClone(WEEKLY_FIXTURE);
     const beatBefore = structuredClone(HEARTBEAT_FIXTURE);
     const phaseBefore = structuredClone(PHASE_FIXTURE);
+    const matchesBefore = structuredClone(MATCHES_FIXTURE);
+    const detailBefore = structuredClone(PLAYER_DETAIL_FIXTURE);
     parseLeaderboard(LEADERBOARD_FIXTURE);
     parseWeekly(WEEKLY_FIXTURE);
     parseHeartbeat(HEARTBEAT_FIXTURE);
     parsePhase(PHASE_FIXTURE);
+    parseMatches(MATCHES_FIXTURE);
+    parsePlayerDetail(PLAYER_DETAIL_FIXTURE);
     assert.deepEqual(LEADERBOARD_FIXTURE, lbBefore, '排行榜那份原始响应必须一字未改');
     assert.deepEqual(WEEKLY_FIXTURE, weekBefore, '周赛那份原始响应必须一字未改');
     assert.deepEqual(HEARTBEAT_FIXTURE, beatBefore, '心跳那份原始响应必须一字未改');
     assert.deepEqual(PHASE_FIXTURE, phaseBefore, '赛段那份原始响应必须一字未改');
+    assert.deepEqual(
+      MATCHES_FIXTURE,
+      matchesBefore,
+      '★★ 比赛列表那份原始响应必须一字未改（`seed.endTowers: null` 也在里面）',
+    );
+    assert.deepEqual(PLAYER_DETAIL_FIXTURE, detailBefore, '玩家详情那份原始响应必须一字未改');
   });
 });
 
@@ -1472,5 +1501,655 @@ describe('进度标识：表 + 未知回落', () => {
     assert.equal(timelineLabel('constructor', t), 'constructor');
     assert.equal(timelineLabel('toString', t), 'toString');
     assert.equal(timelineLabel('hasOwnProperty', t), 'hasOwnProperty');
+  });
+});
+
+/* ===========================================================================
+ * ★★ Round 3（2026-09-17）：行内展开 —— 一位玩家的最近比赛 + 他的汇总
+ * ===========================================================================
+ * 用户 2026-09-19：「点开后能查看最近比赛的情况/数据等」⇒ 展开要读两份响应。
+ * 这一节的两组夹具都是**实测**的（findings §2.1 / §2.2 / §3.1 / §3.2），
+ * 逐字段都有出处；唯一**造**出来的那一行在它自己的注释里点名了（平局那行）。
+ * ========================================================================= */
+
+/**
+ * `/users/edcr/matches?count=100` 的第一行 —— findings §2.1 **逐字**（私人房 type 3）。
+ *
+ * ⚠️★ 它同时是三条红线的载体，改这个夹具前先读它们：
+ *   · `changes: []` —— 32/32 行私人房都是空数组 ⇒ 那一场的 elo 变化是**读不到**，不是 0；
+ *   · `seed.endTowers: null` —— 文档说"未过滤的种子是空数组"，**实测是 `null`**
+ *     （findings 冲突 C1）⇒ 谁在解析里对任何 seed 字段调 `.length` / `.map`，这一行会当场炸；
+ *   · `players[].eloRate: 2349` —— 这是**请求那一刻**的 elo，不是这一场当时的
+ *     （下一行的 `changes[].eloRate: 2342` 才是赛后值，而它俩不一样正是判据）。
+ */
+const MATCH_PRIVATE = {
+  id: 13304815,
+  type: 3,
+  seed: { id: null, overworld: null, nether: null, endTowers: null, variations: [] },
+  category: 'ANY',
+  gameMode: 'default',
+  players: [
+    {
+      uuid: '635f35ee69ed4f0c94ff26ece4818956',
+      nickname: 'edcr',
+      roleType: 1,
+      eloRate: 2349,
+      eloRank: 1,
+      country: 'gb',
+    },
+    {
+      uuid: '410e5776b03a424d8740557bac2d9014',
+      nickname: 'lauveer',
+      roleType: 1,
+      eloRate: 1637,
+      eloRank: 199,
+      country: 'ci',
+    },
+  ],
+  result: { uuid: '635f35ee69ed4f0c94ff26ece4818956', time: 515686 },
+  forfeited: false,
+  vod: [],
+  changes: [],
+  season: 12,
+  date: 1789242779,
+  seedType: null,
+  bastionType: null,
+};
+
+/**
+ * 一场**排位**（type 2，edcr vs Voxio，match `13279218`）—— 字段逐个来自 findings §2.1/§2.2。
+ *
+ * ⚠️★ 这场比赛是"现值 vs 当时值"那条红线的证据本身（findings §2.1 底部第一颗子弹）：
+ *    `players[edcr].eloRate = 2349` 与 `GET /users/edcr` **今天**回的是同一个数
+ *    （= 现值），而 `changes[edcr].eloRate = 2342` 才是**赛后**值。
+ *    ⇒ 界面要显示"这一场涨了 7 分"就只能用 `changes[]`；
+ *      而 `date`（2026-09-11）与 `players[].eloRate`（今天）**不是同一时刻**的数。
+ */
+const MATCH_RANKED = {
+  id: 13279218,
+  type: 2,
+  seed: {
+    id: 'mtf2yoaiujmokqvb',
+    overworld: 'BURIED_TREASURE',
+    nether: 'STABLES',
+    endTowers: [94],
+    variations: ['biome:structure:deep_cold_ocean'],
+  },
+  category: 'ANY',
+  gameMode: 'default',
+  players: [
+    {
+      uuid: '817a3f2e92da42ab89c64a787ce16d28',
+      nickname: 'Voxio',
+      roleType: 1,
+      eloRate: 1757,
+      eloRank: 86,
+      country: 'fr',
+    },
+    {
+      uuid: '635f35ee69ed4f0c94ff26ece4818956',
+      nickname: 'edcr',
+      roleType: 1,
+      eloRate: 2349,
+      eloRank: 1,
+      country: 'gb',
+    },
+  ],
+  result: { uuid: '635f35ee69ed4f0c94ff26ece4818956', time: 597266 },
+  forfeited: false,
+  vod: [
+    {
+      uuid: '817a3f2e92da42ab89c64a787ce16d28',
+      url: 'https://www.twitch.tv/videos/2871547177',
+      startsAt: 1789159348,
+    },
+  ],
+  changes: [{ uuid: '635f35ee69ed4f0c94ff26ece4818956', change: 7, eloRate: 2342 }],
+  season: 12,
+  date: 1789169286,
+  seedType: 'BURIED_TREASURE',
+  bastionType: 'STABLES',
+};
+
+/**
+ * ★ **平局**那一行 —— 这一行是我们**造的**，造的只有两格，都是实测的事实。
+ *
+ * findings §2.1：`result.uuid` 在 100 行里有 **3 行是 `null`**（ids `13304036` / `13303161` /
+ * `13163525`），而 `result.time` 从来没有 null 过。那三行的原始 body 没有被单独存下来，
+ * 所以这里取第一行的形状 + `id` 换成其中一个、`result.uuid` 换成 `null`，
+ * **其余一个字节不改**（它只用来钉 `matchOutcome` 的 `'draw'` 那一支，
+ * 以及"平局不是把结果折成 null"这件事）。
+ */
+const MATCH_DRAW = {
+  ...MATCH_PRIVATE,
+  id: 13304036,
+  result: { uuid: null, time: MATCH_PRIVATE.result.time },
+};
+
+/** `parseMatches` 的那一份响应：三行（私人房 / 排位 / 平局）。 */
+const MATCHES_FIXTURE = { status: 'success', data: [MATCH_PRIVATE, MATCH_RANKED, MATCH_DRAW] };
+
+/**
+ * 夹具里的第 `index` 场（0 = 私人房 / 1 = 排位 / 2 = 平局）。
+ *
+ * ⚠️ 为什么要有这个助手：`noUncheckedIndexedAccess` 让下标访问一律带上 `| undefined`
+ *    （本仓 tsconfig 就是这么开的）⇒ 直接下标访问会把 `RankedMatch | undefined`
+ *    传进下面那些纯函数，而那是**编译错误**。这里取不到就当场红（而不是 `as` 硬转 ——
+ *    硬转会让"夹具空了"变成一个更难读的运行时错）。
+ */
+function matchAt(index: number): RankedMatch {
+  const match = parseMatches(MATCHES_FIXTURE)?.[index];
+  assert.ok(match, `夹具里必须有第 ${index} 场`);
+  return match;
+}
+
+/** 一份**临时拼的**夹具里的第一场（取不到就当场红，理由同上）。 */
+function firstMatchOf(raw: unknown): RankedMatch {
+  const match = parseMatches(raw)?.[0];
+  assert.ok(match, '这个临时夹具必须解析得出来');
+  return match;
+}
+
+/**
+ * `GET /users/edcr` —— findings §3.1/§3.2 的实测值（2026-09-17）。
+ *
+ * ⚠️ `statistics` 只抄了我们要读的四格，但每一格的**两个格子都留着**（`{ranked, casual}`）：
+ *    "取哪一个"正是判据本身 —— 取 `casual` 的实现在 `loses` 上会拿到 `1`（total 那一块）
+ *    而不是 `1809`，而那个数看起来完全正常。
+ */
+const PLAYER_DETAIL_FIXTURE = {
+  status: 'success',
+  data: {
+    uuid: '635f35ee69ed4f0c94ff26ece4818956',
+    nickname: 'edcr',
+    roleType: 1,
+    eloRate: 2349,
+    eloRank: 1,
+    country: 'gb',
+    seasonResult: { last: { eloRate: 2349, eloRank: 1 }, highest: 2385, lowest: 1670, phases: [] },
+    statistics: {
+      season: {
+        bestTime: { ranked: 387772, casual: null },
+        playedMatches: { ranked: 110, casual: 0 },
+        wins: { ranked: 96, casual: 0 },
+        loses: { ranked: 14, casual: 0 },
+      },
+      total: {
+        bestTime: { ranked: 353371, casual: null },
+        playedMatches: { ranked: 5357, casual: 2 },
+        wins: { ranked: 3448, casual: 0 },
+        loses: { ranked: 1809, casual: 1 },
+      },
+    },
+  },
+};
+
+const SELF_UUID = '635f35ee69ed4f0c94ff26ece4818956';
+/** 私人房那一行（`MATCH_PRIVATE` = match `13304815`）的对手：lauveer。 */
+const PRIVATE_RIVAL_UUID = '410e5776b03a424d8740557bac2d9014';
+/** 排位那一行（`MATCH_RANKED` = match `13279218`）的对手：Voxio。 */
+const RANKED_RIVAL_UUID = '817a3f2e92da42ab89c64a787ce16d28';
+
+describe('parseMatches：三行 / 行级丢弃 / 整份不成形状', () => {
+  it('★ 正常：三行都读得出来，逐格照抄（时间单位也在判据里）', () => {
+    const matches = parseMatches(MATCHES_FIXTURE);
+    assert.ok(matches);
+    assert.equal(matches.length, 3);
+    const [first] = matches;
+    assert.equal(first?.id, 13304815);
+    assert.equal(first?.type, 3);
+    assert.equal(first?.season, 12);
+    /*
+     * ⚠️★ `date` 是**秒**（上游的 `Date` 一律是秒）：`1789242779 × 1000` = 2026-09-13 那次实测
+     *    能对上的时刻。按毫秒解释会得到 1970 年 —— 而界面上只是一个"很旧的日期"。
+     */
+    assert.equal(first?.date, 1789242779);
+    /*
+     * ⚠️ `result.time` 是**毫秒**（同一个响应里两种单位并存，这就是那条规矩存在的理由）：
+     *    515686 ms = 8:35.686。
+     */
+    assert.equal(first?.result.time, 515686);
+    assert.equal(matches[0]?.result.uuid, SELF_UUID);
+    // 私人房的两格文案字段：实测是 null（那时整个 seed 都是空的）
+    assert.equal(first?.seedType, null);
+    assert.equal(first?.bastionType, null);
+    // 排位那一场有 seedType / bastionType（与 seed.overworld / .nether 同值）
+    assert.equal(matches[1]?.seedType, 'BURIED_TREASURE');
+    assert.equal(matches[1]?.bastionType, 'STABLES');
+    assert.equal(matches[1]?.vod.length, 1);
+    assert.equal(matches[1]?.vod[0]?.startsAt, 1789159348, '★ `vod[].startsAt` 也是**秒**');
+  });
+
+  it('★★ `changes: []` 保留成空数组（不折成 null）—— "这一场读不到"与"没变化"是两句话', () => {
+    const matches = parseMatches(MATCHES_FIXTURE);
+    assert.deepEqual(matches?.[0]?.changes, [], '私人房：空数组');
+    assert.deepEqual(
+      matches?.[1]?.changes,
+      [{ uuid: SELF_UUID, change: 7, eloRate: 2342 }],
+      '排位：有那一条记录（`eloRate` 是**赛后**值）',
+    );
+    assert.deepEqual(matches?.[2]?.changes, [], '平局那一行照第一行（空数组）');
+  });
+
+  it('★★ `players[].eloRate` 是**现值**、`changes[].eloRate` 是**赛后**值（两者不是同一个数）', () => {
+    /*
+     * ⚠️★ 这一条是那条红线的判据（findings §2.1 底部）：同一场比赛里
+     *    `players[edcr].eloRate` 是 2349（**今天**的值）而 `changes[edcr].eloRate` 是 2342（赛后）。
+     *    把前者当成"当时的 elo"渲染，就会出现"当时 2349、赛后 2342、变化 +7"这种
+     *    **自相矛盾但看不出来**的格子（三个数都是真的，只是其中一个不属于那一刻）。
+     *    解析层能做的是**不改名、不加算**：这两个数各自留着自己的出处。
+     */
+    const matches = parseMatches(MATCHES_FIXTURE);
+    const ranked = matches?.[1];
+    assert.equal(ranked?.players[1]?.eloRate, 2349, '★ 玩家块 = **现在**的值');
+    assert.equal(ranked?.changes[0]?.eloRate, 2342, '★ 变化块 = **赛后**的值');
+    assert.notEqual(
+      ranked?.players[1]?.eloRate,
+      ranked?.changes[0]?.eloRate,
+      '★ 探针：这一场比赛里两个数确实不同（否则上面两条是空跑）',
+    );
+  });
+
+  it('★★ `result.uuid: null` 照抄成 null（平局是上游的写法，不是我们的兜底）', () => {
+    const matches = parseMatches(MATCHES_FIXTURE);
+    assert.equal(matches?.[2]?.result.uuid, null);
+  });
+
+  it('★★ 坏行被丢掉、好行照旧（`id` 不是有限数字的行没有身份）', () => {
+    /*
+     * ⚠️ 丢掉的理由：没有 id 的行不能做 React key、也不能展开（展开会去打 `/matches/NaN`），
+     *    而"第几行"是我们**编**出来的编号（编出来的 key 在重排时会把两场比赛的状态串在一起）。
+     * ⚠️ 代价：这几行在界面上**消失**（不是整份"读不到"，也不是一个假数字）——
+     *    所以界面上那句「最近 N 场」要读**返回值**的长度，不是读请求里的 `count`。
+     */
+    const withBadRows = {
+      status: 'success',
+      data: [
+        { ...MATCH_PRIVATE, id: '13304815' },
+        MATCH_PRIVATE,
+        { ...MATCH_PRIVATE, id: null },
+        { ...MATCH_RANKED, id: Number.NaN },
+        MATCH_DRAW,
+      ],
+    };
+    const matches = parseMatches(withBadRows);
+    assert.ok(matches);
+    assert.deepEqual(
+      matches.map((m) => m.id),
+      [13304815, 13304036],
+      '★★ 三行没有身份的被丢掉，两行好的**照旧**（顺序也没变）',
+    );
+  });
+
+  it('★★ `players` 是空数组 ⇒ 丢掉那一行（"这一场没有人"不是一场比赛）', () => {
+    const matches = parseMatches({
+      status: 'success',
+      data: [{ ...MATCH_PRIVATE, players: [] }, MATCH_RANKED],
+    });
+    assert.deepEqual(
+      matches?.map((m) => m.id),
+      [13279218],
+    );
+  });
+
+  it('★★ 缺 `result` 的一行**丢掉**（否则"读不到结果"会变成"平局"）', () => {
+    /*
+     * ⚠️★ 这一条守的是 `RankedMatch.result` 那个 `uuid: null` 的**含义**：
+     *    我们的形状只有一种写法能表达"上游说平局"，而"这一行根本没有 result"
+     *    是另一件事（我们不知道谁赢了）。让它落进 `uuid: null` 就是把"不知道"印成"平局"，
+     *    而平局在界面上是一个看起来完全正常的结果。
+     */
+    const withoutResult: Record<string, unknown> = { ...MATCH_PRIVATE };
+    delete withoutResult.result;
+    const matches = parseMatches({ status: 'success', data: [withoutResult, MATCH_PRIVATE] });
+    assert.deepEqual(
+      matches?.map((m) => m.id),
+      [13304815],
+      '★★ 缺 result 的丢掉、好的照旧 —— 而且它**不会**变成一行平局',
+    );
+  });
+
+  it('★ 整份不成形状 ⇒ null（三条判据）', () => {
+    assert.equal(parseMatches({ status: 'error', data: [] }), null, 'status 不是 success');
+    /*
+     * ⚠️★ `data` 不是数组 ⇒ 整份 null。这一条同时钉住了"这个端点**不能**走 `envelope()`"：
+     *    那一支用 `rec(data)` 读它，而数组会被 `rec` 判成"不是对象" ⇒ 好数据变 null。
+     */
+    assert.equal(parseMatches({ status: 'success', data: { matches: [] } }), null);
+    assert.equal(parseMatches(null), null);
+    assert.equal(parseMatches('<html>'), null);
+  });
+
+  it('★ 空数组是**一份好数据**（上游对空结果是 200 + `data: []`），不是 null', () => {
+    assert.deepEqual(parseMatches({ status: 'success', data: [] }), []);
+  });
+
+  it('★ 一格坏只坏那一格（玩家 elo 是文本 / vod 地址不是 http）', () => {
+    /*
+     * 宽容解析的第②档：`eloRate` 在类型里可空 ⇒ 那一格是 null，整行照旧；
+     * `vod[].url` 要进界面的 `href` ⇒ 只认 http(s)（`javascript:` 是被丢掉的那一条，
+     * 与 `embed.ts` 的 `rankedLiveChannel` 同一条规矩），而**那一行还在**。
+     */
+    const messy = parseMatches({
+      status: 'success',
+      data: [
+        {
+          ...MATCH_PRIVATE,
+          players: [
+            { ...MATCH_PRIVATE.players[0], eloRate: '2349' },
+            { ...MATCH_PRIVATE.players[1], eloRank: null },
+          ],
+          vod: [
+            { uuid: 'x', url: 'javascript:alert(1)', startsAt: 1 },
+            { uuid: 'y', url: '', startsAt: 1 },
+            { uuid: 'z', url: 'https://example.invalid/v/1', startsAt: 1 },
+          ],
+        },
+      ],
+    });
+    assert.equal(messy?.length, 1, '★ 这几格坏了**不丢行**');
+    assert.equal(messy?.[0]?.players[0]?.eloRate, null, '★ 文本不是数 ⇒ null（不是 0）');
+    assert.equal(messy?.[0]?.players[0]?.nickname, 'edcr', '★ 同一行别的格照旧');
+    assert.deepEqual(
+      messy?.[0]?.vod.map((v) => v.uuid),
+      ['z'],
+      '★★ 只留下 http(s) 的那一条（伪协议与空串都不进 href），而那**一行**还在',
+    );
+  });
+
+  it('★ `seed.endTowers: null`（文档说反了的那一格）不影响解析', () => {
+    /*
+     * ⚠️ findings 冲突 C1：文档说"未过滤的种子这里是空数组"，**实测是 `null`**。
+     *    这一层一个 seed 字段都不读 ⇒ 这条夹具（`null`）与那条（`[94]`）都能过。
+     *    谁哪天顺手加一句 `seed.endTowers.length`，这一条会**当场抛错**（不是静默）。
+     */
+    const matches = parseMatches({
+      status: 'success',
+      data: [
+        { ...MATCH_PRIVATE, seed: { id: null, overworld: null, nether: null, endTowers: null } },
+        MATCH_RANKED,
+      ],
+    });
+    assert.equal(matches?.length, 2);
+  });
+});
+
+describe('parsePlayerDetail：六格 / 一格坏 / 整份不成形状', () => {
+  it('★ 正常：`seasonHighest` 取的是 `seasonResult.highest`（不在外层）', () => {
+    const detail = parsePlayerDetail(PLAYER_DETAIL_FIXTURE);
+    assert.ok(detail);
+    assert.equal(detail.uuid, SELF_UUID);
+    assert.equal(detail.nickname, 'edcr');
+    assert.equal(detail.eloRate, 2349);
+    assert.equal(detail.eloRank, 1);
+    assert.equal(detail.seasonHighest, 2385, '★ 本赛季最高（实测 2385）');
+  });
+
+  it('★★ 战绩取的是 `ranked` 那一半，**不是** `casual`（两个格子都在夹具里）', () => {
+    /*
+     * ⚠️★ 上游每个叶子都是 `{ranked, casual}`，而这一栏是 **ranked** 排位榜的展开。
+     *    取错那一半的两个数都"看起来正常"：`total.loses` 会是 1（casual）而不是 1809，
+     *    `total.playedMatches` 会是 2 而不是 5357 —— 没有任何门禁看得见。
+     */
+    const detail = parsePlayerDetail(PLAYER_DETAIL_FIXTURE);
+    assert.deepEqual(detail?.season, {
+      wins: 96,
+      loses: 14,
+      playedMatches: 110,
+      bestTimeMs: 387772,
+    });
+    assert.deepEqual(detail?.total, {
+      wins: 3448,
+      loses: 1809,
+      playedMatches: 5357,
+      bestTimeMs: 353371,
+    });
+    assert.notEqual(
+      detail?.total.loses,
+      (PLAYER_DETAIL_FIXTURE.data.statistics.total.loses as { casual: number }).casual,
+      '★ 探针：这一格里两个数确实不同（否则上面那条是空跑）',
+    );
+  });
+
+  it('★ 未定级玩家：`eloRate` / `eloRank` 是 null，而**详情照样成立**', () => {
+    /*
+     * ⚠️ 未定级是**真实状态**（实测 `/users/inoutoftherain` 两格都是 null），不是坏数据 ⇒
+     *    它不是整份的骨架（骨架是 uuid + nickname）⇒ 界面上印「—」，别的格照旧。
+     */
+    const unplaced = parsePlayerDetail({
+      ...PLAYER_DETAIL_FIXTURE,
+      data: { ...PLAYER_DETAIL_FIXTURE.data, eloRate: null, eloRank: null },
+    });
+    assert.ok(unplaced);
+    assert.equal(unplaced.eloRate, null);
+    assert.equal(unplaced.eloRank, null);
+    assert.equal(unplaced.season.wins, 96, '★ 同一份里的战绩照旧');
+  });
+
+  it('★ 一格坏只坏那一格：没有 `statistics` ⇒ 两份战绩四格全 null（详情还在）', () => {
+    const noStats = parsePlayerDetail({
+      status: 'success',
+      data: { uuid: SELF_UUID, nickname: 'edcr', eloRate: 2349, eloRank: 1 },
+    });
+    assert.ok(noStats, '★ 缺 statistics **不是**整份失败');
+    assert.deepEqual(noStats.season, {
+      wins: null,
+      loses: null,
+      playedMatches: null,
+      bestTimeMs: null,
+    });
+    assert.deepEqual(noStats.total, {
+      wins: null,
+      loses: null,
+      playedMatches: null,
+      bestTimeMs: null,
+    });
+    assert.equal(noStats.seasonHighest, null, '★ 缺 seasonResult ⇒ 那一格 null');
+  });
+
+  it('★ 缺一格的战绩：`wins` 读得出、`loses` 读不出 ⇒ 只有那一格是 null', () => {
+    const partial = parsePlayerDetail({
+      status: 'success',
+      data: {
+        uuid: SELF_UUID,
+        nickname: 'edcr',
+        statistics: { season: { wins: { ranked: 96 }, loses: { casual: 3 } } },
+      },
+    });
+    assert.equal(partial?.season.wins, 96);
+    assert.equal(
+      partial?.season.loses,
+      null,
+      '★ `loses.ranked` 不在 ⇒ null（**不是** 0，也不是 casual 的 3）',
+    );
+    assert.equal(partial?.season.playedMatches, null);
+  });
+
+  it('★ 整份不成形状 ⇒ null（四条判据，骨架是 uuid + nickname）', () => {
+    assert.equal(parsePlayerDetail({ status: 'error', data: {} }), null, 'status 不是 success');
+    assert.equal(parsePlayerDetail({ status: 'success' }), null, '缺 data');
+    assert.equal(
+      parsePlayerDetail({ status: 'success', data: { nickname: 'edcr' } }),
+      null,
+      '缺 uuid（没有身份的一份响应归属不到任何一行）',
+    );
+    assert.equal(
+      parsePlayerDetail({ status: 'success', data: { uuid: SELF_UUID } }),
+      null,
+      '缺 nickname',
+    );
+  });
+});
+
+describe('④ 之外：行内展开的四个纯函数', () => {
+  /** 排行榜用的那份夹具的简写（`RankedEloEntry` 只有五格）。 */
+  const board = [
+    { rank: 1, nickname: 'edcr', eloRate: 2349, highest: 2385, phasePoint: 0 },
+    { rank: 3, nickname: 'Voxio', eloRate: 1757, highest: 1800, phasePoint: 10 },
+    { rank: 3, nickname: 'lowk3y_', eloRate: 1757, highest: 1760, phasePoint: 10 },
+    { rank: 9, nickname: null, eloRate: null, highest: null, phasePoint: null },
+  ];
+
+  it('★★ `filterEloUsers`：子串、忽略大小写', () => {
+    assert.deepEqual(
+      filterEloUsers(board, 'vox').map((u) => u.nickname),
+      ['Voxio'],
+      '★ 小写查大写',
+    );
+    assert.deepEqual(
+      filterEloUsers(board, 'VOX').map((u) => u.nickname),
+      ['Voxio'],
+      '★ 大写查大写',
+    );
+    assert.deepEqual(
+      filterEloUsers(board, 'k3y').map((u) => u.nickname),
+      ['lowk3y_'],
+      '★ 子串（不是前缀、不是精确）',
+    );
+  });
+
+  it('★★ 空白 / 空串 ⇒ **不筛**（原样返回，内容与顺序都不动）', () => {
+    /*
+     * ⚠️ 连 `trim()` 都不做的实现会让"只打了个空格"变成"一个人都没有"——
+     *    而输入框里那一眼看上去就是空的（用户只会以为榜单坏了）。
+     */
+    assert.deepEqual(filterEloUsers(board, ''), board);
+    assert.deepEqual(filterEloUsers(board, '   '), board);
+    assert.equal(filterEloUsers(board, '\t\n').length, board.length);
+  });
+
+  it('★★ **不重排**：筛出来的行保持上游顺序（排名列就是上游给的那个数）', () => {
+    /*
+     * ⚠️★ 榜单的顺序是上游按 `eloRank` 排的，而"第几名"那一列就是上游的数
+     *    （并列会重复、之后跳号）。重排（比如把命中的排到前面）会让行序与排名列对不上，
+     *    而那看起来像是**上游的排名有问题** —— 没人会怀疑搜索框。
+     * ⚠️ 这条夹具里两行的 `rank` 都是 3（并列），所以"按 rank 再排一次"也看不出来 ——
+     *    判据是"与入参顺序逐项相同"，它对任何重排都免疫。
+     */
+    const hit = filterEloUsers(board, 'o'); // Voxio / lowk3y_ 都命中，且它们的 rank 相同
+    assert.deepEqual(
+      hit.map((u) => u.nickname),
+      ['Voxio', 'lowk3y_'],
+      '★★ 顺序照入参（Voxio 在前），不是按 rank 或字母序重排',
+    );
+  });
+
+  it('★ 昵称是 null 的行**匹配不上**任何非空查询（不是"空昵称匹配一切"）', () => {
+    assert.deepEqual(filterEloUsers(board, 'z'), []);
+    assert.equal(
+      filterEloUsers(board, 'edcr').some((u) => u.nickname === null),
+      false,
+    );
+  });
+
+  it('★ 不改入参、两个分支都回**新数组**', () => {
+    /*
+     * ⚠️ 与文件头那条规矩同源：调用方那份 `users` 要留给"上次刷新失败了，下面是旧数据"用。
+     *    交出同一个引用等于把两份数据绑在一起（谁往后 `sort` 一下都会改到原始那 150 行）。
+     */
+    const before = structuredClone(board);
+    const all = filterEloUsers(board, '');
+    const some = filterEloUsers(board, 'edcr');
+    assert.notEqual(all, board, '★ 不筛时也是**新数组**（文件头：一律 `[...]` / `slice`）');
+    assert.notEqual(some, board);
+    assert.deepEqual(board, before, '★★ 入参一个字节都没动');
+  });
+
+  it('★★ `opponentOf`：他不在这一场里 ⇒ null（**不许**把陌生人当成对手）', () => {
+    const ranked = matchAt(1);
+    assert.equal(opponentOf(ranked, SELF_UUID)?.nickname, 'Voxio', '★ 另一个人');
+    assert.equal(opponentOf(ranked, RANKED_RIVAL_UUID)?.nickname, 'edcr', '★ 反过来也成立');
+    assert.equal(
+      opponentOf(matchAt(0), SELF_UUID)?.nickname,
+      'lauveer',
+      '★ 私人房那一行（另一份夹具）同样对得上',
+    );
+    /*
+     * ⚠️★ 这一条是"判据先看他在不在场"的落点：他不在 `players[]` 里时，
+     *    "uuid 不等于 self 的那一个"会把 `players[0]` 当成他的对手 ——
+     *    一个**陌生人**被印成他的对手，而那个名字看起来完全正常。
+     */
+    assert.equal(opponentOf(ranked, 'nobody-in-this-match'), null, '★★ 他不在这一场里 ⇒ null');
+    // ⚠️ 探针：那份夹具里两个 uuid 确实都不是"他"（否则上面那条是空跑）
+    assert.notEqual(PRIVATE_RIVAL_UUID, RANKED_RIVAL_UUID);
+  });
+
+  it('★ `opponentOf`：只有他自己（1 人的行）⇒ null（没有对手）', () => {
+    const solo = firstMatchOf({
+      status: 'success',
+      data: [{ ...MATCH_PRIVATE, players: [MATCH_PRIVATE.players[0]] }],
+    });
+    assert.equal(opponentOf(solo, SELF_UUID), null);
+  });
+
+  it('★★ `matchOutcome`：赢 / 输 / 平局 / 读不到（四档都要有）', () => {
+    const [priv, ranked, draw] = [matchAt(0), matchAt(1), matchAt(2)];
+    assert.equal(matchOutcome(ranked, SELF_UUID), 'win', '★ `result.uuid` 是他自己');
+    assert.equal(matchOutcome(ranked, RANKED_RIVAL_UUID), 'loss', '★ 对手视角');
+    assert.equal(matchOutcome(draw, SELF_UUID), 'draw', '★ `result.uuid === null` 是平局');
+    assert.equal(matchOutcome(priv, 'nobody-in-this-match'), 'unknown', '★ 他不在这一场里');
+  });
+
+  it('★★ 判据顺序：他不在场**且**结果是 null ⇒ `unknown`（不是"平局"）', () => {
+    /*
+     * ⚠️★ 这一条是两个顺序唯一分得开的地方（自己裁决的那一条）：
+     *    先看 `result.uuid` 的实现会在这里回 `'draw'` —— 也就是把
+     *    "这个人与这一行对不上"说成"他打平了"。而"他打平了"是一件我们**并不知道**的事，
+     *    它还会直接改掉用户对这位玩家水平的判断（平局在战绩里看起来完全正常）。
+     */
+    const draw = matchAt(2);
+    assert.equal(draw.result.uuid, null, '★ 夹具确实是"结果是 null"的那一行');
+    assert.equal(
+      matchOutcome(draw, 'nobody-in-this-match'),
+      'unknown',
+      '★★ 人不在场 ⇒ unknown（先问在场，再看结果）',
+    );
+  });
+
+  it('★ `eloChangeOf`：有他的记录 ⇒ 那个数（赛后 +7）', () => {
+    assert.equal(eloChangeOf(matchAt(1), SELF_UUID), 7);
+  });
+
+  it('★★ `eloChangeOf`：私人房（`changes: []`）⇒ `null`（**不是 0**）', () => {
+    /*
+     * ⚠️★ 私人房的 `changes[]` 实测**恒为空数组**（32/32 行，findings §2.1）：
+     *    这里回 0 的话，界面上会出现"这一场 +0"—— 一个**看起来完全正常**的结论，
+     *    而真相是"私人房根本不上报 elo 变化"（我们读不到那一格）。
+     *    ⇒ 这一条与下一条是本轮"绝不为缺失值填 0"那条纪律的落点，
+     *      两条**各自一个用例**：合成一个的话，前一条失败会把后一条挡住。
+     */
+    assert.equal(eloChangeOf(matchAt(0), SELF_UUID), null, '★★ 私人房读不到 ⇒ null，不是 0');
+    assert.equal(eloChangeOf(matchAt(2), SELF_UUID), null, '★ 平局那一行同理');
+  });
+
+  it('★ `eloChangeOf`：`changes[]` 里**没有他**那一条 ⇒ `null`', () => {
+    assert.equal(
+      eloChangeOf(matchAt(1), RANKED_RIVAL_UUID),
+      null,
+      '★ 那一条记录里没有这个 uuid ⇒ null',
+    );
+  });
+
+  it('★★ placement（`change: null`）⇒ `null`，不是 0', () => {
+    /*
+     * ⚠️ 上游文档：定级赛的 `change` / `eloRate` 是 null（`DOCUMENTED, NOT MEASURED` ——
+     *    100 行实测里没有一行是 placement）。我们照文档留了 `| null`：
+     *    真遇到时那一格说「—」，而不是"这一场 +0"。
+     */
+    const placement = firstMatchOf({
+      status: 'success',
+      data: [
+        {
+          ...MATCH_RANKED,
+          changes: [{ uuid: SELF_UUID, change: null, eloRate: null }],
+        },
+      ],
+    });
+    assert.equal(eloChangeOf(placement, SELF_UUID), null);
+    assert.equal(
+      matchOutcome(placement, SELF_UUID),
+      'win',
+      '★ 结果与变化是两件事：结果照样读得出来',
+    );
   });
 });

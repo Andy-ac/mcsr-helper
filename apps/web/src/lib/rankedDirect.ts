@@ -55,7 +55,9 @@
 import {
   parseLeaderboard,
   parseLive,
+  parseMatches,
   parsePhase,
+  parsePlayerDetail,
   parseWeekly,
   RANKED_FETCH_HEADERS,
   RANKED_FETCH_OPTIONS,
@@ -63,7 +65,9 @@ import {
   RANKED_UPSTREAM_PRIMARY,
   type RankedEloData,
   type RankedLiveData,
+  type RankedMatch,
   type RankedPhaseData,
+  type RankedPlayerDetail,
   type RankedWeeklyData,
 } from '@mcsr/shared/ranked';
 
@@ -76,6 +80,45 @@ const PATH_LEADERBOARD = '/leaderboard';
 /** ★ 2026-09-19 加的那一条：赛段的号数与截止时间（实测 93 字节，`/leaderboard` 里没有）。 */
 const PATH_PHASE = '/phase-leaderboard';
 const PATH_WEEKLY = '/weekly-race';
+
+/** `/users/{昵称}` 与它的 `/matches`（用户 2026-09-19：「点开看最近比赛」+「搜索玩家」）。 */
+const PATH_USERS = '/users';
+
+/**
+ * `/users/{昵称}` —— 「回车精确查一位玩家」那一次请求的路径（**纯函数**，测试直接断言字符串）。
+ *
+ * ⚠️★ 必须 `encodeURIComponent`，**不是** `URLSearchParams` / 表单编码：
+ *    实测（findings §1.1 的 `[Ranked Bot]` 那张表）空格**只有** `%20` 能被解成空格，
+ *    `+` **不**被解 —— `/users/%5BRanked+Bot%5D` 回 400「User is not exists.」，
+ *    而 `/users/%5BRanked%20Bot%5D` 回 200。用 `+` 的话，唯一那个名字里带空格的玩家
+ *    **永远查不到**，而界面上那句话是「没有这个玩家」—— 一句**我们编出来的假话**
+ *    （他确实存在，只是我们问错了写法）。
+ * ⚠️ 上游的查询是**精确匹配、大小写不敏感**（`lowk3y` 查不到 `lowk3y_`），
+ *    所以这个函数只负责"把用户敲的字原样送进去"，不做任何规范化（大写/小写/去空格）——
+ *    规范化会把一次"查得到"变成一次"查不到"（`[Ranked Bot]` 去掉方括号就不存在了）。
+ */
+export function rankedUserPath(nickname: string): string {
+  return `${PATH_USERS}/${encodeURIComponent(nickname)}`;
+}
+
+/**
+ * `/users/{昵称}/matches?count=N` —— 展开抽屉的第二份数据（这位玩家的最近比赛）。
+ *
+ * ⚠️★ `count` 上游**是硬校验的**（findings §1.2）：合法区间 1..100、默认 20，
+ *    而 `0` / `-1` / `101` / `abc` 一律 **400**（body 里带着 "Too small" / "Too big" /
+ *    "Must be an integer" 那几句）—— 与 `/leaderboard` 的 `count` 被**静默忽略**完全不同。
+ * ⇒ 这里**不夹**这个数（不去"帮"调用方把它掰回区间）：夹了以后调用方以为
+ *    "我请求了 100 条"，而它拿到的其实是别的条数 —— 一个**看起来成功**的错。
+ *    越界时上游回 400，`getJson` 把它归进 `http`（那句话里带着**真的**状态码）。
+ * ⚠️ 也不做 NaN / 小数检查：`String(NaN)` 是 `"NaN"`，上游一样回 400（同上）。
+ *    调用点给的是一个常量，这条兜底只保证"不在这里编一个数出来"。
+ * ⚠️ **不传** `sort`（默认 `newest`：实测就是 id 降序 = 最近的在前，那正是"最近比赛"），
+ *    也不传 `type` / `season` / `before` / `after` / `excludedecay`：
+ *    这一栏要的就是"他最近的几场"，而每多一个参数就多一种没人验证过的上游行为。
+ */
+export function rankedMatchesPath(nickname: string, count: number): string {
+  return `${rankedUserPath(nickname)}/matches?count=${String(count)}`;
+}
 
 /**
  * 上游那一侧失败的**五种**原因。
@@ -118,6 +161,41 @@ export class RankedDirectError extends Error {
     this.name = 'RankedDirectError';
     this.reason = reason;
     this.status = status;
+  }
+}
+
+/**
+ * 上游对**这个昵称**的回答：查无此人 / 昵称不合法。
+ *
+ * ⚠️ 上游对"查无此人"回的是 **400 而不是 404**（实测，findings §6），
+ *    而两种 400 的 body **完全不一样**（判据写在 `lookupErrorFromResponse` 上）——
+ *    它们在界面上是两句话（「没有这个玩家」/「这个昵称不合法」，见 `lib/rankedErrors.ts`）。
+ */
+export type RankedLookupKind = 'not_found' | 'invalid_identifier';
+
+/**
+ * 「**这个昵称**有问题」那一族失败。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 它与 `RankedDirectError` 是**两族**东西，故意不互相继承
+ * ---------------------------------------------------------------------------
+ * `RankedDirectError` 的每一档说的都是"**这一次请求**没成功"（连不上 / 上游回了别的状态码 /
+ * 响应读不懂 / 被限流）—— 那几句话的方向都是"**重试可能有用**"；
+ * 而这一族说的是"**这个昵称**不存在 / 上游不收"，重试**永远是白试一次**
+ * （上游的查询是精确匹配：`lowk3y` 查不到 `lowk3y_`，findings §6 末段）。
+ * ⇒ 如果它继承 `RankedDirectError`，仓里每一个 `instanceof RankedDirectError`
+ *   （包括 `lib/rankedErrors.ts` 那张表）都会把它当成"上游回了一个错误"，
+ *   用户读到的就是一句**方向错了**的话："稍后再试"——而再试一百次也是同一个结果。
+ * ⚠️ `kind` 是**两格**的联合（不是一个字符串）：渲染层要按它分两句话说，
+ *    而多出来的 kind 会在这里当场编译不过。
+ */
+export class RankedLookupError extends Error {
+  readonly kind: RankedLookupKind;
+
+  constructor(kind: RankedLookupKind, message: string) {
+    super(message);
+    this.name = 'RankedLookupError';
+    this.kind = kind;
   }
 }
 
@@ -170,6 +248,80 @@ function endpoint(base: string, path: string): string {
 }
 
 /**
+ * 「这是一个对象吗」—— 与 `parse.ts` 里那个同名助手**逐字同形**（那一份是模块私有的）。
+ * ⚠️ 数组要排掉：`typeof [] === 'object'`，而 `[]?.['error']` 取得到东西的写法
+ *    会让一份"本该是对象却是数组"的 body 被读成一堆编号字段（而且读不出错）。
+ */
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * 「这一次非 2xx，你认得出来吗」—— `getJson` 的钩子。
+ *
+ * 返回一个 `Error` 就抛它；返回 `null` 表示"我不认识这一种"，`getJson` 继续走既有那三条判据
+ * （周赛 400 ⇒ `not_found`、429 ⇒ `rated`、其余 ⇒ `http`）。
+ * ⚠️ 钩子收的是**整个 Response**（不是状态码）：今天要用它的那两档**状态码完全一样**
+ *    （都是 400），分得开它们的东西只在 body 里 —— 而 body 只能读一次，
+ *    所以"谁来读"必须只有一处（读两次会抛 `Body is unusable`）。
+ */
+type NotOkHandler = (response: Response) => Promise<Error | null>;
+
+/**
+ * 上游「查无此人 / 昵称不合法」的**两种 400**（实测，findings §1.1 与 §6）。
+ *
+ * 判据是 body 里的**字段**，不是任何一句英文原文（原文是上游的文案，它会变；结构不会）：
+ *   · `{"status":"error","data":{"error":"User is not exists."}}` ⇒ `not_found`
+ *   · `{"status":"error","data":{"params":{"identifier":["Invalid user identifier"]}}}` ⇒ `invalid_identifier`
+ *     ⚠️ 实测这条的**边界是 20 个字符**（`q`×20 ⇒ 前者、`q`×21 ⇒ 后者），
+ *     而 `discord.338669823167037440`（26 字符）**仍然 200** ⇒
+ *     这是"标识符的**形式**"被拒，不是"昵称最长 20 字"这条通用规则（我们只说上游回的那一种）。
+ * ⚠️ 只有 400 走这里（别的状态码直接回 `null`，交回去走既有判据）：
+ *    上游对未匹配路径回 **404**（`{"status":"error","data":{"error":"not found"}}`，实测）
+ *    —— 把 404 也读成"没有这个玩家"是在**替上游**断言它没有的语义。
+ * ⚠️ body 读不出来（Cloudflare 的 HTML 400 页实测真会发生）⇒ `null`：
+ *    那时我们**不认识**这一种 400，交回 `http` 那一档 —— 那句话里带着真的状态码 400，
+ *    而"没有这个玩家"是一句我们当时**并不知道**的话。
+ * ⚠️ 两个字段实测**互斥**（一种 body 只有前者、另一种只有后者），判据顺序因此不承载语义；
+ *    但两者同时出现时取前者（`data.error` 是上游更笼统的那一档）。
+ */
+async function lookupErrorFromResponse(
+  response: Response,
+  nickname: string,
+): Promise<Error | null> {
+  if (response.status !== 400) return null;
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    // ⚠️ 读 body 的过程中也可能被取消（abort 会同时中止读取）—— 那一支必须原样往上抛，
+    //    翻成"不认识这一种 400"会让用户切标签页时看到一句"上游回了一个错误"。
+    if (isCallerAbort(error)) throw error;
+    return null;
+  }
+
+  const data = asRecord(asRecord(body)?.data);
+  if (!data) return null;
+
+  // ① 「User is not exists.」—— 昵称**格式没问题**，只是没有这个人
+  const notExists = data.error;
+  if (typeof notExists === 'string' && notExists.trim() !== '') {
+    return new RankedLookupError('not_found', `上游说没有这个玩家：${nickname}`);
+  }
+
+  // ② 「Invalid user identifier」—— 昵称**这个写法**上游不收（实测：超过 20 个字符）
+  const identifier = asRecord(data.params)?.identifier;
+  if (Array.isArray(identifier) && identifier.length > 0) {
+    return new RankedLookupError('invalid_identifier', `上游说这个昵称不合法：${nickname}`);
+  }
+
+  return null;
+}
+
+/**
  * 发一次直连请求 —— **本文件里唯一碰 `fetch` 的地方**。
  *
  * ⚠️ 请求选项**每一次现拼**，不是共享一个可变的模块级对象：`signal` 每次不同，
@@ -198,7 +350,11 @@ async function send(url: string, signal: AbortSignal | undefined): Promise<Respo
  *   · 上游回了个别的非 2xx ⇒ `http`，**除了**"带 id 的周赛回 400"那一支 ⇒ `not_found`
  *   · 响应体不是 JSON ⇒ `bad_response`
  */
-async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
+async function getJson(
+  path: string,
+  signal?: AbortSignal,
+  onNotOk?: NotOkHandler,
+): Promise<unknown> {
   let response: Response;
   try {
     response = await send(endpoint(RANKED_UPSTREAM_PRIMARY, path), signal);
@@ -218,6 +374,18 @@ async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
   }
 
   if (!response.ok) {
+    /*
+     * ★ 先问**调用方**的钩子，再走下面那三条通用判据。
+     *   只有提问的那一条路径知道"我这个 4xx 的 body 是什么意思"——今天只有
+     *   `/users/{昵称}`：上游"查无此人"回的是 **400 而不是 404**，而且两种 400 的 body
+     *   不一样（`lookupErrorFromResponse`）。钩子说"不认识"（回 `null`）就往下走，
+     *   这一条分支以前的行为**一个字节都没变**（四个老 fetcher 都不传钩子）。
+     * ⚠️ 它是 async 的：读 body 要 await，而 body 只能读一次 ⇒ 这一处是唯一读它的地方。
+     */
+    if (onNotOk) {
+      const known = await onNotOk(response);
+      if (known !== null) throw known;
+    }
     /*
      * ★ 400 单独成档，而且**只在带 id 的周赛那一路**上：上游对"这一周不存在"回的是
      *   400 `race is not found`（实测：104 / -2 / -3 都是这个回答）。那是**用户**手改 URL
@@ -324,4 +492,64 @@ export async function fetchRankedWeekly(
   const data = parseWeekly(await getJson(path, signal));
   if (data === null) throw new RankedDirectError('bad_response', 'weekly-race 响应形状对不上');
   return data;
+}
+
+/**
+ * `GET /users/{昵称}` → 展开抽屉里的那份汇总（也是「回车精确查一位玩家」要的那一次）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 三种失败在这里分成三档（用户下一步做的事完全不同）
+ * ---------------------------------------------------------------------------
+ *   · **200** ⇒ 解析好的详情（`parsePlayerDetail`；整份形状不对 ⇒ `bad_response`）；
+ *   · **400 的两种 body** ⇒ `RankedLookupError`（`not_found` / `invalid_identifier`）：
+ *     那是"**这个昵称**不行"，重试没用（`lookupErrorFromResponse` 认这两种）；
+ *   · **其余**（网络 / 别的状态码 / 429 / 响应体不是 JSON）⇒ 既有的 `RankedDirectError`：
+ *     界面沿用那几句通用文案（"重试可能有用"）。
+ * ⚠️★ 钩子**只挂在这一条路径上**：`/users/{昵称}/matches` 那一侧上游的 400 body
+ *    **我们没量过**（findings 里量的是 `/users/{id}`）⇒ 不替它断言（那一路的 400 会落进
+ *    `http`，界面上那句话带着真的状态码）。要给它同一档，得先量一次它的两种 body。
+ * ⚠️ `nickname` 原样交给 `rankedUserPath`（`encodeURIComponent`），**不**在这里 trim：
+ *    用户敲了首尾空格时，上游回的是"查无此人"—— 那是**真的**（那个昵称确实不存在），
+ *    而我们若自己 trim，就等于悄悄改了用户查的那个名字（`[Ranked Bot]` 那种名字
+ *    里本来就可能有一个看起来多余的空格）。
+ *
+ * ⚠️ 它照样走 `getJson` ⇒ 继承那三条冻结规矩（`cache: 'no-store'`、只带 `accept`、
+ *    `credentials: 'omit'` + `no-referrer`）。实测这个端点回 `Access-Control-Allow-Origin: *`
+ *    与 `cache-control: max-age=14400`（findings §4）⇒ `no-store` 缺不得（4 小时的缓存
+ *    会让"点开看到的"是四个小时前那个人）。
+ */
+export async function fetchRankedUser(
+  nickname: string,
+  signal?: AbortSignal,
+): Promise<RankedPlayerDetail> {
+  const raw = await getJson(rankedUserPath(nickname), signal, (response) =>
+    lookupErrorFromResponse(response, nickname),
+  );
+  const data = parsePlayerDetail(raw);
+  if (data === null) throw new RankedDirectError('bad_response', 'users 响应形状对不上');
+  return data;
+}
+
+/**
+ * `GET /users/{昵称}/matches?count=N` → 这位玩家的最近比赛。
+ *
+ * ⚠️ 形状不对（`status` 不是 success / `data` 不是数组）⇒ `bad_response`
+ *    （**不是**"他没有比赛"）：空数组才是"没有比赛"（上游对空结果是
+ *    `{"status":"success","data":[]}` + 200，findings §1.2）——
+ *    两者在界面上是两句话（"读不到" / "最近没有比赛"）。
+ * ⚠️ 行级丢弃发生在 `parseMatches` 里（没有身份的行），所以这里的返回长度
+ *    **可能小于** `count` —— 界面那句「最近 N 场」要读这份数组的长度，不是读 `count`。
+ * ⚠️ 这一路**不带** 400 的钩子（理由写在 `fetchRankedUser` 上）。
+ * ⚠️ `signal` 照既有四个 fetcher 的写法透传：抽屉在换行/收起/卸载时要能取消
+ *    （容器那一层的 `AbortSignal` 是唯一管取消的地方 —— 这一层自己不设超时）。
+ */
+export async function fetchRankedMatches(
+  nickname: string,
+  count: number,
+  signal?: AbortSignal,
+): Promise<RankedMatch[]> {
+  const raw = await getJson(rankedMatchesPath(nickname, count), signal);
+  const matches = parseMatches(raw);
+  if (matches === null) throw new RankedDirectError('bad_response', 'matches 响应形状对不上');
+  return matches;
 }

@@ -3514,6 +3514,29 @@ export const en: TranslationSchema = {
     errRateLimited: 'That is a lot of requests — try again in a little while.',
 
     /*
+     * ---- The two "this nickname is no good" sentences (added 2026-09-19,
+     *      `RANKED_LOOKUP_ERROR_KEYS`) ----
+     * ⚠️★ They are deliberately **not** folded into the seven above: those say
+     *    "this request failed", these say "**this nickname** does not exist / the
+     *    upstream will not take it" -- and retrying is **always** a wasted attempt,
+     *    because the lookup is an **exact** match (measured: `lowk3y` does not find
+     *    `lowk3y_`, `/users/Ranked%20Bot` does not find `[Ranked Bot]`, findings §6).
+     *    Folding them into `loadFailed` / `errHttp` would tell the reader "just click
+     *    again", while the answer will never change.
+     * ⚠️ The upstream answers **400, not 404**, for an unknown player (measured), and
+     *    the two 400 bodies differ:
+     *    `{"data":{"error":"User is not exists."}}` => the first one;
+     *    `{"data":{"params":{"identifier":[…]}}}` => the second (measured: identifiers
+     *    longer than **20 characters**).
+     *    ⚠️ That 20 is not a general nickname limit: `discord.338669823167037440`
+     *    (26 chars) still answers 200 -- what gets rejected is that identifier *form*,
+     *    so we only say the upstream rejected it, never "nicknames are 20 chars max".
+     */
+    errUserNotFound: 'There is no player with that nickname.',
+    errInvalidIdentifier:
+      'That nickname is not valid (the upstream rejects identifiers longer than 20 characters).',
+
+    /*
      * ⚠️ The placeholder gets a key too (`eloRank` / `highest` / `phasePoint` /
      *    `timelineType` are all null sometimes): hard-coding `—` inside a component
      *    would mean the two languages can never be tuned apart.

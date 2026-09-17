@@ -203,6 +203,174 @@ export interface RankedEloData {
   users: RankedEloEntry[];
 }
 
+/*
+ * ===========================================================================
+ * ⑤ 行内展开：这位玩家的一场比赛（`/users/{id}/matches`）+ 他的汇总（`/users/{id}`）
+ * ===========================================================================
+ * 用户 2026-09-19 的原话：「点开后能查看最近比赛的情况/数据等」—— 点开是**行内展开**
+ * （不是新路由、不是新页面），展开要拉**两份**数据：这位玩家的一份汇总，与他的最近比赛。
+ *
+ * ⚠️ 上游那些字段名（`data[].id` / `data[].changes[]` / `seasonResult.highest` …）
+ *    **只活在 `parse.ts` 里**（文件头那条硬规矩）：这一层是我们自己的形状，
+ *    上游改一次字段名时该改的地方永远只有一处。
+ * ⚠️ 展开是**跨两位玩家**的（同一份 `matches[]` 里既要知道"他赢了没有"，
+ *    也要知道"对手是谁"）⇒ 下面每个纯函数的入参都带着 `selfUuid`（`select.ts`），
+ *    而不是把"我是谁"混进形状里 —— 同一份比赛数据被两个玩家看时，
+ *    形状不该有两份不同的副本。
+ */
+
+/**
+ * 一场比赛里的**一位玩家**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 红线（本轮唯一"会静默错"的字段）：
+ * `eloRate` / `eloRank` 是**请求那一刻的现值**，不是那一场比赛当时的值
+ * ---------------------------------------------------------------------------
+ * 实测三场（findings §2.1 底部）：一场 **season 11** 的比赛里，这个块印的仍是
+ * 本赛季**现在**的 elo；同一场的 `changes[].eloRate` 才是赛后值。
+ * ⇒ 换句话说：把它当"当时的 elo"渲染，画面上会出现"当时 2349 / 赛后 2342"这种
+ *   **自相矛盾但看不出来**的格子（两个数都是真的，只是其中一个根本不属于那一刻）。
+ *   ⇒ 那一场的 elo 只能用 `changes[]`（`select.ts` 的 `eloChangeOf`）；
+ *   这一格进界面前必须按"这位玩家**现在**多少分"来读（名字就叫 `eloRate`，不许改写它）。
+ *   ⚠️ 代价写清：**赛前** elo 上游**根本没有**给（只有赛后值），
+ *   想显示赛前只能拿 `changes[].eloRate - changes[].change` 去算 —— 而我们**不算**：
+ *   私人房（type 3）的 `changes[]` 实测是空数组，算法会在那些行上凭空造一个数出来。
+ * ⚠️ `eloRate` / `eloRank` 的 `| null` 不是装饰：未定级玩家实测就是 `null`
+ *   （findings §3.1：`/users/inoutoftherain` 两格都是 null）。
+ */
+export interface RankedMatchPlayer {
+  uuid: string;
+  nickname: string;
+  /** ⚠️★ 玩家**现在**的 elo（请求那一刻），**不是**这一场当时的值（见上面那段）。 */
+  eloRate: number | null;
+  eloRank: number | null;
+}
+
+/**
+ * 这一场**一位玩家**的 elo 变化（上游 `changes[]` 的一项）。
+ *
+ * ⚠️★ `change` 是 `number | null`：上游文档说 placement（定级赛）时它是 `null`
+ *    （`DOCUMENTED, NOT MEASURED` —— 100 行实测里没有一行是 placement，findings §7）。
+ *    而我们**照文档留了 `| null`**：真遇到时那一格会说「—」，**不是 0**（本仓"绝不为缺失值填 0"）。
+ * ⚠️★ 私人房（type 3）的 `changes[]` 实测**恒为空数组**（32/32 行）⇒ 那些行上
+ *    "这一场他涨了多少分"是**读不到**，而不是"没变化"。这一格必须能表达"读不到"，
+ *    所以 `eloChangeOf`（`select.ts`）对"没有那一条记录"回的是 `null`。
+ */
+export interface RankedMatchChange {
+  uuid: string;
+  /** 赛后 elo 变化量；`null` = placement（上游这么定）。 */
+  change: number | null;
+  /** 赛**后**的 elo（不是赛前）。 */
+  eloRate: number | null;
+}
+
+/** 一条录像（上游 `vod[]` 的一项）。⚠️ 实测只有 Twitch 一种主机，长度只有 0 或 1。 */
+export interface RankedMatchVod {
+  uuid: string;
+  url: string;
+  /** ⚠️ **秒**（上游的 `Date` 一律是秒）：`date - startsAt` 才是"比赛在录像里的第几秒"。 */
+  startsAt: number;
+}
+
+/**
+ * **一场比赛**（`/users/{identifier}/matches` 的一行）。
+ *
+ * 上游那一行的键实测恒为 20 个（findings §2.1 逐个列过），这里只留下展开要用到的那些 ——
+ * 其余的（`category` / `gameMode` / `spectators` / `decayed` / `rank` / `beginner` /
+ * `botSource` / `tag`）**不进这个形状**：不进 = 界面不可能"顺手"印一个出来，
+ * 这一层也不必为它们写兜底（spec 的"不加多余的信息"是同一条口径）。
+ * ⚠️ 其中 `seed` 那一块我们**一个一个字段都没解析**：它的 `endTowers` 实测是 `null`
+ *    而**不是** `[]`（文档说反了，findings 冲突 C1）⇒ 谁要读它就得先想清楚那件事，
+ *    今天这里的态度是"完全不知道它存在"（`parse.ts` 里没有一行碰它）。
+ */
+export interface RankedMatch {
+  id: number;
+  /** 1 casual / 2 ranked / 3 private / 4 event（实测只见过 2 与 3）。 */
+  type: number;
+  /** 赛季号。`null` = 那一格读不到（实测 100 行里恒为 12，`| null` 是兜底）。 */
+  season: number | null;
+  /** ⚠️ **秒**（不是毫秒）：上游的 `Date` 一律是秒，乘 1000 是**渲染**的事（spec §13）。 */
+  date: number;
+  /**
+   * ⚠️ 这一场在场上的人（实测 1 或 2 个 —— 1 个的那些是 forfeit / bot 局）。
+   *    这一份数组是**判"谁赢了"与"对手是谁"的唯一来源**（`select.ts`），
+   *    ⇒ 解析层保证它至少有一个**带 uuid 与昵称**的元素，否则整行丢掉（见 `parse.ts`）。
+   */
+  players: RankedMatchPlayer[];
+  /**
+   * ⚠️ **`time` 是毫秒**（`result.time == completions[0].time`，实测两场都成立）；
+   *    **`uuid` 为 `null` = 平局**（实测 3/100 行）。
+   *    ★ 正是因为 `null` 在这里**有确切含义**（平局），`parse.ts` 才会把"读不到 `result`"
+   *    的一行**丢掉**：否则我们会把"不知道"印成"平局"（一件我们并不知道的事）。
+   */
+  result: { uuid: string | null; time: number | null };
+  forfeited: boolean;
+  /**
+   * ★★ **空数组 = 这一场读不到 elo 变化**（私人房实测 32/32 是空的），不是"没变化"。
+   * ⚠️ 空数组与 `null` 在**输出形状**里必须分得开：这里保留成空数组（不折成 `null`），
+   *    于是"这一场没有变化记录"与"这一场他涨了 0 分"是两句不同的话。
+   *    ⇒ 界面上那一格读 `eloChangeOf()`，它对空数组回 `null`（印「—」），**绝不回 0**。
+   */
+  changes: RankedMatchChange[];
+  /** 空数组 = 这场比赛没有录像（实测 64/100 行是空的；有录像的 36 行恰好 1 条）。 */
+  vod: RankedMatchVod[];
+  /** 主世界结构类型；私人房实测是 `null`（那时整个 seed 都是空的）。 */
+  seedType: string | null;
+  /** 要塞类型；私人房实测是 `null`。 */
+  bastionType: string | null;
+}
+
+/**
+ * 一份**战绩**（`/users/{identifier}` 的 `statistics.season` 或 `statistics.total`）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 上游每一个格子里其实有**两个数**（`{ranked, casual}`），我们只取 `ranked`
+ * ---------------------------------------------------------------------------
+ * 实测（findings §3.2）：`statistics` 恒有两个块（`season` / `total`），每块恒有 **10 个键**，
+ * 每个叶子都是 `{"ranked": …, "casual": …}`。这一栏的名字是「**ranked** 实时信息」，
+ * 排行榜也是赛季排位榜 ⇒ 四格取的都是 `ranked` 那一个（混进 casual 会把两件不同的事
+ * 加在一起，而 `loses` 那个数会凭空翻倍 —— 看起来完全正常）。
+ * ⚠️ 全是 `| null`：**"这一格读不到"必须与一个真的 0 分得开**（本仓那条纪律）。
+ *    ⚠️ 实测 `casual` 那一侧倒是有很多真 0（`{"ranked": 96, "casual": 0}`），
+ *    那是 casual 真的 0 场 —— 我们不取它，也就不会把它的 0 印到 ranked 那一列上。
+ */
+export interface RankedPlayerRecord {
+  wins: number | null;
+  loses: number | null;
+  playedMatches: number | null;
+  /** ⚠️ **毫秒**（上游给的就是毫秒；实测 387772 ms = 6:27.772）。 */
+  bestTimeMs: number | null;
+}
+
+/**
+ * **一位玩家的汇总**（`/users/{identifier}` 里我们真正要的那几格）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 为什么这里只有六格（上游那份响应有 12 个顶层键）
+ * ---------------------------------------------------------------------------
+ * 用户要的是"展开后看得到这位玩家的数据"，而这一栏的语义是**ranked 排位**：
+ * 拿得出手的就是"现在多少分 / 排第几 / 本赛季最高 / 本赛季与历史战绩"这几样。
+ * `achievements` / `connections` / `weeklyRaces` / `timestamp` / `roleType` / `country`
+ * **不进这个形状** —— 不进 = 界面不可能顺手印出来，这一层不为它们写兜底
+ * （要加的人请连着这一段的理由一起改，别只加一格）。
+ * ⚠️ `uuid` 与 `nickname` 是**骨架**：没有身份的一份响应我们无法归属到任何一行
+ *    （展开是按行发生的），所以读不到它们时 `parsePlayerDetail` 回 `null`（整份"读不到"）。
+ * ⚠️★ `nickname` 取的是**响应里的那个**（上游回的是**规范写法**）：实测 `/users/voxio`
+ *    回 `nickname: "Voxio"`、`/users/EDCR` 回 `"edcr"` ⇒ 搜索框必须**读回**这个值，
+ *    而不是相信用户敲进去的那串大小写（findings §6 最后一段）。
+ */
+export interface RankedPlayerDetail {
+  uuid: string;
+  nickname: string;
+  /** 未定级玩家实测就是 `null`（**是真实状态**，不是缺数据）。 */
+  eloRate: number | null;
+  eloRank: number | null;
+  /** `seasonResult.highest`（本赛季最高 elo）。读不到 ⇒ `null`。 */
+  seasonHighest: number | null;
+  season: RankedPlayerRecord;
+  total: RankedPlayerRecord;
+}
+
 /**
  * ★ "赛段"（上游叫 **phase**）—— 用户 2026-09-19 要求**并排显示在赛季时间旁边**的那一份。
  *

@@ -1,5 +1,5 @@
 /**
- * 派生：排序、筛选、分批。
+ * 派生：排序、筛选、分批，以及**行内展开**（最近比赛那一栏）的四个判据。
  *
  * ⚠️ 这里全是**纯函数**，而且**都不改入参**（每一次都 `[...]` 或 `slice`）。
  *    调用方（容器组件）手上那份数据要留着给"上次刷新失败了，下面是 N 秒前的数据"用
@@ -7,7 +7,13 @@
  *    （界面看着正常，只是顺序变了）。测试里有一条专门钉它。
  */
 import { RANKED_ELO_TOP } from './const';
-import type { RankedEloEntry, RankedLiveData, RankedLiveMatch } from './types';
+import type {
+  RankedEloEntry,
+  RankedLiveData,
+  RankedLiveMatch,
+  RankedMatch,
+  RankedMatchPlayer,
+} from './types';
 
 /**
  * 相同 `avgElo` 时的第二判据：`key` **升序**。
@@ -175,4 +181,116 @@ export function sliceLiveMatches(
  */
 export function topEloEntries(users: RankedEloEntry[], n = RANKED_ELO_TOP): RankedEloEntry[] {
   return users.slice(0, n);
+}
+
+/*
+ * ===========================================================================
+ * ★★ 行内展开（用户 2026-09-19：「点开后能查看最近比赛的情况/数据等」）
+ * ===========================================================================
+ * 四个纯函数，一行一场比赛。全部以 `selfUuid` 为判据 —— 同一份比赛数据被两个玩家看时
+ * 只有"我是谁"不同，形状不该有两份（`types.ts` 上写着同一句）。
+ *
+ * ⚠️★ **"他不在这一场里"必须与"他输了"分得开**：下面三个函数的第一条判据都是
+ *    "`selfUuid` 在不在 `players[]` 里"。收起这一条的话，任何一个"上游把玩家块写坏了"
+ *    的行都会显示成**他的败场**（`matchOutcome` 的兜底支就是 `'loss'`）——
+ *    一个假的败场在一张战绩列表里看起来完全正常，而它会直接改掉用户对这位玩家水平的判断。
+ */
+
+/**
+ * ★ 本地筛选：昵称**子串**、忽略大小写；空白/空串 ⇒ 原样返回（不筛）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 它只筛**手上这 150 行**，因为上游**没有**任何搜索/前缀/自动补全端点
+ * ---------------------------------------------------------------------------
+ * findings §7：把 `openapi.yaml` 与文档页的端点表翻完，能查人的只有
+ * `/users/{identifier}` 这一个，而且它是**精确匹配**（`lowk3y` 查不到 `lowk3y_`，
+ * `Ranked%20Bot` 查不到 `[Ranked Bot]`）⇒ "打字就筛"这个交互**只能**在本地做。
+ * ⚠️ 代价写清：打字筛出来的人**只可能是榜上那 150 位**（第 151 名打不出来）。
+ *    要查榜外的人，唯一的入口是**回车精确查一位玩家**（那条路会直连上游）。
+ *
+ * ⚠️ 判据用 `toLowerCase()` 而**不是** `toLocaleLowerCase()`：后者跟着宿主 locale 走
+ *    （土耳其语环境里 `I` → `ı`），于是同一份数据在不同机器上筛出不同的结果
+ *    （`matchesNickname` 上写着同一条理由）。
+ * ⚠️ `nickname` 是 `| null` ⇒ 拿空串去比：它**永远匹配不上**一个非空的搜索词
+ *    （不是"空昵称匹配一切"）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ **不重排**（这一条是本函数的重点）
+ * ---------------------------------------------------------------------------
+ * 榜单的顺序是上游按 `eloRank` 排的，而那一列（第几名）就是上游给的那个数
+ * （并列会重复、之后会跳号，`parse.ts` 里写着）。筛完之后**照原顺序**交出去，
+ * 于是"第 3 行显示第 3 名"这件事永远成立；重排（比如把命中的排到前面）会让
+ * 排名列与行序对不上 —— 而那种错**看起来像是上游的排名有问题**，没人会怀疑搜索框。
+ *
+ * ⚠️ 空白查询（含全空格）与空串都是"不筛"：连 `trim()` 都不做的实现会让
+ *    "只打了个空格"变成"一个人都没有"（而输入框里那一眼看上去就是空的）。
+ * ⚠️ 两个分支都返回**新数组**（文件头那条规矩：不改入参、一律 `[...]` / `slice`）：
+ *    调用方那份 `users` 要留着给"上次刷新失败了，下面是 N 秒前的数据"用，
+ *    而且返回值会被调用方接着 `slice` / 映射 —— 交出同一个引用等于把两份数据绑在一起。
+ */
+export function filterEloUsers(users: RankedEloEntry[], query: string): RankedEloEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return [...users];
+  return users.filter((user) => (user.nickname ?? '').toLowerCase().includes(needle));
+}
+
+/**
+ * ★ 那一场的**对手**：`players[]` 里 `uuid` 不等于 `selfUuid` 的那一位。
+ *
+ * ⚠️★ 判据**先看他在不在场**（与 `matchOutcome` 同一条顺序，理由写在那里）：
+ *    他不在 `players[]` 里时回 `null` —— 而不是"顺手把第一个别人当成他的对手"。
+ *    后者会在一行"上游把玩家块写坏了"的数据上，把一个**陌生人**印成他的对手，
+ *    而那个名字看起来完全正常（用户只会以为这一场真有个对手）。
+ * ⚠️ 只有他自己（1 人的行，实测 26/100 —— forfeit / bot 局）⇒ `null`（没有对手）。
+ * ⚠️ 返回值里那个 `eloRate` 是**现值**、不是那一场的值（`types.ts` 的红线）⇒
+ *    调用方拿它当"对手现在多少分"渲染，而不是"当时多少分"。
+ */
+export function opponentOf(match: RankedMatch, selfUuid: string): RankedMatchPlayer | null {
+  if (!match.players.some((player) => player.uuid === selfUuid)) return null;
+  return match.players.find((player) => player.uuid !== selfUuid) ?? null;
+}
+
+/**
+ * ★ 这一场的结果三态 + 一档"读不到"：`'win' | 'loss' | 'draw' | 'unknown'`。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 判据顺序：**先问"他在不在这场里"，再看结果**（这一条是自己裁决的）
+ * ---------------------------------------------------------------------------
+ * 另一半写法（先看 `result.uuid` 是不是 `null` ⇒ 平局）有一个具体的坏下场：
+ * 当 `selfUuid` **不在** `players[]` 里时，那一行会被说成"他打平了"——
+ * 而"他打平了"与"我们读不懂这一行的玩家块"是两件事，前者是一件我们**并不知道**的事。
+ * ⇒ 顺序是：**人不在场 ⇒ `'unknown'`（先）**；在场才谈结果（平局 / 赢 / 输）。
+ *   · 这一条同时也是"三态之外为什么要有第四档"的理由：`'unknown'` 说的既不是赢也不是输，
+ *     而是"这一行与这个人对不上，别拿它当证据"。
+ * ⚠️ 第四档**不是**死代码：`parseMatches` 会丢掉"玩家块读不出来"的行，所以正常情况下
+ *    他一定在场；但 `RankedMatch` 是导出的类型，别的调用点（比如将来的对阵页）
+ *    可以直接拿一份手写的比赛来问 —— 那时这一档就是唯一的诚实答案。
+ * ⚠️ `result.uuid === null` 是**平局**（上游的写法，实测 3/100 行）。
+ *    它之所以能这么读，是因为 `parseMatches` 把"整份没有 `result`"的行丢掉了
+ *    （否则 `null` 会同时表示"平局"与"读不到"，见那里那条注释）。
+ */
+export function matchOutcome(
+  match: RankedMatch,
+  selfUuid: string,
+): 'win' | 'loss' | 'draw' | 'unknown' {
+  if (!match.players.some((player) => player.uuid === selfUuid)) return 'unknown';
+  if (match.result.uuid === null) return 'draw';
+  return match.result.uuid === selfUuid ? 'win' : 'loss';
+}
+
+/**
+ * ★ 这一场这位玩家**涨/跌了多少分**；读不到 ⇒ `null`（**不是 0**）。
+ *
+ * 两个"读不到"的来源，都是**实测**的：
+ *   · 私人房（type 3）的 `changes[]` 恒为空数组（32/32 行）⇒ 找不到他那一条记录；
+ *   · `change` 本身可能是 `null`（上游文档：placement 定级赛如此 —— `DOCUMENTED, NOT MEASURED`，
+ *     100 行实测里没有一行是 placement）。
+ * ⇒ 两种都回 `null`，界面印「—」。**绝不回 0**：`0` 的意思是"打了这一场，分数没变"，
+ *   而那与"这一场我们读不到分数变化"是两句完全不同的话 —— 后者才是真的。
+ * ⚠️ 赛**前**的值只能靠 `changes[].eloRate - changes[].change` 推，`select.ts` **不算**它：
+ *    私人房那 32 行推不出来，算法会在那些行上凭空造一个数（`types.ts` 上写着同一件事）。
+ */
+export function eloChangeOf(match: RankedMatch, selfUuid: string): number | null {
+  const entry = match.changes.find((change) => change.uuid === selfUuid);
+  return entry?.change ?? null;
 }
