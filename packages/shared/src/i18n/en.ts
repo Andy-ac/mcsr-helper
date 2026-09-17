@@ -3412,6 +3412,140 @@ export const en: TranslationSchema = {
     colPhasePoint: 'Phase points',
     eloEmpty: 'Nobody is on the board this season yet.',
 
+    /*
+     * ===========================================================================
+     * ★★ (3)'s search box and inline expansion (user, 2026-09-19: "clicking a row
+     *    should show that player's recent matches and numbers", and "put a search
+     *    box at the top so people can look up a player themselves")
+     * ===========================================================================
+     * ⚠️★ The search box has **two halves**, i.e. two different things (hence two
+     *    groups of keys):
+     *   · **typing** filters the **150 rows already in hand**, locally -- the
+     *     upstream has **no** search/prefix endpoint at all (findings §7: the only
+     *     way to look someone up is `/users/{identifier}`, and it is an **exact**
+     *     match: `lowk3y` does not find `lowk3y_`);
+     *   · **Enter / the button** looks up **one** exact player, straight to the
+     *     upstream, spending the visitor's own quota.
+     *    Folding them into one sentence would suggest that typing finds players off
+     *    the board, and number 151 can never be reached that way.
+     */
+    searchLabel: 'Search players',
+    searchPlaceholder: 'Enter a player nickname',
+    searchSubmit: 'Look up',
+    /*
+     * ⚠️ This is the **manual for both halves** (it sits right under the box): the
+     *    placeholder alone can only say "enter a player nickname", never that typing
+     *    filters what we already have while Enter really goes and asks -- and those
+     *    two have very different costs (one is local, the other spends quota and may
+     *    come back with "no such player").
+     */
+    searchHint:
+      'Typing filters the board already loaded; press Enter to look up one exact nickname.',
+    /*
+     * ★ The two "no" answers to a lookup. ⚠️★ They are **not** the same thing as
+     *    `errUserNotFound` / `errInvalidIdentifier` (even though the first sentence
+     *    reads almost the same), and they must not be merged:
+     *   · those two go through `describeRankedError` (a failure -> one sentence) and
+     *     render at the **top** of the panel next to a retry button;
+     *   · these two are **the answer to that one lookup**, rendered inside
+     *     `.ranked__lookup` under the search box, with **no retry button** -- the
+     *     upstream match is exact, so retrying gives the same answer forever.
+     * ⚠️ The wording difference is deliberate: this one says "too long **or
+     *    malformed**" (the only thing the reader can change is how they spell it),
+     *    while `errInvalidIdentifier` states the upstream's **measured** rule
+     *    (identifiers longer than 20 characters) and answers "why was it rejected".
+     */
+    lookupNotFound: 'No player with that nickname.',
+    lookupInvalid: 'That nickname is not valid (too long or malformed).',
+    /*
+     * ⚠️★ It is **not** the same sentence as `eloEmpty` ("Nobody is on the board this
+     *    season yet."): this one says "the upstream has a board, your query filtered
+     *    all of it away", that one says "the upstream is empty right now". Confusing
+     *    them sends the reader looking for a problem elsewhere, when all they have to
+     *    do is clear the box (the same pairing as `liveNoMatch` / `liveEmpty` in (2)).
+     * ⚠️ `{{q}}` is the search text **after trimming** (that is what the filter uses).
+     */
+    eloFilterEmpty: 'No player matches "{{q}}".',
+
+    /*
+     * ---- The card that expands out of a row (`.ranked__detail`) ----
+     * ⚠️★ Two places talk about elo and they must stay apart -- this is the most
+     *    expensive red line in the whole section:
+     *   · `detailElo` (this line) prints what the player is **now**
+     *     (`RankedPlayerDetail.eloRate`);
+     *   · each match's elo cell (`.ranked__detailelo`) prints **how much that match
+     *     moved** (`changes[].change`) and deliberately has **no key** -- it is a
+     *     number (`+12` / `-8`), not a sentence.
+     *    Mixing them produces the "2349 at the time / 2342 after" contradiction that
+     *    looks perfectly normal: findings §2.1 bottom proves across three real
+     *    matches that `players[].eloRate` is the value **at request time**, not at
+     *    match time, so the second one can only come from `eloChangeOf()`, and when it
+     *    cannot be read the cell shows `—` (**never 0**).
+     */
+    detailElo: 'Elo {{elo}}',
+    detailRank: 'Rank {{rank}}',
+    /*
+     * ⚠️ Both records carry `{{wins}}` / `{{loses}}`: all four numbers can be
+     *    unreadable (every leaf of the upstream `statistics` block is
+     *    `{ranked, casual}` and we take the `ranked` half only), and the caller fills
+     *    the gap with `—`, **not 0** -- "0 wins 0 losses" is a true statement, "we
+     *    could not read it" is a different one.
+     */
+    detailSeasonRecord: 'Season {{wins}}W {{loses}}L',
+    detailTotalRecord: 'All-time {{wins}}W {{loses}}L',
+    /** ⚠️ `{{time}}` is **milliseconds** (`season.bestTimeMs`); the caller runs `formatRaceTime`. */
+    detailBestTime: 'Season best {{time}}',
+    /*
+     * ⚠️★ `{{n}}` is the length of **the array we hold**, not the `count` we asked
+     *    for: `parseMatches` drops rows whose shape is broken (no identity), so using
+     *    `count` would print "Last 10 matches" above eight rows -- a contradiction
+     *    that no gate in this repo can see.
+     */
+    detailRecent: 'Last {{n}} matches',
+    detailNoMatches: 'No recent matches.',
+    /*
+     * ⚠️★ This one says "we could **not read it this time**", which is a different
+     *    sentence from `detailNoMatches` ("there are none") -- one is worth a retry,
+     *    the other is a fact. ⚠️ The expansion state has no "no such player" picture
+     *    of its own (`RankedDetailState` has three variants, a frozen contract), so an
+     *    upstream "user is not exists" lands here too. The cost is written down: in
+     *    the "this player renamed" case the sentence understates it (retrying will not
+     *    change anything), and that case can today only be told by the lookup half
+     *    (`lookupNotFound`).
+     */
+    detailFailed: 'Data for this player cannot be read right now.',
+    /*
+     * ★ The four outcomes of a match (`matchOutcome`: win / loss / draw / unreadable).
+     * ⚠️ The fourth says "this row does not line up with this player" (`selfUuid` is
+     *    not in `players[]`); it is **not** "loss" -- that would be a fact we do not
+     *    have (the order of the predicates is written on `matchOutcome` in `select.ts`).
+     * ⚠️ A draw (`result.uuid === null`, measured in 3 of 100 rows) is a **real draw**,
+     *    not "unreadable".
+     * ⚠️ `outcomeUnknown` shares its value with `unknown` (both `—`): the fourth
+     *    variant is a placeholder in the UI, and we do not invent a sentence for it.
+     */
+    outcomeWin: 'Win',
+    outcomeLoss: 'Loss',
+    outcomeDraw: 'Draw',
+    outcomeUnknown: '—',
+    detailVod: 'VOD',
+    /*
+     * ★ `match.type` -> what kind of match this was (docs: 1 casual / 2 ranked /
+     *   3 private / 4 event; **only 2 and 3 were ever measured**).
+     * ⚠️★ Printing it is not decoration: for a private match (type 3) the upstream's
+     *    `changes[]` is **always empty** (measured 32/32) and both `seed` fields are
+     *    null, so that row shows `—` for the elo change and for the seed. Without this
+     *    cell the reader takes "a private match has none of these" for "this panel
+     *    failed to read them" and goes off to retry, which can never change the `—`.
+     * ⚠️ If the upstream adds a fifth type, the table has no row for it: the view
+     *    prints **that number** verbatim (exactly how `timelineLabel()` treats an
+     *    unregistered identifier) -- it neither invents a sentence nor leaks a raw key.
+     */
+    matchTypeCasual: 'Casual',
+    matchTypeRanked: 'Ranked',
+    matchTypePrivate: 'Private',
+    matchTypeEvent: 'Event',
+
     // ---- (4) Weekly race (`RankedWeeklyView`, spec §6.5) ----
     weeklyTitle: 'Weekly race',
     weeklyNumber: 'Week {{n}}',

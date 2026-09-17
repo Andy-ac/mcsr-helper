@@ -66,8 +66,11 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 import {
   type RankedChromeProps,
+  type RankedDetailData,
+  type RankedDetailState,
   RankedEloView,
   RankedLiveView,
+  type RankedLookup,
   RankedStatusView,
   RankedTabBar,
   RankedWeeklyView,
@@ -78,14 +81,47 @@ import { useApiErrorText } from '@/lib/auth';
 import {
   fetchRankedElo,
   fetchRankedLive,
+  fetchRankedMatches,
   fetchRankedPhase,
+  fetchRankedUser,
   fetchRankedWeekly,
+  RankedLookupError,
 } from '@/lib/rankedDirect';
 import { describeRankedError } from '@/lib/rankedErrors';
 import { NotFound } from '@/routes/NotFound';
 
 /** 本地计时的一拍（与 `routes/ShareBoard.tsx` 的 `TICK_MS` 同一条；「N 秒前更新」靠它往前走）。 */
 const TICK_MS = 1_000;
+
+/**
+ * ★ 展开一位玩家时，要**最近几场**比赛（`?count=N`）。
+ *
+ * ⚠️★ 上游对这个参数是**硬校验**的（findings §1.2）：合法区间 1..100、默认 20，
+ *    而 `0` / `-1` / `101` / `abc` 一律 **400**（body 里带着 "Too small" / "Too big" /
+ *    "Must be an integer"）⇒ 这个数**不能**靠猜，也不能由用户输入。
+ * ⚠️ 选 10 的两条理由：① 卡片是**行内展开**，十来场一屏放得下；② `count` 只改这一份
+ *    响应的大小、**不改请求次数** —— 所以它省的是"这一份响应多大"，不是额度
+ *    （额度是按**请求次数**算的：文档 "500 requests per 10 minutes"，findings §5.1）。
+ *    ⇒ 真正的取舍是"最近"这个词：10 场足够说明他最近的状态。
+ * ⚠️ 写在这里而不是 `const.ts`：它是**这一屏**的产品口径（那一栏的常量都是上游给的
+ *    契约值），跟着视图一起改才不会漂。
+ */
+const RANKED_DETAIL_MATCHES = 10;
+
+/**
+ * 一份**盖了页章**的东西：`data` 是**哪一页**的（`key`）。
+ *
+ * ⚠️★ 这一层存在的理由见下面 `mine()`：判断"这东西属于不属于当前这一页"在**全文件**里
+ *    只能有一处实现（两处会漂，而漂掉的表现是"数据/界面出现在不属于它的那一页上"）。
+ * ⚠️ 分出一个更薄的 `Held`（而不是一律用 `Loaded`）是因为 ③ 那三格**交互状态**
+ *    （搜索词 / 那一次查询 / 展开的那一位）也属于某一页、也要盖同一个章，但它们
+ *    **没有**"什么时候取到的"这回事 —— 塞一个没人读的 `atMs` 进去只会让下一个人以为
+ *    它们也要进 `shownAtMs`（那个算式回答的是"手上这份数据有多旧"）。
+ */
+interface Held<T> {
+  key: string;
+  data: T;
+}
 
 /**
  * 成功取到的那一份数据 + 它是**哪个面板/哪一周**的（换 tab / 翻页时不能串台）。
@@ -98,9 +134,7 @@ const TICK_MS = 1_000;
  *    存上 key、只渲染相符的那一份之后，"串台"在结构上就不可能发生 ——
  *    不依赖上面那条路由行为将来变不变。
  */
-interface Loaded<T> {
-  key: string;
-  data: T;
+interface Loaded<T> extends Held<T> {
   atMs: number;
 }
 
@@ -136,9 +170,12 @@ function isAbort(error: unknown): boolean {
  * ⚠️ 传 `null` 与"取到了但那一格是 `null`"在这里是**同一个结果**（都返回 `null`），
  *    而这是对的：视图对这两种情况说的话本来就一样（① 的人数那一格是
  *    「—」+「人数暂时读不到」，spec §6.2）。
+ * ⚠️★ 入参是更薄的 `Held`（不是 `Loaded`）：③ 那三格**交互状态**也走这一个判据
+ *    （"换页就重置"在那一栏里就是这么做的，见 `eloSearch` 那一段）—— 判据只有一处，
+ *    两种持有者（取到的数据 / 用户的交互状态）共用它。
  */
-function mine<T>(loaded: Loaded<T> | null, key: string): T | null {
-  return loaded !== null && loaded.key === key ? loaded.data : null;
+function mine<T>(held: Held<T> | null, key: string): T | null {
+  return held !== null && held.key === key ? held.data : null;
 }
 
 /**
@@ -257,6 +294,78 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
    *    而漏掉的那处的表现是"数据永远被判成不属于这一页"—— 面板**永远停在加载中**。
    */
   const page = pageKey(tab, weekId);
+
+  /**
+   * ★★ ③ 的三格**交互状态**（2026-09-19：用户要的「回车查人」与「点开看最近比赛」）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 为什么它们住在**容器**里，而不是 `RankedEloView` 自己的 `useState`
+   * ---------------------------------------------------------------------------
+   * 与 ② 那三格、④ 那两格同一条：这一栏唯一的自动化断言是渲染自检，而
+   * `renderToStaticMarkup` **不跑 effect、不点击、不打字** ⇒ 状态住在视图里的话，
+   * 自检能看到的**只有初始值**（空搜索词、没查过、没展开），于是"筛出来几行"
+   * 「查不到那个人」「展开出来三场比赛」这三件真正会出错的事**一个字都断言不到**
+   * （`RankedEloViewProps` 上写着完整理由）。
+   *
+   * ---------------------------------------------------------------------------
+   * ★★ 「换页（换 tab / 换周）时跟着重置」是**盖章**做的，不是一条清空的 effect
+   * ---------------------------------------------------------------------------
+   * 它们与 `Loaded` 是**同一档次**（属于某一页）⇒ 盖同一个页章、读的时候过同一个
+   * `mine()`（本文件里"属于这一页吗"**只有那一处判据**）：
+   *   · 别的页面上它们**一个字都不渲染**（`mine()` 回 `null`）；
+   *   · 换页那一刻已经在飞的那两次请求由下面那条 `[page]` 的 effect 取消掉。
+   * ⚠️★ 否决了"用一条 effect 在换页时 `setX(null)` 清空"：effect 在渲染**之后**跑
+   *    ⇒ 换页后的**第一帧**会把上一页的查询结果/展开卡片画出来（一帧的串台），
+   *    而"为这件事再发明一条 effect"正是文件头在防的事（本文件里那条被删掉的
+   *    "换页就清空"也正是这个形状）。
+   * ⚠️ 代价（写清，免得下一个人以为漏了）：换回刚看过的那一页时，这三格**还在**
+   *    （与 `loaded` 的旧数据同一条口径 —— 文件头那段写着"回到一个刚看过的标签页时，
+   *    上面已经画着的东西不会被自己抹掉"）。它们是用户**看得见、自己也改得回来**的
+   *    （清掉搜索框、再点一下收起），所以不值得为它付一条 effect 的代价。
+   */
+  const [eloSearch, setEloSearch] = useState<Held<string>>({ key: page, data: '' });
+  /** 那一次精确查询（`null` = 这一页还没查过）。 */
+  const [eloLookup, setEloLookup] = useState<Held<RankedLookup> | null>(null);
+  /** 正在展开的那一位（`null` = 没有展开）。 */
+  const [eloDetail, setEloDetail] = useState<Held<{
+    nickname: string;
+    state: RankedDetailState;
+  }> | null>(null);
+
+  /** 搜索框里的字（**只**认属于这一页的那一份；别的页面上回空串 ⇒ 不筛）。 */
+  const searchText = mine(eloSearch, page) ?? '';
+  /** 那一次精确查询的结果（属于这一页的那一份）。 */
+  const lookup = mine(eloLookup, page);
+  /** 正在展开的那一位（属于这一页的那一份）。 */
+  const detail = mine(eloDetail, page);
+
+  /**
+   * ★ 点击触发的**两次**请求各自的在飞句柄（查人 / 展开）。
+   *
+   * ⚠️★ 与上面那个轮询用的 `inflight` **不能共用**：那一趟每次 `load()` 都会 abort
+   *    上一个 controller（60 秒一次的轮询也是），共用的话一次轮询就会把用户刚点开的
+   *    抽屉掐掉（画面上是"卡片一直转圈"）。两件事各管各的。
+   */
+  const lookupInflight = useRef<AbortController | null>(null);
+  const detailInflight = useRef<AbortController | null>(null);
+
+  /**
+   * ★★ 展开**成功过**的那几位（按昵称缓存）。
+   *
+   * ⚠️★ 上游按**访客自己的 IP** 限流 500 次/10 分钟（文档这么写，而且每个响应都带
+   *    `RateLimit-Policy: "500-in-10min"`，findings §5.1/§5.2），而"点开一个人"是**两发**
+   *    请求（`/users/{id}` + `/users/{id}/matches`）⇒ 同一个人点开三次 = 六发请求，
+   *    全是**白打的**（花的是访客自己的额度，spec §3 代价 2）。
+   * ⚠️ 那份响应的 `cache-control: max-age=14400`（4 小时）被我们**刻意绕过**
+   *    （`rankedDirect.ts` 文件头 ①：不绕开的话面板会冻在 4 小时前那一份上），所以
+   *    浏览器**不会**替我们省这一发；至于 Cloudflare 边缘命中缓存时算不算一次额度，
+   *    findings §5.4 **没有量出来**（`r` 在 HIT 上不动）⇒ 不拿它当免费额度。
+   * ⚠️★ **失败不进缓存**：否则"读不到"就永远读不到了（再点一次本该是一次重试）。
+   *    缓存里只放 `{ user, matches }` 这种**成功**的结果，键是**昵称**。
+   * ⚠️ 换页**不清**它（与 `loaded` 的旧数据同一条）：它是"这位玩家的数据我们已经拿到过"
+   *    这个事实，不属于任何一页。
+   */
+  const detailCache = useRef(new Map<string, RankedDetailData>());
 
   /**
    * 取一轮数据。**成功才替换 `loaded`，失败一个字都不清**（规则 6）。
@@ -526,6 +635,34 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   }, []);
 
   /*
+   * ★★ 换页（换 tab / 换周）与卸载：把**点击触发的那两次**请求取消掉（③ 的两条路）。
+   *
+   * ⚠️★ 它**只**依赖 `page` —— **不许**并进上面那个定时器 effect：那个 effect 还会因为
+   *    `t` / `errorText` 换身份而重跑（**切一次语言就会**），在那里取消会让一次正在飞的
+   *    展开永久停在「加载中」（状态不会重置，也没有任何人会重试）。
+   * ⚠️ 取消**不是**失败：两边各自的 catch 都靠 `isAbort` 把它认出来并直接 return
+   *    （与轮询那一路同形），所以用户切一下标签页不会看到一句"读不到数据"。
+   * ⚠️ 卸载也走这里（`[page]` 的 cleanup 在卸载时同样会跑）—— 不需要第二条 effect。
+   */
+  useEffect(() => {
+    /*
+     * ⚠️★ 这个 effect 的**依赖就是页章本身**：body 里一个字都不做，要的只是下面那个 cleanup
+     *    —— 而"依赖了却不引用"正是 lint 那条 `useExhaustiveDependencies`（"多余的依赖"）
+     *    要报的形状（**实测过**：去掉这一行 `void page`，`biome check` 立刻红在那条规则上）。
+     *    把它显式读一次让两件事同时成立：注释里说的"为什么依赖它"在代码里看得见，
+     *    而 lint 也认得出这个依赖是被用到的。
+     * ⚠️ 它**不能**改成 `[]`：那样"换页时取消"这条规则会**静默消失** ——
+     *    画面上完全看不出来（请求照样发出去、结果照样落在属于它的那一页上），
+     *    只有访客的额度在掉（findings §5）。
+     */
+    void page;
+    return () => {
+      lookupInflight.current?.abort();
+      detailInflight.current?.abort();
+    };
+  }, [page]);
+
+  /*
    * 当前这一页手上**属于它**的那几份数据的时刻（`key` 相符）。用它算一个**唯一**的"有多旧"。
    * ⚠️ 有两页各挂着**两路**（① 心跳 + 人数、③ 排行榜 + 赛段），所以这里可能不止一份
    *    —— 那两格的注释写着为什么界面仍然只该有**一行**新鲜度。
@@ -594,6 +731,108 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
     void navigate(weekPath(verdict.id));
   };
 
+  /**
+   * ★★ 「回车 / 点查询」—— 精确查**一位**玩家（搜索框的另一半，2026-09-19）。
+   *
+   * ---------------------------------------------------------------------------
+   * 三种失败**分成两档**（这是这一条的全部判据）
+   * ---------------------------------------------------------------------------
+   *   · 上游说"查无此人"或"这个昵称不合法"（`RankedLookupError`）⇒ 那两格之一。
+   *     它们**不是**"这一次请求失败了"：它们是上游对**这个昵称**的**确定回答**，
+   *     重试永远是白试一次（上游的查询是精确匹配，findings §6 末段）；
+   *   · 其余（网络 / 500 / 429 / 响应读不懂）⇒ 走**既有**的通用那一档（`errorText`），
+   *     也就是面板顶上那句 + 重试 —— 它说的是"这一次没成功，稍后再试"，方向是对的。
+   * ⚠️★ 失败**绝不动 `elo`**：那张榜是另一路取回来的，一次查人失败不该把它弄没
+   *    （与"赛段那一路失败不弄没整张榜"同一条，spec §6.6 第 4 行）。
+   * ⚠️ 空串（含全空白）⇒ 清掉上一次查询、**一个请求都不发**：上游对空路径回 404
+   *    （findings §6 第 16 行），发出去只是拿访客的额度换一屏错误。清掉而不是留着，
+   *    是因为那一块没有别的关闭入口（用户清空再回车，要的就是"把它收起来"）。
+   * ⚠️ 它是个普通函数（不是 `useCallback`）：只挂在 `<form onSubmit>` 上，不写进任何
+   *    effect 的依赖 —— 写成 `useCallback` 反而会让人以为有人在依赖它（与 `jumpToWeek` 同一条）。
+   */
+  const submitLookup = (): void => {
+    const nickname = searchText.trim();
+    // ⚠️ 先取消上一发（连点两下 / 上一次还在飞）：两个响应乱序落地时，先发的会盖掉后发的
+    lookupInflight.current?.abort();
+    if (nickname === '') {
+      setEloLookup(null);
+      return;
+    }
+    const controller = new AbortController();
+    lookupInflight.current = controller;
+    void (async () => {
+      try {
+        const user = await fetchRankedUser(nickname, controller.signal);
+        if (controller.signal.aborted) return;
+        setEloLookup({ key: page, data: { kind: 'found', user } });
+        /*
+         * ⚠️ 成功**清掉**顶上那句失败提示：它说的是「读不到数据。」+ 具体原因，而这次
+         *    查询刚刚成功了 —— 留着它就是"上面说读不到、下面把数据画出来了"那种自相矛盾。
+         * ⚠️ 代价写清：它同时会清掉**轮询**那一路留下的同一句（下一次轮询失败时会重新
+         *    出现，最多 60 秒），也就是那一格里的提示可能提前消失。
+         */
+        setError(null);
+      } catch (error) {
+        if (isAbort(error) || controller.signal.aborted) return;
+        if (error instanceof RankedLookupError) {
+          setEloLookup({ key: page, data: { kind: error.kind } });
+          setError(null);
+          return;
+        }
+        setError(`${t('ranked.loadFailed')} ${describeRankedError(error, t, errorText)}`);
+      }
+    })();
+  };
+
+  /**
+   * ★★ 「点昵称 ⇒ 展开 / 收起」—— 用户原话「点开后能查看最近比赛的情况/数据等」。
+   *
+   * ⚠️★ 展开一次要**两份**数据，所以是 `Promise.all`：这位玩家的汇总（`/users/{昵称}`）
+   *    与他的最近比赛（`/users/{昵称}/matches?count=10`）。两份**都到齐**才算 ready ——
+   *    分开落地的话卡片会先画出一半（例如「最近 0 场」，而它其实还在飞）。
+   * ⚠️ 点的是**同一个人** ⇒ 收起（并取消那一发可能还在飞的请求）。
+   *    ⚠️ 失败**不进缓存**（见 `detailCache`）⇒「收起再点开」就是一次**重试**：两下，
+   *    一个动作一个语义 —— 写成"失败时点一下就地重试"会让这个按钮再也收不起来。
+   * ⚠️ 缓存的键是**昵称**（用户点的就是它）：命中 ⇒ 一次请求都不发，直接就是 ready。
+   * ⚠️ 失败**不写 `errorText`**：那一路说的是"这一页的数据读不到"（顶上那句 + 重试），
+   *    而这里失败的是**一位玩家**的抽屉 —— 让它把整张榜变成错误页正是 §6.6 第 4 行
+   *    要避免的事（与赛段那一路的 `{ fatal: false }` 同一条取舍）。
+   * ⚠️ 上游回"没有这个玩家"（`RankedLookupError`）也落在 `failed` 上：展开那一档没有
+   *    自己的第四种画面（`RankedDetailState` 是冻结的三档），代价写在 `ranked.detailFailed`
+   *    的词条注释里（那句话在"这个人改名了"的场合说得偏轻）。
+   */
+  const toggleDetail = (nickname: string): void => {
+    if (detail !== null && detail.nickname === nickname) {
+      detailInflight.current?.abort();
+      setEloDetail(null);
+      return;
+    }
+    const cached = detailCache.current.get(nickname);
+    if (cached !== undefined) {
+      setEloDetail({ key: page, data: { nickname, state: { kind: 'ready', data: cached } } });
+      return;
+    }
+    detailInflight.current?.abort();
+    const controller = new AbortController();
+    detailInflight.current = controller;
+    setEloDetail({ key: page, data: { nickname, state: { kind: 'loading' } } });
+    void (async () => {
+      try {
+        const [user, matches] = await Promise.all([
+          fetchRankedUser(nickname, controller.signal),
+          fetchRankedMatches(nickname, RANKED_DETAIL_MATCHES, controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        const data: RankedDetailData = { user, matches };
+        detailCache.current.set(nickname, data);
+        setEloDetail({ key: page, data: { nickname, state: { kind: 'ready', data } } });
+      } catch (error) {
+        if (isAbort(error) || controller.signal.aborted) return;
+        setEloDetail({ key: page, data: { nickname, state: { kind: 'failed' } } });
+      }
+    })();
+  };
+
   /** 四个面板共用的那几格（`RankedChromeProps`）。⚠️ 四处必须**逐字相同**，见上面那个 N。 */
   const chrome: RankedChromeProps = {
     errorText: error,
@@ -642,7 +881,25 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
         />
       ) : null}
       {tab === 'elo' ? (
-        <RankedEloView {...chrome} elo={mine(elo, page)} phase={mine(phase, page)} />
+        /*
+         * ★ ③ 的三格交互状态 + 一个动作都由容器接好线（形状与理由见上面那三个 `useState`）。
+         * ⚠️★ 三格都过 `mine(…, page)`：那一份属于**哪一页**只有那一处判据，
+         *    所以"换页之后他还渲染着"这件事在结构上就不可能发生。
+         * ⚠️ `onSearchTextChange` 也**盖同一个页章**（不是 `setEloSearch(value)`）：
+         *    少了这一步，别的页面上打进去的字会被当成"这一页的字"（虽然不可能，
+         *    因为那个输入框只在这一页上渲染 —— 但两份写法会漂，而这里只有一种）。
+         */
+        <RankedEloView
+          {...chrome}
+          elo={mine(elo, page)}
+          phase={mine(phase, page)}
+          searchText={searchText}
+          onSearchTextChange={(value) => setEloSearch({ key: page, data: value })}
+          onSearchSubmit={submitLookup}
+          lookup={lookup}
+          detail={detail}
+          onToggleDetail={toggleDetail}
+        />
       ) : null}
       {tab === 'weekly' ? (
         <RankedWeeklyView

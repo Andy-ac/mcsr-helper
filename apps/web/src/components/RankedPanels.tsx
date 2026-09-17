@@ -56,6 +56,18 @@
  *    （`ranked/embed.ts` 第 ④ 条分支的原因就写在这里）。
  *
  * ===========================================================================
+ * ★★ ③ 的行内展开：那一格 elo **只能**来自 `changes[]`（本轮唯一的红线）
+ * ===========================================================================
+ * `players[].eloRate` 是**请求那一刻的现值**，不是那一场比赛当时的值 —— findings §2.1
+ * 底部用三场真实比赛量过（一场 season 11 的比赛里，双方那一格印的还是本赛季**现在**的 elo，
+ * 而同一场的 `changes[].eloRate` 才是赛后值）。⇒ 展开区里**任何位置**都不许把它当成
+ * "当时的 elo"印出来；那一格的涨跌只由 `eloChangeOf()`（`changes[].change`）给，
+ * 读不到（私人房实测 `changes: []`）就印「—」，**不许填 0**：0 的意思是"打了这一场、
+ * 分数没变"，与"我们读不到变化"是两句不同的话（本仓那条"绝不为缺失值填 0"）。
+ * ⚠️ 它防的是"把现值印成当时的值"，**防不了**"印错成赛后值"—— 后者由渲染自检里
+ *    `eloChangeOf` 的逐值断言兜着（哨兵法：夹具把对手的现值设成一个不可能出现的数）。
+ *
+ * ===========================================================================
  * ⚠️ 类名 = 与 `styles.css` 之间的接口（那一段在文件**末尾**）
  * ===========================================================================
  * 本仓的样式是全局的、没有 CSS Modules 兜着，而"渲染了一个不存在的类名"全仓
@@ -78,9 +90,13 @@
 import { liveEmbedDecision } from '@mcsr/shared/live';
 import {
   displayWeekNo,
+  eloChangeOf,
+  filterEloUsers,
   formatClock,
   formatRaceTime,
+  matchOutcome,
   nextWeekId,
+  opponentOf,
   prevWeekId,
   RANKED_TABS,
   type RankedEloData,
@@ -88,6 +104,15 @@ import {
   type RankedLiveMatch,
   type RankedLivePlayer,
   type RankedPhaseData,
+  type RankedPlayerDetail,
+  /*
+   * ⚠️★ 这个别名是**必须**的：本文件里已经有一个叫 `RankedMatch` 的**组件**
+   *    （② 的那张对局卡片，`function RankedMatch`）—— 与上游那份比赛形状同名会让两件
+   *    完全不同的事在同一个作用域里撞车（lint 的 noRedeclare 当场就红）。
+   *    ⚠️ 改的是**导入名**：shared 的导出名与那个组件名都没有错，
+   *    错的是把它们放进同一个作用域。
+   */
+  type RankedMatch as RankedPlayerMatch,
   type RankedStatusResponse,
   type RankedTab,
   type RankedWeeklyData,
@@ -97,7 +122,7 @@ import {
   topEloEntries,
   weekPath,
 } from '@mcsr/shared/ranked';
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
@@ -975,6 +1000,297 @@ export function RankedLiveView(props: RankedLiveViewProps) {
 // ③ Elo 排行榜
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ③ 搜索框与行内展开（2026-09-19 用户要求的两件事）—— 词条表、状态形状、那一块标记
+// ---------------------------------------------------------------------------
+
+/**
+ * 一场比赛的**结果** → 词条 key（`matchOutcome` 的四档）。
+ *
+ * ⚠️★ 导出（与 `STATUS_KEYS` 同一条理由）：**对调两行在全仓是静默的** —— 界面照样渲染、
+ *    类型照样过（每一格都是 `string`）、门禁一个都不看它，而用户读到的是另一档的话
+ *    （「胜」印成「负」在一张战绩列表里看起来完全正常，而它会改掉用户对这位玩家水平的判断）。
+ *    ⇒ 送出去让渲染自检**逐格**断言它、并渲染四份产物确认四句话都在。
+ */
+export const OUTCOME_KEYS: Record<'win' | 'loss' | 'draw' | 'unknown', string> = {
+  win: 'ranked.outcomeWin',
+  loss: 'ranked.outcomeLoss',
+  draw: 'ranked.outcomeDraw',
+  unknown: 'ranked.outcomeUnknown',
+};
+
+/**
+ * `match.type` → 词条 key（上游文档：1 casual / 2 ranked / 3 private / 4 event）。
+ *
+ * ⚠️★ 键的类型是 **`number`**，不是穷尽的 `Record<1 | 2 | 3 | 4, string>`：
+ *    `RankedMatch.type` 是上游给的**自由数字**（`types.ts`：实测只见过 2 与 3）。
+ *    写成四个字面量的 Record 会把"上游加了第五种类型"变成一句**编译错误** —— 而那时
+ *    真正该发生的事是**界面照样有话说**（视图里那一条回落：印上游那个数字原样，
+ *    与 `timelineLabel()` 对未登记标识的处置同一条），不是让这个文件编译不过。
+ * ⚠️ 导出理由同上（对调两行是静默的）。
+ */
+export const MATCH_TYPE_KEYS: Record<number, string> = {
+  1: 'ranked.matchTypeCasual',
+  2: 'ranked.matchTypeRanked',
+  3: 'ranked.matchTypePrivate',
+  4: 'ranked.matchTypeEvent',
+};
+
+/**
+ * 「回车 / 点查询」那一次的**三档**结果。
+ *
+ * ⚠️★ 后两档**不是**"请求失败"：它们是上游对**这个昵称**的确定回答（查无此人 / 昵称不合法），
+ *    **重试永远是白试一次** —— 上游的查询是精确匹配（`lowk3y` 查不到 `lowk3y_`，
+ *    findings §6）。所以它们在界面上是**两句话**、而且**没有重试按钮**，
+ *    与 `errorText` 那一档（"这一次没成功，稍后再试"）是两件事。
+ * ⚠️ 这个形状是**冻结的**（容器与渲染自检都按它写）：多一档意味着两边都要改。
+ */
+export type RankedLookup =
+  | { kind: 'found'; user: RankedPlayerDetail }
+  | { kind: 'not_found' }
+  | { kind: 'invalid_identifier' };
+
+/** 展开那一位的两份数据（`Promise.all` 一次拉回来的两份）。 */
+export interface RankedDetailData {
+  user: RankedPlayerDetail;
+  matches: RankedPlayerMatch[];
+}
+
+/**
+ * 展开那一位的**三档**状态。
+ *
+ * ⚠️★ `loading` / `failed` 是**两个不同的画面**，而且都不是"没有数据"：
+ *    · `loading` ⇒ 复用既有的「加载中」那一句；
+ *    · `failed` ⇒ 它自己的一句（与「最近没有比赛。」**不同**：一个该重试、一个是事实）。
+ * ⚠️ 展开**没有**"查无此人"自己的一档（形状是冻结的三档）⇒ 上游回"没有这个玩家"时
+ *    也落在 `failed` 上；代价写在 `ranked.detailFailed` 的词条注释里。
+ */
+export type RankedDetailState =
+  | { kind: 'loading' }
+  | { kind: 'failed' }
+  | { kind: 'ready'; data: RankedDetailData };
+
+/**
+ * 那一行 / 那一位玩家的「点开 / 收起」入口。
+ *
+ * ⚠️★ 它是**按钮**，不是"整行可点"：`<tr>` 上没有可点语义，读屏软件也念不出来
+ *    （用户点开的是"这一位玩家"，不是"这一行"）。
+ * ⚠️ `aria-expanded` 说的是**这个控件自己管着的那一块**开着没有（三个渲染位置各自一颗
+ *    按钮，只有真的渲染了详情的那一颗是 `true`）—— 三颗都写"这位玩家展开了"会让
+ *    读屏软件念出两个都展开、却只有一块内容的界面。
+ * ⚠️ `type="button"`：万一哪天它被挪进某个 `<form>` 里，默认的 `submit` 会顺手提交那个表单。
+ */
+function RankedPlayerButton({
+  nickname,
+  expanded,
+  onToggleDetail,
+}: {
+  nickname: string;
+  expanded: boolean;
+  onToggleDetail: (nickname: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="ranked__playerbtn"
+      aria-expanded={expanded}
+      onClick={() => onToggleDetail(nickname)}
+    >
+      {nickname}
+    </button>
+  );
+}
+
+/**
+ * 展开区里的**一场**比赛。
+ *
+ * ⚠️★ 这一行里**没有** `players[].eloRate` —— 见文件头那条红线：它是请求那一刻的**现值**，
+ *    不是那一场当时的值。⇒ 这一格的 elo 只由 `eloChangeOf()` 给（`changes[].change`），
+ *    私人房实测 `changes: []` ⇒「—」，**不是 0**（0 的意思是"打了这一场、分数没变"）。
+ *    ⚠️ 代价写清：赛前 elo 上游**根本没给**（只有赛后值），我们不推算 —— 推算的算法会在
+ *    私人房那 32 行上凭空造一个数出来。
+ */
+function RankedDetailMatch({ match, selfUuid }: { match: RankedPlayerMatch; selfUuid: string }) {
+  const { t } = useTranslation();
+  const dash = t('ranked.unknown');
+  const opponent = opponentOf(match, selfUuid);
+  const outcome = matchOutcome(match, selfUuid);
+  const change = eloChangeOf(match, selfUuid);
+  const typeKey = MATCH_TYPE_KEYS[match.type];
+  /*
+   * ⚠️ 两格种子都可能是 `null`（私人房实测两格都是 null）⇒ 读出哪几个印哪几个，
+   *    一个都读不出时印「—」（印空串会让那一格看起来像"这一场本来就没有种子这一栏"）。
+   * ⚠️ 值**原样**（上游的英文标识 `DESERT_TEMPLE` / `STABLES`），与直播那栏的
+   *    `timelineType` 同一条处置：它们是种子/要塞的名字，不是可翻译的产品文案。
+   */
+  const seed = [match.seedType, match.bastionType]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+
+  return (
+    <div className="ranked__detailmatch">
+      {/* ⚠️ 只有他一个人的那些行（实测 26/100，forfeit / bot 局）⇒ 没有对手 ⇒「—」 */}
+      <span className="ranked__detailopp">{opponent === null ? dash : opponent.nickname}</span>
+      <span className={`ranked__detailoutcome ranked__detailoutcome--${outcome}`}>
+        {t(OUTCOME_KEYS[outcome])}
+      </span>
+      {/*
+        ⚠️ `result.time` 是**毫秒**（`formatRaceTime` 就是干这个的；错当秒会印出 `0:05`）。
+        ⚠️★ 它是上游 `result` 那一格的时间 —— 实测两场都满足 `result.time == completions[0].time`
+        （findings §2.2，"Match detail" 那一节），也就是**这一场跑完的那个成绩**（胜者的）。
+        ⇒ 负场那一行它印的是**对手**的成绩，而它仍然是"这一场的结果时间"：我们不改它的
+        含义，也不把它藏起来（藏起来会让一行战绩只剩一个「负」字）。
+        ⚠️ 它**不是**"这位玩家的用时"，所以这一格没有名字（要印他自己的用时，上游没给 ——
+        这与"私人房没有 elo 变化"是同一类"上游根本没有"）。
+        ⚠️ 形状上是 `| null`（实测 100 行里从没 null）⇒「—」，不编一个 0。
+      */}
+      <span className="ranked__detailtime">
+        {match.result.time === null ? dash : formatRaceTime(match.result.time)}
+      </span>
+      {/*
+        ★★ 这一格就是那条红线：`changes[]` 里**这位玩家**的变化量。
+        ⚠️ 正数带 `+`：不带号时 `12` 读不出是涨还是跌，而同一列里负场印的是 `-8`。
+        ⚠️ 读不到 ⇒「—」（私人房 `changes: []`；placement 的 `change` 是 null）。
+        **绝不印 0**，也绝不拿同一行的 `players[].eloRate` 去凑一个数出来。
+      */}
+      <span className="ranked__detailelo">
+        {change === null ? dash : change > 0 ? `+${String(change)}` : String(change)}
+      </span>
+      {/*
+        ⚠️ 这一格印出来是为了解释**同一行里那两个「—」**：私人房（type 3）没有 elo 变化、
+        也没有种子（两件事都是实测），而那与"这一栏没读到"在屏幕上长得一模一样
+        （`ranked.matchTypePrivate` 的词条注释里写着同一段）。
+        ⚠️ 认不出的类型印**上游那个数字**原样：印一句"未知"会把"上游加了新的比赛类型"
+        这件事藏起来（与 `timelineLabel()` 的未知回落同一条处置）。
+      */}
+      <span className="ranked__detailtype">
+        {typeKey === undefined ? String(match.type) : t(typeKey)}
+      </span>
+      <span className="ranked__detailseed">{seed === '' ? dash : seed}</span>
+      {/*
+        ⚠️★ 只在这个数组非空时渲染：实测 100 行里 64 行是空的、有录像的 36 行恰好 1 条 ⇒
+        空数组就是"这场比赛没有录像"，而**一条指向空地址的「录像」比没有入口更坏**。
+        ⚠️ `rel` 用 `noreferrer`（与 `RankedStream` 那条外链逐字相同）：这是上游给的
+        第三方地址，而 `noopener` 独自挡不住 referrer 泄漏。
+        ⚠️ 地址在 `parse.ts` 就被筛过（只认 http(s)）⇒ 上游的一个字段进不了 `<a href>`
+        的伪协议位（`javascript:` 那一类；测试钉着这一条）。
+      */}
+      {match.vod.map((vod) => (
+        <a
+          key={vod.uuid}
+          className="ranked__detailvod"
+          href={vod.url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {t('ranked.detailVod')}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 展开区**里面的内容**：三个画面各有各的话（`RankedDetailState` 的三档）。
+ *
+ * ⚠️ 它**只吃 state**（`selfUuid` 从 `state.data.user.uuid` 拿）：展开的两份数据是
+ *    一次 `Promise.all` 拉回来的，分开传会让"用户是谁"有第二个来源 —— 而错的那一个
+ *    会把对手的成绩算到他头上（`matchOutcome` / `opponentOf` / `eloChangeOf` 全靠它）。
+ */
+function RankedDetailBody({ state }: { state: RankedDetailState }) {
+  const { t } = useTranslation();
+
+  if (state.kind === 'loading') {
+    /* ⚠️ 复用既有的那一句（用户要的"点开能看数据"在飞的时候，屏幕上要有话说） */
+    return <p className="state">{t('common.loading')}</p>;
+  }
+  if (state.kind === 'failed') {
+    return <p className="ranked__detailfailed">{t('ranked.detailFailed')}</p>;
+  }
+
+  const { user, matches } = state.data;
+  const dash = t('ranked.unknown');
+
+  return (
+    <>
+      {/*
+        ★ 第一行：五格读数（用户说的"数据"）。⚠️ 每一个数**各自**判空、各自印「—」——
+        上游 `statistics` 的每一格都是 `{ranked, casual}` 两个数，我们只取 `ranked`
+        （`parse.ts` 的事），读不到就是 `null`，**绝不填 0**。
+        ⚠️★ 类名是 `.ranked__detailstats`，**不是** `.ranked__meta`：渲染自检有一条
+        `metaOf(elo).length === 1`（"赛季与赛段并排"那一格），它同时是"别人不许往这一栏里
+        再塞一行读数"的守卫 ⇒ 视觉上照抄 `.ranked__meta` 那套（flex + gap + 13px + 弱色），
+        但类名必须不同。
+      */}
+      <p className="ranked__detailstats">
+        <span>{t('ranked.detailElo', { elo: user.eloRate ?? dash })}</span>
+        <span>{t('ranked.detailRank', { rank: user.eloRank ?? dash })}</span>
+        <span>
+          {t('ranked.detailSeasonRecord', {
+            wins: user.season.wins ?? dash,
+            loses: user.season.loses ?? dash,
+          })}
+        </span>
+        <span>
+          {t('ranked.detailTotalRecord', {
+            wins: user.total.wins ?? dash,
+            loses: user.total.loses ?? dash,
+          })}
+        </span>
+        <span>
+          {t('ranked.detailBestTime', {
+            /* ⚠️ `bestTimeMs` 是**毫秒**（上游给的就是毫秒：实测 387772 = 6:27.772） */
+            time: user.season.bestTimeMs === null ? dash : formatRaceTime(user.season.bestTimeMs),
+          })}
+        </span>
+      </p>
+      {/*
+        ⚠️★ 这个 N 读的是**我们手上这份数组的长度**（`parseMatches` 会丢掉形状坏掉的行），
+        不是请求里的 `count` —— 用 `count` 会印出「最近 10 场」而下面只有 8 条，
+        而那种自相矛盾**没有任何门禁看得见**（`fetchRankedMatches` 的注释里写着同一件事）。
+      */}
+      <p className="ranked__detailtitle">{t('ranked.detailRecent', { n: matches.length })}</p>
+      {matches.length === 0 ? (
+        /* ⚠️ 复用既有的空态类名：这是"上游说他没有比赛"，不是"我们没读到" */
+        <p className="ranked__empty">{t('ranked.detailNoMatches')}</p>
+      ) : (
+        matches.map((match) => (
+          /* ⚠️ key 用 `match.id`（上游的比赛身份）：下标会让"上游删掉一场"整体错位一格 */
+          <RankedDetailMatch key={match.id} match={match} selfUuid={user.uuid} />
+        ))
+      )}
+    </>
+  );
+}
+
+/**
+ * 一块展开出来的卡片（`.ranked__detail`）—— 三个渲染位置**共用**它。
+ *
+ * ⚠️ `collapse` 只有**表格下面那一块**（判据③）才为真：另外两处（表格那一行里、
+ *    `.ranked__lookup` 里）都已经有一颗 `aria-expanded` 的昵称按钮（就是用户点的那一颗），
+ *    再放一颗会让读屏软件念出两个长得一样的控件，而它们各自管的东西不同。
+ */
+function RankedDetailBlock({
+  nickname,
+  state,
+  collapse,
+  onToggleDetail,
+}: {
+  nickname: string;
+  state: RankedDetailState;
+  collapse: boolean;
+  onToggleDetail: (nickname: string) => void;
+}) {
+  return (
+    <div className="ranked__detail">
+      {collapse ? (
+        <RankedPlayerButton nickname={nickname} expanded onToggleDetail={onToggleDetail} />
+      ) : null}
+      <RankedDetailBody state={state} />
+    </div>
+  );
+}
+
 export type RankedEloViewProps = RankedChromeProps & {
   /** 直连 `/leaderboard` 的解析结果。`null` = 还没取到。 */
   elo: RankedEloData | null;
@@ -989,6 +1305,33 @@ export type RankedEloViewProps = RankedChromeProps & {
    *    时仍然要印得出那个号数（`parse.ts` 的三格各自可空）。
    */
   phase: RankedPhaseData | null;
+
+  // -------------------------------------------------------------------------
+  // ★★ 搜索框的两半 + 行内展开（2026-09-19）—— 五格状态 + 一个动作，全**必填**
+  // -------------------------------------------------------------------------
+  /*
+   * ⚠️★ 为什么这几格是 props、而不是视图里的 `useState`（与 ② 的四格同一条理由）：
+   *    这一栏唯一的自动化断言是渲染自检 `renderToStaticMarkup` —— **不跑 effect、
+   *    不点击、不打字**。状态住在视图里的话，自检能看到的**只有初始值**（空搜索词、
+   *    没查过、没展开），于是"筛出来几行"「查不到那个人」「展开出来三场比赛」
+   *    这三件真正会出错的事**一个字都断言不到**（`docs/pending.md §5.63`：
+   *    一条不可能红的守卫比没有守卫更坏）⇒ 状态上提一层，自检用**不同的 props**
+   *    渲染出每一档并逐格断言。
+   * ⚠️★ 六格都**必填**（不是可选、也不给"缺省时当作空"的兜底）：可选 + 兜底会让
+   *    "容器忘了接线"变成**静默的** —— 搜索框看着在、打进去没反应、点了昵称也不展开，
+   *    而所有门禁照样绿。必填之后忘了传是**编译错误**（渲染脚本那一侧由
+   *    `assertPropsGiven` 那道运行时守卫兜着，它不受类型检查）。
+   */
+  /** 搜索框里的字（**只**管本地筛选；与下面那一次精确查询是两件事）。 */
+  searchText: string;
+  onSearchTextChange: (value: string) => void;
+  /** 回车或点「查询」—— 精确查一位玩家（空串 ⇒ 清掉上一次查询，**不发请求**）。 */
+  onSearchSubmit: () => void;
+  /** 那一次精确查询的结果；`null` = 这一页还没查过（那时那一块**整个不渲染**）。 */
+  lookup: RankedLookup | null;
+  /** 正在展开的那一位玩家；`null` = 没有展开。 */
+  detail: { nickname: string; state: RankedDetailState } | null;
+  onToggleDetail: (nickname: string) => void;
 };
 
 /**
@@ -1006,7 +1349,17 @@ export type RankedEloViewProps = RankedChromeProps & {
  */
 export function RankedEloView(props: RankedEloViewProps) {
   const { t, i18n } = useTranslation();
-  const { elo, phase, ...c } = props;
+  const {
+    elo,
+    phase,
+    searchText,
+    onSearchTextChange,
+    onSearchSubmit,
+    lookup,
+    detail,
+    onToggleDetail,
+    ...c
+  } = props;
 
   if (elo === null) {
     return (
@@ -1017,6 +1370,15 @@ export function RankedEloView(props: RankedEloViewProps) {
   }
 
   const users = topEloEntries(elo.users);
+  /*
+   * ★★ 打字 ⇒ **本地**筛选（一个请求都不发）。
+   * ⚠️★ 筛的是 `topEloEntries()` **之后**那 150 行（与下面真正渲染的是同一份）：
+   *    反过来（先筛 160 条再截断）会让排名 151 的那一行在搜索词命中时冒出来 ——
+   *    而它的排名列印的是上游给的 151，表格就再也不是"前 150"了。
+   * ⚠️ 上游**没有**搜索/前缀端点（findings §7）⇒ 打字永远筛不出榜外的人；
+   *    那件事由回车那一次直连负责。
+   */
+  const shown = filterEloUsers(users, searchText);
   const dash = t('ranked.unknown');
   /*
    * ⚠️ 两格各自判空（不是"整份有没有"）：上游的 schema 里 `number` / `endsAt` 就是可空的
@@ -1028,9 +1390,137 @@ export function RankedEloView(props: RankedEloViewProps) {
   const phaseNumber = phase?.number ?? null;
   const phaseEndsAt = phase?.endsAt ?? null;
 
+  /*
+   * ★★ 展开的那一位渲染在**哪里**（三条判据，**按顺序**；用户点了一下，就必须看得见结果）：
+   *   ① 表里有这一行（而且没被筛掉）⇒ 紧跟那一行之后（`<tr class="ranked__detailrow">`）；
+   *   ② 否则，查人那一次正好查的是他 ⇒ 渲染在 `.ranked__lookup` 里面；
+   *   ③ 否则 ⇒ 表格**下面**单独一块 `.ranked__detail`（第一行是可点收起的昵称按钮）。
+   *
+   * ⚠️★ 为什么非要有②③（而不是"表里没有就不渲染"）：轮询每 60 秒**整份换掉** `elo`，
+   *    那位玩家可能**掉出前 150**；搜索框又会把整张榜筛小。两种情况下他都可能不在表里 ——
+   *    静默消失会让用户以为自己那一下没生效（他会再点一次，而那次点击落在别的东西上）。
+   * ⚠️ 反过来，"被筛选筛掉了却还留在页面上"确实会让过滤看起来坏了 —— 两个方向都有代价；
+   *    这里选**不消失**：这一块讲的是**那一位玩家**（不是这张榜的一部分），而一块
+   *    点一下就凭空消失、又没有任何入口找回来的界面，比一次"过滤看起来没生效"更糟。
+   * ⚠️ 三条**互斥**（同一个产物里 `.ranked__detail` 恰好一个；渲染自检钉着它）。
+   */
+  const open = detail;
+  const openNickname = open === null ? null : open.nickname;
+  const inTable = openNickname !== null && shown.some((user) => user.nickname === openNickname);
+  const inLookup =
+    !inTable &&
+    openNickname !== null &&
+    lookup !== null &&
+    lookup.kind === 'found' &&
+    lookup.user.nickname === openNickname;
+  const belowTable = openNickname !== null && !inTable && !inLookup;
+
   return (
     <RankedChrome {...c}>
       <h2 className="ranked__title">{t('ranked.eloTitle')}</h2>
+      {/*
+        ★★ 搜索框（用户原话：「在**顶部**设置搜索框允许用户自行搜索玩家」）。
+        它的**两半**是两件不同的事，都写在下面那行提示里：
+          · 打字 = 在**已经取到的那份榜**上本地筛选（上游没有搜索端点，findings §7）；
+          · 回车 / 点「查询」= 精确查**一位**玩家（直连上游，花访客自己的额度）。
+        ⚠️★ 它是一个 `<form>` 而不是"输入框 + 按钮各挂一个 handler"：回车提交表单是
+        **浏览器原生**的行为（`type="submit"` 那颗按钮就是它的提交按钮）。自己监听键盘
+        要处理 IME / 回车 / 小键盘，而漏掉任何一种的表现都是"回车没反应"
+        （与 ④ 那个手输周号的框同一条，写法也照抄它）。
+        ⚠️ `onSubmit` 里**必须** `preventDefault`：不写的话表单会按默认行为导航到当前 URL
+        （整页刷新），SPA 里的状态（含这一页的数据）会全部丢掉 —— 表现是"回车之后页面
+        闪一下、回到加载中"。
+        ⚠️ `type="text"` + 可见的 `<label>` 走 `sr-only`：占位符在输入第一个字之后就没了，
+        那是控件**唯一**的名字；只给占位符不给标签，读屏软件会念出一个无名输入框
+        （`htmlFor` / `id` 成对写，与 ② 的搜索框同一条）。
+      */}
+      {/* biome-ignore lint/a11y/useSemanticElements: 见上面那段 —— form 上的 role="search" 合法，换成 <search> 会拆掉"回车提交" */}
+      <form
+        className="ranked__search"
+        /*
+         * ⚠️★ 这一行是**有意的 lint 豁免**（本仓已有四处同形的，比如 `Layout.tsx` 的
+         *    `useExhaustiveDependencies`），理由两条：
+         *   · `role="search"` 在 `<form>` 上是**合法**的 ARIA（它就是 search 地标），
+         *     biome 报的是"现在有 `<search>` 元素可用"那一条**风格**建议；
+         *   · 换成 `<search>` 只有两种写法，两种都更差：要么多一层 wrapper
+         *     （`<search><form …>`，把"地标"与"提交点"拆成两个元素），要么失去
+         *     **回车提交**（`<search>` 没有表单语义，那是用户说的键盘路径）。
+         *   ⇒ 保持"一个 form 同时是地标与提交点"，代价是这一行豁免。
+         */
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearchSubmit();
+        }}
+      >
+        <label className="sr-only" htmlFor="ranked-search">
+          {t('ranked.searchLabel')}
+        </label>
+        <input
+          id="ranked-search"
+          className="ranked__searchinput"
+          type="text"
+          autoComplete="off"
+          value={searchText}
+          placeholder={t('ranked.searchPlaceholder')}
+          onChange={(event) => onSearchTextChange(event.target.value)}
+        />
+        <button type="submit" className="ghostbtn">
+          {t('ranked.searchSubmit')}
+        </button>
+      </form>
+      {/* ⚠️ 说明书（两个入口各自的代价不同），紧贴在框下面 —— 见上面那一段 */}
+      <p className="ranked__searchhint">{t('ranked.searchHint')}</p>
+      {/*
+        ★★ 那一次精确查询的结果（`null` ⇒ **整个不渲染**，不是渲染一个空框：
+        用户还没查过的时候，多一行空白只会让人以为上面那一步失败了）。
+        ⚠️ 命中时印的是**响应里那个昵称**（上游回的是规范写法：敲 `voxio` 回 `Voxio`），
+        而不是用户敲进去的那串大小写 —— findings §6 最后一段。
+        ⚠️ 没命中/不合法那两档是**两句不同的话**，而且**没有重试按钮**：上游的查询是
+        精确匹配，重试一万次还是这个结果（与 `errorText` 那一档的区别写在
+        `RankedLookup` 的形状注释上）。
+      */}
+      {lookup === null ? null : (
+        <div className="ranked__lookup">
+          {lookup.kind === 'found' ? (
+            <>
+              <RankedPlayerButton
+                nickname={lookup.user.nickname}
+                expanded={inLookup}
+                onToggleDetail={onToggleDetail}
+              />
+              {/*
+                ⚠️ 这一格用 `.ranked__lookupstats`（**不是** `.ranked__meta`）：见
+                `RankedDetailBody` 那段注释 —— "赛季与赛段并排"那条断言同时钉着
+                "这一栏里不许有第二个 `.ranked__meta`"。
+              */}
+              <span className="ranked__lookupstats">
+                <span>{t('ranked.detailElo', { elo: lookup.user.eloRate ?? dash })}</span>
+                <span>{t('ranked.detailRank', { rank: lookup.user.eloRank ?? dash })}</span>
+                <span>
+                  {t('ranked.detailSeasonRecord', {
+                    wins: lookup.user.season.wins ?? dash,
+                    loses: lookup.user.season.loses ?? dash,
+                  })}
+                </span>
+              </span>
+              {/* 判据②：展开的那一位正好就是查到的这一位 ⇒ 卡片落在这里 */}
+              {inLookup && open !== null ? (
+                <RankedDetailBlock
+                  nickname={open.nickname}
+                  state={open.state}
+                  collapse={false}
+                  onToggleDetail={onToggleDetail}
+                />
+              ) : null}
+            </>
+          ) : (
+            <p className="ranked__lookupmsg">
+              {lookup.kind === 'not_found' ? t('ranked.lookupNotFound') : t('ranked.lookupInvalid')}
+            </p>
+          )}
+        </div>
+      )}
       {/*
         ⚠️★ 赛季与赛段是**同一行里的四格**（`.ranked__meta` 是 flex + gap）——
         这就是用户说的「并排」：赛季号、赛季起止、赛段号、赛段截止，一行读完。
@@ -1072,6 +1562,17 @@ export function RankedEloView(props: RankedEloViewProps) {
       </p>
       {users.length === 0 ? (
         <p className="ranked__empty">{t('ranked.eloEmpty')}</p>
+      ) : shown.length === 0 ? (
+        /*
+         * ★★ 「筛完一个人都不剩」是**另一句话**（`eloFilterEmpty`），不是上面的
+         *    `eloEmpty`（「这个赛季还没有人上榜。」）：上游此刻有人、只是当前这个搜索词
+         *    一个都没命中。说反了用户会以为上游空了，于是去别处找问题 ——
+         *    而该做的只是把搜索框里那个词删掉（与 ② 的 `liveNoMatch` / `liveEmpty` 同一口径）。
+         * ⚠️ `users.length === 0` 那一支**照旧**用 `eloEmpty`：上游本身就空的时候，
+         *    说"没有匹配的玩家"会把一件上游的事说成用户自己筛出来的。
+         * ⚠️ 因此这里**不渲染表**（与上面空集合那一支同一条：一张只有表头的空表看起来像坏了）。
+         */
+        <p className="ranked__empty">{t('ranked.eloFilterEmpty', { q: searchText.trim() })}</p>
       ) : (
         /*
          * ⚠️★ 外面这一层是**窄屏兜底**（2026-09-16 终审）：五列 + 每格 12px 的左右内边距
@@ -1091,25 +1592,81 @@ export function RankedEloView(props: RankedEloViewProps) {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {shown.map((user) => (
                 /*
                  * ⚠️ key 不取下标：`eloRank` 会**并列**（同一名次两行），所以名次自己
                  * 也唯一不了 —— 加上昵称之后才唯一（同一份榜单里一个玩家只出现一次）。
                  * ⚠️ `highest` / `phasePoint` 在赛季刚开时是 0 或 `null`：
                  *    `null` 印占位符，`0` 是**真的值**（spec §10 第 7 条）。
+                 * ⚠️★ 外层是 `Fragment key=…`（不是 `<tr key=…>`）：展开时**紧跟那一行之后**
+                 *    要多出一个 `<tr class="ranked__detailrow">`，而一个 map 只能返回一个元素
+                 *    —— 两条 `<tr>` 必须共用同一把 key 才不会让 React 把展开那一行当成
+                 *    另一行的兄弟（表现是"点开之后行整体错位一格"）。
                  */
-                <tr key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
-                  <td>{user.rank ?? dash}</td>
-                  <td>{user.nickname ?? dash}</td>
-                  <td>{user.eloRate ?? dash}</td>
-                  <td>{user.highest ?? dash}</td>
-                  <td>{user.phasePoint ?? dash}</td>
-                </tr>
+                <Fragment key={`${String(user.rank ?? 'x')}:${user.nickname ?? ''}`}>
+                  <tr>
+                    <td>{user.rank ?? dash}</td>
+                    <td>
+                      {/*
+                        ⚠️★ 可点的是**昵称那一格里的按钮**，不是整行（`<tr>` 上没有可点语义，
+                        读屏软件也念不出来）—— 用户点开的是"这一位玩家"。
+                        ⚠️ `nickname` 是 `| null`（形状如此）⇒ 那一格印「—」且**没有入口**：
+                        上游那条查人的路径要的就是昵称，一个没有名字的玩家查不出任何东西
+                        （做成按钮的话，点下去只会得到一次"没有这个玩家"）。
+                      */}
+                      {user.nickname === null ? (
+                        dash
+                      ) : (
+                        <RankedPlayerButton
+                          nickname={user.nickname}
+                          expanded={openNickname === user.nickname}
+                          onToggleDetail={onToggleDetail}
+                        />
+                      )}
+                    </td>
+                    <td>{user.eloRate ?? dash}</td>
+                    <td>{user.highest ?? dash}</td>
+                    <td>{user.phasePoint ?? dash}</td>
+                  </tr>
+                  {/* 判据①：展开的那一位**就在表里**（而且没被筛掉）⇒ 紧跟这一行 */}
+                  {open !== null && openNickname === user.nickname ? (
+                    <tr className="ranked__detailrow">
+                      {/* ⚠️ 五列 ⇒ `colSpan={5}`：少一列会让整行挤在第一列里，而表格本身不会报错。
+                          ⚠️ 实测（本机 React 19.3 的 `renderToStaticMarkup`）：产物里就是
+                          `colSpan="5"`（**大小写照 JSX 原样**，不是 `colspan`）—— HTML 的属性名
+                          不区分大小写，浏览器照样当 `colspan` 解；断言要按产物里那一串写。 */}
+                      <td colSpan={5}>
+                        <RankedDetailBlock
+                          nickname={open.nickname}
+                          state={open.state}
+                          collapse={false}
+                          onToggleDetail={onToggleDetail}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
         </div>
       )}
+      {/*
+        ★★ 判据③：他**不在**这张表里（掉出前 150、或者被搜索词筛掉了）——
+        卡片落在表格**下面**，而且第一行仍是那颗可点收起的昵称按钮（不然用户没有任何
+        办法把它关掉，只能刷新整页）。为什么"不消失"这件事见上面那三条判据的注释。
+        ⚠️ 它渲染在 `</table>` **外面**（不是某一行下面）："他在表里"这件事不成立，
+        所以在表里给他找一行是自相矛盾的 —— 而"筛选把他筛掉了却还留在表里"正好会让
+        过滤看起来坏了。
+      */}
+      {belowTable && open !== null ? (
+        <RankedDetailBlock
+          nickname={open.nickname}
+          state={open.state}
+          collapse
+          onToggleDetail={onToggleDetail}
+        />
+      ) : null}
     </RankedChrome>
   );
 }

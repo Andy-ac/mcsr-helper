@@ -8110,6 +8110,299 @@ html[data-theme='light'] {
   margin: 0;
 }
 
+/* ---- ③ 的搜索框、查询结果与展开出来的卡片（2026-09-19，用户要求的两件事）---- */
+
+/*
+ * ★★ 搜索框（用户原话：「在**顶部**设置搜索框允许用户自行搜索玩家」）。
+ *
+ * ⚠️★ 输入框用**系统字体**（`--font-body`），与 `.filters__search input` /
+ *    `.ranked__weekjump input` 那两条**逐字相同**的理由：用户在里面打字，像素字体在输入时
+ *    反而不便阅读，光标落在像素字形之间也会错位。这是**刻意的例外**，不是漏了 `--font-pixel`。
+ * ⚠️ `flex: 1` + `min-width: 0`：输入框吃掉整行剩下的宽度，而 `min-width: 0` 兜的是
+ *    "flex 项的最小内容宽度"（不写它的话，一个很长的占位符/值会把面板顶宽 ——
+ *    与 `.ranked__tablescroll` 那条注释讲的是同一件事）。
+ */
+.ranked__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ranked__searchinput {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.ranked__searchinput::placeholder {
+  color: var(--fg-faint);
+}
+.ranked__searchinput:hover {
+  border-color: var(--line-strong);
+}
+.ranked__searchinput:focus {
+  border-color: var(--grass);
+  background: var(--surface-2);
+  box-shadow: var(--sh-glow);
+}
+
+/*
+ * ⚠️ 两个入口的说明书（打字 = 筛手上这份榜；回车 = 精确查一位玩家）。
+ *    度量取 `.ranked__meta` 那一档（13px + `--fg-muted`）：它是**说明**，
+ *    不是读数（读数用 `.ranked__lookupstats` / `.ranked__detailstats`），
+ *    也不是提示（提示是 `.ranked__lookupmsg` 那一档的警示色）。
+ */
+.ranked__searchhint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/*
+ * ★ 那一次精确查询的结果（命中 / 没命中 / 昵称不合法）。
+ * ⚠️ 它是**一行**（窄屏换行）：命中时那颗昵称按钮与它的读数并排 ——
+ *    与赛季那一行的"并排"同一条口径（"这一位是谁"和"他现在多少分"要一起读到）。
+ */
+.ranked__lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+/*
+ * ★★ 昵称按钮（表格每一行的昵称 / 查询命中的那一位 / 兜底卡片的第一行 —— 三处共用）。
+ *
+ * ⚠️★ 它长得像**可点的文字**，不是一颗带底板的按钮：它在表格的昵称列里，
+ *    一颗实心按钮会把那一列撑成"每一行一个大盒子"，而整张表的可读性靠的是列对齐。
+ *    形状照 `.ranked__tab` 那一套（无底、hover 才出现底色）。
+ * ⚠️ 焦点环不覆盖（全局那条 `:focus-visible` 管着）：键盘用户必须看得见自己停在哪。
+ * ⚠️ 字体用系统字体：昵称是**用户内容**，下划线/大小写密集的名字在像素字体里更难认
+ *    （与 `.ranked__weekjump input` 用系统字体同一条理由）。
+ */
+.ranked__playerbtn {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.ranked__playerbtn:hover {
+  background: var(--surface-2);
+}
+/*
+ * ⚠️ 展开着的那一颗必须有**看得见的**变化（不是只靠 `aria-expanded`）：
+ *    卡片在下面，而按钮自己不变的话，用户看不出自己是"点开了"还是"点错了"。
+ *    判据与读屏软件读到的是**同一个属性**，不是第二份 state —— 两处判开的话，
+ *    某一次改动会让按钮看起来开着而读屏软件念成关着。
+ */
+.ranked__playerbtn[aria-expanded='true'] {
+  color: var(--grass-bright);
+  background: var(--surface-2);
+}
+
+/*
+ * 命中时那一行里的读数（elo / 排名 / 本赛季战绩）。
+ * ⚠️★ 度量照抄 `.ranked__meta`（flex + gap + 13px + `--fg-muted`），但**类名必须不同**：
+ *    渲染自检有一条 `metaOf(elo).length === 1`（"赛季与赛段并排"那一格），
+ *    它同时是"别人不许往这一栏里再塞一行读数"的守卫 ⇒ 复用那个类名会当场把它弄红。
+ */
+.ranked__lookupstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/*
+ * ⚠️ 「没有这个玩家。」/「这个昵称不合法…」——用 `--redstone`（与"故障"同一个变量）：
+ *    它说的是"你要的那个人不在那里"，与 `.ranked__jumperror` 同一条取舍
+ *    （用 `--gold` 会让它与"等待"那一档混起来）。
+ * ⚠️ 它不是 `Notice`（不带底板、不打断读屏）：用户就在搜索框旁边，看得见自己打了什么。
+ */
+.ranked__lookupmsg {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--redstone);
+  margin: 0;
+}
+
+/*
+ * ★ 展开时**紧跟那一行**之后多出来的那一行表格行。
+ * ⚠️ 它自己**不带下边框**：上面那一行已经有一条，两条挨在一起会画出一道双线
+ *    （看起来像表格被切成了两层）。
+ * ⚠️ 左右内边距与 `.ranked__table td` 一致（12px），卡片才对得上列。
+ */
+.ranked__detailrow > td {
+  border-bottom: none;
+  padding: 0 12px 12px;
+}
+
+/*
+ * ★★ 展开出来的卡片（表格那一行里 / 查询结果里 / 表格下面 —— 三个位置共用同一个类名）。
+ * ⚠️ 外面那一圈底板是**必须**的：卡片在三种位置里出现，而其中两种（表格行内、查询结果里）
+ *    周围都是别的内容 —— 没有底板时它看起来像"那一行下面多出来一段没排版的字"。
+ * ⚠️ `min-width: 0`：它在 `<td>` 里，而表格格子的宽度由内容决定 ⇒ 不给它这条，
+ *    一个长种子（19 位数字）会把整张表顶宽（`.ranked__tablescroll` 挡的是"整页滚动"，
+ *    挡不住"表格自己变宽"）。
+ */
+.ranked__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+/* 卡片第一行的读数（elo / 排名 / 本赛季 / 全时段 / 最佳）—— 与 `.ranked__lookupstats` 同一档度量 */
+.ranked__detailstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/*
+ * 「最近 N 场比赛」—— 卡片的第二个小标题。
+ * ⚠️ 字号取**面板标题下面那一档**（`.ranked__seeds dt` / `.ranked__tab` 同档的 12px 像素字体）：
+ *    它比读数强、比 `<h2>` 弱，而且**不是** `<h2>`（十来张卡片各出一个标题，
+ *    读屏软件按标题跳转时会被它们淹没）。
+ */
+.ranked__detailtitle {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0;
+}
+
+/*
+ * ★ 一场比赛那一行：对手 / 结果 / 用时 / elo 变化 / 类型 / 种子 / 录像。
+ * ⚠️ 七格**排成一行**（窄屏换行）：这是战绩列表，逐行对齐才能上下比较；
+ *    每一场做成一张小卡片的话，十来行会占掉一整屏。
+ * ⚠️ `align-items: baseline`：七格的字号不同（结果那一格是像素字体）——
+ *    基线对齐比居中更像一张表。
+ */
+.ranked__detailmatch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: 13px;
+}
+
+/* 对手昵称：这一行里唯一可能很长的东西 ⇒ 允许它断行，不把这一行顶出卡片 */
+.ranked__detailopp {
+  min-width: 60px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 结果那一格（胜 / 负 / 平 / 读不到）。
+ * ⚠️★ 颜色与文字来自**同一份判据**（`matchOutcome` 的四档 → 类名后缀 + 词条表），
+ *    不是两处各判一次 —— 两处判开时，"胜"印成红色而文字写着「胜」这种自相矛盾
+ *    没有任何门禁看得见。
+ * ⚠️★ 「读不到」那一档用**弱色**而不是红色：它说的是"这一行与这个人对不上"，
+ *    画成"负"的那个颜色是在替上游断言一件我们并不知道的事（判据写在 `matchOutcome` 上）。
+ */
+.ranked__detailoutcome {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  min-width: 2em;
+}
+.ranked__detailoutcome--win {
+  color: var(--grass-bright);
+}
+.ranked__detailoutcome--loss {
+  color: var(--redstone);
+}
+.ranked__detailoutcome--draw {
+  color: var(--gold);
+}
+.ranked__detailoutcome--unknown {
+  color: var(--fg-faint);
+}
+
+/*
+ * 用时与 elo 变化：两个短格。
+ * ⚠️ 等宽数字（`tabular-nums`，与 `.ranked__table td` 同一条）：上下要对得齐，
+ *    否则 `6:27.772` 与 `1:01:01.001` 会看起来一样长。
+ */
+.ranked__detailtime {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  min-width: 3.5em;
+}
+
+/*
+ * ★★ elo 变化那一格 —— **红线就在这一格上**（它是 `changes[].change`，
+ * 不是 `players[].eloRate` 那个现值；读不到就是 `—`，不是 0）。
+ * ⚠️ 它是这一行里最要紧的数 ⇒ 比别的读数强一档（`--fg` 而不是 `--fg-muted`）。
+ */
+.ranked__detailelo {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  min-width: 3.5em;
+}
+
+/*
+ * 「这一场是什么性质的比赛」（休闲 / 排位 / 私人房 / 活动）——最弱的一档。
+ * ⚠️ 它有存在的理由（私人房没有 elo 变化、也没有种子，那两格是「—」）——
+ *    完整理由写在 `ranked.matchTypePrivate` 的词条注释里。
+ */
+.ranked__detailtype {
+  color: var(--fg-faint);
+}
+
+/* 种子（上游的英文标识原样）—— 弱色 + 等宽，与 `.ranked__seeds dd` 同一套 */
+.ranked__detailseed {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 录像外链（只有 `vod[]` 非空时才渲染这一格） */
+.ranked__detailvod {
+  font-size: 13px;
+  color: var(--diamond);
+}
+
+/*
+ * ⚠️ 展开"这一次没读到"那一句。⚠️ 它**不是** `.ranked__empty`：空态说的是"这里现在没有
+ *    内容"（虚框 + 一段留白），而这一句是"这一次没读到"（该重试）—— 混成一句会让用户
+ *    对着一份永远读不到的东西等它自己好起来。
+ */
+.ranked__detailfailed {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--redstone);
+  margin: 0;
+}
+
 /* ==================================================================
    追踪的博主 · `/videos` 页上的那一块（2026-09-16，`.tracked*`）
 
