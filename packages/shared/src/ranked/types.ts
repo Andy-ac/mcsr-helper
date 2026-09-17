@@ -389,10 +389,23 @@ export interface RankedPlayerDetail {
    * ★★ 本赛季**当前赛段**的积分（`seasonResult.last.phasePoint`）—— 搜索行第五列。
    *
    * ⚠️★★ 上游把它埋在两层的里面（`seasonResult.last.phasePoint`），而榜上那一列读的是
-   *    `seasonResult.phasePoint`（`parseEloEntry`）—— 两个位置都是在**实测的响应**里
-   *    看着取的（账本 `ranked-round4/progress.md` 的 `seasonResult` 读数），
-   *    不是抄文档。⚠️ 换位置之前先看一眼那两条读数：读错了的表现是**整列 0 或整列「—」**，
+   *    `seasonResult.phasePoint`（`parseEloEntry`）—— **两个位置的证据在两处，别混着引**
+   *    （2026-09-19 复评 I5 订正：这一段原来只引了账本 `ranked-round4/progress.md` 那一份
+   *    `/users/{id}` 的 `seasonResult` 读数，而那一份里**根本没有**顶层的 `phasePoint`
+   *    ⇒ 榜那一半的证据引错了地方）：
+   *      · `/users/{id}` 那一半 ⇒ 账本 `ranked-round4/progress.md`（"搜索行那五列的数据来源"）
+   *        里那份实测读数：`{"last":{…,"phasePoint":0,…},"highest":2385,…}` —— 埋两层里面；
+   *      · `/leaderboard` 那一半 ⇒ `docs/ranked-live-spec.md` §2.3：实测"③ 前 150 名里
+   *        `seasonResult` 的键**恒为** `{eloRate, eloRank, phasePoint, highest, phaseHighest}`"
+   *        （顶层的 `phasePoint`，**没有** `last` 这一层）。
+   *    ⚠️ 换位置之前先把这两处读数都看一遍：读错了的表现是**整列 0 或整列「—」**，
    *    而这两者都不是故障，没有任何门禁看得见。
+   * ⚠️★ **同一个玩家在两处出现时，这一列必须是同一个数**（同一屏里可能两行同名：固定那一行
+   *    从这一格印、榜上那一行从 `RankedEloEntry.phasePoint` 印）。两条解析路径读的是**两个
+   *    不同位置**，所以"它们一致"不是天上掉下来的：`services/api/src/ranked-shared.test.ts`
+   *    里有一条**跨端点**的联合断言（同一份夹具里的同一个人，两条路径必须给出同一个值）。
+   *    ⚠️ 代价写清：那条断言证的是**我们两条读法**一致；"上游这两个端点对同一个人给的是不是
+   *    同一个数"只能人打两次请求去对（`docs/pending.md §5.101`）。
    * ⚠️★ `0` 是**真的值**（赛季刚开始时整列都是 0，spec §2.3），缺才是 `null`
    *    ⇒ 解析层绝不许把 0 折成 `null`（那会让"这个赛段才刚开始"变成"我们没读到"）。
    */

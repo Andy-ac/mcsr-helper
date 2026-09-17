@@ -38,6 +38,12 @@
  *    ⚠️ 把 `"DOM"` 加进 api 的 `lib` 是**更坏**的修法（一个 Node 服务不该有 DOM 类型）。
  *    ⚠️ 影响面：本 hook 只接管 `@/` 开头的 specifier（`services/api` 里没有别的东西用它），
  *    而且它只活在**跑这一个测试文件的进程**里（`node --test` 每个文件一个子进程）。
+ *    ⚠️★ **`registerHooks()` 要 Node ≥ 22.15**（nodejs.org 的 `module` 文档：**Added in: v22.15.0**，
+ *    Customization Hooks 的历史表也写着 “v22.15.0 Add support for synchronous and in-thread hooks”）。
+ *    这就是根 `package.json` 的 `engines` 从 `>=22` 提到 `>=22.15` 的**唯一**理由
+ *    （2026-09-19 复评 M10；理由也写在那个文件的 `//engines` 里）—— 在 22.0–22.14 上
+ *    整个 api 测试套件会在 import 那一刻红成 `registerHooks is not a function`，
+ *    而那条错误指向本文件、不指向 node 版本。
  * 2. **两条 import 的路径是"算出来"的**（不是字面量）：TypeScript 只对**字面量**
  *    specifier 做模块解析 ⇒ 非字面量的动态 import 拿到的是 `any`，**不会**把
  *    `apps/web/src/lib/*` 拖进 `services/api` 这个项目的类型检查（上面那五条错就是这么来的）。
@@ -46,7 +52,10 @@
  *    ⚠️ 也**不许**改成字面量：那会让整个 api 项目的 typecheck 当场红
  *    （不是这个测试红 —— 是**每一个** `pnpm -w check` 都红）。
  *
- * ⚠️ 本文件**绝不出真实网络**：它只构造 `ApiError` 与调一个纯函数，一个 fetch 都不发。
+ * ⚠️ 本文件**绝不出真实网络**：两个方向都把出口堵死了 —— 多数用例只构造 `ApiError` 再调一个
+ *    纯函数；而"读路径上的 `code` 恒为 `undefined`"那一条走**真的** `fetchSeedByMatchId()`，
+ *    但 `globalThis.fetch` 已被换成桩（照 `ranked.test.ts` 的 `mockUpstream`），
+ *    桩还会数调用次数（"那一发真的发出去了"本身是判据）。
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -94,7 +103,7 @@ const { describeSeedQueryError } = (await import(SEED_ERRORS_PATH)) as {
     fallbackMin?: number,
   ) => SeedQueryFailure;
 };
-const { ApiError } = (await import(API_PATH)) as {
+const { ApiError, fetchSeedByMatchId } = (await import(API_PATH)) as {
   ApiError: new (
     message: string,
     status: number,
@@ -103,6 +112,10 @@ const { ApiError } = (await import(API_PATH)) as {
     status: number;
     code?: string;
   };
+  fetchSeedByMatchId: (
+    matchId: number,
+    signal?: AbortSignal,
+  ) => Promise<{ seed: unknown; cached: boolean }>;
 };
 
 /**
@@ -121,19 +134,43 @@ const getError = (status: number): InstanceType<typeof ApiError> =>
   new ApiError(`HTTP ${String(status)}`, status);
 
 describe('describeSeedQueryError：404 ⇒ not_found（按状态码，不按错误码）', () => {
-  it('★ 探针：这条读路径上的 `ApiError.code` 就是 `undefined`（那一半判据的立足点）', () => {
+  it('★★ 探针：真正的**读路径**上 `ApiError.code` 恒为 `undefined`（即使响应体里带着一个码）', async (t) => {
     /*
-     * ⚠️ 没有这一条，下面那条断言可能只是"构造器恰好没设 code"的巧合：
-     *    它的判据是**状态码**，而"为什么不看 code"这件事必须被钉住
-     *    （`api.ts` 的 `request()` 不读体 ⇒ 所有 GET 都是这个样子）。
+     * ⚠️★ 这一条**必须**走真的读函数（`fetchSeedByMatchId` → `lib/api.ts` 的 `request()`），
+     *    而且**桩掉 `fetch`**（照 `ranked.test.ts` 的 `mockUpstream` 先例）——
+     *    它原来是自己 `new ApiError(…, 404)` 再断言 `code === undefined`，
+     *    那断的是**构造器的性质**（构造器当然不会凭空造一个码出来），`request()` 哪天
+     *    改成读错误体（一次跨切面改动，`api.ts:310` 那一段写着它为什么被否决），
+     *    那条探针**照样绿** —— 一条不可能红的守卫（本仓 §5.63）。
+     * ⚠️★ 桩回来的响应体**逐字**照服务端那条 404 写（`routes/seeds.ts` 的
+     *    `{"error":"seed_not_found"}`）：这正是"我方的状态码判据是不是还站得住"要问的东西 ——
+     *    体里有一个码，而这条读路径**不读它**。
+     * ⚠️ 本文件其余用例仍然自己构造 `ApiError`：它们问的是"给定这样一个错误，
+     *    `describeSeedQueryError` 怎么分档"，而这个**形状**由本用例钉住。
      */
-    const error = getError(404);
+    let calls = 0;
+    t.mock.method(globalThis, 'fetch', async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: 'seed_not_found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    let caught: unknown = null;
+    try {
+      /* ⚠️ 这个 id 谁都不碰（桩不发真实请求）：随便挑一个真实存在的比赛 id，形如 13304815 */
+      await fetchSeedByMatchId(13_304_815);
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(calls, 1, '★ 探针：那一发真的发出去了（不是自己构造的 `ApiError`）');
+    assert.ok(caught instanceof ApiError, '★ 探针：404 抛的是 `ApiError`（这条读路径的形状）');
+    assert.equal(caught.status, 404, '★ 而状态码是真的在那儿（唯一的判据就建立在它上面）');
     assert.equal(
-      error.code,
+      caught.code,
       undefined,
-      '读路径的 ApiError 带了 code ⇒ 本文件守的那条判据（按状态码）已经不是真实形状了，回去读 api.ts 的那一段',
+      '读路径的 `ApiError` 带上了 `code`（响应体里的 `error` 被读进来了）⇒ 本文件守的那条判据（按状态码）已经不是真实形状了，回去读 `api.ts` 那一段',
     );
-    assert.equal(error.status, 404, '★ 而状态码是真的在那儿（唯一的判据就建立在它上面）');
   });
 
   it('★★★ 404 ⇒ `kind: not_found` —— "这场比赛的种子不在库里"是**常态**，不是故障', () => {

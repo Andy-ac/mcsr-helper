@@ -2053,6 +2053,95 @@ describe('parsePlayerDetail：五格 / 一格坏 / 整份不成形状', () => {
   });
 });
 
+/*
+ * ===========================================================================
+ * ★★ 跨端点联合判据（2026-09-19 复评 I5）：**同一个玩家的"阶段分"只有一份真相**
+ * ===========================================================================
+ * 屏幕上那一列（`ranked.colPhasePoint`）**可能同时出现两次**：榜上他自己那一行
+ * （`RankedEloEntry.phasePoint`）与"固定在最上面"那一行（`RankedPlayerDetail.seasonPhasePoint`）。
+ * 而这两格来自**两个端点、两个不同的字段位置**（`parseEloEntry` 读 `seasonResult.phasePoint`，
+ * `parsePlayerDetail` 读 `seasonResult.last.phasePoint` —— 两处实测见 `types.ts` 那一格上
+ * 分开引的两条证据）⇒ "两行印同一个数"这件事**没有任何东西保证**，除非这里钉住它。
+ *
+ * ⚠️★ 为什么这条判据只能长在这里（而不是渲染自检里）：两个端点的**响应**是两份不同的 JSON，
+ *    一次渲染里不可能真的打两次上游去交叉核对 —— 能验的是**我们两条读法**在同一个人上
+ *    给出同一个值。渲染自检那一侧喂的是**手写的**两个夹具（两边都是 0），
+ *    对"哪一条路径读错了字段"**一个字都证不了**。
+ *
+ * ⚠️★ 判据的形状：同一份夹具里放**同一个玩家**，两个端点各自的**真实形状**都是完整的
+ *    （榜那一份有顶层 `phasePoint`、**没有** `last`；详情那一份有 `last.phasePoint`、
+ *    **没有**顶层 `phasePoint` —— 这是实测，不是我们编的），两边的值都取一个**非 0** 的数
+ *    （`42`）：`0` 会让"读错了位置 ⇒ null"与"本来就读不到"分不开，而这是这条判据唯一要分的东西。
+ *    ⇒ 谁把两条路径"统一"成一个字段名（一次看起来很像整理的改动），这里当场红。
+ *
+ * ⚠️ 代价写清：它证的是**我们两条读法**一致；"上游这两个端点对同一个人给的是不是同一个数"
+ *    仍然只能人打两次请求去对（`docs/pending.md §5.101`）。
+ */
+describe('★★ 跨端点：同一个玩家的"阶段分"（两个端点、两个字段位置）', () => {
+  /** 那一次判据用的值：**非 0**（见上面那一段），而且两边同值。 */
+  const SAME_PHASE_POINT = 42;
+  const SAME_NICKNAME = 'edcr';
+
+  it('★★★ 榜上那一行（`/leaderboard` 的 `seasonResult.phasePoint`）与详情（`/users/{id}` 的 `seasonResult.last.phasePoint`）印的是**同一个数**', () => {
+    const board = parseLeaderboard({
+      status: 'success',
+      data: {
+        season: LEADERBOARD_FIXTURE.data.season,
+        users: [
+          {
+            uuid: 'a',
+            nickname: SAME_NICKNAME,
+            roleType: 1,
+            eloRate: 2349,
+            eloRank: 1,
+            /* ⚠️ 榜那一份的**真实形状**：`seasonResult` 里**没有** `last` 这一层 */
+            seasonResult: {
+              eloRate: 2349,
+              eloRank: 1,
+              phasePoint: SAME_PHASE_POINT,
+              highest: 2385,
+              phaseHighest: 2385,
+            },
+          },
+        ],
+      },
+    });
+    const detail = parsePlayerDetail({
+      ...PLAYER_DETAIL_FIXTURE,
+      data: {
+        ...PLAYER_DETAIL_FIXTURE.data,
+        nickname: SAME_NICKNAME,
+        /* ⚠️ 详情那一份的**真实形状**：埋两层，而且**没有**顶层 `phasePoint` */
+        seasonResult: {
+          last: { eloRate: 2349, eloRank: 1, phasePoint: SAME_PHASE_POINT, percentile: 0 },
+          highest: 2385,
+          lowest: 1670,
+          phases: [],
+        },
+      },
+    });
+    const boardRow = board?.users[0];
+    assert.ok(boardRow, '★ 探针：榜那一行解析得出来（否则下面那条是在比 undefined）');
+    assert.ok(detail, '★ 探针：详情那一份解析得出来');
+    assert.equal(boardRow.nickname, detail.nickname, '★ 探针：两处是**同一个玩家**');
+    assert.equal(
+      boardRow.phasePoint,
+      SAME_PHASE_POINT,
+      '★ 探针：榜那一格读到的**就是**那个非 0 的数（读错位置时它是 null，而 null 与"上游没给"分不开）',
+    );
+    assert.equal(
+      detail.seasonPhasePoint,
+      SAME_PHASE_POINT,
+      '★★ 探针：详情那一格同上（它埋在 `seasonResult.last` 里）',
+    );
+    assert.equal(
+      boardRow.phasePoint,
+      detail.seasonPhasePoint,
+      '★★★ 同一个玩家在榜上与他被搜出来时，这一列**必须是同一个数** —— 两条路径读的是两个不同的字段位置，所以"一致"必须被钉住（谁把两处统一成一个字段名，这条当场红）',
+    );
+  });
+});
+
 describe('④ 之外：行内展开的四个纯函数', () => {
   /** 排行榜用的那份夹具的简写（`RankedEloEntry` 只有五格）。 */
   const board = [

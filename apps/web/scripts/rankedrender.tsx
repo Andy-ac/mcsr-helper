@@ -2387,9 +2387,15 @@ const cellsOfRow = (row: string): string[] =>
  *    ⇒ 这个选择器恰好等于"数据行"，而"展开出来的行"不会被当成一个玩家
  *    （旧写法靠"裸 `<tr>`"达到同一件事，这一版靠类名，两者的等价性由下面
  *    `★ 每一行一个玩家` 与 `★★ 渲染出来的是 N 行数据行` 这两条各自钉着）。
- * ⚠️ 用 `elementsWithClass`（本文件那个有探针的提取器）而不是再写一个正则：
- *    "类名要整个词相等"这件事只在它一处定义，`ranked__row--lookup` **算** `ranked__row`
- *    （它就是同一个词 + 一个修饰），而 `ranked__detailrow` 不算。
+ * ⚠️★ 用 `elementsWithClass`（本文件那个有探针的提取器）而不是再写一个正则 —— 但**别指望它
+ *    会把 `ranked__row--lookup` "当成" `ranked__row`**：那个提取器的判据是**整词相等**
+ *    （`classes.includes(cls)`，探针在它上面那一段、`hasClassOf` 的说明同一条），
+ *    所以 `ranked__row--lookup` **不**会因为"同一个词加了个修饰"而命中。
+ *    ⚠️★ 它之所以成立，是因为**视图同时写了两个类名**：
+ *    `className="ranked__row ranked__row--lookup"`（`RankedPanels.tsx` 那一行）——
+ *    少写 `ranked__row` 那一半时，固定那一行会**从"数据行"里掉出去**
+ *    （`★ 每一行一个玩家` 会少一行，而屏幕上那一行长得完全正常）。
+ *    ⇒ 这条取法与视图那两个类名是**成对**的（④b③ 里"两行类名集合互比"那两条钉着这一对）。
  */
 const eloRowsOf = (table: string): string[] => elementsWithClass(table, 'ranked__row');
 const eloRows = eloRowsOf(eloTable).map((row) => cellsOfRow(row));
@@ -3693,6 +3699,66 @@ assert.deepEqual(
   '★★ ② 而**两颗**都念"展开"：判据是"**他**的卡片开着没有"，不是"卡片开在**我这一行**下面没有"（只说一颗会让读屏软件念"已收起"，用户于是再点一次 —— 而那次点击把卡片收起来）',
 );
 /*
+ * ★★★ ② 的**第三档**（2026-09-19 复评 I1）：**上游给了空集合** + 展开的正是**查到的**那一位。
+ *
+ * ⚠️★ 这一档在修复之前**没有任何夹具**盖过，而它正是"卡片会不会一个位置都没有"的那一格：
+ *    空榜 ⇒ `shown` 是空的 ⇒ 判据①（他在表里）不成立；查到的就是他 ⇒ 判据② 成立、
+ *    判据③（表格下面）**不成立**。而空榜那一支当时**整块不渲染表**
+ *    ⇒ 判据② 没有落点 ⇒ **卡片一个位置都不渲染**（旧的取法会在这里数到 **0** 块 `.ranked__detail`）。
+ *    ⚠️ 这个洞是第四轮**新有的**：上一轮那张卡片住在 `.ranked__lookup` 里（与表格无关），
+ *      卡片搬进"固定那一行"后面之后，"没有表"第一次等于"没有卡片"。
+ * ⚠️★ 判据是**四件**，缺一条都挡不住那一类错：
+ *    空态那一句照旧（上游确实没人）+ **表照样渲染** + `<tbody>` 里**恰好一行**（就是固定那一行）
+ *    + 卡片**恰好一块**、在表格**里面**、紧跟那一行之后。
+ * ⚠️ 它与上面 ④ 那一节的"空集合 ⇒ **不**渲染表"**不矛盾**：那条的夹具是 `lookup: null`
+ *    （没有查到的玩家 ⇒ 没有行可画），这一档有一位查到的玩家（⇒ 有那一行）。
+ */
+const eloEmptyFound = renderElo(
+  {
+    elo: ELO_EMPTY,
+    lookup: ELO_LOOKUP_FOUND,
+    detail: { nickname: 'edcr', state: ELO_DETAIL_READY },
+  },
+  '排行榜·上游空了 + 查到的他展开着',
+);
+assert.equal(
+  textOf(elementsWithClass(eloEmptyFound, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.eloEmpty'),
+  '★★ ② 空榜那一句照旧（「这个赛季还没有人上榜。」）—— 表是为**查到的这一位**画的，不是榜上有人了',
+);
+const emptyFoundTable = elementsWithClass(eloEmptyFound, 'ranked__table')[0] ?? '';
+assert.notEqual(
+  emptyFoundTable,
+  '',
+  '★★★ ② 空榜 + 查到的他 ⇒ **表照样渲染**（不渲染的话下面那条卡片判据没有落点，而屏幕上就是"卡片哪儿都没有"）',
+);
+const emptyFoundRows = eloRowsOf(emptyFoundTable);
+assert.equal(
+  emptyFoundRows.length,
+  1,
+  `★★ ② 而且那个表体里恰好**一行** —— 就是固定那一行（榜上本来就没人；找到 ${String(emptyFoundRows.length)} 行）`,
+);
+assert.equal(
+  hasClassOf(openTagOf(emptyFoundRows[0] ?? ''), 'ranked__row--lookup'),
+  true,
+  '★ 探针：那一行带 `--lookup`（它是"查到的他"，不是榜上的行）—— 否则下面两条位置断言的锚点就错了',
+);
+const emptyFoundPinnedEnd =
+  emptyFoundTable.indexOf(emptyFoundRows[0] ?? '') + (emptyFoundRows[0] ?? '').length;
+const emptyFoundDetailAt = emptyFoundTable.indexOf('<tr class="ranked__detailrow">');
+assert.notEqual(emptyFoundDetailAt, -1, '★ 探针：展开那一行在产物里（否则下面两条是空跑）');
+assert.equal(
+  elementsWithClass(emptyFoundTable, 'ranked__detail').length,
+  1,
+  '★★★ ② 卡片**恰好一块**、而且在**表格里面**（判据②的位置口径与上面两档逐字相同）',
+);
+assert.ok(emptyFoundDetailAt >= emptyFoundPinnedEnd, '★★ ② 那一块落在固定那一行**之后**');
+assert.equal(
+  /<tr\b/.test(emptyFoundTable.slice(emptyFoundPinnedEnd, emptyFoundDetailAt)),
+  false,
+  '★★★ ② 而且是**紧跟**（两者之间一个 `<tr` 都没有 —— 这一条把"渲染到表尾"与"紧跟"分开）',
+);
+/*
  * ★★ 三条判据**互斥**：同一个产物里 `.ranked__detail` 恰好**一块**。
  * ⚠️ 少了这一条，一个"三条都渲染"的实现会同时通过上面三条（每一条看到的都是**另一处**），
  *    而用户会看到两张一模一样的卡片、各自跟着不同的东西开合。
@@ -3701,6 +3767,7 @@ for (const [where, html] of [
   ['① 表里', eloInTable],
   ['② 固定那一行后面', eloInLookup],
   ['② 两行同名那一档', eloFoundInTable],
+  ['② 空榜 + 查到的他', eloEmptyFound],
   ['③ 表格下面', eloFilteredAway],
 ] as const) {
   assert.equal(
@@ -3724,7 +3791,7 @@ assert.equal(
 );
 assert.equal(metaOf(eloLookupFound).length, 1, '★★ 查询命中那一屏同理');
 ok(
-  '④b⑥ 位置判据：①紧跟榜上那一行（colSpan=5）②紧跟固定那一行 + 两行同名那一档仍恰好一块 ③表格下面',
+  '④b⑥ 位置判据：①紧跟榜上那一行（colSpan=5）②紧跟固定那一行 + 两行同名与"空榜 + 查到的他"那两档仍恰好一块 ③表格下面',
 );
 
 /* ---- ⑦ 两族**从表里取**的词条（结果的四档 + 比赛类型的四种）---- */
@@ -4010,37 +4077,23 @@ assert.deepEqual(
   '★★★ ⑤ 三个种子值**逐字**（字面量；三格互不相同 ⇒ "第 3 格印的是第 1 格"也会在这里红）',
 );
 /*
- * ★★★ ⑤ 反方向：值**没有被当成数字**。
+ * ★★★ ⑤ "值**没有被当成数字**"这件事（本仓 `SeedResultCard.tsx` 的文件头记着
+ *    `Number()` 会静默改 64 位整数）：**判据就是上面那一条逐字 `deepEqual`**。
  *
- * ⚠️★ 这是"数字被格式化"那类错的**唯一**判据（本仓 `SeedResultCard.tsx` 的文件头记着
- *    `Number()` 会静默改 64 位整数这件事）：`textOf` 会把 `<dd>` 里的字取出来，
- *    而一个走过 `Number()` / `toLocaleString()` 的实现印出来的是
- *    8813544817493859000 或 8,813,544,817,493,859,226 —— 两种都**看起来像十九个数字**。
- * ⚠️ 三条判据各管一种写法，缺一条就漏一类：
- *   · 千分位（`toLocaleString()`）；
+ * ⚠️★ 2026-09-19 复评 I2：这里原来还有**四条**断言（不许带千分位 / 不许有三位分组 /
+ *    不许出现科学计数法 / 不许出现 `Number()` 那个舍入后的值），它们**全部**被上面那条
+ *    `deepEqual` 严格蕴含（三格必须逐字等于那三个字面量 ⇒ 任何一个被格式化的值都当场红）
+ *    ⇒ **一条都不可能单独红**；而那段注释当时还写着"三条判据各管一种写法，缺一条就漏一类"，
+ *    那句是**假的**（那不是覆盖率，是同一件事的四个分身）。
+ *    ⇒ 四条一起删掉：一条不可能红的守卫比没有守卫更坏（本仓 §5.63；本文件上面「排名列印的是
+ *    上游的 `eloRank`」那一节记着上一轮同样把一条被蕴含的探针删掉的裁决）。
+ * ⚠️ 三类错今天仍然有人管，管它们的就是那条逐字比对（**三种写法印出来的都不是那三个字面量**）：
+ *   · 千分位（`toLocaleString()` 会印 `8,813,544,817,493,859,226`）；
  *   · 科学计数法（`Number.prototype.toString()` 对超大数是 `8.81e+18`）；
- *   · `Number()` 的**舍入**（19 位超过 2^53 ⇒ 末几位被抹平）。
+ *   · `Number()` 的**舍入**（19 位超过 2^53 ⇒ `8813544817493859000`）。
+ * ⚠️ 代价写清：这三类错的判据从此**只有一处**（那条 `deepEqual`）—— 谁把它改成"包含某串字"
+ *    或"比长度"，这三类错会**一起**失去判据，而屏幕上的表现只是"种子值看起来还是十九位数字"。
  */
-assert.equal(
-  seedOpenCells.values.join('|').includes('8,813,544,817,493,859,226'),
-  false,
-  '★★★ ⑤ 值**不许**带千分位（`toLocaleString()` 的产物：每一格都还是"数字"，只是被分了组）',
-);
-assert.equal(
-  /[0-9],[0-9]{3}/.test(seedOpenCells.values.join('|')),
-  false,
-  '★★★ ⑤ 任何三位分组都不许出现（上面那条只钉着主世界那一个值；这一条管三个）',
-);
-assert.equal(
-  /e\+?\d/i.test(textOf(seedOpenLine)),
-  false,
-  '★★ ⑤ 也不许出现科学计数法（`Number()` 转字符串对大整数的形状）',
-);
-assert.equal(
-  seedOpenCells.values.includes('8813544817493859000'),
-  false,
-  '★★★ ⑤ 更不许出现 `Number("8813544817493859226")` 那个**舍入后**的值（末几位被抹平，而它看起来仍然像十九个数字）',
-);
 /*
  * ★★★ ⑤ `theEndSeed: null` ⇒ 那一格印「—」，**不是** 0、**不是**空串。
  *
@@ -4058,16 +4111,17 @@ assert.equal(
   fresh('ranked.unknown'),
   '★★★ ⑤ `theEndSeed: null` ⇒ 那一格印「—」（**绝不**填 0）',
 );
-assert.notEqual(
-  seedNoEndCells.values[2],
-  '0',
-  '★★★ ⑤ 而它**不是** `0`（0 是一个真种子，缺失不是它）',
-);
-assert.notEqual(
-  seedNoEndCells.values[2],
-  '',
-  '★★★ ⑤ 也**不是**空串（空格子看起来像"上游给了个空种子"）',
-);
+/*
+ * ⚠️★ 2026-09-19 复评 I2：这里原来还有两条（`!== '0'` / `!== ''`），两条都被上面那条
+ *    `deepEqual` 蕴含 —— 它断的是"印出来的**就是** `ranked.unknown` 那一条词条"，
+ *    而那条词条的值由 spec §7.3 **冻结**成「—」（`packages/shared/src/i18n/zh-CN.ts:3356`）
+ *    ⇒ 只有"词条被别人改成 `0` 或空串"这一种情形能让那两条单独红，而那是一次**词条值**的
+ *    改动（不是视图的改动）。⇒ 一起删掉（§5.63：不可能单独红的守卫比没有守卫更坏）。
+ * ⚠️ 代价写清（这一条**必须**留着）：今天**没有任何断言**拦得住"那条占位符词条被改成 `0`
+ *    或空串"—— 它一变，全站十几处占位符会一起印 `0`，而这一层照样绿。判据在别处：
+ *    spec §7.3 那张冻结表 + 两份字典（`i18n-keys.test.ts` 只管 key 在不在、值非不非空，
+ *    它**不**比具体值）。谁要改那句「—」，去改的是那两处，不是这里补两条分身。
+ */
 assert.deepEqual(
   [seedNoEndCells.values[0], seedNoEndCells.values[1]],
   ['8813544817493859226', '234370381031116'],
@@ -4172,7 +4226,7 @@ assert.equal(
   '★★ ⑤ 也**不说**"不在库里"/"读不到"（"慢"与那两档是三个不同的处境）',
 );
 ok(
-  '④b⑨ ⑤ 每场一颗按钮（最后一格 + aria-expanded 逐场）+ 四档：ready 三值逐字（无千分位/科学计数法/舍入）+ null ⇒ — + not_found/failed 互斥 + loading 复用',
+  '④b⑨ ⑤ 每场一颗按钮（最后一格 + aria-expanded 逐场）+ 四档：ready 三值**逐字**（千分位/科学计数法/舍入那三类错都在这一条上红）+ null ⇒ — + not_found/failed 互斥 + loading 复用',
 );
 
 // ---------------------------------------------------------------------------

@@ -471,9 +471,11 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
    *    只 `abort()` 不收状态的话，那一格会永远停在 `loading` —— 视图照旧渲染
    *    「加载中」，而没有请求、没有重试、也没有第二个人会把它推到下一档
    *    （用户唯一的出路是"再点一次"，而他根本不知道要这么干）。
-   * ⚠️ 它有两个调用点，两处都**必须**走这一个函数：
+   * ⚠️ 它有三个调用点，三处都**必须**走这一个函数：
    *    · `[page]` 的 cleanup（换 tab / 换周 / 卸载）；
-   *    · `toggleSeed` 起新的一发之前（一发同时只有一发）以及"收起"那一支。
+   *    · `toggleSeed` 起新的一发之前（一发同时只有一发）；
+   *    · `toggleSeed` 的"收起"那一支 —— ⚠️★ 那一处**带条件**（`seedInflight.current?.key === key`）：
+   *      收起的只是这一场，而"当下在飞的那一个"可能是**另一场**（见 `toggleSeed` 里 ③ 那一段）。
    *    各写一遍的话迟早有一处漏掉收状态的那半句，而那一处**没有任何自动判据**
    *    （`[page]` 那个 effect 在静态渲染里根本不跑）。
    */
@@ -1031,6 +1033,17 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
    * ② **缓存**（`seedCache`）：`ready` / `not_found` 命中就**一次请求都不发**。
    * ③ **取消**：起新的一发之前先 `abortSeed()` —— 一发同时只有一发，而且被取消的
    *    那一格会被收掉（不会停在「加载中」）。
+   *    ⚠️★ 而"**收起**"那一支只取消**属于这一场**的那一发（2026-09-19 复评 M8 修）：
+   *    `abortSeed()` 收的是"当下在飞的那一个"，它可能是**另一场**（点开 A 还在飞时点开 B，
+   *    再收起 A ⇒ 取消的是 B 那一发，而且 B 的 `loading` 格会被 `dropSeedState(onlyLoading)`
+   *    悄悄收掉 —— 用户看到 B 的面板**凭空消失**、没有报错、也没有任何重试入口）。
+   *    ⚠️ 不能只写 `dropSeedState(key, false)` 而不取消：那一发回来时 `putSeedState(key, …)`
+   *    会把刚收起的格子**又画回来**（"收起之后面板自己冒出来"）。
+   *    ⇒ 判据是 `seedInflight.current?.key === key`（这一发是不是这一场的）。
+   *    ⚠️ 代价写清：`seedInflight` 在成功/失败之后**不清空**（那一格已经落地，见下面那三段），
+   *    所以这里有时会 abort 一个**已经完成**的 controller —— 那是无害的（abort 已完成的
+   *    请求什么都不做，而 `dropSeedState(key, true)` 对 `ready` / `not_found` / `failed`
+   *    一格都不碰：`onlyLoading` 那一半就是为它写的）。
    * ④ **错误分类**：交给 `describeSeedQueryError`（`lib/seedErrors.ts`），
    *    这里**不许**再写一遍 `status === 404` 或 `code === 'seed_not_found'` 的分支 ——
    *    两份判据会漂，而漂掉的表现是"不在库里的 20% 显示成故障"（或者反过来）。
@@ -1048,7 +1061,13 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
     const key = String(matchId);
     const open = seeds !== null && seeds[key] !== undefined;
     if (open) {
-      abortSeed();
+      /*
+       * ⚠️★ 只取消**属于这一场**的那一发（见上面 ③ 那一段的代价）：无条件 `abortSeed()` 会把
+       *    另一场正在飞的请求掐掉、并把它那块面板悄悄收走（用户看到的是一块面板凭空消失）。
+       *    ⚠️ 而这一场那一发**必须**取消：不取消的话它回来时 `putSeedState` 会把这一格
+       *    又写回去 —— 表现是"点了收起，面板过一会儿自己冒出来"。
+       */
+      if (seedInflight.current?.key === key) abortSeed();
       dropSeedState(key, false);
       return;
     }

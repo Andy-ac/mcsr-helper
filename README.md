@@ -10,7 +10,10 @@ MCSR 社区的资源库与日历 —— 一个**不做内容抓取、只做聚�
 ## 快速开始
 
 ```bash
-# 前置：Node >= 22，pnpm >= 10
+# 前置：Node >= 22.15（⚠️ 这一条是硬的，但**不是** pnpm 替你拦的：不满足时 pnpm 只打一行
+#   `[WARN] Unsupported engine`，真正红的是 `services/api/src/ranked-seed-errors.test.ts` ——
+#   它用的 `node:module` 的 `registerHooks()` 是 **v22.15.0** 才有的。理由写在根 package.json 的 `//engines` 里），
+#   pnpm >= 10
 node -v && pnpm -v
 
 pnpm install
