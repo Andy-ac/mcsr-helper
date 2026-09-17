@@ -1460,6 +1460,23 @@ html:not(.vt) .route-fade {
   background: rgba(255, 255, 255, 0.03);
 }
 
+/*
+ * ★ 「直播中」徽章（2026-09-18，用户第 10 条）。
+ *
+ * ⚠️ 用的是"开"的那一套颜色（`--grass` / `--grass-ink`），**不是** `--redstone`：
+ *    `--redstone` 在本仓是**破坏性动作**的颜色（删除、丢弃，见 `:1172` 那条注释），
+ *    而"这个人在播"是一件好事、也是一个事实，不是警告。
+ *    `--grass-ink` 是这一套里唯一在两种主题 × 两种底色上都读得清的字色（同 `:4615`）。
+ *
+ * ⚠️ 颜色在这里**不是唯一通道**：徽章上那四个字（`live.liveBadge`）自己就说了这件事
+ *    —— 色盲用户读到的是同一句话（`.seed__pickmark` 那一节要求的不依赖颜色的通道）。
+ */
+.badge--live {
+  color: var(--grass-ink);
+  background: var(--grass);
+  border-color: var(--grass-bright);
+}
+
 /* ==================================================================
    分页
    ================================================================== */
@@ -5387,6 +5404,21 @@ html[data-grid-dir='prev'] ::view-transition-new(gridmorph) {
   font-size: 13px;
   line-height: 1.75;
   color: var(--fg-muted);
+}
+
+/*
+ * 人数那一格（2026-09-18，用户第 10 条：「显示观看人数」）。
+ *
+ * ⚠️ 它**单独一条规则**，不是塞进 `.badge` 里：上游没给人数时这一格
+ *    **整个不渲染**（`LiveCard` 里那个三元），所以"徽章还在、人数没了"是一种
+ *    正常形态 —— 而塞进徽章内部的话，少一格与多一格都会让徽章自己的边框跟着变。
+ */
+.live-card__viewers {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  line-height: 1.7;
+  color: var(--fg-muted);
+  white-space: nowrap;
 }
 
 /* "这一行嵌不出来"的解释行 —— 中性色，不是错误色：

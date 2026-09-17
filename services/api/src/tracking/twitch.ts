@@ -295,22 +295,44 @@ interface TwitchToken {
   expiresAtMs: number;
 }
 
-export interface TwitchAdapterDeps {
+/** 「拿一个能用的 app access token」——这个进程里**唯一**的一处实现（见下面 §token 源）。 */
+export interface TwitchTokenSource {
+  get(): Promise<string>;
+}
+
+export interface TwitchTokenSourceDeps {
   /** `MCSR_TWITCH_ID`。 */
   clientId: string;
   /** `MCSR_TWITCH_SECRET`。⚠️ 只出现在换 token 的 POST 体里，别处一次都不许出现。 */
   clientSecret: string;
   /** 注入假实现，测试里**绝不打真网络**。 */
   fetchImpl?: typeof fetch;
-  /**
-   * 注入假时钟（**毫秒**）。默认 `Date.now`。
-   * ⚠️ 它存在的唯一理由是 token 过期那一支：没有它，那个分支只能靠真等一小时 ⇒
-   *    永远没有人测它，而"缓存永远不过期"与"按小时刷新"在测试里就分不开了。
-   */
+  /** 注入假时钟（**毫秒**）。默认 `Date.now`（理由同 `TwitchAdapterDeps.now`）。 */
   now?: () => number;
 }
 
-export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
+/**
+ * ★ app access token 的**唯一**来源（client credentials + 进程内缓存）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么它是一个导出的工厂，而不是 `createTwitchAdapter` 里的一个闭包（2026-09-18）
+ * ---------------------------------------------------------------------------
+ * 用户第 10 条带来第二个要用 Twitch 凭据的作业：`live-status.ts`（每 3 分钟查一次
+ * 「谁在播、多少人看」，走的是 `helix/streams`，与本适配器的 `helix/users|videos`
+ * 不是同一个端点）。它同样必须先换一个 app access token。
+ * ⇒ 两条路要么**共用这一份**，要么各自写一套 —— 而"各写一套"的下场很具体：
+ *    限流/提前刷新的余量/失败留缓存的规则会漂移，症状是**其中一个作业满屏 401**，
+ *    而另一个一切正常（那种差异最难查）。
+ * ⇒ 抽成导出函数。行为**一个字没变**：同一张失败分类表、同一个 Promise 缓存、
+ *    同一份提前刷新余量；`tracking-platforms.test.ts` 里那几条 token 断言仍然钉着它。
+ * ⚠️ 缓存是**实例内**的（不是模块级）：`index.ts` 对同一套凭据返回同一个适配器实例，
+ *    那个缓存才让"一次运行只换一次 token"成立（文件头第一节）。
+ *
+ * ⚠️ 过期（或快过期）才真的去换；刷新的余量最多吃掉 TTL 的一半（`Math.min`）：
+ *    上游真给一个很短的 TTL 时，"提前一小时刷新"会让**每一次调用**都重新换 token
+ *    —— 那是一个自造的限流，而它是这一层唯一会因为"慷慨"而变慢的地方。
+ */
+export function createTwitchTokenSource(deps: TwitchTokenSourceDeps): TwitchTokenSource {
   const clientId = deps.clientId;
   const clientSecret = deps.clientSecret;
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -322,39 +344,6 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
    */
   let tokenPromise: Promise<TwitchToken> | null = null;
   let tokenExpiresAtMs = 0;
-
-  /**
-   * 拿 app access token（client credentials）。过期（或快过期）才真的去换。
-   *
-   * ⚠️ 刷新的余量最多吃掉 TTL 的一半（`Math.min`）：上游真给一个很短的 TTL 时，
-   *    "提前一小时刷新"会让**每一次调用**都重新换 token —— 那是一个自造的限流，
-   *    而它是这一层唯一会因为"慷慨"而变慢的地方。
-   */
-  async function appToken(): Promise<string> {
-    const current = tokenPromise;
-    if (current !== null && nowMs() < tokenExpiresAtMs) {
-      return (await current).value;
-    }
-
-    /*
-     * ★ 顺序就是规则：**先把 Promise 挂上去，再 await 它**（缓存的是 Promise 而不是结果，
-     *   照 `bilibili.ts` 的会话缓存）。两件事同时由这三行保证：
-     *   · 并发来的第二个调用拿到的是同一个 Promise ⇒ 不会各换一次 token；
-     *   · **失败也留在那里**（异常照样从下面抛出去，但 `tokenPromise` 不清空）——
-     *     一次失败的换 token 请求不该被后面的每一个 creator 立刻重打一次。
-     *     它会在那个临时 TTL 到点之后才被替换掉。
-     *     ⚠️ 而 CLI 拿到 `PlatformHandshakeError` 就**放弃整个平台**了（§5.1），
-     *     所以"留着"在这里的代价几乎不存在。
-     */
-    const promise = fetchAppToken();
-    tokenPromise = promise;
-    // 临时 TTL（1 小时）：真正的 `expires_in` 要等响应回来才知道，下一行回填它。
-    tokenExpiresAtMs = nowMs() + DEFAULT_TOKEN_TTL_MS;
-
-    const fresh = await promise;
-    tokenExpiresAtMs = fresh.expiresAtMs;
-    return fresh.value;
-  }
 
   /** 真的去换一次 token。**任何**失败都是 `PlatformHandshakeError`（见文件头第三节）。 */
   async function fetchAppToken(): Promise<TwitchToken> {
@@ -411,6 +400,64 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
     return { value, expiresAtMs: nowMs() + ttlMs - marginMs };
   }
 
+  return {
+    async get(): Promise<string> {
+      const current = tokenPromise;
+      if (current !== null && nowMs() < tokenExpiresAtMs) {
+        return (await current).value;
+      }
+
+      /*
+       * ★ 顺序就是规则：**先把 Promise 挂上去，再 await 它**（缓存的是 Promise 而不是结果，
+       *   照 `bilibili.ts` 的会话缓存）。两件事同时由这三行保证：
+       *   · 并发来的第二个调用拿到的是同一个 Promise ⇒ 不会各换一次 token；
+       *   · **失败也留在那里**（异常照样从下面抛出去，但 `tokenPromise` 不清空）——
+       *     一次失败的换 token 请求不该被后面的每一个 creator 立刻重打一次。
+       *     它会在那个临时 TTL 到点之后才被替换掉。
+       *     ⚠️ 而 CLI 拿到 `PlatformHandshakeError` 就**放弃整个平台**了（§5.1），
+       *     所以"留着"在这里的代价几乎不存在。
+       */
+      const promise = fetchAppToken();
+      tokenPromise = promise;
+      // 临时 TTL（1 小时）：真正的 `expires_in` 要等响应回来才知道，下一行回填它。
+      tokenExpiresAtMs = nowMs() + DEFAULT_TOKEN_TTL_MS;
+
+      const fresh = await promise;
+      tokenExpiresAtMs = fresh.expiresAtMs;
+      return fresh.value;
+    },
+  };
+}
+
+export interface TwitchAdapterDeps {
+  /** `MCSR_TWITCH_ID`。 */
+  clientId: string;
+  /** `MCSR_TWITCH_SECRET`。⚠️ 只出现在换 token 的 POST 体里，别处一次都不许出现。 */
+  clientSecret: string;
+  /** 注入假实现，测试里**绝不打真网络**。 */
+  fetchImpl?: typeof fetch;
+  /**
+   * 注入假时钟（**毫秒**）。默认 `Date.now`。
+   * ⚠️ 它存在的唯一理由是 token 过期那一支：没有它，那个分支只能靠真等一小时 ⇒
+   *    永远没有人测它，而"缓存永远不过期"与"按小时刷新"在测试里就分不开了。
+   */
+  now?: () => number;
+}
+
+export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
+  const clientId = deps.clientId;
+  const clientSecret = deps.clientSecret;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const nowMs = deps.now ?? Date.now;
+
+  /*
+   * ★ 换 token 这件事**不在这个闭包里了**（2026-09-18 抽成上面那个导出的工厂）：
+   *   `live-status.ts`（每 3 分钟查一轮「谁在播」）与这个适配器共用**同一份**实现。
+   *   ⚠️ 一个恶意的"顺手改"是把它内联回来 —— 那会让"怎么换 Twitch token"
+   *     变成两份，而两份的下场写在 `createTwitchTokenSource` 的注释里。
+   */
+  const tokens = createTwitchTokenSource({ clientId, clientSecret, fetchImpl, now: nowMs });
+
   /**
    * 发一个 helix GET 并读出 JSON —— helix 这一层的失败分类只在这一个地方。
    *
@@ -433,7 +480,7 @@ export function createTwitchAdapter(deps: TwitchAdapterDeps): PlatformAdapter {
     step: string,
     repeatIds?: readonly string[],
   ): Promise<unknown> {
-    const token = await appToken();
+    const token = await tokens.get();
     const query = new URLSearchParams(params);
     // ★ 逐个 append（不是 set）：空数组 ⇒ 一个都不加，`params` 里已有的键照样只出现一次。
     for (const id of repeatIds ?? []) query.append('id', id);

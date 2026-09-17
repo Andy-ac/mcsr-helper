@@ -293,6 +293,13 @@ describe('★ 014：user_live_links 建出来了，而 live_channels 一动没�
      *    ⇒ 判据仍然是"**014 之后这张表的列集合是确定的**"：多出 `pending` 之类的
      *      （重建才会干的事）照样会被这条抓住。下面 ③ 那句状态 CHECK 才是
      *      "没给它加 pending" 的真正守卫。
+     *
+     * ⚠️ **2026-09-18：同一条理由再加三项**（`is_live` / `viewer_count` /
+     *    `live_checked_at`，迁移 023，用户第 10 条「检测是否正在直播 + 显示观看人数」）。
+     *    也是 `ALTER TABLE … ADD COLUMN`、也不重建 —— 而这一条断言**照旧有效**且**照旧会红**：
+     *    它与"多了一列"无关，它问的是"**列集合是不是我们知道的那些**"
+     *    （所以每加一列都必须回来改这一行 —— 那正是它存在的意义：
+     *     一个没人维护的宽断言会变成"永远通过"）。
      */
     assert.deepEqual(cols, [
       'created_at',
@@ -300,6 +307,8 @@ describe('★ 014：user_live_links 建出来了，而 live_channels 一动没�
       'embed_channel',
       'handle',
       'id',
+      'is_live',
+      'live_checked_at',
       'live_video_id',
       'note',
       'platform',
@@ -307,6 +316,7 @@ describe('★ 014：user_live_links 建出来了，而 live_channels 一动没�
       'status',
       'tags',
       'updated_at',
+      'viewer_count',
     ]);
 
     const statementsOnly = m014UserLiveLinks

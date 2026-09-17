@@ -454,6 +454,71 @@ export interface LiveChannel {
   status: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * **这一刻**在不在播（迁移 023 的三列，用户第 10 条）。
+   *
+   * ⚠️★ 三态，**不许压成两态**：
+   *   · `true`  —— 一个定时作业问过上游，它说这个人在播；
+   *   · `false` —— 问过，它说没在播；
+   *   · `null`  —— **没查过 / 查不到**（这一列刚加、这个平台我们还不查、
+   *                或者这一轮那条上游整个失败了）。
+   *   把 `null` 读成 `false` 会让界面说出一句我们没验证过的话（"他没在播"），
+   *   所以界面上 `null` 与 `false` 都是**什么都不显示**，但代码里必须分得开。
+   *
+   * ⚠️ 它是**几分钟前的事实**，不是"现在"：作业每 3 分钟跑一轮 + 这条接口有 60 秒
+   *    公开缓存（`routes/live.ts`），界面上的文案必须把这份迟到说出来
+   *    （`live.recordsChannels` 那一句）。迟到的原因与代价写在那条词条的注释里。
+   */
+  isLive: boolean | null;
+  /**
+   * 观看人数；**`null` = 上游没给**（不是 0）。
+   *
+   * ⚠️ 本仓"绝不为缺失值填 0"那条在这里的具体形状：上游真的会给 0
+   *    （实测：Twitch 的在播流里有 `viewer_count=0` 的条目），所以 0 只能有一个来源
+   *    —— 上游真的这么说了。`null` 与 0 在界面上是两件事（一个什么都不显示、
+   *    一个是"0 人观看"），压成一个就再也分不开了。
+   */
+  viewerCount: number | null;
+  /** 上面两格是**什么时候**查的（Unix 秒）；`null` = 从没查过。 */
+  liveCheckedAt: number | null;
+}
+
+/**
+ * 「搜索栏」的纯函数：只筛手上这一份列表，**不发请求、不排序**。
+ *
+ * ⚠️ 为什么放在 shared 而不是页面里：它是**纯函数**，而纯函数是本仓唯一能
+ *    在 node 里逐条断言的东西（`services/api/src/live-order.test.ts` 直接调它）。
+ *    页面只负责把输入框的值喂进来。
+ *
+ * ---------------------------------------------------------------------------
+ * 判据（三个字段、子串、忽略大小写）
+ * ---------------------------------------------------------------------------
+ *   · `displayName` —— 用户唯一能看见并复述的东西（卡片的 `<h2>`）；
+ *   · `tags`        —— 卡片上那些 chip，是这一页的分类词（"ranked"、"速通"）；
+ *   · `note`        —— 卡片上那句说明，想找"某个打速通的"时最可能命中的地方。
+ * ⚠️ **不搜 `handle`**：它现在不是人填的、卡片上也不显示（`LiveCard` 的注释写着
+ *    那一格为什么被删掉），搜它只会让结果看起来随机 —— 用户看不见的东西
+ *    不该成为筛选依据。
+ *
+ * ⚠️ 用 `toLowerCase()` 而不是 `toLocaleLowerCase()`：与 `ranked/select.ts` 的
+ *    `matchesNickname` 同一条（本机区域设置不该改变筛选结果）。
+ * ⚠️ 空查询**返回全部**（而且是一份新数组）：调用方拿到的永远是一份可以直接渲染的列表，
+ *    不必在渲染处再写一个 `query ? filtered : all` 的分支 —— 那种分支正是
+ *    "两种情况各写一遍"的入口。
+ *
+ * ⚠️ **不排序**：顺序由服务端定（"在播的按人数降序在前"），前端再排一次就是
+ *    第二份真相（用户第 10 条要的正是那个服务端顺序）。
+ */
+export function filterLiveChannels<T extends Pick<LiveChannel, 'displayName' | 'tags' | 'note'>>(
+  channels: readonly T[],
+  query: string,
+): T[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return [...channels];
+  return channels.filter((channel) => {
+    const fields = [channel.displayName, channel.note ?? '', ...channel.tags];
+    return fields.some((field) => field.toLowerCase().includes(needle));
+  });
 }
 
 // ---------------------------------------------------------------------------

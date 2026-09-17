@@ -11,14 +11,27 @@ import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
  * 直播清单里的一张卡 —— **一个频道**，不是一场直播。
  *
  * ---------------------------------------------------------------------------
- * 这一张卡上最要紧的一件事：**不撒谎**
+ * ★★ 这一张卡上最要紧的一件事：**"直播中"这句话是有时间戳的**（2026-09-18 改）
  * ---------------------------------------------------------------------------
- * 我们**不检测直播状态**（没有 API key，也不轮询）。所以这里：
- *   · 没有「直播中」标记 —— 加了它就得有人维护它的真假，而"某人没开播
- *     界面却显示他在播"是用户一周之内就会发现的谎；
- *   · 有播放器的时候，播的是**频道级嵌入**或一个具体的视频 ID，
- *     两者都不是"我们现在确认他正在播"；
- *   · 没有播放器的时候，**说清楚为什么没有**，而不是留一个空框。
+ * 这一节原来写着"我们**不检测**直播状态（没有 API key，也不轮询），所以这里没有
+ * 「直播中」标记"。**那句话已经作废**：用户第 10 条要的就是那个标记。
+ *
+ * 现在的形状：一个 systemd 作业每 **3 分钟**查一次（`services/api/src/live-status.ts`），
+ * 结果落在 `live_channels.is_live / viewer_count` 上。所以这一张卡上：
+ *   · `isLive === true` ⇒ 一枚「直播中」徽章 +（**上游给了才画**）人数；
+ *   · `isLive === false`（问过，没在播）与 `isLive === null`（没查过 / 查不到）
+ *     ⇒ **什么都不画** —— 这两种情况在界面上说的是同一句话，但它们在数据里
+ *     分得开（`packages/shared/src/live.ts` 的 `LiveChannel` 写着为什么必须分开）。
+ *
+ * ⚠️★ 代价写在这里，因为它**不是**"过几秒就对了"：徽章与人数最多可以旧到
+ *    **9 分钟**（3 分钟作业节拍 + 60 秒 `max-age` + 300 秒 `stale-while-revalidate`，
+ *    这笔账算在 `routes/live.ts` 的注释里）。⇒ 页面必须把这份迟到**说出来**
+ *    （`live.recordsChannels` 那一句），否则"在播"这个标记就从"仍然为真"
+ *    变成一句新的谎 —— 这是这一条线上历史承诺最敏感的地方。
+ *
+ * ⚠️ 还有一条**能力边界**同样要在页面上说清（`live.recordsChannels` 里说了）：
+ *    今天只查 Twitch 与 B站。⇒ **YouTube 行永远没有徽章**（那不是"它没在播"，
+ *    是"我们没查"）—— 界面上两者都是"没有标记"，所以那句话必须点名平台。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 三种"嵌不出来"必须分开说
@@ -59,6 +72,26 @@ export function LiveCard({ channel }: { channel: LiveChannel }) {
     <li className={`live-card${channel.status === 'hidden' ? ' live-card--hidden' : ''}`}>
       <div className="live-card__head">
         <h2 className="live-card__name">{channel.displayName}</h2>
+        {/*
+          ★ 「直播中」+ 人数（用户第 10 条）。
+          ⚠️ 判据是 `=== true`，**不是**"truthy"：`isLive` 有三态，
+             而 `null`（没查过 / 查不到）与 `false`（问过、没在播）都**什么都不画**。
+             写成 `channel.isLive ? …` 的话 `null` 也会被当成"在播"——
+             那正是这一条最坏的一种错（凭空多一个「直播中」）。
+          ⚠️ 人数那一格**单独判一次 `=== null`**：上游没给人数时**整个节点不渲染**
+             （不印 0、不印"人数未知"）。0 与"没给"是两句不同的话 ——
+             `viewerCount` 为 0 时这里会正常印出"0 人观看"，那是上游真的说了 0。
+        */}
+        {channel.isLive === true ? (
+          <>
+            <span className="badge badge--live">{t('live.liveBadge')}</span>
+            {channel.viewerCount === null ? null : (
+              <span className="live-card__viewers">
+                {t('live.viewers', { n: channel.viewerCount })}
+              </span>
+            )}
+          </>
+        ) : null}
         <span className="badge badge--kind">
           {t(`videos.platform${platformKey(channel.platform)}`)}
         </span>

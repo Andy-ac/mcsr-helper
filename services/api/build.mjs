@@ -45,6 +45,15 @@ await esbuild.build({
     // ⚠️ 与 track 一样**不用改 deploy.sh 的产物清单**（整个 dist/ 都会上传），
     //    要改的是那一份 scp/install 的**单元文件**列表（见 deploy/deploy.sh）。
     'ranked-streams': path.join(root, 'src/ranked-streams.ts'),
+    // ★ 「谁在播、多少人看」的那一轮（用户第 10 条）。与上面两个 oneshot 同形
+    //   （在服务器上跑、不经 HTTP），由 systemd 每 3 分钟拉起一次
+    //   （deploy/mcsr-helper-live-status.{service,timer}），所以同样必须能独立启动。
+    //   为什么是 CLI 而不是请求路径 / 长驻 worker，见 src/live-status.ts 的文件头第二节。
+    //   ⚠️ 它与 ranked-streams 有一处**相反**：它需要 Twitch 凭据 ⇒ 那个单元**有**
+    //      `EnvironmentFile=-/etc/mcsr-helper/track.env`（理由写在单元里）。
+    //   ⚠️ 与 track / ranked-streams 一样**不用改 deploy.sh 的产物清单**（整个 dist/
+    //      都会上传），要改的是那一份 scp/install 的**单元文件**列表。
+    'live-status': path.join(root, 'src/live-status.ts'),
   },
   outdir: path.join(root, 'dist'),
   bundle: true,

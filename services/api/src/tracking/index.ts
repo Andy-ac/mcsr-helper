@@ -52,7 +52,7 @@
 import type { TrackPlatform } from '@mcsr/shared';
 
 import { bilibiliAdapter } from './bilibili';
-import { createTwitchAdapter } from './twitch';
+import { createTwitchAdapter, createTwitchTokenSource, type TwitchTokenSource } from './twitch';
 import { NoCredentialsError, type PlatformAdapter } from './types';
 import { createYouTubeAdapter } from './youtube';
 
@@ -191,4 +191,35 @@ export function platformStatus(): Record<TrackPlatform, PlatformStatus> {
     youtube: hasYouTubeKey() ? 'ok' : 'skipped:no-credentials',
     twitch: hasTwitchCredentials() ? 'ok' : 'skipped:no-credentials',
   };
+}
+
+/**
+ * ★ Twitch 的凭据 + token 源 —— 给**第二个**要用 Twitch 凭据的作业
+ * （`live-status.ts`：每 3 分钟查一轮「谁在播、多少人看」，走 `helix/streams`）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么它在这里，而不在 `live-status.ts` 里自己读环境变量
+ * ---------------------------------------------------------------------------
+ * 凭据的**读法**（变量名 + "空值算没配" + "值本身不 trim"）只有这一份，
+ * 就在这上面那几行里。第二个作业要是自己复制一份 `process.env.MCSR_TWITCH_ID`，
+ * 两份会漂移 —— 而漂移的症状是"某个作业把空 key 当成配好了，然后满屏 401"
+ * （`envValue` 的注释逐字写着这件事）。
+ * ⚠️ 返回里同时给 `clientId`：`helix` 的请求头 `Client-Id` 就是它，
+ *    而"从环境变量里读它"这件事同样只该有一个地方（与 `adapterFor('twitch')` 同源）。
+ *
+ * ⚠️ **没有凭据时返回 `null`，不抛**（与 `adapterFor` 不同）：调用方是 oneshot 作业，
+ *    它要做的动作是"把 twitch 这一平台记成 skipped、继续跑别的平台"，而不是中断整轮。
+ *    状态那一栏仍然去看 `platformStatus().twitch`，两者是同一个判据（同一个 `envValue`）。
+ *
+ * ⚠️ 这里**不做实例缓存**（`cachedAdapter` 那一套用不上）：作业是 oneshot，
+ *    一次运行里自己拿着这一个源调若干批，缓存的意义在"实例内只换一次 token"，
+ *    而那由 `createTwitchTokenSource` 的 Promise 缓存保证（文件头第一节）。
+ *    代价：同一个进程里若同时用 API 侧的 `adapterFor('twitch')` 与这里，
+ *    会有**两个** token（各一次换 token 调用）。今天不存在这种进程。
+ */
+export function twitchCredentialsFromEnv(): { clientId: string; tokens: TwitchTokenSource } | null {
+  const clientId = envValue(TWITCH_ID_ENV);
+  const clientSecret = envValue(TWITCH_SECRET_ENV);
+  if (clientId === null || clientSecret === null) return null;
+  return { clientId, tokens: createTwitchTokenSource({ clientId, clientSecret }) };
 }

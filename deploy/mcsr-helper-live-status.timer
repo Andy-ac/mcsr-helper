@@ -1,0 +1,53 @@
+# deploy/mcsr-helper-live-status.timer
+#
+# 安装（deploy.sh 会做）：
+#   sudo install -m 0644 deploy/mcsr-helper-live-status.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-live-status.timer
+#   systemctl list-timers mcsr-helper-live-status.timer    # 看下一次什么时候跑
+#
+# ⚠️ 这个文件名必须与 service 那个**同名**（只是后缀不同）：这里没有写 `Unit=`，
+#    systemd 就是按同名的 service 去找的。
+# ⚠️ 手动触发一轮（排查时用，不影响定时）：
+#   sudo systemctl start mcsr-helper-live-status.service
+#   journalctl -u mcsr-helper-live-status -n 20 --no-pager
+
+[Unit]
+Description=MCSR Helper — live status and viewer counts, every three minutes
+
+[Timer]
+# 每小时的 0/3/6/…/57 分（秒位是 0）。
+#
+# ★ 为什么是 **3 分钟**（与另外两个作业都不同）：
+#   · 它跟的是"谁**现在**在播 + 多少人看"，而那个数字是**给人看**的 ——
+#     晚 3 分钟完全可以接受，晚 10 分钟（track 那个节拍）就开始像"这页坏了"；
+#   · 上游的花费**与人数无关**：Twitch 一次调用最多 100 个 login，183 个频道就是
+#     2 次调用（实测），所以 1 分钟一轮与 3 分钟一轮**拿到的东西一样多**，
+#     只是贵三倍 ⇒ "更勤"换不到更多信息；
+#   · bilibili 那一条是一行一个请求，但它今天在生产上是 **0 行**（实测）⇒ 今天 0 次；
+#     真加了行数时，作业自己有一条 60 秒的墙钟预算兜着（不会把一轮拖过 3 分钟）。
+#   ⚠️ 与 `ranked-streams.timer` 的 5 分钟不同，而这两个作业跟的其实是**同一件事**
+#      （谁在直播）—— 那边跟的是"上游告诉我们谁贴了直播链接"（收录名单，慢变量），
+#      这边跟的是"那个名单里谁**现在**亮着"（快变量）。⇒ 两个节拍不同是**有意的**。
+#
+# ⚠️ 代价（量过的）：这一条作业每 3 分钟一轮 ≈ 每天 **480 轮**，
+#    每轮 **2 次** Twitch `helix/streams` + 最多 1 次换 token（进程内缓存）
+#    ⇒ 约 **960 次/天**。上游实测的限流头是 `ratelimit-limit=800`
+#    （`.cache/videos-live-round/probe-twitch-streams.out.txt`），那是**每分钟**的量级，
+#    而我们是 0.67 次/分钟。⇒ 这笔账离限流很远，所以节拍是按**体感**定的。
+OnCalendar=*:0/3
+# 机器关机期间错过的那些点，开机后**补跑一次**（不是补跑全部）。
+# ⚠️ 少了它，一次重启会把"刚开播的人多快出现"这件事整整推后 3 分钟 ——
+#    而这是本作业唯一的时效承诺（track.timer 里那一条是同一个理由）。
+Persistent=true
+# 抖动最多 30 秒：这台机器上已经有三个 timer，让每次落点略有不同，
+# 比整点齐刷刷打过去更不容易和别的东西撞在一起。
+# ⚠️ 代价：实际跑的时刻可能是 10:03:27 这种，所以看日志时别拿整点去对
+#    （那一行摘要里印的是**真实的开始/结束时刻**，不是计划时刻）。
+# ⚠️ 30 秒相对 3 分钟的节拍是 1/6，所以"最坏晚多少"要按 3 分 30 秒算 ——
+#    界面文案里那句"可能晚几分钟"已经把这个抖动包含在内了。
+RandomizedDelaySec=30
+
+[Install]
+# ⚠️ 是 `timers.target`，不是 `multi-user.target`：timer 归 systemd 的 timer 那一套管。
+WantedBy=timers.target

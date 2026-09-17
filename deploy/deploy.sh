@@ -153,6 +153,7 @@ scp "${SCP_OPTS[@]}" -q \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
   deploy/mcsr-helper-ranked-streams.service deploy/mcsr-helper-ranked-streams.timer \
+  deploy/mcsr-helper-live-status.service deploy/mcsr-helper-live-status.timer \
   "$TMP/caddy-domain.conf" \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
@@ -341,6 +342,40 @@ fi
 #    （**响的**，不是静默的），不值得在这里再加一段跨主机的一致性检查。
 \$SUDO systemctl enable --now mcsr-helper-ranked-streams.timer
 echo "    直播收录 timer 已启用（systemctl list-timers mcsr-helper-ranked-streams.timer 看下一次）"
+
+# ---- 直播状态与观看人数的 timer（每 3 分钟一轮，用户第 10 条）----
+#
+# 与上面两段**同一个形状**（\`cmp\` 判断未变就跳过 + install + daemon-reload +
+# \`enable --now\`），只有两处不同，都是这个作业自己的性质：
+#   · **有凭据** —— 它要 Twitch 的 app access token，所以单元里有
+#     \`EnvironmentFile=-/etc/mcsr-helper/track.env\`（与 ranked-streams **相反**）。
+#     ⇒ 这一段**不需要**再同步什么凭据模板：那个文件是 track 那一段装的（同一个文件）。
+#   · **RuntimeDirectory 换成它自己的名字**（\`/run/mcsr-helper-live-status\`）——
+#     三个作业的锁不能共用一个目录，否则"同时跑"会被误判成"重叠"；
+#     那一条同样**不在这里建**（tmpfs，重启即空，理由与上面两段逐字相同）。
+# ⚠️ 它**依赖一个已经跑过的迁移**（023 给 \`live_channels\` 加三列）。部署顺序是
+#    "重启 API（跑迁移）→ 启用 timer"，而 API 那一段在这之前 —— 但即便顺序反过来，
+#    症状也只是那一轮写库失败（\`本轮失败（db）\`，退出码非零、日志可见），
+#    不会静默；下一轮 API 起来之后自己会好。
+LIVE_STATUS_UNITS_CHANGED=0
+for unit in mcsr-helper-live-status.service mcsr-helper-live-status.timer; do
+  if [ -f "/tmp/\$unit" ]; then
+    if ! \$SUDO cmp -s "/tmp/\$unit" "/etc/systemd/system/\$unit"; then
+      \$SUDO install -m 0644 "/tmp/\$unit" "/etc/systemd/system/\$unit"
+      LIVE_STATUS_UNITS_CHANGED=1
+      echo "    \$unit 有变化，已安装"
+    else
+      echo "    \$unit 未变"
+    fi
+  fi
+done
+if [ "\$LIVE_STATUS_UNITS_CHANGED" = "1" ]; then
+  \$SUDO systemctl daemon-reload
+fi
+# ⚠️ 同上面两条：这一句**故意不吞错误** —— 装不上 timer 就等于"直播中"徽章永远不更新
+#    （而页面上会安安静静地一直显示上一轮的读数）。
+\$SUDO systemctl enable --now mcsr-helper-live-status.timer
+echo "    直播状态 timer 已启用（systemctl list-timers mcsr-helper-live-status.timer 看下一次）"
 
 # ---------- 桌面安装包 ----------
 #

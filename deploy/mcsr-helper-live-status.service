@@ -1,0 +1,131 @@
+# deploy/mcsr-helper-live-status.service
+#
+# 安装（deploy.sh 会做，手工装的话是这几行）：
+#   sudo install -m 0644 deploy/mcsr-helper-live-status.service /etc/systemd/system/
+#   sudo install -m 0644 deploy/mcsr-helper-live-status.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcsr-helper-live-status.timer
+#
+# 它做什么（一句话）：问一次上游「名单里谁在播、多少人看」，把结果写进
+# `live_channels` 的三列（迁移 023），好让「直播」那一页显示「直播中」徽章与人数
+# （用户第 10 条）。规则、失败分档与"为什么是 CLI + timer"写在
+# `services/api/src/live-status.ts` 的文件头。
+#
+# ⚠️ 两个文件名**不能改**：timer 里没有写 `Unit=`，systemd 就是按**同名**去找
+#    这个 service（`mcsr-helper-live-status.timer` → `.service`）。
+#    改名的表现是"timer 装上了、时间到了什么都没发生"（track / ranked-streams 同一段）。
+#
+# ⚠️ 这里**故意没有**加固那一套（api 单元里的 ProtectSystem / ReadWritePaths…）——
+#    与 track / ranked-streams 同一条：那是一次独立的安全改动，不在这一轮里。
+#    要加的时候先看清下面 RuntimeDirectory 那一段：锁文件必须落在一个**本单元可写**
+#    的目录里，而 /run 本身不是。
+
+[Unit]
+Description=MCSR Helper — live status and viewer counts (one shot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=mcsr
+# ★ 与 mcsr-helper-api.service:20 逐字对齐（track.service 同一条理由）：那个单元已经在
+#   生产上用 Group=mcsr 跑着 ⇒ 这个组一定存在。写了它的作用是**明确**，而不是靠
+#   "systemd 会去取这个用户的主组"那条默认行为 —— 默认值在有人把 mcsr 加进别的组、
+#   或换了机器重建用户时会变，而变了以后 RuntimeDirectory 的属组跟着变。
+Group=mcsr
+WorkingDirectory=/srv/mcsr-helper/api
+Environment=NODE_ENV=production
+# DB_PATH 显式给出，不依赖 cwd —— 与 api / track / ranked-streams 同一条理由：
+# 否则"从别的目录启动"会静默打开另一个库文件，表现为"数据不见了"
+# （⚠️ 本单元写的是 `live_channels` 的三列，写错库的症状是"页面上永远没有徽章"，
+#   而日志里那一行摘要照样报 `twitch ok（写 183）` —— 数字全对，只是写到了别处）。
+Environment=DB_PATH=/srv/mcsr-helper/api/data/mcsr.db
+# node:sqlite 目前会打印一行 ExperimentalWarning。功能正常，只是噪音；
+# 关掉它以免掩盖真正的警告（track.service 同一行）。
+Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
+# ---- ★ 凭据：这个作业**要** Twitch 的密钥（与 ranked-streams 单元**相反**）----
+#
+# `ranked-streams.service` 里写着"本作业**故意没有** EnvironmentFile" —— 那是对的，
+# 因为它打的 `api.mcsrranked.com` 是公开端点、一个密钥都不用。**本单元不一样**：
+# Twitch 的 `helix/streams` 需要 app access token，而换 token 要
+# `MCSR_TWITCH_ID` + `MCSR_TWITCH_SECRET` ⇒ 它必须能读到 `/etc/mcsr-helper/track.env`
+# （与 `track.service` 同一个文件、同一套变量名，**没有第二份凭据**）。
+#
+# ⚠️ 前缀的 `-` 表示"文件不存在也照常启动"（与 track.service 逐字相同）：
+#    缺凭据**不是**这个作业的崩溃条件 —— `platformStatus().twitch` 会报
+#    `skipped:no-credentials`，那一轮把 twitch 记成"跳过"并继续跑 bilibili
+#    （`live-status.ts` 的 `RunDeps.platformStatus`）。
+#    若把它写成硬失败，一台还没配密钥的机器会每 3 分钟在 `systemctl --failed` 里红一次
+#    —— 而那正是"红得太多就没人看"的形状。
+EnvironmentFile=-/etc/mcsr-helper/track.env
+# ---- 防重叠 ----
+#
+# `Type=oneshot` 的 timer **不保证**上一轮跑完才启动下一轮（`RandomizedDelaySec` 只是
+# 把落点抖动一下）。而 db/index.ts 里 `PRAGMA busy_timeout = 5000` 会让两个重叠的进程
+# **排队等着写**而不是报错 ⇒ 两轮各写一遍同一批行（后一轮覆盖前一轮），日志里一行错都没有。
+# ⇒ 用 flock 包住 ExecStart（与 track / ranked-streams 逐字同形）。
+#
+# ⚠️ `-n`（--nonblock）是"拿不到锁就立刻退"，而不是排队等。本作业一轮的**上界**是
+#    算得出来的：Twitch 2 次调用（20 秒超时）+ bilibili 最多 100 次（8 秒超时，
+#    外加一条 60 秒的墙钟预算）⇒ 正常情况下几秒，最坏一分钟出头。
+#    让第二个进程排队等它毫无意义。
+# ⚠️ 认下的代价：拿不到锁时 flock 退出码是 1 ⇒ systemd 把这一轮记成 **failed**。
+#    这是**有意**的：它同时也是"有一轮超过了 3 分钟"的信号，而那个信号平时看不到
+#    （改成静默跳过的话，卡住的那一轮与正常的一轮在 journal 里长得一模一样）。
+#    本作业的时长有结构上的上界（上面那笔账），所以这一档**应当**几乎见不到；
+#    真见到它，先看是不是上游在挂（两边的超时都会把一轮拖长）。
+# ---- ★★ 锁文件为什么在 /run/mcsr-helper-live-status/ 里，而不是直接在 /run/ 下 ----
+#
+# ★ 那一段是 track 单元踩过的坑**逐字适用**（现场：timer 每 10 分钟准点触发、
+#   部署脚本报成功、`systemctl list-timers` 一片健康，而 node **一次都没跑**）：
+#   `flock` 不是"打开一个已有的锁文件"，它会**创建**它（`open(O_CREAT)`）；
+#   而 /run 是 systemd 挂的 tmpfs、`root:root` **0755**，部署脚本与 bootstrap
+#   都不去动它的属主 ⇒ 以 `mcsr` 运行的本单元**没有权限在这层目录里建文件**。
+#
+# ★ 修法用 systemd 自己的机制（`RuntimeDirectory=`），**不去 chmod /run**：
+#   它让 systemd 在 /run 下建一个**属于本单元服务用户**的目录，单元跑完随单元一起清掉。
+#   ⚠️ 被否掉的三种写法（chmod 1777 /run、换 /run/lock/、在 deploy.sh 里 install -d）
+#   的代价在 track.service 里逐条写着，这里不重复。
+#   ⚠️ 目录名必须与另外两个作业**不同**（`/run/mcsr-helper-live-status`）：
+#      共用一个目录会让"同时跑"被误判成"重叠"，而三个作业的节拍互不相同。
+#   ⚠️ RuntimeDirectoryMode=0750：锁只给同一个用户的两个进程争，不需要别的用户能进来。
+#   ⚠️ 顺带说明：**deploy.sh 不需要为这件事加任何一行** —— 目录是 systemd 按
+#      ExecStart 前一刻建的，deploy 那一段要做的只是"把单元装上 + daemon-reload"。
+RuntimeDirectory=mcsr-helper-live-status
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/flock -n /run/mcsr-helper-live-status/sync.lock /usr/bin/node /srv/mcsr-helper/api/live-status.js
+
+# 输出默认就进 journald（不写 StandardOutput= 时它就是 journal，与 api 单元显式写的那两行等价）
+# ⇒ 那一行摘要与失败都在 `journalctl -u mcsr-helper-live-status` 里，而它的**全部意义**
+#   就是必须能被人看到。
+#
+# ---- 万一坏了，人看到的是什么（"响"而不是"静"）----
+#
+# 本作业的每一次运行**恰好一行**（成功走 stdout、失败走 stderr，`live-status.ts` 文件头）。
+# 那一行里**每个平台各一段**，所以"哪个平台坏了"不需要另找日志。
+#
+# 下面两行是**真跑出来的**（不是照格式编的）：
+#   · 成功那一段来自 `.cache/videos-live-round/rehearse-cli-ok-line.mjs` ——
+#     生产副本的 184 行 + 假上游，形状与真实成功完全一致（数字一栏是那一轮的读数）；
+#   · 失败那一段来自 `rehearse-cli-no-write.mjs`：拿**部署产物**
+#     `dist/live-status.js` 跑在本机（到 id.twitch.tv 打不出去），退出码 1，
+#     而且跑完 184 行**逐行逐列与跑之前逐字符相同**（这就是"平台级失败一个字段都不写"）。
+#
+#   live-status: 开始=… 结束=… 写入 183 行 平台: twitch ok（问 183 / 在播 42 / 写 183） bilibili ok（问 0 / 在播 0 / 写 0） youtube 本轮不查（1 行保持"从没查过"）
+#   live-status: 开始=… 结束=… 写入 0 行 平台: twitch failed（问 0 / 在播 0 / 写 0；没答 183 行（原值保留：unavailable: PlatformUnavailableError: twitch: 联系不上上游（oauth2/token）：TypeError: fetch failed）） bilibili ok（问 0 / 在播 0 / 写 0） youtube 本轮不查（1 行保持"从没查过"） —— 每一个有行要查的平台都失败了
+#
+#   | journal 里有什么 | 成因 | 该做什么 |
+#   |---|---|---|
+#   | 整行走 **stderr** + 结尾「每一个有行要查的平台都失败了」 | 所有该查的平台这一轮都挂了 | 看每一段 `failed（…）` 里的原因；下一轮**多半自己会好** |
+#   | 某一段是 `failed（…；没答 N 行（原值保留：…））`，而整行走 stdout | **那个平台**这一轮挂了（别的平台照旧在更新） | 同上；⚠️ 那些行**保持上一轮的读数**，所以界面上的徽章会旧到下一轮成功为止 |
+#   | `没答 N 行（原值保留：bad_response: …）` | 上游改了形状 / 我们参数写错了 ⇒ **要改代码**，不自愈 | 看那段原文：Twitch 的那一档最可能是"一次塞超过 100 个 login"（实测 400） |
+#   | 某一平台是 `跳过（没有凭据…）` | `/etc/mcsr-helper/track.env` 里没有 Twitch 密钥 | 配上并 `systemctl restart mcsr-helper-api`（API 进程也要看得到，见 track.env.example） |
+#   | `twitch 跳过` 而凭据明明配了 | 变量名/空值不对（`envValue` 把空串当没配） | 跑 `.cache/verify-credentials.sh` 那一套核对（它只打印长度，不打印值） |
+#   | `没答 N 行（原值保留：…）` 里出现 `-352` 之类的上游码 | 上游在限我们的流 / 风控 | 连着一两个小时都这样再看；本作业的调用量极小（3 分钟一轮，Twitch 2 次/轮） |
+#   | `本轮失败（db）：…` | 写库失败（磁盘满 / 表被改坏 / 约束） | 看那一行里的错误原文；⚠️ 事务已回滚 ⇒ **一行都没写**，库里的读数是上一轮的 |
+#   | 另有一行 `[live-status] 这一轮没能跑起来：` + 栈 | **我们自己的 bug**（或 dist 没装全 / 库打不开） | 栈就是线索；这一格**不会**下一轮自己好 |
+#   | `flock: cannot open lock file …`（`status=66`，**不是** 1） | **锁本身坏了**（权限/路径） | 看 /run/mcsr-helper-live-status 的属主与 RuntimeDirectory 那一段 |
+#   | journal 里除 systemd 自己那两行（`Starting…`/`Finished…`）之外**什么都没有** | **上一轮还没跑完**（`flock -n` 拿不到锁，什么都不打印） | 正常见不到（一轮几秒）；见到了就是有一轮卡住 —— 看是不是上游在挂 |
+#
+#   ⚠️ 判据是"**有没有那一行 `live-status:`**"：跑起来了就一定有（哪怕一行都没查）。
+#   ⚠️ 与 `track` 不一样：本作业**没有**"部分成功"这种形状，所以 `failed` 的每一种
+#      都在上面那张表里有明确含义（`track` 那个作业会因为某一个博主抓不动每 10 分钟红一次）。

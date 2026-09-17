@@ -38,6 +38,7 @@ import { m019LiveShares } from './migrations/019_live_shares';
 import { m020TrackedVideos } from './migrations/020_tracked_videos';
 import { m021TrackedVideoVisibility } from './migrations/021_tracked_video_visibility';
 import { m022TrackedCreatorCooldown } from './migrations/022_tracked_creator_cooldown';
+import { m023LiveStatus } from './migrations/023_live_status';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -181,6 +182,18 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    `tracking-schema.test.ts` 末尾那一组专门钉"它在 `_migrations` 里"）。
    */
   { name: '022_tracked_creator_cooldown', sql: m022TrackedCreatorCooldown },
+  /*
+   * 023：`live_channels` 的直播状态三列（`is_live` / `viewer_count` / `live_checked_at`）——
+   * 「直播」那一页第一次会显示"在不在播"和人数（用户第 10 条）。
+   *
+   * ⚠️ 与 011 / 015 / 021 / 022 同一个形状：纯 `ALTER TABLE ADD COLUMN`（可空、无默认值，
+   *    外加一条 `CHECK (is_live IN (0,1))` —— 本机在生产副本上实测过 SQLite 收得下它），
+   *    **不重建表** ⇒ 不需要 `PRAGMA foreign_keys`，**留在事务里**（不加 noTransaction），
+   *    失败即整条回滚。
+   * ⚠️ 为什么不建索引：这一页一共 184 行，新排序走 `idx_live_listing` + 临时 B 树，
+   *    实测 20 次合计 8.9 ms。读数与理由写在 `023_live_status.ts` 的文件头第三节。
+   */
+  { name: '023_live_status', sql: m023LiveStatus },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {

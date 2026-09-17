@@ -34,6 +34,10 @@ interface LiveRow {
   status: string;
   created_at: number;
   updated_at: number;
+  /** 迁移 023 的三列：`is_live` 0/1/NULL、`viewer_count` 可空、`live_checked_at` Unix **秒**。 */
+  is_live: number | null;
+  viewer_count: number | null;
+  live_checked_at: number | null;
 }
 
 /**
@@ -84,23 +88,147 @@ function toChannel(row: LiveRow) {
     status: row.status,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    /*
+     * ★ 直播状态三列（迁移 023）。**`NULL` 必须原样传出去**：
+     *   · `is_live IS NULL` ⇒ `isLive: null`（"从没查过 / 查不到"），
+     *     ⚠️ **不是 `false`** —— 那是"问过，没在播"，一句我们没验证过的话；
+     *   · `viewer_count IS NULL` ⇒ `viewerCount: null`（上游没给），**不是 0**。
+     *   三个字段的语义写在 `packages/shared/src/live.ts` 的 `LiveChannel` 上。
+     */
+    isLive: row.is_live === null ? null : row.is_live === 1,
+    viewerCount: row.viewer_count === null ? null : Number(row.viewer_count),
+    liveCheckedAt: row.live_checked_at === null ? null : Number(row.live_checked_at),
   };
 }
 
 /**
- * 公开列表：只出 visible，按 sortOrder 再按名字。
+ * 公开列表的排序键（用户第 10 条："正在直播的频道按观看人数递降的顺序排列在前面"）。
  *
- * ⚠️ 排序的第二键是 `display_name`，不是 `id`。
+ * ---------------------------------------------------------------------------
+ * ★ 三段，每一段回答一个不同的问题
+ * ---------------------------------------------------------------------------
+ *   ① `CASE WHEN is_live = 1 THEN 0 ELSE 1 END ASC`
+ *      —— 在播的整段在前。**写成 CASE 而不是 `is_live = 1 DESC`**：后者对
+ *      `is_live IS NULL`（从没查过）求值是 **NULL**，而 SQLite 里 NULL 在 DESC 下排最后
+ *      ⇒ 那些行会被挤到"不在播"**之后**，于是"其余保持今天的顺序"这句话当场变成假的
+ *      （今天的顺序是整个尾部按 sort_order 排的）。本机实测过这个性质
+ *      （`.cache/videos-live-round/probe-023-sqlite.mjs` 的 ②）。
+ *   ② `CASE WHEN is_live = 1 THEN viewer_count ELSE NULL END DESC`
+ *      —— 在播内部按人数降序；**人数为 NULL 的在播行排在有点数的后面**
+ *      （SQLite 的 DESC 把 NULL 排最后，同一条实测）。**不是**把 NULL 当 0：
+ *      当 0 的话，"上游没给人数"会排在"真的 0 人看"**前面**，而这两件事必须分得开。
+ *      其它行在这一键上全是 NULL ⇒ 它们之间由一个**相等**的键分开，落到 ③。
+ *   ③ `sort_order ASC, display_name ASC` —— **今天那两个键，一个字没改**（不在播的、
+ *      从没查过的，全都按它排；第二键钉死顺序的理由见下面那段旧注释）。
+ *
+ * ⚠️ 索引：这一页一共 184 行（2026-09-18 生产快照实测），`EXPLAIN QUERY PLAN` 走
+ *    `idx_live_listing (status, sort_order)` + `USE TEMP B-TREE FOR ORDER BY`，
+ *    整条语句跑 20 次合计 **10.7–12.1 ms**（同一份快照上量的，两次读数）。
+ *    ⇒ **不为它建索引**（要建就得建表达式索引，而每次写都要维护它）。理由与读数
+ *    也写在 `023_live_status.ts` 的文件头第三节 —— 那儿是"决定不建"的地方。
+ */
+const LIVE_ORDER_BY = `
+  CASE WHEN is_live = 1 THEN 0 ELSE 1 END ASC,
+  CASE WHEN is_live = 1 THEN viewer_count ELSE NULL END DESC,
+  sort_order ASC,
+  display_name ASC`;
+
+/**
+ * 公开列表：只出 visible，按上面那段排序键。
+ *
+ * ⚠️ 排序的第二键（`sort_order` 之后）是 `display_name`，不是 `id`。
  *    只按 sort_order 排的话，同序的两行顺序由 SQLite 自己决定 ——
  *    而它对同一份数据可以给出不同的顺序（尤其是加了索引之后），
  *    表现是"刷新一次，两个主播换了位置"。第二键把顺序钉死。
  */
 export function listLiveChannels(includeHidden = false) {
   const sql = includeHidden
-    ? 'SELECT * FROM live_channels ORDER BY sort_order ASC, display_name ASC'
-    : "SELECT * FROM live_channels WHERE status = 'visible' ORDER BY sort_order ASC, display_name ASC";
+    ? `SELECT * FROM live_channels ORDER BY ${LIVE_ORDER_BY}`
+    : `SELECT * FROM live_channels WHERE status = 'visible' ORDER BY ${LIVE_ORDER_BY}`;
   const rows = getDb().prepare(sql).all() as unknown as LiveRow[];
   return rows.map(toChannel);
+}
+
+/** 一轮直播状态检查要问的那些行（见 `live-status.ts`）。 */
+export interface LiveStatusTarget {
+  id: string;
+  platform: LivePlatform;
+  /** Twitch 是 login、B站 是房间号；**这里不做形状判断**（那是适配层的事）。 */
+  handle: string;
+}
+
+/**
+ * ★ 采集作业要查哪些行 —— **只查 visible**。
+ *
+ * ⚠️ 为什么不管 hidden 行：这个作业存在的全部意义是"公开列表上那个『直播中』徽章
+ *    是真的"，被隐藏的行不在这份列表上。代价（认下）：编辑把一行从隐藏改回显示之后，
+ *    它的状态要等**下一轮**（≤3 分钟）才有；在那之前那一行什么标记都不显示 ——
+ *    而"什么都不显示"正是这一页对"没查过"的既有说法，不是谎。
+ * ⚠️ 顺序是 `platform, sort_order, display_name`：不是为了好看，是为了**确定性**
+ *    （分批与日志里那一行在两次运行之间一致，排查时才能逐行对照）。
+ */
+export function listLiveStatusTargets(): LiveStatusTarget[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, platform, handle FROM live_channels
+        WHERE status = 'visible'
+        ORDER BY platform ASC, sort_order ASC, display_name ASC`,
+    )
+    .all() as unknown as Array<{ id: string; platform: string; handle: string }>;
+  return rows.map((row) => ({
+    id: row.id,
+    platform: row.platform as LivePlatform,
+    handle: row.handle,
+  }));
+}
+
+/** 一行要写回去的直播状态。**`isLive` 只有 0 / 1** —— 这个作业从不写 NULL。 */
+export interface LiveStatusUpdate {
+  id: string;
+  isLive: 0 | 1;
+  /** `null` = 上游没给人数（**不是 0**）。 */
+  viewerCount: number | null;
+}
+
+/**
+ * ★ 把一批"查到了什么"写回去 —— 采集作业唯一的写入口。
+ *
+ * ---------------------------------------------------------------------------
+ * 三条规矩（它们就是这一层的全部内容）
+ * ---------------------------------------------------------------------------
+ *   ① **只写传进来的那些行**：没传进来的行（这一轮没查、或那一批上游失败了）
+ *      一个字节都不动 —— 包括 `live_checked_at`。这是"一次网络抖动不许把所有人
+ *      标成不在播"这条要求在数据层的形状：**"不在播"必须由一次成功的回答产生**。
+ *   ② **整批在一个事务里**：要么都进去，要么都不进。不然失败时库里会留下
+ *      "一半是这一轮的时刻、一半是上一轮的时刻"，而日志上那一行数字只对一半
+ *      （本仓 §5.47：一个错得不自洽的计数比没有计数更危险）。
+ *   ③ `live_checked_at` 是 **Unix 秒**（三列里唯一的秒；`live_channels` 的
+ *      `created_at` / `updated_at` 是**毫秒**）。填错的后果是不报错的：
+ *      界面上的时刻会跑到 5 万年以后，而"这一格是什么时候查的"这件事
+ *      就没有第二种方式能发现。
+ *
+ * @param checkedAt 这一批的时刻（Unix **秒**）。
+ * @returns 真的写进去的行数（= `updates.length`，除非抛异常）。
+ */
+export function applyLiveStatus(updates: readonly LiveStatusUpdate[], checkedAt: number): number {
+  if (updates.length === 0) return 0;
+
+  const db = getDb();
+  const statement = db.prepare(
+    'UPDATE live_channels SET is_live = ?, viewer_count = ?, live_checked_at = ? WHERE id = ?',
+  );
+
+  db.exec('BEGIN');
+  try {
+    for (const update of updates) {
+      statement.run(update.isLive, update.viewerCount, checkedAt, update.id);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return updates.length;
 }
 
 export function getLiveChannel(id: string) {
@@ -268,8 +396,10 @@ export function updateLiveChannel(
   | { ok: true; channel: NonNullable<ReturnType<typeof getLiveChannel>> }
   | { ok: false; reason: 'not_found' | 'taken' } {
   const db = getDb();
-  const row = db.prepare('SELECT id FROM live_channels WHERE id = ?').get(id) as
-    | { id: string }
+  const row = db
+    .prepare('SELECT id, platform, handle, live_video_id FROM live_channels WHERE id = ?')
+    .get(id) as
+    | { id: string; platform: string; handle: string; live_video_id: string | null }
     | undefined;
   if (!row) return { ok: false, reason: 'not_found' };
 
@@ -280,10 +410,34 @@ export function updateLiveChannel(
   const clash = findLiveChannelByHandle(input.platform, input.handle, input.liveVideoId ?? null);
   if (clash && clash.id !== id) return { ok: false, reason: 'taken' };
 
+  /*
+   * ★ 身份变了（平台 / 标识 / 视频 ID 有一个不一样）⇒ 把那三列**清回 NULL**。
+   *
+   * 理由：`is_live` / `viewer_count` / `live_checked_at` 是**关于某个具体频道**的读数，
+   * 而这个表单可以把这一行**改成另一个频道**（用户原话：「我只要当前直播的视频 ID 就够了」
+   * ⇒ 编辑确实会把某一行的链接换成别的）。不清的话，`twitch/foo` 那一行的
+   * 「直播中」徽章会跟着变成 `twitch/bar` 的读者看到 —— 一句我们**从来没验证过**的话，
+   * 而且是这一页最坏的一种错（它看起来完全正常）。
+   * ⇒ 清回 `NULL` = "没查过"：界面什么都不显示，下一轮（≤3 分钟）就会补上真话。
+   *
+   * ⚠️ 用 `CASE WHEN ? THEN NULL ELSE <原列> END` 而不是"先读出来、再写回去"：
+   *    后者在读与写之间有一个窗口，状态作业正好在那一刻写这一行的话，
+   *    结果就是"编辑保存一次，刚查到的人数被抹掉"（而两边都不报错）。
+   *    写成一条语句时它自己就是原子的。代价：SQL 长了一句，参数多三个（可忽略）。
+   */
+  const identityChanged =
+    row.platform !== input.platform ||
+    row.handle !== input.handle ||
+    row.live_video_id !== (input.liveVideoId ?? null);
+  const reset = identityChanged ? 1 : 0;
+
   db.prepare(
     `UPDATE live_channels SET
        platform = ?, handle = ?, display_name = ?, note = ?, tags = ?, live_video_id = ?,
-       embed_channel = ?, sort_order = ?, updated_at = ?
+       embed_channel = ?, sort_order = ?, updated_at = ?,
+       is_live = CASE WHEN ? THEN NULL ELSE is_live END,
+       viewer_count = CASE WHEN ? THEN NULL ELSE viewer_count END,
+       live_checked_at = CASE WHEN ? THEN NULL ELSE live_checked_at END
      WHERE id = ?`,
   ).run(
     input.platform,
@@ -295,6 +449,9 @@ export function updateLiveChannel(
     input.embedChannel ? 1 : 0,
     input.sortOrder,
     now,
+    reset,
+    reset,
+    reset,
     id,
   );
 

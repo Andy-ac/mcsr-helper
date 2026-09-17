@@ -160,8 +160,13 @@ const ARC_SEARCH_WEB_LOCATION = '1550101';
 /**
  * 请求头。**不在** spec §2.1 的散文里，但做出那张对照表的探针带了它们
  * （`.cache/bilibili-feasibility2.mjs:14-15` 逐字），理由见文件头。
+ *
+ * ⚠️ 2026-09-18 起**导出**：`liveness/bilibili-rooms.ts`（每 3 分钟那一轮直播状态）
+ *    打的是另一个 host（`api.live.bilibili.com`），但它要用的正是**同一套**"我们是谁"
+ *    —— 两处各写一份 UA 的下场是某天只改了一处，而症状是"某个作业突然开始被风控"，
+ *    排查时没人会想到去比对两个文件里的 UA 字符串。
  */
-const BROWSER_HEADERS: Record<string, string> = {
+export const BROWSER_HEADERS: Record<string, string> = {
   'user-agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   referer: 'https://www.bilibili.com/',

@@ -2680,10 +2680,68 @@ export const en: TranslationSchema = {
      * lie the user notices within a week: a channel is clearly offline and we
      * show nothing either way. Saying "these are channels" is always true.
      */
+    /*
+     * ★★ The single most important line in this section — **rewritten 2026-09-18**,
+     * because what it used to promise was overturned by the user's item 10.
+     *
+     * It used to read: "These are **channels**, not a 'who is live right now' board
+     * — we do not detect liveness, so there is no live badge." Together with the
+     * header comment of `routes/Live.tsx` that sentence was *the only reason this
+     * page could stay honest*: as long as it stood, nobody expected the page to
+     * tell them who is live.
+     *
+     * Item 10 asks for exactly that badge (plus viewer counts and a search box), so
+     * the old sentence stopped being true. The fix is **not** to delete it (then the
+     * page says nothing about what it is) but to replace it with something that is
+     * still true: it is still a list of channels, but **now something really does
+     * check them**.
+     *
+     * Two things must be said, and leaving either out is a new lie:
+     *   ① **it lags**: the job runs every 3 minutes, and the response carries
+     *      `max-age=60` + `stale-while-revalidate=300`, so a badge or a viewer count
+     *      can be up to **9 minutes** old (the arithmetic lives in `routes/live.ts`).
+     *   ② **only two platforms are checked** — Twitch and Bilibili. A YouTube row
+     *      will never get a badge, and in the UI "not checked" looks exactly like
+     *      "not live" (both render nothing), so the sentence has to name the
+     *      platforms. (Why YouTube is out this round: `search.list?eventType=live`
+     *      has its own 100-calls-per-day bucket — see the job's header, section 3.)
+     *
+     * NOTE: the Chinese side carries the same two facts; placeholders/keys must
+     * stay aligned (`i18n-keys.test.ts` enforces the key and placeholder parity).
+     */
     recordsChannels:
-      'These are **channels**, not a "who is live right now" board — we do not detect liveness, so there is no live badge.',
+      'These are **channels**, not a real-time board — the "Live" badge and viewer counts are checked every few minutes for Twitch and Bilibili only, so they can lag behind.',
     relationToVideos:
       'How this differs from the "Videos" section: that one is whatever anyone posted (constantly changing), this one is a slow-moving curated list.',
+
+    /*
+     * ★ The "live now" badge (user item 10). It means "was live **the last time we
+     *   checked**" — the lag is what `recordsChannels` above owns up to. Rendered
+     *   only when `isLive === true`: `null` (never checked / could not check) and
+     *   `false` (checked, not live) both render nothing, and they stay distinct in
+     *   the data (`packages/shared/src/live.ts`).
+     */
+    liveBadge: 'Live',
+    /*
+     * Viewer count. ⚠️ Rendered **only when `viewerCount` is not `null`** — when the
+     * upstream did not give a number, that cell renders nothing at all (no 0, no
+     * "unknown"). That is why this section has **no** "viewers unknown" sibling key:
+     * it would be a dead key with no render site.
+     */
+    viewers: '{{n}} watching',
+    /*
+     * The search box's visible name (placeholder) and its screen-reader label share
+     * this one key — same shape as `ranked.liveSearch`. Both sites must stay in
+     * sync: with a placeholder only, the input loses its name as soon as the user
+     * types the first character.
+     */
+    searchLabel: 'Search name or tag',
+    /*
+     * "No match" gets its **own** sentence: the list is not empty then, it is only
+     * filtered. Collapsing the two would read as "this page is empty" (the same
+     * accounting the tracked-creators block did).
+     */
+    searchEmpty: 'No channels match.',
 
     // NOTE: `gotoChannel` is also the label for the channel-stable link we now
     // prefer on YouTube (youtube.com/@handle/live — measured: it resolves to the
