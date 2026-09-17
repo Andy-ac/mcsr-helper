@@ -1748,6 +1748,17 @@ export const en: TranslationSchema = {
     pasteAction: 'Post a video',
     viewAll: 'Videos',
     viewMine: 'My posts',
+    /*
+     * ★ The two top-level tabs (item 8, 2026-09-19): one page, two blocks, two buttons.
+     * ⚠️★ Only the **left** button needs a new string here: the right one reads
+     *    "Tracked creators", which is `tracked.title` (one thing must not have two names —
+     *    the `<h2>` of that block uses the very same key, and both are visible at once:
+     *    the tab at the top, the heading inside the block).
+     * ⚠️ It does not mean "my posts" (that is `viewMine`) but **where this column's content
+     *    comes from**: the wall is what people post, the other column is what the server
+     *    fetches (the two paths of spec §8.1).
+     */
+    tabWall: 'Posted by users',
 
     // ---- Filters ----
     allPlatforms: 'All platforms',
@@ -1874,7 +1885,7 @@ export const en: TranslationSchema = {
      *   here otherwise assumes it was lost.
      */
     subtitle:
-      'A scheduled job pulls these creators’ videos, newest first. The list is maintained by content editors — it is not the same thing as the wall above, which is what people post themselves.',
+      'A scheduled job pulls these creators’ videos, newest first. The list is maintained by content editors — it is a different source from “Posted by users”, not the same list.',
     count: '{{count}} tracked',
     empty: 'No tracked videos yet',
     /*
@@ -1905,6 +1916,75 @@ export const en: TranslationSchema = {
      */
     emptyPlatform:
       'No videos on this platform yet — the list has no creator for it, or their videos have not been fetched yet.',
+    /*
+     * ★★ Item 9 (2026-09-19): the sentence for "empty **because of a filter**" — different
+     *    from all three above.
+     *
+     * ⚠️★ The three ways of being empty are three different facts, and reusing any two of
+     *    them sends the reader off to do something useless:
+     *   · the "all" case (`empty` + `emptyHint`): nothing fetched for the creators on the
+     *     list yet / fetching runs every 10 minutes — "wait and it will show up";
+     *   · one **partition** (`emptyPlatform`): no creator of that platform is on the list
+     *     at all — waiting will never help;
+     *   · one **filter** (this sentence): the list **has** content, this condition filtered
+     *     it away — the action is neither waiting nor switching platform, it is
+     *     **loosening the condition**.
+     * ⚠️ It promises **no time** ("wait a bit" would be a lie here: keep the condition and it
+     *    stays empty forever), and it does not say the block is broken (this is its most
+     *    normal kind of empty).
+     * ⚠️ The criterion lives in `TrackedVideos.tsx` (`emptyTitle`): when
+     *    `hasTrackedFilters(filters)` is true this sentence is used — and **sorting is not a
+     *    filter** (it does not change the result set), so "empty after re-sorting" still says
+     *    the block has nothing, not "nothing matches this filter".
+     */
+    emptyFilter: 'Nothing matches this filter — loosen it, or clear the filters and look again.',
+
+    // ---- Item 9: the filter bar (five selects) ----
+    /*
+     * ⚠️★ These are the accessible names (`aria-label`) of the five comboboxes; the **visible**
+     *    label is carried by the first option itself ("All time" / "All tags" …) —
+     *    `routes/ResourceList.tsx` does exactly this (its select's label is its default
+     *    option), and this column copies it rather than inventing a second control style.
+     * ⚠️ The **numbers** behind the three time ranges and the four duration buckets are not in
+     *    the dictionary: `TRACKED_TIME_RANGES` / `TRACKED_DURATION_PRESETS` in
+     *    `packages/shared/src/tracking.ts` own them (a label table that drifts from the range
+     *    table shows up as "I picked 1–5 minutes and got a different range", and that does not
+     *    raise anything). The strings here only answer "how do we say it".
+     */
+    filterTime: 'Time range',
+    filterTag: 'Tag',
+    filterDuration: 'Length',
+    filterSort: 'Sort',
+    filterCreator: 'Creator',
+    timeAll: 'All time',
+    time7d: 'Last 7 days',
+    time30d: 'Last 30 days',
+    time1y: 'Last year',
+    tagAll: 'All tags',
+    durAll: 'Any length',
+    /* ⚠️ The four buckets are **closed** intervals and do not overlap (see the preset table). */
+    durLt1: 'Under 1 minute',
+    dur1to5: '1–5 minutes',
+    dur5to15: '5–15 minutes',
+    durGt15: 'Over 15 minutes',
+    /*
+     * ⚠️ The two sort options have **no** "all" entry: a sort always has a current value
+     *    (newest first by default). The first entry is that default, and when the value equals
+     *    the default it is not written into the URL (a repo-wide convention).
+     */
+    sortNew: 'Newest first',
+    sortViews: 'Most viewed first',
+    creatorAll: 'All creators',
+    /*
+     * ★ One entry of the creator dropdown: name · platform (count).
+     * ⚠️ The count is the number of **publicly visible** videos
+     *    (`TrackedCreatorSummary.videoCount`); it answers "does this person have anything" —
+     *    the list already contains creators with 0, and picking one only shows "nothing matches
+     *    this filter", so the dropdown says it up front.
+     * ⚠️ The name may be the handle instead (the view falls back when the display name is
+     *    empty — see `creatorLabel`).
+     */
+    creatorOption: '{{name}} · {{platform}} ({{count}})',
     thumbAlt: 'Thumbnail of {{title}}',
     publishedAt: 'Published',
     duration: 'Length',

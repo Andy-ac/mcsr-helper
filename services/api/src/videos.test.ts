@@ -154,6 +154,50 @@ describe('★ 视频嵌入（Q21：B站/YouTube 为主，客户端内播放）',
       assert.equal(parsed.searchParams.get('t'), null);
     });
 
+    /**
+     * ★★ 弹幕**开着**（2026-09-19，用户第 8 条）—— 这一条是**推翻旧裁决**换来的，
+     *    所以它必须自己有一条断言（而不是靠渲染脚本那条"地址逐字符相等"顺带钉住：
+     *    那条住在 `apps/web/scripts/liverender.tsx` 里，是**另一条线**的文件，
+     *    而这个 URL 构造器是全站四条嵌入路径共用的）。
+     *
+     * ⚠️★ 为什么值是 `'1'` 而不是"不传"：`danmaku` 是官方表里的 **boolean**
+     *    （"`false` 表示关闭弹幕，其他表示默认值"），而播放器页源码在它为 false 时
+     *    `featureList.add('noDanmaku')` ⇒ **连弹幕数据都不取**（开关根本不存在）。
+     *    显式写 `'1'` 是为了让下一个读的人**一眼看见**我们的选择 ——
+     *    不写这一格也能得到同样的行为，但那要靠读者自己去查默认值。
+     * ⚠️ 反面控制（`notEqual 0`）不是多余的：写成 `'0'` 正是被推翻的那一版，
+     *    而它的表现是"用户报告的那个缺陷回来了"，没有任何别的断言会红。
+     */
+    it('★★ B站：弹幕参数必须是「开」（`danmaku=1`，不是被推翻的 `0`）', () => {
+      const url = buildEmbedUrl('bilibili', 'BV1xx411c7mD', null, 'mcsrhelper.com');
+      assert.ok(url !== null);
+      const danmaku = new URL(url).searchParams.get('danmaku');
+      assert.equal(
+        danmaku,
+        '1',
+        'B站 的嵌入地址必须显式带 `danmaku=1`：`0` 会让播放器**不取弹幕数据**（连开关都没有）—— ' +
+          '被推翻的那条旧裁决与它的代价写在 `packages/shared/src/videos.ts` 的 bilibili 分支上',
+      );
+      assert.notEqual(danmaku, '0', '`danmaku=0` 就是用户第 8 条报的那个缺陷本身');
+    });
+
+    /**
+     * ⚠️ `high_quality` / `as_wide`**一个都不许加**（2026-09-19 实测）：
+     *    它们不在官方参数表里、也不在播放器页的 `paramType` 表里 ⇒ 今天**完全无效**
+     *    （而那个页面**永远**回 200，所以"加进去没坏"这种验证方式什么也证明不了）。
+     *    这条断言钉的是"别顺手加"：加进去不会报错、也不会有任何界面变化 ——
+     *    只有下一个人读代码时才知道那两个参数骗了他。
+     */
+    it('★ B站：不许顺手加 `high_quality` / `as_wide`（实测它们今天完全无效）', () => {
+      const url = buildEmbedUrl('bilibili', 'BV1xx411c7mD', null, 'mcsrhelper.com');
+      assert.ok(url !== null);
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get('high_quality'), null);
+      assert.equal(parsed.searchParams.get('as_wide'), null);
+      // 反面控制：这一串确实带着参数（否则上面两条在"空地址"上恒真）
+      assert.equal(parsed.searchParams.get('bvid'), 'BV1xx411c7mD');
+    });
+
     it('★ 平台是否支持跳转 —— 界面靠它决定要不要提示"该平台不支持"', () => {
       assert.equal(platformSupportsStartOffset('youtube'), true);
       assert.equal(platformSupportsStartOffset('twitch'), true);

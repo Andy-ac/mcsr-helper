@@ -2,10 +2,22 @@
  * 追踪的博主与他们全部视频 —— **HTTP 面**（spec §6.1 那五个端点）。
  *
  *   GET    /api/tracking/videos          **公开**      追踪到的视频（分页 published_at DESC，可带 `?platform=` 分区，spec §5.1）
+ *   GET    /api/tracking/roster          **公开**      名册的**公开只读**那一份（下拉框用，每行五个键，第 9 条）
  *   GET    /api/tracking/creators        live.manage  名单（含采集状态）
  *   POST   /api/tracking/creators        live.manage  加一个（入参是**一个链接或 @handle**）
  *   PATCH  /api/tracking/creators/:id    live.manage  改显示名 / 停用启用 / 重新回填
  *   DELETE /api/tracking/creators/:id    live.manage  删（视频靠外键级联跟着走）
+ *
+ * ⚠️ 上面这张表是**六条**了（2026-09-19 加了 `/roster`）：文件头那句"spec §6.1 那五个端点"
+ *    指的是 spec 里原来的五条，而公开名册是用户第 9 条新要的第六条 —— spec 的表格归文档那一侧，
+ *    这里照实写。改动这张表时**连这一行说明一起改**（"四条/五条/六条"在本仓已经漂过一次）。
+ *
+ * ★ 公开列表的查询参数（第 9 条，2026-09-19）：
+ *   `page` / `pageSize` / `platform` / `sort`(`new`|`views`) / `creatorId` / `tag` /
+ *   `durMin` / `durMax` / `since` / `until` —— **全部**在
+ *   `packages/shared/src/tracking.ts` 的 `TrackedVideoQuerySchema` 里（前后端共用一份）。
+ *   ⚠️★ 少写一个参数**不会报错**：实测未知查询参数被静默忽略。理由与那六条各自
+ *   防的事，写在那个 schema 上。
  *
  * 挂载由 `index.ts` 做：`app.route('/api/tracking', trackingRoute)`。
  * ⚠️ 路由文件里写的是**相对路径**（`/creators`，没有 `/api/tracking` 前缀）——
@@ -184,6 +196,7 @@ import {
   deleteCreator,
   getCreator,
   listCreators,
+  listPublicCreators,
   listTrackedVideos,
   updateCreator,
 } from '../tracked-videos';
@@ -539,7 +552,8 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
       return c.json({ error: 'invalid_query', issues: formatIssues(parsed.error) }, 400);
     }
 
-    const { page, pageSize, platform } = parsed.data;
+    const { page, pageSize, platform, creatorId, tag, durMin, durMax, since, until, sort } =
+      parsed.data;
     /*
      * ⚠️ `...(platform === undefined ? {} : { platform })` 是计划（brief step 4）逐字冻结的形状，
      *    **不要简化成 `platform,`**：它要说的是"这个键**不在**"，而不是"传一个 `undefined` 进去"——
@@ -547,8 +561,8 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
      *    （`platform?: TrackPlatform`），展开这版交给它的是"没有这个条件"，
      *    `platform,` 交给它的是"这个条件被显式设成了 `undefined`"。
      *    ⚠️ 但**别**把这句说成"callee 在看键在不在"：它读的是**值**
-     *    （`opts.platform === undefined ? "status = 'visible'" : …`，`tracked-videos.ts:483-485`），
-     *    所以今天这两版在运行期同效（那个开关是 `false`，见下）—— 观察得到的只有一句：
+     *    （`opts.platform === undefined ? … : …`，`tracked-videos.ts` 的 `conditions` 那一段），
+     *    所以今天这两版在运行期同效——观察得到的只有一句：
      *    不传 = 全部，传了 = 只出那个平台。展开这版的价值在于它**说的**正是接口本来的意思，
      *    而且是那个开关哪天打开时仍然成立的那一版。
      *    ⚠️ 照实记一句（别照抄计划给的那个理由）：计划说它"是 `exactOptionalPropertyTypes`
@@ -556,16 +570,57 @@ export function createTrackingRoute(deps: TrackingRouteDeps): Hono<{ Variables: 
      *    实测直传 `platform,` 今天能过 `tsc`（T4 报告 §7.1 的四次对照）。
      *    这一行因此不是"今天必须这么写"，而是"那个开关哪天打开时**唯一**在这里不红的写法"
      *    （同一次对照：强制打开之后这一处是 TS2379，展开这版不是）。
+     *
+     * ★★ 第 9 条的六个参数（2026-09-19）**逐格手抄**，不做 `{...parsed.data}` 的展开：
+     *    展开会把 `page` / `pageSize` 一起塞进数据层（那里的参数是 `limit` / `offset`），
+     *    两个形状混起来之后，`page` 漏进 `opts` 是**无声**的（`listTrackedVideos` 读不到它，
+     *    于是"第 2 页"永远给出第 1 页 —— 而响应里的 `page: 2` 照样是对的）。
+     *    ⚠️ 手抄的代价是"schema 加了参数、这里忘了传"：那一样是无声的（多传进来的键
+     *    会被 `listTrackedVideos` 直接忽略），所以每一个参数都有一条端到端用例
+     *    （`tracking-routes.test.ts` 的筛选那一组），而不是只测 schema。
      */
     const { items, total } = listTrackedVideos({
       limit: pageSize,
       offset: (page - 1) * pageSize,
+      sort,
       ...(platform === undefined ? {} : { platform }),
+      ...(creatorId === undefined ? {} : { creatorId }),
+      ...(tag === undefined ? {} : { tag }),
+      ...(durMin === undefined ? {} : { durMin }),
+      ...(durMax === undefined ? {} : { durMax }),
+      ...(since === undefined ? {} : { since }),
+      ...(until === undefined ? {} : { until }),
     });
 
     c.header('Cache-Control', PUBLIC_CACHE);
     // 形状与视频墙逐字一致（items / total / page / pageSize）：两个列表共用一套分页控件
     return c.json({ items, total, page, pageSize });
+  });
+
+  /**
+   * 公开名册：**下拉框**那一份（用户第 9 条），每一条只有五个键。
+   *
+   * ★★ 为什么是**新的一条路径**，而不是给 `/creators` 开一个"匿名时少回几个字段"的口子：
+   *    那条路径今天需要 `live.manage`（线上匿名实测 **401**）。往它上面挂"看身份决定
+   *    回什么"的判据，会让"这条端点要什么权限"从一个中间件变成一段运行期逻辑 ——
+   *    而那正是最难审的一类东西（同一个 URL 对不同人回不同形状）。
+   *    ⇒ 两条路径、两个读者、两种缓存：`/creators` 是 `no-store` 的管理面板数据，
+   *      这一条是与列表同档的公开缓存。
+   *
+   * ⚠️★ 路径名**故意不相似**：叫 `/roster` 而不是 `/creators/public`。
+   *    后者的形状（挂在需要权限的那条路径下面）会让下一个人以为它也吃那条中间件，
+   *    而 Hono 里"父路径有鉴权"**不会**保护子路径 —— 那种误解的代价是一条公开端点
+   *    被当成受保护的，或者反过来：有人给它补一个鉴权，于是下拉框对所有人 401。
+   *
+   * ⚠️★ 它**不泄露新东西**：博主名字与平台今天就已经公开（追踪栏有按平台分组的
+   *    小标题、每张卡上有平台徽章），而这里连"有多少条视频"都只数**公开可见**的那些。
+   *    这句话下一个人一定会问，所以写在这里，也写在 `listPublicCreators` 上。
+   * ⚠️ 缓存与公开列表同档（60 秒）**不是**照抄：它是同一条数据（名单变动比视频慢得多，
+   *    而抓取是每 10 分钟一轮），给它 `no-store` 只会让每一次打开页面都多打一次库。
+   */
+  trackingRoute.get('/roster', (c) => {
+    c.header('Cache-Control', PUBLIC_CACHE);
+    return c.json({ items: listPublicCreators() });
   });
 
   /**

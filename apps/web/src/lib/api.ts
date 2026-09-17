@@ -25,8 +25,8 @@ import type {
   ShareSummary,
   TrackedCreator,
   TrackedCreatorInput,
+  TrackedCreatorSummary,
   TrackedVideo,
-  TrackPlatform,
   VideoPlatform,
 } from '@mcsr/shared';
 import type { UserSelf } from '@mcsr/shared/auth';
@@ -66,6 +66,15 @@ import type {
   SeedQueryResult,
   SeedRecord,
 } from '@mcsr/shared/seed';
+/*
+ * ⚠️★ 这是本文件里**唯一**一处从 shared 取**值**（不是类型）的 import：追踪列表的查询串
+ *    由 `buildTrackedVideoQuery` 拼（第 9 条，2026-09-19），而它必须与
+ *    `TrackedVideoQuerySchema` 的键集合成对 —— 那件事只有住在 shared 才**能被断言**
+ *    （`apps/web` 没有测试运行器）。理由与代价写在那个函数的注释上。
+ * ⚠️ 走子路径 `@mcsr/shared/tracking`（与 `lib/trackedQuery.ts` 同一处 alias）：
+ *    vite 的 alias 表与 `scripts/check-shared-aliases.mjs` 按子路径对账。
+ */
+import { buildTrackedVideoQuery, type TrackedVideoQueryInput } from '@mcsr/shared/tracking';
 import type { Video, VideoInput } from '@mcsr/shared/videos';
 
 export interface HealthResponse {
@@ -1604,35 +1613,49 @@ export interface TrackedVideoListResponse {
  *
  * ⚠️★ `platform` 是**分区**（spec §5.1，T4 加的查询参数）：筛选在**服务端**做，
  *    所以 `total` 是"该分区内的总数"，翻页也只在分区内翻。
- *    ⇒ 「全部」传 `undefined`，**绝不许**传空串 `''`。
+ *    ⇒ 「全部」传 `undefined`，**绝不许**传空串 `''`（`?platform=` 是 400）。
+ *
+ * ===========================================================================
+ * ★★ 签名从四个位置参数改成**一个对象**（2026-09-19，用户第 9 条）
+ * ===========================================================================
+ * 原来那个 `platform` 是**必填的位置参数**，理由写在当时的注释里："忘了传"与
+ * "传了 `undefined`"在类型上长得一样，而表现是"点了 Twitch 却还是全部"，不报错。
+ * ★ 第 9 条把这个端点从 1 个筛选加到 9 个参数（`sort` / `creatorId` / `tag` /
+ *   `durMin` / `durMax` / `since` / `until` + 分区 + 分页），位置参数那一套撑不住：
+ *   调用点会变成一串 `undefined, undefined, 'views'` 而**没有任何判据**能看出
+ *   第三个位置是什么。⇒ 改成对象，并且：
+ *   · 对象**在这里由 `buildTrackedVideoQuery` 拼成查询串**，那一份住在
+ *     `packages/shared/src/tracking.ts`（`apps/web` 没有测试运行器，写在组件里
+ *     就只有人眼能验），它的行为由 `services/api/src/tracking-shared.test.ts` 钉住；
+ *   · 键名与 schema 的键名由那一条测试**成对**断言（漏一个 / 多一个都会红）。
+ *
+ * ⚠️★ 缓存键就是**这个 URL**：本仓没有任何手写的 cache key（没有进程内缓存、
+ *    反代也没有 `proxy_cache_key`），而这条端点是 `public, max-age=60`。
+ *    ⇒ 少拼一个参数 = 两个不同的筛选共用同一条缓存项（"我选了播放量倒序，
+ *      出来还是刚才那批"），而用户会以为"只是刷新慢"。这就是上面那条成对断言
+ *    存在的理由。
  */
 export function fetchTrackedVideos(
-  page: number,
-  pageSize: number,
-  /**
-   * 分区；`undefined` = 全部。
-   * ⚠️ 它是**必填的位置参数**（不是可选的末尾参数）：分区这条路上"忘了传"与
-   *    "传了 `undefined`"在类型上长得一样，写成可选参数会让下面那个口子
-   *    在某个调用点被静默跳过 —— 而表现是"点了 Twitch 却还是全部"，不报错。
-   */
-  platform: TrackPlatform | undefined,
+  query: TrackedVideoQueryInput,
   signal?: AbortSignal,
 ): Promise<TrackedVideoListResponse> {
-  const params = new URLSearchParams();
-  // 第 1 页不拼 `page`：与 `fetchVideos` / `buildResourceQuery` 同一个约定，
-  // 分享出去的地址里不留一个"和默认值一样"的参数。
-  if (page > 1) params.set('page', String(page));
-  params.set('pageSize', String(pageSize));
-  /*
-   * ⚠️★ 「全部」时**不拼**这个参数（与"第 1 页不拼 `page`"同一个约定）。
-   *    这里不能图省事写成 `params.set('platform', platform ?? '')`：
-   *    `platform` 在服务端是**封闭枚举**（`TrackedVideoQuerySchema`），
-   *    空串**不是**它的取值 ⇒ `?platform=` 是一个 400（T4 实测），
-   *    而用户看到的是"查询参数不合法"，那句话指不到"你把分区清空了"上
-   *    （与上面那面墙同一条纪律，`routes/Videos.tsx` 的注释里写着）。
-   */
-  if (platform !== undefined) params.set('platform', platform);
-  return request<TrackedVideoListResponse>(`/api/tracking/videos?${params.toString()}`, signal);
+  return request<TrackedVideoListResponse>(
+    `/api/tracking/videos${buildTrackedVideoQuery(query)}`,
+    signal,
+  );
+}
+
+/**
+ * 公开名册（下拉框那一份）：每一条只有 `id` / `platform` / `displayName` /
+ * `handle` / `videoCount` 五个键（第 9 条）。
+ *
+ * ⚠️★ 它**不是** `fetchTrackedCreators`：那一条要 `live.manage`（线上匿名实测 401），
+ *    而"筛某一位博主"是所有人都要用的功能 —— 两条路径、两种缓存，别把它们合并。
+ */
+export function fetchTrackedCreatorRoster(
+  signal?: AbortSignal,
+): Promise<{ items: TrackedCreatorSummary[] }> {
+  return request<{ items: TrackedCreatorSummary[] }>('/api/tracking/roster', signal);
 }
 
 /**

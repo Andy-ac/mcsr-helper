@@ -129,6 +129,9 @@ export function formatTwitchTime(sec: number): string {
  *   · B站：`bvid` 参数。**没有官方的起始时间参数** ——
  *     所以 B站传了 startOffsetSec 也**不会跳转**。这一点必须在界面上说明，
  *     而不是默默丢掉：默默丢掉会让用户以为链接坏了。
+ *   · B站 的弹幕是**开着**的（`danmaku=1`，2026-09-19）：那条参数一旦写成 `0`，
+ *     播放器不是"默认关掉弹幕"而是**不取弹幕数据**，连开关都不存在 ——
+ *     实测源码、被推翻的旧裁决与它的代价都写在下面那个 case 里。
  *
  * `origin` 是 Twitch 的 `parent` 值（我们的域名，例如 `mcsrhelper.com`）。
  */
@@ -170,8 +173,33 @@ export function buildEmbedUrl(
       return `https://player.twitch.tv/?${params.toString()}`;
     }
     case 'bilibili': {
-      // danmaku=false：弹幕默认关掉。它是第三方内容，而我们的页面有自己的评论阈值。
-      const params = new URLSearchParams({ bvid: videoId, autoplay: '0', danmaku: '0' });
+      /*
+       * ★★ `danmaku=1`（2026-09-19 改，原来是 `0`）。
+       *
+       * ⚠️★ 这一格的**代价**必须写在这里，因为它是**推翻**一条既有裁决换来的：
+       *   `danmaku=0` 那句注释说的是"弹幕是第三方内容，而我们的页面有自己的评论阈值"。
+       *   改成 `1` 之后，**弹幕里会出现我们不审的内容**，而那句"我们有自己那套阈值"
+       *   对弹幕这一格**不再成立** —— 我们既不过滤它、也看不到它。
+       *   接受它的理由只有一条，而且是用户裁决的：弹幕开关**根本不存在**时，
+       *   "这一栏的播放器和上面那栏一样"这件事就是假的（见下）。
+       *
+       * ★ 为什么 `0` 不是"默认关掉"，而是"这个控件根本不存在"（**实测**）：
+       *   `player.bilibili.com/player.html` 是一个静态壳，参数在**浏览器端**读
+       *   （`.cache/videos-live-round/bili-player-curated.body.txt:144-157` 是页面源码原文）：
+       *     `if (SP.danmaku != null && !SP.danmaku) featureList.add('noDanmaku');`
+       *   而播放器核心对那个 feature 的第一句就是
+       *     `if (this.configStore.noDanmaku || …) return void this.log.i('noDanmaku');`
+       *   ⇒ 弹幕**连数据都不取**，用户看到的不是"弹幕默认关闭"，而是**没有那个开关**。
+       *   官方参数表那句"`false` 表示关闭弹幕，其他表示默认值"（`danmaku` 是 boolean）
+       *   说的正是"别写 false"。
+       *
+       * ⚠️ 与 `autoplay: '0'` **不一样**：那个是真的有效（官方表里的 boolean），
+       *   不要因为这一条就顺手把 `autoplay` 也改成 `1` —— 一进页面就出声是另一件事。
+       * ⚠️ 也**不要**顺手加 `high_quality` / `as_wide`：它们不在官方表里、
+       *   也不在播放器页的 `paramType` 表里（实测同上），今天**完全无效**；
+       *   `docs/tracked-embed-spec.md` 里那句把它们记成"实测通过"的话是假记录（已订正）。
+       */
+      const params = new URLSearchParams({ bvid: videoId, autoplay: '0', danmaku: '1' });
       return `https://player.bilibili.com/player.html?${params.toString()}`;
     }
     default:

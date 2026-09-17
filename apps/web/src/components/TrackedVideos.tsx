@@ -1,10 +1,33 @@
-import type { TrackedCreator, TrackedVideo, TrackPlatform } from '@mcsr/shared/tracking';
-import { TRACK_PLATFORMS, toMillis } from '@mcsr/shared/tracking';
+import type {
+  TrackedCreator,
+  TrackedCreatorSummary,
+  TrackedDurationPresetId,
+  TrackedSort,
+  TrackedTimeRangeId,
+  TrackedVideo,
+  TrackPlatform,
+} from '@mcsr/shared/tracking';
+import {
+  TRACK_PLATFORMS,
+  TRACKED_DURATION_PRESET_IDS,
+  TRACKED_TIME_RANGE_IDS,
+  TRACKED_VIDEO_TAGS,
+  toMillis,
+} from '@mcsr/shared/tracking';
 import { formatTimecode } from '@mcsr/shared/videos';
 import { useTranslation } from 'react-i18next';
 import { ClickToPlayEmbed } from '@/components/ClickToPlayEmbed';
 import { Field, Notice } from '@/components/Form';
 import { watchUrl } from '@/components/VideoEmbed';
+import type { TrackedFilterParam, TrackedFilterState } from '@/lib/trackedQuery';
+import {
+  hasTrackedFilters,
+  TRACKED_CREATOR_PARAM,
+  TRACKED_DURATION_PARAM,
+  TRACKED_SORT_PARAM,
+  TRACKED_TAG_PARAM,
+  TRACKED_TIME_PARAM,
+} from '@/lib/trackedQuery';
 
 /**
  * 「追踪的博主」—— `/videos` 页上的那一块（**两个只吃 props 的纯视图**）。
@@ -94,10 +117,55 @@ const TAG_KEYS: Record<string, string> = {
   long: 'tracked.tagLong',
 };
 
+/**
+ * 第 9 条那三个下拉框的**选项文字**：id → 词条 key。
+ *
+ * ⚠️★ 三张表都写成**穷尽**的 `Record<联合, string>`（不是 `Record<string, string>`）：
+ *    清单里多一档时这里会**当场编译失败**，而写成宽松 Record 的话，那一档会静默
+ *    落到"没有文字的选项"上（一个空白的下拉项，只有用户点开才发现）。
+ *    这与 `PLATFORM_KEYS` 是同一条理由（见它上面那段）。
+ * ⚠️ 键是**拼出来**的（`t(TIME_KEYS[id])`），所以 `services/api/src/i18n-keys.test.ts`
+ *    那条"字面量键必须存在"的守卫看不见它们 —— 它们由**渲染自检**兜着
+ *    （断言画出来的文字等于 `t('tracked.time7d')` 之类；表里写错一个字母时，
+ *    产物里是那串原始 key，而断言的右边是真词条 ⇒ 当场红）。
+ */
+const TIME_KEYS: Record<TrackedTimeRangeId, string> = {
+  '7d': 'tracked.time7d',
+  '30d': 'tracked.time30d',
+  '1y': 'tracked.time1y',
+};
+const DURATION_KEYS: Record<TrackedDurationPresetId, string> = {
+  lt1: 'tracked.durLt1',
+  '1to5': 'tracked.dur1to5',
+  '5to15': 'tracked.dur5to15',
+  gt15: 'tracked.durGt15',
+};
+const SORT_KEYS: Record<TrackedSort, string> = {
+  new: 'tracked.sortNew',
+  views: 'tracked.sortViews',
+};
+
 /** 标签 → 显示文字（认不出来的原样显示，理由见 `TAG_KEYS`）。 */
 function tagLabel(tag: string, t: (key: string) => string): string {
   const key = TAG_KEYS[tag];
   return key === undefined ? tag : t(key);
+}
+
+/**
+ * 下拉框里那位博主怎么称呼。
+ *
+ * ⚠️★ 卡片那一格与这里**故意不一样**，两处各有各的理由：
+ *   · 卡片上：`display_name` 为空 ⇒ **整格不渲染**（那一格是"额外信息"，而
+ *     一张卡上已经写着平台、标题、四个读数 —— 少一格不损失什么，
+ *     印一个空框或拿 handle 顶上反而让人以为数据坏了）；
+ *   · 下拉框里：`display_name` 为空 ⇒ **回落成 handle**，因为这一格**就是控件本身**
+ *     （一个没有文字的 `<option>` 是点不准的），而且下拉框是"找人"的地方 ——
+ *     handle 正是那个能找到人的标识。
+ * ⚠️ 两个都为空（手工改库才造得出来）时这一格会退化成"平台 + 条数"那一半，
+ *    仍是一行能读的文字 —— 这里**不编**一个名字（本仓同一条纪律）。
+ */
+function creatorLabel(row: TrackedCreatorSummary): string {
+  return row.displayName !== '' ? row.displayName : row.handle;
 }
 
 /**
@@ -171,6 +239,44 @@ export interface TrackedVideosSectionProps {
   onPlatformChange: (platform: TrackPlatform | undefined) => void;
   /** 翻页。⚠️ 必填 —— 见上面那段（少传它 = 一个按不动的分页器）。 */
   onPage: (page: number) => void;
+
+  // -------------------------------------------------------------------------
+  // 第 9 条（2026-09-19）：筛选条 / 排序 / 博主下拉
+  // -------------------------------------------------------------------------
+  /**
+   * 这一栏当前的筛选与排序（**全部来自地址栏**，见 `lib/trackedQuery.ts`）。
+   *
+   * ⚠️★ 它**只影响取数**（服务端筛选，与 `platform` 同一条纪律）：组件**不**拿它
+   *    过滤 `items` —— 在界面里再筛一次就是第二份"什么算符合条件"，而 `total`
+   *    是服务端给的（两份口径一旦漂移，表现是"分页器说共 40 条、列表里却只有 3 条"）。
+   * ⚠️ 它**必填**：少传它 = 五个下拉框全都停在"全部"（而列表是筛过的），
+   *    那种界面上写着"全部"、实际只显示一部分的状态**没有任何解释**。
+   */
+  filters: TrackedFilterState;
+  /**
+   * 博主下拉的名册（公开只读那一份，`GET /api/tracking/roster`）。
+   *
+   * ⚠️ 空数组 = 只有「全部博主」那一项（名册还没取到、或者名单真的是空的）——
+   *    这是**能接受**的降级：下拉框仍然能表达"全部"，而列表本身照常显示。
+   *    组件不判断"是不是加载失败"（那是页面的事）：一个只有「全部博主」的下拉框
+   *    对访客和对编辑都是同一句话，不像空态那样会说假话。
+   */
+  creators: TrackedCreatorSummary[];
+  /**
+   * 改一档筛选 / 排序。`value === undefined` = 回到「全部」（排序回到时间倒序）。
+   *
+   * ⚠️ 传的是**参数的原始值**（字符串），不是解析后的值：地址栏那一层
+   *    （`lib/trackedQuery.ts` 的 `nextParamsForTrackedFilter`）才是唯一写 URL 的地方 ——
+   *    组件里再校验一次就是第二份取值域，而两份迟早会漂。
+   * ⚠️ 必填 —— 少传它 = 五个拉不动（且看起来完全正常）的下拉框。
+   */
+  onFilterChange: (key: TrackedFilterParam, value: string | undefined) => void;
+  /**
+   * 「清除筛选」：把这一栏的**七个**参数一起清掉（五个筛选 + 分区 + 页码），
+   * 墙上那面墙的状态一个不动（`clearedTrackedFilterParams`）。
+   * ⚠️ 必填：空态里那颗按钮是用户回到"什么都没筛"的唯一出口。
+   */
+  onClearFilters: () => void;
 }
 
 /**
@@ -191,24 +297,45 @@ export function TrackedVideosSection({
   platform,
   onPlatformChange,
   onPage,
+  filters,
+  creators,
+  onFilterChange,
+  onClearFilters,
 }: TrackedVideosSectionProps) {
   const { t, i18n } = useTranslation();
   const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
 
   /*
-   * ★★ 空态那一句话：**选了分区**的时候不是页面给的那一句（T8，spec §5.4 那四个按钮）。
+   * ★★ 筛选条与"清除筛选"的判据**只有一份**（`lib/trackedQuery.ts` 的 `hasTrackedFilters`）。
    *
-   * ⚠️★ 为什么必须分开说：`tracked.emptyHint`（下面第二句）把空的原因说成"名单上的博主
-   *    还没有抓到 / 抓取每 10 分钟跑一轮"。在**某一个分区**里空，原因常常是
-   *    **名单上连这个平台的博主都没有**（今天三个平台里有两个就是这样）——
-   *    照原样说的话，用户会去等抓取，而抓取永远不会把一个**不在名单上**的博主抓回来。
-   * ⚠️ 所以分区里换一句（`tracked.emptyPlatform`，它自己把两种原因都写清楚），
-   *    并且**不画第二句**：那一句正是要修正的那件事。
-   * ⚠️ 判据在这一层而不是页面：`platform` 与 `items` 都是本组件手里的 prop，
-   *    "这个分区里一条都没有"由它们一起决定（理由见 `empty` 那格 prop 的说明）。
-   * ⚠️ 它**不影响**取数：分区仍然只由服务端筛（上面那段说明），这里换的是一句话。
+   * ⚠️★ 它**故意不看 `sort`**：排序不改变结果集，所以"只是换了排序"的空列表
+   *    不该说"这个筛选下没有视频"（那是一句让人去找一个不存在的筛选的话）。
+   *    两处消费者（下面那颗清除按钮、`emptyTitle`）都问同一个函数。
+   * ⚠️ `platform` 单独加进来：它也是这一栏的筛选（四颗 chip），只是它的判据与
+   *    那五个不同（它的空态说**另一句话**，见 `emptyTitle`）。
    */
-  const emptyTitle = platform === undefined ? empty : t('tracked.emptyPlatform');
+  const filterActive = hasTrackedFilters(filters);
+  const showClear = filterActive || platform !== undefined;
+
+  /*
+   * ★★ 空态那一句话：**三种空**说三句不同的话（T8 起的两句 + 第 9 条这一句）。
+   *
+   * ⚠️★ 为什么必须分开说：`tracked.emptyHint`（下面第二句）把空的原因说成
+   *    "名单上的博主还没有抓到 / 抓取每 10 分钟跑一轮"。在**某一个筛选**下空，
+   *    原因常常是那个筛选条件太窄（今天总共 24 条，按"只看某位博主 + 只看短片"筛
+   *    当然可能一条都没有）—— 照原样说的话，用户会去等抓取，
+   *    而抓取永远不会让一个**筛得太窄**的列表长出东西来。
+   * ⚠️ 判据的顺序是"**越具体越优先**"：筛选项 > 分区 > 什么都没筛。
+   *    筛选项在最前是因为它**是用户刚刚做的那个动作**（他改完条件就该看到
+   *    "这个筛选下没有"），而分区那条更像"这一栏本来就没有这个平台的内容"。
+   * ⚠️ 判据都在这一层（`filters` / `platform` / `items` 都是本组件手里的 prop）：
+   *    页面再判一次就是第二份口径（`empty` 那格 prop 的说明写着同一条）。
+   */
+  const emptyTitle = filterActive
+    ? t('tracked.emptyFilter')
+    : platform === undefined
+      ? empty
+      : t('tracked.emptyPlatform');
 
   return (
     <section className="tracked" aria-labelledby="tracked-title">
@@ -216,6 +343,144 @@ export function TrackedVideosSection({
         {t('tracked.title')}
       </h2>
       <p className="tracked__sub">{t('tracked.subtitle')}</p>
+
+      {/*
+        ★★ 筛选条（第 9 条，2026-09-19）：五个 `<select>` —— 时间范围 / 标签 / 时长 /
+        排序 / 博主。
+
+        ⚠️★ 形状照 `routes/ResourceList.tsx` 那一排（`.filters` + `.filters__select`），
+            **不另立一套控件**：全站的下拉框只有这一种外形，第二套会让同一页上两个
+            筛选条长得不一样（而"哪一个是筛选"正是靠外形认出来的）。
+        ⚠️★ 每个 `<select>` 都带 `aria-label`（读屏软件要靠它说清这五个组合框各是什么），
+            而**可见的标签由第一个选项自己承担**（「全部时间」/「全部标签」…）——
+            这是 `ResourceList` 那一处既有做法（那个 select 的标签就是它的默认选项）。
+        ⚠️★ 筛选**全部在服务端做**（`?tsort=&ttag=&tdur=&ttime=&tcreator=`，第 9 条）：
+            组件**不**拿 `filters` 去过滤 `items`。这里是"参数变了 ⇒ 页面重新取数"，
+            而重取数由页面那一层负责（依赖数组里少一个值，表现就是"点了没反应"）。
+        ⚠️ 认不出的值不会出现在这里：`filters` 由 `readTrackedFilters` 校验过
+            （手打 `?ttag=foo` 退化成"全部"），所以下拉框的值永远落在选项里。
+      */}
+      <div className="filters">
+        <select
+          className="filters__select"
+          aria-label={t('tracked.filterTime')}
+          value={filters.time ?? ''}
+          onChange={(event) =>
+            onFilterChange(
+              TRACKED_TIME_PARAM,
+              event.target.value === '' ? undefined : event.target.value,
+            )
+          }
+        >
+          <option value="">{t('tracked.timeAll')}</option>
+          {TRACKED_TIME_RANGE_IDS.map((id) => (
+            <option key={id} value={id}>
+              {t(TIME_KEYS[id])}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="filters__select"
+          aria-label={t('tracked.filterTag')}
+          value={filters.tag ?? ''}
+          onChange={(event) =>
+            onFilterChange(
+              TRACKED_TAG_PARAM,
+              event.target.value === '' ? undefined : event.target.value,
+            )
+          }
+        >
+          <option value="">{t('tracked.tagAll')}</option>
+          {TRACKED_VIDEO_TAGS.map((tag) => (
+            <option key={tag} value={tag}>
+              {t(TAG_KEYS[tag] ?? tag)}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="filters__select"
+          aria-label={t('tracked.filterDuration')}
+          value={filters.duration ?? ''}
+          onChange={(event) =>
+            onFilterChange(
+              TRACKED_DURATION_PARAM,
+              event.target.value === '' ? undefined : event.target.value,
+            )
+          }
+        >
+          <option value="">{t('tracked.durAll')}</option>
+          {TRACKED_DURATION_PRESET_IDS.map((id) => (
+            <option key={id} value={id}>
+              {t(DURATION_KEYS[id])}
+            </option>
+          ))}
+        </select>
+
+        {/*
+          ⚠️ 排序那一格**没有空值选项**：排序永远有一个当前值（默认时间倒序）。
+          ⇒ 它的第一个选项就是默认值本身，而值等于默认值时**不写进地址栏**
+             （本仓"不把默认值拼进 URL"的约定）—— 所以这里传 `undefined`。
+        */}
+        <select
+          className="filters__select"
+          aria-label={t('tracked.filterSort')}
+          value={filters.sort}
+          onChange={(event) =>
+            onFilterChange(
+              TRACKED_SORT_PARAM,
+              event.target.value === 'new' ? undefined : event.target.value,
+            )
+          }
+        >
+          <option value="new">{t(SORT_KEYS.new)}</option>
+          <option value="views">{t(SORT_KEYS.views)}</option>
+        </select>
+
+        {/*
+          博主下拉（用户第 9 条的原话："用下拉框展示所有追踪的博主"）。
+          ⚠️ 名册来自**公开只读**那条路由（`?roster`），不是管理面板那一份 ——
+             后者要 `live.manage`，而这一栏是所有人都在看的（线上匿名实测那条是 401）。
+          ⚠️ 条数一起画出来（`videoCount`，只数公开可见的）：它是"这个人有没有内容"
+             唯一的线索 —— 名单里今天就有条数为 0 的博主，而选中他只会得到一句
+             "这个筛选下没有视频"。
+          ⚠️ 空名册 ⇒ 只剩「全部博主」那一项（能接受的降级，见 props 的说明）。
+        */}
+        <select
+          className="filters__select"
+          aria-label={t('tracked.filterCreator')}
+          value={filters.creatorId ?? ''}
+          onChange={(event) =>
+            onFilterChange(
+              TRACKED_CREATOR_PARAM,
+              event.target.value === '' ? undefined : event.target.value,
+            )
+          }
+        >
+          <option value="">{t('tracked.creatorAll')}</option>
+          {creators.map((row) => (
+            <option key={row.id} value={row.id}>
+              {t('tracked.creatorOption', {
+                name: creatorLabel(row),
+                platform: t(PLATFORM_KEYS[row.platform]),
+                count: row.videoCount,
+              })}
+            </option>
+          ))}
+        </select>
+
+        {/*
+          ⚠️ 清除按钮**只在真的筛了什么的时候**出现（`showClear`）—— 它同时清掉分区，
+             所以判据里含 `platform`。文案复用 `videos.clearFilters`（同一页上另一面墙
+             也是这颗按钮，同一件事不该有两个说法）。
+        */}
+        {showClear ? (
+          <button type="button" className="filters__clear" onClick={onClearFilters}>
+            {t('videos.clearFilters')}
+          </button>
+        ) : null}
+      </div>
 
       {/*
         ★★ 分区按钮（T7，spec §5.2）—— **照抄上面那面墙**（`routes/Videos.tsx` 那个
@@ -230,6 +495,8 @@ export function TrackedVideosSection({
            「当前什么都没筛」也要看得出来，否则四个按钮都不亮，看起来像没选中任何一项。
         ⚠️ 平台名走 `PLATFORM_KEYS`（本文件上面那张表），**不在这里写第二份** ——
            同一个平台两个名字正是它当初被抽出来的原因。
+        ⚠️ 它与上面那五个下拉框**是两套并列的筛选**（分区 vs 条件），四个按钮保留原样：
+           `tplatform` 与第 9 条那五条各自独立、互相叠加（服务端两个条件都收）。
       */}
       <div className="tagcloud">
         <span className="tagcloud__label">{t('videos.allPlatforms')}</span>
@@ -266,14 +533,26 @@ export function TrackedVideosSection({
          * ⚠️ 「全部」那一档是**两句话**：第一句由页面给（"还没有追踪到视频"），第二句是
          *    这一栏的说明（这些视频由服务器定时抓、名单由编辑维护）—— 少了第二句，
          *    访客会以为这一栏坏了，或者以为我们漏掉了他的视频。
-         * ⚠️★ 而**分区**那一档只有一句（`emptyTitle` = `tracked.emptyPlatform`）：
-         *    第二句在分区里说的原因是错的（那一句已经被这句取代了，见上面 `emptyTitle`）。
-         *    它仍然是一句**说清为什么空**的话，所以这一块不是空白。
+         * ⚠️★ 而**筛过**的那两档只有一句（`emptyTitle` = `tracked.emptyFilter` 或
+         *    `tracked.emptyPlatform`）：第二句在那两档里说的原因是错的，
+         *    而它正是要被取代的那句话（见上面 `emptyTitle` 那一整段）。
+         * ⚠️★ 第二句的判据是"**什么都没筛**"（`!filterActive && platform === undefined`），
+         *    不是原来那个只看 `platform` 的条件 —— 只看分区的话，用标签筛出空列表时
+         *    会同时印出"这个筛选下没有视频"与"抓取每 10 分钟跑一轮"，
+         *    而后一句把原因指向了抓取：用户会去等，而他要做的是把筛选放开。
+         * ⚠️ 筛过的时候多给一颗「清除筛选」：`emptyFilter` 是一句结论，
+         *    而用户接下来唯一该做的那件事就是**放开条件** —— 让他自己去五个下拉框里
+         *    一个个猜是哪一个筛空的，比什么都别说更糟（那面墙的空态里也有同一颗按钮）。
          */
         <div className="tracked__empty">
           <p className="tracked__emptytitle">{emptyTitle}</p>
-          {platform === undefined ? (
+          {!filterActive && platform === undefined ? (
             <p className="tracked__emptyhint">{t('tracked.emptyHint')}</p>
+          ) : null}
+          {filterActive || platform !== undefined ? (
+            <button type="button" className="filters__clear" onClick={onClearFilters}>
+              {t('videos.clearFilters')}
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -328,6 +607,25 @@ export function TrackedVideosSection({
                 <div className="tracked__body">
                   <div className="tracked__head">
                     <span className="badge badge--kind">{t(PLATFORM_KEYS[video.platform])}</span>
+                    {/*
+                      ★★ 博主名字（用户第 8 条，2026-09-19）：排在平台徽章**右边**。
+
+                      ⚠️★ 判据是**值本身**（空串 / 没有 ⇒ **整格不渲染**）：
+                        · `creatorName` 为 `''`（库里那一列是空串）或 `undefined`（管理面板
+                          那一侧的形状）时，这一格就不该存在 —— **不许**退化成 handle、
+                          也不许印一个空框（两者都会让人以为数据坏了，而"没有名字"
+                          本来就不需要解释，与"空容器不渲染"是同一条纪律）；
+                        · 服务端已经把 `NULL` 收成空串了（`toTrackedVideo` 那一段），
+                          所以这里用真假判断就够，两边的判据是同一个。
+                      ⚠️ 名字**不是**链接：用户第 8 条只要"显示博主名称"，而把名字变成
+                        入口会多出一个去处（博主主页）与一条我们没抓过的 URL 形状。
+                        真要看全部视频，「去原站看」那条兜底外链就在下面。
+                      ⚠️ 它是**额外**加上去的一格：`tracked__head` 本来就是 flex-wrap，
+                        窄屏上它会自己换行（不需要新的布局规则）。
+                    */}
+                    {video.creatorName ? (
+                      <span className="tracked__creator">{video.creatorName}</span>
+                    ) : null}
                     {/*
                       标签容器**只在有标签时渲染**：渲染一个空的
                       `<ul class="tracked__tags">` 会占掉一行高度，读起来像"这里本来

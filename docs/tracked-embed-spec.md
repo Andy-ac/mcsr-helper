@@ -53,13 +53,28 @@ Twitch   POST id.twitch.tv/oauth2/token（client_credentials）                 
 ### 2.2 三个平台的播放器页（Referer = 我们站点，实测）
 
 ```
-bilibili  https://player.bilibili.com/player.html?bvid=BV…&page=1&high_quality=1&danmaku=0 → 200
+bilibili  https://player.bilibili.com/player.html?bvid=BV…&autoplay=0&danmaku=1 → 200
 YouTube   https://www.youtube.com/embed/FVkp6tc2rNY                                        → 200
 Twitch    https://player.twitch.tv/?video=335921245&parent=mcsrhelper.com                  → 200
           （响应头 Content-Security-Policy: frame-ancestors https://mcsrhelper.com
             —— parent 是**服务端强校验**的）
 Twitch    同一个地址**不带** parent → 302 /embed-error.html?errorCode=NoParent
 ```
+
+⚠️★ **这一格原来写着 `&page=1&high_quality=1&danmaku=0`，而那个"200"是一条假记录**
+（2026-09-19 订正，证据在 `.cache/videos-live-round/`）：
+`player.bilibili.com/player.html` 是一个**静态壳**，它对**任何**参数组合都回 200 且
+**字节数完全相同**（6660 / 6660 / 6660，`headers.json`）—— 参数在浏览器端才被读
+（`bili-player-curated.body.txt:86-131` 的 `paramType` 表）。⇒ 那次"200"**不能**当作
+`high_quality` 有效的证据，而 `high_quality` / `as_wide` **不在**官方参数表里、
+也不在播放器页的参数表里（对照 `docs/platform-oauth-embed-factsheet.md:138`
+"Treat `high_quality` as undocumented/legacy"）。**今天一个都不用**。
+
+★ `danmaku` 从 `0` 改成 `1`（2026-09-19，用户第 8 条）：`0` 不是"弹幕默认关"，
+而是**连弹幕数据都不取**——播放器页源码 `if (SP.danmaku != null && !SP.danmaku)
+featureList.add('noDanmaku')`（同上 `:144-157`），而播放器核心对那个 feature 直接
+`return this.log.i('noDanmaku')`。⇒ 用户看到的"调不了弹幕"是**开关根本不存在**。
+被推翻的那条旧裁决与它的代价写在 `packages/shared/src/videos.ts` 的 bilibili 分支上。
 
 ### 2.3 线上 CSP **已经放行三个播放器**，这一轮一行都不用改
 

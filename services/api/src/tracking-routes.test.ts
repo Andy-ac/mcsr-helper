@@ -1472,11 +1472,602 @@ describe('HTTP：公开列表的 platform 分区', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 公开视频列表的筛选与排序（用户第 9 条，2026-09-19）
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组守的是**六个新查询参数**（`sort` / `creatorId` / `tag` / `durMin` / `durMax` /
+ * `since` / `until`）与它们两件最容易做错的事。
+ *
+ * ⚠️★ 为什么每一条都要**端到端**（走 HTTP，不只测 schema）：
+ *    这个端点实测**静默忽略未知查询参数**。schema 里加了、路由里忘了传进
+ *    `listTrackedVideos` —— 那是最可能的漏法，而它**一点声音都没有**：
+ *    响应是 200、形状完全正常、筛选就是不生效。所以每一条断言都从
+ *    `?参数=` 打到响应体上。
+ */
+describe('HTTP：公开列表的筛选与排序（第 9 条）', () => {
+  /** 夹具的基准秒（比 `now` 早，但都是过去的时刻）。 */
+  const PUB = 1_700_000_000;
+
+  /**
+   * 六条视频，每一条都在某**一个**判据上与别的不同 —— 这样"某一格读错了"
+   * 一定会在某一条断言上现形（照 `videorender.tsx` 那套夹具的做法）。
+   *
+   * | id | published | duration | views | 直播回放 | 它专门用来验 |
+   * |---|---|---|---|---|---|
+   * | v-short | +1 | 30 | 100 | 否 | 短片 / 播放量并列的后一个 |
+   * | v-long | +2 | 2400 | 500 | 否 | 长片 / 播放量最大的 |
+   * | v-zero | +3 | 600 | **0** | 否 | ★ **真的 0 次播放**（见下面那段 ★★） |
+   * | v-null | +4 | **null** | 100 | 否 | 时长缺失 ⇒ 给了范围就不该出现 |
+   * | v-replay | +5 | 300 | **null** | 是 | ★ 播放量缺失、**而且比 v-zero 新** |
+   * | v-nopub | **null** | 60 | 1 | 否 | 发布时间缺失 ⇒ 给了范围就不该出现 |
+   *
+   * ★★ `v-zero` 与 `v-replay` 是**一对**，缺一不可（2026-09-19 实测出来的，见
+   *    `tracked-videos.ts` 的 `ORDER BY` 那一段）：
+   *    "`view_count` 为 NULL 的排最后"这条断言**区分不出**"写了 `IS NULL ASC`"与
+   *    "只写 `DESC`" —— SQLite 3.53.4 实测里后者已经把 NULL 排在末尾。
+   *    真正会错的是**把"没有播放量"当成 0**（`COALESCE(view_count, 0)`）：
+   *    那会让 v-replay 与 v-zero **并列**，而并列由 `published_at DESC` 分开
+   *    ⇒ 比 v-zero 新的 v-replay 会插到一条**真的 0 次播放**的视频**前面**，
+   *    而"没人看"与"这一轮上游没回播放量"就此混为一谈（本仓那条纪律要防的正是它）。
+   *    ⇒ 两条必须同时在场，而且 v-replay 必须**更新**（+5 > +3）。
+   */
+  function seedFilterFixture(creatorId: string): void {
+    upsertVideos(
+      creatorId,
+      'bilibili',
+      [
+        fetchedRow('v-short', PUB + 1, 30, 100, false),
+        fetchedRow('v-long', PUB + 2, 2400, 500, false),
+        fetchedRow('v-zero', PUB + 3, 600, 0, false),
+        fetchedRow('v-null', PUB + 4, null, 100, false),
+        fetchedRow('v-replay', PUB + 5, 300, null, true),
+        fetchedRow('v-nopub', null, 60, 1, false),
+      ],
+      now,
+    );
+  }
+
+  /** 一条 `FetchedVideo`，四格都由调用方指定（`fetchedVideo` 那一个是固定值）。 */
+  function fetchedRow(
+    externalId: string,
+    publishedAt: number | null,
+    durationSec: number | null,
+    viewCount: number | null,
+    isLiveReplay: boolean,
+  ) {
+    return {
+      externalId,
+      title: `视频 ${externalId}`,
+      thumbnailUrl: null,
+      publishedAt,
+      durationSec,
+      viewCount,
+      commentCount: null,
+      isLiveReplay,
+    };
+  }
+
+  /** 响应里这一页的 `externalId` 顺序。 */
+  const orderOf = (res: Res): string[] => videosOf(res).map((v) => v.externalId);
+
+  it('★★ sort=views：播放量倒序，而 **view_count 为 null 的排最后**（不是当成 0）', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(creator.id);
+
+    /*
+     * 先钉住**今天的行为**（`sort` 不传 = `new`）：少一条这样的对照，
+     * 下面那条 views 断言在"整个端点只按播放量排"这种坏法下照样能过。
+     */
+    const byDate = await call('GET', '/api/tracking/videos?pageSize=50');
+    assert.equal(byDate.status, 200, byDate.text);
+    assert.deepEqual(
+      orderOf(byDate),
+      ['v-replay', 'v-null', 'v-zero', 'v-long', 'v-short', 'v-nopub'],
+      '不传 sort 时是 published_at DESC（日期不知道的排最后）—— 第 9 条不许改这条',
+    );
+
+    const byViews = await call('GET', '/api/tracking/videos?pageSize=50&sort=views');
+    assert.equal(byViews.status, 200, byViews.text);
+    /*
+     * ★★ 这一条把**四**件事同时钉住：
+     *   · 500 在最前（真的按播放量降序）；
+     *   · **并列的两个 100** 按 `published_at DESC` 分开（v-null 是 +4、v-short 是 +1）
+     *     —— 少了这个次级键，翻页时同分的记录会重复出现或被整页跳过；
+     *   · 1 次播放的 `v-nopub` 与 **0 次播放**的 `v-zero` 都在它们该在的位置
+     *     （0 是一个真实读数，它排在 1 后面、而不是被当成"没有值"丢掉）；
+     *   · ★★ `view_count` 为 **null** 的 `v-replay` 在**最后**，而且排在那条
+     *     **0 次播放**的 `v-zero` **之后** —— 后者比它**旧**（+3 < +5），
+     *     所以两版 SQL 在这里才会分开：把"没有播放量"当成 0（`COALESCE(…, 0)`）
+     *     会让两者并列，而并列由 `published_at DESC` 决定 ⇒ 更新的 `v-replay`
+     *     会插到 `v-zero` **前面**。
+     *     ⚠️ 这也是**唯一**能抓住"填 0"那种改法的断言：实测（SQLite 3.53.4）
+     *     `ORDER BY view_count DESC` 单独写就已经把 NULL 排最后了，
+     *     ```IS NULL ASC``` 那两个显式键与它结果相同 ⇒ "NULL 最后"这半句本身
+     *     区分不出两版（理由写在 `tracked-videos.ts` 的 `ORDER BY` 那一段）。
+     */
+    assert.deepEqual(
+      orderOf(byViews),
+      ['v-long', 'v-null', 'v-short', 'v-nopub', 'v-zero', 'v-replay'],
+      'views 排序必须是：播放量降序 → 并列按发布时间倒序 → **没有播放量的最后**（0 是数据，不是"没有"）',
+    );
+    assert.equal(byViews.body.total, 6, '排序不改 total（它只回答"筛出来有多少条"）');
+    // 反面控制：两份响应的顺序**确实不同**（都在验同一个顺序的话，上面两条有一半是空的）
+    assert.notDeepEqual(orderOf(byViews), orderOf(byDate));
+  });
+
+  it('★ creatorId：只看这一位；不存在的 id ⇒ 空列表而**不是** 400；空串 ⇒ 400', async () => {
+    const editor = await signUp('editor');
+    const mine = await addCreator(editor.cookie, nextMid());
+    const other = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(mine.id);
+    upsertVideos(other.id, 'bilibili', [fetchedRow('w-1', PUB + 9, 600, 9, false)], now);
+
+    const all = await call('GET', '/api/tracking/videos?pageSize=50');
+    assert.equal(all.body.total, 7, '不传 creatorId = 全部（对照）');
+
+    const onlyMine = await call('GET', `/api/tracking/videos?pageSize=50&creatorId=${mine.id}`);
+    assert.equal(onlyMine.status, 200, onlyMine.text);
+    assert.equal(
+      onlyMine.body.total,
+      6,
+      'total 必须是**筛过之后**的条数（否则分页器会多出两页空白）',
+    );
+    assert.deepEqual(orderOf(onlyMine), [
+      'v-replay',
+      'v-null',
+      'v-zero',
+      'v-long',
+      'v-short',
+      'v-nopub',
+    ]);
+    assert.equal(
+      videosOf(onlyMine).every((v) => v.id !== undefined),
+      true,
+      '探针：那一页确实有内容（every 对空数组也是 true）',
+    );
+
+    const onlyOther = await call('GET', `/api/tracking/videos?pageSize=50&creatorId=${other.id}`);
+    assert.deepEqual(orderOf(onlyOther), ['w-1'], '另一个博主要能筛出**他的**那一条');
+
+    /*
+     * ⚠️ 一个格式完全合法、但不存在的 id：**空列表**，不是 400。
+     *    `creatorId` 与 `platform` 不一样 —— 后者是封闭枚举（`foo` 必须拒），
+     *    而前者的取值域是"数据库里那些 id"，客户端拿不到那张表才有意义。
+     *    400 会让"这个博主刚被删掉、而我的地址还开着"变成一整块错误界面。
+     */
+    const ghost = await call('GET', '/api/tracking/videos?creatorId=no-such-creator');
+    assert.equal(ghost.status, 200, ghost.text);
+    assert.equal(ghost.body.total, 0);
+    assert.deepEqual(videosOf(ghost), []);
+
+    // 空串**不是**"全部"（与 `platform=` 同一条纪律）
+    const empty = await call('GET', '/api/tracking/videos?creatorId=');
+    assert.equal(empty.status, 400, empty.text);
+    assert.equal(empty.body.error, 'invalid_query');
+  });
+
+  it('★ tag：三个标签各筛各的（判定来自 `deriveTags`，不是前端猜的）', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(creator.id);
+
+    const short = await call('GET', '/api/tracking/videos?pageSize=50&tag=short');
+    assert.deepEqual(
+      orderOf(short),
+      ['v-short', 'v-nopub'],
+      'short = ≤60 秒（两条：30 秒与 60 秒）',
+    );
+    assert.equal(short.body.total, 2);
+
+    const long = await call('GET', '/api/tracking/videos?pageSize=50&tag=long');
+    assert.deepEqual(orderOf(long), ['v-long'], 'long = ≥20 分钟');
+
+    const replay = await call('GET', '/api/tracking/videos?pageSize=50&tag=liveReplay');
+    assert.deepEqual(orderOf(replay), ['v-replay'], 'liveReplay 来自 is_live_replay 那一列');
+
+    /*
+     * ⚠️★ 反面：**认不出的标签是 400**，而不是静默不筛。
+     *    实测（2026-09-19 生产）：`?tag=ranked` 与不带参数**逐字节相同** ——
+     *    那正是"参数没进 schema"时发生的事。`ranked` 在这里是个好反例：
+     *    它是**另一张表**（`live_channels.tags`）上的真实标签，很容易被人顺手拿来筛视频。
+     */
+    const bogus = await call('GET', '/api/tracking/videos?tag=ranked');
+    assert.equal(bogus.status, 400, bogus.text);
+    assert.equal(bogus.body.error, 'invalid_query');
+    assert.deepEqual(
+      (bogus.body.issues as Array<{ field: string }>).map((i) => i.field),
+      ['tag'],
+      '400 里要指名道姓说是哪个参数（否则前端只能显示一句"参数不合法"）',
+    );
+  });
+
+  it('★★ 时长范围：闭区间；**给了范围就把"不知道多长"的行排除掉**', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(creator.id);
+
+    // 不给时长参数 ⇒ `v-null`（duration_sec 为 NULL）照常出现
+    const noRange = await call('GET', '/api/tracking/videos?pageSize=50');
+    assert.equal(
+      orderOf(noRange).includes('v-null'),
+      true,
+      '不筛时长时，时长未知的那一条必须照常出现（它是"不知道"，不是"0 秒"）',
+    );
+
+    // 两端都给：60…299（闭区间 ⇒ 恰好 60 的那一条**要**在里面，300 的那一条不在）
+    const mid = await call('GET', '/api/tracking/videos?pageSize=50&durMin=60&durMax=299');
+    assert.deepEqual(
+      orderOf(mid),
+      ['v-nopub'],
+      '60…299 只该有"恰好 60 秒"的那一条：30 太短、300 刚好超出、2400 太长、' +
+        '而 duration 为 null 的那条**不许**混进来',
+    );
+    assert.equal(mid.body.total, 1, 'total 与 items 用同一个条件');
+
+    // 只给下界（15 分钟以上）：闭区间的下界、没有上界
+    const openEnded = await call('GET', '/api/tracking/videos?pageSize=50&durMin=300');
+    assert.deepEqual(
+      orderOf(openEnded),
+      ['v-replay', 'v-zero', 'v-long'],
+      '只给下界时上界是无穷（300 / 600 / 2400 都在 —— 它不是"恰好 300 秒"）',
+    );
+
+    // 只给上界：59（<1 分钟那一档）
+    const shortOnly = await call('GET', '/api/tracking/videos?pageSize=50&durMax=59');
+    assert.deepEqual(orderOf(shortOnly), ['v-short'], '0…59 只该有 30 秒那一条');
+
+    /*
+     * ⚠️ 两端**相等**是合法的（"恰好 60 秒"），而且与"反了"必须分得开：
+     *    反了的那一端由下面那组非法值用例守着。
+     */
+    const exact = await call('GET', '/api/tracking/videos?durMin=60&durMax=60');
+    assert.equal(exact.status, 200, exact.text);
+    assert.deepEqual(orderOf(exact), ['v-nopub']);
+  });
+
+  it('★★ since / until：闭区间；发布时间为 NULL 的行**不出现**在任何一个时间范围里', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(creator.id);
+
+    const fromTwo = await call('GET', `/api/tracking/videos?pageSize=50&since=${PUB + 2}`);
+    assert.deepEqual(
+      orderOf(fromTwo),
+      ['v-replay', 'v-null', 'v-zero', 'v-long'],
+      'since 是**闭**下界（+2 的那条要在里面），而发布时间为 null 的那条不在任何"最近多久"里',
+    );
+
+    const untilOne = await call('GET', `/api/tracking/videos?pageSize=50&until=${PUB + 1}`);
+    assert.deepEqual(orderOf(untilOne), ['v-short'], 'until 是**闭**上界');
+
+    const window = await call(
+      'GET',
+      `/api/tracking/videos?pageSize=50&since=${PUB + 2}&until=${PUB + 3}`,
+    );
+    assert.deepEqual(orderOf(window), ['v-zero', 'v-long'], '两端一起给 = 一个闭区间');
+
+    /*
+     * ⚠️★ 反面（这条是"绝不为缺失值填 0"在时间上的样子）：把 `published_at` 为 NULL
+     *    的行当成 0（或当成"今天"）的话，它会在**每一个** `since` 里出现，
+     *    而用户看到的是"最近 7 天里有一条 1970 年的视频"。
+     */
+    const everything = await call('GET', `/api/tracking/videos?pageSize=50&since=0`);
+    assert.equal(
+      orderOf(everything).includes('v-nopub'),
+      false,
+      'since=0 是"从纪元起"——而"时间未知"**不属于**任何一个时间范围（它只是排最后）',
+    );
+    assert.equal(everything.body.total, 5);
+  });
+
+  it('★ 筛选在**分页之前**生效：`total` 是筛完之后的数，第 2 页在筛选结果里翻', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedFilterFixture(creator.id);
+
+    const first = await call('GET', '/api/tracking/videos?tag=short&pageSize=1&page=1');
+    assert.equal(first.body.total, 2, 'total 必须是**筛选后**的 2，不是全表 6');
+    assert.deepEqual(orderOf(first), ['v-short']);
+
+    const second = await call('GET', '/api/tracking/videos?tag=short&pageSize=1&page=2');
+    assert.deepEqual(orderOf(second), ['v-nopub'], '第 2 页是筛选结果里的第二条');
+
+    // 反面：筛出来的总数小于页码时是**空页**（不是"回到第一页"，也不是 400）
+    const third = await call('GET', '/api/tracking/videos?tag=short&pageSize=1&page=3');
+    assert.equal(third.status, 200, third.text);
+    assert.deepEqual(videosOf(third), []);
+
+    /*
+     * ★ 组合：分区 + 博主 + 标签三个条件同时在（参数是**按位置**绑的，
+     *   条件的顺序与参数的顺序一旦错位，这一条会红 —— 而那种错法不报错）。
+     */
+    const combined = await call(
+      'GET',
+      `/api/tracking/videos?platform=bilibili&creatorId=${creator.id}&tag=short`,
+    );
+    assert.equal(combined.body.total, 2);
+
+    // 同一个组合里换一个平台 ⇒ 一条都没有（证明 `platform` 的条件确实绑上去了）
+    const wrongPlatform = await call(
+      'GET',
+      `/api/tracking/videos?platform=youtube&creatorId=${creator.id}&tag=short`,
+    );
+    assert.equal(wrongPlatform.body.total, 0);
+  });
+
+  it('★★ 每个新参数的非法值都 ⇒ 400 `invalid_query`，而且 issues 指名字段', async () => {
+    /*
+     * ⚠️★ 这一组是第 9 条**最要紧**的一段：实测未知参数被**静默忽略**，
+     *    所以"忘了进 schema"的表现是界面纹丝不动、日志一行没有。
+     *    每一个参数都要有一条"非法 ⇒ 400"的用例 —— 判据是 400 **加上**
+     *    `issues[].field` 正是那个参数名（只断状态码的话，一个"凡带问号就 400"
+     *    的坏实现也能全绿）。
+     */
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['sort=views-desc', 'sort'],
+      ['sort=', 'sort'],
+      ['tag=ranked', 'tag'],
+      ['tag=', 'tag'],
+      ['creatorId=', 'creatorId'],
+      ['durMin=-1', 'durMin'],
+      ['durMin=abc', 'durMin'],
+      ['durMax=86401', 'durMax'],
+      ['durMax=1.5', 'durMax'],
+      ['since=abc', 'since'],
+      ['since=-1', 'since'],
+      ['until=abc', 'until'],
+      // ★ 毫秒写进"秒"的位置：没有上界时它会变成一份**看起来像没有内容**的空列表
+      [`since=${String(Date.now())}`, 'since'],
+      // ★ 区间反了：同样是一份空列表（语法完全合法），所以必须在这里变成 400
+      ['durMin=900&durMax=60', 'durMax'],
+      ['since=200&until=100', 'until'],
+    ];
+    for (const [query, field] of cases) {
+      const res = await call('GET', `/api/tracking/videos?${query}`);
+      assert.equal(res.status, 400, `?${query} ⇒ ${res.text}`);
+      assert.equal(res.body.error, 'invalid_query', `?${query} 的错误码`);
+      assert.deepEqual(
+        (res.body.issues as Array<{ field: string }>).map((i) => i.field),
+        [field],
+        `?${query} 的 issues 必须指名 ${field}`,
+      );
+    }
+
+    /*
+     * ★★ 反面控制（少了它，上面那一组在"整个端点什么都拒"时照样绿）：
+     *    每一个参数的**合法值**都必须 200。⚠️ 这里**不用** `durMin=-0` 之类的边界
+     *    去试探，只要求"合法即 200" —— 它验的是"上面那 16 条拒的是值，不是参数本身"。
+     */
+    const legal = [
+      'sort=views',
+      'sort=new',
+      'tag=liveReplay',
+      'tag=short',
+      'tag=long',
+      'creatorId=whatever-id',
+      'durMin=0',
+      'durMin=86400',
+      'durMax=0',
+      'durMax=86400',
+      'since=0',
+      `until=${String(4_102_444_800)}`,
+      'durMin=60&durMax=900',
+      'since=100&until=200',
+    ];
+    for (const query of legal) {
+      const res = await call('GET', `/api/tracking/videos?${query}`);
+      assert.equal(res.status, 200, `?${query} 是合法的，不该被拒：${res.text}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 公开列表上的博主名 + 公开名册（用户第 8、9 条，2026-09-19）
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组守两件**服务端新加的东西**：
+ *   ① 公开列表的每一行带 `creatorId` / `creatorName`（第 8 条"显示视频博主名称"），
+ *      而**管理字段一个都不许跟着出去**；
+ *   ② `GET /api/tracking/roster`（第 9 条的下拉框）是**公开只读**的，
+ *      与需要 `live.manage` 的 `/creators` 分开。
+ *
+ * ⚠️★ 为什么"没有管理字段"要**逐键**钉：多带一个键从响应上看不出来
+ *    （`TrackedVideo` 是同一份类型，`creatorName` 那一格本来就是可选的），
+ *    而它们里面是"这个频道最近老失败 / 冷却到什么时候 / 谁加的"——
+ *    一次手滑的 `{...creator}` 展开就会把它们发给所有访客，**没有任何东西会红**。
+ */
+describe('HTTP：博主名与公开名册（第 8、9 条）', () => {
+  /** 公开视频那一行**恰好**该有的键（顺序打乱后比对，加一个键就会红）。 */
+  const VIDEO_KEYS = [
+    'commentCount',
+    'creatorId',
+    'creatorName',
+    'durationSec',
+    'externalId',
+    'firstSeenAt',
+    'id',
+    'isLiveReplay',
+    'platform',
+    'publishedAt',
+    'status',
+    'tags',
+    'thumbnailUrl',
+    'title',
+    'viewCount',
+  ].sort();
+
+  /**
+   * 管理面板/内部形状上的那些键：它们**一个都不许**出现在这两条公开响应里。
+   *
+   * ⚠️ `displayName` / `handle` **不在**这张表里：它们是名册那五个键里的两个
+   *    （博主名字今天就已经是公开的 —— 追踪栏有按平台分组的小标题）。
+   *    它们不能出现在**视频那一行**上，而那一条由上面的键集合断言管着
+   *    （视频那一行带的是 `creatorName`，不是 `displayName`）。
+   */
+  const ADMIN_ONLY_KEYS = [
+    'addedBy',
+    'avatarUrl',
+    'backfillDone',
+    'consecutiveFailures',
+    'cooldownUntil',
+    'createdAt',
+    'enabled',
+    'hiddenAt',
+    'hiddenCount',
+    'hiddenReason',
+    'lastCursor',
+    'lastError',
+    'lastSyncedAt',
+    'platformMeta',
+    'updatedAt',
+    'verifyCheckedAt',
+  ];
+
+  it('★★ 公开列表每一行带 creatorId + creatorName，且**没有**任何一个管理字段', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    seedVideos(creator.id, ['BV_named']);
+
+    const res = await call('GET', '/api/tracking/videos');
+    assert.equal(res.status, 200, res.text);
+    const items = res.body.items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 1, `夹具应当恰好一条：${res.text}`);
+    const item = items[0] ?? {};
+
+    assert.equal(
+      item.creatorName,
+      creator.displayName,
+      '每一行必须带博主显示名 —— 没有它，界面只能说"某位博主"（第 8 条要的正是这个名字）',
+    );
+    assert.equal(item.creatorId, creator.id, 'creatorId 与那一行同源（界面用它做筛选/对照）');
+
+    assert.deepEqual(Object.keys(item).sort(), VIDEO_KEYS, '公开视频那一行的键集合不许漂');
+    for (const key of ADMIN_ONLY_KEYS) {
+      assert.equal(
+        Object.hasOwn(item, key),
+        false,
+        `公开列表里出现了管理/内部字段 \`${key}\` —— 它是采集的可观测性，只有编辑该看到它`,
+      );
+    }
+    // 反面控制：键集合的判据不是"什么都看不到"（那样上面两条会以"对象是空的"方式通过）
+    assert.ok(Object.keys(item).length > 5, '探针：这一行确实有内容');
+
+    /*
+     * ⚠️ 名单接口（管理那一份）**仍然是** `live.manage`：这一条与下面名册那一条
+     *    成对 —— 只测名册公开、不测名单受保护的话，"把鉴权中间件从路由上摘掉"
+     *    这种坏法在公开面的测试里**看不出来**（后台那份反而变成了越权可读）。
+     */
+    const manageList = await call('GET', '/api/tracking/creators');
+    assert.equal(manageList.status, 401, `名单接口对匿名必须是 401：${manageList.text}`);
+  });
+
+  it('★★ 公开名册：匿名可读、每行**恰好五个键**、含停用的博主、videoCount 只数可见的', async () => {
+    const editor = await signUp('editor');
+    const kept = await addCreator(editor.cookie, nextMid());
+    const off = await addCreator(editor.cookie, nextMid());
+    seedVideos(kept.id, ['BV_v1', 'BV_v2', 'BV_v3']);
+    // 其中一条下架（核对阶段或手工改库写 `hidden`，v1 没有隐藏端点）
+    getDb()
+      .prepare("UPDATE tracked_videos SET status = 'hidden' WHERE external_id = ?")
+      .run('BV_v3');
+    upsertVideos(
+      off.id,
+      'bilibili',
+      [fetchedVideo('BV_off', '停用博主的一条', 1_700_000_900)],
+      now,
+    );
+    // 停用：`enabled = 0` **不**影响他的视频在公开列表里出现（只影响还抓不抓）
+    const disabled = await call('PATCH', `/api/tracking/creators/${off.id}`, {
+      json: { enabled: false },
+      cookie: editor.cookie,
+    });
+    assert.equal(disabled.status, 200, disabled.text);
+
+    const res = await call('GET', '/api/tracking/roster');
+    assert.equal(res.status, 200, res.text);
+    assert.match(String(res.cacheControl), /^public, max-age=60/, '名册与公开列表同档缓存');
+    const items = res.body.items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 2, '停用的博主**也要**在名册里（他的旧视频还在公开列表里）');
+
+    for (const item of items) {
+      assert.deepEqual(
+        Object.keys(item).sort(),
+        ['displayName', 'handle', 'id', 'platform', 'videoCount'],
+        '名册一行**恰好五个键**（多一个就是一次静默的外泄）',
+      );
+    }
+    for (const key of ADMIN_ONLY_KEYS) {
+      assert.equal(
+        res.text.includes(`"${key}"`),
+        false,
+        `名册响应里出现了 \`${key}\`（整份响应体都不该有它）`,
+      );
+    }
+
+    const rowOf = (id: string) => items.find((row) => row.id === id) ?? {};
+    assert.equal(rowOf(kept.id).displayName, kept.displayName);
+    assert.equal(rowOf(kept.id).handle, kept.handle);
+    /*
+     * ★ `videoCount` **只数可见的**（3 条里有一条 hidden ⇒ 2）。口径写在
+     *   `TrackedCreatorSummary` 上：公开端点数"隐藏了几条"等于对外宣布我们下架过东西。
+     */
+    assert.equal(
+      rowOf(kept.id).videoCount,
+      2,
+      'videoCount 数的是**公开可见**的条数（隐藏的那条不算）',
+    );
+    assert.equal(rowOf(off.id).videoCount, 1, '停用不影响他的视频在公开列表里被数出来');
+    assert.equal(rowOf(off.id).platform, 'bilibili');
+
+    /*
+     * ★ 顺序按显示名（下拉框是"找人"的控件）：假适配器给的名字是 `UP <mid>`，
+     *   而 mid 是递增造的 ⇒ 后加的那个排后面。这里只钉"稳定且按名字"这一句，
+     *   具体的 mid 顺序不值得写死。
+     */
+    const names = items.map((row) => String(row.displayName));
+    assert.deepEqual(names, [...names].sort(), '名册按显示名字典序（下拉框里要能顺着找）');
+
+    // 名册不是名单：管理那一份仍然 401（两条路径两个读者）
+    const manageList = await call('GET', '/api/tracking/creators');
+    assert.equal(manageList.status, 401, manageList.text);
+  });
+
+  it('★ 显示名为空串时名册照原样回空串（不许拿 handle 顶上 —— 那是界面那一侧的决定）', async () => {
+    const editor = await signUp('editor');
+    const creator = await addCreator(editor.cookie, nextMid());
+    /*
+     * `display_name` 是 NOT NULL，但没人拦着它写空串（`TrackedCreatorInputSchema` 的
+     * `'   '` 那条注释记着这件事）。这里直接改库造出那个状态。
+     */
+    getDb()
+      .prepare('UPDATE tracked_creators SET display_name = ? WHERE id = ?')
+      .run('', creator.id);
+
+    const res = await call('GET', '/api/tracking/roster');
+    const row = (res.body.items as Array<Record<string, unknown>>)[0] ?? {};
+    assert.equal(
+      row.displayName,
+      '',
+      '服务端**原样**回空串：回落成 handle 是界面那一侧的决定（两种消费者对"没名字"的处置不同）',
+    );
+    assert.equal(row.handle, creator.handle, '而 handle 自己照旧带着（界面要用它兜底）');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 挂载：真 app（index.ts）与真注册表
 // ---------------------------------------------------------------------------
 
 describe('HTTP：挂载与真注册表', () => {
-  it('真 app 上就是这五条路径（匿名 GET /videos ⇒ 200）', async () => {
+  /*
+   * ⚠️ 标题里的条数**改过一次**（2026-09-19）：原来说的是"这五条路径"（spec §6.1 那五条），
+   *    而第 9 条加了公开名册 `/roster` ⇒ 今天是**六**条。这句话在本仓漂过一次
+   *    （`routes/tracking.ts` 的文件头上记着同一件事），所以改它的时候**连这一行一起改**。
+   */
+  it('真 app 上就是这六条路径（匿名 GET /videos 与 /roster ⇒ 200）', async () => {
     const res = await callOn(realApp, 'GET', '/api/tracking/videos');
     assert.equal(res.status, 200, res.text);
     assert.equal(res.body.total, 0);
@@ -1495,6 +2086,21 @@ describe('HTTP：挂载与真注册表', () => {
       /^public, max-age=60/,
       '路由的 c.header 必须压过 index.ts 那条 no-store 默认（否则公开列表永远不缓存）',
     );
+
+    /*
+     * ★ 公开名册同样要在**真 app** 上验一次（第 9 条）：它在注入的 app 里全绿也可能
+     *   是"只有测试那一份 app 认得它"（`index.ts` 挂的是同一个 router，但那件事
+     *    没有任何断言看得见 —— 与上面那条缓存头是同一种"默认值只在真 app 上生效"的坑）。
+     * ⚠️ 还要**一并验它没有吃那条鉴权**：`/creators` 对匿名 401，而 `/roster` 200 ——
+     *    这两条一起才算证明"两条路径、两个读者"（只测 `roster` 200 的话，
+     *    一个"把 requireCapability 加到了整个 router 上"的坏法看不出来）。
+     */
+    const roster = await callOn(realApp, 'GET', '/api/tracking/roster');
+    assert.equal(roster.status, 200, roster.text);
+    assert.deepEqual(roster.body.items, []);
+    assert.match(String(roster.cacheControl), /^public, max-age=60/);
+    const manage = await callOn(realApp, 'GET', '/api/tracking/creators');
+    assert.equal(manage.status, 401, `管理那一份对匿名必须 401：${manage.text}`);
   });
 
   it('真注册表 + 今天一个凭据都没有：youtube 链接 ⇒ 503，且一个上游请求都没发出去', async () => {

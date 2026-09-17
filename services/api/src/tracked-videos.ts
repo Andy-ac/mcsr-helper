@@ -220,7 +220,14 @@
  *    用 `external_id AS externalId` 起别名（这一条是本文件里**唯一**的驼峰别名；
  *    其余每一处都是 snake_case + 上面的三个转换点，例如同一句里的 `video_count`）。
  */
-import type { TrackedCreator, TrackedVideo, TrackPlatform } from '@mcsr/shared';
+import type {
+  TrackedCreator,
+  TrackedCreatorSummary,
+  TrackedSort,
+  TrackedVideo,
+  TrackedVideoTag,
+  TrackPlatform,
+} from '@mcsr/shared';
 import { newId } from './auth/tokens';
 import { getDb } from './db';
 import { deriveTags } from './tracking/parse';
@@ -297,16 +304,31 @@ interface VideoRow {
   tags: string | null;
   status: string;
   first_seen_at: number;
+  /**
+   * ★ 联结出来的博主显示名（2026-09-19，用户第 8 条）。
+   *
+   * ⚠️ `NULL` 只可能来自"联结不到那一行"（外键 `ON DELETE CASCADE` 下不该发生），
+   *    而**空串**是真实存在的（`display_name` 是 NOT NULL，但没人拦着它写空）——
+   *    ⇒ 对外形状里两者都保持原样，界面上"没有名字"就**不画那一格**，
+   *      绝不用 handle 顶上、也不印一个空框（两种都会让人以为数据坏了）。
+   */
+  creator_name: string | null;
 }
 
 /**
  * 列名逐列写出来（见文件头第八节）。`updated_at` 不在里面：对外的
  * `TrackedVideo` 没有这一格，多读一列只是多一处将来会漂的地方。
+ *
+ * ⚠️ 这里的每一列都必须是 `tracked_videos` 的列（`t.`）或联结出来带别名的列：
+ *    语句没有前缀限定，`id` / `platform` / `status` 这些名字两份表里**都有** ——
+ *    一旦有前缀写漏，SQLite 会对"两份表都有的列名"直接抛
+ *    `ambiguous column name`（这一条会抛，算是幸运的），但**别指望它**：
+ *    真正的风险是"某个列名将来只在一份表里出现"，那时它会静默读到另一份表的那一列。
  */
 const VIDEO_COLUMNS = `
-  id, creator_id, platform, external_id, title, thumbnail_url, published_at,
-  duration_sec, view_count, comment_count, is_live_replay, tags, status,
-  first_seen_at
+  t.id, t.creator_id, t.platform, t.external_id, t.title, t.thumbnail_url, t.published_at,
+  t.duration_sec, t.view_count, t.comment_count, t.is_live_replay, t.tags, t.status,
+  t.first_seen_at, c.display_name AS creator_name
 `;
 
 const CREATOR_COLUMNS = `
@@ -473,8 +495,22 @@ function toTrackedVideo(row: VideoRow): TrackedVideo {
     tags: parseTags(row.tags),
     status: row.status,
     firstSeenAt: row.first_seen_at,
-    // ⚠️ 这里**不填** `creatorName`：shared 的注释写明它只有管理面板要
-    //（公开列表多一次 JOIN 只为拿一个不显示的字段，不值）。
+    /*
+     * ★ 博主显示名（2026-09-19，用户第 8 条）——**公开列表也要**。
+     *
+     * ⚠️★ 这里原来写着"不填 `creatorName`：shared 的注释写明它只有管理面板要"，
+     *    而那一句话连同 shared 里的注释现在都改了：用户要在每张卡上看到博主名称，
+     *    而"这位博主是谁"只能在服务端 JOIN 出来（公开列表本来不带谁的名字）。
+     *    代价：**每一条**公开查询多一次 `JOIN tracked_creators`（`id` 是主键，
+     *    这是索引命中，不是全表扫）。
+     * ⚠️ `NULL`（联结不到那一行）在这里收成**空串**，而 `''`（真的有这一行、只是没名字）
+     *    原样过去 —— 两者是**同一个状态**："这张卡上没有名字"。界面靠空值决定
+     *    **不画那一格**，而任何占位值（`'?'` / handle / 平台名）都会让它画出来
+     *    （本仓纪律：拿不到就是 null/空，不许退化成看起来像真数据的值）。
+     *    外键 `ON DELETE CASCADE` 下 `NULL` 本来不该出现，收成空串只是为了不让
+     *    "联结不到"变成界面上的一个 `undefined`。
+     */
+    creatorName: row.creator_name ?? '',
   };
 }
 
@@ -515,12 +551,53 @@ function nonNegativeInt(value: number): number {
  * ⚠️ 第二个排序键不是装饰（`videos.ts:266-270` 写过同一条理由）：同一秒发布的两支视频
  *    SQLite 不保证稳定顺序，翻页时会有记录重复出现或被整页跳过，而界面上看起来
  *    只是"好像漏了几条"。
+ *
+ * ===========================================================================
+ * ★★ 第 9 条（2026-09-19）：筛选与排序 —— **全部在 SQL 里，全部在分页之前**
+ * ===========================================================================
+ * 六个新条件（`creatorId` / `tag` / `durMin` / `durMax` / `since` / `until`）与两个
+ * 排序键。三件事在这里说清楚，因为它们的错法都是**静默**的：
+ *
+ * ① **筛选必须在 `LIMIT/OFFSET` 之前**。取一页再在内存里筛，表现是"这一页只剩两三条、
+ *    而 `total` 说有一百条"（甚至翻到某一页整个空）—— 而服务端一次错都没报。
+ *    ⇒ 同一个 `where` 同时喂 `COUNT(*)` 与 `items`（下面那段常量），这是它的全部理由。
+ * ② **排序也在 SQL 里**（同一条理由：分页是在这一层切的）。
+ * ③ ★★ **绝不为缺失值填 0**（本仓既有纪律，见 `packages/shared/src/tracking.ts` 的 ★★）：
+ *    · `view_count` 为 `NULL` 的行在 `sort=views` 下**排在最后**，不是当成 0 ——
+ *      "这支视频没人看"与"这一轮上游没回播放量"是两件事，而当 0 之后它们**长得一样**；
+ *    · `duration_sec` 为 `NULL` 的行在**给了时长范围**时**不出现**（`IS NOT NULL` 那一句）：
+ *      说一条"不知道多长"的视频落在 1–5 分钟里，是编的。
+ *
+ * ⚠️ 标签筛选用 `json_each`（SQLite 的 JSON1，本机实测可用：3.53.4）而不是
+ *    `tags LIKE '%"short"%'`：后者是**文本**匹配 —— 它今天恰好也对（值都带引号），
+ *    但它把"值的相等"变成了"子串的出现"，而这两件事在有人往 `tags` 里写别的东西
+ *    （手工改库、或者将来多一个自由文本标签）时**不一样**。`json_each` 比的是
+ *    数组元素本身。代价：这条 `WHERE` 走不了索引（`tags` 本来也没有索引），
+ *    与 LIKE 相同 —— 所以这里没有多付什么。
  */
-export function listTrackedVideos(opts: {
-  limit: number;
-  offset: number;
+export interface TrackedVideoListFilters {
+  /** 分区（spec §5.1）。`undefined` = 全部。 */
   platform?: TrackPlatform;
-}): {
+  /** 只看这一位博主。`undefined` = 全部。⚠️ 不存在的 id ⇒ 空列表（**不是** 400）。 */
+  creatorId?: string;
+  /** 标签。`undefined` = 全部。 */
+  tag?: TrackedVideoTag;
+  /** 时长下界（秒，闭区间）。给了任一端 ⇒"不知道多长"的行整批排除（见上面 ③）。 */
+  durMin?: number;
+  durMax?: number;
+  /** 发布时间的下界（Unix 秒，闭区间）。 */
+  since?: number;
+  until?: number;
+}
+
+export function listTrackedVideos(
+  opts: {
+    limit: number;
+    offset: number;
+    /** 排序键。`undefined` 与 `'new'` 同义（`published_at DESC`，即今天的行为）。 */
+    sort?: TrackedSort;
+  } & TrackedVideoListFilters,
+): {
   items: TrackedVideo[];
   total: number;
 } {
@@ -529,28 +606,176 @@ export function listTrackedVideos(opts: {
   const offset = nonNegativeInt(opts.offset);
 
   /*
-   * `total` 与 `items` 跑的是**同一个条件**（可见性 + 可选的分区），
+   * `total` 与 `items` 跑的是**同一个条件**（可见性 + 全部分区/筛选条件），
    * 所以把它连同它的参数绑成一对：两处各写一遍的话，某天给列表再加一个筛选条件时
    * 很容易只改一处 —— 而那种漏掉的表现是"翻到第三页就没有了"。
+   *
+   * ⚠️ 条件的**追加顺序**必须与参数的追加顺序**逐条对齐**（SQLite 是按位置绑的）：
+   *    调换两行的顺序不会抛错，只会让两个筛选条件互相拿到对方的值 ——
+   *    而症状是"筛 B站 出来的是短片的那些"，看起来像数据坏了。
+   *    ⇒ 每个 `if` 的上面一行写条件、下一行紧接着 push 它的参数，中间不留别的东西。
    */
-  const where =
-    opts.platform === undefined ? "status = 'visible'" : "status = 'visible' AND platform = ?";
-  const params: string[] = opts.platform === undefined ? [] : [opts.platform];
+  const conditions: string[] = ["t.status = 'visible'"];
+  const params: Array<string | number> = [];
 
-  const totalRow = db
-    .prepare(`SELECT COUNT(*) AS n FROM tracked_videos WHERE ${where}`)
-    .get(...params) as { n: number } | undefined;
+  if (opts.platform !== undefined) {
+    conditions.push('t.platform = ?');
+    params.push(opts.platform);
+  }
+  if (opts.creatorId !== undefined) {
+    conditions.push('t.creator_id = ?');
+    params.push(opts.creatorId);
+  }
+  if (opts.tag !== undefined) {
+    // JSON1：比的是数组**元素**，不是文本子串（上面那段 ⚠️）
+    conditions.push('EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?)');
+    params.push(opts.tag);
+  }
+  /*
+   * 时长：给了任一端就把**不知道多长**的行排除掉，并套上那几个界。
+   *
+   * ⚠️★ 那两句比较**自己**就把 NULL 行排除了（SQL 的三值逻辑：`NULL >= 60` 是 NULL，
+   *    而 `WHERE` 只收 true），所以 `IS NOT NULL` 那一句**今天不是承重的** ——
+   *    2026-09-19 实测：把它换成恒真条件，六条夹具的每一条断言结果都不变。
+   *    ⇒ 它留着是为了**意图**，不是为了行为：下一个读的人不必知道 SQL 怎么比 NULL
+   *      就能看出"不知道多长的不算数"，而将来谁把这一段改成"给两个界都补默认值"
+   *      （`durMin ?? 0`）时，少掉的正是这一句。
+   *    ⇒ ⚠️ 所以**不许**把"NULL 被排除"这件事写成"靠 `IS NOT NULL` 实现的"：
+   *      那句话我量过，是假的（本仓最贵的那类缺陷就是这种"看起来很有道理"的假注释）。
+   *
+   * ⚠️ 也不能写成 `(duration_sec IS NULL OR (duration_sec >= ? AND duration_sec <= ?))` ——
+   *    那个写法会让"不知道多长"的行**永远**出现在每一次时长筛选里（等于没筛），
+   *    而界面上看起来只是"多出来几条"。
+   */
+  if (opts.durMin !== undefined || opts.durMax !== undefined) {
+    conditions.push('t.duration_sec IS NOT NULL');
+    if (opts.durMin !== undefined) {
+      conditions.push('t.duration_sec >= ?');
+      params.push(opts.durMin);
+    }
+    if (opts.durMax !== undefined) {
+      conditions.push('t.duration_sec <= ?');
+      params.push(opts.durMax);
+    }
+  }
+  /*
+   * 发布时间：与时长**故意不同** —— 这里**不加** `published_at IS NOT NULL`。
+   * 理由：`published_at` 为 NULL 的行在**任何**排序下都已经排在最后（上面那句），
+   * 而"我只看最近 7 天"这句话对一条没有日期的视频来说，答案只能是"它不在最近 7 天里"。
+   * ⚠️ 但也不能靠 `published_at >= ?` 单独表达：SQLite 里 `NULL >= 5` 是 **NULL**
+   * （不是 true 也不是 false），`WHERE` 只收 true ⇒ NULL 的行**确实**被排除了。
+   * 这一条是"靠 SQL 的三值逻辑工作"的，所以写在这里说清楚：**它是对的，但读的人
+   * 必须知道为什么**（换成 `NOT (published_at < ?)` 就是另一回事了：那是 NULL）。
+   */
+  if (opts.since !== undefined) {
+    conditions.push('t.published_at >= ?');
+    params.push(opts.since);
+  }
+  if (opts.until !== undefined) {
+    conditions.push('t.published_at <= ?');
+    params.push(opts.until);
+  }
+
+  const where = conditions.join(' AND ');
+
+  /*
+   * ★ 两个排序键的差别只有一件事：`views` 先按"有没有播放量"分两档（`IS NULL` 是 0/1，
+   *   `ASC` ⇒ 有播放量的在前），再按播放量降序。
+   *
+   * ⚠️★ 这里**实测过**，而且结论与"直觉"不同（2026-09-19，node:sqlite / SQLite 3.53.4）：
+   *   · `ORDER BY view_count DESC` **单独写**已经把 NULL 排在**最后**了
+   *     （SQLite 把 NULL 当最小值，`DESC` 于是把它放到末尾——`ASC` 才是 NULL 在最前）；
+   *   · 所以前两个键**今天**与裸 `DESC` 结果逐条相同 ⇒ "NULL 排最后"这条断言
+   *     **区分不出**这两版。⇒ 那条断言真正守的是**另一件事**：
+   *     `COALESCE(view_count, 0)`（把"没有播放量"当成 0）——它会与一条**真的 0 播放**
+   *     的行并列，然后由 `published_at DESC` 决定谁在前面，于是"没有播放量"的行
+   *     会插到一条真有 0 次播放的视频前面。测试夹具里专门有一条 0 播放的行
+   *     （`tracking-routes.test.ts` 的 `v-zero`），就是为了让这个错法能被抓住。
+   *   · 那两个显式键**仍然留着**：它们把意图写出来（下一个读的人不必知道 SQLite
+   *     怎么排 NULL），而且别的方言的默认值正好相反（PostgreSQL 里 `DESC` 默认
+   *     NULLS FIRST）。代价：一句看起来"多余"的 SQL —— 比"哪天换了数据库/驱动，
+   *     没有播放量的那批突然排到最前面，而没有任何断言会红"便宜得多。
+   *   ⚠️ 写这一段的教训（本仓最贵的那类缺陷）：第一版注释断言的是"`DESC` 会把没有
+   *   播放量的顶到最前面" —— 那句话**没有量过**，而实测它正好是反的。
+   *
+   * ⚠️ 两个键都把 `published_at DESC, id ASC` 接在后面：前者是同分/同秒的次序，
+   *   后者只负责**稳定**（同一次状态查两次必须给同一个顺序，翻页才不会重复/漏记录）。
+   */
+  const orderBy =
+    opts.sort === 'views'
+      ? 't.view_count IS NULL ASC, t.view_count DESC, t.published_at DESC, t.id ASC'
+      : 't.published_at DESC, t.id ASC';
+
+  /*
+   * ⚠️ 两句 SQL 的**表与联结必须逐字相同**：`COUNT(*)` 那一句只要少一个 `JOIN`，
+   *    带 `creatorId` 的筛选就会在 `total` 与 `items` 上得到两个不同的答案
+   *    （症状同上：分页器说 40 条、列表里只有 3 条）。
+   *    ⇒ 所以联结写成一处常量，两句从它拼。
+   */
+  const from = 'FROM tracked_videos t JOIN tracked_creators c ON c.id = t.creator_id';
+
+  const totalRow = db.prepare(`SELECT COUNT(*) AS n ${from} WHERE ${where}`).get(...params) as
+    | { n: number }
+    | undefined;
 
   const rows = db
     .prepare(
-      `SELECT ${VIDEO_COLUMNS} FROM tracked_videos
+      `SELECT ${VIDEO_COLUMNS} ${from}
         WHERE ${where}
-        ORDER BY published_at DESC, id ASC
+        ORDER BY ${orderBy}
         LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as unknown as VideoRow[];
 
   return { items: rows.map(toTrackedVideo), total: totalRow?.n ?? 0 };
+}
+
+/**
+ * 公开名册（下拉框那一份）：**每一条只出五个键**。
+ *
+ * ★★ 为什么要有它（用户第 9 条要一个"所有追踪的博主"的下拉框）：
+ *    `GET /api/tracking/creators` 需要 `live.manage`（线上匿名实测 **401**），
+ *    而"只筛某一位博主"是所有人都要用的功能 ⇒ 需要一条**公开只读**的路由。
+ *
+ * ⚠️★ 它**不是** `listCreators()` 的别名，别把它改回去：那个函数带着采集状态
+ *    （`lastError` / `consecutiveFailures` / `cooldownUntil` …），公开出去等于
+ *    把"这个频道最近老失败"贴在所有人的下拉框里。这里逐列写出来（不用 `*`），
+ *    转换点也**只有这一处** —— 多带一列从响应上看不出来，所以每一列都必须显式加一行。
+ * ⚠️ 可见性：**不过滤 `enabled`**。停用的博主**他的旧视频仍然在公开列表里**
+ *    （`listTrackedVideos` 只过滤视频自己的 `status`，不看博主的 `enabled`）——
+ *    下拉框要是把他藏起来，就会出现"列表里有他的视频、却没法按他筛"这种状态。
+ *    停用只回答"还抓不抓"，不回答"他的视频还算不算数"。
+ * ⚠️★ `videoCount` 只数 `status = 'visible'` 的行（口径写在
+ *    `packages/shared/src/tracking.ts` 的 `TrackedCreatorSummary` 上）——
+ *    公开端点数隐藏的条数等于对外宣布"我们下架过东西"。
+ * ⚠️ 排序按**显示名**（下拉框是"找人"的控件，只有字典序能让人找得到），
+ *    并列与空名字用 `id` 兜底保证稳定。空显示名会排在**最前**（`''` 最小）——
+ *    界面那一侧对空名字有回落（见 `TrackedVideos.tsx` 的 `creatorLabel`）。
+ */
+export function listPublicCreators(): TrackedCreatorSummary[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT c.id, c.platform, c.display_name, c.handle,
+              COUNT(v.id) AS video_count
+         FROM tracked_creators c
+         LEFT JOIN tracked_videos v ON v.creator_id = c.id AND v.status = 'visible'
+        GROUP BY c.id
+        ORDER BY c.display_name ASC, c.id ASC`,
+    )
+    .all() as unknown as Array<{
+    id: string;
+    platform: TrackPlatform;
+    display_name: string;
+    handle: string;
+    video_count: number;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    platform: row.platform,
+    displayName: row.display_name,
+    handle: row.handle,
+    videoCount: row.video_count,
+  }));
 }
 
 // ---------------------------------------------------------------------------

@@ -1501,10 +1501,28 @@ describe('追踪数据层：公开列表与名单', () => {
     assert.equal(item.viewCount, 7);
     assert.equal(item.durationSec, 30);
     assert.equal(item.status, 'visible');
+    /*
+     * ★★ 这一条**反了过来**（2026-09-19，用户第 8 条）。
+     *
+     * 它原来断言的是 `'creatorName' in item === false`，理由是当时 shared 的注释
+     * "那一格只有管理面板要，公开列表不填" —— 而用户第 8 条要的正是"每张卡上显示
+     * 视频博主名称"，于是公开列表**必须**填它（`listTrackedVideos` 多一次 JOIN）。
+     *
+     * ⚠️★ 这不是"把一条红了就改的断言放松掉"：判据的方向**整个调头**了
+     * （从"不许有"变成"必须有、而且必须是这位博主的名字"），
+     * 而它防的错法也换了 —— 现在防的是"JOIN 联错了行 / 名字取成了别人的"
+     * （联错的表现是一张卡上写着另一个博主，而**没有任何地方会报错**）。
+     * ⇒ 名字的**值**必须一起钉住：只断言"有这个键"的话，把 `c.display_name`
+     * 换成常量 `'x'` 也照样绿。
+     *
+     * ⚠️ `addCreator()` 这个夹具给的显示名是 `UP <mid>`（见它自己的定义），
+     * 所以这里比对的是**那一行**的名字，不是任何一个非空字符串。
+     */
     assert.equal(
-      'creatorName' in item,
-      false,
-      '公开列表不填 creatorName（shared 的注释：那一格只有管理面板要）',
+      item.creatorName,
+      getDb().prepare('SELECT display_name FROM tracked_creators WHERE id = ?').get(a)
+        ?.display_name,
+      '公开列表要带博主显示名，而且必须是这一行的那个名字（联错行时这一条会红）',
     );
   });
 

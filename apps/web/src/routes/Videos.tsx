@@ -1,6 +1,7 @@
 import { VIDEO_PLATFORMS, type VideoPlatform } from '@mcsr/shared';
 import { DEFAULT_PAGE_SIZE } from '@mcsr/shared/resources';
-import type { TrackedCreator, TrackPlatform } from '@mcsr/shared/tracking';
+import type { TrackedCreator, TrackedCreatorSummary, TrackPlatform } from '@mcsr/shared/tracking';
+import { trackedDurationRange, trackedSinceSec } from '@mcsr/shared/tracking';
 import type { Video } from '@mcsr/shared/videos';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,6 +16,7 @@ import {
   addTrackedCreator,
   deleteTrackedCreator,
   fetchMyVideos,
+  fetchTrackedCreatorRoster,
   fetchTrackedCreators,
   fetchTrackedVideos,
   fetchVideos,
@@ -25,7 +27,16 @@ import {
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { useCan } from '@/lib/capabilities';
 import { describeTrackedError } from '@/lib/trackedErrors';
-import { nextParamsForTrackedPlatform, readTrackedPlatform } from '@/lib/trackedQuery';
+import type { TrackedFilterParam, VideosTab } from '@/lib/trackedQuery';
+import {
+  clearedTrackedFilterParams,
+  nextParamsForTrackedFilter,
+  nextParamsForTrackedPlatform,
+  nextParamsForVideosTab,
+  readTrackedFilters,
+  readTrackedPlatform,
+  readVideosTab,
+} from '@/lib/trackedQuery';
 import { useAsync } from '@/lib/useAsync';
 
 /**
@@ -181,6 +192,20 @@ export function Videos() {
    */
   const trackedPlatform = readTrackedPlatform(params);
 
+  /*
+   * 第 9 条（2026-09-19）：五个筛选/排序参数，**同一套纪律**（先校验再用、退化成默认）。
+   * ⚠️★ 它读的键是 `tsort` / `ttag` / `tdur` / `ttime` / `tcreator` —— 一个都不撞
+   *    上面那面墙的四个（`platform` / `authorId` / `page` / `view`）与这一栏既有的两个
+   *    （`tpage` / `tplatform`）。`lib/trackedQuery.ts` 的文件头列着这条约定。
+   */
+  const trackedFilters = readTrackedFilters(params);
+
+  /*
+   * 顶部两个栏目（用户第 8 条）。⚠️ 缺参数 / 认不出的值 ⇒ 那面墙（今天的行为）：
+   * 一个被改坏的地址不该变成一整块错误页，也不该变成"两块都不显示"。
+   */
+  const videosTab = readVideosTab(params);
+
   const [trackedRefreshKey, setTrackedRefreshKey] = useState(0);
   const [creatorsRefreshKey, setCreatorsRefreshKey] = useState(0);
   const [addInput, setAddInput] = useState('');
@@ -192,18 +217,81 @@ export function Videos() {
   const [panelFieldErrors, setPanelFieldErrors] = useState<TrackedCreatorFieldErrors>({});
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
+  /*
+   * ★ 两个"预设"在**这里**翻译成服务端认的数字（第 9 条）：
+   *   · `ttime`（最近 7 天 / 30 天 / 一年）⇒ `since`（Unix 秒）；
+   *   · `tdur`（<1 分钟 / 1–5 / 5–15 / >15）⇒ `durMin` / `durMax`。
+   * ⚠️★ 两张翻译表住在 `packages/shared/src/tracking.ts`（`trackedSinceSec` /
+   *    `trackedDurationRange`），**不在这里写第二份**：同一个下拉框的选项与它映射出的
+   *    区间一旦分家，表现是"选了 1–5 分钟、筛出来的是别的区间"—— 而那**不报错**
+   *    （那两个函数的注释里写着各自防的事）。
+   * ⚠️ `nowSec` 由**这里**取一次（`Date.now()`）：那两个函数**不看时钟**，
+   *    理由写在 `trackedSinceSec` 上（自己读时钟的函数在测试里不可控）。
+   * ⚠️ 每次渲染算一次是**故意**的：`since` 因此跟着"现在"走 —— 一份打开的页面
+   *    放上一小时再点分页，重新算出来的 `since` 会比第一次晚一小时，而那正是
+   *    "最近 7 天"该有的意思（缓存键随之变化，也是一次**正常**的缓存未命中）。
+   */
+  const trackedSince = trackedSinceSec(trackedFilters.time, Math.floor(Date.now() / 1000));
+  const trackedDuration = trackedDurationRange(trackedFilters.duration);
+
   const trackedState = useAsync<TrackedVideoListResponse>(
-    (signal) => fetchTrackedVideos(trackedPage, DEFAULT_PAGE_SIZE, trackedPlatform, signal),
+    (signal) =>
+      fetchTrackedVideos(
+        {
+          page: trackedPage,
+          pageSize: DEFAULT_PAGE_SIZE,
+          platform: trackedPlatform,
+          sort: trackedFilters.sort,
+          ...(trackedFilters.tag === undefined ? {} : { tag: trackedFilters.tag }),
+          ...(trackedFilters.creatorId === undefined
+            ? {}
+            : { creatorId: trackedFilters.creatorId }),
+          ...(trackedSince === undefined ? {} : { since: trackedSince }),
+          ...(trackedDuration.durMin === undefined ? {} : { durMin: trackedDuration.durMin }),
+          ...(trackedDuration.durMax === undefined ? {} : { durMax: trackedDuration.durMax }),
+        },
+        signal,
+      ),
     /*
-     * ⚠️★ `trackedPlatform` **必须在依赖数组里**：漏了它的表现是"点了 Twitch、
-     *    按钮亮着、列表还是全部那些" —— 一次请求都不发，而且**不报错**
-     *    （`useAsync` 只在依赖变化时重跑）。渲染自检看不见这一条：它不跑 effect，
-     *    只证明"给我这个 prop 画成什么样"。
-     * ⚠️ 依赖数组里写 `?? ''`（而不是裸的 `trackedPlatform`）：与上面那面墙
-     *    `platform ?? ''` 同一个形状 —— `undefined` 与 `''` 在这里是同一个意思
-     *    （"全部"），列成同一个值时不会因为"从没传变到传了空"而多跑一次请求。
+     * ⚠️★ 依赖数组里**每一个**能改变查询串的值都要列出来：漏一个的表现是
+     *    "改了下拉框、选项变了、列表纹丝不动" —— 一次请求都不发，而且**不报错**
+     *    （`useAsync` 只在依赖变化时重跑）。渲染自检看不见这一条：它不跑 effect。
+     *    ⚠️ 这里逐项列 `trackedFilters.*` 而不是整个对象：对象字面量每次渲染都是新的，
+     *    列整个对象会在**每一次**渲染都重发一次请求。
+     *    ⚠️★ 但**不列** `trackedSince`：它是从 `trackedFilters.time` 算出来的
+     *    （那个才是用户的操作），而它的值每次渲染都不同（跟着"现在"走）——
+     *    列进来就等于"每一次渲染都重取一次列表"。代价写清楚：一个打开的页面**不会**
+     *    在跨过整点/整天的边界时自己刷新（那时 `since` 已经变了，而列表还是旧的），
+     *    下一次翻页或改筛选才会用上新的 `since`。
+     * ⚠️ `trackedPlatform ?? ''` 与上面那面墙同形（`undefined` 与 `''` 在这里都是"全部"）。
      */
-    [trackedPage, trackedPlatform ?? '', trackedRefreshKey],
+    [
+      trackedPage,
+      trackedPlatform ?? '',
+      trackedFilters.sort,
+      trackedFilters.tag ?? '',
+      trackedFilters.duration ?? '',
+      trackedFilters.time ?? '',
+      trackedFilters.creatorId ?? '',
+      trackedRefreshKey,
+    ],
+  );
+
+  /**
+   * 博主下拉的名册（第 9 条）。
+   *
+   * ⚠️★ 它与上面那一条**分开取数**（两个 `useAsync`）：名册失败不该让视频列表变成
+   *    错误界面（那是两件不同的事），而它自己的降级是"下拉框里只剩「全部博主」"。
+   * ⚠️ 它在**两栏都在的时候也照常请求**（不判断 `videosTab`）：切换标签页是**客户端的
+   *    状态变化**，而按标签页条件化取数会让"切过去的那一瞬间下拉框是空的"。
+   *    代价：墙上那一栏的访客也发一次 `/roster`（60 秒公开缓存，与列表同档）。
+   *    ⚠️ 不这么做的另一个代价更大：把名册请求塞进"追踪那一栏的子树"里，就得让
+   *    那一块自己取数 —— 而本仓的界面组件**不许取数**（不跑 effect 的那条纪律，
+   *    `TrackedVideos.tsx` 的文件头写着）。
+   */
+  const rosterState = useAsync<{ items: TrackedCreatorSummary[] }>(
+    (signal) => fetchTrackedCreatorRoster(signal),
+    [],
   );
 
   /*
@@ -250,6 +338,43 @@ export function Videos() {
    */
   function setTrackedPlatform(next: TrackPlatform | undefined) {
     setParams((prev) => nextParamsForTrackedPlatform(prev, next));
+  }
+
+  /**
+   * 顶部两个栏目（第 8 条）的切换。
+   *
+   * ⚠️★ 它**只碰** `vtab` —— 两栏各自的状态（墙上那面墙的四个键、追踪那一栏的七个）
+   *    一个都不动：从追踪切回墙上，之前翻到第 3 页仍然是第 3 页；再切回来，
+   *    筛过的条件也还在。这正是"两个栏目共用一条地址"该有的样子（而"切一次就清一次"
+   *    的表现是"每次切回来都要重新筛一遍"，用户会以为地址被吃了）。
+   * ⚠️ 具体的读写住在 `lib/trackedQuery.ts`（`nextParamsForVideosTab`）：谁调用谁
+   *    是静态渲染看不见的那一半，而那个纯函数的行为由渲染自检钉着（⑯）。
+   */
+  function setVideosTab(next: VideosTab) {
+    setParams((prev) => nextParamsForVideosTab(prev, next));
+  }
+
+  /**
+   * 改一档筛选 / 排序（第 9 条）。
+   *
+   * ⚠️★ 它只把**控件给的原始值**交给纯函数写回地址栏：校验与"回到第 1 页"都在
+   *    `nextParamsForTrackedFilter` 里（一处判据，两个方向都写在那里）。
+   * ⚠️★ 它**不许**走上面那个 `setParam`：那个函数为了那面墙"换筛选回第一页"会删掉
+   *    `page` —— 拿它改追踪那一栏的筛选，会把上面那面墙悄悄弹回第 1 页（spec §8.2）。
+   *    `nextParamsForTrackedFilter` 删的是 `tpage`。
+   */
+  function setTrackedFilter(key: TrackedFilterParam, value: string | undefined) {
+    setParams((prev) => nextParamsForTrackedFilter(prev, key, value));
+  }
+
+  /**
+   * 「清除筛选」：这一栏的七个参数一起清掉（含分区与页码），墙上那面墙一个不动。
+   *
+   * ⚠️ 它是空态里那颗按钮的唯一出口（`clearedTrackedFilterParams` 的注释写着
+   *    "为什么连分区一起清"），所以不能省。
+   */
+  function clearTrackedFilters() {
+    setParams((prev) => clearedTrackedFilterParams(prev));
   }
 
   /**
@@ -410,272 +535,356 @@ export function Videos() {
         />
       ) : null}
 
-      {/* 视图切换只在登录后出现 —— 没登录的人点"我贴的"只会被弹回来 */}
-      {auth.user ? (
-        <div className="video-viewswitch">
-          <button
-            type="button"
-            className={`video-viewswitch__item${mineView ? '' : ' is-active'}`}
-            onClick={() => setParam('view', undefined)}
-          >
-            {t('videos.viewAll')}
-          </button>
-          <button
-            type="button"
-            className={`video-viewswitch__item${mineView ? ' is-active' : ''}`}
-            onClick={() => setParam('view', 'mine')}
-          >
-            {t('videos.viewMine')}
-          </button>
-        </div>
-      ) : null}
+      {/*
+        ★★ 顶部两个栏目（用户第 8 条：「最后将两个栏目"自己贴的视频"和"追踪的博主"分开，
+        在顶部切换」）。
 
-      {mineView && !auth.user ? (
-        auth.loading ? (
-          <p className="state">{t('common.loading')}</p>
-        ) : (
-          <>
-            <Notice kind="info">{t('videos.mineNeedLogin')}</Notice>
-            <p className="submitgate">
-              <Link className="cta" to={`/login?next=${encodeURIComponent('/videos?view=mine')}`}>
-                {t('nav.login')}
-              </Link>
-            </p>
-          </>
-        )
-      ) : (
-        <>
+        ⚠️★ 形状借**本页自己**那两颗按钮（`.video-viewswitch` / `.video-viewswitch__item` /
+        `is-active`）—— 它就是这一页上"切换看哪一块"的既有控件（「推荐视频 / 我的分享」），
+        同一页上第二套"两个按钮的切换器"只会让用户以为是两回事。
+        ⚠️ 本轮**没有**照简报里点名的 `Seeds.tsx` 那一套（`.seed__tabs`）：那份简报写的
+        路径（`components/Seeds.tsx`）不存在，而 `routes/Seeds.tsx` 那两个标签页
+        **没有**用 `useTabIndicator`（那是 `ResourceList` 的 `.tabs`）。
+        ⇒ 就近取这一页已有的那套：零新增 CSS、零新增类名（代价：两处切换器长得一样，
+        而它们本来就是"同一个页面里换一块看"的同一件事）。
+        ⚠️★ 语义用 `aria-pressed`（与 `routes/Seeds.tsx` 那两颗一致），**不用**
+        `role="tablist"`：真正的 tab 模式要求 `aria-controls` + `tabpanel` 一整套，
+        只挂半个 `role="tab"` 会被读屏软件念成一个没有对应面板的选项卡
+        （`Seeds.tsx` 那一处写着同一条理由）。
+        ⚠️★ **同一时刻只渲染其中一块**（不是"两块都在、只是滚动到某一处"）：
+        这也是用户原话里"分开"的意思 —— 两块加起来几十张卡一起加载，
+        而它们根本不同时可见。换栏目**不重置**任何状态（理由见 `setVideosTab`）。
+      */}
+      <div className="video-viewswitch">
+        <button
+          type="button"
+          className={`video-viewswitch__item${videosTab === 'wall' ? ' is-active' : ''}`}
+          aria-pressed={videosTab === 'wall'}
+          onClick={() => setVideosTab('wall')}
+        >
+          {t('videos.tabWall')}
+        </button>
+        <button
+          type="button"
+          className={`video-viewswitch__item${videosTab === 'tracked' ? ' is-active' : ''}`}
+          aria-pressed={videosTab === 'tracked'}
+          onClick={() => setVideosTab('tracked')}
+        >
           {/*
+            ⚠️ 这一颗的文字**复用** `tracked.title`（"追踪的博主"）：同一个东西不该有
+            两个名字（`videos.title` 那条注释写着同一条纪律），而下面那一块的 `<h2>`
+            用的正是这同一个键 —— 两者同时可见（标签在顶、标题在块内），
+            换一个说法就会变成两种叫法。
+          */}
+          {t('tracked.title')}
+        </button>
+      </div>
+
+      {/*
+        ⚠️★ 下面这一大段（自贴视频墙 / 我贴的）是**原来那块**，一个字没动 ——
+        只是被包进了"当前栏目是墙上"这个条件里。它和追踪那一栏是两张表、两条路
+        （spec §8.1），所以两块互斥渲染不会让任何一边的数据消失。
+        ⚠️ 「贴个视频」那颗按钮与它的表单**留在页面顶栏**（两栏都看得见）：
+        贴出来的视频落在**这面墙**上，而按钮与墙分处两个栏目时，用户下一步会去点
+        那一栏 —— 藏起来反而会让人找不到入口（表单自己带成功态与「去看墙上」，
+        见 `VideoForm`）。
+      */}
+      {videosTab === 'wall' ? (
+        <>
+          {/* 视图切换只在登录后出现 —— 没登录的人点"我贴的"只会被弹回来 */}
+          {auth.user ? (
+            <div className="video-viewswitch">
+              <button
+                type="button"
+                className={`video-viewswitch__item${mineView ? '' : ' is-active'}`}
+                onClick={() => setParam('view', undefined)}
+              >
+                {t('videos.viewAll')}
+              </button>
+              <button
+                type="button"
+                className={`video-viewswitch__item${mineView ? ' is-active' : ''}`}
+                onClick={() => setParam('view', 'mine')}
+              >
+                {t('videos.viewMine')}
+              </button>
+            </div>
+          ) : null}
+
+          {mineView && !auth.user ? (
+            auth.loading ? (
+              <p className="state">{t('common.loading')}</p>
+            ) : (
+              <>
+                <Notice kind="info">{t('videos.mineNeedLogin')}</Notice>
+                <p className="submitgate">
+                  <Link
+                    className="cta"
+                    to={`/login?next=${encodeURIComponent('/videos?view=mine')}`}
+                  >
+                    {t('nav.login')}
+                  </Link>
+                </p>
+              </>
+            )
+          ) : (
+            <>
+              {/*
             ⚠️ 「我贴的」不显示平台筛选：那个接口不分页也不收参数，筛选只能
                在客户端做，而"界面上的筛选"和"服务端的筛选"看起来一样、
                行为不同，是那种只有数据量大了才会暴露的差异。
           */}
-          {!mineView ? (
-            <div className="tagcloud">
-              <span className="tagcloud__label">{t('videos.allPlatforms')}</span>
-              <button
-                type="button"
-                className={`tagchip${platform === undefined ? ' tagchip--on' : ''}`}
-                onClick={() => setParam('platform', undefined)}
-              >
-                {t('videos.allPlatforms')}
-              </button>
-              {VIDEO_PLATFORMS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  className={`tagchip${platform === p ? ' tagchip--on' : ''}`}
-                  onClick={() => setParam('platform', p)}
-                >
-                  {t(platformKey(p))}
-                </button>
-              ))}
+              {!mineView ? (
+                <div className="tagcloud">
+                  <span className="tagcloud__label">{t('videos.allPlatforms')}</span>
+                  <button
+                    type="button"
+                    className={`tagchip${platform === undefined ? ' tagchip--on' : ''}`}
+                    onClick={() => setParam('platform', undefined)}
+                  >
+                    {t('videos.allPlatforms')}
+                  </button>
+                  {VIDEO_PLATFORMS.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className={`tagchip${platform === p ? ' tagchip--on' : ''}`}
+                      onClick={() => setParam('platform', p)}
+                    >
+                      {t(platformKey(p))}
+                    </button>
+                  ))}
 
-              {/*
+                  {/*
                 作者筛选是一个"当前条件"chip，不是一堆可选项 ——
                 全站没有"列出所有作者"的接口，而这个筛选的自然入口
                 是点卡片上的作者名（见 VideoCard）。没有 chip 的话，
                 点完之后页面会变成"少了很多东西"，而用户看不出为什么。
               */}
-              {authorId ? (
-                <button
-                  type="button"
-                  className="tagchip tagchip--on"
-                  title={t('videos.clearAuthor')}
-                  onClick={() => setParam('authorId', undefined)}
-                >
-                  {t('videos.authorFilter', { name: authorName ?? authorId.slice(0, 8) })} ×
-                </button>
+                  {authorId ? (
+                    <button
+                      type="button"
+                      className="tagchip tagchip--on"
+                      title={t('videos.clearAuthor')}
+                      onClick={() => setParam('authorId', undefined)}
+                    >
+                      {t('videos.authorFilter', { name: authorName ?? authorId.slice(0, 8) })} ×
+                    </button>
+                  ) : null}
+
+                  {hasFilters ? (
+                    <button type="button" className="filters__clear" onClick={clearAll}>
+                      {t('videos.clearFilters')}
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
 
-              {hasFilters ? (
-                <button type="button" className="filters__clear" onClick={clearAll}>
-                  {t('videos.clearFilters')}
-                </button>
+              {state.status === 'loading' ? <WallSkeleton /> : null}
+
+              {state.status === 'error' ? (
+                <div className="state state--error">
+                  <p>
+                    {t('videos.loadFailed')}：{state.error}
+                  </p>
+                </div>
               ) : null}
-            </div>
-          ) : null}
 
-          {state.status === 'loading' ? <WallSkeleton /> : null}
-
-          {state.status === 'error' ? (
-            <div className="state state--error">
-              <p>
-                {t('videos.loadFailed')}：{state.error}
-              </p>
-            </div>
-          ) : null}
-
-          {/*
+              {/*
             操作结果（删除 / 隐藏 / 恢复）留在页面上 —— 见上面 flash 的说明。
             它比列表先渲染，所以"卡片消失了"和"为什么消失"是同时被看到的。
           */}
-          {flash ? (
-            <Notice kind={flash.ok ? 'ok' : 'bad'}>
-              {flash.text}
-              <button
-                type="button"
-                className="video-flash__close"
-                aria-label={t('common.cancel')}
-                onClick={() => setFlash(null)}
-              >
-                ×
-              </button>
-            </Notice>
-          ) : null}
-
-          {state.status === 'ok' ? (
-            state.data.items.length === 0 ? (
-              <div className="state state--empty">
-                <p className="state__title">
-                  {mineView ? t('videos.mineEmpty') : t('videos.noResults')}
-                </p>
-                <p>{mineView ? t('videos.mineEmptyHint') : t('videos.noResultsHint')}</p>
-                {!mineView && hasFilters ? (
-                  <button type="button" className="filters__clear" onClick={clearAll}>
-                    {t('videos.clearFilters')}
+              {flash ? (
+                <Notice kind={flash.ok ? 'ok' : 'bad'}>
+                  {flash.text}
+                  <button
+                    type="button"
+                    className="video-flash__close"
+                    aria-label={t('common.cancel')}
+                    onClick={() => setFlash(null)}
+                  >
+                    ×
                   </button>
-                ) : null}
-              </div>
-            ) : (
-              <>
-                <p className="resultcount">
-                  {hasFilters && !mineView
-                    ? t('videos.resultCountFiltered', { count: state.data.total })
-                    : t('videos.resultCount', { count: state.data.total })}
-                </p>
+                </Notice>
+              ) : null}
 
-                {/*
+              {state.status === 'ok' ? (
+                state.data.items.length === 0 ? (
+                  <div className="state state--empty">
+                    <p className="state__title">
+                      {mineView ? t('videos.mineEmpty') : t('videos.noResults')}
+                    </p>
+                    <p>{mineView ? t('videos.mineEmptyHint') : t('videos.noResultsHint')}</p>
+                    {!mineView && hasFilters ? (
+                      <button type="button" className="filters__clear" onClick={clearAll}>
+                        {t('videos.clearFilters')}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    <p className="resultcount">
+                      {hasFilters && !mineView
+                        ? t('videos.resultCountFiltered', { count: state.data.total })
+                        : t('videos.resultCount', { count: state.data.total })}
+                    </p>
+
+                    {/*
                   被隐藏的视频只有作者自己在「我贴的」里看得见。明说这件事，
                   否则作者会以为"这些也还在墙上"，而墙上其实一条都没有。
                 */}
-                {mineView && hiddenCount > 0 ? (
-                  <p className="submitnote">{em(t('videos.mineHiddenNote'))}</p>
-                ) : null}
+                    {mineView && hiddenCount > 0 ? (
+                      <p className="submitnote">{em(t('videos.mineHiddenNote'))}</p>
+                    ) : null}
 
-                <ul className="video-wall">
-                  {state.data.items.map((video: Video) => (
-                    <VideoCard
-                      key={video.id}
-                      video={video}
-                      onResult={(ok, text) => {
-                        setFlash({ ok, text });
-                        // 无论成功还是空操作都重拉：删除/隐藏会让这一条从列表里
-                        // 消失，而"它是不是真的没了"只有服务端说了算 ——
-                        // 在前端本地把它抹掉，就等于把服务端的判定做成了第二份。
-                        setRefreshKey((k) => k + 1);
-                      }}
-                      // 在「我贴的」里按作者筛选没有意义（全都是我）
-                      onFilterAuthor={mineView ? undefined : (id) => setParam('authorId', id)}
-                      /*
-                       * 需求②（t14）：「编辑」链接只对有 `content.author` 的人出现。
-                       * ⚠️ 判据在**页面**这一层算（`useCan`），组件只管显不显示 ——
-                       *    能力矩阵是唯一一份"谁是编辑"的定义。
-                       */
-                      canAuthor={canAuthor}
-                    />
-                  ))}
-                </ul>
+                    <ul className="video-wall">
+                      {state.data.items.map((video: Video) => (
+                        <VideoCard
+                          key={video.id}
+                          video={video}
+                          onResult={(ok, text) => {
+                            setFlash({ ok, text });
+                            // 无论成功还是空操作都重拉：删除/隐藏会让这一条从列表里
+                            // 消失，而"它是不是真的没了"只有服务端说了算 ——
+                            // 在前端本地把它抹掉，就等于把服务端的判定做成了第二份。
+                            setRefreshKey((k) => k + 1);
+                          }}
+                          // 在「我贴的」里按作者筛选没有意义（全都是我）
+                          onFilterAuthor={mineView ? undefined : (id) => setParam('authorId', id)}
+                          /*
+                           * 需求②（t14）：「编辑」链接只对有 `content.author` 的人出现。
+                           * ⚠️ 判据在**页面**这一层算（`useCan`），组件只管显不显示 ——
+                           *    能力矩阵是唯一一份"谁是编辑"的定义。
+                           */
+                          canAuthor={canAuthor}
+                        />
+                      ))}
+                    </ul>
 
-                {!mineView && totalPages > 1 ? (
-                  <nav className="pager" aria-label="pagination">
-                    <button
-                      type="button"
-                      disabled={page <= 1}
-                      onClick={() => setParam('page', String(page - 1))}
-                    >
-                      ← {t('videos.prevPage')}
-                    </button>
-                    <span className="pager__pos">
-                      {t('videos.page', { page, total: totalPages })}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={page >= totalPages}
-                      onClick={() => setParam('page', String(page + 1))}
-                    >
-                      {t('videos.nextPage')} →
-                    </button>
-                  </nav>
-                ) : null}
-              </>
-            )
-          ) : null}
+                    {!mineView && totalPages > 1 ? (
+                      <nav className="pager" aria-label="pagination">
+                        <button
+                          type="button"
+                          disabled={page <= 1}
+                          onClick={() => setParam('page', String(page - 1))}
+                        >
+                          ← {t('videos.prevPage')}
+                        </button>
+                        <span className="pager__pos">
+                          {t('videos.page', { page, total: totalPages })}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={page >= totalPages}
+                          onClick={() => setParam('page', String(page + 1))}
+                        >
+                          {t('videos.nextPage')} →
+                        </button>
+                      </nav>
+                    ) : null}
+                  </>
+                )
+              ) : null}
+            </>
+          )}
         </>
-      )}
+      ) : null}
 
       {/*
-        ★ 「追踪的博主」—— spec §6.2 的两块，**在现有的 `/videos` 页里**（用户裁决 R1）。
-        ⚠️★ 它们渲染在上面那个三元表达式**之外**，因为这一栏与那个视图切换无关：
-           `view=mine` 讲的是"我贴的视频"，而追踪的博主是另一个来源（spec §8.1 的两张表）——
-           把它塞进「我贴的」那个分支里，表现是"切到我的分享，追踪那一栏就没了"。
-        ⚠️ R3：上面那一块（自贴视频）**一个字都没动**，这一整段是**追加**的。
+        ★ 「追踪的博主」—— spec §6.2 的两块 + 第 9 条的筛选条。
+        ⚠️★ 第 8 条起它与上面那面墙**互斥渲染**（顶部那个切换器）：用户原话是
+           "将两个栏目分开，在顶部切换"。⚠️ 与 R3 那条"自贴那条路一个字不动"不冲突：
+           那一条说的是**内容与行为**，而这次改的是"哪一块出现在屏幕上"——
+           上面那一块的标记、取数、分页、筛选一个字节都没变（它只是被包进一个条件里）。
+        ⚠️ R1 那句"两块都在 `/videos` 页里"今天仍然成立（同一个页面、同一个地址，
+           只是同一时刻只显示一栏）。**不要**把它们拆成两个路由：两栏的状态住在
+           同一份查询串里（墙上那四个键 + 这一栏的七个），拆路由会让"切回去"
+           变成一次导航，而那次导航会把另一栏的状态留在地址里（看起来像串了数据）。
       */}
-      <TrackedVideosSection
-        items={trackedState.status === 'ok' ? trackedState.data.items : []}
-        total={trackedState.status === 'ok' ? trackedState.data.total : 0}
-        page={trackedPage}
-        pageSize={DEFAULT_PAGE_SIZE}
-        empty={t('tracked.empty')}
-        /*
-         * ⚠️ 三个状态**分开传**，一个都不许合并：把 loading / error 折进"items 是空的"
-         *    会让取数失败渲染成"还没有追踪到视频" —— 一句假话（`empty` 那一条的说明）。
-         * ⚠️★ 失败那一句**先有翻译好的前言、再接原始细节**（`videos.loadFailed` +
-         *    `useAsync` 给的那句）：与上面那面墙那一处逐字同形。只把原文传下去的话，
-         *    英文界面上出现的是一整句中文（`API 返回 HTTP 500` 来自 `lib/api.ts`），
-         *    而 `--en` 的零汉字扫描看不见这一层 —— 页面不在它的夹具里
-         *    （脚本末尾的"覆盖边界"写着这件事）。
-         */
-        loading={trackedState.status === 'loading'}
-        error={
-          trackedState.status === 'error'
-            ? `${t('videos.loadFailed')}：${trackedState.error}`
-            : null
-        }
-        /*
-         * ⚠️★ 分区**只影响取数**（服务端筛选，spec §5.1）：把 `trackedPlatform` 往下传
-         *    是让四个按钮画对选中态，组件**不会**拿它去过滤 `items` ——
-         *    在界面里再筛一次就是第二份"什么算这个分区"，而 `total` 是服务端给的。
-         */
-        platform={trackedPlatform}
-        onPlatformChange={setTrackedPlatform}
-        onPage={setTrackedPage}
-      />
+      {videosTab === 'tracked' ? (
+        <>
+          <TrackedVideosSection
+            items={trackedState.status === 'ok' ? trackedState.data.items : []}
+            total={trackedState.status === 'ok' ? trackedState.data.total : 0}
+            page={trackedPage}
+            pageSize={DEFAULT_PAGE_SIZE}
+            empty={t('tracked.empty')}
+            /*
+             * ⚠️ 三个状态**分开传**，一个都不许合并：把 loading / error 折进"items 是空的"
+             *    会让取数失败渲染成"还没有追踪到视频" —— 一句假话（`empty` 那一条的说明）。
+             * ⚠️★ 失败那一句**先有翻译好的前言、再接原始细节**（`videos.loadFailed` +
+             *    `useAsync` 给的那句）：与上面那面墙那一处逐字同形。只把原文传下去的话，
+             *    英文界面上出现的是一整句中文（`API 返回 HTTP 500` 来自 `lib/api.ts`），
+             *    而 `--en` 的零汉字扫描看不见这一层 —— 页面不在它的夹具里
+             *    （脚本末尾的"覆盖边界"写着这件事）。
+             */
+            loading={trackedState.status === 'loading'}
+            error={
+              trackedState.status === 'error'
+                ? `${t('videos.loadFailed')}：${trackedState.error}`
+                : null
+            }
+            /*
+             * ⚠️★ 分区**只影响取数**（服务端筛选，spec §5.1）：把 `trackedPlatform` 往下传
+             *    是让四个按钮画对选中态，组件**不会**拿它去过滤 `items` ——
+             *    在界面里再筛一次就是第二份"什么算这个分区"，而 `total` 是服务端给的。
+             */
+            platform={trackedPlatform}
+            onPlatformChange={setTrackedPlatform}
+            onPage={setTrackedPage}
+            /*
+             * ⚠️★ 第 9 条的四格（筛选状态 / 名册 / 改筛选 / 清除筛选）**都是必填**：
+             *    少传 `filters` 或 `creators` 会让五个下拉框静默停在"全部"
+             *    （而列表其实是筛过的）—— 那种界面上写着"全部"、实际只显示一部分的
+             *    状态**没有任何解释**。少传两个回调则是"拉不动、而且看起来完全正常"。
+             * ⚠️ 名册取数失败 ⇒ 空数组（降级成"只有全部博主"）—— 那**不是**假话：
+             *    下拉框里少几项不会让谁以为列表坏了，而视频列表自己有它那条 error。
+             */
+            filters={trackedFilters}
+            creators={rosterState.status === 'ok' ? rosterState.data.items : []}
+            onFilterChange={setTrackedFilter}
+            onClearFilters={clearTrackedFilters}
+          />
 
-      <TrackedCreatorsPanel
-        /*
-         * ⚠️ 能力判据在**页面**这一层算（`useCan`）：`permissions.ts` 是"谁是编辑"的
-         *    唯一定义，组件那一侧只决定显不显示。
-         */
-        canManage={canManageTracked}
-        loading={creatorsState.status === 'loading'}
-        busy={panelBusy}
-        creators={creatorsState.status === 'ok' ? creatorsState.data.items : []}
-        /*
-         * ⚠️★ 取数失败**必须**自己占一格（而不是折进上面那句 `creators: []`）：
-         *    折进去的话面板会渲染成"名单还是空的 —— 在上面贴一个博主的链接"，
-         *    而那句是**假话**（名单不是空的，是没读到），并且会把编辑送去重贴一条
-         *    **已经在名单上**的链接（再贴一次只会拿到 `duplicate`）。
-         *    与上面那一栏的 `error` 是同一条纪律：三态分开传，谁都别替谁说话。
-         * ⚠️ 前言复用 `videos.loadFailed`（与那面墙、与上面那一栏同一个说法），
-         *    然后是 `useAsync` 给的原始细节。
-         */
-        loadError={
-          creatorsState.status === 'error'
-            ? `${t('videos.loadFailed')}：${creatorsState.error}`
-            : null
-        }
-        input={addInput}
-        fieldErrors={panelFieldErrors}
-        notice={panelNotice}
-        confirmingId={confirmingId}
-        onInput={setAddInput}
-        onAdd={() => void handleAddCreator()}
-        onToggle={(id, enabled) => void handleToggleCreator(id, enabled)}
-        onRebackfill={(id) => void handleRebackfillCreator(id)}
-        onAskDelete={setConfirmingId}
-        onDelete={(id) => void handleDeleteCreator(id)}
-      />
+          <TrackedCreatorsPanel
+            /*
+             * ⚠️ 能力判据在**页面**这一层算（`useCan`）：`permissions.ts` 是"谁是编辑"
+             *    的唯一定义，组件那一侧只决定显不显示。
+             * ⚠️ 面板跟着**追踪那一栏**走：它维护的就是这份名单（加 / 停用 / 回填 / 删），
+             *    而墙上那一栏与它无关。放在追踪那一栏里还有一个实际好处：
+             *    编辑改完名单，眼下这个列表正是受影响的那一个。
+             */
+            canManage={canManageTracked}
+            loading={creatorsState.status === 'loading'}
+            busy={panelBusy}
+            creators={creatorsState.status === 'ok' ? creatorsState.data.items : []}
+            /*
+             * ⚠️★ 取数失败**必须**自己占一格（而不是折进上面那句 `creators: []`）：
+             *    折进去的话面板会渲染成"名单还是空的 —— 在上面贴一个博主的链接"，
+             *    而那句是**假话**（名单不是空的，是没读到），并且会把编辑送去重贴一条
+             *    **已经在名单上**的链接（再贴一次只会拿到 `duplicate`）。
+             *    与上面那一栏的 `error` 是同一条纪律：三态分开传，谁都别替谁说话。
+             * ⚠️ 前言复用 `videos.loadFailed`（与那面墙、与上面那一栏同一个说法），
+             *    然后是 `useAsync` 给的原始细节。
+             */
+            loadError={
+              creatorsState.status === 'error'
+                ? `${t('videos.loadFailed')}：${creatorsState.error}`
+                : null
+            }
+            input={addInput}
+            fieldErrors={panelFieldErrors}
+            notice={panelNotice}
+            confirmingId={confirmingId}
+            onInput={setAddInput}
+            onAdd={() => void handleAddCreator()}
+            onToggle={(id, enabled) => void handleToggleCreator(id, enabled)}
+            onRebackfill={(id) => void handleRebackfillCreator(id)}
+            onAskDelete={setConfirmingId}
+            onDelete={(id) => void handleDeleteCreator(id)}
+          />
+        </>
+      ) : null}
     </>
   );
 }
