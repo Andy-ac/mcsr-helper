@@ -878,7 +878,9 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 - [ ] ★★ single-flight：十个并发 ⇒ 上游计数 **== 1**
 - [ ] ★ 兜底：上游 500 / 超时 / 非 JSON ⇒ 有旧数据时 `stale: true` + 旧数据；没有则 503
 - [ ] 上游 429 ⇒ 503 `ranked_busy`；形状不对 ⇒ 502 `upstream_bad_response`（日志带字段名）
-- [ ] ★★ 心跳解析：**四格**各取自己那一格的**最后一条**；**少一格 ⇒ 那一格 `null` 而 200 照给**；
+- [ ] ★★ 心跳解析：**四格**各取自己那一格的**最后一条**；**少一格 ⇒ 那一格 `null` 而 200 照给**
+      （"200 照给"这一半只有本文件能验，夹具见 `heartbeatPayloadMissingStore`；
+      "那一格变成 `null`"那一半在 `ranked-shared.test.ts`，见 §11.2）；
       **四格全没状态 ⇒ 整份 `null`**（502）；响应里**没有** `ping` / `uptime24`（用户把它们删了）
 - [ ] 每 IP 限流：> 60 次/分钟 ⇒ 429 `rate_limited`
 - [ ] `error-codes.test.ts`：两个新码已进 `KNOWN_CODES`

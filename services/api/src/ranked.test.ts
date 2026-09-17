@@ -300,6 +300,28 @@ function heartbeatPayloadNoComponents(): Record<string, unknown> {
   };
 }
 
+/**
+ * **少了一格**（Store 那一格）的那一份 —— spec §11.1 里"少一格 ⇒ 那一格 `null` 而 200 照给"
+ * 那一格的夹具。
+ *
+ * ⚠️★ 它与上面那份 `heartbeatPayloadNoComponents` 是**判据的两侧**，不是同一个夹具的变体：
+ *    四格一个都对不上 ⇒ **502**（我们的适配层要改），少一格 ⇒ **200**（那一行照常渲染、印 `—`）。
+ * ⚠️ "少"有**两种形状**，实现里是两条分支（`beats?.[id]` 是 `undefined` / 是空数组），
+ *    两种都要走：上游换了结构是前者，那一格这一刻没数据是后者。
+ */
+function heartbeatPayloadMissingStore(
+  shape: 'missing-key' | 'empty-array',
+): Record<string, unknown> {
+  const payload = heartbeatPayload();
+  const list = { ...(payload.heartbeatList as Record<string, unknown>) };
+  if (shape === 'missing-key') {
+    delete list['4'];
+  } else {
+    list['4'] = [];
+  }
+  return { ...payload, heartbeatList: list };
+}
+
 // ---------------------------------------------------------------------------
 // 打我们的端点
 // ---------------------------------------------------------------------------
@@ -593,6 +615,51 @@ describe('★ 心跳端点：正常路径', () => {
 
     // ★ 正常路径**一个字都不该写进错误日志**（自审那条"没有噪声"的可测形式）
     assert.deepEqual(errors, [], '正常路径不该有任何 console.error');
+  });
+
+  /*
+   * ★★ spec §11.1 那一格："**少一格 ⇒ 那一格 `null` 而 200 照给**"。
+   *
+   * ⚠️★ "200 照给"是一个 **HTTP 状态**，只有这一层能验：解析层那一条
+   *    （`ranked-shared.test.ts`）证的是"那一格变成 `null`"，而"整栏还能不能看"
+   *    是这一层的结论。（2026-09-19 复评 M3：§11.1 这一格当时只有解析层那一半，
+   *    端点这一半一条断言都没有。）
+   * ⚠️ 两种"少"都要走：键**不在**（上游改了结构）与数组**是空的**（那一格此刻没数据）——
+   *    实现里是两条分支，界面上都必须是"那一行照常在、印 `—`"。
+   * ⚠️ 与下面那条"四个 id 一个都对不上 ⇒ 502"是**判据的两侧**：一侧是"上游那一刻没给"，
+   *    另一侧是"我们的适配层对不上了"。混成一条就等于把后者的排查方向删掉。
+   */
+  it('★★ 少一格 ⇒ 那一格 `null` 而 **200 照给**（另外三格一个字都不受影响）', async (t) => {
+    const errors = captureErrors(t);
+    let shape: 'missing-key' | 'empty-array' = 'missing-key';
+    mockUpstream(t, () => jsonResponse(heartbeatPayloadMissingStore(shape)));
+
+    const missingKey = await call();
+
+    assert.equal(missingKey.status, 200, '少一格不是故障：那一行照常渲染，200 照给');
+    assert.equal(missingKey.body.stale, false, '★ 也不是"兜底"：这就是上游此刻给的答案');
+    const components = componentsOf(missingKey.body);
+    assert.equal(components.length, 4, '★ 恒四行：少的那一格仍在响应里（`state: null`）');
+    assert.deepEqual(
+      components[2],
+      { id: '4', nameKey: 'ranked.componentStore', state: null, checkedAt: null },
+      '★★ 读不到 ⇒ `null`（**不是** 0「故障」，也不是整格消失）',
+    );
+    assert.deepEqual(
+      components.filter((_, i) => i !== 2),
+      expectedComponents().filter((_, i) => i !== 2),
+      '★★ 正面对照：另外三格一个字都没受影响',
+    );
+    assert.deepEqual(errors, [], '★★ 一个字都不记日志：这不是失败，没有失败可报');
+
+    /* 第二种"少"：键在、数组空着 —— 同一条判据的另一条分支。 */
+    process.env.MCSR_RANKED_STATUS_TTL_MS = '0';
+    shape = 'empty-array';
+    const emptyArray = await call();
+
+    assert.equal(emptyArray.status, 200, '数组空着与键不在是同一句话：那一格读不到');
+    assert.deepEqual(componentsOf(emptyArray.body)[2], components[2]);
+    assert.deepEqual(errors, [], '★ 同样不记日志（两种"少"都不是失败）');
   });
 });
 

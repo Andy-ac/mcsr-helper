@@ -124,6 +124,7 @@ import { ApiError } from '@/lib/api';
 import {
   fetchRankedElo,
   fetchRankedLive,
+  fetchRankedPhase,
   fetchRankedWeekly,
   RankedDirectError,
   setUpstreamFetchForTests,
@@ -413,8 +414,14 @@ const UNKNOWN_TYPE = 'future.brand_new_node'; // ★ 不在 `TIMELINE_LABEL_KEYS
  *    表里的值对 `services/api/src/i18n-keys.test.ts` 是看不见的（它扫源码里的字面量
  *    `t('…')` 调用），所以"四行都在、而且各印各的名字"这件事只有这里能断言。
  *    表改了而这里没跟上 ⇒ 下面那条 deepEqual 当场红（那正是它该有的代价）。
- * ⚠️ 四格的时间刻意**互不相同**（实测上游四个监视器的节拍就不在同一个网格上）
- *    ⇒ "每一格印的是**自己**那个时间"是可断言的（一个把第一个时间印四遍的实现会红）。
+ * ⚠️ 四格的时间**不是四个互不相同的值**（这是照实测抄的，不是笔误）：第 1 格与第 3 格
+ *    都是 `11:16:27` —— 上游 monitor 2 与 monitor 4 那一刻的节拍就落在同一秒上；
+ *    另两格是 `11:18:07`（第 2 格）与 `11:16:28`（第 4 格）。
+ *    ⇒ 夹具证明的是"格与格之间有**可分辨的差别**"，而不是"两两不等"：
+ *    一个"把同一串时间印在四行上"的实现，无论抄的是哪一串都会红
+ *    （抄 `11:16:27` 在第 2 / 第 4 行红，抄另两串则在第 1 / 第 3 行红）；
+ *    把第 1 格与第 3 格**对调**同样会红（这两格的值必须相等才蒙得过去）。
+ *    ⚠️ 反过来说，把夹具改成"四个都不一样"会让它替上游断言一件不存在的事。
  * ⚠️ 四个状态也刻意不同（1/1/2/3）：一枚"永远印正常"的徽章实现会红。
  */
 const COMPONENT_IDS = ['2', '3', '4', '5'] as const;
@@ -1163,7 +1170,8 @@ assert.equal(
  * ⚠️★ 三格都是**逐行**断言的，而不是"整个产物里有这些字"：
  *    后者对一个"四行都印同一个名字/同一个时间"的实现照样绿 —— 而那正是这一版
  *    最容易犯的错（`RANKED_STATUS_COMPONENTS` 是一张表，抄错一格就会重复同一行）。
- * ⚠️ 时间那一格比的是**自己那个**时间（四格各不相同，见夹具的注释）。
+ * ⚠️ 时间那一格比的是**自己那个**时间（那四个值不是两两不同，但足以分辨谁是谁 ——
+ *    见夹具的注释：抄任何一串印四行、或把前两格对调，都会在下面红）。
  */
 for (const [i, row] of componentRows.entries()) {
   const nameKey = COMPONENT_NAME_KEYS[i] ?? '';
@@ -2020,15 +2028,23 @@ assert.equal(eloRows[1]?.[1], flat('Bravo'), '★ 正向对照：同一行别的
  *    （150 条全在），而"再多也不撑爆页面"由夹具的 160 条钉住。
  */
 const eloMany = renderElo({ elo: ELO_MANY }, '排行榜·160 条');
+const eloManyTable = elementsWithClass(eloMany, 'ranked__table')[0] ?? '';
 assert.equal(
-  elementsWithClass(eloMany, 'ranked__table')[0]?.match(/<td>/g)?.length,
+  eloManyTable.match(/<td>/g)?.length,
   RANKED_ELO_TOP * 5,
   `★★ 160 条只渲染前 ${String(RANKED_ELO_TOP)} 行（${String(RANKED_ELO_TOP * 5)} 个格子）`,
 );
+/*
+ * ★★ 第二半钉的是**行数本身**，不是格子总数（2026-09-19 复评 M1：这里原本是
+ *    同一条断言原样抄了两遍 —— 第二遍一个字都不会多发现）。
+ * ⚠️ 两件事真的不等价：一个"149 行、其中一行多印了 5 个格子"的实现
+ *    格子总数照样是 750，只有行数这条会红。⇒ 上一条管总量、这一条管行数。
+ * ⚠️ 减掉的 1 是表头那一行（`<tr>` 一共 151 个）。
+ */
 assert.equal(
-  elementsWithClass(eloMany, 'ranked__table')[0]?.match(/<td>/g)?.length,
-  RANKED_ELO_TOP * 5,
-  `★★ 160 条只渲染前 ${String(RANKED_ELO_TOP)} 行（${String(RANKED_ELO_TOP * 5)} 个格子）`,
+  [...eloManyTable.matchAll(/<tr>/g)].length - 1,
+  RANKED_ELO_TOP,
+  `★★ 渲染出来的是 ${String(RANKED_ELO_TOP)} 行**数据行**（夹具 160 条，多的一条都不渲染）`,
 );
 /* 空集合是**自己的话**（不是"加载中"，也不是"出错了"）。 */
 const eloEmpty = renderElo({ elo: ELO_EMPTY }, '排行榜·空集合');
@@ -2845,16 +2861,26 @@ globalThis.fetch = sentinel as unknown as typeof globalThis.fetch;
 try {
   setUpstreamFetchForTests(recorder as unknown as typeof globalThis.fetch);
   /*
-   * 三个 fetcher 各打一次。⚠️ 用 `allSettled`：这一节断言的是**请求怎么发出去的**，
+   * ★★ **四个** fetcher 各打一次 —— 四个都必须在里面，尤其 `fetchRankedPhase`：
+   *    spec §11.3 那条"直连请求的冻结选项"**只有这里能验**（它只存在于函数被调用时），
+   *    少列一个就等于那一次请求的 `cache` / `credentials` / `referrerPolicy` / 头
+   *    **一条断言都没有**（2026-09-19 复评 I1：它当时正是漏在外面的那一个）。
+   * ⚠️ 顺序 = 容器里的调用顺序（③ 先榜后赛段，见 `routes/Ranked.tsx`）—— 下面比的是逐条的路径。
+   * ⚠️ 用 `allSettled`：这一节断言的是**请求怎么发出去的**，
    * 而 stub 回的是一个空壳响应 ⇒ 解析层会（正确地）说"形状对不上"。
    * 让那件事把整节打断的话，断言就永远走不到了。
    */
-  await Promise.allSettled([fetchRankedLive(), fetchRankedElo(), fetchRankedWeekly(null)]);
-  assert.equal(calls.length, 3, `★★ 三个 fetcher 各打一次（实测 ${String(calls.length)} 次）`);
+  await Promise.allSettled([
+    fetchRankedLive(),
+    fetchRankedElo(),
+    fetchRankedPhase(),
+    fetchRankedWeekly(null),
+  ]);
+  assert.equal(calls.length, 4, `★★ 四个 fetcher 各打一次（实测 ${String(calls.length)} 次）`);
   assert.deepEqual(
     calls.map((c) => new URL(c.url).pathname),
-    ['/live', '/leaderboard', '/weekly-race'],
-    '★ 三条路径（上游域名只在 `const.ts` 里写一次，所以这里比的是路径）',
+    ['/live', '/leaderboard', '/phase-leaderboard', '/weekly-race'],
+    '★ 四条路径（上游域名只在 `const.ts` 里写一次，所以这里比的是路径）',
   );
   for (const [i, call] of calls.entries()) {
     const init = call.init ?? {};
@@ -2896,7 +2922,7 @@ try {
     );
     /*
      * ⚠️★ 这里原本还有一条 `assert.equal(init.signal, undefined, '没传 signal 的那几个调用点')`
-     *    —— 2026-09-16 终审删掉了：三个 fetcher 都是**不带参数**调用的，
+     *    —— 2026-09-16 终审删掉了：四个 fetcher 都是**不带参数**调用的，
      *    那个值由构造方式决定（`signal` 这个键必须有、值只能是 `undefined`），
      *    而"这个键在不在"已经由上面那条 `Object.keys(init).sort()` 钉着 ⇒ 它不可能红。
      *    ⚠️ 没有它**不是**少了一件事：`signal` 真的传错了是**运行时**判据 ——
