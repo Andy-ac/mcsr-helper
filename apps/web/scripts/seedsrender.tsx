@@ -44,7 +44,7 @@
  *   **在本脚本里不会有任何编译错误** —— 只有运行时守卫会拦住它。
  *
  * ===========================================================================
- * ★★ 六：那 47 条 `labelKey` 的**词条存在性 + 值**（这一条最要紧）
+ * ★★ 六：那 47 条 `labelKey` 的**词条存在性 + 同一排内标签两两不同**（这一条最要紧）
  * ===========================================================================
  * 那 47 个键（37 个变种 + 10 个群系）只在**一处**被引用：`packages/shared/src/seedPicker.ts`
  * 的表的 `labelKey` 字段（界面是 `t(variation.labelKey)`，传进去的是**变量**）。
@@ -59,10 +59,16 @@
  *       上面那条比的是**表**、看不见；`services/api/src/i18n-keys.test.ts` 那几条静态扫描
  *       只走 `apps/web/src` 与 `services/api/src`（`packages/shared/src` **不在**扫描根里，
  *       而界面传进去的是**变量**、不是字面量），它那条"两份字典键集合相等"也只能抓到"只加了一边"。
- *    ② **值等于它自己那个上游标识**：值抄错行时键存在、不是裸 key、两种语言还一致 ⇒ 其余判据全绿。
+ *    ② **同一上下文（= 同一排按钮）里的标签两两不同**：两颗按钮印同一句话时用户分不出
+ *       哪颗是哪颗，而"复制上一行改一改"留下的痕迹正是这个。
  *    ⇒ 表现是按钮上直接印出 `seedsPage.variation.village.snowyTundra`
- *      （i18next 对未知 key 原样返回 key），或者印出**别人**的名字。
+ *      （i18next 对未知 key 原样返回 key），或者两颗按钮说同一句话。
  *    本脚本 ⑥ 逐条 × **两种语言**把这两件钉住（与当前跑的是哪一遍无关）。
+ * ⚠️★ 原来 ② 是**"值等于它自己那个上游标识"**（那一轮的值 = 标识原文）。**2026-09-18 用户
+ *    把中文侧翻成了人话** ⇒ 那条判据成了"钉死旧文案"，已按它自己的注释删掉；
+ *    **删掉它损失了什么、今天还剩什么**，逐条写在 ⑥ 那一组上面，别只看这一行。
+ * ⚠️ 渲染那一侧的"这颗按钮绑的是哪个键"由 ① 与 ③ 逐颗钉着（**47 条全覆盖**）——
+ *    那是翻译之后**活下来**的那条不变量，与上面这两件**不是**同一件事。
  * ⚠️★ 所以**不要**因为"那条测试也能抓键名"就把 ⑥ 当成重复删掉：它比这条注释
  *    原来写的理由**更强**（原来那句把它的独有性吹大了），不是更弱。
  * ⚠️ 所以 ⑥ 遍历的是**表**，不是"这一张渲染出来的那一排"：只查渲染出来的那几个，
@@ -520,9 +526,13 @@ function variationOf(variations: readonly SeedPickerVariation[], id: string): Se
 
 const VILLAGE = overworldRow('village');
 const BURIED = overworldRow('buried_treasure');
+const DESERT_TEMPLE = overworldRow('desert_temple');
+const SHIPWRECK = overworldRow('shipwreck');
+const RUINED_PORTAL = overworldRow('ruined_portal');
 const BRIDGE = bastionRow('bridge');
 const STABLES = bastionRow('stables');
 const TREASURE = bastionRow('treasure');
+const HOUSING = bastionRow('housing');
 
 /** 上下文由 `overworldContext()` / `bastionContext()` 拼 —— 与界面用的是同一个函数。 */
 const VILLAGE_CTX = overworldContext(VILLAGE.value);
@@ -535,9 +545,13 @@ const OBSIDIAN = variationOf(VILLAGE_VARS, 'chest:structure:obsidian');
 /** 只选了一行的状态。⚠️ `pickTop` 的第二个参数是**字段名**，与界面传的是同一个。 */
 const S_VILLAGE = pickTop(EMPTY_SEED_PICKER, 'overworld', VILLAGE.value);
 const S_BURIED = pickTop(EMPTY_SEED_PICKER, 'overworld', BURIED.value);
+const S_DESERT_TEMPLE = pickTop(EMPTY_SEED_PICKER, 'overworld', DESERT_TEMPLE.value);
+const S_SHIPWRECK = pickTop(EMPTY_SEED_PICKER, 'overworld', SHIPWRECK.value);
+const S_RUINED_PORTAL = pickTop(EMPTY_SEED_PICKER, 'overworld', RUINED_PORTAL.value);
 const S_BRIDGE = pickTop(EMPTY_SEED_PICKER, 'bastionType', BRIDGE.value);
 const S_STABLES = pickTop(EMPTY_SEED_PICKER, 'bastionType', STABLES.value);
 const S_TREASURE = pickTop(EMPTY_SEED_PICKER, 'bastionType', TREASURE.value);
+const S_HOUSING = pickTop(EMPTY_SEED_PICKER, 'bastionType', HOUSING.value);
 
 /*
  * ★ ④ 的夹具走**状态机**，不手工造 marks：
@@ -675,17 +689,52 @@ for (const c of NO_VARIATION_CASES) {
 ok('没有变种的两个结构：不渲染变种排，而它们自己照常被选中（19 颗顶层按钮都在）');
 
 // ---------------------------------------------------------------------------
-console.log('③ 断言 2：变种排的按钮数 —— village 7 / stables 11 / bridge 4');
+console.log(
+  '③ 断言 2：七个有变种的行 —— desert_temple 2 / shipwreck 5 / ruined_portal 5 / village 7 / housing 3 / bridge 4 / stables 11',
+);
 // ---------------------------------------------------------------------------
 /*
- * ★★ 三个数是**三个不同的状态**，所以面板**一个状态渲染一次**、在那一次产物里数。
+ * ★★ 每一个有变种的行**各渲染一次**（一个状态渲染一次），在那一次产物里数、并**逐颗比对文字**。
  *    想从一次渲染里同时拿到 7 与 11 是不可能的（两个结构不会同时是当前选中的那一行）。
+ * ⚠️★ 2026-09-18 起这一组还担着**第二件要紧事**：用户把中文侧翻成人话之后，
+ *    「值 = 它对应的上游标识」那条判据被删掉了（理由与代价见 ⑥）⇒
+ *    "**这一页把哪一颗按钮绑到了哪个键**"就只剩这里逐颗钉着。
+ *    原来只覆盖 village / stables / bridge 三行，剩下 15 条变种
+ *    （desert_temple 2 / shipwreck 5 / ruined_portal 5 / housing 3）**从不渲染** ⇒
+ *    本轮把那四行补了进来，加上 ① 的 19 颗顶层按钮（含 10 条群系）= 表里 47 条**全覆盖**。
+ *    那正是翻译之后**活下来**的那条不变量：值是什么语言无关紧要，键与按钮的对应关系要紧。
  * ⚠️ 每一条旁边都有"表里也是这么多"与"每一颗的文字 = 表里那一行的词条"两条：
  *    只数个数的话，"七颗按钮都印同一个词"照样绿。
  * ⚠️ 变种排的**组名**也在这里钉：两排变种用的不是同一个词条
  *    （主世界那排是"结构变种"、堡垒那排是"堡垒变种"），用错在界面上看不出来。
+ * ⚠️ 每行的条数是**手抄的**（本仓惯例）：它防的是"为了让红的变绿，把某一行从表里删掉"。
+ *    改表就要一起改这里。
  */
 const COUNT_CASES = [
+  {
+    where: 'desert_temple',
+    state: S_DESERT_TEMPLE,
+    vars: DESERT_TEMPLE.variations,
+    count: 2,
+    rowLabel: 'seedsPage.pickVariations',
+    at: 1,
+  },
+  {
+    where: 'shipwreck',
+    state: S_SHIPWRECK,
+    vars: SHIPWRECK.variations,
+    count: 5,
+    rowLabel: 'seedsPage.pickVariations',
+    at: 1,
+  },
+  {
+    where: 'ruined_portal',
+    state: S_RUINED_PORTAL,
+    vars: RUINED_PORTAL.variations,
+    count: 5,
+    rowLabel: 'seedsPage.pickVariations',
+    at: 1,
+  },
   {
     where: 'village',
     state: S_VILLAGE,
@@ -693,6 +742,14 @@ const COUNT_CASES = [
     count: 7,
     rowLabel: 'seedsPage.pickVariations',
     at: 1,
+  },
+  {
+    where: 'housing',
+    state: S_HOUSING,
+    vars: HOUSING.variations,
+    count: 3,
+    rowLabel: 'seedsPage.pickBastionVariations',
+    at: 3,
   },
   {
     where: 'stables',
@@ -754,7 +811,21 @@ for (const c of COUNT_CASES) {
   );
   assert.equal(topButtons(html).length, 19, `★ ${c.where}：四排顶层单选照常 19 颗`);
 }
-ok('变种排：village 7 / stables 11 / bridge 4，逐条文字与组名都对（一次一个状态）');
+/*
+ * ★★ **"每一个有变种的行都在这里渲染过一遍"本身要是一条判据**（从**表**里现算，不手抄）：
+ *    漏掉一个行 ⇒ 那一排的按钮就没有任何产物级判据，而"47 条全覆盖"那句话是**自己说的**。
+ *    表里加一行（`variations` 非空）而没加到这里 ⇒ 这条当场红。
+ */
+const VARIATION_ROW_NAMES: readonly string[] = [
+  ...SEED_PICKER_OVERWORLD.filter((r) => r.variations.length > 0).map((r) => r.value),
+  ...SEED_PICKER_BASTION_TYPES.filter((r) => r.variations.length > 0).map((r) => r.value),
+];
+assert.deepEqual(
+  COUNT_CASES.map((c) => c.where).sort(),
+  [...VARIATION_ROW_NAMES].sort(),
+  '★★ 表里**每一个有变种的行**都在这里渲染过（少一个、或同一行来两次 ⇒ 那条排的按钮没人看着）',
+);
+ok('变种排：七个有变种的行（2/5/5/7/3/11/4 = 表里 37 条）逐颗文字与组名都对（一次一个状态）');
 
 // ---------------------------------------------------------------------------
 console.log('④ 断言 3：同一次渲染里三种状态都在（is-with / is-without / 都没有）');
@@ -1000,16 +1071,19 @@ console.log('⑥ 断言 5：表里全部 47 个 labelKey 逐条 × 两种语言'
  *    **"打错键名不会有任何门禁发现"是假的** —— `services/api/src/seeds-picker-shared.test.ts:899`
  *    拿表里的键与手抄的 `SPEC_LABEL_KEYS` 比对，键名写错当场红。
  *    ⑥ 独有的是**另外两件**：两份字典里各有没有这条键（两种语言都要查）、
- *    以及**值等于它自己那个上游标识**。界面上印出那一串 key 本身，
- *    就是"字典那一侧少了或改了"的表现 —— 那种改法别的门禁看不见。
+ *    以及**同一排（同一上下文）里的标签两两不同**（2026-09-18 起；理由与代价见下面那一整段）。
+ *    界面上印出那一串 key 本身，就是"字典那一侧少了或改了"的表现 —— 那种改法别的门禁看不见。
  * ⚠️ 遍历的是**表**，不是"这一张渲染出来的那一排"：只查渲染出来的那几个，
  *    剩下 40 条照样没有任何门禁 —— 而它们迟早会被渲染出来。
+ *    （★ 但"渲染出来的那一排"另有 ① 与 ③ 逐颗比对**产物里的文字**：37 条变种在 ③、
+ *     10 条群系在 ① 的 19 颗顶层按钮里 —— 合起来 47 条全覆盖。）
  * ⚠️ **两种语言都要查**，与这一遍跑的是 `--en` 还是默认无关（`LANGUAGES`）：
  *    中文那一遍跑的时候英文那半边同样没人看。
  * ⚠️ 47 这个数字是**手抄的**（本仓惯例）：它防的是"为了让红的变绿，把某一行从表里删掉"。
  *    改表就要一起改这里。
- * ⚠️★ 遍历的是**成对的**（词条键, 上游标识），不是一串键："键存在"与"值是对的 id"
- *    是两件事 —— 值抄错行时键照样存在、照样不是裸 key、照样两种语言一样。
+ * ⚠️★ 遍历的是**成对的**（词条键, 上游标识），不是一串键：分组（"同一排"）按**键自己的前缀**
+ *    走，而"键在不在"与"这一排的标签互不相同"是两件事 —— 后者要成排一起看才判得出来。
+ *    配对里那个**上游标识**今天只剩一处用处（同一排里不许重复），因为值已经不再是标识了。
  */
 const VARIATION_LABEL_PAIRS: readonly { key: string; id: string }[] = [
   ...[...SEED_PICKER_OVERWORLD, ...SEED_PICKER_BASTION_TYPES].flatMap((row) =>
@@ -1029,7 +1103,7 @@ assert.equal(
   VARIATION_LABEL_KEYS.length,
   '★ 47 条键互不相同（两个变种共用一个键 = 界面上两个不同的东西显示同一个词，spec §5.2/§5.3）',
 );
-for (const { key, id } of VARIATION_LABEL_PAIRS) {
+for (const { key } of VARIATION_LABEL_PAIRS) {
   for (const lng of LANGUAGES) {
     assert.ok(
       i18n.exists(key, { lng }),
@@ -1046,27 +1120,129 @@ for (const { key, id } of VARIATION_LABEL_PAIRS) {
       '',
       `★★ 词条 ${key} 在【${lng}】里是空的（空格子看起来像渲染坏了）`,
     );
-    /*
-     * ★★ 值必须就是**它对应的那个上游标识**（spec §5.1 / R6：这一轮的值 = 标识原文，
-     *    两种语言写同一串）。这一条同时守住两件事：
-     *      · 值抄错行（`plains` 那一格放着 `desert` 的串）—— 那颗按钮上挂着**别人**的名字，
-     *        而键存在、不是裸 key、两种语言也对得上，**其它门禁一条都发现不了**；
-     *      · 只翻译了一半（一边是 id、一边是中文）—— 同一条键在两种语言的界面上说两件事。
-     *    ⚠️ 因此它**蕴含**了"两种语言的值必须相同"，那条就不必单独写
-     *      （本仓的规矩：不可能红的守卫比没有守卫更坏）。同理也没有"值不能是另一条 key"
-     *      那一条：id 永远不以 `seedsPage.` 开头。
-     *    ⚠️★ 用户之后真的要改中文的那一天，要改的**就是这一条**：那时的正确判据回到
-     *      "值不是裸 key"（上面那两条），而不再是"值等于 id"。别把它当成永久的业务断言。
-     */
-    assert.equal(
-      flat(value),
-      flat(id),
-      `★★ 词条 ${key} 在【${lng}】里的值不是它对应的上游标识（期望「${id}」，实读「${value}」）—— 按钮上会挂着别的变种的名字`,
-    );
   }
 }
+
+/*
+ * ★★ 同一上下文（= 界面上**同一排**变种按钮）里的标签必须**两两不同**。
+ *
+ * ⚠️★ 这里原来是一条 `assert.equal(flat(value), flat(id), …)`：**值必须就是它对应的
+ *    那个上游标识**（spec §5.1 / R6：那一轮的值 = 标识原文，两种语言写同一串）。
+ *    它同时守着两件事：
+ *      · 值抄错行（`plains` 那一格放着 `desert` 的串）—— 那颗按钮上挂着**别人**的名字，
+ *        而键存在、不是裸 key、两种语言也对得上，**其它门禁一条都发现不了**；
+ *      · 只翻译了一半（一边是 id、一边是中文）—— 同一条键在两种语言的界面上说两件事。
+ *    （它还**蕴含**了"两种语言的值必须相同"，所以那条没有单独写；也没有"值不能是另一条 key"
+ *      那一条：id 永远不以 `seedsPage.` 开头。）
+ *    ⚠️★ **2026-09-18 用户把中文侧翻成了人话**（`沙漠` / `两个三箱塔` / …）⇒ 那条判据
+ *    就从"业务断言"变成了"钉死旧文案"：中文侧的值**不再**是标识，它**今天就是要红的**。
+ *    这一段的旧注释早就写着这一天该怎么办：判据回到"值不是裸 key"，而不再是"值等于 id"。
+ *    ⇒ 已按那句话删掉（英文侧的值仍然是标识，但**没有**哪条断言可以对英文单独生效 ——
+ *      "两种语言一起查"这条纪律正是为了不留下那种半边盲区）。
+ *
+ * ⚠️⚠️ **删掉它是有代价的，代价写在明面上**：
+ *    · 值**跨行抄错**（把甲行的词抄到乙行，例如 `desertTemple.diamond` 那一格放着村庄的
+ *      「沙漠」）在中文侧**今天没有任何机器判据**：键照样存在、照样不是裸 key、
+ *      那一行内部也照样互不相同。
+ *    · 这条判据**没法"改造"回来**：两份字典里**不同的键可以合法地共用同一个标签** ——
+ *      `village.diamond` / `desertTemple.diamond` / `shipwreck.diamond` 三条都是「钻石」
+ *      （同一个上游标识、三个键，spec §5.3 那是有意的重复），而 `bastionBiome.*` 与
+ *      `fortressBiome.*` 两排**五个标签全同、标识却不同**（`biome:bastion:nether_wastes`
+ *      与 `biome:fortress:nether_wastes` 都叫「下界荒地」）⇒ "标签不同 ⇔ 标识不同"这个
+ *      等式**不成立**，任何"拿标签反推标识"的守卫都会红在**合法**的东西上
+ *      （本仓的规矩：不可能红的守卫比没有守卫更坏）。
+ *      ⚠️ 顺带也否掉了另一条看着能用的判据：**"两排群系必须读成一样"**。它抓得住那一对
+ *      抄错，但它钉的是今天这份抄写的**一种巧合**，而不是"这一页把哪一颗按钮绑到了哪个键"
+ *      —— 后者才是这一组要守的东西，而它已经由 ① / ③ 逐颗钉着了。
+ *
+ * ★ **今天还剩什么**（一条抓一样，别把它们当成同一条）：
+ *    · 47 这个数与"47 条键互不相同"（上面那两条）—— 抓"表被改短 / 两行共用一个键"；
+ *    · 上面那三条（存在 / 不是裸 key / 非空）× **两种语言** —— 抓"字典那一侧少一条、
+ *      或者键名写歪了"，表现是界面上印出 `seedsPage.variation.village.snowyTundra`
+ *      （i18next 对未知 key 原样返回 key）；
+ *    · **同一排里的标签两两不同**（紧跟在这后面）—— 抓**同一排内**两颗按钮印同一句话
+ *      （用户分不出哪颗是哪颗），而那正是"复制上一行改一改"最容易留下的痕迹；
+ *    · ① 的 19 颗顶层按钮与 ③ 的每一排变种按钮：产物里的文字逐条 = 表里那个 `labelKey`
+ *      在**本遍语言**里的值 —— 抓"这一页把某一颗按钮绑到了**别人的**键"（渲染那一侧）。
+ *      ③ 今天覆盖**全部七个**有变种的行（37 条变种），加上 ① 的 10 条群系 = 47 条全覆盖；
+ *    · 英文侧的值今天仍然**逐字**是标识 ⇒ 英文那一遍的"两两不同"顺带钉着"英文侧没被人
+ *      手工改过"（改一个词就可能与同行另一个撞上）。
+ *    · **没有**任何判据管"中文这个词**是不是**它那个标识的正确翻译" —— 那件事从
+ *      2026-09-18 起只由人看（这是用户自己的选择：他今天要的就是人话）。
+ */
+/*
+ * ★ **重复检测自己必须能命中**：下面那条"没有重复"如果是因为检测逻辑坏了（比如分组
+ *    只剩一条），它就会是一条**不可能红**的守卫（`docs/pending.md §5.63`）⇒ 先跑两个探针。
+ */
+const duplicatesIn = (values: readonly string[]): string[] => [
+  ...new Set(values.filter((v, i) => values.indexOf(v) !== i)),
+];
+assert.deepEqual(
+  duplicatesIn(['沙漠', '沙漠', '平原']),
+  ['沙漠'],
+  '★ 探针：重复检测必须能命中（否则下面那一组"没有重复"是空话）',
+);
+assert.deepEqual(duplicatesIn(['沙漠', '平原']), [], '★ 探针：而真的不重复时必须回空数组');
+/*
+ * ⚠️ 分组按**键自己的前缀**（`seedsPage.variation.<上下文>.<短名>`）：界面上一排 = 一个上下文，
+ *    与键名规则（spec §5.1）是同一个划分。**键的形状要先钉住** —— 不钉的话，某天有人把键
+ *    写成四段以外的形状，分组会**静默地**变成"一行一条"，而下面那条判据仍然全绿
+ *    （那就是一条不可能红的守卫）。
+ */
+const VARIATION_BY_CONTEXT = new Map<string, { key: string; id: string }[]>();
+for (const pair of VARIATION_LABEL_PAIRS) {
+  assert.equal(
+    /^seedsPage\.variation\.[A-Za-z]+\.[A-Za-z0-9]+$/.test(pair.key),
+    true,
+    `★ 键名规则是 seedsPage.variation.<上下文>.<短名>（现读「${pair.key}」）`,
+  );
+  const ctx = pair.key.split('.')[2] as string;
+  VARIATION_BY_CONTEXT.set(ctx, [...(VARIATION_BY_CONTEXT.get(ctx) ?? []), pair]);
+}
+assert.equal(
+  VARIATION_BY_CONTEXT.size,
+  9,
+  `★ 探针：上下文恰好 9 个（7 个结构 + 两排群系；现读 ${String(VARIATION_BY_CONTEXT.size)} 个）—— 分组塌了就成空跑`,
+);
+for (const [ctx, pairs] of VARIATION_BY_CONTEXT) {
+  assert.ok(
+    pairs.length >= 2,
+    `★ 探针：${ctx} 至少两条（只剩一条时"两两不同"恒真，那是一条不可能红的守卫）`,
+  );
+  /*
+   * ⚠️ 这一排里**配对的上游标识**也必须互不相同：一颗按钮 = 一个变种，两颗按钮指着同一个
+   *    上游变种就是"有一条永远查不出不同"。它与词条值无关（值今天是人话），
+   *    所以**只有这一条**还看得见"表里那一对配对"本身。
+   *    （配对与 spec §4.2 的逐条对照另有一份守卫：`seeds-picker-shared.test.ts:910`。）
+   */
+  assert.equal(
+    new Set(pairs.map((p) => p.id)).size,
+    pairs.length,
+    `★ ${ctx} 那一排里有两颗按钮指着**同一个上游变种**（重复：${pairs
+      .map((p) => p.id)
+      .filter((v, i, all) => all.indexOf(v) !== i)
+      .join(' / ')}）`,
+  );
+}
+for (const lng of LANGUAGES) {
+  let grouped = 0;
+  for (const [ctx, pairs] of VARIATION_BY_CONTEXT) {
+    grouped += pairs.length;
+    const values = pairs.map((p) => flat(t(p.key, { lng })));
+    assert.deepEqual(
+      duplicatesIn(values),
+      [],
+      `★★ 【${lng}】的 ${ctx} 那一排里有两颗按钮印同一句话（重复：${duplicatesIn(values).join(' / ')}）—— 用户分不出哪颗是哪颗`,
+    );
+  }
+  assert.equal(
+    grouped,
+    47,
+    `★ 探针：【${lng}】那一遍确实把 47 条都分了组（现读 ${String(grouped)} 条）`,
+  );
+}
 ok(
-  `词汇表：${String(VARIATION_LABEL_KEYS.length)} 条 labelKey × 两种语言，逐条存在、有真值、不是裸 key、值等于它自己的上游标识`,
+  `词汇表：${String(VARIATION_LABEL_KEYS.length)} 条 labelKey × 两种语言，逐条存在、有真值、不是裸 key；且同一排内的标签两两不同`,
 );
 
 // ---------------------------------------------------------------------------

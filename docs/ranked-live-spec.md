@@ -80,7 +80,7 @@
 | ② 「只展示双方均直播的对局」 | 一颗开关「只看双方都在直播」：两侧 `liveUrl` 均非 null（**任何平台**）（★ 2026-09-19，§6.3） |
 | ③ 排行榜 | 前 **150**（★ 2026-09-19） + 顶部赛季号与**结束时间**（★ 2026-09-19 第二轮：用户点名**去掉起始时间**） **+ 并排的赛段**（§6.4） |
 | ④ 周赛 | 默认本周、可前后翻页；顶部周数 + **4 个种子** + 截止时间（§6.5） |
-| 当前进度显示 | **英文原样**，同时 `zh-CN.ts` 里为每个已知标识配词条（值先写英文，用户稍后校准）（§7.2） |
+| 当前进度显示 | **查表印词条值** + 未知回落（★ 2026-09-18 修订：中文侧的词条值是人话「进入堡垒遗迹」这类，英文侧仍是上游标识原样；当年那句"值先写英文、两种语言同值"已作废）（§7.2） |
 | 周数显示 | `id = -1` ⇒ **「第 0 周」**；`id ≥ 1` ⇒ 「第 N 周」一一对应（§6.5） |
 | 请求 IP | **访客的 IP**（浏览器直连）；只有心跳走我们的服务器（§3） |
 
@@ -642,10 +642,13 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
 │  1234 人正在玩 Ranked                                        │
 └──────────────────────────────────────────────────────────────┘
 ```
+⚠️★ 上面那四行的名字是**英文侧**的字面（`en.ts` 的值）。**中文侧 2026-09-18 起是**
+「服务器」/「API」/「商店」/「Wiki」（用户自己改的）—— 两种语言说的是**同一件事的两份文本**，
+顺序与 id 的对应关系不受影响（§7.3 与 `pending.md §5.99` ①）。
 
 | 元素 | 规则 |
 |---|---|
-| 四行 | **恒为四行**，顺序 = `RANKED_STATUS_COMPONENTS`（Game Server → API → Store → Wiki，**用户的顺序**） |
+| 四行 | **恒为四行**，顺序 = `RANKED_STATUS_COMPONENTS`（上游那四格的顺序：Game Server → API → Store → Wiki，**用户的顺序**；⚠️ 那一列字面量是**英文侧**的显示文本，中文侧 2026-09-18 起是「服务器」/「API」/「商店」/「Wiki」，见 §7.3） |
 | 名字 | 来自那张表的词条 key（`ranked.componentGameServer` …）。⚠️ **不在任何 API 里**（§4.2 的长注释） |
 | 状态徽章 | 四格各自的 `state` → `1` 正常 / `0` 故障 / `2` 等待 / `3` 维护 —— **四种都要有话说** |
 | 读不到那一格 | `state: null` ⇒ 徽章是 `—` + **中性配色**（`--unknown`），**不是**「故障」；时间也是 `—` |
@@ -715,7 +718,13 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
    中间   = 这场比赛已经进行的时间（currentTime）
 ```
 
-  ⚠️ `timelineType` **原样显示**（英文标识）—— 草图上那串就是界面上真正会出现的字面。
+  ⚠️★ **修订 2026-09-18：那一格印的是词条值，不是标识。** 用户当天自己把 `zh-CN.ts` 的
+  `ranked.timeline.*` 九条从标识原文翻成了人话 ⇒ 中文界面上出现的是「进入堡垒遗迹」这类词，
+  上面草图里那串 `nether.find_bastion` **是英文侧今天的字面**（`en.ts` 的值仍然逐字是标识，
+  用户明确只要中文那一侧翻）。⚠️ **未在表里的标识两种语言都照样原样回落**（`timelineLabel()`
+  的那一支没变）—— 新节点仍然有话说。⚠️ 界面上那一格由渲染自检断言为"**表里那个
+  `labelKey` 在本遍语言里的值**"（`apps/web/scripts/rankedrender.tsx`）：钉死某个手抄字面
+  的断言会红在用户改词条的那一天，而红的原因与"视图坏了"无关。
   ⚠️ 一人没有 `timeline` ⇒ 那一格渲染 `—`（**不删**：删掉会让左右不对称）。
   ⚠️ 两人顺序固定为"elo 高的在左"（null 排后），同一场比赛在两次刷新之间不会左右乱跳。
 - **点击展开直播框**：
@@ -1028,10 +1037,14 @@ export function nextWeekId(id: number, latestId: number): number | null {
 ⚠️ 英文栏目名**不能叫 "Ranked live" / "Live"**：侧栏「直播」已经是 "Live"，
 本仓为"侧栏出现两个 Live"花过一轮。`ranked.tabLive`（"Top matches"）在标签页内是安全的。
 
-### 7.2 当前进度（`timeline.type`）—— **英文原样 + 词条表**
+### 7.2 当前进度（`timeline.type`）—— **词条表 + 未知回落**
 
-用户裁决：界面**暂时显示英文原样**，同时 `zh-CN.ts` 里配好对应词条（值先写英文），
-**用户稍后自行校准翻译**。
+用户裁决（2026-09-16）：界面**暂时显示英文原样**，同时 `zh-CN.ts` 里配好对应词条（值先写英文）。
+★ **修订 2026-09-18：用户自己把那九条中文值翻成了人话**（「进入堡垒遗迹」…），
+**英文侧一个字没动**（`en.ts` 的值仍然逐字是上游标识）⇒ 中文界面印人话、英文界面印标识，
+**两种语言不再长得一样**。**回落那条设计不变**（下面三条里第 1 条），
+而"值 = 标识"这条当年的判据**作废**：与上游的对应关系只由**词条 key** 承载
+（`TIMELINE_LABEL_KEYS` 的值）。
 
 ```ts
 // packages/shared/src/ranked/timeline.ts
@@ -1055,7 +1068,11 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 - ⚠️★ **回落到原始标识**是这条设计的核心：上游随时可能加一个新节点，界面必须**照样有话说**。
   i18next 查不到 key 时**原样返回 key** ⇒ 直接 `t(...)` 会印出 `ranked.timeline.xxx`，
   而那正是 §11.2"裸 key 泄漏"扫描要抓的东西。
-- ⚠️ `zh-CN.ts` 里这些**值先写英文原文**（用户要自己校准）。**不许**留空、**不许**写 `TBD`。
+- ⚠️ `zh-CN.ts` 里这九条的**中文值** 2026-09-18 起是**人话**（用户自己改的：「进入堡垒遗迹」…），
+  而在那之前它们是标识原文。**不许**留空、**不许**写 `TBD`。⚠️ 英文侧（`en.ts`）**仍然是标识原文**
+  —— 两种语言的界面从此不再一样（代价记在 `pending.md`）。⚠️ 与上游的对应关系**只由上面那张表的
+  key 承载**：值不再是标识，所以"看值猜标识"没有判据（这一点在渲染自检那边的后果，
+  与种子的 47 条词条是同一件事：`pending.md` 里记着丢掉的那条抄错判据）。
 - 词条 key 的**存在性**由渲染自检逐条断言（表里有 N 条就断言 N 条，与「实时分享」的 `FROZEN_KEYS` 同一手法）。
 
 ### 7.3 其余词条（面板用）
@@ -1063,7 +1080,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | key | 中文 |
 |---|---|
 | `ranked.statusUp/Down/Pending/Maintenance` | 「正常」/「故障」/「等待」/「维护」（★ 2026-09-19 起被**四格**各自使用） |
-| ★ `ranked.componentGameServer` / `componentApi` / `componentStore` / `componentWiki` | 「Game Server」/「API」/「Store」/「Wiki」—— ⚠️★ 这四个名字**不在任何 API 里**，来自状态页的 `preloadData`（§4.2）；两种语言同值（上游的专有名词） |
+| ★ `ranked.componentGameServer` / `componentApi` / `componentStore` / `componentWiki` | **中文侧**（2026-09-18 用户自己改的）：「服务器」/「API」/「商店」/「Wiki」；**英文侧仍是**「Game Server」/「API」/「Store」/「Wiki」—— ⚠️★ 这四个名字**不在任何 API 里**，来自状态页的 `preloadData`（§4.2）；⚠️ 当年那句"两种语言同值（上游的专有名词）"**今天不成立**（中文侧翻过之后两侧不同值）：id ↔ 名字的对应关系由 **`RANKED_STATUS_COMPONENTS` 这张表的键**承载，而"名字与 id 对不上"那件事只能靠人去对状态页 —— 状态页上没有中文，人要比的是**英文那四个词** |
 | ★ `ranked.componentCheckedAt` | 「最后更新 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-17 11:16:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按**本机**时区解释 ⇒ 显示值随部署机器漂；本仓被一次静默的 8 小时偏移烧过）。它取代码表里的 `statusCheckedAt` |
 | ⛔ ~~`ranked.statusPing` / `statusPingUnknown` / `statusUptime` / `statusCheckedAt`~~ | **已删**（2026-09-19，用户口径「不加其他多余的信息」）：没有消费者的 key 留着，下一个人会以为它还挂着某个渲染点。渲染自检有一条断言"它们**不在**字典里" |
 | `ranked.playersTitle` / `players` / `playersUnknown` / `playersZero` | 「实时在线人数」/「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
@@ -1543,7 +1560,7 @@ nickname."）；`lookupInvalid` 与 `errInvalidIdentifier` 才是**两侧都不�
 | 英文栏目名 | **"Ranked now"** |
 | 我们**唯一**的端点 | `GET /api/ranked/status`（**心跳，2026-09-19 起是四格**；CORS 所迫）。★ 2026-09-17：`GET /api/ranked/live` **已删除**（它**没有调用者** —— 面板是浏览器直连的；收录那一件事改走 systemd 作业，见 §3.1） |
 | 服务器出网（ranked 上游） | 心跳 ≤2 次/分钟（**4%**）+ 直播链接收录作业 0.2 次/分钟（**0.4%**）⇒ 合计 **≈4.4%**（口径：500 次 / 10 分钟 / IP，§2.1）。⚠️ §3.1 说明了为什么**不**照抄那个"约 8%" |
-| ★★ 状态栏那四格的**名字** | 写死在 `RANKED_STATUS_COMPONENTS`（`2/3/4/5 → Game Server/API/Store/Wiki`）。⚠️⚠️ **这是这一栏唯一一处未经 API 验证的映射**（心跳只给 id，名字只在状态页的 `preloadData` 里，那条路没有 API）—— 上游重新编号时**没有任何门禁看得见**（`pending.md §5.99` ①） |
+| ★★ 状态栏那四格的**名字** | 写死在 `RANKED_STATUS_COMPONENTS`（`2/3/4/5 → ranked.component*`；**中文侧的显示文本** 2026-09-18 起是「服务器」/「API」/「商店」/「Wiki」，**英文侧**仍是 `Game Server/API/Store/Wiki`）。⚠️⚠️ **这是这一栏唯一一处未经 API 验证的映射**（心跳只给 id，名字只在状态页的 `preloadData` 里，那条路没有 API）—— 上游重新编号时**没有任何门禁看得见**（`pending.md §5.99` ①）；⚠️ 那次人工核对照的是 `en.ts` 里那四个英文词（状态页上没有中文） |
 | 浏览器直连的上游 | `api.mcsrranked.com` 的 `/live`、`/leaderboard`、**`/phase-leaderboard`（★ 2026-09-19 加）**、`/weekly-race{,/{id}}`（**主入口**）；`mcsrranked.com/api` 同路径（**兜底**，只在网络错误时） |
 | 直连请求选项 | `cache: 'no-store'`、`credentials: 'omit'`、`referrerPolicy: 'no-referrer'`、**不带自定义头**（新增的赛段那一条**照旧**） |
 | 心跳缓存 | TTL 30 秒 + single-flight + 兜底 ≤10 分钟 |
@@ -1555,7 +1572,7 @@ nickname."）；`lookupInvalid` 与 `errInvalidIdentifier` 才是**两侧都不�
 | 高分对局筛选 | 昵称搜索（两侧任一、子串、忽略大小写）+「只看双方都在直播」（两侧 `liveUrl` 均非 null，**任何平台**）；两者与分批**可组合**，且**只筛本地数据**（不发请求） |
 | 排序口径 | `avgElo` = 非 null 平均；两人都 null ⇒ null ⇒ **排最后** |
 | 排名口径 | 上游的 **`eloRank`**（并列会重复、之后会跳号） |
-| 进度显示 | `timeline.type` **原样** + 词条表 + 未知回落（§7.2） |
+| 进度显示 | `timeline.type` 查 `TIMELINE_LABEL_KEYS` → 印**词条值** + 未知回落（§7.2）。⚠️ 2026-09-18 起中文侧的值是人话、英文侧仍是标识 ⇒ 两种语言的这一格**不再一样** |
 | 周数显示 | `displayWeekNo(-1) = 0`，`≥1` 一一对应；**显示用响应里的 `data.id`** |
 | ★ 周赛顶部那一行 | 上一周 / 下一周 / **手输周数 + 跳转** / **本周**；三轮都在**面板最上面**（§6.5） |
 | ★ 手输周数的判定 | `parseWeekInput(raw, latestId)`（纯函数）：非整数 ⇒ `not_a_number`；`0` / `≤ -2` / `> latestId` / 超长 ⇒ `no_such_week`；**不合法一个请求都不发** |

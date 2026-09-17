@@ -294,10 +294,16 @@ export interface SeedPickerState {
 
 - **文件**：`packages/shared/src/i18n/zh-CN.ts` 与 `packages/shared/src/i18n/en.ts`
   的 `seedsPage.variation.*` 下（用户此前已经改过 `zh-CN.ts`，见 `progress.md` §十五①）。
-- **值**：**上游标识原文**（R6）。**两种语言都写同一串英文**。
-  ⚠️ 理由与上一轮的时间线词条逐字相同（`packages/shared/src/ranked/timeline.ts`）：
-  值就是标识本身，于是"表里有"与"表里没有"不会显示成两种不同的东西。这一轮的表是固定的，
-  但仍然照这个走 —— 用户明确说了"暂时用英文原文展示"。
+- **值**：★ **2026-09-18 修订** —— **中文侧是给人看的文案**（用户当天自己把 47 条从
+  `biome:structure:desert` 这类标识原文翻成了「沙漠」这类人话），**英文侧仍然写上游标识原文**
+  （用户明确只要中文那一侧翻）。⇒ 与上游的对应关系**只由键名承载**
+  （`seedPicker.ts` 表里那一行的 `labelKey`），值不再承载它。
+  ⚠️ 本节原文写的是"值 = 标识原文，两种语言都写同一串英文（R6）"，并给了两条理由
+  （① 值就是标识本身 ⇒ "表里有"与"表里没有"不会显示成两种不同的东西；② 用户说"暂时用英文原文展示"）。
+  今天**两条都不成立**：值不再是标识，而这一处**本来就没有**"查不到就回落成标识"那条支路
+  （查不到时 i18next 原样返回 **key**，界面上印出 `seedsPage.variation.…`，肉眼分得开）。
+  ⚠️ **代价**：中文侧"值抄错行"从此没有机器判据（渲染自检里丢掉的那条抄错守卫，
+  逐条记在 `pending.md`）；同一排内的标签两两不同那一条仍然守着"两颗按钮说同一句话"。
 - **键名规则**：`seedsPage.variation.<上下文>.<短名>`。
 
 ### 5.2 ★ bastion 子类型**分开分键**（用户明确要求）
@@ -306,8 +312,8 @@ export interface SeedPickerState {
 `single:1/2/3` 是**双箱塔**、`small_single:1/2/3` 是**单箱塔**）。所以：
 
 ```
-seedsPage.variation.bridge.single1   = 'bastion:single:1'
-seedsPage.variation.stables.single1  = 'bastion:single:1'   ← 同一个标识，两个键
+seedsPage.variation.bridge.single1   ← bastion:single:1   （★ 箭头的意思是"这个键代表哪个上游标识"）
+seedsPage.variation.stables.single1  ← bastion:single:1   ← 同一个标识，两个键
 ```
 
 ⇒ **同一个标识在不同 bastion 子类型下必须是不同的键**，将来改一处不会连带改另一处。
@@ -331,10 +337,13 @@ village / desert_temple / shipwreck，**共用一个键**"，而 §5.1 的规则
   所以"按上下文分键"在主世界/bastion/群系三类上是同一个规则。
 
 **代价（写在明面上）**：今天 `chest:structure:diamond` 会在
-`village.diamond` / `desertTemple.diamond` / `shipwreck.diamond` **三个键里各存一份同样的英文**。
+`village.diamond` / `desertTemple.diamond` / `shipwreck.diamond` **三个键里各存一份同样的文案**
+（2026-09-18 起中文侧三处都是「钻石」）。
 用户翻译时如果三处说法相同，他要改三处；**只改了一处**的表现是同一个意思在三种结构下
-两种语言混着显示。⇒ 真要合并时，改法是"把三行的 `labelKey` 指向同一个键"，
-改动只在表里、词条不用动。
+两种语言混着显示 —— ⚠️★ 而这件事从 2026-09-18 起**没有机器判据**（键各自都合法、
+值不再等于标识、三个键在不同排里所以"同一排内标签两两不同"也管不到它；
+丢掉的那条判据逐条记在 `pending.md`）。
+⇒ 真要合并时，改法是"把三行的 `labelKey` 指向同一个键"，改动只在表里、词条不用动。
 
 ### 5.4 完整的键清单（37 条变种 + 10 条群系 = **47 条键**）
 
@@ -398,15 +407,17 @@ fortress 生物群系 = seedsPage.variation.fortressBiome.{同上五个}
 主世界结构                                          ← 组名**单独一行，在它那一排按钮上面**
 [村庄] [沙漠神殿] [沉船] [废弃传送门] [埋藏的宝藏]      ← 单选，可空
 结构变种                                            ← 选中村庄时出现；与上一排**同级，不缩进**
-[biome:structure:desert] [..:plains] [..:savanna] [..:snowy_tundra] [..:taiga]
-[chest:structure:diamond] [chest:structure:obsidian]  ← 三态；前五个互斥
+[沙漠] [平原] [热带草原] [雪原] [针叶林]                ← ★ 2026-09-18 起是这样（中文侧是人话）
+[钻石] [黑曜石]                                      ← 三态；前五个互斥
+⚠️ 这张草图原来画的是 `[biome:structure:desert] …`（那一轮值 = 上游标识原文）。
+   今天**英文侧**画出来仍然是那样（`en.ts` 的值没动），中文侧是上面这样。
 
 下界堡垒遗迹 · 生物群系
-[bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空
+[玄武岩三角洲] [绯红森林] [下界荒地] [灵魂沙峡谷] [诡异森林]                 ← 单选，可空
 下界堡垒遗迹 · 类型
 [桥] [藏宝室] [居住区] [疣猪兽棚]                     ← 单选，可空
 堡垒变种                                            ← 选中桥时出现；同样不缩进
-[bastion:single:1] [bastion:single:2] [bastion:triple:1] [bastion:triple:2]   ← 三态，不互斥
+[一个坏塔] [两个坏塔] [一个好塔] [两个好塔]            ← ★ 2026-09-18 起（英文侧仍是 `bastion:*`）
 
 要塞 · 生物群系
 [bio..basalt_deltas] [..crimson_forest] [..nether_wastes] [..soul_sand_valley] [..warped_forest]   ← 单选，可空

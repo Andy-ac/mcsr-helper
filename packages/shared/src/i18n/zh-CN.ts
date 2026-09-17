@@ -106,7 +106,7 @@ export const zhCN = {
      *    而它现在唯一的效果只是"多一条没人用的词条" —— 留一条注释比留一条
      *    无声的孤儿更诚实（下一个人看得见它为什么还在）。
      */
-    comingSoon: '当前处于 M0 骨架阶段，功能正在建设中。',
+    comingSoon: '当前处于测试阶段，部分功能正在建设中。',
 
     /*
      * -------------------------------------------------------------------------
@@ -2209,22 +2209,35 @@ export const zhCN = {
     /**
      * ★ 变种词汇表 —— **用户之后要改的就是这一块**（spec §5，"写在词汇表 ts 文件里"）。
      *
-     * ⚠️ 值 = **上游标识原文**，两种语言写**同一串**英文（R6 / spec §5.1）。这一轮**故意不翻译**：
-     *    用户原话是"暂时用英文原文展示，之后我会修改"。
-     *    第二个理由与 `ranked/timeline.ts` 那张表逐字相同：值就是标识本身，
-     *    于是"表里有"与"表里没有"不会显示成两种不同的东西。
-     *    这两句是要说明：在这里填中文**不违反**任何东西，只是今天不该填。
+     * ⚠️★ 值 = **给人看的文案**。**2026-09-18 用户自己把这一块从"上游标识原文"翻成了中文**
+     *    （`village.desert` 从 `biome:structure:desert` 变成「沙漠」、`stables.triple2`
+     *    从 `bastion:triple:2` 变成「两个三箱塔」）⇒ 中文侧今天读起来是人话。
+     *    ⚠️ **英文侧（`en.ts`）仍然是标识原文**：用户今天明确只要中文这一侧翻，
+     *    所以两种语言的界面**不再长得一样**（代价与"要关掉它该做什么"记在 `pending.md`）。
+     *    ⚠️ 与上游的对应关系**只由键名承载**（`seedPicker.ts` 表里那一行的 `labelKey`）：
+     *    值本身**不再**能反推标识 —— 同一个标识在几个上下文下各有自己的键（下面那句），
+     *    而不同的键也可能合法地共用同一个标签（`village.diamond` 与 `shipwreck.diamond`
+     *    都是「钻石」），所以"看值猜标识"这件事没有判据，**别照它推理**。
+     *    ⚠️ 2026-09-16 那两句旧词（"值就是标识本身，于是'表里有'与'表里没有'不会显示成两种
+     *    不同的东西"，理由是从 `ranked/timeline.ts` 那张表逐字抄来的）**今天都不成立了**：
+     *    值不再是标识；而这一处**本来就没有**"查不到就回落成标识"那条支路（查不到时
+     *    i18next 原样返回 **key** ⇒ 界面上印出 `seedsPage.variation.…`，肉眼分得开）。
+     *    别照那两句推理。
      *
      * ⚠️ 键名规则**没有例外**：`seedsPage.variation.<上下文>.<短名>`。所以
      *    `chest:structure:diamond` 在 village / desertTemple / shipwreck 下是**三个键**、
-     *    今天各存一份同样的英文 —— spec §5.3 的裁决，**这个重复是有意的**。
-     *    代价写在明面上：将来要改说法就得改三处；真要合并时改的是
+     *    今天各存一份「钻石」—— spec §5.3 的裁决，**这个重复是有意的**。
+     *    代价写在明面上：将来要改说法就得改三处（而且这一轮之后，"只改了其中一处"
+     *    在中文侧**没有机器判据**：三个键各自都合法）；真要合并时改的是
      *    `seedPicker.ts` 表里那三行的 `labelKey`，这一块一个字都不用动。
      *
      * ⚠️ bastion 的子类型**分开分键**（spec §5.2，用户明确要求）：`bastion:single:1`
      *    在 bridge 与 stables 下是**两个键**。上游文档里 stables 的 `single:1/2/3` 是双箱塔、
      *    `small_single:1/2/3` 是单箱塔 —— 共用键的表现是"两个不同的东西显示同一个词"，
      *    而且不会报错（实测 ⑩/⑪：同一个词条在两种类型下命中数不同，是两样东西）。
+     *    ⚠️ 这一条在中文侧**今天仍然**成立且必须成立：同一排里的两颗按钮**不许说同一句话**
+     *    （渲染自检 ⑥ 逐个上下文断言"同一排内标签两两不同"）；而**跨排**共用同一个词
+     *    是合法的（bastion 群系与 fortress 群系那五条就是两边同词）。
      *
      * ⚠️ 键名逐字取自 `packages/shared/src/seedPicker.ts` 的表的 `labelKey` 字段。
      *    **少一条不会报错** —— i18next 对未知 key 原样返回 key，
@@ -2233,77 +2246,77 @@ export const zhCN = {
     variation: {
       // 主世界 · village（上游 overworld=village）
       village: {
-        desert: 'biome:structure:desert',
-        plains: 'biome:structure:plains',
-        savanna: 'biome:structure:savanna',
-        snowyTundra: 'biome:structure:snowy_tundra',
-        taiga: 'biome:structure:taiga',
-        diamond: 'chest:structure:diamond',
-        obsidian: 'chest:structure:obsidian',
+        desert: '沙漠',
+        plains: '平原',
+        savanna: '热带草原',
+        snowyTundra: '雪原',
+        taiga: '针叶林',
+        diamond: '钻石',
+        obsidian: '黑曜石',
       },
       // 主世界 · desertTemple（上游 overworld=desert_temple）
       desertTemple: {
-        diamond: 'chest:structure:diamond',
-        egap: 'chest:structure:egap',
+        diamond: '钻石',
+        egap: '附魔金苹果',
       },
       // 主世界 · shipwreck（上游 overworld=shipwreck）
       shipwreck: {
-        carrot: 'chest:structure:carrot',
-        diamond: 'chest:structure:diamond',
-        normal: 'type:structure:normal',
-        sideways: 'type:structure:sideways',
-        upsidedown: 'type:structure:upsidedown',
+        carrot: '胡萝卜',
+        diamond: '钻石',
+        normal: '正立',
+        sideways: '侧翻',
+        upsidedown: '倒置',
       },
       // 主世界 · ruinedPortal（上游 overworld=ruined_portal）
       ruinedPortal: {
-        egap: 'chest:structure:egap',
-        goldenCarrot: 'chest:structure:golden_carrot',
-        lootingSword: 'chest:structure:looting_sword',
-        completable: 'type:structure:completable',
-        lava: 'type:structure:lava',
+        egap: '附魔金苹果',
+        goldenCarrot: '金胡萝卜',
+        lootingSword: '抢夺附魔剑',
+        completable: '可用黑曜石补全',
+        lava: '需用岩浆浇筑',
       },
       // bastion · bridge（上游 nether=bridge）
       bridge: {
-        single1: 'bastion:single:1',
-        single2: 'bastion:single:2',
-        triple1: 'bastion:triple:1',
-        triple2: 'bastion:triple:2',
+        single1: '一个坏塔',
+        single2: '两个坏塔',
+        triple1: '一个好塔',
+        triple2: '两个好塔',
       },
       // bastion · housing（上游 nether=housing）
       housing: {
-        single1: 'bastion:single:1',
-        triple1: 'bastion:triple:1',
-        triple2: 'bastion:triple:2',
+        single1: '一个坏塔',
+        triple1: '一个好塔',
+        triple2: '两个好塔',
       },
       // bastion · stables（上游 nether=stables）
       stables: {
-        goodGap1: 'bastion:good_gap:1',
-        goodGap2: 'bastion:good_gap:2',
-        single1: 'bastion:single:1',
-        single2: 'bastion:single:2',
-        single3: 'bastion:single:3',
-        smallSingle1: 'bastion:small_single:1',
-        smallSingle2: 'bastion:small_single:2',
-        smallSingle3: 'bastion:small_single:3',
-        triple1: 'bastion:triple:1',
-        triple2: 'bastion:triple:2',
-        triple3: 'bastion:triple:3',
+        goodGap1: '一个好塔底',
+        goodGap2: '两个好塔底',
+        single1: '一个双箱塔',
+        single2: '两个双箱塔',
+        single3: '三个双箱塔',
+        smallSingle1: '一个单箱塔',
+        smallSingle2: '两个单箱塔',
+        smallSingle3: '三个单箱塔',
+        triple1: '一个三箱塔',
+        triple2: '两个三箱塔',
+        triple3: '三个三箱塔',
       },
       // bastion 生物群系 —— 顶行单选，整条标识进上游的 variations=（spec §4.2）
       bastionBiome: {
-        basaltDeltas: 'biome:bastion:basalt_deltas',
-        crimsonForest: 'biome:bastion:crimson_forest',
-        netherWastes: 'biome:bastion:nether_wastes',
-        soulSandValley: 'biome:bastion:soul_sand_valley',
-        warpedForest: 'biome:bastion:warped_forest',
+        basaltDeltas: '玄武岩三角洲',
+        crimsonForest: '绯红森林',
+        netherWastes: '下界荒地',
+        soulSandValley: '灵魂沙峡谷',
+        warpedForest: '诡异森林',
       },
       // fortress 生物群系 —— 同上，标识是 biome:fortress:*
       fortressBiome: {
-        basaltDeltas: 'biome:fortress:basalt_deltas',
-        crimsonForest: 'biome:fortress:crimson_forest',
-        netherWastes: 'biome:fortress:nether_wastes',
-        soulSandValley: 'biome:fortress:soul_sand_valley',
-        warpedForest: 'biome:fortress:warped_forest',
+        basaltDeltas: '玄武岩三角洲',
+        crimsonForest: '绯红森林',
+        netherWastes: '下界荒地',
+        soulSandValley: '灵魂沙峡谷',
+        warpedForest: '诡异森林',
       },
     },
 
@@ -2939,13 +2952,22 @@ export const zhCN = {
      *    而它那三个 `/api/status-page/…` 兄弟端点实测全是 403
      *    ⇒ 名字是这一栏**唯一**一处未经 API 验证的映射（来历写在
      *    `packages/shared/src/ranked/const.ts` 那张表上）。
-     * ⚠️ 中文侧与英文侧**同值**（都是上游的专有名词）：它们是四个服务的名字，
-     *    不是可翻译的产品文案 —— 与 `ranked.timeline.*` 那九条同一条处置。
-     *    真要改中文，改的是这两处的值，而"名字与 id 对不上"那件事仍然只能靠人去对状态页。
+     * ⚠️★ 2026-09-18 起中文侧是**人话**（用户自己改的：「服务器」/「商店」；
+     *    `componentApi` / `componentWiki` 本来就是拉丁字母、两种语言同形，一个字没动）。
+     *    ⇒ 原来那句"中文侧与英文侧**同值**、都是上游的专有名词、不是可翻译的产品文案"
+     *      **今天不成立**：中文侧与英文侧不再同值。
+     *    ⚠️ 与上游 id 的对应关系由**键**承载（`packages/shared/src/ranked/const.ts` 的
+     *      `RANKED_STATUS_COMPONENTS` 表：2/3/4/5 → 这四个键），值不承载它。
+     *    ⚠️ 代价（写清）：这四个名字本来是**从状态页上抄下来的原文**，中文侧翻译之后
+     *      "名字与 id 对不上"那件事**更只能**靠人去对状态页了 —— 人手里要比的是**英文那四个词**
+     *      （状态页上没有中文），而界面上中文读者看到的是「服务器」。
+     *      英文那四个名字仍然写在 `en.ts` 里，所以那次人工核对照旧做得了。
+     *    ⚠️ 真要改中文，改的是这两处的值，而"名字与 id 对不上"那件事仍然只能靠人去对状态页
+     *      （`pending.md §5.99` ①）。
      */
-    componentGameServer: 'Game Server',
+    componentGameServer: '服务器',
     componentApi: 'API',
-    componentStore: 'Store',
+    componentStore: '商店',
     componentWiki: 'Wiki',
     /*
      * ⚠️★ `{{time}}` 是上游那串 `2026-09-17 11:16:27` 的**原样**文本，**不做时区换算**：
@@ -3357,26 +3379,34 @@ export const zhCN = {
 
     /*
      * ===========================================================================
-     * 当前进度（`timeline.type`）—— **英文原样 + 词条表**（spec §7.2）
+     * 当前进度（`timeline.type`）—— **词条表 + 未知回落**（spec §7.2）
      * ===========================================================================
-     * ★★ 值是**上游那串标识本身**，而且中英**两份都**写英文（用户稍后自行校准中文）。
-     * ⚠️★ 写中文（"找到要塞"）会与 `timelineLabel()` 的**未知回落**分叉：那一支原样返回
-     *    标识 ⇒ 同一个标识"表里有"与"表里没有"会显示成两种不同的东西，而这一层存在的
-     *    全部理由正是"上游随时会加新节点"。⇒ 值 = 标识，两种语言显示同一串。
+     * ⚠️★ 2026-09-18 起中文侧是**人话**（用户自己改的：「进入堡垒遗迹」这类，
+     *    原来是上游标识原文）；**英文侧（`en.ts`）仍然是标识原文** ⇒ 两种语言的界面
+     *    **不再长得一样**（代价与"要关掉它该做什么"记在 `pending.md`）。
+     * ⚠️★ 与上游的对应关系**只由键承载**（`ranked/timeline.ts` 的 `TIMELINE_LABEL_KEYS`），
+     *    值不承载它 —— 所以"看值猜标识"没有判据。
+     * ⚠️★ 那这里写中文，会不会与 `timelineLabel()` 的**未知回落**分叉？**会**，而且这正是
+     *    今天的状态：回落那一支**原样返回标识** ⇒ 在**英文**侧"表里有"与"表里没有"仍然
+     *    分不开（值就是标识），而在**中文**侧一眼分得开（「进入堡垒遗迹」vs
+     *    `nether.find_bastion`）。这一层存在的全部理由仍然是"上游随时会加新节点"，
+     *    而"新节点照样有话说"靠的是**回落本身**，不是靠"值等于标识"。
+     *    ⇒ 旧注释里那句"值 = 标识，两种语言显示同一串"是 2026-09-16 的裁决，今天作废；
+     *      但**回落这条设计没变**：别为了"两边长得一样"把值改回标识。
      * ⚠️ 行数与 `packages/shared/src/ranked/timeline.ts` 的 `TIMELINE_LABEL_KEYS`
      *    **逐条对应**（今天 9 条，含 spec §7.2 那张草图里没出现过的 `story.root`）——
      *    T8 的渲染自检读表逐行断言两种语言里都有，漏一条界面上就会印出裸 key。
      */
     timeline: {
-      root: 'story.root',
-      enterTheNether: 'story.enter_the_nether',
-      findFortress: 'nether.find_fortress',
-      findBastion: 'nether.find_bastion',
-      blindTravel: 'projectelo.timeline.blind_travel',
-      followEnderEye: 'story.follow_ender_eye',
-      enterTheEnd: 'story.enter_the_end',
-      enterEndPortal: 'end.enter_end_portal',
-      killDragon: 'end.kill_dragon',
+      root: '开始游戏',
+      enterTheNether: '进入下界',
+      findFortress: '进入下界要塞',
+      findBastion: '进入堡垒遗迹',
+      blindTravel: '盲传',
+      followEnderEye: '前往主世界要塞',
+      enterTheEnd: '进入末地',
+      enterEndPortal: '结束游戏',
+      killDragon: '杀死末影龙',
     },
   },
 };

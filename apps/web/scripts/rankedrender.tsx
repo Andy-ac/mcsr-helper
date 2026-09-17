@@ -1914,14 +1914,22 @@ assert.ok(
   (CARD_BOTH.players[0].eloRate ?? 0) > (CARD_BOTH.players[1].eloRate ?? 0),
   '★ 探针：夹具里**左边那个人的 elo 更高**（否则下面"镜像"那条断言是空跑）',
 );
+/*
+ * ⚠️★ 「进度」那一格印的是**词条值**，不是上游那串标识符（2026-09-18 用户自己把
+ *    `ranked.timeline.*` 的九条中文值从原始标识符改成了人话 —— 「进入堡垒遗迹」这类）。
+ *    ⇒ 期望值走 `t(...)`，**不许**再把手抄的标识符写在这里：那是一条"钉死旧文案"的断言，
+ *    用户改词条时它会红，而红的原因与"视图坏了"毫无关系（这一轮就是这么红的）。
+ *    ⚠️ 但"上游加了新标识符 ⇒ **回落到原样显示**"这半条**必须**另有断言兜着 ——
+ *    它在下面 `UNKNOWN_TYPE` 那一档（`future.brand_new_node` 原样印出来）。
+ */
 assert.deepEqual(
   fieldsOf(bothSides[0] ?? ''),
-  ['HufterL', '1658', '#161', 'nether.find_bastion', '2:21'].map(flat),
+  ['HufterL', '1658', '#161', fresh('ranked.timeline.findBastion'), '2:21'].map(flat),
   '★★ 左半边五个字段（用户原话的顺序：名字 → elo → #排名 → 进度 → 节点时间）',
 );
 assert.deepEqual(
   fieldsOf(bothSides[1] ?? ''),
-  ['WhyIP', '1656', '#163', 'story.enter_the_end', '12:30'].map(flat),
+  ['WhyIP', '1656', '#163', fresh('ranked.timeline.enterTheEnd'), '12:30'].map(flat),
   '★★ 右半边**同一组字段**、各自的值（不是空的，也不是照抄左边）',
 );
 assert.equal(

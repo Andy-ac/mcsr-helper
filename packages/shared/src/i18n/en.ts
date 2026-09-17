@@ -2362,13 +2362,22 @@ export const en: TranslationSchema = {
     /**
      * ★ The variation vocabulary — **the block the owner will edit** (spec §5).
      *
-     * ⚠️ The values are the **raw upstream identifiers**, and both languages carry the
-     *    **same** English string (R6 / spec §5.1). Nothing here is translated on purpose:
-     *    the owner said "show the upstream text for now, I will change it later".
-     *    A second reason, word for word the same as `ranked/timeline.ts`: when the value
-     *    *is* the identifier, "in the table" and "not in the table" cannot look like two
-     *    different things. Both sentences matter — filling in English here breaks nothing,
-     *    it is just not what today wants.
+     * ⚠️★ **The values here are still the raw upstream identifiers, and that is deliberate.**
+     *    On 2026-09-18 the owner translated the **Chinese** side into readable text
+     *    (`village.desert` went from `biome:structure:desert` to 「沙漠」) and **left this
+     *    side alone** — English keeps showing identifiers today. So the two locales no
+     *    longer read alike: an English visitor sees `nether.find_bastion` where a Chinese
+     *    one sees 「进入堡垒遗迹」. The cost and what would close it are recorded in
+     *    `docs/pending.md`; nothing here has to change until the owner says so.
+     *    ⚠️ This paragraph used to claim "both languages carry the **same** English string
+     *    (R6 / spec §5.1)" — **that is no longer true**: the key, not the value, is what
+     *    maps an entry to upstream (`seedPicker.ts`'s `labelKey` field). Do not reason
+     *    from the old sentence.
+     *    ⚠️ A second reason in that old paragraph was copied word for word from
+     *    `ranked/timeline.ts` ("when the value *is* the identifier, in-the-table and
+     *    not-in-the-table cannot look like two different things") — it never held here:
+     *    a missing key makes i18next return the **key**, so the page prints
+     *    `seedsPage.variation.…`, which is visibly different from any value.
      *
      * ⚠️ The key rule has **no exceptions**: `seedsPage.variation.<context>.<shortName>`.
      *    So `chest:structure:diamond` is **three keys** under village / desertTemple /
@@ -2382,7 +2391,9 @@ export const en: TranslationSchema = {
      *    stables' `single:1/2/3` are double-chest towers and `small_single:1/2/3` are
      *    single-chest towers — a shared key would show one word for two different things,
      *    and nothing would report it (probes ⑩/⑪: the same entry yields different match
-     *    counts under the two types, so they really are two things).
+     *    counts under the two types, so they really are two things). ⚠️ The render check now
+     *    asserts the "two chips in one row never say the same thing" half of that for
+     *    **both** languages (`seedsrender.tsx` ⑥); identical words **across** rows stay legal.
      *
      * ⚠️ Every key here is copied from the `labelKey` field of the table in
      *    `packages/shared/src/seedPicker.ts`. **A missing one reports nothing** — i18next
@@ -3208,9 +3219,16 @@ export const en: TranslationSchema = {
      *    `/api/status-page/…` siblings all 403. So this mapping is the **one**
      *    part of this section that no API has verified (the full story lives
      *    on the table in `packages/shared/src/ranked/const.ts`).
-     * ⚠️ Both dictionaries carry the **same** values here: these are the
-     *    upstream's proper nouns, not product copy to translate -- the same
-     *    treatment `ranked.timeline.*` gets.
+     * ⚠️★ Since 2026-09-18 the **Chinese** side reads 「服务器」/「商店」 (the owner's own
+     *    edit; `componentApi` / `componentWiki` were already Latin and did not change).
+     *    So the two dictionaries **no longer carry the same values** — this paragraph used
+     *    to say they did ("the upstream's proper nouns, not product copy to translate").
+     *    ⚠️ The id ↔ name mapping now lives in the **key** (`RANKED_STATUS_COMPONENTS` in
+     *    `packages/shared/src/ranked/const.ts`: ids 2/3/4/5 → these four keys), not in values.
+     *    ⚠️ Cost: the four names were **copied off the status page**, and after the Chinese
+     *    translation the one manual check that can catch a re-numbering by upstream
+     *    (`pending.md §5.99` ①) has to compare **these English words** — the status page has
+     *    no Chinese on it. These values are what makes that check still possible.
      */
     componentGameServer: 'Game Server',
     componentApi: 'API',
@@ -3719,21 +3737,26 @@ export const en: TranslationSchema = {
 
     /*
      * ===========================================================================
-     * Current milestone (`timeline.type`) — **English as-is + key table** (§7.2)
+     * Current milestone (`timeline.type`) — **key table + unknown fallback** (§7.2)
      * ===========================================================================
-     * ★★ The values are **the upstream identifier itself**, written in English on
-     *    **both** sides (the user will calibrate the Chinese later).
-     * ⚠️★ Writing anything else here ("Find fortress") would fork away from
-     *    `timelineLabel()`'s **unknown fallback**, which returns the identifier
-     *    verbatim -- the same identifier would then render two different ways
-     *    depending on whether the table happens to know it, and the whole reason
-     *    that layer exists is that the upstream adds nodes whenever it likes.
-     *    ⇒ value = identifier, and both languages show the same string.
-     * ⚠️ The row count matches `TIMELINE_LABEL_KEYS` in
-     *    `packages/shared/src/ranked/timeline.ts` **row for row** (9 today,
-     *    including `story.root`, which spec §7.2's sketch never listed). Task 8's
-     *    render check reads that table and asserts every row in both languages;
-     *    a missing row leaks a raw key onto the page.
+     * ⚠️★ **The values here are still the raw upstream identifiers, on purpose.** On
+     *    2026-09-18 the owner turned the **Chinese** side into readable text
+     *    (「进入堡垒遗迹」 …) and left this side alone, so the two locales no longer read
+     *    alike: English shows `nether.find_bastion` where Chinese shows a phrase. Cost and
+     *    what would close it (translating this side too — declined today) are in
+     *    `docs/pending.md`.
+     *    ⚠️ The key, **not the value**, is what maps an entry to upstream
+     *    (`TIMELINE_LABEL_KEYS` in `packages/shared/src/ranked/timeline.ts`).
+     *    ⚠️★ The old note here argued that writing anything else would fork away from
+     *    `timelineLabel()`'s **unknown fallback** (which returns the identifier verbatim),
+     *    so "the same identifier would render two different ways". That fork **now exists by
+     *    design** on the Chinese side, and it is acceptable: the fallback still has something
+     *    to say for a node the table has never seen, which is the whole reason that layer
+     *    exists. Do **not** "fix" it by putting identifiers back into `zh-CN.ts`.
+     * ⚠️ The row count matches `TIMELINE_LABEL_KEYS` **row for row** (9 today, including
+     *    `story.root`, which spec §7.2's sketch never listed). Task 8's render check reads
+     *    that table and asserts every row in both languages; a missing row leaks a raw key
+     *    onto the page.
      */
     timeline: {
       root: 'story.root',
