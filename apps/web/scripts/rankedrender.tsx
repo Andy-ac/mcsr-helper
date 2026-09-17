@@ -796,7 +796,7 @@ const ELO_PRESENT_SENTINEL = 987654;
 
 /**
  * ★ 一场比赛（展开那一栏的夹具工厂）。
- * * ⚠️★ 两位玩家的 `eloRate` **都是**哨兵：红线管的不只是"对手那一格" ——
+ * ⚠️★ 两位玩家的 `eloRate` **都是**哨兵：红线管的不只是"对手那一格" ——
  *    把**自己**的现值印进某一行同样是错的（"他现在多少分"只该出现在卡片第一行那个 elo 里）。
  * ⚠️ `changes[].eloRate`（赛后值）**刻意不是**哨兵：详情里印的是 `change`（涨跌量），
  *    两者是不同的字段，让它们同值会让一条断言同时管两件不同的事。
@@ -900,8 +900,13 @@ const ELO_MATCHES: RankedMatch[] = [
  *    那一条只能断言「—」（那与"没渲染"分不开）。
  * ⚠️ `season.bestTimeMs` 是**毫秒**（上游给的就是毫秒：387772 = 6:27.772）。
  * ⚠️★ 这里**没有** `seasonHighest`：修复轮（T4）把那格从形状/解析/测试里删掉了
- *    （它没有任何渲染点 ⇒ 一条没有消费者的数据通路）。留在这里会让类型检查当场红 ——
- *    那正是这条"删干净"的判据（比"少了一格没人发现"好）。
+ *    （它没有任何渲染点 ⇒ 一条没有消费者的数据通路）。
+ *    ⚠️ 但"删干净"的判据**不在这个文件上**：`apps/web/tsconfig.json` 的 `include` 只有
+ *    `src/**`（外加 `packages/ui/src`），本脚本是 `tsx` 直接跑的（类型剥掉、不查）
+ *    ⇒ 这里多写一格 `seasonHighest` **不会有任何门禁红**（`tsc --listFiles` 里
+ *    `scripts/**` 一个文件都不在）。那条判据住在 `packages/shared`（形状）与
+ *    `services/api` 那两个测试文件里 —— 少删一处，那边就编译不过/测试红。
+ *    这份夹具跟着一起改，是因为它是**照着 `RankedPlayerDetail` 写的**，不是因为有人会拦。
  */
 const ELO_DETAIL_USER: RankedPlayerDetail = {
   uuid: ELO_SELF_UUID,
