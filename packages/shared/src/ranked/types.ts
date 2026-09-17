@@ -106,7 +106,7 @@ export interface RankedLiveData {
   players: number | null;
   /**
    * 上游顺序，**没有被排序**。
-   * ⚠️ 排序是 `select.ts` 的事（`sortLiveMatches` / `topLiveMatches`）：
+   * ⚠️ 排序是 `select.ts` 的事（`sortLiveMatches` / `sliceLiveMatches`）：
    *    解析层只管"把上游翻译成我们的形状"，额外做一次排序会让
    *    "解析"与"展示口径"两件事混在一起 —— 而展示口径是会被改的（谁在前谁在后）。
    */

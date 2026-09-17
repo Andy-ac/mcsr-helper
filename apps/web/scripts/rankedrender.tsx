@@ -81,7 +81,7 @@ import {
   RANKED_ELO_TOP,
   RANKED_FETCH_HEADERS,
   RANKED_FETCH_OPTIONS,
-  RANKED_LIVE_TOP,
+  RANKED_LIVE_BATCH,
   RANKED_TABS,
   RANKED_UPSTREAM_ALT,
   RANKED_UPSTREAM_PRIMARY,
@@ -541,7 +541,12 @@ const LIVE_DATA: RankedLiveData = {
 /** 「上游给了空集合」那一档。 */
 const LIVE_EMPTY: RankedLiveData = { players: 0, matches: [] };
 
-/** 12 场 ⇒ 视图只渲染前 10（`RANKED_LIVE_TOP`），而那句 total 说的是 12。 */
+/**
+ * 12 场 ⇒ 视图**全给**（约一批的一半），而那句 total 说的是 12。
+ * ⚠️★ 这一份夹具在 2026-09-19 之前是用来钉"**只渲染前 10**"的：现在截断没了
+ *    （用户要求全部展示），它反过来钉"**12 场一张都不许少**" —— 12 > 旧的 10，
+ *    所以把截断改回来的那一刻，下面那条断言会当场红。
+ */
 const LIVE_MANY: RankedLiveData = {
   players: PLAYERS,
   matches: Array.from({ length: 12 }, (_, i) =>
@@ -558,6 +563,58 @@ const LIVE_MANY: RankedLiveData = {
       player({ nickname: `P${String(i)}B`, eloRate: 1000 + i * 10, eloRank: 200 + i }),
     ),
   ).reverse(),
+};
+
+/**
+ * ★★ ③b 的筛选夹具（2026-09-19）：三场覆盖"双方都在直播 / 只有一方在直播 / 两人都没直播"。
+ *
+ * ⚠️★ `LIVE_DATA` 那四场里**没有一场是双方都在直播的**（上游实测里这种对局本来就少），
+ *    所以"只看双方都在直播"这条判据的**正例**必须在这里造一场 —— 只有反例的话，
+ *    一个"永远返回 false"的实现也能把"开关打开后一场都不剩"那几条断言喂绿。
+ * ⚠️ 正例右侧用的是 **kick**（认不出的平台 ⇒ `livePlatform: null`）：判据是 `liveUrl`
+ *    非 null，**不是**平台白名单（用户 2026-09-19 的裁决：任何平台都算）。
+ *    拿 `livePlatform` 当判据的实现会把这一场藏掉 ⇒ 下面那条断言当场红。
+ * ⚠️ 昵称刻意取成大小写混合、且**互不为子串**（`StreamerA` / `StreamerB` / `SoloC` /
+ *    `PlainD` / `OfflineE` / `OfflineF`）：搜索那几条断言靠的是"只命中一场"，
+ *    一个名字套另一个名字的话，命中的场次数就对不上了。
+ */
+const LIVE_FILTER: RankedLiveData = {
+  players: PLAYERS,
+  matches: [
+    /* 双方都在直播：左 Twitch、右 kick（后者 `livePlatform` 是 null，见上面那条）。 */
+    matchOf(
+      's1|s2',
+      90_000,
+      player({
+        nickname: 'StreamerA',
+        eloRate: 2100,
+        eloRank: 300,
+        liveUrl: TWITCH,
+        livePlatform: 'twitch',
+      }),
+      player({ nickname: 'StreamerB', eloRate: 2050, eloRank: 310, liveUrl: KICK }),
+    ),
+    /* 只有**左边**在直播 ⇒ 「双方都直播」必须把它藏掉。 */
+    matchOf(
+      's3|s4',
+      80_000,
+      player({
+        nickname: 'SoloC',
+        eloRate: 2000,
+        eloRank: 400,
+        liveUrl: TWITCH,
+        livePlatform: 'twitch',
+      }),
+      player({ nickname: 'PlainD', eloRate: 1950, eloRank: 410 }),
+    ),
+    /* 两人都没直播。 */
+    matchOf(
+      's5|s6',
+      70_000,
+      player({ nickname: 'OfflineE', eloRate: 1900, eloRank: 500 }),
+      player({ nickname: 'OfflineF', eloRate: 1850, eloRank: 510 }),
+    ),
+  ],
 };
 
 /** ⑨ 的产品那一半：一个**不在表里**的标识 + 一个在表里的（正向对照）。 */
@@ -639,7 +696,23 @@ const WEEK_ONE = week(1);
 const CHROME_KEYS = ['errorText', 'staleSecs', 'updatedAgoSecs', 'busy', 'onRetry'] as const;
 const VIEW_KEYS = {
   status: ['status', 'players'],
-  live: ['live', 'origin'],
+  /*
+   * ⚠️★ 2026-09-19 加的六格是 ② 的筛选条与分批（`RankedLiveViewProps` 上写着它们为什么
+   *    是 props 而不是视图里的 state：状态住在视图里的话，本脚本**只能**看到初始值，
+   *    "筛出一场"「双方都直播只剩那一场」「还有 N 场」三件事一个字都断言不到）。
+   *    它们必须是**必填**、而且必须**逐个进这张表** —— 少一格的表现是静默的：
+   *    搜索框/开关看着都在，打进去没反应，而本脚本的产物级断言照样绿。
+   */
+  live: [
+    'live',
+    'origin',
+    'search',
+    'onSearchChange',
+    'bothLiveOnly',
+    'onToggleBothLive',
+    'shown',
+    'onLoadMore',
+  ],
   elo: ['elo'],
   weekly: ['weekly', 'latestId'],
 } as const;
@@ -654,6 +727,11 @@ const VIEW_KEYS = {
  * ⚠️ 判据是 `undefined`，**不能**写成 falsy：`staleSecs` 的 `null`（"没有旧数据这回事"）、
  *    `busy` 的 `false`、`players` 的 `null` 与 `0` 全是**合法值**，写成 falsy 会让
  *    每一个正常夹具都红。
+ * ⚠️★ `on*` 那一组**另外**要求是函数（2026-09-19 从"只查 `onRetry` 一个"改成按前缀查）：
+ *    `undefined` 之外的另一种缺法是"传了一个不是函数的东西"（比如 `onSearchChange: noop()`
+ *    多写了一对括号 —— 它在产物里与接好线的**长得一模一样**，点下去却什么都没有）。
+ *    跑一遍 `onSearchChange` / `onToggleBothLive` / `onLoadMore` 之后，本栏目**每一个**
+ *    交互入口都进了这道守卫。
  */
 function assertPropsGiven(
   props: Record<string, unknown>,
@@ -666,12 +744,14 @@ function assertPropsGiven(
       undefined,
       `★★ ${where}：必填 prop \`${key}\` 没有传 —— 本脚本不受类型检查保护，产物里也看不出来`,
     );
+    if (key.startsWith('on')) {
+      assert.equal(
+        typeof props[key],
+        'function',
+        `★★ ${where}：\`${key}\` 必须是函数（传了 undefined 或一个调用的结果，那个入口就按不动）`,
+      );
+    }
   }
-  assert.equal(
-    typeof props.onRetry,
-    'function',
-    `★★ ${where}：\`onRetry\` 必须是函数（传了 undefined 就是一颗按不动的「重试」）`,
-  );
 }
 
 /*
@@ -709,6 +789,35 @@ assert.throws(
   },
   /origin/,
   '★★ 探针：`origin` 缺了也要能命中（它是 Twitch 的 `parent`，缺了会**静默**降级成外链）',
+);
+/*
+ * ★ 探针：`on*` 那一组"必须是函数"也要能命中 —— 否则它是恒真的空跑。
+ * ⚠️★ 夹具必须**把除了那一格之外的都补齐**：守卫是按顺序查的，少给一格的话它会先在
+ *    那一格上失败，这条探针就成了"报错信息里有没有 `onSearchChange`"的巧合
+ *    （上面那条 `origin` 探针也是同一个理由）。
+ * ⚠️ 喂的是 `onSearchChange: 'nope'`（一个**不是函数**的值）：这是 `undefined` 之外的
+ *    另一种缺法（`onSearchChange: noop()` 多写了一对括号就是它）。
+ */
+assert.throws(
+  () => {
+    assertPropsGiven(
+      {
+        ...chrome(),
+        live: LIVE_DATA,
+        origin: ORIGIN,
+        search: '',
+        bothLiveOnly: false,
+        shown: RANKED_LIVE_BATCH,
+        onToggleBothLive: noop,
+        onLoadMore: noop,
+        onSearchChange: 'nope',
+      } as unknown as Record<string, unknown>,
+      [...CHROME_KEYS, ...VIEW_KEYS.live],
+      '探针',
+    );
+  },
+  /onSearchChange/,
+  '★★ 探针：`onSearchChange` 传了个不是函数的东西也要能命中（产物里看不出来，点下去什么都没有）',
 );
 
 /** 四支共用的那几格（容器给的是**同一个对象**的四个字面量，见 `routes/Ranked.tsx`）。 */
@@ -768,7 +877,23 @@ const renderStatus = (o: Partial<RankedStatusViewProps> = {}, where = '状况'):
 };
 
 const renderLive = (o: Partial<RankedLiveViewProps> = {}, where = '对局'): string => {
-  const props: RankedLiveViewProps = { ...chrome(), live: LIVE_DATA, origin: ORIGIN, ...o };
+  const props: RankedLiveViewProps = {
+    ...chrome(),
+    live: LIVE_DATA,
+    origin: ORIGIN,
+    /*
+     * ★ ② 的三格状态 + 两个动作的**默认值**：不筛、开关关着、首批那么多。
+     * ⚠️ `shown` 用 `RANKED_LIVE_BATCH`（不是写死的数）：这一句就是"首批是一批"这件事
+     *    在本脚本里的落点 —— 常量改了而这里没跟上时，`liveMany` 那几条会红。
+     */
+    search: '',
+    onSearchChange: noop,
+    bothLiveOnly: false,
+    onToggleBothLive: noop,
+    shown: RANKED_LIVE_BATCH,
+    onLoadMore: noop,
+    ...o,
+  };
   assertPropsGiven(
     props as unknown as Record<string, unknown>,
     [...CHROME_KEYS, ...VIEW_KEYS.live],
@@ -1058,17 +1183,17 @@ assert.notEqual(
 ok('状况：四态各有各的话 + 四行度量逐行 + 0/null 两句话 + uptime 掉行 + 兜底那一句');
 
 // ---------------------------------------------------------------------------
-console.log('③ 实时高分对局：两侧各五格 + 占位符 + 镜像 + 排序取前 10 + 展开入口的正反');
+console.log('③ 实时高分对局：两侧各五格 + 占位符 + 镜像 + 排序全部渲染 + 展开入口的正反');
 // ---------------------------------------------------------------------------
 /* 冻结值先钉常量，再钉产物：只钉产物的话，常量改了断言跟着走（那是装饰）。 */
-assert.equal(RANKED_LIVE_TOP, 10, '★★ 冻结的"取前 10"（spec §13）');
+assert.equal(RANKED_LIVE_BATCH, 20, '★★ 冻结的"一批渲染几场"（spec §13，2026-09-19 起）');
 assert.equal(RANKED_ELO_TOP, 100, '★★ 冻结的"排行榜前 100"（spec §13）');
 
 const live = renderLive({}, '对局·正常');
 const cards = elementsWithClass(live, 'ranked__match');
 assert.equal(cards.length, 4, `★ 夹具四场都要渲染出来（找到 ${String(cards.length)} 张）`);
 /*
- * ★★ 排序与"取前 10"是**视图自己**做的（`topLiveMatches`，本文件头第 3 节那条纪律：
+ * ★★ 排序与分段都是**视图自己**做的（`sliceLiveMatches`，本文件头第 3 节那条纪律：
  *    total 与列表必须来自同一次计算）。夹具的打乱顺序就是为了这一条能红。
  */
 assert.deepEqual(
@@ -1079,17 +1204,18 @@ assert.deepEqual(
 assert.equal(
   textOf(elementsWithClass(live, 'ranked__meta')[0] ?? ''),
   fresh('ranked.liveFrom', { total: LIVE_DATA.matches.length }),
-  '★ 「{{total}} 场里按平均 elo 取前 10」里的 total 是**总场次**（与下面那张表同一次计算）',
+  '★ 「共 {{total}} 场」里的 total 是**上游的总场次**（与下面那张表同一次计算）',
 );
 /*
- * 12 场 ⇒ 只渲染前 10。⚠️ 这条同时钉住"那句 total 说的是 12 而不是 10"：
- *    把 topLiveMatches 换成直接渲染 matches 时，卡片数会变成 12 ⇒ 红。
+ * ★★ 12 场 ⇒ **一张都不许少**（用户 2026-09-19 的要求：全部展示）。
+ * ⚠️★ 这一条的前身是"只渲染前 10"（`RANKED_LIVE_TOP`）：12 > 10 ⇒ 把截断改回来的
+ *    那一刻，这里当场红。它是"全部展示"这句话在本栏目里**唯一**的产物级判据。
  */
 const liveMany = renderLive({ live: LIVE_MANY }, '对局·12 场');
 assert.equal(
   elementsWithClass(liveMany, 'ranked__match').length,
-  RANKED_LIVE_TOP,
-  `★★ 12 场只渲染前 ${String(RANKED_LIVE_TOP)} 张`,
+  LIVE_MANY.matches.length,
+  `★★ 12 场**全渲染**（一张都不许截断；旧行为是只给 10 张）`,
 );
 assert.equal(
   textOf(elementsWithClass(liveMany, 'ranked__meta')[0] ?? ''),
@@ -1102,7 +1228,7 @@ assert.equal(
       '',
   ),
   flat('P11A'),
-  '★ 取前 10 取的是**分最高的**那 10 场（第 11 张卡片是分数最低的那一场）',
+  '★ 第一张仍是**分最高的**那一场（12 张里那一场是 P11A —— 顺序没变，只是不再截断）',
 );
 
 /* 两侧各五个字段，**逐格**断言文本（不是"有五个元素"）。 */
@@ -1294,7 +1420,266 @@ assert.equal(
   0,
   '★★ 认不出的平台**不画**播放器门面（画一个点了不动的框比给外链糟得多）',
 );
-ok('对局：两侧五格逐格 + 两格 null 的孤立断言 + 排序/取前 10 + 展开键正反 + Twitch parent');
+ok('对局：两侧五格逐格 + 两格 null 的孤立断言 + 排序/全部渲染 + 展开键正反 + Twitch parent');
+
+// ---------------------------------------------------------------------------
+console.log('③b ★ 对局的筛选条与分批：搜索 / 只看双方都在直播 / 加载更多（三种状态）');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一节补的是 2026-09-19 用户要求的三件事：搜索框、那颗开关、「加载更多」。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 它证明的是**视图拿着这三格状态会渲染成什么样**，不是"点下去会发生什么"
+ * ---------------------------------------------------------------------------
+ * 状态住在容器里（`routes/Ranked.tsx` 那三个 `useState`），视图只吃 props ⇒ 本脚本
+ * 可以用**不同的 props**把三种状态各渲染一遍、逐格断言产物。而"打字 / 点击之后
+ * 容器真的换了状态"是**另一件事**：`renderToStaticMarkup` 不跑 effect、不点击、
+ * 不打字（文件末尾那段覆盖边界写着这一条的完整版）。⇒ 这里钉住的是
+ * **判据与产物**（命中哪几场、还剩几场、开关显示成开着还是关着），
+ * 而"接好线了没有"由 `assertPropsGiven`（`on*` 必须是函数）+ 编译期的必填 prop 兜着。
+ */
+const liveFilter = renderLive({ live: LIVE_FILTER }, '对局·筛选夹具');
+const filterCards = (html: string): string[] =>
+  elementsWithClass(html, 'ranked__match').map((card) =>
+    textOf(elementsWithClass(card, 'ranked__name')[0] ?? ''),
+  );
+
+/**
+ * 「加载更多（还有 N 场）」那颗按钮的**形状**：词条里那个数换成 `(\d+)`。
+ *
+ * ⚠️★ 形状从**词条**现算（把 `n: 0` 渲染一遍、再把它那个 `0` 换成通配），不手抄中文标点：
+ *    手抄的话，文案改一次这条守卫就假红，而下一个人只会把守卫删掉。
+ * ⚠️★ 为什么不能拿"产物里只有一颗按钮"当判据（这一版第一稿就是这么写的，当场红）：
+ *    ② 的筛选条里那颗 chip **也是** `<button>`，而卡片里的播放器门面同样是 ——
+ *    夹具一改，"几颗按钮"就会跟着变，那种断言钉的是夹具而不是界面。
+ */
+const LOAD_MORE_SHAPE = new RegExp(
+  `^${fresh('ranked.liveMore', { n: 0 })
+    .split('0')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('(\\d+)')}$`,
+);
+/** 产物里那颗「加载更多」按钮（没有就是 `null`）—— `n` 是**它自己印出来的**那个数。 */
+const loadMoreOf = (html: string): { n: number; attrs: string } | null => {
+  for (const button of buttons(html)) {
+    const m = LOAD_MORE_SHAPE.exec(button.text);
+    if (m !== null) return { n: Number(m[1] ?? ''), attrs: button.attrs };
+  }
+  return null;
+};
+assert.equal(
+  LOAD_MORE_SHAPE.test(fresh('ranked.liveMore', { n: 7 })),
+  true,
+  '★ 探针：这个形状认得出它自己的词条',
+);
+assert.equal(
+  LOAD_MORE_SHAPE.test(fresh('ranked.liveBothLive')),
+  false,
+  '★★ 探针：筛选条那颗 chip 的文案**不**匹配这个形状（否则下面每一条都会指到那颗开关上）',
+);
+
+/* ---- ① 搜索框与开关的**存在**与初值（不筛那一份） ---- */
+assert.equal(
+  elementsWithClass(live, 'filters__search').length,
+  1,
+  '★ 面板顶部有一个搜索框（用户原话：「在顶部加入搜索栏搜索选手」）',
+);
+const searchInput =
+  /<input\b[^>]*>/.exec(elementsWithClass(live, 'filters__search')[0] ?? '')?.[0] ?? '';
+assert.notEqual(
+  searchInput,
+  '',
+  '★ 探针：那一块里确实有一个 `<input>`（否则下面几条作用在空串上）',
+);
+assert.equal(attrOf(searchInput, 'type'), 'search', '★ 它是一个 `type="search"` 的输入框');
+assert.equal(
+  attrOf(searchInput, 'placeholder'),
+  t('ranked.liveSearch'),
+  '★ 占位符是「搜索选手」（词条，不是写死的字）',
+);
+assert.equal(
+  attrOf(searchInput, 'value'),
+  '',
+  '★ 默认（没打字）时输入框是**空**的 —— 也就是"不筛"',
+);
+assert.equal(
+  elementsWithClass(live, 'filters__search')[0]?.includes('ranked-live-q'),
+  true,
+  '★ 那个 `<label class="sr-only">` 的 `htmlFor` 对得上输入框的 `id`（占位符一打字就没了，它得有名字）',
+);
+/* 开关：**关着**那一份的衣服与读屏话说的是同一件事（`aria-pressed` / `tagchip--on`）。 */
+const chipOf = (html: string): { attrs: string; text: string } | undefined =>
+  buttons(html).find((b) => b.text === fresh('ranked.liveBothLive'));
+assert.notEqual(chipOf(live), undefined, '★ 开关在（文案「只看双方都在直播」）');
+assert.equal(
+  attrOf(chipOf(live)?.attrs ?? '', 'aria-pressed'),
+  'false',
+  '★ 默认关着 ⇒ `aria-pressed="false"`',
+);
+assert.equal(
+  hasClassOf(`<button ${chipOf(live)?.attrs ?? ''}>`, 'tagchip--on'),
+  false,
+  '★ 默认关着 ⇒ **不**带 `tagchip--on`（那颗 chip 的选中态就是它）',
+);
+
+/* ---- ② 搜「选手」：命中哪几场、忽略大小写、搜不到时说什么 ---- */
+assert.deepEqual(
+  filterCards(liveFilter),
+  ['StreamerA', 'SoloC', 'OfflineE'].map(flat),
+  '★★ 正面对照：没打字、开关关着 ⇒ 三场都在（顺序仍是 `avgElo` 降序）',
+);
+const liveSearchHit = renderLive({ live: LIVE_FILTER, search: 'plaind' }, '对局·搜 plaind');
+assert.deepEqual(
+  filterCards(liveSearchHit),
+  ['SoloC'].map(flat),
+  '★★ 搜「plaind」只剩一场：命中的是**右侧**那个人的昵称（夹具里那场左侧叫 SoloC）',
+);
+const liveSearchUpper = renderLive({ live: LIVE_FILTER, search: 'PLAIND' }, '对局·大写搜索');
+assert.deepEqual(
+  filterCards(liveSearchUpper),
+  filterCards(liveSearchHit),
+  '★★ 大小写不敏感：大写输入与上面那一份**逐卡相同**',
+);
+assert.equal(
+  textOf(elementsWithClass(liveSearchHit, 'ranked__meta')[0] ?? ''),
+  fresh('ranked.liveFrom', { total: LIVE_FILTER.matches.length }),
+  '★★ 筛完之后那句 total 说的还是**上游的 3 场**（不是筛后的 1 场 —— 两个数不许互相冒充）',
+);
+assert.equal(
+  textOf(elementsWithClass(liveSearchHit, 'ranked__meta')[1] ?? ''),
+  fresh('ranked.liveMatched', { matched: 1 }),
+  '★★ 而紧跟着的第二行说「符合条件 1 场」（筛掉过东西时才有这一行）',
+);
+assert.deepEqual(
+  metaOf(liveFilter),
+  [fresh('ranked.liveFrom', { total: LIVE_FILTER.matches.length })],
+  '★ 正面对照：**没筛**时不许出现「符合条件 N 场」那一行（它会把总数再说一遍）',
+);
+const liveSearchMiss = renderLive({ live: LIVE_FILTER, search: 'nobodyhere' }, '对局·搜不到');
+assert.deepEqual(filterCards(liveSearchMiss), [], '★ 搜不到 ⇒ 一张卡片都不渲染');
+assert.equal(
+  textOf(elementsWithClass(liveSearchMiss, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.liveNoMatch'),
+  '★★ 而且说的是「没有符合条件的对局。」—— **不是**「现在没有直播中的对局。」（后者是假话：上游那 3 场还在）',
+);
+assert.notEqual(
+  fresh('ranked.liveNoMatch'),
+  fresh('ranked.liveEmpty'),
+  '★★ 探针：那两句本身必须不同（否则上面那条与"空集合"分不开）',
+);
+
+/* ---- ③ 「只看双方都在直播」：正例（含认不出的平台）与反例 ---- */
+const liveBoth = renderLive({ live: LIVE_FILTER, bothLiveOnly: true }, '对局·只看双方都在直播');
+assert.deepEqual(
+  filterCards(liveBoth),
+  ['StreamerA'].map(flat),
+  '★★ 开关打开 ⇒ 只剩"双方都在直播"的那一场（右侧在 **kick** 上也算 —— 判据是 `liveUrl`，不是平台白名单）',
+);
+assert.equal(
+  attrOf(chipOf(liveBoth)?.attrs ?? '', 'aria-pressed'),
+  'true',
+  '★★ 开关开着 ⇒ `aria-pressed="true"`（读屏软件听到的"开着"）',
+);
+assert.equal(
+  hasClassOf(`<button ${chipOf(liveBoth)?.attrs ?? ''}>`, 'tagchip--on'),
+  true,
+  '★★ 而且戴上 `tagchip--on`（眼睛看到的"开着" —— 两个通道取自同一份判据）',
+);
+/*
+ * ⚠️★ 两个条件**可组合**：搜索命中的那一场只有一方在直播 ⇒ 开关把它筛掉。
+ *    写成 OR 的实现会在这里画出 `SoloC` 那张卡片（当场红）。
+ */
+const liveCombo = renderLive(
+  { live: LIVE_FILTER, search: 'soloc', bothLiveOnly: true },
+  '对局·搜索 + 双方都直播',
+);
+assert.deepEqual(
+  filterCards(liveCombo),
+  [],
+  '★★ 搜索命中但只有一方在直播 ⇒ 一场不剩（搜索与开关是 **AND**）',
+);
+assert.equal(
+  textOf(elementsWithClass(liveCombo, 'ranked__empty')[0] ?? ''),
+  fresh('ranked.liveNoMatch'),
+  '★ 而它说的是"没有符合条件的对局"（与上面那个搜不到的情形同一句话）',
+);
+assert.deepEqual(
+  filterCards(
+    renderLive(
+      { live: LIVE_FILTER, search: 'streamerb', bothLiveOnly: true },
+      '对局·搜索+开关都在',
+    ),
+  ),
+  ['StreamerA'].map(flat),
+  '★★ 两个条件同时命中 ⇒ 那一场在（上一个断言是"AND"，这一条是"AND 之后仍然找得到"）',
+);
+
+/* ---- ④ 「加载更多」：还剩几场、点到最后那一下 ---- */
+/*
+ * ⚠️★ 这里的 `shown` 是**手写的小数字**（5 / 12），不是 `RANKED_LIVE_BATCH`：
+ *    12 场那一份用一批就全渲染完了（下面第一条），而"切在哪一张"要有断言就得
+ *    自己指定一个小于 12 的数 —— `shown` 本来就是这个意思（"已经显示几张"）。
+ */
+const livePage1 = renderLive({ live: LIVE_MANY, shown: 5 }, '对局·只显示 5 张');
+assert.equal(
+  elementsWithClass(livePage1, 'ranked__match').length,
+  5,
+  '★ `shown: 5` ⇒ 只渲染 5 张卡片',
+);
+assert.equal(
+  loadMoreOf(livePage1)?.n,
+  LIVE_MANY.matches.length - 5,
+  '★★ 「加载更多（还有 7 场）」里的 7 = 12 - 5：那个数**就是**还没渲染的场次（不是另算一遍）',
+);
+assert.equal(
+  isDisabled(loadMoreOf(livePage1)?.attrs ?? ''),
+  false,
+  '★ 那颗按钮是**可点**的（不是一颗灰着的装饰）',
+);
+const liveAll = renderLive({ live: LIVE_MANY, shown: LIVE_MANY.matches.length }, '对局·全部显示完');
+assert.equal(
+  elementsWithClass(liveAll, 'ranked__match').length,
+  LIVE_MANY.matches.length,
+  '★ 全部显示完之后：12 张卡片一张不少',
+);
+assert.equal(
+  loadMoreOf(liveAll),
+  null,
+  '★★ 而「加载更多」**整颗不渲染**（到头了不留一颗点下去什么都不发生的按钮）',
+);
+/* ⚠️ 探针：上面那条"没有按钮"必须不是"这颗按钮在别的夹具里也画不出来"（那是恒真的）。 */
+assert.equal(
+  loadMoreOf(livePage1) !== null,
+  true,
+  '★ 探针：同一份夹具、只把 `shown` 从 12 换成 5 ⇒ 按钮就出现了（判据真的跟着 `remaining` 走）',
+);
+/*
+ * ★★ 分批 + 搜索叠在一起：剩下那几场的数字必须跟着筛后的集合走。
+ *    ⚠️ 写成"筛后总数 - 一批"之类的第二份算式会印出比实际还剩的更大的数，
+ *    而点一下**什么都不会多出来**（用户只会觉得按钮坏了）。
+ */
+const livePageFiltered = renderLive(
+  { live: LIVE_MANY, shown: 5, search: 'p1' },
+  '对局·搜索 + 分批',
+);
+assert.equal(
+  elementsWithClass(livePageFiltered, 'ranked__match').length,
+  3,
+  '★ 搜「p1」命中 P1A/P10A/P11A 三场 ⇒ 三张卡片（`shown: 5` 比它大，所以全渲染）',
+);
+assert.equal(
+  loadMoreOf(livePageFiltered),
+  null,
+  '★★ 而"还有 0 场" ⇒ 按钮不渲染（那个数不是"12 - 5 = 7"）',
+);
+assert.deepEqual(
+  filterCards(livePage1).slice(0, 5),
+  ['P11A', 'P10A', 'P9A', 'P8A', 'P7A'].map(flat),
+  '★ 分批切的是**分最高的那几张**（`shown` 只决定切几刀，不决定谁排在前面）',
+);
+ok(
+  '③b 筛选与分批：搜索框/开关在 + 大小写不敏感 + 双方都直播（含 kick）+ AND 组合 + 加载更多的正反',
+);
 
 // ---------------------------------------------------------------------------
 console.log('④ Elo 排行榜：五列 + 并列排名原样 + 赛季起止 + highest 缺失 + 空态');
@@ -1774,7 +2159,7 @@ assertFiveStates({
     assert.equal(
       textOf(elementsWithClass(html, 'ranked__meta')[0] ?? ''),
       '',
-      '★ "N 场里取前 10"那句在 0 场时**不渲染**（N = 0 时它是一句废话，读起来像模板坏了）',
+      '★ 「共 N 场」那句在 0 场时**不渲染**（N = 0 时它是一句废话，读起来像模板坏了）',
     );
   },
 });
@@ -2557,11 +2942,22 @@ console.log(
 );
 console.log('     `assertClickable`），而"prop 忘了传"在**页面**那一侧是编译错误。');
 console.log(
+  '   ·★ **② 那三件事的交互本身**（2026-09-19 加的）：在搜索框里**打字**、点那颗「只看双方都在直播」、',
+);
+console.log(
+  '     点「加载更多」—— 三格状态住在容器里（`routes/Ranked.tsx` 的三个 `useState`），而容器在 Node 里',
+);
+console.log('     渲染不了。⇒ ③b 钉的是"**视图拿着这三格状态会渲染成什么样**"（判据 + 产物），');
+console.log(
+  '     "打字/点击真的换了状态"那一半要人在浏览器里点一次：三种状态各点一遍，看卡片数、那句"还有 N 场"',
+);
+console.log('     与开关的高亮是不是跟着走。');
+console.log(
   '   · 点开 `<details>` 之后才挂的 iframe（`ClickToPlayEmbed` 的 `useState`）、真的播放；',
 );
 console.log('   · **尺寸、配色与字体**：这里只看类名在不在 `styles.css` 里（⑧），不看它长什么样。');
 console.log(
-  '   · 上游那一侧：解析、排序、取前 N 的逐值断言在 `services/api/src/ranked-shared.test.ts`，',
+  '   · 上游那一侧：解析、排序、筛选与分段的逐值断言在 `services/api/src/ranked-shared.test.ts`，',
 );
 console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
 /*
@@ -2569,8 +2965,9 @@ console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
  *    脚本照样绿、照样打印"通过 N 项"，只有这个数字会变。改脚本就要一起改这里。
  * ⚠️ en 比 zh 多一组，是因为 ⑪ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`，见上面）；两个数差 1 是**正常的**，别把它抹平。
+ * ⚠️ 2026-09-19：两边各 +1（③b 那一组：搜索 / 双方都在直播 / 加载更多）。
  */
-const expectedGroups = LANG === 'en' ? 15 : 14;
+const expectedGroups = LANG === 'en' ? 16 : 15;
 assert.equal(
   pass,
   expectedGroups,

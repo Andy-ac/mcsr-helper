@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { RankedLiveData, RankedLiveMatch, RankedLivePlayer } from '@mcsr/shared/ranked';
 
 const {
   parseLive,
@@ -13,7 +14,10 @@ const {
   parseWeekly,
   parseHeartbeat,
   sortLiveMatches,
-  topLiveMatches,
+  sliceLiveMatches,
+  filterLiveMatches,
+  bothStreaming,
+  matchesNickname,
   topEloEntries,
   rankedLiveChannel,
   displayWeekNo,
@@ -25,7 +29,7 @@ const {
   secondsAgo,
   TIMELINE_LABEL_KEYS,
   timelineLabel,
-  RANKED_LIVE_TOP,
+  RANKED_LIVE_BATCH,
   RANKED_ELO_TOP,
   RANKED_POLL_MS,
   RANKED_FETCH_OPTIONS,
@@ -156,7 +160,13 @@ const LIVE_FIXTURE = {
 
 describe('冻结常量', () => {
   it('★ 条数与刷新间隔（spec §13）', () => {
-    assert.equal(RANKED_LIVE_TOP, 10);
+    /*
+     * ⚠️★ 2026-09-19：这一格从「取前 10」的 `RANKED_LIVE_TOP` 换成「一批渲染几场」的
+     *    `RANKED_LIVE_BATCH`（用户要求**全部展示**，截断被"首批 + 加载更多"取代）。
+     *    数从 10 抬到 20 的理由写在常量自己的注释里（实测常见量级是二三十场）。
+     *    ⚠️ 钉死的仍然是**数**：改它要同时改 `const.ts` 的注释与 spec §13 那一行。
+     */
+    assert.equal(RANKED_LIVE_BATCH, 20);
     assert.equal(RANKED_ELO_TOP, 100);
     // ⚠️ 四个数逐个钉死：它们决定"多实时"与"多费访客的额度"，
     //    改一个都要同时改 spec §5.1 那张表。
@@ -296,7 +306,7 @@ describe('RankedLiveMatch.key：卡片的身份（spec §4.3 / §6.3）', () => 
   });
 });
 
-describe('sortLiveMatches / topLiveMatches', () => {
+describe('sortLiveMatches', () => {
   it('★★ 按平均 elo 降序，两人都 null 的排最后', () => {
     const d = parseLive(LIVE_FIXTURE);
     assert.ok(d);
@@ -346,16 +356,298 @@ describe('sortLiveMatches / topLiveMatches', () => {
     );
   });
 
-  it('★ 取前 10（`RANKED_LIVE_TOP`），且不修改入参', () => {
+  it('★ 夹具不足一场批量时**全给**（不再截断），且不修改入参', () => {
+    /*
+     * ⚠️★ 这一条的前身是"取前 10"（`RANKED_LIVE_TOP`）。2026-09-19 用户要求
+     *    **全部展示**，于是截断没了、`topLiveMatches` 也删了 —— 现在这一段钉的是
+     *    "夹具那五场一场都不许少"：`sliceLiveMatches` 的可见段是"前 `shown` 张"，
+     *    而 `shown` 由容器给（首批 `RANKED_LIVE_BATCH`）⇒ 少于一批时结果就是全部。
+     */
     const d = parseLive(LIVE_FIXTURE);
     assert.ok(d);
-    assert.equal(RANKED_LIVE_TOP, 10);
     const before = d.matches.map((m) => m.key);
-    assert.equal(topLiveMatches(d).length, 5, '不足 10 场就全给');
+    const slice = sliceLiveMatches(d, { query: '', bothLiveOnly: false, shown: RANKED_LIVE_BATCH });
+    assert.equal(slice.total, 5, '上游给了五场');
+    assert.equal(slice.visible.length, 5, '不足一批就全给（**不**截断）');
+    assert.equal(slice.remaining, 0, '还剩 0 场 ⇒ 界面上不该有「加载更多」');
     assert.deepEqual(
       d.matches.map((m) => m.key),
       before,
       '入参没被就地排序',
+    );
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * ② 的筛选与分批（2026-09-19 用户要求：全部展示 + 昵称搜索 + 「只看双方都在直播」）
+ * ------------------------------------------------------------------------- */
+
+/**
+ * 一段对局的形状。⚠️ 这里**直接造形状**、不经过 `parseLive`：
+ *   · 上游实测里"双方都在直播"的对局很少，而那条判据的**正例**必须有一场
+ *     （只有反例的话，一个"永远返回 false"的实现也能全绿）；
+ *   · 混在一起的话，"筛选坏了"与"解析坏了"红了看起来一模一样。
+ */
+function livePlayer(o: {
+  nickname?: string | null;
+  eloRate?: number | null;
+  liveUrl?: string | null;
+  livePlatform?: 'twitch' | 'youtube' | 'bilibili' | null;
+}): RankedLivePlayer {
+  return {
+    nickname: o.nickname ?? null,
+    eloRate: o.eloRate ?? null,
+    eloRank: null,
+    timelineType: null,
+    timelineTime: null,
+    liveUrl: o.liveUrl ?? null,
+    livePlatform: o.livePlatform ?? null,
+  };
+}
+
+function liveMatch(
+  key: string,
+  avgElo: number | null,
+  left: RankedLivePlayer,
+  right: RankedLivePlayer,
+): RankedLiveMatch {
+  return { key, currentTime: 0, avgElo, players: [left, right] };
+}
+
+/** 一场对局：左 Twitch、右 **kick**（认不出的平台）。 */
+const MATCH_BOTH_LIVE = liveMatch(
+  'a|b',
+  2200,
+  livePlayer({
+    nickname: 'StreamerA',
+    eloRate: 2300,
+    liveUrl: 'https://twitch.tv/streamera',
+    livePlatform: 'twitch',
+  }),
+  livePlayer({ nickname: 'StreamerB', eloRate: 2100, liveUrl: 'https://kick.com/streamb' }),
+);
+/** 只有**左边**在直播 —— 「双方都直播」那条判据的反例。 */
+const MATCH_ONE_LIVE = liveMatch(
+  'c|d',
+  2000,
+  livePlayer({
+    nickname: 'SoloC',
+    eloRate: 2100,
+    liveUrl: 'https://twitch.tv/soloc',
+    livePlatform: 'twitch',
+  }),
+  livePlayer({ nickname: 'PlainD', eloRate: 1900 }),
+);
+/** 两人都没直播。 */
+const MATCH_NO_LIVE = liveMatch(
+  'e|f',
+  1800,
+  livePlayer({ nickname: 'OfflineE', eloRate: 1800 }),
+  livePlayer({ nickname: 'OfflineF', eloRate: 1800 }),
+);
+
+/** 七场（**升序**入参：分最低的在最前面）：分批那几条断言要的场次比一批少，但足够看出切在哪。 */
+const LIVE_SEVEN: RankedLiveData = {
+  players: 1234,
+  matches: Array.from({ length: 7 }, (_, i) =>
+    liveMatch(
+      `k${String(i)}|j${String(i)}`,
+      /*
+       * ⚠️★ 入参是**升序**塞进去的（第一项分最低、最后一项分最高）：`sliceLiveMatches` 会先
+       *    按 `avgElo` 降序排 —— 照"分最高的在最前"塞的话，"取前 3 张"与"取输入前 3 项"
+       *    分不出来，那几条关于切在哪里的断言就成了空跑。
+       */
+      1000 + i * 10,
+      livePlayer({ nickname: `Player${String(i)}A`, eloRate: 1000 + i * 10 }),
+      livePlayer({ nickname: `Player${String(i)}B`, eloRate: 1000 + i * 10 }),
+    ),
+  ),
+};
+
+/** 一段 `matched` / `visible` 的 key（断言里只关心"留下的是哪几场"）。 */
+const keysOf = (matches: RankedLiveMatch[]): string[] => matches.map((m) => m.key);
+
+describe('② 的筛选：bothStreaming / matchesNickname / filterLiveMatches', () => {
+  it('★★ 双方都在直播：只有一方在直播的场次必须被藏掉（认不出的平台照样算）', () => {
+    assert.equal(
+      bothStreaming(MATCH_BOTH_LIVE),
+      true,
+      '★★ 两侧 `liveUrl` 都非 null ⇒ 命中（右边在 **kick** 上：判据是 liveUrl，不是平台白名单）',
+    );
+    assert.equal(bothStreaming(MATCH_ONE_LIVE), false, '★★ 只有一方在直播 ⇒ **不**命中');
+    assert.equal(bothStreaming(MATCH_NO_LIVE), false, '★ 两人都没直播 ⇒ 不命中');
+
+    /*
+     * ⚠️★ 两条探针：下面那一对"正例 / 反例"必须真的分别是正例与反例 ——
+     *    否则它们可能只是"同一场对局比了两次"（`§5.63` 那一族）。
+     */
+    assert.equal(
+      MATCH_ONE_LIVE.players[0].liveUrl,
+      'https://twitch.tv/soloc',
+      '★ 探针：反例那一场**确实有一个人在直播**（否则它只是 `MATCH_NO_LIVE` 的复制品）',
+    );
+    assert.equal(
+      MATCH_BOTH_LIVE.players[1].livePlatform,
+      null,
+      '★ 探针：正例的右侧是**认不出的平台** ⇒ 拿 `livePlatform` 当判据的实现会把它藏掉，这条当场红',
+    );
+    assert.notEqual(MATCH_BOTH_LIVE.players[1].liveUrl, null, '★ 探针：而它确实有 `liveUrl`');
+
+    assert.deepEqual(
+      keysOf(
+        filterLiveMatches([MATCH_BOTH_LIVE, MATCH_ONE_LIVE, MATCH_NO_LIVE], {
+          query: '',
+          bothLiveOnly: true,
+        }),
+      ),
+      ['a|b'],
+      '★★ 开关开着时：三场里只留下双方都在直播的那一场',
+    );
+    assert.deepEqual(
+      keysOf(
+        filterLiveMatches([MATCH_BOTH_LIVE, MATCH_ONE_LIVE, MATCH_NO_LIVE], {
+          query: '',
+          bothLiveOnly: false,
+        }),
+      ),
+      ['a|b', 'c|d', 'e|f'],
+      '★ 正面对照：开关关着时三场一场都不许少（顺序 = 输入顺序，filter 不排序）',
+    );
+  });
+
+  it('★★ 昵称搜索：两侧任一命中、忽略大小写、空词不筛（而且不搜地址）', () => {
+    const all = [MATCH_BOTH_LIVE, MATCH_ONE_LIVE, MATCH_NO_LIVE];
+    const search = (query: string): string[] =>
+      keysOf(filterLiveMatches(all, { query, bothLiveOnly: false }));
+
+    assert.deepEqual(
+      search('streamerb'),
+      ['a|b'],
+      '★ 命中**右侧**那个人的昵称（不是只看左边那个人）',
+    );
+    assert.deepEqual(search('STREAMERB'), ['a|b'], '★★ 大写输入照样命中（大小写不敏感）');
+    assert.deepEqual(search('reamer'), ['a|b'], '★★ 是**子串**匹配（搜昵称中段也要命中）');
+    assert.deepEqual(
+      search('StreamerB'),
+      ['a|b'],
+      '★ 与夹具原样大小写一致时当然也命中（正面对照）',
+    );
+    assert.deepEqual(search('plaind'), ['c|d'], '★ 另一场也搜得到（不是"只认第一场"）');
+    assert.equal(matchesNickname(MATCH_BOTH_LIVE, 'streamera'), true, '★ 左侧那一册同样能命中');
+    assert.deepEqual(search('nobodyhere'), [], '★★ 没有命中 ⇒ 一场都不留（不是"搜不到就全给"）');
+
+    assert.equal(
+      filterLiveMatches(all, { query: '', bothLiveOnly: false }).length,
+      3,
+      '★★ 空词 ⇒ 全都留下',
+    );
+    assert.equal(
+      filterLiveMatches(all, { query: '   ', bothLiveOnly: false }).length,
+      3,
+      '★ 只有空白 ⇒ 与空词同一档（否则打一个空格进去整页会突然空掉）',
+    );
+    assert.deepEqual(search('  streamerb  '), ['a|b'], '★ 首尾空白被去掉（复制粘贴昵称时会带上）');
+    /*
+     * ⚠️★ 判据**只搜昵称**，不搜 `liveUrl`：这一条钉的是后半句 ——
+     *    `MATCH_BOTH_LIVE` 右侧那条地址里就带着 `kick.com`，而它的昵称里没有。
+     *    写成"搜地址"的实现会在这里多出一场，而界面上看起来只是"搜索结果比想的多一条"。
+     */
+    assert.deepEqual(search('kick.com'), [], '★★ 地址里的词不算命中（搜索框说的是「搜索选手」）');
+  });
+
+  it('★★ 两个条件是 AND：搜索命中的那一场只有一方在直播 ⇒ 照样被藏掉', () => {
+    const all = [MATCH_BOTH_LIVE, MATCH_ONE_LIVE, MATCH_NO_LIVE];
+    assert.deepEqual(
+      keysOf(filterLiveMatches(all, { query: 'streamer', bothLiveOnly: true })),
+      ['a|b'],
+      '★★ 搜索命中 + 双方都直播 ⇒ 只剩那一场',
+    );
+    /*
+     * ⚠️★ 这一条是"AND 还是 OR"的判据：`soloc` 只存在于 `MATCH_ONE_LIVE` 里，
+     *    而那一场**只有一方在直播**。写成 OR 的实现会在这里返回 `['c|d']` —— 当场红。
+     */
+    assert.deepEqual(
+      keysOf(filterLiveMatches(all, { query: 'soloc', bothLiveOnly: true })),
+      [],
+      '★★ 搜索命中但被开关筛掉 ⇒ 一场不剩（两个条件是 AND，不是 OR）',
+    );
+  });
+});
+
+describe('② 的分批：sliceLiveMatches', () => {
+  it('★★ 四个数（总数 / 筛后 / 这一帧渲染的 / 还剩几场）来自同一次计算', () => {
+    const slice = sliceLiveMatches(LIVE_SEVEN, {
+      query: '',
+      bothLiveOnly: false,
+      shown: 3,
+    });
+    assert.equal(slice.total, 7, '★ total 是**上游的总场次**，与筛选无关');
+    assert.equal(slice.matched.length, 7, '★ 没筛 ⇒ 筛后还是 7 场');
+    assert.equal(slice.visible.length, 3, '★ 这一帧渲染前 3 张');
+    assert.equal(slice.remaining, 4, '★★ 还剩 4 场 —— 界面那句「还有 N 场」必须就是它');
+    assert.equal(
+      slice.visible.length + slice.remaining,
+      slice.matched.length,
+      '★★ 渲染出来的 + 还剩的 = 筛后的总数（界面上那两处数字不许各算各的）',
+    );
+    /*
+     * ⚠️ 取的是**分最高的那几张**（入参是升序塞进去的 ⇒ 照输入顺序取会拿到最低那几场）。
+     */
+    assert.deepEqual(keysOf(slice.visible), ['k6|j6', 'k5|j5', 'k4|j4']);
+    assert.deepEqual(
+      slice.visible.map((m) => m.avgElo),
+      [1060, 1050, 1040],
+    );
+  });
+
+  it('★★ 筛选与分批叠在一起时四个数跟着一起变（界面上那句"还有 N 场"不许虚报）', () => {
+    const filtered = sliceLiveMatches(LIVE_SEVEN, {
+      query: 'player2a',
+      bothLiveOnly: false,
+      shown: RANKED_LIVE_BATCH,
+    });
+    assert.equal(filtered.total, 7, '★ total 仍然是**上游的** 7 场（筛选不许把它改小）');
+    assert.equal(filtered.matched.length, 1, '★ 只有一场命中');
+    assert.equal(filtered.visible.length, 1);
+    assert.equal(filtered.remaining, 0, '★★ 只剩一场 ⇒ 还剩 0 场（此时界面上不该有「加载更多」）');
+    assert.deepEqual(keysOf(filtered.visible), ['k2|j2']);
+    assert.notEqual(
+      filtered.total,
+      filtered.matched.length,
+      '★ 探针：这份夹具里两个数确实不同（否则上面几条是空跑）',
+    );
+  });
+
+  it('★ `shown` 小于一批时只给那么多；负数一律夹成 0（不许把最后一张悄悄吃掉）', () => {
+    const none = sliceLiveMatches(LIVE_SEVEN, { query: '', bothLiveOnly: false, shown: 0 });
+    assert.deepEqual(none.visible, [], '★ `shown: 0` ⇒ 一张都不渲染');
+    assert.equal(none.remaining, 7, '★ 而"还剩 7 场"仍然是对的（界面上那句话说的是 truth）');
+
+    /*
+     * ⚠️★ `slice(0, -1)` 在 JS 里是"**从末尾往回数**"（= 除了最后一张），
+     *    少的那张卡片在界面上看起来只是"这一场没了"，没有任何报错 ⇒ 夹成 0。
+     */
+    const negative = sliceLiveMatches(LIVE_SEVEN, { query: '', bothLiveOnly: false, shown: -1 });
+    assert.deepEqual(negative.visible, [], '★★ 负数 ⇒ 0 张（**不是**"除了最后一张的 6 张"）');
+    assert.equal(negative.remaining, 7);
+  });
+
+  it('★ 排序只做一次、入参一个字节都不动', () => {
+    const data: RankedLiveData = {
+      players: 1234,
+      matches: [MATCH_NO_LIVE, MATCH_BOTH_LIVE, MATCH_ONE_LIVE],
+    };
+    const before = data.matches.map((m) => m.key);
+    const slice = sliceLiveMatches(data, { query: '', bothLiveOnly: false, shown: 20 });
+    assert.deepEqual(
+      keysOf(slice.visible),
+      ['a|b', 'c|d', 'e|f'],
+      '★★ 输出按 `avgElo` 降序（夹具入参顺序是乱的：2200 那一场在中间）',
+    );
+    assert.deepEqual(
+      data.matches.map((m) => m.key),
+      before,
+      '★★ 入参那份数组**不许被就地排序**（容器手上那份还要留给"上次刷新失败了"用）',
     );
   });
 });
@@ -697,11 +989,11 @@ describe('解析是纯函数（spec §11.2 第一条）', () => {
     assert.ok(parsed);
     const orderBefore = parsed.matches.map((m) => m.key);
     sortLiveMatches(parsed.matches);
-    topLiveMatches(parsed);
+    sliceLiveMatches(parsed, { query: '', bothLiveOnly: false, shown: RANKED_LIVE_BATCH });
     assert.deepEqual(
       parsed.matches.map((m) => m.key),
       orderBefore,
-      'sortLiveMatches / topLiveMatches 不许就地排掉调用方那份 matches',
+      'sortLiveMatches / sliceLiveMatches 不许就地排掉调用方那份 matches',
     );
     assert.deepEqual(LIVE_FIXTURE, before, '上游那份原始响应必须一字未改');
 

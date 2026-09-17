@@ -49,6 +49,7 @@
  */
 
 import {
+  RANKED_LIVE_BATCH,
   RANKED_POLL_MS,
   type RankedEloData,
   type RankedLiveData,
@@ -159,6 +160,35 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   /** 有一轮取数在飞 —— 决定重试键是否可点。 */
   const [busy, setBusy] = useState(false);
+
+  /*
+   * ★★ ② 那一栏的三格**交互状态**：搜索词 / 「只看双方都在直播」/ 已经显示几张卡片。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 为什么它们住在**容器**里，而不是 `RankedLiveView` 自己的 `useState`
+   * ---------------------------------------------------------------------------
+   * 文件头那条"这个文件里没有界面"说的是**标记**（元素、类名、文案），不是状态：
+   * 这三格没有别的地方可放 —— 视图必须保持"只吃 props 的纯视图"，因为这一栏唯一的
+   * 自动化断言是渲染自检，而 `renderToStaticMarkup` **不跑 effect、不点击、不打字**。
+   * 状态住在视图里的话，自检能看到的**只有初始值**（空搜索词 + 开关关着 + 首批），
+   * 于是"筛出一场"「双方都直播只剩那一场」「还有 7 场」这三件真正会出错的事
+   * **一个字都断言不到**（`RankedLiveViewProps` 上写着完整理由）。
+   * ⚠️ 它们与上面那七个 `useState` **不是一类**：上面那一批是"这一页取到了什么数据"
+   *    （失败不清、按 `page` 盖章），这三格是"用户现在想看什么"（与请求无关，一个
+   *    字节都不发出去 —— 筛的是手上**已经取到**的那份数据）。
+   *
+   * ⚠️★ 换 tab / 翻页时**不清空**这三格（这里没有那样的 effect，是**有意**的）：
+   *    · 它们不影响取数（规则 1 仍然是"只有当前这一页取数"），所以留着不会串台；
+   *    · "加载更多"是用户**明确要求**过的决定（"再多给我几场"），切一下标签页回来
+   *      就把它收回，等于让用户重复点一遍；
+   *    · 而"回来时搜索框还留着上次那个词"是**看得见**的：他随时可以清掉，
+   *      清掉之后列表自己就回来了（切片会跟着新的条件重算）。
+   *    ⚠️ 反过来（换页就清）需要一条 effect，而 effect 的依赖一旦写错就会安静地
+   *    多跑几次 —— 为一件"用户看得见、自己改得回来"的事付那个代价不值得。
+   */
+  const [liveQuery, setLiveQuery] = useState('');
+  const [liveBothOnly, setLiveBothOnly] = useState(false);
+  const [liveShown, setLiveShown] = useState(RANKED_LIVE_BATCH);
 
   /**
    * 正在飞的那一轮取数。
@@ -517,7 +547,26 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
         />
       ) : null}
       {tab === 'live' ? (
-        <RankedLiveView {...chrome} live={mine(live, page)} origin={origin} />
+        /*
+         * ★ ② 的三格交互状态 + 两个动作都由容器接好线（形状与理由见上面那三个 `useState`）。
+         * ⚠️★ `onLoadMore` 加的是 `RANKED_LIVE_BATCH`（**不是**一个写死的数字）：
+         *    写死的话，改常量时"首批"变了、"每次加载更多"没变，而界面上两处都对不上
+         *    —— 没有任何门禁看得见（那句 total 与按钮上的数字都还是"有值"的）。
+         * ⚠️ 写成"在旧值上加一批"（`n => n + …`）而不是"读 `liveShown` 再加"：
+         *    连着点两下时，后者两下读到的都是**同一份旧值**，于是只前进了一批 ——
+         *    而界面上看起来只是"第二下没反应"。
+         */
+        <RankedLiveView
+          {...chrome}
+          live={mine(live, page)}
+          origin={origin}
+          search={liveQuery}
+          onSearchChange={setLiveQuery}
+          bothLiveOnly={liveBothOnly}
+          onToggleBothLive={() => setLiveBothOnly((on) => !on)}
+          shown={liveShown}
+          onLoadMore={() => setLiveShown((n) => n + RANKED_LIVE_BATCH)}
+        />
       ) : null}
       {tab === 'elo' ? <RankedEloView {...chrome} elo={mine(elo, page)} /> : null}
       {tab === 'weekly' ? (

@@ -242,7 +242,7 @@ function averageElo(players: [RankedLivePlayer, RankedLivePlayer]): number | nul
  * `GET /live` 的响应 → ① 的人数 + ② 的对局。
  *
  * ⚠️ 这里**不排序**：`matches` 保持上游顺序，排序是 `select.ts` 的事
- *    （`sortLiveMatches` / `topLiveMatches`）。
+ *    （`sortLiveMatches` / `sliceLiveMatches`）。
  *    否决了"顺手排一下"：那会把**展示口径**（谁在前）混进**解析**，
  *    而展示口径是会被改的（比如以后想按"比赛时长"排）——
  *    改它的那一天，会连"解析是否忠实"这个测试前提一起动到。

@@ -3199,18 +3199,66 @@ export const en: TranslationSchema = {
 
     // ---- (2) Live top matches (`RankedLiveView`, spec §6.3) ----
     /*
-     * ⚠️★ The title names what this panel actually selects: matches being played **right now**,
-     *    top 10 **by average elo**. It used to read "Top matches streaming right now" (changed
+     * ⚠️★ The title names only what this panel actually selects: matches being played
+     *    **right now**. It used to read "Top matches streaming right now" (changed
      *    2026-09-16), which overstated two things: a card may have **no stream at all** (the
      *    upstream field is empty; the render fixture's top card is even named `Nostream`) --
      *    streaming is carried by each card's own "Show streams (N)" -- and "top" is an
      *    **average** elo ordering in which an unrated player (`eloRate: null`) is normal
      *    (spec §10 item 6), so the leading card is not necessarily a high-elo one.
      *    The ordering itself is spelled out by `liveFrom` right below.
+     *    ⚠️★ 2026-09-19 removed the "(top 10 by average elo)" parenthetical as well (the user
+     *    asked for **every** match): from that day "top 10" is simply false (no truncation
+     *    any more, see `RANKED_LIVE_BATCH`), and "by average elo" was already said by
+     *    `liveFrom` -- a title and a line saying the same thing drift apart one edit at a time.
      */
-    liveTitle: 'Matches playing right now (top 10 by average elo)',
+    liveTitle: 'Matches playing right now',
     liveEmpty: 'There is no live match right now.',
-    liveFrom: 'Top 10 of {{total}} by average elo',
+    /*
+     * ⚠️★ Rewritten 2026-09-19 (it used to be "Top 10 of {{total}} by average elo"): the list
+     *    is no longer truncated (first batch + "Load more"), so "top 10" became false on the
+     *    spot. It now says two things that are both true -- how many matches upstream sent,
+     *    and what the order below is.
+     *    ⚠️ `{{total}}` is the **upstream total** (`sliceLiveMatches().total`), not the
+     *      filtered count: when a filter is on, `liveMatched` below says how many survived.
+     *      The two must not impersonate each other (otherwise "23 matches" sits above five
+     *      cards, and one of the two sentences is a lie).
+     */
+    liveFrom: '{{total}} matches, highest average elo first',
+    /*
+     * ★ The search box (`ranked.liveSearch`) and the toggle (`ranked.liveBothLive`) are the
+     *    two controls the user asked for on 2026-09-19; these keys belong to this section
+     *    (**not** reused from `resources.searchPlaceholder` -- that one means "search
+     *    resources", and cross-section reuse means editing one section silently edits the
+     *    other; this repo already ruled on that for the weekly-race seeds).
+     * ⚠️ `liveSearch` is both the placeholder and the label (`<label class="sr-only">`): a
+     *    placeholder disappears after the first keystroke, so a placeholder-only field has
+     *    no name at all.
+     */
+    liveSearch: 'Search player',
+    liveBothLive: 'Both streaming only',
+    /*
+     * ⚠️★ "Nothing survives the filter" is a **different sentence** from `liveEmpty`
+     *    ("There is no live match right now"): this one says upstream *does* have matches and
+     *    the current term/toggle filtered them all out. Swapping them tells the user upstream
+     *    is empty, so he goes looking for a problem somewhere else -- when all he has to do is
+     *    clear the box.
+     */
+    liveNoMatch: 'No match fits the filter.',
+    /*
+     * ⚠️ "{{matched}} fit the filter" is rendered only when the filter actually removed
+     *    something (the predicate is "matched < total"): otherwise it repeats the total from
+     *    `liveFrom`, which reads like a broken template.
+     */
+    liveMatched: '{{matched}} match the filter',
+    /*
+     * ★★ "Load more ({{n}} left)" -- `{{n}}` is **how many are still unrendered**
+     *    (`remaining`), computed together with the list above (the reasoning lives on
+     *    `sliceLiveMatches`). ⚠️ It must not be a second formula such as "matched - batch":
+     *    once a filter is on, that prints a bigger number than is actually left, and clicking
+     *    **adds nothing** (the user just concludes the button is broken).
+     */
+    liveMore: 'Load more ({{n}} left)',
     liveExpand: 'Show streams ({{n}})',
     /*
      * ⚠️★ The wording is "**this link** cannot be embedded", NOT "this platform is

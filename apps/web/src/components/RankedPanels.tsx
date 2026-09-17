@@ -22,13 +22,15 @@
  * 否决了"在这里算一个更精确的秒数"：那是拿可断言性换一段没人验得动的算术。）
  *
  * ===========================================================================
- * ★ ②③④ 三处**列表**由视图自己派生（`topLiveMatches` / `topEloEntries` / 逐行渲染）
+ * ★ ②③④ 三处**列表**由视图自己派生（`sliceLiveMatches` / `topEloEntries` / 逐行渲染）
  * ===========================================================================
- * 「{{total}} 场里按平均 elo 取前 10」里的 total 是 `live.matches.length`，而下面是
- * 取前 10 之后的列表 —— 两者必须来自**同一次**计算。分两处算（容器算 total、视图算
+ * 「共 {{total}} 场」里的 total 是 `live.matches.length`，而下面是筛选、分批之后真的
+ * 渲染出来的那几张 —— 两者必须来自**同一次**计算。分两处算（容器算 total、视图算
  * 列表，或者反过来），迟早会渲染出"写着 14 场、其实列了 10 条"的产物，而那种
  * 自相矛盾**没有任何门禁能发现**：它每一句都合法、每一格都有值。
- * ⚠️ 视图里调用**纯函数**是允许的（`select.ts` 那两个都不读时钟、不改入参）；
+ * ⇒ ② 的那一段（排序 / 筛选 / 取前 `shown` 张 / 还剩几场）整个住在
+ *   `shared/ranked/select.ts` 的 `sliceLiveMatches` 里，一次调用给出全部四个数。
+ * ⚠️ 视图里调用**纯函数**是允许的（`select.ts` 那几个都不读时钟、不改入参）；
  *    不允许的是时钟与取数。
  *
  * ===========================================================================
@@ -89,9 +91,9 @@ import {
   type RankedTab,
   type RankedWeeklyData,
   rankedLiveChannel,
+  sliceLiveMatches,
   timelineLabel,
   topEloEntries,
-  topLiveMatches,
   weekPath,
 } from '@mcsr/shared/ranked';
 import type { ReactNode } from 'react';
@@ -741,20 +743,60 @@ export type RankedLiveViewProps = RankedChromeProps & {
    *    类型检查，它还要自己写一道运行时守卫（Task 8），两件事缺一不可。
    */
   origin: string;
+
+  // -------------------------------------------------------------------------
+  // ★★ 筛选条与分批：这三格状态**住在容器里**，视图只吃 props（下面是四格 + 两个动作）
+  // -------------------------------------------------------------------------
+  /*
+   * ⚠️★ 为什么这四格是 props，而不是视图里的 `useState`：
+   *    这一栏唯一的自动化断言是渲染自检，而它是 `renderToStaticMarkup` ——
+   *    **不跑 effect、不点击、不打字**。状态住在视图里的话，自检能看到的**只有初始值**
+   *    （空搜索词 + 开关关着 + 首批），于是"筛出 1 场"「双方都直播只剩那 1 场」
+   *    「还有 7 场」这三件真正会出错的事**一个字都断言不到**，而一条不可能红的守卫
+   *    比没有守卫更坏（`docs/pending.md §5.63`）。⇒ 状态上提一层，
+   *    自检就能用**不同的 props**渲染出那三种状态并逐格断言（`③b` 那一节）。
+   * ⚠️★ 四格与两个动作都**必填**，理由与上面 `origin` 逐字相同：
+   *    可选 + 兜底（`query ?? ''`、`shown ?? <全部>`）会让"容器忘了接线"变成**静默**的
+   *    —— 搜索框看着在、打进去没反应，而所有门禁照样绿。必填之后是**编译错误**
+   *    （渲染脚本那一侧由 `assertPropsGiven` 兜着，它不受类型检查）。
+   */
+  /** 搜索框里的字（受控）。空串 = 不筛。 */
+  search: string;
+  onSearchChange: (value: string) => void;
+  /** 「只看双方都在直播」开着没有。 */
+  bothLiveOnly: boolean;
+  onToggleBothLive: () => void;
+  /** 已经显示几张卡片（容器从一批起，点一次「加载更多」加一批）。 */
+  shown: number;
+  onLoadMore: () => void;
 };
 
 /**
- * ② 实时高分对局（spec §6.3）：排序、取前 10、逐张卡片。
+ * ② 实时高分对局（spec §6.3；2026-09-19 改版：全部展示 + 搜索 + 双方都直播）。
  *
- * ⚠️★ 排序与取前 10 都**在这里**（`topLiveMatches(live)`），与上面那句
- *    「{{total}} 场里按平均 elo 取前 10」用**同一份**数据（本文件头第 3 节）。
+ * ⚠️★ 排序、筛选与"取前 `shown` 张"全**在这里**一次算完（`sliceLiveMatches(live, …)`），
+ *    与面板上那三处数字（共 N 场 / 符合条件 M 场 / 还有 K 场）用**同一份**结果
+ *    （本文件头第 3 节那条纪律：分两处算就会出现自相矛盾、而没有门禁看得见）。
  * ⚠️ 空集合是**自己的话**（「现在没有直播中的对局。」）—— 它既不是"加载中"
  *    也不是"出错了"：三者的下一步完全不同（等 / 等 / 重试），
  *    合成一句会让用户对着一屏空白不知道该做什么。
+ * ⚠️★ "**筛完一场不剩**"是**第四句**话（`ranked.liveNoMatch`），不是上面那一句：
+ *    上游那一刻有 23 场对局、只是当前这个搜索词一场都没命中 —— 说「现在没有直播中的
+ *    对局」是一句**假话**（用户会以为上游空了），而正确的那句要说的是"你的条件太窄了"。
  */
 export function RankedLiveView(props: RankedLiveViewProps) {
   const { t } = useTranslation();
-  const { live, origin, ...c } = props;
+  const {
+    live,
+    origin,
+    search,
+    onSearchChange,
+    bothLiveOnly,
+    onToggleBothLive,
+    shown,
+    onLoadMore,
+    ...c
+  } = props;
 
   if (live === null) {
     return (
@@ -764,31 +806,109 @@ export function RankedLiveView(props: RankedLiveViewProps) {
     );
   }
 
-  const matches = topLiveMatches(live);
+  const slice = sliceLiveMatches(live, { query: search, bothLiveOnly, shown });
 
   return (
     <RankedChrome {...c}>
       <h2 className="ranked__title">{t('ranked.liveTitle')}</h2>
-      {matches.length === 0 ? (
+      {/*
+        ★★ 筛选条：搜索框 + 「只看双方都在直播」。
+        ⚠️★ 它**永远渲染**，包括"上游此刻一场都没有"与"筛完一场不剩"两档：
+        藏起来的话，用户看到"没有符合条件的对局"却**找不到**那个条件在哪里
+        （条件还在生效，只是入口没了），只能刷新整页 —— `CalendarSeriesSection`
+        那一块的搜索框同一条口径（"包括匿名访客"）。
+        ⚠️ 类名复用全站现成的那一套（`.filters` / `.filters__search` / `.tagchip`）：
+        本仓的样式是全局的，而这一栏的类名清单是它与渲染自检 ⑧ 之间的接口 ——
+        能不加就不加（`RankedRetry` 的注释里写着同一条取舍）。
+        ⚠️★ 开关的"开着没有"必须走**同一份判据**的两个通道：`aria-pressed`（读屏软件）
+        与 `tagchip--on`（眼睛）都取自 `bothLiveOnly`，不是两处各判一次 ——
+        两处判开的话，某一次改动会让按钮**看起来**开着而读屏软件念成关着（或反过来），
+        而那种自相矛盾没有任何门禁能发现（`CalendarFilters` 那颗开关写着同一句话）。
+      */}
+      <div className="filters">
+        <div className="filters__search">
+          {/*
+            ⚠️ 可见文字只有占位符，标签走 `sr-only`：这一块上面已经有一个 `<h2>`，
+            再挂一行看得见的「搜索」会让它看起来像第二个标题（与系列活动那一块同一条）。
+            ⚠️ `htmlFor` / `id` 成对写：占位符在输入第一个字之后就消失了，
+            那是控件**唯一**的名字 —— 只给占位符不给标签，读屏软件会念出一个无名输入框。
+          */}
+          <label className="sr-only" htmlFor="ranked-live-q">
+            {t('ranked.liveSearch')}
+          </label>
+          <input
+            id="ranked-live-q"
+            type="search"
+            value={search}
+            placeholder={t('ranked.liveSearch')}
+            onChange={(event) => onSearchChange(event.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          className={bothLiveOnly ? 'tagchip tagchip--on' : 'tagchip'}
+          aria-pressed={bothLiveOnly}
+          onClick={onToggleBothLive}
+        >
+          {t('ranked.liveBothLive')}
+        </button>
+      </div>
+      {slice.total === 0 ? (
         <p className="ranked__empty">{t('ranked.liveEmpty')}</p>
       ) : (
         <>
           {/*
-            ⚠️ 「{{total}} 场里按平均 elo 取前 10」只在**有**场次时渲染：
-            空集合那两句话（"N 场里取前 10" + "现在没有对局"）里的前一句
-            在 N = 0 时是一句废话，读起来像模板坏了。
+            ⚠️ 「共 {{total}} 场」只在**有**场次时渲染：空集合那两句话（"共 N 场" +
+            "现在没有对局"）里的前一句在 N = 0 时是一句废话，读起来像模板坏了。
+            ⚠️★ 这里的 total 是**上游给的总场次**，不是筛后场次 —— 筛选生效时下面
+            还会多一行说明（`ranked.liveMatched`），两者不许互相冒充。
           */}
-          <p className="ranked__meta">{t('ranked.liveFrom', { total: live.matches.length })}</p>
-          <ul className="ranked__live">
-            {matches.map((match) => (
-              /*
-               * ⚠️ key 用 `match.key`（两个 uuid 排序后拼起来，`types.ts` 里写着为什么
-               * 必须排序）：上游没有 match id，而左右两侧的 elo 一变就可能互换 ——
-               * 不排序的话 React 会把同一场比赛当成新的一场重建（展开的框会跟着塌掉）。
-               */
-              <RankedMatch key={match.key} match={match} origin={origin} />
-            ))}
-          </ul>
+          <p className="ranked__meta">{t('ranked.liveFrom', { total: slice.total })}</p>
+          {slice.matched.length === 0 ? (
+            /* ⚠️ 上游有场次、只是被筛没了 ⇒ 这是**另一句话**（见函数上方那一段） */
+            <p className="ranked__empty">{t('ranked.liveNoMatch')}</p>
+          ) : (
+            <>
+              {/*
+                ⚠️★ 只有**筛掉过东西**时才渲染这一行：没筛时它会把总数再说一遍
+                （"共 23 场 / 符合条件 23 场"），而那读起来像模板坏了。
+                ⚠️ 判据是"筛后 < 总数"而不是"搜索词非空或开关开着"：后者在
+                "搜索词打了一半、还没命中任何一场"时会渲染出两句互相打架的话。
+              */}
+              {slice.matched.length < slice.total ? (
+                <p className="ranked__meta">
+                  {t('ranked.liveMatched', { matched: slice.matched.length })}
+                </p>
+              ) : null}
+              <ul className="ranked__live">
+                {slice.visible.map((match) => (
+                  /*
+                   * ⚠️ key 用 `match.key`（两个 uuid 排序后拼起来，`types.ts` 里写着为什么
+                   * 必须排序）：上游没有 match id，而左右两侧的 elo 一变就可能互换 ——
+                   * 不排序的话 React 会把同一场比赛当成新的一场重建（展开的框会跟着塌掉）。
+                   */
+                  <RankedMatch key={match.key} match={match} origin={origin} />
+                ))}
+              </ul>
+              {/*
+                ★★ 「加载更多」**只在还有没渲染的场次时**渲染，而且把这个数印在按钮上。
+                ⚠️★ 那个数来自 `slice.remaining`（与上面列表**同一次**计算）：写成
+                `slice.matched.length - RANKED_LIVE_BATCH` 之类的第二份算式，筛完之后
+                就会印出一个比实际还剩的更多的数（点一下什么都不会多出来）。
+                ⚠️ 到头时**整颗按钮不渲染**（不是"渲染成禁用"）：一颗按下去什么都不会
+                发生的按钮比没有按钮更坏 —— `RankedWeekNav` 的"到头了"那一格、
+                以及 `ranked.liveExpand` 为什么不给"0 个"的入口，都是同一条。
+                ⚠️ 那一行的类名复用 `.ranked__meta`（与失败屏的「重试」那一行同形）。
+              */}
+              {slice.remaining > 0 ? (
+                <p className="ranked__meta">
+                  <button type="button" className="ghostbtn" onClick={onLoadMore}>
+                    {t('ranked.liveMore', { n: slice.remaining })}
+                  </button>
+                </p>
+              ) : null}
+            </>
+          )}
         </>
       )}
     </RankedChrome>
