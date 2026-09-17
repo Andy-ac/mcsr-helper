@@ -264,6 +264,16 @@ export const zhCN = {
      * ⚠️ 结果那句里的两个数是**服务端回的**（真的改了几行），不是前端按 chip 上的
      *    计数猜的：未上架的草稿与已下架的内容同样会被清掉（否则它们一上架那个标签
      *    就回来了），而它们在标签云里本来就不出现 ⇒ 这两个数**可能大于**用户看得见的条数。
+     *
+     * ★★ `tagDeleteFileManaged`（2026-09-17 复审发现）：**库不是内容文件的对手**。
+     *    `deploy/deploy.sh` 每次部署都跑 `import.js --apply --file content/resources.json`，
+     *    导入器按文件里的 `tags` UPSERT ⇒ **文件里还写着这个标签的话，下次部署它会长回来**，
+     *    而在此之前**没有任何地方说过这件事**（用户看到的只是"删掉了"，几天后它又在那儿）。
+     *    ⚠️ 这一句**只在服务端回的 `fileManaged > 0` 时**出现（= 改掉的行里有几条是
+     *    已上架 + `source='import'` 的）：用户提交的内容导入器一个都不碰，
+     *    那种情况下"下次部署会写回来"是**假话** ⇒ 一个字都不说（见 `TagCloud.tsx`）。
+     *    ⚠️ 它说的**不是**"没删成功"（删是删了），而是"这一次删除活不过下次部署、
+     *    要连仓库里那个文件一起改"——配方写在 `docs/pending.md §5.96`。
      */
     tagDeleteAction: '删除标签「{{tag}}」',
     tagDeleteConfirm: '删除标签「{{tag}}」？会影响 {{count}} 条资源；资源本身保留。',
@@ -271,6 +281,8 @@ export const zhCN = {
     tagDeleteWorking: '删除中…',
     tagDeleteDone:
       '已删除标签「{{tag}}」：{{resources}} 条资源、{{revisions}} 条待审版本去掉了它。',
+    tagDeleteFileManaged:
+      '其中 {{count}} 条来自内容文件 content/resources.json：在这里删除不会保留到下次部署，还要把这个标签从 content/resources.json 里一并去掉。',
     tagDeleteFailed: '删除标签失败。',
     loading: '加载中…',
     loadFailed: '加载失败',

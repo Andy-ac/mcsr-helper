@@ -388,13 +388,49 @@ export function listTopTags(limit = 30): Array<{ tag: string; count: number }> {
  * ---------------------------------------------------------------------------
  * 判据在路由（那里要回 400，见 `routes/resources.ts`）。这里靠的是**精确相等**：
  * 空串匹配不到任何合法标签（tag schema 是 `min(1)`），所以即使有人绕过路由
- * 直接调它，也只会拿到 `{ resources: 0, revisions: 0 }`，**不会**变成一次全表清洗。
+ * 直接调它，也只会拿到 `{ resources: 0, revisions: 0, fileManaged: 0 }`，
+ * **不会**变成一次全表清洗。
  *
  * ⚠️ 两侧都做 `trim().toLowerCase()`：写入路径（`normalizeResourceInput`）与小写化的
  *    筛选路径（`listResources` 里的 `query.tag.toLowerCase()`）都是用这条规则对齐标签的，
  *    这里跟它们一致 —— 否则 `Tools` 与 `tools` 会变成两个**只有删除才分得清**的东西。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 第三个数字：改掉的行里，有多少条是**内容文件管的**（2026-09-17，复审发现）
+ * ---------------------------------------------------------------------------
+ * 前两个数字说的是"这一次改了几行"，但它们**没有说完**这一次动作的全部后果：
+ * 库不是内容文件的对手。`deploy/deploy.sh` 每次部署都会跑
+ * `node import.js --apply --file content/resources.json`，而导入器按文件里的 `tags`
+ * 把每一条 UPSERT 一遍（`upsertResource` 的 `ON CONFLICT … tags = excluded.tags`）
+ * ⇒ **文件里还写着的标签会在下一次部署时原样长回来**，而这一路上没有任何东西出声。
+ * "删掉的东西又回来了"正是本轮已经为待审版本关掉过一次的那类失败
+ * （见下面那段 `resource_revisions` 的说明），只不过这次的来源是内容文件，不是快照。
+ *
+ * ⚠️ 所以这里**只报数、不动手**：删除行为一个字不改，也**不**建"隐藏标签"表 ——
+ *    那张表（墓碑）在裁定里被明确否掉了（标签是**数出来的**、没有词表，
+ *    多一层墓碑等于让"标签"这个概念有两份真相，而两份真相迟早会漂）。
+ *    这个数字回答的是唯一该由界面回答的那个问题：
+ *    "我刚才删掉的东西，有多少是下一次部署会替我恢复的？"
+ *    ⇒ 边界要**看得见**，不能让用户以为它真的没了。
+ *
+ * ⚠️ 判据是**两个条件同时成立**，而且都取自"这一次真的改了的那一行"：
+ *   · `source = 'import'` —— 导入器**只 UPSERT 这些行**（`upsertResource` 与
+ *     `import.ts` 的文件头都写着）。`source = 'user'` 的行它一个都不碰，
+ *     所以那些行删掉就是真的删掉了，不能算进来（算进来等于吓唬用户，
+ *     而下一次他就不再信这个提示了）。
+ *   · `status = 'published'` —— 用户看得见的就是这一批（标签云 `listTopTags`
+ *     也只数 published）。未上架的草稿与已下架的内容**同样会被文件恢复**，
+ *     但它们不在用户眼前的这排标签上，把它们算进来会让这个数字与界面上的
+ *     东西对不上（而"对不上的数字"正是本仓反复记过的那类坑：用户会去数，
+ *     数不上就觉得整个提示是假的）。
+ *     ⇔ 换句话说：这个数字不是"库里有多少行是文件管的"，是"**你刚才在标签云上
+ *     看到的那批里，有多少条会自己回来**"。
  */
-export function deleteTagEverywhere(tag: string): { resources: number; revisions: number } {
+export function deleteTagEverywhere(tag: string): {
+  resources: number;
+  revisions: number;
+  fileManaged: number;
+} {
   const db: DatabaseSync = getDb();
   const target = tag.trim().toLowerCase();
 
@@ -407,6 +443,7 @@ export function deleteTagEverywhere(tag: string): { resources: number; revisions
 
   let resources = 0;
   let revisions = 0;
+  let fileManaged = 0;
 
   /*
    * 两条 UPDATE 必须在**同一个事务**里：删标签是一次动作，界面与审计都按
@@ -416,9 +453,17 @@ export function deleteTagEverywhere(tag: string): { resources: number; revisions
    */
   db.exec('BEGIN');
   try {
-    const resourceRows = db.prepare('SELECT id, tags FROM resources').all() as unknown as Array<{
+    /*
+     * ⚠️ `status` 与 `source` 只用来**数**第三个数字，不参与写入 ——
+     *    写入的判据仍然只有 `stripped()` 那一个（见上面那段注释）。
+     */
+    const resourceRows = db
+      .prepare('SELECT id, tags, status, source FROM resources')
+      .all() as unknown as Array<{
       id: string;
       tags: string;
+      status: string;
+      source: string;
     }>;
     const setResourceTags = db.prepare('UPDATE resources SET tags = ? WHERE id = ?');
     for (const row of resourceRows) {
@@ -426,6 +471,8 @@ export function deleteTagEverywhere(tag: string): { resources: number; revisions
       if (next === null) continue;
       setResourceTags.run(next, row.id);
       resources += 1;
+      // 这一行是**文件管的**：下一次部署会按 content/resources.json 把它写回来
+      if (row.status === 'published' && row.source === 'import') fileManaged += 1;
     }
 
     const revisionRows = db
@@ -445,7 +492,7 @@ export function deleteTagEverywhere(tag: string): { resources: number; revisions
     throw error;
   }
 
-  return { resources, revisions };
+  return { resources, revisions, fileManaged };
 }
 
 // ---------------------------------------------------------------------------

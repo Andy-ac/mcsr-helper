@@ -463,7 +463,20 @@ export interface TagDeleteResult {
   /** **规范化之后**的标签（trim + 小写）——界面回显要用它，别用自己发出去的那个串。 */
   tag: string;
   resources: number;
+  /** 有变化的**待审版本行数**（`resource_revisions` 里 `status='pending'` 的那些）。 */
   revisions: number;
+  /**
+   * ★ 改掉的行里有多少条**是内容文件管的**（已上架 + `source = 'import'`）。
+   *
+   * 库不是内容文件的对手：`deploy/deploy.sh` 每次部署都跑一次
+   * `import.js --apply --file content/resources.json`，而导入器按文件里的 `tags`
+   * UPSERT ⇒ **下一次部署会把那些标签原样写回来**。
+   * ⇒ `> 0` 时界面必须说出来（`resources.tagDeleteFileManaged`），否则用户看到的是
+   *   "删掉了"，几天后它又在那儿，而中间没有任何东西解释过这件事。
+   * ⚠️ `0` 是**正常值**（用户提交的内容导入器一个都不碰）⇒ 那时候**一个字都不说**：
+   *    "不可能发生的情况"不该在界面上占一行。
+   */
+  fileManaged: number;
 }
 
 // ---------------------------------------------------------------------------

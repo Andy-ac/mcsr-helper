@@ -975,6 +975,16 @@ console.log('⑨ ★★ 删标签：编辑者看得到那个 ✕，审核员 / �
  *      这句话写错的代价不是"报错"，而是**用户不敢按**或者**按了才发现删错了**。
  *
  * ===========================================================================
+ * ★★ 第三件事（2026-09-17 复审加的）：**文件管的那些行会在下次部署时回来**
+ * ===========================================================================
+ * 库不是内容文件的对手：`deploy/deploy.sh` 每次部署都按 `content/resources.json`
+ * UPSERT 一遍，所以文件里还写着的标签下次部署就长回来了 —— 而这件事在此之前
+ * 界面上一个字都没说（用户以为删掉了）。所以结果那一句后面要接一句
+ * `resources.tagDeleteFileManaged`，**判据是服务端回的 `fileManaged`**：
+ * 见 ⑤b 那一节（> 0 必须在、= 0 一个字都不许有 —— 零那一侧是最容易写成"永远说"
+ * 的那一半，而那样说出来的是一句假话）。
+ *
+ * ===========================================================================
  * ⚠️ 为什么四份登录态都要**真的过一遍 `useCan`**
  * ===========================================================================
  * 判据住在容器里（`TagCloud` 的 `useCan('resource.moderate')`）。如果自检只给组件
@@ -1174,17 +1184,72 @@ assert.equal(
 
 /* ---- ⑤ 结果：成功与失败都看得见（本仓"不许静默"的底线） ---- */
 const doneText = t('resources.tagDeleteDone', { tag: 'tools', resources: 2, revisions: 1 });
-const cloudDone = renderCloudView({ notice: { ok: true, text: doneText } });
+const cloudDone = renderCloudView({ notice: { ok: true, text: doneText, fileManaged: 0 } });
 assert.ok(textOf(cloudDone).includes(textOf(doneText)), '★ 成功要说清改了几条资源、几个待审版本');
 assert.ok(cloudDone.includes('notice--ok'), '成功用普通提示条（不是错误色）');
 
 const cloudFailed = renderCloudView({
-  notice: { ok: false, text: `${t('resources.tagDeleteFailed')} 403` },
+  notice: { ok: false, text: `${t('resources.tagDeleteFailed')} 403`, fileManaged: 0 },
 });
 assert.ok(textOf(cloudFailed).includes(textOf(t('resources.tagDeleteFailed'))), '★ 失败要有那句话');
 assert.ok(
   cloudFailed.includes('notice--bad') && cloudFailed.includes('403'),
   '★★ 失败要用错误色，并且带上**具体原因**（403？连不上？）—— 只有一句笼统的"失败了"等于没说',
+);
+
+/* ---- ⑤b ★★ 文件管辖边界：`fileManaged > 0` 时那一句必须在，= 0 时一个字都不许有 ---- */
+/*
+ * 2026-09-17 复审：库不是内容文件的对手。`deploy/deploy.sh` 每次部署都会按
+ * `content/resources.json` 把每一条 UPSERT 一遍 ⇒ 文件里还写着的标签**下次部署
+ * 就会长回来**，而在此之前界面上没有任何地方说过这件事。
+ *
+ * ⚠️ 两个方向都要验，而且**零那一侧才是最容易写错的那一半**：
+ *   · 只在 > 0 时说的话，写成"永远说"⇒ 用户提交的内容上会看到一句**假话**
+ *     （导入器一个都不碰它们），而"下次部署会回来"这句假话会让他去做一件多余的事；
+ *   · 写成永远不说 ⇒ 这条修复等于没做（那正是复审要的那条边界）。
+ * ⚠️ 零那一侧的对照**不能**拿"count=3 的那一整句"去比 —— 两句的数字本来就不同，
+ *    那样写出来的断言是**假的绿**（它只是在比两个不同的数字）。
+ *    所以这里从**词条本身**取出数字两边的固定正文，两半都逐字对照：
+ *    数字 > 0 那一份两半都要在，数字 = 0 那一份两半都不许在。
+ */
+const FILE_MANAGED_KEY = 'resources.tagDeleteFileManaged';
+const fileManagedRaw = String(i18n.getResource(LANG, 'translation', FILE_MANAGED_KEY));
+const fileManagedParts = fileManagedRaw.split('{{count}}').map(textOf);
+assert.equal(
+  fileManagedParts.length,
+  2,
+  `探针：${FILE_MANAGED_KEY} 里应当**恰好一个** \`{{count}}\`（数字两边的正文据此切开）`,
+);
+assert.ok(
+  fileManagedParts.every((part) => part.length > 0),
+  '探针：数字两边的固定正文都不能为空 —— 空串会让下面那两条断言恒真',
+);
+
+const cloudFileManaged = renderCloudView({
+  notice: { ok: true, text: doneText, fileManaged: 3 },
+});
+/* ⚠️ 正向对照：同一份产物里**结果那一句**也必须在（否则"找到了"可能是拿到了别的东西）。 */
+assert.ok(
+  textOf(cloudFileManaged).includes(textOf(doneText)),
+  '（正向对照）有这一句的那一屏，结果那一句照样要在',
+);
+
+for (const part of fileManagedParts) {
+  const where = JSON.stringify(part.slice(0, 18));
+  assert.ok(
+    textOf(cloudFileManaged).includes(part),
+    `★★ fileManaged = 3 ⇒ 必须说出"其中 3 条来自内容文件、这次删除活不过下次部署"（缺: ${where}）`,
+  );
+  assert.equal(
+    textOf(cloudDone).includes(part),
+    false,
+    `★★ fileManaged = 0 ⇒ 那一句一个字都不许出现（命中: ${where}）—— ` +
+      '用户提交的内容导入器一个都不碰，说"下次部署会回来"是假话',
+  );
+}
+assert.ok(
+  textOf(cloudFileManaged).includes(textOf(t(FILE_MANAGED_KEY, { count: 3 }))),
+  '★ 那一句要**整句逐字**出现，而且条数就是传进去的那个 3（不是别处来的数）',
 );
 
 /*
@@ -1194,7 +1259,10 @@ assert.ok(
  *    `tags.length > 0`）：不留这一条的话，删最后一个标签的人看到的是**一片空白** ——
  *    既没有标签行、也没有"删掉了什么"，最自然的解读是"刚才那一下把页面弄坏了"。
  */
-const cloudEmptyAfterDelete = renderCloudView({ tags: [], notice: { ok: true, text: doneText } });
+const cloudEmptyAfterDelete = renderCloudView({
+  tags: [],
+  notice: { ok: true, text: doneText, fileManaged: 0 },
+});
 assert.ok(cloudDone.includes('tagcloud'), '（正向对照）有标签时那一行必须在');
 assert.equal(
   cloudEmptyAfterDelete.includes('tagcloud'),
@@ -1218,6 +1286,9 @@ const TAG_DELETE_KEYS = [
   'tagDeleteConfirmAction',
   'tagDeleteWorking',
   'tagDeleteDone',
+  // ★ 2026-09-17 复审加的那一句（文件管辖边界），必须自己也在这一列里 ——
+  //   漏掉它的后果与漏掉词条一模一样：界面上原样印出 key。
+  'tagDeleteFileManaged',
   'tagDeleteFailed',
 ] as const;
 for (const key of TAG_DELETE_KEYS) {
@@ -1235,6 +1306,7 @@ const cloudProducts = [
   cloudBusy,
   cloudDone,
   cloudFailed,
+  cloudFileManaged,
   cloudEmptyAfterDelete,
 ].join('');
 /* ⚠️ 扫描器本身必须能命中（否则下面是恒真的空跑）。 */
@@ -1248,7 +1320,8 @@ assert.deepEqual(leakedTagKeys, [], `裸 key 泄漏：${leakedTagKeys.join(', ')
 
 ok(
   `编辑者有 ${String(editorDels.length)} 个 ✕（各带标签名）、审核员/访客/未登录一个都没有；` +
-    '确认那句话有标签名与条数、成功失败都看得见、删完最后一个标签时提示还在',
+    '确认那句话有标签名与条数、成功失败都看得见、删完最后一个标签时提示还在；' +
+    '文件管的那些行会明说"这次删除活不过下次部署"，0 条时那一句不出现',
 );
 
 // ---------------------------------------------------------------------------
@@ -1283,6 +1356,7 @@ const everyProduct = [
   cloudBusy,
   cloudDone,
   cloudFailed,
+  cloudFileManaged,
   cloudEmptyAfterDelete,
 ].join('');
 

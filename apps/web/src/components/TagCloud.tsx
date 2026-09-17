@@ -58,13 +58,35 @@ import { useCan } from '@/lib/capabilities';
  * `fetchLiveChannelsFresh`）。
  *
  * ===========================================================================
+ * ★★ 第二句必须说的话：**文件管的那些行，删了会在下次部署时回来**（2026-09-17 复审）
+ * ===========================================================================
+ * 用户要求的是"删掉这个标签"。库里的删除**真的发生了**，但库不是内容文件的对手：
+ * `deploy/deploy.sh` 每次部署都跑 `import.js --apply --file content/resources.json`，
+ * 导入器按文件里的 `tags` UPSERT ⇒ **文件里还写着的标签会在下次部署时长回来**，
+ * 而这件事在上一次之前**没有任何地方说过**（复审原话：这必须记下边界并给出运维答案）。
+ *
+ * 所以服务端多回一个 `fileManaged`（已上架 + `source='import'` 的行数），这里在
+ * **结果那一句**后面接着说：
+ *   · `> 0` ⇒ 说出"其中几条来自内容文件、在这里删不会留到下次部署、还要去仓库里
+ *     改那个文件"（词条 `resources.tagDeleteFileManaged`，配方在 `docs/pending.md §5.96`）；
+ *   · `= 0` ⇒ **一个字都不说**。用户提交的内容导入器一个都不碰，那种情况下
+ *     "下次部署会把它写回来"是**假话**；界面上多一句不会发生的事，只会让人开始
+ *     不信这个提示（本仓对"不可能发生的状态"一贯是：不给它留一行）。
+ * ⚠️ 判据是服务端那个数字，**不是前端自己猜**：前端根本不知道哪些行来自文件
+ *    （标签云只有标签和计数，没有来源）。
+ * ⚠️ 它只能出现在**结果**里，不能提前出现在确认那一句里：确认时还不知道这个数字
+ *    （要等删除的响应），而按 chip 上的计数去猜会给出一个错的数字 ——
+ *    错的数字比没有数字更坏。
+ *
+ * ===========================================================================
  * 覆盖边界（写清楚，免得下一个人高估它）
  * ===========================================================================
  * `resourcerender.tsx` 验的是**把 props 给对了渲染成什么样**。它**不验**：
  *   · **点击**（选标签、点 ✕、确认、取消都不在这里跑 —— `renderToStaticMarkup`
  *     不跑 effect、不派发事件）；
  *   · **真的发出了什么请求**、**服务端到底改了什么**（那些在
- *     `services/api/src/resource-tags.test.ts`：行数、其它字段、待审版本、403、400、审计）；
+ *     `services/api/src/resource-tags.test.ts`：行数、其它字段、待审版本、403、400、审计、
+ *     以及 `fileManaged` 那个数字对不对）；
  *   · **缓存**（`fresh` 那一半只能靠真的浏览器，服务端那一条 `no-store` 头由
  *     路由自己带）。
  * 渲染自检与那几份证据是互补的，不是替代关系。
@@ -91,8 +113,13 @@ export interface TagCloudViewProps {
   confirming: string | null;
   /** 删除请求进行中（确认键与取消键都禁用，不让人重复点）。 */
   busy: boolean;
-  /** 上一次删除的结果（成功/失败都要看得见，本仓一贯"不许静默"）；`null` = 还没删过。 */
-  notice: { ok: boolean; text: string } | null;
+  /**
+   * 上一次删除的结果（成功/失败都要看得见，本仓一贯"不许静默"）；`null` = 还没删过。
+   * ⚠️ `fileManaged` 是**服务端回的那个数字**（改掉的行里有多少条由内容文件管理）：
+   *    它决定结果那一句后面要不要再接一句"这次删除活不过下次部署"。
+   *    `0` 时不接（见文件头那一段）。
+   */
+  notice: { ok: boolean; text: string; fileManaged: number } | null;
   onRequestDelete: (tag: string) => void;
   onCancelDelete: () => void;
   onConfirmDelete: () => void;
@@ -200,8 +227,23 @@ export function TagCloudView(props: TagCloudViewProps) {
         ⚠️ 提示放在标签行**外面**：它是"刚才那一下的结果"，不是"这一排标签"的一部分。
            放在里面的话，最后一条标签被删掉时它会跟着整行一起消失 —— 而那正是
            唯一需要它的时候（`tags` 变成空数组之后这次删除就"没有下文"了）。
+
+        ★ `fileManaged > 0` 时再接**一句**（文件把那些标签留在了仓库里，下次部署会写回去）：
+          它是"这一下没有真的删掉"这件事的唯一提示，而 `= 0` 时它一个字都不出现
+          （用户提交的内容导入器不碰 ⇒ 那时候那句话是假话）。理由见文件头那一段。
+        ⚠️ 拼成一个**字符串**再交给 `Notice`（它是 `children` 为字符串时才走 `em()`）：
+          两句之间要有空格，否则界面上是两个句子黏在一起（`textOf` 会把空白压掉，
+          所以自检看不见这个错，只有人眼看得见）。
       */}
-      {notice ? <Notice kind={notice.ok ? 'ok' : 'bad'}>{notice.text}</Notice> : null}
+      {notice ? (
+        <Notice kind={notice.ok ? 'ok' : 'bad'}>
+          {notice.fileManaged > 0
+            ? `${notice.text} ${t('resources.tagDeleteFileManaged', {
+                count: notice.fileManaged,
+              })}`
+            : notice.text}
+        </Notice>
+      ) : null}
     </>
   );
 }
@@ -237,7 +279,9 @@ export function TagCloud(props: TagCloudProps) {
 
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string; fileManaged: number } | null>(
+    null,
+  );
 
   async function confirmDelete() {
     if (confirming === null) return;
@@ -251,6 +295,9 @@ export function TagCloud(props: TagCloudProps) {
        *   两个数字是"真的改了几行"，不是前端按 chip 上的计数猜的 ——
        *   未上架的草稿与已下架的内容同样会被清掉，它们在标签云里本来就不出现，
        *   所以那两个数字**可能大于**用户看得见的条数。说的必须是改了什么。
+       * ★ `fileManaged` 一路带进 notice：它是**结果那一句后面还要不要接一句**的判据
+       *   （> 0 ⇒ 接，= 0 ⇒ 不接），而那一句由视图渲染（自检就从那里验它）。
+       *   ⚠️ 失败那一支里它是 `0`：一次没成功的删除没有任何"会被文件写回来"的东西。
        */
       setNotice({
         ok: true,
@@ -259,12 +306,17 @@ export function TagCloud(props: TagCloudProps) {
           resources: res.resources,
           revisions: res.revisions,
         }),
+        fileManaged: res.fileManaged,
       });
       setConfirming(null);
       props.onDeleted(res.tag);
     } catch (err) {
       // ⚠️ 失败**必须**看得见，并且带上服务端/网络那一层的原因（403？连不上？）
-      setNotice({ ok: false, text: `${t('resources.tagDeleteFailed')} ${errorText(err)}` });
+      setNotice({
+        ok: false,
+        text: `${t('resources.tagDeleteFailed')} ${errorText(err)}`,
+        fileManaged: 0,
+      });
     } finally {
       setBusy(false);
     }

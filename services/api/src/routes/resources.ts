@@ -142,7 +142,7 @@ resourcesRoute.get('/tags', (c) => {
  * ---------------------------------------------------------------------------
  * 响应：说清"改了什么"，因为它就是那句确认话术的来源
  * ---------------------------------------------------------------------------
- * `{ ok, tag, resources, revisions }`：
+ * `{ ok, tag, resources, revisions, fileManaged }`：
  *   · `tag` —— **规范化之后**的那个（trim + 小写）；调用方拿它回显，
  *     免得界面上写着「Tools」而库里存的是「tools」；
  *   · `resources` —— 有变化的**资源行数**（含未上架的那些），
@@ -153,10 +153,21 @@ resourcesRoute.get('/tags', (c) => {
  *    未上架的草稿与下架的内容同样会被清掉（理由见数据层），而它们在标签云里
  *    本来就不出现。报告的是"改了什么"，不是"你看见了什么"。
  *
+ * ★ `fileManaged`（2026-09-17，复审发现）—— 上面那两个数**没有说完**这次动作的后果：
+ *    改掉的行里有多少是 `source = 'import'`（= 由 `content/resources.json` 管理）
+ *    且**已上架**的。部署脚本每次都跑一次导入（`deploy/deploy.sh`），而导入器
+ *    按文件里的 `tags` UPSERT ⇒ **那些行上的标签会在下一次部署时原样长回来**。
+ *    ⚠️ 接口**只报这个边界，不做任何拦截**：没有墓碑表（裁定里明确否掉了）、
+ *    删除行为也一个字没改。真删掉它要**两步**（界面删 + 仓库里改内容文件），
+ *    配方写在 `docs/pending.md §5.96`，而这句话必须由界面说给用户听。
+ *    ⚠️ 判据取的是"真的改了的那一行"，而且是**已上架**的那一批
+ *    （理由在 `deleteTagEverywhere` 的注释里：说到数字要和用户在标签云上看到的对得上）。
+ *    ⇒ `0` 是**正常值**（用户提交的内容导入器一个都不碰），不是"没查"。
+ *
  * ⚠️ 不存在的标签**不是 404**：标签是数出来的、没有词表，所以"从来没存在过"
  *    与"刚刚被别人删掉了"在服务端看起来完全一样（都是 0 行）。回 404 只会让
- *    前端去猜一个它猜不出的区别；回 `{ resources: 0, revisions: 0 }` 是同一件
- *    事实的更准确说法，而且这个接口因此是**幂等**的（删两次不会出错）。
+ *    前端去猜一个它猜不出的区别；回 `{ resources: 0, revisions: 0, fileManaged: 0 }`
+ *    是同一件事实的更准确说法，而且这个接口因此是**幂等**的（删两次不会出错）。
  */
 resourcesRoute.delete('/tags/:tag', requireCapability('resource.moderate'), (c) => {
   const user = c.get('user');
@@ -200,7 +211,13 @@ resourcesRoute.delete('/tags/:tag', requireCapability('resource.moderate'), (c) 
   // ⚠️ `no-store`：这是一次写，回读当然要新鲜数据。标签云那条 GET 带
   //    `public, max-age=60`，客户端回读时必须绕开缓存（见 `fetchTags` 的 `fresh`）。
   c.header('Cache-Control', 'no-store');
-  return c.json({ ok: true, tag, resources: counts.resources, revisions: counts.revisions });
+  return c.json({
+    ok: true,
+    tag,
+    resources: counts.resources,
+    revisions: counts.revisions,
+    fileManaged: counts.fileManaged,
+  });
 });
 
 resourcesRoute.get('/', (c) => {

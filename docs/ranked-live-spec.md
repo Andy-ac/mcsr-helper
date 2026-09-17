@@ -472,7 +472,9 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
   ⚠️ 两人顺序固定为"elo 高的在左"（null 排后），同一场比赛在两次刷新之间不会左右乱跳。
 - **点击展开直播框**：
   - 只在 **`liveUrl` 存在**时渲染那一侧的框；一个都没有 ⇒ 整张卡片没有展开入口（不是一颗点不动的按钮）。
-  - **点击才加载** iframe（沿用 `components/ClickToPlayEmbed.tsx`）：一屏最多 20 个框，
+  - **点击才加载** iframe（沿用 `components/ClickToPlayEmbed.tsx`）：一屏最多 40 个框
+    （一批 `RANKED_LIVE_BATCH` = 20 张卡片，每张最多两个框；★ 2026-09-19 起是 40 而不是
+    20 —— 原来那句"20"算的是"取前 10 × 2"），
     全预加载会把浏览器与带宽打满。
   - 白名单（`livePlatform`）：`twitch` / `youtube` / `bilibili` 内嵌；其余**外链** + 一句说明。
     地址由 `packages/shared` 现成的嵌入函数拼（Twitch 必须带 `parent`，§11.2 有一条测试）。
@@ -801,7 +803,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | **访客 IP 到达第三方** | 隐私 | 用户明确选了这个代价；只做 `omit` + `no-referrer` 两件事 |
 | 上游字段悄悄改名 | 界面上出现 `—` 一片 | 逐格兜底；**浏览器侧不记日志**（没有读者，见 §10 第 8 条），能被我们看到的只有心跳那一条的 502 + 服务端日志 |
 | 一个访客开多个标签页 | 烧他自己的额度（可能 429） | 只有当前标签页轮询、不可见时停、历史周不刷新 |
-| 直播框把浏览器打满 | 卡顿 | 点击才加载；一屏最多 20 个 |
+| 直播框把浏览器打满 | 卡顿 | 点击才加载；一屏最多 40 个（一批 20 张卡片 × 每张最多 2 个框） |
 | 心跳那一处把服务器 IP 的额度花掉 | 每分钟 ≤2 次（4%） | TTL 30 秒 + single-flight；不做预算表（多一份没人走的状态） |
 
 ---

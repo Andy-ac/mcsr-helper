@@ -30,6 +30,15 @@
  *      说大了是吓人，说小了是**骗人**。⇒ 有一条用例是拿"调用前后真的变了的行"
  *      去对响应里的两个数，而不是拿我手写的常量去对（常量与实现对不上时，
  *      那条断言会跟着一起错，两边都是绿的）。
+ *
+ * ===========================================================================
+ * ⑦ 是**复审后加的**那一条边界：库不是内容文件的对手
+ * ===========================================================================
+ * `deploy/deploy.sh` 每次部署都按 `content/resources.json` 把每一条 UPSERT 一遍
+ * ⇒ 文件里还写着的标签**下次部署就长回来了**，而在此之前没有任何东西说过这件事。
+ * 服务端因此多回一个 `fileManaged`（已上架 + `source='import'` 的行数），
+ * 那一节钉的就是这个数字的两个方向（> 0 要报、只有用户提交时必须是 0）。
+ * 界面那一半在 `apps/web/scripts/resourcerender.tsx` 的 ⑤b。
  */
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, it } from 'node:test';
@@ -237,7 +246,13 @@ describe('① 已上架的资源：标签没了，资源还在（其它字段一
 
     const res = await deleteTag('tools', editor.cookie);
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(res.body, { ok: true, tag: 'tools', resources: 1, revisions: 0 });
+    assert.deepEqual(res.body, {
+      ok: true,
+      tag: 'tools',
+      resources: 1,
+      revisions: 0,
+      fileManaged: 0,
+    });
 
     assert.deepEqual(tagsOf(id), ['video'], '★ 目标标签必须从这一行消失，别的标签一个都不许动');
 
@@ -331,8 +346,9 @@ describe('② 待审版本也去掉这个标签；approved / rejected 的历史�
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.deepEqual(
       res.body,
-      { ok: true, tag: 'tools', resources: 1, revisions: 1 },
-      '★ 一条资源 + 一个待审版本 ⇒ { 1, 1 }',
+      { ok: true, tag: 'tools', resources: 1, revisions: 1, fileManaged: 0 },
+      '★ 一条资源 + 一个待审版本 ⇒ { 1, 1 }；`fileManaged` 是 0 —— 这一条是**用户提交**的，' +
+        '导入器一个都不碰（见 ⑦ 那三条正向用例）',
     );
 
     assert.deepEqual(tagsOf(id), ['video'], '线上那一行的标签要清掉');
@@ -387,7 +403,7 @@ describe('② 待审版本也去掉这个标签；approved / rejected 的历史�
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.deepEqual(
       res.body,
-      { ok: true, tag: 'tools', resources: 1, revisions: 0 },
+      { ok: true, tag: 'tools', resources: 1, revisions: 0, fileManaged: 0 },
       '★ 被驳回的版本不算 —— 只有 pending 才可能将来冒到线上',
     );
     assert.deepEqual(tagsOf(id), [], '线上那一行的 tools 要清掉（它本来就只剩这一个标签）');
@@ -446,6 +462,8 @@ describe('③ 判据：`resource.moderate`（editor 及以上）', () => {
     assert.equal(denied.status, 403);
     assert.equal('resources' in denied.body, false, '403 的响应体里不该有"影响了多少条"的计数');
     assert.equal('revisions' in denied.body, false);
+    // ★ `fileManaged` 同样是"这次动了多少"的一部分：权限不够的人一个字都不该问出来
+    assert.equal('fileManaged' in denied.body, false);
   });
 });
 
@@ -516,8 +534,8 @@ describe('④ 空标签 / 纯空白：400 `invalid_input`，而且一行都没�
     const id = await published(author.cookie, reviewer.cookie, ['tools']);
 
     const before = tagsMap('resources');
-    assert.deepEqual(deleteTagEverywhere(''), { resources: 0, revisions: 0 });
-    assert.deepEqual(deleteTagEverywhere('   '), { resources: 0, revisions: 0 });
+    assert.deepEqual(deleteTagEverywhere(''), { resources: 0, revisions: 0, fileManaged: 0 });
+    assert.deepEqual(deleteTagEverywhere('   '), { resources: 0, revisions: 0, fileManaged: 0 });
     /*
      * ⚠️ 判据是**精确相等**（不是 `includes`）：`''` 若是子串匹配，每一行都会被清成 `[]`。
      *    这一条盯的就是"哪天有人把过滤改成 `!t.includes(target)`"。
@@ -588,7 +606,18 @@ describe('⑤ 响应里的数字 == 真的改了几行；审计里有一条', ()
 
     assert.equal(res.body.resources, changedResources.length, '★ 资源的数字必须等于真的变了的行数');
     assert.equal(res.body.revisions, changedRevisions.length, '★ 版本的数字必须等于真的变了的行数');
-    assert.deepEqual(res.body, { ok: true, tag: 'tools', resources: 2, revisions: 1 });
+    /*
+     * ⚠️ `fileManaged` 在这里必须是 **0**：这一格特意加了一条 `upsertResource`（默认
+     *    `source='import'`）的行，但它带的是 `video`、**没有** tools ⇒ 它一行都没被改，
+     *    所以不该被算进来。这条断言盯的正是"扫了几行"与"改了几行"被搞混的那种写法。
+     */
+    assert.deepEqual(res.body, {
+      ok: true,
+      tag: 'tools',
+      resources: 2,
+      revisions: 1,
+      fileManaged: 0,
+    });
 
     // 夹具对照：真的是 a、b 两条资源 + a 的那个待审版本
     assert.deepEqual(changedResources.slice().sort(), [a, b].slice().sort());
@@ -666,12 +695,30 @@ describe('⑤ 响应里的数字 == 真的改了几行；审计里有一条', ()
 
     const miss = await deleteTag('nope', editor.cookie);
     assert.equal(miss.status, 200, '标签是数出来的、没有词表 ⇒ "从来没存在过"与"刚被删掉"分不开');
-    assert.deepEqual(miss.body, { ok: true, tag: 'nope', resources: 0, revisions: 0 });
+    assert.deepEqual(miss.body, {
+      ok: true,
+      tag: 'nope',
+      resources: 0,
+      revisions: 0,
+      fileManaged: 0,
+    });
 
     const first = await deleteTag('tools', editor.cookie);
     const second = await deleteTag('tools', editor.cookie);
-    assert.deepEqual(first.body, { ok: true, tag: 'tools', resources: 1, revisions: 0 });
-    assert.deepEqual(second.body, { ok: true, tag: 'tools', resources: 0, revisions: 0 });
+    assert.deepEqual(first.body, {
+      ok: true,
+      tag: 'tools',
+      resources: 1,
+      revisions: 0,
+      fileManaged: 0,
+    });
+    assert.deepEqual(second.body, {
+      ok: true,
+      tag: 'tools',
+      resources: 0,
+      revisions: 0,
+      fileManaged: 0,
+    });
   });
 
   it('大小写与首尾空白被规范化成同一个标签（与写入路径同一条规则）', async () => {
@@ -720,8 +767,9 @@ describe('⑥ 它只动 tags 这一列', () => {
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.deepEqual(
       res.body,
-      { ok: true, tag: 'tools', resources: 2, revisions: 1 },
-      '★ 两行资源（pending + hidden）+ 一个待审版本（hidden 那条的 revision 1 是 approved，不算）',
+      { ok: true, tag: 'tools', resources: 2, revisions: 1, fileManaged: 0 },
+      '★ 两行资源（pending + hidden）+ 一个待审版本（hidden 那条的 revision 1 是 approved，不算）' +
+        '；`fileManaged` 是 0 —— 这两条都是用户提交的（导入器不碰它们）',
     );
     assert.deepEqual(tagsOf(pendingId), [], '★ 未上架的草稿也要清（它上架时标签会冒出来）');
     assert.deepEqual(resourceRow(hiddenId).tags, '[]', '★ 下架的内容也要清');
@@ -740,7 +788,13 @@ describe('⑥ 它只动 tags 这一列', () => {
     const before = tagsMap('resources');
     const res = await deleteTag('tools', editor.cookie);
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(res.body, { ok: true, tag: 'tools', resources: 1, revisions: 0 });
+    assert.deepEqual(res.body, {
+      ok: true,
+      tag: 'tools',
+      resources: 1,
+      revisions: 0,
+      fileManaged: 0,
+    });
 
     assert.equal(
       tagsMap('resources')[without],
@@ -749,5 +803,158 @@ describe('⑥ 它只动 tags 这一列', () => {
     );
     assert.deepEqual(tagsOf(withTools), ['video'], '★ 同一行上别的标签也一个都不许动');
     assert.deepEqual(tagsOf(without), ['texture', 'video'], '（对照）另一条资源原样');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑦ `fileManaged`：改掉的行里有多少条是**内容文件管的**（2026-09-17 复审发现）
+// ---------------------------------------------------------------------------
+/**
+ * ===========================================================================
+ * 这一节守的是什么
+ * ===========================================================================
+ * 复审判定：删标签**不是**违反批准的设计（标签表 / 隐藏标签在裁定里被明确否掉了，
+ * 所以导入器**不可能**知道某个标签被删过），但这次改动必须**记下边界并给出运维答案**。
+ * 边界就是这一条：库不是内容文件的对手 ——
+ *
+ *     `deploy/deploy.sh` 每次部署都跑
+ *     `node import.js --apply --file content/resources.json`，
+ *     而导入器按文件里的 `tags` 把每一条 UPSERT 一遍
+ *     ⇒ **文件里还写着这个标签的话，下一次部署它就原样长回来了**，
+ *        而这一路上没有任何东西会出声。
+ *
+ * 这是"删掉的东西又回来了"那一类里**最静默**的一种：库里的删除是**真的**发生了
+ * （前六节的断言全绿），几天后它又在那儿，而中间没有人解释过这件事。
+ * 服务端因此多回一个数字（已上架 + `source='import'` 的行数），界面据此说一句
+ * "这次删除活不过下次部署"。**这一节钉的就是那个数字**，两个方向各一条：
+ *   · 文件管的行 ⇒ 必须报出来（否则界面永远不会说那句话，修复等于没做）；
+ *   · 只有用户提交的行 ⇒ 必须是 0（否则界面会在一件**不可能发生**的事上吓唬用户，
+ *     而"下次部署会回来"对用户提交的内容是**假话** —— 导入器一个都不碰它们）。
+ *
+ * ⚠️ 这一节**不**验界面（界面那一半在 `apps/web/scripts/resourcerender.tsx` 的 ⑤b：
+ *    `> 0` 必现、`= 0` 一个字都没有），也不验"部署之后真的会回来" ——
+ *    那要在服务器上跑一次 `import.js --apply` 才看得到，配方写在 `docs/pending.md §5.96`。
+ */
+
+describe('⑦ `fileManaged`：文件管的行要报出来；用户提交的行一个都不算', () => {
+  /** 一条**导入脚本写的**那种行（`content/resources.json` 里的每一条都是这么进库的）。 */
+  function importRow(
+    id: string,
+    tags: string[],
+    status: 'published' | 'hidden' | 'pending' = 'published',
+  ): void {
+    upsertResource(
+      {
+        kind: 'website',
+        id,
+        title: `内容文件里的 ${id}`,
+        titleEn: null,
+        url: `https://${id}.example/`,
+        imageUrl: null,
+        summary: null,
+        body: '正文',
+        lang: 'zh-CN',
+        tags,
+        featured: false,
+        official: false,
+        status,
+      },
+      // ⚠️ 显式写出来：这个参数的默认值**就是** `'import'`，而本节的判据全挂在它上面，
+      //    读的人不该去猜（`upsertResource` 的注释里写着默认值）。
+      { source: 'import' },
+    );
+    assert.equal(
+      (getDb().prepare('SELECT source FROM resources WHERE id = ?').get(id) as { source: string })
+        .source,
+      'import',
+      `夹具：${id} 必须真的是文件管的（否则本节验的是另一件事）`,
+    );
+  }
+
+  it('文件管的已上架行会被报出来，用户提交的行不算（哪怕它也被改了）', async () => {
+    const author = await makeUser('user');
+    const reviewer = await makeUser('reviewer');
+    const editor = await makeUser('editor');
+
+    // 一条**用户提交**的：走提交 → 审核 ⇒ source = 'user'（导入器一个都不碰）
+    const userRow = await published(author.cookie, reviewer.cookie, ['tools', 'video']);
+    // 两条**文件管的**：一条带 tools（会被改），一条不带（不该被算进来）
+    importRow('imp-with-tools', ['tools', 'video']);
+    importRow('imp-without-tools', ['video']);
+
+    for (const id of ['imp-with-tools', 'imp-without-tools']) {
+      assert.equal(resourceRow(id).status, 'published', `夹具：${id} 必须是已上架的`);
+    }
+
+    const res = await deleteTag('tools', editor.cookie);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(
+      res.body,
+      /*
+       * `resources: 2` = 用户提交的那一条 + 文件管的那一条带 tools 的。
+       * `fileManaged: 1` = 其中**只有一条**会被下次部署恢复。
+       * ⚠️ 这两个数字**必须分开**：界面那句"资源本身保留"说的是 2，
+       *    而"下次部署会把它写回来"说的是 1 —— 混起来就变成"两条都会回来"（假话），
+       *    或者"一条都不会回来"（那正是复审要关掉的那个静默）。
+       */
+      { ok: true, tag: 'tools', resources: 2, revisions: 0, fileManaged: 1 },
+      '★ 文件管的那一条要报出来（`fileManaged: 1`），而用户提交的那一条不算',
+    );
+
+    assert.deepEqual(tagsOf(userRow), ['video'], '（对照）用户提交的那条照样被清了');
+    assert.deepEqual(tagsOf('imp-with-tools'), ['video'], '（对照）文件管的那条也被清了');
+    assert.deepEqual(
+      tagsOf('imp-without-tools'),
+      ['video'],
+      '★ 没带这个标签的文件管的行不该被算进来，也不该被写',
+    );
+    assert.equal(
+      (getDb().prepare('SELECT COUNT(*) AS n FROM resources').get() as { n: number }).n,
+      3,
+      '★ 一行都没删（这个接口的第一条不变量，和 ① 一样）',
+    );
+  });
+
+  it('只有用户提交的行带这个标签 ⇒ `fileManaged` 必须是 0（那句话不许出现）', async () => {
+    const author = await makeUser('user');
+    const reviewer = await makeUser('reviewer');
+    const editor = await makeUser('editor');
+
+    await published(author.cookie, reviewer.cookie, ['tools', 'video']);
+    await published(author.cookie, reviewer.cookie, ['tools']);
+    // 文件管的行也在库里，但它**没有**这个标签 ⇒ 它一行都没被改
+    importRow('imp-untouched', ['video']);
+
+    const res = await deleteTag('tools', editor.cookie);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(
+      res.body,
+      { ok: true, tag: 'tools', resources: 2, revisions: 0, fileManaged: 0 },
+      '★★ 0 是**正常值**：导入器不碰用户提交的内容 ⇒ 那两句"来自内容文件 / 下次部署会回来" ' +
+        '在这一次都是假话，界面上因此一个字都不许说',
+    );
+  });
+
+  it('文件管但**没上架**的行不算（它同样会被文件恢复，但不在用户眼前的标签云上）', async () => {
+    const author = await makeUser('user');
+    const reviewer = await makeUser('reviewer');
+    const editor = await makeUser('editor');
+
+    await published(author.cookie, reviewer.cookie, ['tools']);
+    // ⚠️ 下架的（hidden）与草稿（pending）：两种都不出现在标签云里（`listTopTags` 只数
+    //    published）⇒ 把它们算进 `fileManaged` 会让那个数字大于用户在标签云上看到的条数，
+    //    而"对不上的数字"正是本仓反复记过的那类坑（用户会去数，数不上就觉得整句是假的）。
+    importRow('imp-hidden', ['tools'], 'hidden');
+    importRow('imp-pending', ['tools'], 'pending');
+
+    const res = await deleteTag('tools', editor.cookie);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(
+      res.body,
+      { ok: true, tag: 'tools', resources: 3, revisions: 0, fileManaged: 0 },
+      '★ 三条都**真的被清**了（`resources: 3`），但只有已上架的那一条算给界面看',
+    );
+    assert.deepEqual(tagsOf('imp-hidden'), [], '（对照）下架的照样清 —— 不清它一上架标签就冒出来');
+    assert.deepEqual(tagsOf('imp-pending'), []);
   });
 });

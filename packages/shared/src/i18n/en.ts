@@ -271,6 +271,16 @@ export const en: TranslationSchema = {
      * ⚠️ The two numbers in the result line come from the server (how many rows really
      *    changed) — pending drafts and hidden entries lose the tag too, and they are
      *    not in the tag cloud ⇒ those numbers can be larger than what the user sees.
+     *
+     * ★★ `tagDeleteFileManaged` (2026-09-17 review): the database is not the content
+     *    file's equal. `deploy/deploy.sh` runs `import.js --apply --file
+     *    content/resources.json` on every deploy, and the importer upserts each entry
+     *    with the file's `tags` ⇒ a tag still written in that file comes back at the
+     *    next deploy, and nothing used to say so. This sentence appears **only when the
+     *    server reports `fileManaged > 0`** (changed rows that are published and
+     *    `source='import'`): the importer never touches user submissions, so for those
+     *    the claim would be false and the line is not shown at all. The removal recipe
+     *    lives in `docs/pending.md §5.96`.
      */
     tagDeleteAction: 'Delete the tag "{{tag}}"',
     tagDeleteConfirm:
@@ -279,6 +289,8 @@ export const en: TranslationSchema = {
     tagDeleteWorking: 'Deleting…',
     tagDeleteDone:
       'Tag "{{tag}}" deleted: removed from {{resources}} resources and {{revisions}} pending revisions.',
+    tagDeleteFileManaged:
+      'Note that {{count}} of them come from the content file content/resources.json — deleting here will not survive the next deploy; remove the tag from content/resources.json as well.',
     tagDeleteFailed: 'Could not delete the tag.',
     loading: 'Loading…',
     loadFailed: 'Failed to load',
