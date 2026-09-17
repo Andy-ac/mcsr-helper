@@ -108,7 +108,7 @@ ExecStart=/usr/bin/flock -n /run/mcsr-helper-ranked-streams/sync.lock /usr/bin/n
 #   | `ranked-streams: 本轮失败（busy）` | 上游在限**我们**的流（429）⇒ 有人在拿这个出口 IP 猛打上游 | 查有没有别的脚本在用同一台机器；本作业自己只占 0.4% |
 #   | `ranked-streams: 本轮失败（bad_response）` | 上游改了形状 ⇒ **我们的适配层要改** | 改 `packages/shared/src/ranked/parse.ts`（这一档不会自愈） |
 #   | `ranked-streams: 本轮失败（db）` | 写库失败（磁盘满 / 表被改坏 / 约束） | 看那一行里的错误原文；**它带"已经写进去几条"** |
-#   | `[ranked-streams] 这一轮没能跑起来：` + 栈 | **我们自己的 bug**（或数据库层面） | 栈本身就是线索；这一格**不会**下一轮自己好 |
+#   | `[ranked-streams] 这一轮没能跑起来：` + 栈，**或** node 自己的报错（`Cannot find module`…） | **我们自己的 bug**（或数据库层面 / `dist` 没装全） | 栈或那行报错本身就是线索；这一格**不会**下一轮自己好 |
 #   | journal 里除 systemd 自己那两行（`Starting…`/`Finished…`）之外**什么都没有** | **上一轮还没跑完**（`flock -n` 拿不到锁，什么都不打印） | 本作业一轮约一秒 ⇒ 正常见不到；见到了就是有一轮卡住（多半卡在上游，8 秒超时） |
 #
 #   ⚠️ 判据是"**有没有那一行 `ranked-streams:`**"：跑起来了就一定有（哪怕一条频道都没收）。

@@ -257,6 +257,13 @@ export async function runOnce(deps: RunDeps): Promise<RoundOutcome> {
     line: formatSummary({
       candidates: result.candidates,
       inserted: result.inserted,
+      /*
+       * ⚠️ `existing` 是**算出来的**，不是量出来的（2026-09-19 终审指出）：`候选 - 新增`
+       *    在数学上恒等于"本来就在库里的条数"，所以摘要里那个恒等式
+       *    `载荷 N = 新增 M + 已在库 K` **永远不会**失败 —— 它是账目，不是守卫。
+       *    真正被测试钉住的是两个**独立的**数：`candidates`（从载荷里数出来的 twitch 频道）
+       *    与 `inserted`（真的插进去的行数）。⇒ 别把这一行当成一致性检查。
+       */
       existing: result.candidates - result.inserted,
       startedAt,
       finishedAt: deps.now(),
