@@ -224,50 +224,79 @@ function rankedLogLines(errors: string[]): string[] {
 // 上游夹具（spec §2.2 的实测形状）
 // ---------------------------------------------------------------------------
 
-interface MonitorFixture {
+/**
+ * 四格组件的夹具 —— id 是上游 `heartbeatList` 的键，`state` 是上游原样的四档
+ * （0 故障 / 1 正常 / 2 等待 / 3 维护），`checkedAt` 是上游那串**没有时区**的文本。
+ *
+ * ⚠️★ 上游的响应里**没有名字**（那一格只有 `"2": [...]` 这样的键），所以这里的
+ *    `nameKey` 是**我们**那张表（`RANKED_STATUS_COMPONENTS`）给的名字 ——
+ *    它是这一栏唯一一处未经 API 验证的东西（`const.ts` 上写着完整来历）。
+ *    这四条与那张表**逐字对应**：改名字要两边一起改，对不上的时候这条用例会红。
+ */
+interface ComponentFixture {
+  id: string;
+  nameKey: string;
   state: 0 | 1 | 2 | 3;
   checkedAt: string;
-  ping: number | null;
-  uptime24: number | null;
 }
 
-/** 上游那一条心跳（原文照抄实测：时间是一串**没有时区**的文本）。 */
-const MONITOR: MonitorFixture = {
-  state: 1,
-  checkedAt: '2026-09-15 13:36:27',
-  ping: 380,
-  uptime24: 1,
-};
+const COMPONENTS: ComponentFixture[] = [
+  { id: '2', nameKey: 'ranked.componentGameServer', state: 1, checkedAt: '2026-09-15 13:36:27' },
+  { id: '3', nameKey: 'ranked.componentApi', state: 1, checkedAt: '2026-09-15 13:36:20' },
+  { id: '4', nameKey: 'ranked.componentStore', state: 2, checkedAt: '2026-09-15 13:36:21' },
+  { id: '5', nameKey: 'ranked.componentWiki', state: 3, checkedAt: '2026-09-15 13:36:22' },
+];
+
+/**
+ * 期望的响应里那四格 —— `gameState` 只改 Game Server 那一格
+ * （"第二份心跳换了状态"这件事靠它造，别的三格保持原样）。
+ */
+function expectedComponents(gameState: 0 | 1 | 2 | 3 = 1): ComponentFixture[] {
+  return COMPONENTS.map((each) => (each.id === '2' ? { ...each, state: gameState } : each));
+}
 
 /**
  * 心跳响应。
  *
- * ⚠️ `heartbeatList['2']` 故意放**两条**（前一条状态不同、时间更早）：数组是**旧 → 新**
+ * ⚠️ Game Server 那一格故意放**两条**（前一条状态不同、时间更早）：数组是**旧 → 新**
  *    的，取第一条的实现会让我们显示一个最多 100 分钟前的状态，而界面上写着"实时"
  *    —— 那是**数据是真的、时间是假的**那一类错（spec §2.2）。
- * `'2'` 是 Game Server 那一格（spec §13 冻结值），另外三格（API / Store / Wiki）
- *    也照实写上：它们同时在钉"有没有把别的服务器的数据混进响应"。
+ * ⚠️★ `ping` 与 `uptimeList` 照实测写上，因为真实响应里它们**有**：而 2026-09-19 起
+ *    我们**一个字节都不读**（延迟与 24 小时可用率被用户从状态栏里删掉了）⇒
+ *    下面那条"响应键集"的断言同时钉住了另一半："它们没有漏进我们的响应"。
  */
-function heartbeatPayload(monitor: MonitorFixture = MONITOR): Record<string, unknown> {
+function heartbeatPayload(gameState: 0 | 1 | 2 | 3 = 1): Record<string, unknown> {
+  const [game, api, store, wiki] = COMPONENTS as [
+    ComponentFixture,
+    ComponentFixture,
+    ComponentFixture,
+    ComponentFixture,
+  ];
   return {
     heartbeatList: {
-      '2': [
+      [game.id]: [
         { status: 0, time: '2026-09-15 13:35:27', msg: '', ping: 900 },
-        { status: monitor.state, time: monitor.checkedAt, msg: '', ping: monitor.ping },
+        { status: gameState, time: game.checkedAt, msg: '', ping: 380 },
       ],
-      '3': [{ status: 1, time: '2026-09-15 13:36:20', msg: '', ping: 12 }],
-      '4': [{ status: 2, time: '2026-09-15 13:36:21', msg: '', ping: 30 }],
-      '5': [{ status: 3, time: '2026-09-15 13:36:22', msg: '', ping: 8 }],
+      [api.id]: [{ status: api.state, time: api.checkedAt, msg: '', ping: 12 }],
+      [store.id]: [{ status: store.state, time: store.checkedAt, msg: '', ping: 30 }],
+      [wiki.id]: [{ status: wiki.state, time: wiki.checkedAt, msg: '', ping: 8 }],
     },
-    uptimeList: { '2_24': monitor.uptime24, '3_24': 0.5, '4_24': 0.25, '5_24': 0.75 },
+    uptimeList: { '2_24': 1, '3_24': 0.5, '4_24': 0.25, '5_24': 0.75 },
   };
 }
 
-/** 形状不对的那一份：`heartbeatList` 在，但**没有 monitor 2 那一格**（上游改了字段就是这种样子）。 */
-function heartbeatPayloadMissingMonitor(): Record<string, unknown> {
+/**
+ * 形状不对的那一份：`heartbeatList` 在，但**四个 id 一个都对不上**
+ * （上游换了键 / 换了结构就是这种样子）。
+ *
+ * ⚠️★ 判据是"**四格全没有状态**"，不是"少了某一格"：只少一格是真会发生的事
+ *    （那一行印「—」，200 照给），而**四格全丢**只可能是我们与上游对不上了 ⇒ 502。
+ */
+function heartbeatPayloadNoComponents(): Record<string, unknown> {
   return {
-    heartbeatList: { '3': [{ status: 1, time: '2026-09-15 13:36:20', msg: '', ping: 12 }] },
-    uptimeList: { '3_24': 0.5 },
+    heartbeatList: { '7': [{ status: 1, time: '2026-09-15 13:36:20', msg: '', ping: 12 }] },
+    uptimeList: { '7_24': 0.5 },
   };
 }
 
@@ -326,13 +355,19 @@ async function drain(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-/** 读响应里的 `monitor`；不是一个对象就当场失败，而不是让后面每条断言都变成 undefined 比较。 */
-function monitorOf(body: Record<string, unknown>): Record<string, unknown> {
-  const monitor = body.monitor;
-  if (typeof monitor !== 'object' || monitor === null) {
-    assert.fail(`响应里的 monitor 不是一个对象：${JSON.stringify(body)}`);
+/**
+ * 读响应里的 `components`；不是一个数组就当场失败，而不是让后面每条断言都变成 undefined 比较。
+ *
+ * ⚠️ 返回 `unknown[]`（不是 `ComponentFixture[]`）：调用方要拿它和夹具
+ * `deepEqual` —— 若这里先按夹具的形状断言一遍，"响应多了/少了字段"就变成**运行时**的
+ * `undefined`，而下面那条键集断言再也看不见它（它比较的是两份都缺同一格的东西）。
+ */
+function componentsOf(body: Record<string, unknown>): unknown[] {
+  const components = body.components;
+  if (!Array.isArray(components)) {
+    assert.fail(`响应里的 components 不是一个数组：${JSON.stringify(body)}`);
   }
-  return monitor as Record<string, unknown>;
+  return components;
 }
 
 /** 读一个**数字**字段（读错类型会静默变成 NaN 比较，所以这里当场失败）。 */
@@ -504,13 +539,38 @@ describe('★ 心跳端点：正常路径', () => {
     assert.equal(res.cacheControl, 'no-store', '心跳不能进任何一层缓存（spec §4.2）');
 
     // ★ 公开面零泄漏：只有我们这一个端点的四格，没有别的栏目的数据
-    assert.deepEqual(Object.keys(res.body).sort(), ['fetchedAt', 'monitor', 'serverNow', 'stale']);
-    const monitor = monitorOf(res.body);
-    assert.deepEqual(Object.keys(monitor).sort(), ['checkedAt', 'ping', 'state', 'uptime24']);
+    assert.deepEqual(Object.keys(res.body).sort(), [
+      'components',
+      'fetchedAt',
+      'serverNow',
+      'stale',
+    ]);
+    const components = componentsOf(res.body);
+    assert.equal(
+      components.length,
+      4,
+      '★ 状态栏要的是**四格**（Game Server / API / Store / Wiki）',
+    );
     assert.deepEqual(
-      monitor,
-      { state: 1, checkedAt: '2026-09-15 13:36:27', ping: 380, uptime24: 1 },
-      '★ checkedAt 是上游那串文本**原样**（不是时间戳、也不是解析回来的本地时间）',
+      components,
+      expectedComponents(),
+      '★ 四格的状态与时间逐格来自上游那一条**最后**的心跳（取第一条会拿到最多 100 分钟前的状态）',
+    );
+    /*
+     * ★★ `ping` / `uptime24` / 24 小时可用率**不许**出现在响应里：
+     *    2026-09-19 用户明确把它们从状态栏删掉了（「不加其他多余的信息」），
+     *    所以它们连我们的形状都没进（`types.ts` 那条注释）。这条断言是那件事的守卫 ——
+     *    少了它，"顺手把延迟加回来"不会有任何门禁看得见（界面上多一行也是合法的）。
+     */
+    assert.deepEqual(
+      Object.keys(components[0] as unknown as Record<string, unknown>).sort(),
+      ['checkedAt', 'id', 'nameKey', 'state'],
+      '★★ 一格只有这四件事：id / 名字 / 状态 / 最后更新（延迟与可用率被删掉了）',
+    );
+    assert.equal(
+      'ping' in (components[0] as unknown as Record<string, unknown>),
+      false,
+      '★★ 延迟不在响应里（用户把它删了）',
     );
     assert.equal(res.body.stale, false);
 
@@ -572,15 +632,15 @@ describe('★ 心跳端点：缓存与 single-flight', () => {
      */
     process.env.MCSR_RANKED_STATUS_TTL_MS = '0';
     let state: 0 | 1 | 2 | 3 = 1;
-    const fetchMock = mockUpstream(t, () => jsonResponse(heartbeatPayload({ ...MONITOR, state })));
+    const fetchMock = mockUpstream(t, () => jsonResponse(heartbeatPayload(state)));
 
     const first = await call();
     state = 3; // 第二份心跳换了状态：回的是不是**新的**那份，一眼可见
     const second = await call();
 
     assert.equal(upstreamCallCount(fetchMock), 2);
-    assert.deepEqual(monitorOf(first.body), MONITOR);
-    assert.deepEqual(monitorOf(second.body), { ...MONITOR, state: 3 });
+    assert.deepEqual(componentsOf(first.body), expectedComponents(1));
+    assert.deepEqual(componentsOf(second.body), expectedComponents(3));
   });
 
   it('★★ single-flight：十个并发 ⇒ 上游计数 1', async (t) => {
@@ -604,7 +664,7 @@ describe('★ 心跳端点：缓存与 single-flight', () => {
     for (const res of results) {
       assert.equal(res.status, 200);
       assert.equal(res.cacheControl, 'no-store');
-      assert.deepEqual(monitorOf(res.body), MONITOR, '十个响应必须是同一份心跳');
+      assert.deepEqual(componentsOf(res.body), expectedComponents(), '十个响应必须是同一份心跳');
     }
   });
 
@@ -670,7 +730,7 @@ describe('★ 心跳端点：缓存与 single-flight', () => {
 // ---------------------------------------------------------------------------
 
 describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => {
-  it('上游 500 + 有旧数据 ⇒ 200 + stale:true + monitor 是**旧的那份**', async (t) => {
+  it('上游 500 + 有旧数据 ⇒ 200 + stale:true + components 是**旧的那份**', async (t) => {
     const errors = captureErrors(t);
     let failing = false;
     const fetchMock = mockUpstream(t, () =>
@@ -687,7 +747,7 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
 
     assert.equal(res.status, 200, '有旧数据时不该给用户一个 5xx —— 这正是兜底存在的理由');
     assert.equal(res.body.stale, true, '★ 旧数据必须自己说自己是旧的');
-    assert.deepEqual(monitorOf(res.body), MONITOR, '兜底给的是**上一次**那份心跳');
+    assert.deepEqual(componentsOf(res.body), expectedComponents(), '兜底给的是**上一次**那份心跳');
     assert.equal(
       numField(res.body, 'fetchedAt'),
       numField(good.body, 'fetchedAt'),
@@ -784,7 +844,7 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
 
     assert.equal(res.status, 200);
     assert.equal(res.body.stale, true);
-    assert.deepEqual(monitorOf(res.body), MONITOR);
+    assert.deepEqual(componentsOf(res.body), expectedComponents());
     assert.equal(numField(res.body, 'fetchedAt'), numField(good.body, 'fetchedAt'));
     assert.equal(upstreamCallCount(fetchMock), 2);
     assertLoggedFailure(errors, 'unavailable');
@@ -823,15 +883,15 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
 
     assert.equal(res.status, 200);
     assert.equal(res.body.stale, true);
-    assert.deepEqual(monitorOf(res.body), MONITOR);
+    assert.deepEqual(componentsOf(res.body), expectedComponents());
     assert.equal(numField(res.body, 'fetchedAt'), numField(good.body, 'fetchedAt'));
     assert.equal(upstreamCallCount(fetchMock), 2);
     assertLoggedFailure(errors, 'unavailable');
   });
 
-  it('★ 形状不对（heartbeatList 缺 monitor 2）⇒ 502 upstream_bad_response，日志带字段名', async (t) => {
+  it('★ 形状不对（四个 id 一个都对不上）⇒ 502 upstream_bad_response，日志带字段名', async (t) => {
     const errors = captureErrors(t);
-    const fetchMock = mockUpstream(t, () => jsonResponse(heartbeatPayloadMissingMonitor()));
+    const fetchMock = mockUpstream(t, () => jsonResponse(heartbeatPayloadNoComponents()));
 
     const res = await call();
 
@@ -844,18 +904,18 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
     assert.deepEqual(res.body, { error: 'upstream_bad_response' });
     assert.equal(upstreamCallCount(fetchMock), 1);
 
-    // ★ 这条日志的**唯一**意义是告诉我们上游改了哪一格 —— 所以字段名必须在里面
+    // ★ 这条日志的**唯一**意义是告诉我们上游改了哪几格 —— 所以字段名与那几个 id 必须在里面
     assertLoggedFailure(errors, 'bad_response');
     const logged = errors.find((line) => line.includes('bad_response')) ?? '';
     assert.ok(logged.includes('heartbeatList'), `日志要带上字段名：${logged}`);
-    assert.ok(logged.includes('monitor 2'), `日志要带上缺的那一格（monitor 2）：${logged}`);
+    assert.ok(logged.includes('2, 3, 4, 5'), `日志要带上我们找的那四个 id：${logged}`);
   });
 
   it('形状不对但有 10 分钟内的旧数据 ⇒ 仍然给旧数据（兜底不看失败的种类）', async (t) => {
     const errors = captureErrors(t);
     let drifted = false;
     mockUpstream(t, () =>
-      drifted ? jsonResponse(heartbeatPayloadMissingMonitor()) : jsonResponse(heartbeatPayload()),
+      drifted ? jsonResponse(heartbeatPayloadNoComponents()) : jsonResponse(heartbeatPayload()),
     );
 
     await call();
@@ -870,7 +930,7 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
      */
     assert.equal(res.status, 200);
     assert.equal(res.body.stale, true);
-    assert.deepEqual(monitorOf(res.body), MONITOR);
+    assert.deepEqual(componentsOf(res.body), expectedComponents());
     assertLoggedFailure(errors, 'bad_response');
   });
 
@@ -906,7 +966,7 @@ describe('★ 心跳端点：上游失败（三种 kind 不许合并）', () => 
     // 兜底排在 kind 之前：手上那份还在 10 分钟内 ⇒ 给数据，而不是一句"稍后再试"
     assert.equal(res.status, 200);
     assert.equal(res.body.stale, true);
-    assert.deepEqual(monitorOf(res.body), MONITOR);
+    assert.deepEqual(componentsOf(res.body), expectedComponents());
     assert.equal(upstreamCallCount(fetchMock), 2);
     assertLoggedFailure(errors, 'busy');
   });
@@ -1082,7 +1142,7 @@ describe('★ 心跳端点：失败也要节流（两个时刻）', () => {
     const third = await call({ ip: '10.9.9.52' });
     assert.equal(third.status, 200);
     assert.equal(third.body.stale, true);
-    assert.deepEqual(monitorOf(third.body), MONITOR, '还是那份旧数据');
+    assert.deepEqual(componentsOf(third.body), expectedComponents(), '还是那份旧数据');
     assert.equal(numField(third.body, 'fetchedAt'), base, 'fetchedAt 是那份**数据**的年龄');
     assert.equal(numField(third.body, 'serverNow'), base + 40_000, 'serverNow 才是"现在"');
     assert.equal(

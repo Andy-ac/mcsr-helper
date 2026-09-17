@@ -87,6 +87,7 @@ import {
   type RankedLiveData,
   type RankedLiveMatch,
   type RankedLivePlayer,
+  type RankedPhaseData,
   type RankedStatusResponse,
   type RankedTab,
   type RankedWeeklyData,
@@ -160,6 +161,8 @@ const RANKED_TAB_LABEL_KEYS: Record<RankedTab, string> = {
  * ⚠️ 四种状态**各有各的话**（spec §6.2）：只判 up/down 会让"等待"和"维护"
  *    —— 上游真的会回这两档 —— 显示成"故障"，于是用户在一个**计划内**的维护窗口里
  *    到处找自己的问题。
+ * ⚠️★ 2026-09-19 起它被**四格**分别使用（不再是"一个服务器一格"）：
+ *    表本身一个字没改，四格各自查自己那一格的状态。
  */
 export const STATUS_KEYS: Record<0 | 1 | 2 | 3, string> = {
   0: 'ranked.statusDown',
@@ -174,6 +177,10 @@ export const STATUS_KEYS: Record<0 | 1 | 2 | 3, string> = {
  * ⚠️ 与 `STATUS_KEYS` **同键、同穷尽**：拆成两张表是因为它们回答的是两件事
  * （说什么 / 什么颜色），而这两件事会各自被改（配色是设计，文案是产品）。
  * 合成一张表会让"改配色"不得不动到文案那一列。
+ * ⚠️★ 还有**第三**档：`state === null`（上游这一份响应里没有这一格）→ `--unknown`。
+ *    它**故意不在**这张 `Record<0|1|2|3, …>` 里 —— 它不是"第五种状态"，
+ *    是"没有状态"，而给一个读不到的组件配一个红色徽章是在说一件我们不知道的事
+ *    （用户会去查一个没坏的服务）。所以它是 `null` 那一支单独的类名。
  */
 const BADGE: Record<0 | 1 | 2 | 3, string> = {
   0: 'down',
@@ -445,13 +452,35 @@ export type RankedStatusViewProps = RankedChromeProps & {
 };
 
 /**
- * ① 状况与人数（spec §6.2）。
+ * ① 状况与人数（spec §6.2，**2026-09-19 按用户裁决改版**）。
  *
- * ⚠️ 四个状态各有各的话；`players` 的 `0` 与 `null` 是**两句不同的话**
- * （「现在没有人在玩 Ranked」是真话，「人数暂时读不到」是另一件事）。
- * ⚠️ `checkedAt` **原样显示**（不做时区换算，见 `types.ts` 那条注释）。
- * ⚠️ `uptime24` 为 `null` ⇒ **整行不渲染**（不是渲染 0%：「这一栏今天没有数据」
- *    与"可用率 0%"是两件事，而 0% 会让用户以为服务整个挂了一天）。
+ * ---------------------------------------------------------------------------
+ * ★★ 这一屏现在**只有**两样东西：四个组件（状态 + 最后更新）与在线人数
+ * ---------------------------------------------------------------------------
+ * 用户原话：「"状态栏"显示 Game Server, API, Store 和 Wiki 所有的状态和最后更新时间，
+ * 下面显示当前在线人数，**不加其他多余的信息**」；追问后的口径是**只留四行 + 人数**。
+ * ⇒ 这一屏**删掉**了四样东西，它们都是**被删的**、不是"忘了写"：
+ *   · 延迟（`ranked.statusPing` / `statusPingUnknown`）；
+ *   · 24 小时可用率（`ranked.statusUptime`）；
+ *   · 那一格单独的 Game Server 心跳（`ranked.statusCheckedAt`）—— 它被**四行**取代；
+ *   · 心跳历史（上游那份响应里每格 100 条）—— 我们从第一条起就没显示过它，
+ *     现在连解析都不做了（`parse.ts` 只取 `.at(-1)`）。
+ *   那四条词条**同时**从两份字典里删掉了：没有消费者的 key 留着，下一个人会以为
+ *   它们还挂着某个渲染点（本仓为这种事删过 `shares.moderateHideReason`）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 四行是**四格**，不是"上游给了几格就几格"
+ * ---------------------------------------------------------------------------
+ * 服务端那份响应里的 `components` 恒为四格（`RANKED_STATUS_COMPONENTS` 定序与命名），
+ * 上游少了某一格时那一行**照样在**、只是状态与时间是 `—`：
+ *   · 悄悄少一行，用户以为"状态栏本来就长这样"（而少了的那一格可能正是他关心的那个）；
+ *   · 把读不到的格子画成「故障」更糟 —— 那是替他断言一个我们并不知道的事实。
+ * ⚠️★ `checkedAt` **原样显示**（不做时区换算，见 `types.ts` 那条长注释）：
+ *    那串字符没有时区，`new Date()` 会按**本机**时区解释 ⇒ 显示值随机器漂（8 小时那种错）。
+ *    这一格说的是"**上游那条心跳**自己是什么时候的"，而"这份数据有多旧"由外壳那一行
+ *    `updatedAgoSecs` 回答（本地时钟算的）—— 两件事，各说各的。
+ * ⚠️ `players` 的 `0` 与 `null` 是**两句不同的话**（「现在没有人在玩 Ranked」是真话，
+ *    「人数暂时读不到」是另一件事）—— 这一条没被这次删减波及。
  */
 export function RankedStatusView(props: RankedStatusViewProps) {
   const { t } = useTranslation();
@@ -478,9 +507,6 @@ export function RankedStatusView(props: RankedStatusViewProps) {
         两者的读者与用途都不同 —— 借一次就把两个会各自被改的词绑成了一条。
       */}
       <h2 className="ranked__title">{t('ranked.statusTitle')}</h2>
-      <p className={`ranked__badge ranked__badge--${BADGE[status.monitor.state]}`}>
-        {t(STATUS_KEYS[status.monitor.state])}
-      </p>
       {/*
         ★★ 响应里的 `stale: true` —— **服务端**拿了兜底（上游那一刻读不到 ⇒ 回上一次的
         成功心跳），而**我们这一次**的请求是**成功**的（200，不是失败）。
@@ -490,32 +516,48 @@ export function RankedStatusView(props: RankedStatusViewProps) {
         ⚠️ 没有它的话，一次兜底的心跳与一次新鲜的心跳在界面上长得**一模一样**：
         徽章是绿的、`checkedAt` 是上游那串旧文本，而「N 秒前更新」说的是**我们这次请求**的年龄
         —— 三处都在说"没问题"，而这份数据最老可以到 10 分钟前。
-        ⚠️ 位置紧贴在徽章下面（不是放到面板末尾）：徽章说的是「正常」，而这一句限定的正是
-        **那句断言的依据**（这份"正常"是旧的）—— 隔着一整个面板它就变成一句脚注了。
+        ⚠️ 位置紧贴在四行上面（不是放到面板末尾）：那四行说的是「正常」，
+        而这一句限定的正是**那句断言的依据**（这份"正常"是旧的）—— 隔着一整个面板它就成脚注了。
         ⚠️ `info` 而不是 `bad`：这一次没有任何东西失败，也没有要用户做的事
         （`bad` 那一档是 `role="alert"`，会打断读屏）。
       */}
       {status.stale ? <Notice kind="info">{t('ranked.statusStale')}</Notice> : null}
-      <p className="ranked__meta">
-        {status.monitor.ping === null
-          ? t('ranked.statusPingUnknown')
-          : t('ranked.statusPing', { ms: status.monitor.ping })}
-      </p>
       {/*
-        ⚠️ 「最后心跳 2026-09-15 13:36:27」—— 上游那串字符**原样**显示。
-        没有它的话，「服务正常」这句话到底有多新就没人知道：心跳可能已经停了一小时，
-        而徽章照样是绿的（这一栏的"新鲜度"那一行说的是**我们这份数据**的年龄，
-        与上游那一条心跳的时刻是两件事）。
+        ★★ 四行：名字 / 状态徽章 / 最后更新。一行的**三格**都在同一个 `<li>` 里
+        （而不是"名字一列、徽章一列"的两张表）：四行是**四件独立的事**，
+        每件都有自己的时间，读屏软件按列表项念时也是"这一件事：状态、时间"。
+        ⚠️ `key` 用 `component.id`（上游的身份），不是下标：上游换了顺序时
+        按身份复用 DOM，而不是把四行的内容整体错位一格。
       */}
-      <p className="ranked__meta">
-        {t('ranked.statusCheckedAt', { time: status.monitor.checkedAt })}
-      </p>
-      {/* ⚠️ `uptime24` 为 null ⇒ **整行不渲染**（不是渲染 0%） */}
-      {status.monitor.uptime24 !== null ? (
-        <p className="ranked__meta">
-          {t('ranked.statusUptime', { pct: Math.round(status.monitor.uptime24 * 100) })}
-        </p>
-      ) : null}
+      <ul className="ranked__components">
+        {status.components.map((component) => (
+          <li className="ranked__component" key={component.id}>
+            <span className="ranked__compname">{t(component.nameKey)}</span>
+            {/*
+              ⚠️★ `state === null` ⇒ 占位符 `—` + **中性**的 `--unknown` 配色：
+              它既不是"正常"也不是"故障"，而是"这一格这次没读到"。
+              把它画成红色（`--down`）会让用户在一个上游少给一格的时候去查自己的服务。
+            */}
+            <span
+              className={
+                component.state === null
+                  ? 'ranked__badge ranked__badge--unknown'
+                  : `ranked__badge ranked__badge--${BADGE[component.state]}`
+              }
+            >
+              {component.state === null ? t('ranked.unknown') : t(STATUS_KEYS[component.state])}
+            </span>
+            {/*
+              ⚠️ 时间同样是"读不到就说读不到"：「最后更新 —」。
+              没有这一格的话，一行「Game Server —」看不出是"没有状态"还是"什么都没有"。
+            */}
+            <span className="ranked__meta">
+              {t('ranked.componentCheckedAt', { time: component.checkedAt ?? t('ranked.unknown') })}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {/* 用户要的"下面显示当前在线人数"：大号数字 + 那一句说明，别的什么都没有 */}
       {players === null ? (
         <p className="ranked__big ranked__big--unknown">{t('ranked.unknown')}</p>
       ) : (
@@ -922,22 +964,35 @@ export function RankedLiveView(props: RankedLiveViewProps) {
 export type RankedEloViewProps = RankedChromeProps & {
   /** 直连 `/leaderboard` 的解析结果。`null` = 还没取到。 */
   elo: RankedEloData | null;
+  /**
+   * ★ 赛季**赛段**（`/phase-leaderboard` 那一次 93 字节的请求）。
+   *
+   * ⚠️★ 它与 `elo` **各来各的**：那一次请求失败时它是 `null`，而**排行榜照常渲染**
+   *    —— 用户要的是"赛季时间旁边并排显示赛段"，不是"用赛段换掉整张榜"。
+   *    容器里那一路走的是 `{ fatal: false }`（辅助请求），所以它失败**也不会**
+   *    在面板上多出一句"读不到数据"：那一句会让用户以为整页都废了。
+   * ⚠️ 判据是"有没有赛段这一份"，不是"三格是不是都有值"：号数读得出、截止读不出
+   *    时仍然要印得出那个号数（`parse.ts` 的三格各自可空）。
+   */
+  phase: RankedPhaseData | null;
 };
 
 /**
- * ③ Elo 排行榜（spec §6.4）：赛季 + 五列表格。
+ * ③ Elo 排行榜（spec §6.4）：赛季 + 赛段（并排）+ 五列表格。
  *
  * ⚠️★ 排名列印的是上游的 **`eloRank`**，**不是下标 + 1**：并列会重复、之后会跳号
  *    （上游实测给的是 `…, 3, 3, 5, …`），下标会把它印成 `3, 4, 5` ——
  *    看起来更"正常"，而它是**错的**（第 4 名不存在，那两个是并列第 3）。
- * ⚠️ 取前 100 用 `topEloEntries`：它**只截断不重排**（`select.ts` 里写着理由 ——
+ * ⚠️★ 取前 150 用 `topEloEntries`：它**只截断不重排**（`select.ts` 里写着理由 ——
  *    上游已经按 eloRank 排好了，我们重排只会引入一种"两个都对却不一样"的顺序）。
+ *    ⚠️ 150 **不是我们挑的数**：上游那份响应实测就是 150 条，而且 `count` / `page`
+ *    被它静默忽略 ⇒ **没有"下一页"可翻**（`const.ts` 那个常量的注释写着这件事）。
  * ⚠️ 上游每条还带着 `country`：**我们不发也不显示**（spec §9 最后一行），
  *    所以它连我们的形状都没进（那条数据在 `parse.ts` 就被丢掉了）。
  */
 export function RankedEloView(props: RankedEloViewProps) {
   const { t, i18n } = useTranslation();
-  const { elo, ...c } = props;
+  const { elo, phase, ...c } = props;
 
   if (elo === null) {
     return (
@@ -949,14 +1004,25 @@ export function RankedEloView(props: RankedEloViewProps) {
 
   const users = topEloEntries(elo.users);
   const dash = t('ranked.unknown');
+  /*
+   * ⚠️ 两格各自判空（不是"整份有没有"）：上游的 schema 里 `number` / `endsAt` 就是可空的
+   *    ⇒ 号数在读、截止读不出时，印「赛段 1」比印一句"读不到"更有用，而且是真话。
+   * ⚠️★ 两格**都没有**（`phase` 是 `null`，或它三格全空）⇒ 说一句「赛段信息暂时读不到」：
+   *    这一格**不静默消失** —— 用户明确要过这一份信息，凭空少一格与"上游没给"长得一样，
+   *    而他不知道要重试还是该算了（spec §6.6 那条"失败要说具体"的同一条道理）。
+   */
+  const phaseNumber = phase?.number ?? null;
+  const phaseEndsAt = phase?.endsAt ?? null;
 
   return (
     <RankedChrome {...c}>
       <h2 className="ranked__title">{t('ranked.eloTitle')}</h2>
       {/*
-        ⚠️ 赛季号与起止分成两格（同一个 `.ranked__meta` 里的两个 `<span>`）：
-        它们是**两个**词条（spec §7.3），合成一句就要自己拼一个分隔符 ——
-        而分隔符是排版，不是文案（`.ranked__meta` 用 flex 的 gap 分开它们）。
+        ⚠️★ 赛季与赛段是**同一行里的四格**（`.ranked__meta` 是 flex + gap）——
+        这就是用户说的「并排」：赛季号、赛季起止、赛段号、赛段截止，一行读完。
+        分成两行会让"赛季"与"赛段"看起来是两件不相干的事，而赛段是赛季**内部**的划分。
+        ⚠️ 词条是四个（spec §7.3），合成一句就要自己拼一个分隔符 ——
+        而分隔符是排版，不是文案（间隙就是分隔符）。
       */}
       <p className="ranked__meta">
         <span>{t('ranked.season', { n: elo.season.number })}</span>
@@ -970,6 +1036,13 @@ export function RankedEloView(props: RankedEloViewProps) {
             to: localDate(elo.season.endsAt, i18n.language),
           })}
         </span>
+        {phaseNumber === null && phaseEndsAt === null ? (
+          <span>{t('ranked.phaseUnknown')}</span>
+        ) : null}
+        {phaseNumber === null ? null : <span>{t('ranked.phase', { n: phaseNumber })}</span>}
+        {phaseEndsAt === null ? null : (
+          <span>{t('ranked.phaseEndsAt', { when: localDate(phaseEndsAt, i18n.language) })}</span>
+        )}
       </p>
       {users.length === 0 ? (
         <p className="ranked__empty">{t('ranked.eloEmpty')}</p>
@@ -1027,10 +1100,60 @@ export type RankedWeeklyViewProps = RankedChromeProps & {
   weekly: RankedWeeklyData | null;
   /** 最新一周的 id（`/weekly-race` 不带 id 那一次响应给的）。`null` = 还不知道。 */
   latestId: number | null;
+
+  // -------------------------------------------------------------------------
+  // ★★ 2026-09-19 用户要求的两件东西：**手输周数跳转** + 「本周」
+  // -------------------------------------------------------------------------
+  /*
+   * ⚠️★ 输入框里的字与那一句"输入不合法"的提示都**住在容器里**（与 ② 的三格状态同一条
+   *    理由，`RankedLiveViewProps` 上写着全文）：这一栏唯一的自动化断言是渲染自检，
+   *    而它是 `renderToStaticMarkup` —— **不跑 effect、不点击、不打字**。
+   *    状态住在视图里的话，自检能看到的只有初始值（空框、没有错误），
+   *    于是"输了个字母之后屏幕上说什么"**一个字都断言不到**（而那是这次要求的重点）。
+   * ⚠️ 两格 + 两个动作都**必填**：可选 + 兜底会让"容器忘了接线"变成静默的
+   *    —— 输入框看着在、按了跳转什么都不会发生，而所有门禁照样绿。
+   */
+  /** 输入框里的字（受控）。⚠️ 是**字符串**：用户打进来的东西原样留着，由纯函数判它。 */
+  weekInput: string;
+  onWeekInputChange: (value: string) => void;
+  /** 按了「跳转」/ 在输入框里回车 —— 判定与导航都由容器做（`parseWeekInput`）。 */
+  onWeekJump: () => void;
+  /** 上一句判定不合法时的提示（**已经翻好的一句话**）；`null` = 没有要说的话。 */
+  weekError: string | null;
 };
 
 /**
- * ④ 周赛榜单（spec §6.5）：周数 + 4 个种子 + 截止 + 五列表格 + 翻页。
+ * ★★ 「输进来的周数不合法」→ 词条 key（**导出的表**：渲染自检逐格查两种语言）。
+ *
+ * 两档分开的理由是**用户下一步做的事不同**：
+ *   · `not_a_number` —— 他打错了（或者还没打），该说的是"请输入一个周数"；
+ *   · `no_such_week` —— 他打的是一个**真的不存在**的周（0 是"本周"的别名、`≤ -2`、
+ *     比最新周还大）⇒ 说的是「没有这一周。」，而且**故意复用上游那一档的同一句话**
+ *     （`ranked.errNotFound`）：上游对"不存在的周号"回的 400 说的正是这件事，
+ *     我们本地判出来的同一件事没有理由换个说法 —— 换个说法会让用户以为
+ *     "本地挡住"与"上游没有"是两种不同的处境，而它们是同一件事。
+ * ⚠️ 表里存的是**词条 key**（`t()` 在渲染点调用），与 `STATUS_KEYS` 同一条做法。
+ * ⚠️★ 这张表**不在** `services/api/src/i18n-keys.test.ts` 的覆盖范围里（它扫的是
+ *    源码里的**字面量** `t('…')` 调用，而这里的值是表里的值）⇒ 表里少一条，
+ *    界面上会直接印出裸 key 而门禁全绿（本仓在标签页那四条上量到过同一个坑）。
+ *    渲染自检 ⑤b 逐条查两种语言。
+ */
+export const WEEK_INPUT_ERROR_KEYS: Record<'not_a_number' | 'no_such_week', string> = {
+  not_a_number: 'ranked.weeklyBadNumber',
+  no_such_week: 'ranked.errNotFound',
+};
+
+/**
+ * ④ 周赛榜单（spec §6.5，**2026-09-19 改版**）：顶部一行导航（翻页 + 跳转 + 本周）→
+ * 周数 / 截止 → 四个种子 → 五列表格。
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ 用户原话：「周赛将'上一周/下一周'移至顶部，并允许用户直接输入对应周的数字跳转，
+ *    添加'本周'按钮」
+ * ---------------------------------------------------------------------------
+ * ⇒ 那一行 `<nav>` 从**表格下面**搬到了**面板最上面**（紧跟 `<h2>`）：
+ *   它是这一页的**导航**，而"翻到下一周"这件事在原来的位置要先滚过 50 行成绩才够得到。
+ *   ⚠️ 搬的是**位置**，判据一个字没改（还是 `prevWeekId` / `nextWeekId` 那两个纯函数）。
  *
  * ⚠️★ 周数走 `displayWeekNo()`：上游把"第 0 周"记成 `-1`（唯一的负周），
  *    照原样印会让界面出现「第 -1 周」—— 那是上游的下标，不是任何人心里的周数。
@@ -1038,10 +1161,14 @@ export type RankedWeeklyViewProps = RankedChromeProps & {
  *    跨过 0，因为 0 在上游是"本周"的别名 —— 拼出 `id = 0` 的链接会让 URL 写着 0、
  *    屏幕上是第 103 周的数据。它们返回 `null` 时这一格渲染成**不可点的一格**
  *    （不是一条会 400 的链接）。
+ * ⚠️★ 手输那个框**不发请求**：`onWeekJump` 先过 `parseWeekInput`（纯函数，
+ *    被 `ranked-shared.test.ts` 逐值钉住），不合法就**一个字都不发出去**、
+ *    只把一句话放到框下面。键盘路径是**原生**的：输入框与按钮在同一个 `<form>` 里，
+ *    回车提交表单 ⇒ 走同一个 `onWeekJump`（没有第二份"回车时该怎么办"的代码）。
  */
 export function RankedWeeklyView(props: RankedWeeklyViewProps) {
   const { t, i18n } = useTranslation();
-  const { weekly, latestId, ...c } = props;
+  const { weekly, latestId, weekInput, onWeekInputChange, onWeekJump, weekError, ...c } = props;
 
   if (weekly === null) {
     return (
@@ -1062,6 +1189,16 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
    */
   const next = nextWeekId(weekly.id, latestId ?? weekly.id);
   /*
+   * ★★ 「本周」按钮的落点：**最新周号的路径**（用户："id 从周赛列表端点来"）。
+   * ⚠️ `latestId` 还没到时回落到**不带周号的根路径** `/ranked/weekly` —— 那一条
+   *    在上游永远是"此刻的周"（spec §6.5：它不带 id，刷新时始终指向当前周）。
+   *    不回落到根路径的话，这个按钮在那一瞬间要么不可点（用户什么也做不了）、
+   *    要么得**猜**一个周号（猜错就是"URL 写着 103、屏幕上却是 104"，正是 0 那个坑的形状）。
+   *    ⚠️ 两者都指向"本周"，所以这不是两个不同的功能：有号码时用号码（可分享、可刷新），
+   *    没有号码时用根路径（上游自己回答"此刻是第几周"）。
+   */
+  const thisWeekTo = latestId === null ? '/ranked/weekly' : weekPath(latestId);
+  /*
    * ⚠️★ 这一行不是多余的临时变量：它的**类型**就是"顺序数组覆盖了形状里每一格种子"
    *    那条编译期断言（见 `OrderedWeeklySeedFields`）—— 形状里加第五格种子、
    *    而 `WEEKLY_SEED_ORDER` 没跟上时，这一行是从 `readonly WeeklySeedField[]`
@@ -1072,6 +1209,79 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
   return (
     <RankedChrome {...c}>
       <h2 className="ranked__title">{t('ranked.weeklyTitle')}</h2>
+      {/*
+        ★★ 顶部这一行：上一周 / 下一周 / 手输周数 + 跳转 / 本周。
+        ⚠️ 顺序是"翻页 → 跳转 → 回本周"：从左到右是**从近到远**的三种动作
+        （相邻的一周 / 任意一周 / 回到此刻），而"本周"放在最后是因为它是**兜底**动作
+        （用户翻到 60 周以后最想按的就是它）。
+        ⚠️ 三格按钮的类名沿用现成的 `.ranked__navbtn`（真链接长得像按钮）：
+        新造一个"次级按钮"类名意味着 `styles.css` 里多一条只差一个像素的规则
+        （本仓对"同一栏目的按钮长得不一样"有记录）。
+      */}
+      <nav className="ranked__weeknav">
+        {prev === null ? (
+          <span className="ranked__navbtn ranked__navbtn--off">{t('ranked.weeklyPrev')}</span>
+        ) : (
+          <Link className="ranked__navbtn" to={weekPath(prev)}>
+            {t('ranked.weeklyPrev')}
+          </Link>
+        )}
+        {next === null ? (
+          <span className="ranked__navbtn ranked__navbtn--off">{t('ranked.weeklyNext')}</span>
+        ) : (
+          <Link className="ranked__navbtn" to={weekPath(next)}>
+            {t('ranked.weeklyNext')}
+          </Link>
+        )}
+        {/*
+          ★ 手输跳转。⚠️ 是一个 `<form>` 而不是"一个输入框 + 一颗按钮各挂一个 handler"：
+          回车提交表单是**浏览器原生**的行为，也就是用户说的"键盘路径"
+          （`type="submit"` 那颗按钮就是它的提交按钮）。自己监听键盘要处理
+          IME / 回车 / 小键盘，而漏掉任何一种的表现都是"回车没反应"。
+          ⚠️ `onSubmit` 里**必须** `preventDefault`：不写的话表单会按默认行为
+          导航到当前 URL（整页刷新），而 SPA 里的状态（含这一页的数据）会全部丢掉 ——
+          表现是"按了回车之后页面闪一下、回到加载中"。
+          ⚠️ `type="text"` + `inputMode="numeric"`，**不是** `type="number"`：
+          number 输入框会把字母**吃掉**（用户打的 `abc` 直接消失、值变成空串）⇒
+          我们就没法说"请输入一个周数"了，只能对着一句"空"发呆。
+          ⚠️ 输入框用 `<label class="sr-only">` 给它一个**可访问名字**（占位符在输入第一个字
+          之后就没了）；`htmlFor` / `id` 成对写（与 ② 的搜索框同一条）。
+        */}
+        <form
+          className="ranked__weekjump"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onWeekJump();
+          }}
+        >
+          <label className="sr-only" htmlFor="ranked-week-jump">
+            {t('ranked.weeklyJump')}
+          </label>
+          <input
+            id="ranked-week-jump"
+            type="text"
+            inputMode="numeric"
+            value={weekInput}
+            placeholder={t('ranked.weeklyJump')}
+            onChange={(event) => onWeekInputChange(event.target.value)}
+          />
+          <button type="submit" className="ghostbtn">
+            {t('ranked.weeklyJumpGo')}
+          </button>
+        </form>
+        {/* ★ 用户要的「本周」：真链接（可刷新、可分享），落点见上面那一段 */}
+        <Link className="ranked__navbtn" to={thisWeekTo}>
+          {t('ranked.weeklyThisWeek')}
+        </Link>
+      </nav>
+      {/*
+        ⚠️★ 判定不合法的那一句话紧贴在导航**下面**（不是塞进导航那一行里）：
+        它说的是"你刚才打的那个数"，而导航那一行是三个可以继续点的动作 ——
+        混在一行里，读屏软件会把一句话念成第四颗按钮。
+        ⚠️ 它不是 `Notice`（那一条会带 `role="alert"` 或一块底板）：这是一句**就地**的提示，
+        不是需要打断朗读的故障（用户就在输入框旁边，看得见）。
+      */}
+      {weekError === null ? null : <p className="ranked__jumperror">{weekError}</p>}
       <p className="ranked__meta">
         <span>{t('ranked.weeklyNumber', { n: displayWeekNo(weekly.id) })}</span>
         {/*
@@ -1142,27 +1352,11 @@ export function RankedWeeklyView(props: RankedWeeklyViewProps) {
         </div>
       )}
       {/*
-        ⚠️ 翻页是**真链接**（`/ranked/weekly/102`，不是查询串）：可刷新、可分享、
-        前进后退都落在同一屏上。⚠️ 到头的那一档渲染 `<span>` 而不是 `<a>` ——
-        本仓的规矩是"入口在不在"要能被断言，而一条 `aria-disabled` 的链接
-        仍然会被读屏软件念成一个可点的链接，那就是在骗人。
+        ⚠️★ 这里**原来**是那一行翻页导航（上一周 / 下一周）—— 2026-09-19 用户要求把它移到
+        **顶部**，它现在就在 `<h2>` 下面那一行（含手输跳转与「本周」）。
+        别把它加回来：两处导航会各自漂（一处的边界判据改了、另一处没改），
+        而"下面那一行还能点"会让用户以为两台不同的东西。
       */}
-      <nav className="ranked__weeknav">
-        {prev === null ? (
-          <span className="ranked__navbtn ranked__navbtn--off">{t('ranked.weeklyPrev')}</span>
-        ) : (
-          <Link className="ranked__navbtn" to={weekPath(prev)}>
-            {t('ranked.weeklyPrev')}
-          </Link>
-        )}
-        {next === null ? (
-          <span className="ranked__navbtn ranked__navbtn--off">{t('ranked.weeklyNext')}</span>
-        ) : (
-          <Link className="ranked__navbtn" to={weekPath(next)}>
-            {t('ranked.weeklyNext')}
-          </Link>
-        )}
-      </nav>
     </RankedChrome>
   );
 }

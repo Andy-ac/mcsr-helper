@@ -20,9 +20,9 @@
  */
 import {
   parseHeartbeat,
-  RANKED_MONITOR_ID,
+  RANKED_STATUS_COMPONENTS,
   RANKED_STATUS_UPSTREAM,
-  type RankedMonitor,
+  type RankedStatusComponent,
 } from '@mcsr/shared/ranked';
 
 /**
@@ -38,7 +38,7 @@ import {
  *    一直等一个不会自己好起来的东西。
  */
 export type HeartbeatResult =
-  | { ok: true; monitor: RankedMonitor }
+  | { ok: true; components: RankedStatusComponent[] }
   | { ok: false; kind: 'unavailable' | 'busy' | 'bad_response'; detail: string };
 
 /**
@@ -137,21 +137,21 @@ export async function fetchHeartbeat(): Promise<HeartbeatResult> {
     };
   }
 
-  const monitor = parseHeartbeat(raw);
-  if (!monitor) {
+  const components = parseHeartbeat(raw);
+  if (!components) {
     /*
      * ⚠️ 这一档是**适配层出问题**（上游改了字段名/结构），与"上游抖了一下"是两件事：
-     *    路由层拿 bad_response 回 502，日志里带上**是哪一格**缺了 ——
+     *    路由层拿 bad_response 回 502，日志里带上**是哪几个 id** ——
      *    那条日志存在的唯一意义就是告诉下一个人要改哪里。
      */
     return {
       ok: false,
       kind: 'bad_response',
       // ⚠️ 两句话都要留着：`parseHeartbeat` 返回 null 有**两个**来源（响应不是一个对象 /
-      //    那一格不在），而日志的读者要靠它决定是去查上游还是查我们自己的适配层。
-      detail: `heartbeatList 里没有 monitor ${RANKED_MONITOR_ID} 那一条（响应不是对象，或上游改了字段名/结构）`,
+      //    那张表里的四个 id 一个都没有状态），而日志的读者要靠它决定是去查上游还是查我们自己的适配层。
+      detail: `heartbeatList 里 ${RANKED_STATUS_COMPONENTS.map((each) => each.id).join(', ')} 四格一个状态都没有（响应不是对象，或上游改了字段名/结构）`,
     };
   }
 
-  return { ok: true, monitor };
+  return { ok: true, components };
 }

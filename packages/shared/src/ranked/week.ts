@@ -66,3 +66,61 @@ export function nextWeekId(id: number, latestId: number): number | null {
 export function weekPath(id: number): string {
   return `/ranked/weekly/${String(id)}`;
 }
+
+/**
+ * ★★ 用户**手输**一个周数时的判定（2026-09-19 用户要求加的那个输入框）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么这件事必须是一个**纯函数**，而不是组件里的一段 if
+ * ---------------------------------------------------------------------------
+ * `apps/web` 没有测试运行器，写在组件里的分支**没有任何门禁看得见**；而这个函数的
+ * 每一个分支都对应"用户按了跳转之后会发生什么"，其中三种是**我们不许发请求**的
+ * （见下面那张表）。所以它住在这里，被 `ranked-shared.test.ts` 逐值钉住。
+ *
+ * ---------------------------------------------------------------------------
+ * 三档，都是**本地**判掉的：不合法就一句话，一个请求都不发
+ * ---------------------------------------------------------------------------
+ * | 输入 | 结果 | 为什么不能发出去 |
+ * |---|---|---|
+ * | 不是整数（空串 / `abc` / `1.5` / `1e3` / `+5` / 全角数字） | `not_a_number` | 上游会回 400（甚至拼出 `/weekly-race/NaN` 这种路径）—— 拿访客的额度换一屏错误 |
+ * | `0` | `no_such_week` | **0 是"本周"的别名**（实测：请求 0 拿到第 103 周）⇒ 会得到"URL 写着 0、屏幕上是本周"这个画面 |
+ * | `≤ -2` | `no_such_week` | 实测 `-2/-3/-10` 全部 400：`-1` 是**唯一的**负周 |
+ * | `> latestId`（且我们已知 `latestId`） | `no_such_week` | 未来的周不存在，我们已经知道答案了 |
+ * | `-1` 或 `1 … latestId` | `ok` | 发出去 |
+ *
+ * ⚠️★ `latestId` 为 `null`（还不知道最新是第几周）时**不猜**：那时只能挡掉上面那三种
+ *    **确定的**不存在，比 `latestId` 大的数照发 —— 上游回 400 `race is not found`，
+ *    界面走**已有的** `not_found` 那一档说「没有这一周。」（`lib/rankedErrors.ts`）。
+ *    否决了"猜一个上限"：那会把一个**真的存在**的新周挡在门外（上游每周加一周），
+ *    而用户看到的是"没有这一周"—— 一句我们编出来的假话。
+ *    ⚠️ 实际走到这一支的窗口很窄：周赛面板只有在 `weekly !== null` 时才渲染这一行，
+ *    而"本周"那一页的 `latestId` 与数据是**同一次**响应给的（只有历史周那一页在
+ *    第一次打开时有几毫秒的空档）。
+ *
+ * ⚠️ 判定用的是 `Number.isSafeInteger`：`Number('99999999999999999999')` 是 1e20
+ *    （一个**不是**安全整数的浮点近似），把它拼进路径会得到 `/weekly-race/1e+20`
+ *    —— 那是把一次"用户打错了"变成一次真实的垃圾请求（也正是不许发的那种）。
+ * ⚠️ 换行/空格是**合法**的（手机键盘会带上来）：先 `trim()` 再判，与
+ *    `matchesNickname` 对搜索词的处理一致。
+ */
+export type WeekInputVerdict =
+  | { ok: true; id: number }
+  | { ok: false; reason: 'not_a_number' | 'no_such_week' };
+
+/** 只认**十进制整数**（可带负号）：`1.5` / `1e3` / `+5` / `１２３` 都不是周数。 */
+const WEEK_INPUT_PATTERN = /^-?\d+$/;
+
+export function parseWeekInput(raw: string, latestId: number | null): WeekInputVerdict {
+  const text = raw.trim();
+  if (!WEEK_INPUT_PATTERN.test(text)) return { ok: false, reason: 'not_a_number' };
+
+  const id = Number(text);
+  // ⚠️ 这一条同时挡住上面那条正则挡不住的超长数字（见函数头最后一条 ⚠️）
+  if (!Number.isSafeInteger(id)) return { ok: false, reason: 'no_such_week' };
+
+  if (id === 0) return { ok: false, reason: 'no_such_week' }; // 0 = "本周"的别名，永不请求
+  if (id < -1) return { ok: false, reason: 'no_such_week' }; // -1 是唯一的负周
+  if (latestId !== null && id > latestId) return { ok: false, reason: 'no_such_week' };
+
+  return { ok: true, id };
+}

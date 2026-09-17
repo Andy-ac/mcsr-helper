@@ -24,7 +24,7 @@
  *    由调用方在收到响应时记一次（`fetchedAt`），那是另一个问题。
  * ⚠️ 本文件里**不许出现上游域名**（Global Constraints 第 1 条），也不打任何网络请求。
  */
-import { RANKED_MONITOR_ID } from './const';
+import { RANKED_STATUS_COMPONENTS } from './const';
 import { rankedLiveChannel } from './embed';
 import type {
   RankedEloData,
@@ -32,7 +32,8 @@ import type {
   RankedLiveData,
   RankedLiveMatch,
   RankedLivePlayer,
-  RankedMonitor,
+  RankedPhaseData,
+  RankedStatusComponent,
   RankedWeeklyData,
   RankedWeeklyEntry,
 } from './types';
@@ -403,41 +404,104 @@ function parseWeeklyEntry(row: unknown): RankedWeeklyEntry | null {
  */
 
 /**
- * 心跳响应 → 那一格服务器的状态。
+ * 心跳响应 → **四格组件的状态与最后更新时间**（① 的状态栏）。
  *
- * ⚠️ `heartbeatList` 里每个键是一个**数组**，实测 100 条，**旧 → 新** ⇒ 取**最后一条**。
- *    取第一条（或取平均）会让我们显示一个最多 100 分钟前的状态，
- *    而界面上写着"正在打的对局"—— 那是最坏的一种错：**数据是真的，时间是假的**。
- * ⚠️ `status` 只有 0/1/2/3 四档（故障/正常/等待/维护），四档都要认：
- *    只判 `status === 1 ? up : down` 会把「维护」说成「故障」（spec §6.2 明确四种都要有话说）。
+ * ---------------------------------------------------------------------------
+ * ★★ 这里迭代的是**我们那张表**（`RANKED_STATUS_COMPONENTS`），不是 `heartbeatList` 的键
+ * ---------------------------------------------------------------------------
+ * 用户要的是"Game Server, API, Store, Wiki 四个的状态与最后更新时间"（2026-09-19）⇒
+ * 界面上的行数必须是**四**，与上游那一刻回了几个监视器无关：
+ *   · 上游少了某一格（改过 id、那一刻数据缺失）⇒ **那一行的状态是 `null`**，
+ *     界面印「—」。悄悄少一行会让用户以为状态栏本来就长这样
+ *     （而"少了的那一个正好是你关心的那个"看起来与"它不在状态栏上"一模一样）；
+ *   · 上游多了第五个 ⇒ 它**不进**这一份（表里没有它）。要不要显示是产品决定，
+ *     答案是"不要"（用户点了这四个名字），所以这里不按上游的键迭代。
+ * ⚠️ 两者都是**刻意的**，改任何一个都要连着 `const.ts` 那张表的注释一起改。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 取的是每一格的**最后一条**（数组是旧 → 新），且数组里可以只有一条
+ * ---------------------------------------------------------------------------
+ * 实测：每格 100 条、旧→新（监 2 是 `03:01:27 … 11:16:27`）。取第一条（或取平均）
+ * 会让我们显示一个最多 100 分钟前的状态 —— 那时界面上的字还是"正常"，
+ * 而它说的是**一小时前**的正常。这是这一层最坏的一种错：**数据是真的，时间是假的**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ `ping` / `uptimeList` 在这份响应里，但我们**一个字都不读**
+ * ---------------------------------------------------------------------------
+ * 延迟与 24 小时可用率是 2026-09-19 被用户明确删掉的两样东西（spec §6.2 的修订）。
+ * 它们**不进我们的形状** ⇒ 界面不可能"顺手"再印一个出来，这一层也不为它们写兜底。
+ *
+ * @returns 四格组件（顺序由那张表定）；**整份不成形状**时返回 `null`。
+ *   「整份不成形状」有两条判据，都在下面写着：响应不是对象、或者**四格全都没有状态**。
  */
-export function parseHeartbeat(raw: unknown): RankedMonitor | null {
+export function parseHeartbeat(raw: unknown): RankedStatusComponent[] | null {
   const root = rec(raw);
   if (!root) return null;
 
   const beats = rec(root.heartbeatList);
-  const latest = list(beats?.[RANKED_MONITOR_ID]).at(-1);
-  const beat = rec(latest);
-  if (!beat) return null; // 没有这一格 / 数组是空的 ⇒ 整份不成形状
+  const components = RANKED_STATUS_COMPONENTS.map(({ id, nameKey }) => {
+    // ⚠️ 一格坏掉**只坏那一格**（宽容解析的第②档）：拿不到就算了，别的三格照给。
+    const beat = rec(list(beats?.[id]).at(-1));
+    return {
+      id,
+      nameKey,
+      state: monitorState(beat?.status),
+      // ★ **原样**那串文本（`2026-09-17 11:16:27`）—— 一个时间戳都不换算（见 types.ts 的长注释）
+      checkedAt: str(beat?.time),
+    };
+  });
 
-  const state = monitorState(beat.status);
-  const checkedAt = str(beat.time);
-  // ⚠️ 这两格没有 `| null` 可放：没有状态的徽章、没有时间的心跳都不是"心跳"，
-  //    整份 `null` 让端点回 502 `upstream_bad_response`（那是真话，而且带日志）。
-  if (state === null || checkedAt === null) return null;
+  /*
+   * ★★ 四格**全都没有状态** ⇒ 整份 `null`。
+   *
+   * 为什么这一条不能省：`heartbeatList` 还在（是一个对象）、但四个 id 一个都对不上，
+   * 说明上游**换了键或者换了结构** —— 那是"我们的适配层要改"（服务端回 502 并记下是哪一格），
+   * 而**不是**"四个服务刚好都读不到"。少了这条判据，界面上会出现四行整齐的「—」，
+   * 看起来像"上游四个服务同时没数据"（一次我们永远查不出来的静默降级）。
+   * ⚠️ 判据是**状态**而不是"有没有那条心跳"：状态是这一栏唯一的实质内容，
+   *    一份只有时间的响应渲染出来是四行"最后更新 xxx、状态 —"，那是半个状态栏。
+   */
+  if (components.every((each) => each.state === null)) return null;
 
-  const uptime = rec(root.uptimeList);
-  return {
-    state,
-    // ★ **原样**那串文本（`2026-09-15 13:36:27`）—— 一个时间戳都不换算（见 types.ts 的长注释）
-    checkedAt,
-    ping: num(beat.ping),
-    // `uptimeList` 的键形如 `2_24`（monitor 2 的 24 小时可用率），与 `heartbeatList` **不同名**。
-    uptime24: num(uptime?.[`${RANKED_MONITOR_ID}_24`]),
-  };
+  return components;
 }
 
 /** `status` 的四档（写成比较链，让 TS 把 `unknown` 收窄成那个联合类型）。 */
 function monitorState(v: unknown): 0 | 1 | 2 | 3 | null {
   return v === 0 || v === 1 || v === 2 || v === 3 ? v : null;
+}
+
+/**
+ * `GET /phase-leaderboard` 的响应 → 赛季**赛段**（③ 顶部那并排的一格）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 这一份是**另一个端点**给的（93 字节），而且它**只为这一格**存在
+ * ---------------------------------------------------------------------------
+ * `/leaderboard` 里没有 phase 对象（findings §2.4），所以"赛段"必须多打一次请求。
+ * 那个响应**很大一部分**是 `data.users`（一份赛段积分榜）—— 我们**不看它**：
+ * 用户要的是"并排显示赛段信息"，不是"再来一张表"（`types.ts` 里写着同一句）。
+ *
+ * ⚠️★ 整份不成形状 ⇒ `null`，而**不是**"回一个三格全 null 的对象"：
+ *    调用方（③ 那一页）对这两种情况的处理**不一样** ——
+ *    `null` 时那一格说「赛段信息暂时读不到」（我们知道这次没读到），
+ *    而"读到了但没有号数/截止" ⇒ 那一格按格印「—」。
+ *    合成一种会让"这次请求失败了"与"上游没给这一格"看起来一模一样，
+ *    而那两件事的下一步完全不同（重试 / 什么也不做）。
+ * ⚠️ 三格**各自**可以是 `null`（文档 schema 里 `number` / `endsAt` 就是可空的）：
+ *    号数读得出、截止读不出时，界面印「赛段 1」而不印那一句"读不到"。
+ */
+export function parsePhase(raw: unknown): RankedPhaseData | null {
+  const data = envelope(raw);
+  if (!data) return null;
+
+  // ⚠️ `phase` 必须是一个**对象**：它是这份响应的骨架，不是可空的一行。
+  const phase = rec(data.phase);
+  if (!phase) return null;
+
+  return {
+    number: num(phase.number),
+    // ⚠️ 秒（上游的 `Date` 一律是秒，spec §13），不在这里乘 1000
+    endsAt: num(phase.endsAt),
+    season: num(phase.season),
+  };
 }

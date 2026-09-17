@@ -55,6 +55,7 @@
 import {
   parseLeaderboard,
   parseLive,
+  parsePhase,
   parseWeekly,
   RANKED_FETCH_HEADERS,
   RANKED_FETCH_OPTIONS,
@@ -62,15 +63,18 @@ import {
   RANKED_UPSTREAM_PRIMARY,
   type RankedEloData,
   type RankedLiveData,
+  type RankedPhaseData,
   type RankedWeeklyData,
 } from '@mcsr/shared/ranked';
 
 /*
- * 三个直连路径。⚠️ **上游域名只在 `const.ts` 里写一次**（计划的 Global Constraints 第 1 条），
+ * 四个直连路径。⚠️ **上游域名只在 `const.ts` 里写一次**（计划的 Global Constraints 第 1 条），
  * 所以这里只有路径 —— 换入口（或加第三个入口）时改的是常量，不是一个一个 URL。
  */
 const PATH_LIVE = '/live';
 const PATH_LEADERBOARD = '/leaderboard';
+/** ★ 2026-09-19 加的那一条：赛段的号数与截止时间（实测 93 字节，`/leaderboard` 里没有）。 */
+const PATH_PHASE = '/phase-leaderboard';
 const PATH_WEEKLY = '/weekly-race';
 
 /**
@@ -266,10 +270,38 @@ export async function fetchRankedLive(signal?: AbortSignal): Promise<RankedLiveD
   return data;
 }
 
-/** `GET /leaderboard` → ③ 的赛季与前 100 名（截断是 `select.ts` 的事，这里**不截**）。 */
+/** `GET /leaderboard` → ③ 的赛季与前 150 名（截断是 `select.ts` 的事，这里**不截**）。 */
 export async function fetchRankedElo(signal?: AbortSignal): Promise<RankedEloData> {
   const data = parseLeaderboard(await getJson(PATH_LEADERBOARD, signal));
   if (data === null) throw new RankedDirectError('bad_response', 'leaderboard 响应形状对不上');
+  return data;
+}
+
+/**
+ * `GET /phase-leaderboard` → ③ 顶上那并排的一格（**赛段**的号数与截止时间）。
+ *
+ * ---------------------------------------------------------------------------
+ * ★ 为什么它必须是一次**独立的**请求（用户 2026-09-19 要"并排显示赛段信息"）
+ * ---------------------------------------------------------------------------
+ * `/leaderboard` 的响应里**没有 phase 对象**（实测：只有每一行各自的
+ * `seasonResult.phasePoint` / `phaseHighest`）—— 赛段的号数与截止时间只在
+ * 这一个端点上，而且它极便宜（实测 93 字节、无参数、`users` 是空数组）。
+ * ⇒ 排行榜面板因此变成**两次直连**，而两次都走访客自己的 IP（spec §3，没有新端点）。
+ * ⚠️★ 这一路是**辅助**的：容器用 `{ fatal: false }` 调它（与"历史周补问一次最新周号"
+ *    那一路同形）—— 它挂了时排行榜**照常渲染**，只有赛段那一格说"读不到"。
+ *    把它写成主路（`fatal: true`）会让一次 93 字节的失败把一整张榜变成错误页。
+ * ⚠️ 它带的那份 `users`（赛段积分榜）**我们不读**：用户要的是赛段的时间窗口
+ *    （`types.ts` 的 `RankedPhaseData` 上写着同一句）。
+ *
+ * ⚠️ 它照样走 `getJson` ⇒ 也就是说它**继承**了那三条冻结规矩（`cache: 'no-store'`、
+ *    只带 CORS 安全头、`credentials: 'omit'` + `no-referrer`）：实测这个端点与
+ *    `/leaderboard` 一样回 `Access-Control-Allow-Origin: *` 与
+ *    `cache-control: max-age=14400`（findings §3）⇒ 两者缺一不可。
+ */
+export async function fetchRankedPhase(signal?: AbortSignal): Promise<RankedPhaseData> {
+  const data = parsePhase(await getJson(PATH_PHASE, signal));
+  if (data === null)
+    throw new RankedDirectError('bad_response', 'phase-leaderboard 响应形状对不上');
   return data;
 }
 

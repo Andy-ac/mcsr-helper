@@ -7,6 +7,20 @@
 > `status.mcsrranked.com` **不发 CORS 头**（§2.5），浏览器读不到它。
 > 这次修订同时改了两件事：数据通路（§3）与周数显示（§6.5）。
 >
+> ★★ **修订（2026-09-19，用户第三次裁决，四条）**——这一版改的是**界面内容**，
+> **数据通路的裁决一个字没改**（仍然是"面板直连 / 心跳走我们"，见 §3、§13）：
+>   1. **① 状态栏只留四格 + 在线人数**（§6.2）：Game Server / API / Store / Wiki 各自的
+>      **状态**与**最后更新时间**，下面是在线人数；**延迟、24 小时可用率、心跳历史、
+>      解释性文字全部删掉**（连同词条 —— 两种语言各删四条）。
+>      ⚠️ 那四格**仍然全部来自那个只能由服务器去取的主机**（CORS 所迫），
+>      所以 §3 那张表里"① 的服务心跳"那一行现在是**四格**，不是一个。
+>   2. **③ 排行榜显示前 150**（§6.4）：150 是**上游的硬上限且没有分页**
+>      （实测 `count` / `page` 被静默忽略）⇒ 界面上**没有**"下一页"，句子也别去别处找。
+>   3. **③ 顶部并排显示赛段**（§6.4）：赛段来自**第二个**端点 `/phase-leaderboard`
+>      （实测 93 字节），**浏览器直连**（那个主机发 `*`）⇒ 排行榜面板从此是**两次**直连。
+>   4. **④ 翻页移到顶部 + 手输周数跳转 + 「本周」**（§6.5）。
+>   ⚠️ 这一版**没有**新增服务端端点、**没有**新依赖、**没有**新迁移。
+>
 > 与文档冲突时以 **§2 的实测结果**为准 —— 上游文档有四处与真实响应不一致。
 
 ---
@@ -21,7 +35,8 @@
 | 面板 | 谁发请求 | 为什么 |
 |---|---|---|
 | ①②③④ 的**主体数据** | **访客的浏览器**直连 `api.mcsrranked.com` | 用**访客自己的 IP**，不占服务器那条 500 次 / 10 分钟的额度 |
-| ① 的**服务心跳** | **我们的服务器**（`/api/ranked/status`） | 那个域名没有 CORS 头，浏览器**读不到**（§2.5） |
+| ① 的**服务心跳**（★★ 2026-09-19 起是**四格**，不是一个） | **我们的服务器**（`/api/ranked/status`） | 那个域名没有 CORS 头，浏览器**读不到**（§2.5）——**四格全在同一个主机上**，所以这一条不是"某一格例外"，而是"整条状态栏都只能走我们" |
+| ③ 的**赛段**（★ 2026-09-19 加） | **访客的浏览器**直连（`/phase-leaderboard`） | 它在 `api.mcsrranked.com` 上，实测回 `access-control-allow-origin: *` ⇒ 按同一张表的规矩直连；**不新增端点**（§6.4） |
 
 ⇒ **我们只新增一个端点**（心跳），它 30 秒才打一次上游（每分钟 ≤2 次）。
 **不落库、不加迁移、不动 `frame-src`**；只把 CSP 的 `connect-src` 精确放开两个主机（§2.6）。
@@ -63,7 +78,7 @@
 | ② 高分对局 | 按**两人 elo 平均**降序**全部展示**（首批 20 + 「加载更多」，★ 2026-09-19 取代"取前 10"），卡片左右对称，点击展开直播框（§6.3） |
 | ② 顶部搜索栏搜索选手 | 昵称**子串**匹配、忽略大小写、两侧任一命中；**只在本地筛**（★ 2026-09-19，§6.3） |
 | ② 「只展示双方均直播的对局」 | 一颗开关「只看双方都在直播」：两侧 `liveUrl` 均非 null（**任何平台**）（★ 2026-09-19，§6.3） |
-| ③ 排行榜 | 前 100 + 顶部赛季号与起止（§6.4） |
+| ③ 排行榜 | 前 **150**（★ 2026-09-19） + 顶部赛季号与起止 **+ 并排的赛段**（§6.4） |
 | ④ 周赛 | 默认本周、可前后翻页；顶部周数 + **4 个种子** + 截止时间（§6.5） |
 | 当前进度显示 | **英文原样**，同时 `zh-CN.ts` 里为每个已知标识配词条（值先写英文，用户稍后校准）（§7.2） |
 | 周数显示 | `id = -1` ⇒ **「第 0 周」**；`id ≥ 1` ⇒ 「第 N 周」一一对应（§6.5） |
@@ -317,41 +332,84 @@ connect-src 'self' https://api.mcsrranked.com https://mcsrranked.com;
 
 | 面板 | 谁产这份数据 | 上游 |
 |---|---|---|
-| ① 心跳 | 我们的 `GET /api/ranked/status` | `status.mcsrranked.com` |
+| ① 心跳 | 我们的 `GET /api/ranked/status` | `status.mcsrranked.com`（**四格**） |
 | ① 人数 | 浏览器直连 | `/live` 的 `data.players` |
 | ② 对局 | 浏览器直连 | `/live` 的 `data.liveMatches` |
-| ③ 排行榜 | 浏览器直连 | `/leaderboard` |
+| ③ 排行榜 | 浏览器直连 | `/leaderboard`（**前 150**，上游的硬上限） |
+| ③ 赛段 | 浏览器直连 | `/phase-leaderboard` 的 `data.phase`（★ 2026-09-19 加的第二次直连） |
 | ④ 周赛 | 浏览器直连 | `/weekly-race` / `/weekly-race/{id}` |
 
 ### 4.2 我们唯一的端点（心跳）
 
 ```ts
 // GET /api/ranked/status   —— 公开、no-store
+interface RankedStatusComponent {
+  /** ★ 上游 `heartbeatList` 的键（`"2"` … `"5"`）。**字符串**：JSON 的键永远是字符串。 */
+  id: string;
+  /**
+   * ★★ 这一格名字的**词条 key**（`ranked.componentGameServer` …）。
+   * ⚠️⚠️ 上游的响应里**没有名字** —— 它只有 id。名字只出现在**人看的那张状态页**的内联脚本里
+   *    （`window.preloadData.publicGroupList[0].monitorList[].name`），而那条路**没有 API**：
+   *    `…/api/status-page/mcsrranked`、`…/config`、`/api/status` 三个实测全是 **403**。
+   *    ⇒ 那四对 id→名字是**这一栏唯一一处未经 API 验证的映射**，写死在
+   *      `packages/shared/src/ranked/const.ts` 的 `RANKED_STATUS_COMPONENTS` 上
+   *      （那张表的注释写着完整来历与两个选择的代价）。
+   *    ⚠️ 它错了长什么样：上游重新编号监视器 ⇒ 两格的名字互换，而**每一格都合法、每个状态都是真的**，
+   *      没有任何门禁看得见（`pending.md §5.99` 里记着"要人对着状态页核一次"）。
+   */
+  nameKey: string;
+  /** 0 down / 1 up / 2 pending / 3 maintenance —— 原样给前端，映射在界面那一层。 */
+  state: 0 | 1 | 2 | 3 | null;
+  /**
+   * ★ 上游那一条心跳的时间，**原样一串文本**（`2026-09-17 11:16:27`），不是时间戳。
+   * ⚠️ 那串字符**没有时区**，`new Date()` 会按**本机时区**解释 ⇒ 同一份数据在不同机器上
+   *    会算出不同的时刻，显示值也会随部署机器漂（本仓被一次静默的 8 小时偏移烧过）。
+   *    我们只把它当**文本**显示（「最后更新 2026-09-17 11:16:27」），一个时间戳都不换算。
+   *    ⚠️ 这条判断由 `ranked-shared.test.ts` 里三条断言钉住（值是原样字符串、类型是 string、
+   *      换一份夹具就换成那一份）——**"顺手转一下"会在那里红**。
+   *    ⚠️ `null` = 上游这一份里没有这一格。它**不是**"故障"（`state: null` 也是）。
+   */
+  checkedAt: string | null;
+}
+
 interface RankedStatusResponse {
-  monitor: {
-    /** 0 down / 1 up / 2 pending / 3 maintenance —— 原样给前端，映射在界面那一层。 */
-    state: 0 | 1 | 2 | 3;
-    /**
-     * ★ 上游那一条心跳的时间，**原样一串文本**（`2026-09-15 13:36:27`），不是时间戳。
-     * ⚠️ 那串字符**没有时区**，`new Date()` 会按**本机时区**解释 ⇒ 同一份数据在不同机器上
-     *    会算出不同的时刻，显示值也会随部署机器漂。我们只把它当**文本**显示
-     *    （「最后心跳 13:36:27」），一个时间戳都不换算。
-     */
-    checkedAt: string;
-    ping: number | null;
-    /** 24 小时可用率 0–1。 */
-    uptime24: number | null;
-  };
+  /** ★★ **恒为四格**，顺序由 `RANKED_STATUS_COMPONENTS` 定。上游少给一格时那一格是 `null` 字段。 */
+  components: RankedStatusComponent[];
   serverNow: number;   // 服务端取一次
   fetchedAt: number;   // 这份心跳是什么时候取的
   stale: boolean;      // 是不是兜底的旧数据
 }
 ```
 
+⚠️★ **四格全都没有状态 ⇒ 整份不成形状**（502 `upstream_bad_response`，日志带上那四个 id）：
+"上游换了键"与"四个服务刚好都没数据"是两件事，而后者在界面上看起来是四行整齐的 `—`。
+**只少一格 ⇒ 200 照给**，那一格印 `—`（界面不许替上游断言一个我们不知道的事实）。
+
+⚠️★ 被删掉的两样（2026-09-19 用户口径「不加其他多余的信息」）：`ping` 与 24 小时可用率。
+上游**照样在响应里给**（`ping` / `uptimeList`），我们**一个字节都不读** ——
+它们不进这个形状，所以界面不可能"顺手"再印一个出来。
+
 **拒绝码**：上游 5xx/超时 ⇒ 503 `upstream_unavailable`（有旧数据时照旧给旧数据 + `stale: true`）；
 上游 429 ⇒ 503 `ranked_busy`；形状不对 ⇒ 502 `upstream_bad_response`（日志带字段名）。
 ⚠️ `ranked_busy` 与 `upstream_bad_response` 是**新码** ⇒ 要同时进
 `services/api/src/error-codes.test.ts` 的 `KNOWN_CODES`，并决定前端拿它们说什么（§7.3）。
+
+### 4.2.1 ★ ③ 的第二份数据（赛段）**不是**我们端点的一部分
+
+`/phase-leaderboard` 由**访客浏览器直连**（与 `/leaderboard` 同一条路、同一套请求选项），
+所以它**不进** `RankedStatusResponse`、也不新增任何服务端路由。它的形状：
+
+```ts
+interface RankedPhaseData {
+  number: number | null;    // 赛段号（实测今天是 1）
+  endsAt: number | null;    // 秒（与赛季起止同一条单位规矩）
+  season: number | null;
+}
+```
+
+- 整份不成形状（缺 `phase` / `phase` 不是对象 / `status !== 'success'`）⇒ 解析层回 `null`，
+  界面说「赛段信息暂时读不到」——**与"读到但某一格是空的"（印 `—`）是两件事**。
+- ⚠️★ 那一次请求失败**不许**让排行榜变空：容器按**辅助那一路**（`{ fatal: false }`）调它。
 
 ### 4.3 浏览器侧的形状（与上游解耦）
 
@@ -377,7 +435,15 @@ interface RankedLiveResponse { matches: RankedLiveMatch[]; total: number; fetche
 interface RankedEloResponse {
   season: { number: number; startsAt: number; endsAt: number };   // 秒
   users: Array<{ rank: number | null; nickname: string; eloRate: number | null;
-                 highest: number | null; phasePoint: number | null }>;   // 前 100
+                 highest: number | null; phasePoint: number | null }>;   // 前 150（★ 2026-09-19）
+  fetchedAt: number;
+}
+
+/** ★ 2026-09-19：**另一个端点**给的（93 字节），与上面那份各来各的。 */
+interface RankedPhaseResponse {
+  number: number | null;   // 赛段号
+  endsAt: number | null;   // 秒
+  season: number | null;
   fetchedAt: number;
 }
 
@@ -469,16 +535,39 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
   的守卫，而侧栏那一行指向 `/ranked`。重定向那一行就是它的答案，别用 `milestone` 规避。
 - ⚠️ ④ 的翻页也走**路径**（`/ranked/weekly/102`），不是查询串：真链接、可刷新、可分享。
 
-### 6.2 ① 状况与人数 `/ranked/status`
+### 6.2 ① 状况与人数 `/ranked/status` ★★ 修订（2026-09-19）
+
+用户原话：「"状态栏"显示 Game Server, API, Store 和 Wiki 所有的状态和最后更新时间，
+下面显示当前在线人数，**不加其他多余的信息**」；追问后的口径是**只留四格（状态 + 最后更新）+ 人数**。
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ◤ Game Server      [正常]      最后更新 2026-09-17 11:16:27  │
+│  ◤ API              [正常]      最后更新 2026-09-17 11:18:07  │
+│  ◤ Store            [等待]      最后更新 2026-09-17 11:16:27  │
+│  ◤ Wiki             [维护]      最后更新 2026-09-17 11:16:28  │
+│                                                              │
+│  1234                                                        │
+│  1234 人正在玩 Ranked                                        │
+└──────────────────────────────────────────────────────────────┘
+```
 
 | 元素 | 规则 |
 |---|---|
-| 服务状态徽章 | `state` → `1` 正常 / `0` 故障 / `2` 等待 / `3` 维护 —— **四种都要有话说**，不许只判 up/down |
-| 心跳详情 | `ping` → 「延迟 380 ms」；`null` → 「延迟未知」（不是 0） |
-| 24 小时可用率 | `uptime24` → 「24 小时可用率 100%」；`null` → 整行不渲染 |
-| 实时人数 | `players` → 大号数字；`null` → 「—」+「人数暂时读不到」 |
-| 新鲜度 | 「N 秒前更新」（本地计时每秒往前） |
+| 四行 | **恒为四行**，顺序 = `RANKED_STATUS_COMPONENTS`（Game Server → API → Store → Wiki，**用户的顺序**） |
+| 名字 | 来自那张表的词条 key（`ranked.componentGameServer` …）。⚠️ **不在任何 API 里**（§4.2 的长注释） |
+| 状态徽章 | 四格各自的 `state` → `1` 正常 / `0` 故障 / `2` 等待 / `3` 维护 —— **四种都要有话说** |
+| 读不到那一格 | `state: null` ⇒ 徽章是 `—` + **中性配色**（`--unknown`），**不是**「故障」；时间也是 `—` |
+| 最后更新 | `checkedAt` **原样**（不做时区换算，§4.2）；词条是「最后更新 {{time}}」 |
+| 实时人数 | `players` → 大号数字 + 一句说明；`null` → 「—」+「人数暂时读不到」 |
+| 新鲜度 | 「N 秒前更新」（本地计时每秒往前）——**这是"这份数据多旧"的唯一答案** |
 | 失败 | 有旧数据 ⇒ 旧数据 + 「上次刷新失败了…」+ 重试；没有 ⇒ 一句错误 + 重试 |
+
+⛔ **这一屏不许再加东西**（2026-09-19 用户口径的字面意思）。被**删掉**的四样（不是遗漏）：
+延迟（`statusPing` / `statusPingUnknown`）、24 小时可用率（`statusUptime`）、
+单格心跳那一行（`statusCheckedAt`）、心跳历史（上游给 400 条，我们从来不显示）。
+⇒ 那四条词条**从两份字典里一起删了**，而且渲染自检有一条断言"它们**不在**字典里"
+（没有消费者的 key 留着，下一个人会以为它还挂着某个渲染点）。
 
 ⚠️ **`players === 0` 与 `players === null` 是两件事**：前者印「现在没有人在玩 Ranked」（真话），
 后者印「—」+「人数暂时读不到」。两种都要有词条。
@@ -531,21 +620,51 @@ interface RankedPlayersResponse { players: number | null; fetchedAt: number }
   （用户会以为上游空了，而该做的只是清掉搜索框里那个词）。
 - **轮询**：10 秒（§5.1）。
 
-### 6.4 ③ Elo 排行榜 `/ranked/elo`
+### 6.4 ③ Elo 排行榜 `/ranked/elo` ★★ 修订（2026-09-19）
 
-- 顶部：**赛季 12** + 「2026-09-15 → 2026-12-30」（上游给的是**秒**；按**本地时区**渲染，
-  与本仓其它日期一致）。
+- 顶部**一行四格**（用户原话：「除了显示赛季时间，另外**并排**显示赛段信息」）：
+  **赛季 12** · 「2026-09-15 → 2026-12-30」 · **赛段 1** · **结束 2026-09-30**。
+  ⚠️★ "并排"= **同一个 `.ranked__meta`**（flex + gap 那一行），不是两行、不是两个 `<p>`。
+- ⚠️★ **赛段来自第二次直连**（`/phase-leaderboard`，实测 93 字节）：`/leaderboard` 的响应里
+  **没有** phase 对象（实测，只有每一行各自的 `seasonResult.phasePoint` / `phaseHighest`）。
+  那一次失败时那一格说「赛段信息暂时读不到」，而**整张榜照常渲染**
+  ——容器按辅助那一路（`{ fatal: false }`）调它，所以**不会**多出一句"读不到数据"。
+  三格各自可空：号数读得出、截止读不出时印号数（不印那一句"读不到"）。
 - 表格：**排名 / 昵称 / elo / highest / phasepoint**。
   ⚠️ 上游每条还带着 `country`，**我们不发、也不显示**（§9）。
 - ⚠️★ **排名列用 `eloRank`**（并列会重复、之后跳号），**不是下标 + 1**。
-- 取**前 100**（上游 150）。第 100 名卡在并列中间时**照上游给的原样显示**。
+- ★★ 取**前 150**（2026-09-19 用户口径）。
+  ⚠️★ **150 是上游的硬上限，而且没有分页**：实测 `?count=200` / `?count=1` /
+  `?page=1&count=150` 与不带参数的响应**字节完全相同**（都是 150 条）⇒ 上游**忽略**这两个参数
+  ⇒ **第 151 行拿不到**。⇒ 界面上**没有**"下一页"、也没有"加载更多"，
+  而且这不是"还没做"——**没有下一页**。`RANKED_ELO_TOP = 150` 是**上界**
+  （上游哪天给得更多时由它截断，页面不会被撑爆）。
 - 空态：赛季刚开 ⇒ 「这个赛季还没有人上榜。」
-- 轮询：60 秒。
+- 轮询：60 秒（两路请求在**同一轮**里发）。
 
-### 6.5 ④ 周赛榜单 `/ranked/weekly` ★ 修订
+### 6.5 ④ 周赛榜单 `/ranked/weekly` ★★ 修订（2026-09-19）
 
 - 默认 `GET /weekly-race`（本周）。
-- 顶部：**周数** + **4 个种子**（主世界 / 下界 / 末地 / RNG）+ 截止时间（本地时区）。
+- ★★ **顶部一行导航**（用户原话：「将'上一周/下一周'移**到顶部**，并允许用户直接输入对应周的
+  数字跳转，添加'本周'按钮」）：**上一周 | 下一周 | [ 周数 ] 跳转 | 本周**
+  —— 紧跟在面板的 `<h2>` 下面、**周数与四格种子之前**（原来它挂在成绩表**下面**）。
+  ⚠️ 那一行**只有一处**（渲染自检同时断言"在种子/表格之前"与"`.ranked__weeknav` 只有一个"）
+  —— 两处导航会各自漂，而"下面那一行还能点"会让用户以为那是两个不同的东西。
+- 手输跳转：`<form>` + `<label class="sr-only">` + `type="text"` + `inputMode="numeric"` +
+  **`type="submit"`** 的「跳转」。
+  - ⚠️ `type="text"` 而**不是** `number`：number 输入框会把字母**吃掉**（值变成空串）
+    ⇒ 我们就没法说「请输入一个周数。」了。
+  - ★ **回车提交表单**（浏览器原生行为），所以键盘路径与点击走**同一个** `onWeekJump`。
+  - ⛔ **不合法就一个请求都不发**（`parseWeekInput`，纯函数，被测试逐值钉住）：
+    | 输入 | 结果 | 界面上说什么 |
+    |---|---|---|
+    | 空 / 字母 / `1.5` / `1e3` / `+5` / 全角数字 | `not_a_number` | 「请输入一个周数。」 |
+    | `0`（**本周的别名**）/ `≤ -2` / 比最新周还大 | `no_such_week` | 「没有这一周。」（**复用**上游那一档的同一句） |
+    | `-1` 或 `1 … latestId` | `ok` | 跳过去 |
+  - ⚠️ `latestId` 还不知道时**不猜**（比 103 大的数照发，由上游的 400 说话）。
+- 「本周」= **真链接**，落点 `weekPath(latestId)`（`latestId` 还不知道时是不带周号的
+  `/ranked/weekly` —— 上游自己回答"此刻是第几周"）。它**永远可点**（与"上一周到头了"无关）。
+- 顶部其余部分：**周数** + **4 个种子**（主世界 / 下界 / 末地 / RNG）+ 截止时间（本地时区）。
 - 表格：**排名 / 昵称 / 时间 / elo / elo 排名**（用户原话的五个字段）。
 
 **★ 周数显示（用户 2026-09-16 的裁决）**：
@@ -649,10 +768,10 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 
 | key | 中文 |
 |---|---|
-| `ranked.statusUp/Down/Pending/Maintenance` | 「正常」/「故障」/「等待」/「维护」 |
-| `ranked.statusPing` / `statusPingUnknown` | 「延迟 {{ms}} ms」/「延迟未知」 |
-| `ranked.statusCheckedAt` | 「最后心跳 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-15 13:36:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按本机时区解释 ⇒ 显示值会随部署机器漂，而测试也会变成"看机器运气"） |
-| `ranked.statusUptime` | 「24 小时可用率 {{pct}}%」 |
+| `ranked.statusUp/Down/Pending/Maintenance` | 「正常」/「故障」/「等待」/「维护」（★ 2026-09-19 起被**四格**各自使用） |
+| ★ `ranked.componentGameServer` / `componentApi` / `componentStore` / `componentWiki` | 「Game Server」/「API」/「Store」/「Wiki」—— ⚠️★ 这四个名字**不在任何 API 里**，来自状态页的 `preloadData`（§4.2）；两种语言同值（上游的专有名词） |
+| ★ `ranked.componentCheckedAt` | 「最后更新 {{time}}」—— ⚠️ `{{time}}` 是上游那串 `2026-09-17 11:16:27` **原样**文本，**不做时区换算**（那串字符没有时区，`new Date()` 会按**本机**时区解释 ⇒ 显示值随部署机器漂；本仓被一次静默的 8 小时偏移烧过）。它取代码表里的 `statusCheckedAt` |
+| ⛔ ~~`ranked.statusPing` / `statusPingUnknown` / `statusUptime` / `statusCheckedAt`~~ | **已删**（2026-09-19，用户口径「不加其他多余的信息」）：没有消费者的 key 留着，下一个人会以为它还挂着某个渲染点。渲染自检有一条断言"它们**不在**字典里" |
 | `ranked.players` / `playersUnknown` / `playersZero` | 「{{n}} 人正在玩 Ranked」/「人数暂时读不到」/「现在没有人在玩 Ranked」 |
 | `ranked.liveTitle` / `liveEmpty` | 「现在正在打的对局」/「现在没有直播中的对局。」—— ⚠️ `liveTitle` 早先写的是「正在直播的高分对局」（**2026-09-16 终审改掉**，英文同句改成 "Matches playing right now (top 10 by average elo)"）：一张卡片**可以完全没有直播**（"谁在直播"由每张卡片自己的 `liveExpand` 承载，夹具里榜首那张甚至就叫 `Nostream`），而"高分"也不是判据（判据是**平均** elo 的排序，未定级是常态 ⇒ §10 第 6 条）⇒ 标题只能说这一栏**真正在选择的东西**，排序口径由下面那行 `liveFrom` 说全。⚠️★ **2026-09-19** 又把括号里的「按平均 elo 排前 10」删掉了（用户要求全部展示）：那句"前 10"从这一天起是假话，而"按平均 elo 排"本来就由 `liveFrom` 说了一遍 |
 | `ranked.liveFrom` | 「共 {{total}} 场，按平均 elo 排序」（**2026-09-19 改写**，原为「{{total}} 场里按平均 elo 取前 10」）。⚠️ `{{total}}` 是**上游的总场次**（`sliceLiveMatches().total`），不是筛后场次 —— 后者由 `liveMatched` 说，两个数不许互相冒充 |
@@ -668,10 +787,13 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `ranked.statusTitle` | 「服务状况」—— ① 那一栏的小标题。⚠️ 它**不是** `nav.ranked`：标签页那一行已经用了栏目名，这里再写一遍就是同一句话在同一个屏幕上出现两次；而 ②③④ 各自都有自己的 `<h2>`，① 没有的话它就成了唯一一个没有标题的面板 |
 | `ranked.matchTime` | 「已进行 {{time}}」 |
 | `ranked.eloTitle` / `season` / `seasonRange` | 「Elo 排行榜」/「赛季 {{n}}」/「{{from}} → {{to}}」 |
+| ★ `ranked.phase` / `phaseEndsAt` / `phaseUnknown` | 「赛段 {{n}}」/「结束 {{when}}」/「赛段信息暂时读不到」—— ⚠️ 前两条与赛季那两条在**同一行**里（"并排"，§6.4）；`phaseUnknown` 是**那一次 `/phase-leaderboard` 请求失败**那一档（与"上游给了但某一格空着 ⇒ 印 `—`"是两件事）。⚠️ `{{when}}` 是**秒**、按本地时区渲染（与赛季起止同一条规矩） |
 | `ranked.colRank/Nickname/Elo/Highest/PhasePoint` | 「排名」/「昵称」/「elo」/「最高」/「阶段分」 |
 | `ranked.eloEmpty` | 「这个赛季还没有人上榜。」 |
 | `ranked.weeklyTitle` / `weeklyNumber` / `weeklyEndsAt` / `weeklySeed` | 「周赛」/「第 {{n}} 周」/「截止 {{when}}」/「种子」 |
-| `ranked.weeklyPrev` / `weeklyNext` | 「上一周」/「下一周」 |
+| `ranked.weeklyPrev` / `weeklyNext` | 「上一周」/「下一周」—— ★ 2026-09-19 起它们住在**顶部**那一行（§6.5） |
+| ★ `ranked.weeklyJump` / `weeklyJumpGo` / `weeklyThisWeek` | 「跳到某一周」/「跳转」/「本周」—— ⚠️ `weeklyJump` **同时**是占位符与 `<label class="sr-only">`（占位符在输入第一个字之后就没了）；`weeklyThisWeek` 是一条**真链接** |
+| ★ `ranked.weeklyBadNumber` | 「请输入一个周数。」—— ⚠️ 它**只**管"这不是一个周数"；"这个周数不存在"（0 / ≤ -2 / 比最新周还大）说的是 **`errNotFound`**（「没有这一周。」），因为那是**上游**对同一个问题的原话（对照表在 `WEEK_INPUT_ERROR_KEYS` 上） |
 | `ranked.colTime` / `colEloRank` | 「时间」/「elo 排名」 |
 | `ranked.weeklyEmpty` | 「这一周还没有人完赛。」 |
 | `ranked.updatedAgo` | 「{{secs}} 秒前更新」 |
@@ -751,19 +873,28 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 
 ⚠️ 与 `seeds-proxy.test.ts` 同一条纪律：替换 `globalThis.fetch`。
 
-- [ ] `GET /api/ranked/status` 正常路径：四个字段逐个断言 + `stale: false` + `no-store`
+- [ ] `GET /api/ranked/status` 正常路径：四格逐个断言 + `stale: false` + `no-store`
 - [ ] ★ TTL 30 秒：TTL 内第二次请求**不打上游**（桩计数 == 1）；过了再打（== 2）
 - [ ] ★★ single-flight：十个并发 ⇒ 上游计数 **== 1**
 - [ ] ★ 兜底：上游 500 / 超时 / 非 JSON ⇒ 有旧数据时 `stale: true` + 旧数据；没有则 503
 - [ ] 上游 429 ⇒ 503 `ranked_busy`；形状不对 ⇒ 502 `upstream_bad_response`（日志带字段名）
-- [ ] 心跳解析：`heartbeatList['2']` 取**最后一条**；`uptimeList['2_24']`；缺字段 ⇒ null 而不是崩
+- [ ] ★★ 心跳解析：**四格**各取自己那一格的**最后一条**；**少一格 ⇒ 那一格 `null` 而 200 照给**；
+      **四格全没状态 ⇒ 整份 `null`**（502）；响应里**没有** `ping` / `uptime24`（用户把它们删了）
 - [ ] 每 IP 限流：> 60 次/分钟 ⇒ 429 `rate_limited`
 - [ ] `error-codes.test.ts`：两个新码已进 `KNOWN_CODES`
 - [ ] ★ **公开面零泄漏**：新端点匿名 200，且响应里不含其它栏目的数据；既有公开接口响应里不含 `ranked*` 新字段
 
 ### 11.2 共享解析层与纯函数（`packages/shared/src/ranked/`，测试放 `services/api`）
 
-- [ ] ★ 解析是**纯函数**：同一份响应解析两次得到同样结果（不读时钟、不读全局状态）
+- [ ] ★ 解析是**纯函数**：同一份响应解析两次得到同样结果（不读时钟、不读全局状态）——**五个**入口
+- [ ] ★★ **四格组件**（2026-09-19）：从一份真实的四格心跳体里逐格抽出 id / 名字 / 状态 / 时间；
+      **含"少了某一格"那一档**（那一格 `null`、另外三格不受影响、整份不失败）；
+      `checkedAt` 是**原样字符串**（类型 + 逐字 + 换夹具就换值三条一起钉）
+- [ ] ★★ **赛段**（2026-09-19）：`{number, endsAt, season}` 三格；**缺 phase / phase 不是对象 ⇒ `null`**
+      （而**不是**三格全 null 的对象）；三格各自可空
+- [ ] ★★ **手输周数**（2026-09-19）：`1 … latestId` 与 `-1` 合法；空 / 字母 / `1.5` / `1e3` / `+5` /
+      全角数字 ⇒ `not_a_number`；`0` / `≤ -2` / `> latestId` / 超长数字 ⇒ `no_such_week`；
+      `latestId === null` 时**不猜**
 - [ ] ★★ **排序与分段**（2026-09-19 起不再截断）：夹具含"avgElo 最高但一人 null"、"两人都 null"两场
       ⇒ 两人都 null **排最后**、一人的按另一个人的值算；并列按 `key` 升序
 - [ ] ★★ **筛选与分批**（`bothStreaming` / `matchesNickname` / `filterLiveMatches` / `sliceLiveMatches`）：
@@ -772,6 +903,7 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
       `shown` 为 0 / 负数时的边界，以及 total / matched / visible / remaining 四个数彼此自洽
 - [ ] ★★ **排名用 eloRank 不用下标**：夹具造 `…,3,3,5,…` ⇒ 输出原样是 `3,3,5`
 - [ ] ★ `highest` 缺失 ⇒ `null`（不是 `undefined`、不是 0）
+- [ ] ★ **前 150**（2026-09-19 用户口径）：150 条**一条都不少**，超过 150 条时截到 150（上界）
 - [ ] ★ **周数映射与翻页**（逐值）：
       `displayWeekNo(-1) === 0`、`displayWeekNo(1) === 1`、`displayWeekNo(103) === 103`；
       `prevWeekId(1) === -1`、`prevWeekId(-1) === null`、`prevWeekId(103) === 102`；
@@ -790,6 +922,11 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 ### 11.3 前端：`apps/web/scripts/rankedrender.tsx`（新增，进 `check:all`，中英各一遍）
 
 - [ ] 四个标签页：名字、真链接、`aria-current` 只在当前那一页
+- [ ] ★★ ① **四行逐行**：名字（来自那张表）/ 状态（**每格说它自己那句**）/ 最后更新（**每格是它自己那个时间**）；
+      **上游少一格的夹具** ⇒ 那一行还在、印 `—` 与「最后更新 —」、**不许**是「故障」；
+      ★★ 还有一个**全屏文字逐字**的断言：这一屏**只有**四行 + 人数 + 外壳那一行新鲜度
+      （多任何一件都会红 —— 这是"不加其他多余的信息"那条口径唯一的机器判据）
+- [ ] ★ ① 那四条被删的词条**不在**两份字典里（`statusPing` / `statusPingUnknown` / `statusUptime` / `statusCheckedAt`）
 - [ ] ① 四种状态徽章各有话说；`players` 的 **0 与 null 是两句不同的话**
 - [ ] ② 卡片：左右两半**各自五个字段**都在；`timeline: null` ⇒ `—`；一人 null elo ⇒ `—`；
       两人顺序 = elo 高的在左
@@ -802,8 +939,18 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
       ⚠️★ 它钉的是"**视图拿着这三格状态渲染成什么样**"：三格状态住在容器里（`routes/Ranked.tsx`），
       而容器在 Node 里渲染不了 ⇒ **打字 / 点击真的换了状态**这一半要人点一次
 - [ ] ③ 五列都在；**并列排名照原样印**（`3,3,5`）；赛季号与起止都在
+- [ ] ★★ ③ **赛段并排在赛季那一行**（同一行四格：赛季号 / 起止 / 赛段号 / 赛段截止）；
+      赛段是 `null` 时那一格说「赛段信息暂时读不到」而**整张榜一个格子都不少**、也**不**多一句"读不到数据"
+- [ ] ★★ ③ **150 行**（夹具给 160 条 ⇒ 渲染 150 行 = 750 个格子）+ 常量钉死 `RANKED_ELO_TOP === 150`
 - [ ] ④ 顶部：周数（**第 -1 周那份渲染成「第 0 周」**）、4 个种子、截止时间；五列；
       `id >= latestId` ⇒「下一周」**禁用**；`id === -1` ⇒「上一周」**禁用**（正反两半）
+- [ ] ★★ ④ **导航在顶部**（位置断言：在周数那一行 / 四格种子 / 成绩表之**前**，且在面板标题之**后**）
+      ＋ 那一行**只有一处**（`.ranked__weeknav` 的个数 == 1）
+- [ ] ★★ ④ **手输框与「本周」**：输入框与 `type="submit"` 的按钮**在同一个 `<form>` 里**、
+      `type="text"` + `inputMode="numeric"` + `sr-only` 的 `label for` 成对；
+      受控（喂 `'95'` 就印 `value="95"`）；三格导航里有「本周」且它指向 `latestId`
+      （`latestId` 为 `null` 时回落到不带周号的 `/ranked/weekly`）；
+      两种不合法的输入各说一句（`not_a_number` / `no_such_week`），而且**导航与数据一个字都没少**
 - [ ] ★★ **直连请求的选项**：这一栏唯一能验的地方就是"那个函数被调用时带了什么"——
       用记录器替换 `fetch`，断言 **`cache: 'no-store'`**、`credentials: 'omit'`、
       `referrerPolicy: 'no-referrer'`、**没有自定义头**（带了会触发预检）
@@ -842,6 +989,17 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
       ⇒ 「只收 twitch」与摘要那三个数必须**红**（实测：红 7 条）
 - [ ] ★ mutation ⑬（★ 2026-09-17）：`ranked-streams.ts` 的失败分支改成 `return 0`
       ⇒ 四条「失败 ⇒ 退出码 1」的用例必须**红**（实测：红 4 条）
+- [ ] ★ mutation ⑭（★ 2026-09-19）：**③ 的赛段那三格整个不渲染**
+      ⇒ 「赛季那一行里并排着**赛段号**」必须**红**
+- [ ] ★ mutation ⑮（★ 2026-09-19）：`RANKED_ELO_TOP` 150 → **100**
+      ⇒ shared 两条（条数 / 前 150 一条都不少）**与**渲染自检那条常量断言必须**红**
+- [ ] ★ mutation ⑯（★ 2026-09-19）：`parseWeekInput` 一律 `{ ok: true }`
+      ⇒ 三条「不合法一律本地挡掉」的用例必须**红**
+- [ ] ★ mutation ⑰（★ 2026-09-19）：缺的那一格 `state: null → 0`（解析层）**或**
+      视图把 `state === null` 印成「故障」—— ⚠️ 这一件事有**两半**（住在两个文件里），
+      要**两刀各砍一次**：只砍解析层时渲染自检**照旧绿**（实测），因为渲染脚本喂的是**已经解析好的**形状
+- [ ] ★ mutation ⑱（★ 2026-09-19）：`checkedAt` 改成 `new Date(...).toISOString()`
+      ⇒ 「上游给的原样字符串」那几条必须**红**
 - [ ] 每处 mutation 之后**字节级还原**并用哈希证明
 
 ### 11.5 收录作业：`services/api/src/ranked-streams.ts`（★ 2026-09-17 加）
@@ -891,20 +1049,24 @@ export function timelineLabel(type: string | null, t: (k: string) => string): st
 | `block` 短名 | `ranked` |
 | 词条命名空间 | `ranked.*`（+ `nav.ranked` + `home.desc.ranked`） |
 | 英文栏目名 | **"Ranked now"** |
-| 我们**唯一**的端点 | `GET /api/ranked/status`（**心跳**；CORS 所迫）。★ 2026-09-17：`GET /api/ranked/live` **已删除**（它**没有调用者** —— 面板是浏览器直连的；收录那一件事改走 systemd 作业，见 §3.1） |
+| 我们**唯一**的端点 | `GET /api/ranked/status`（**心跳，2026-09-19 起是四格**；CORS 所迫）。★ 2026-09-17：`GET /api/ranked/live` **已删除**（它**没有调用者** —— 面板是浏览器直连的；收录那一件事改走 systemd 作业，见 §3.1） |
 | 服务器出网（ranked 上游） | 心跳 ≤2 次/分钟（**4%**）+ 直播链接收录作业 0.2 次/分钟（**0.4%**）⇒ 合计 **≈4.4%**（口径：500 次 / 10 分钟 / IP，§2.1）。⚠️ §3.1 说明了为什么**不**照抄那个"约 8%" |
-| 浏览器直连的上游 | `api.mcsrranked.com` 的 `/live`、`/leaderboard`、`/weekly-race{,/{id}}`（**主入口**）；`mcsrranked.com/api` 同路径（**兜底**，只在网络错误时） |
-| 直连请求选项 | `cache: 'no-store'`、`credentials: 'omit'`、`referrerPolicy: 'no-referrer'`、**不带自定义头** |
+| ★★ 状态栏那四格的**名字** | 写死在 `RANKED_STATUS_COMPONENTS`（`2/3/4/5 → Game Server/API/Store/Wiki`）。⚠️⚠️ **这是这一栏唯一一处未经 API 验证的映射**（心跳只给 id，名字只在状态页的 `preloadData` 里，那条路没有 API）—— 上游重新编号时**没有任何门禁看得见**（`pending.md §5.99` ①） |
+| 浏览器直连的上游 | `api.mcsrranked.com` 的 `/live`、`/leaderboard`、**`/phase-leaderboard`（★ 2026-09-19 加）**、`/weekly-race{,/{id}}`（**主入口**）；`mcsrranked.com/api` 同路径（**兜底**，只在网络错误时） |
+| 直连请求选项 | `cache: 'no-store'`、`credentials: 'omit'`、`referrerPolicy: 'no-referrer'`、**不带自定义头**（新增的赛段那一条**照旧**） |
 | 心跳缓存 | TTL 30 秒 + single-flight + 兜底 ≤10 分钟 |
 | 心跳限流 | 每 IP 60 次/分钟 |
-| 刷新间隔 | 状况 15s（心跳 + 人数） / 对局 10s / 排行榜 60s / 周赛本周 60s / **历史周不刷新**；页面不可见时停 |
-| 排行榜条数 | 前 **100**（上游 150） |
+| 刷新间隔 | 状况 15s（心跳 + 人数） / 对局 10s / 排行榜 60s（**两路请求同一轮**） / 周赛本周 60s / **历史周不刷新**；页面不可见时停 |
+| 排行榜条数 | 前 **150**（★ 2026-09-19；**上游的硬上限，没有分页** —— `count`/`page` 被静默忽略） |
+| ★ 赛段（③ 顶上那一格） | 来自 `/phase-leaderboard`（实测 **93 字节**）的 `data.phase = {number, endsAt, season}`；**浏览器直连**；失败**不许**清空排行榜（辅助那一路 `{ fatal: false }`） |
 | 高分对局条数 | **全部**（不再截断，★ 2026-09-19 改；首批 + 「加载更多」每批 **20** 场，`RANKED_LIVE_BATCH`），`avgElo` 降序、`key` 升序 |
 | 高分对局筛选 | 昵称搜索（两侧任一、子串、忽略大小写）+「只看双方都在直播」（两侧 `liveUrl` 均非 null，**任何平台**）；两者与分批**可组合**，且**只筛本地数据**（不发请求） |
 | 排序口径 | `avgElo` = 非 null 平均；两人都 null ⇒ null ⇒ **排最后** |
 | 排名口径 | 上游的 **`eloRank`**（并列会重复、之后会跳号） |
 | 进度显示 | `timeline.type` **原样** + 词条表 + 未知回落（§7.2） |
 | 周数显示 | `displayWeekNo(-1) = 0`，`≥1` 一一对应；**显示用响应里的 `data.id`** |
+| ★ 周赛顶部那一行 | 上一周 / 下一周 / **手输周数 + 跳转** / **本周**；三轮都在**面板最上面**（§6.5） |
+| ★ 手输周数的判定 | `parseWeekInput(raw, latestId)`（纯函数）：非整数 ⇒ `not_a_number`；`0` / `≤ -2` / `> latestId` / 超长 ⇒ `no_such_week`；**不合法一个请求都不发** |
 | 翻页 | `prevWeekId(-1) = null`、`prevWeekId(1) = -1`、`nextWeekId(-1, latest) = 1`、`nextWeekId(latest, latest) = null`；**永不产出 0** |
 | 直播嵌入白名单 | `twitch` / `youtube` / `bilibili`（CSP 允许的三个）；其余给外链；**点击才加载** |
 | 兜底码 | **我们那一个端点**：429 `rate_limited` / 503 `ranked_busy` / 503 `upstream_unavailable` / 502 `upstream_bad_response`。**浏览器直连那三处不走拒绝码**：`RankedDirectError` 的四种原因（`network` / `http` / `not_found` / `bad_response`）由 `lib/rankedErrors.ts` 映射成界面文案（"这一周不存在"那一档来自上游的 400） |

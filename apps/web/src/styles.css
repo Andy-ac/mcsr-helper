@@ -7555,8 +7555,10 @@ html[data-theme='light'] {
   border-color: rgba(232, 86, 74, 0.42);
   background: rgba(232, 86, 74, 0.12);
 }
-/* 「等待」用金色、「维护」用钻青：这两档都**不是**故障，所以都不用红石色 ——
-   红石色会让"上游还没回话"和"计划内的维护"看起来像我们挂了。 */
+/*
+ * 「等待」用金色、「维护」用钻青：这两档都**不是**故障，所以都不用红石色 ——
+ * 红石色会让"上游还没回话"和"计划内的维护"看起来像我们挂了。
+ */
 .ranked__badge--pending {
   color: var(--gold);
   border-color: rgba(255, 170, 0, 0.42);
@@ -7566,6 +7568,73 @@ html[data-theme='light'] {
   color: var(--diamond);
   border-color: rgba(74, 237, 217, 0.32);
   background: rgba(74, 237, 217, 0.08);
+}
+
+/*
+ * ★★ 第五档配色：`state === null`（上游这一份响应里**没有**这一格）。
+ * ⚠️ 它**不是**第五种状态（`STATUS_KEYS` 是穷尽的 `Record<0|1|2|3>`，故意没给它留位置），
+ *    而是"没有状态"：中性灰 + 虚框，与 `.ranked__navbtn--off`（"到头了"那一格）
+ *    同一种处理 —— 两者都是"**这里没有可判断的东西**"，不是坏消息。
+ * ⚠️ 画成红色（`--down`）是最容易顺手做的错：用户会去查一个根本没坏的服务的故障。
+ */
+.ranked__badge--unknown {
+  color: var(--fg-faint);
+  border-style: dashed;
+  border-color: var(--line);
+  background: transparent;
+}
+
+/*
+ * ★★ ① 的**四行组件**（2026-09-19：状态栏只留这四行 + 在线人数）。
+ * ⚠️ 一列四行、行内三格（名字 / 状态徽章 / 最后更新）：用 grid 而不是"三列各一个
+ *    `<ul>`"—— 四行是四件**独立**的事，每件都带着自己的时间，读屏软件按列表项念出来的
+ *    也应当是"Game Server：正常，最后更新 11:16:27"。
+ * ⚠️ `minmax(0, 1fr)` 让名字那一列可以被压窄：`API` 与 `Game Server` 的长度不一样，
+ *    固定宽度在窄屏上会把时间那一格顶出去（`.ranked__tablescroll` 那条注释是同一种考虑）。
+ * ⚠️ `align-items: center`：徽章与时间都比名字矮，居中对齐才不像错位。
+ */
+.ranked__components {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ranked__component {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 14px;
+  row-gap: 4px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+/*
+ * ⚠️★ `.ranked__badge` 自带 `align-self: flex-start`（它原来独立成行，见那一条注释）——
+ *    在 grid 的 `align-items: center` 下把徽章重新拉回中间，否则它贴在行顶。
+ *    这一条必须**写在徽章规则之后**（同级选择器的先后就是层叠顺序）。
+ * ⚠️ 徽章在行内不再自己成行 ⇒ 它不再是那一行里唯一的元素，`align-self` 那条规则
+ *    对它单独生效时才是对的（`StateBadge` 那一处仍在页面上单独用）。
+ */
+.ranked__component .ranked__badge {
+  align-self: center;
+}
+
+/* 组件的名字：这一行的主字段（像素字体 + 加粗，与 `.ranked__name` 同一条）。
+   ⚠️ `min-width: 0` + `overflow-wrap: anywhere`：名字比格子长时要能断行，
+   而不是把右边两格挤出去。 */
+.ranked__compname {
+  min-width: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  font-weight: 700;
+  color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 /* ① 的在线人数。⚠️ `--fs-px-lg`（24px = 2 倍设计尺寸）：这是这一页唯一一个"一眼要读到"
@@ -7964,6 +8033,65 @@ html[data-theme='light'] {
   border-style: dashed;
   border-color: var(--line);
   background: transparent;
+}
+
+/*
+ * ★★ 2026-09-19 加的两件东西住在这同一行里（用户要求把它们放在**顶部**）：
+ *    手输周数 + 「跳转」 + 「本周」（`.ranked__weeknav` 是那一行的 flex 容器）。
+ *
+ * ⚠️★ 输入框**用系统字体**（`--font-body`），与 `.filters__search input` 那一条**逐字相同**
+ *    的理由：用户在里面打字，像素字体在输入时反而不便阅读，光标落在像素字形之间也会错位。
+ *    这是**刻意的例外**，不是漏了 `--font-pixel`（`.filters__search input` 的注释是同一条）。
+ * ⚠️ `width: 8ch` 而不是 `flex: 1`：这一行里还有三颗按钮，输入框把整行撑开会让
+ *    "上一周 / 下一周 / 本周"被挤到下一行（`.ranked__weeknav` 是 `flex-wrap: wrap`）。
+ *    8 个字符宽够放五位数的周号（今天最大 103），而且它就在按钮旁边。
+ */
+.ranked__weekjump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ranked__weekjump input {
+  width: 8ch;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 5px 9px;
+  outline: none;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.ranked__weekjump input::placeholder {
+  color: var(--fg-faint);
+}
+.ranked__weekjump input:hover {
+  border-color: var(--line-strong);
+}
+.ranked__weekjump input:focus {
+  border-color: var(--grass);
+  background: var(--surface-2);
+  box-shadow: var(--sh-glow);
+}
+
+/*
+ * ★ 「你打的那个数不合法」那一句（`weekError`）。⚠️ 它**不是** `.ranked__empty`：
+ *    空态说的是"这里现在没有内容"（虚框 + 一段留白），而这一句是**回应用户刚才的动作**，
+ *    所以它紧贴在导航那一行下面、用警示色，而**不占一整块底板**（用户就在输入框旁边，
+ *    看得见自己打了什么）。
+ * ⚠️ 颜色走 `--redstone`（与"故障"同一个变量）：这是"你要的东西不在那里"，
+ *    而不是"某个东西坏了"；用 `--gold` 会让它与"等待"那一档混起来。
+ */
+.ranked__jumperror {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--redstone);
+  margin: 0;
 }
 
 /* ==================================================================

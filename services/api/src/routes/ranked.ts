@@ -43,7 +43,7 @@
  *     ⚠️ 这一处**不做**全局预算表：它每分钟最多 2 次真实上游调用，
  *     再加一层预算是多一份状态而没有多一分保护（本仓对"没人走的分支"有记录）。
  */
-import type { RankedMonitor, RankedStatusResponse } from '@mcsr/shared/ranked';
+import type { RankedStatusComponent, RankedStatusResponse } from '@mcsr/shared/ranked';
 import { Hono } from 'hono';
 import type { AuthVariables } from '../auth/middleware';
 import { clientIp, hit, keyFor } from '../auth/ratelimit';
@@ -94,7 +94,11 @@ export const RANKED_STATUS_LIMIT = { limit: 60, windowMs: 60_000 };
 type FailureKind = Extract<HeartbeatResult, { ok: false }>['kind'];
 
 interface Entry {
-  monitor: RankedMonitor;
+  /**
+   * ★ 四格组件（`RANKED_STATUS_COMPONENTS` 那张表定的序与名字）——
+   * 2026-09-19 起不再是**一格**（那时只有 Game Server，还带着延迟与可用率两样后来被删掉的东西）。
+   */
+  components: RankedStatusComponent[];
   /** 这份心跳**取到**的时刻（不是上游 `checkedAt`，那是一串没有时区的文本）。 */
   fetchedAt: number;
 }
@@ -215,7 +219,7 @@ rankedRoute.get('/status', async (c) => {
      *   —— 这份形状是**冻结契约**（spec §4.2），而它的读者是浏览器那一侧。
      */
     return c.json({
-      monitor: cachedEntry.monitor,
+      components: cachedEntry.components,
       serverNow: now,
       fetchedAt: cachedEntry.fetchedAt,
       stale: false,
@@ -241,7 +245,7 @@ rankedRoute.get('/status', async (c) => {
   if (due || inflight !== null) {
     const result = await load();
     if (result.ok) {
-      cached = { monitor: result.monitor, fetchedAt: now };
+      cached = { components: result.components, fetchedAt: now };
       lastFailureKind = null;
       // ★ 这一份是刚取到的 ⇒ 下面回 `stale: false`（哪怕 TTL 被设成 0）
       justFetched = true;
@@ -274,7 +278,7 @@ rankedRoute.get('/status', async (c) => {
      */
     const stale = !justFetched && now - usable.fetchedAt >= ttlMs();
     return c.json({
-      monitor: usable.monitor,
+      components: usable.components,
       serverNow: now,
       fetchedAt: usable.fetchedAt,
       stale,

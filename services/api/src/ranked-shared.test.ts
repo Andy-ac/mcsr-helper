@@ -13,6 +13,8 @@ const {
   parseLeaderboard,
   parseWeekly,
   parseHeartbeat,
+  parsePhase,
+  parseWeekInput,
   sortLiveMatches,
   sliceLiveMatches,
   filterLiveMatches,
@@ -34,6 +36,7 @@ const {
   RANKED_POLL_MS,
   RANKED_FETCH_OPTIONS,
   RANKED_FETCH_HEADERS,
+  RANKED_STATUS_COMPONENTS,
 } = await import('@mcsr/shared/ranked');
 
 /**
@@ -167,7 +170,14 @@ describe('冻结常量', () => {
      *    ⚠️ 钉死的仍然是**数**：改它要同时改 `const.ts` 的注释与 spec §13 那一行。
      */
     assert.equal(RANKED_LIVE_BATCH, 20);
-    assert.equal(RANKED_ELO_TOP, 100);
+    /*
+     * ★★ 150 —— 用户 2026-09-19 的口径（「排行榜显示前 150 信息」），而且它**同时是**
+     *    上游的硬上限：实测 `?count=200` / `?count=1` / `?page=1&count=150` 与不带参数的
+     *    响应**字节完全相同**（都是 150 条）⇒ 上游**忽略**这两个参数，第 151 行拿不到。
+     *    ⇒ 界面上没有"下一页"不是"还没做"，是**没有下一页**（`const.ts` 上写着这一段）。
+     *    ⚠️ 这条断言钉的是数：改成 100（旧口径）或 200（上游给不出）都要在这里红。
+     */
+    assert.equal(RANKED_ELO_TOP, 150);
     // ⚠️ 四个数逐个钉死：它们决定"多实时"与"多费访客的额度"，
     //    改一个都要同时改 spec §5.1 那张表。
     assert.deepEqual(RANKED_POLL_MS, { status: 15_000, live: 10_000, elo: 60_000, weekly: 60_000 });
@@ -731,8 +741,8 @@ describe('parseLeaderboard：并列与跳号', () => {
     assert.deepEqual(d?.season, { number: 12, startsAt: 1789430400, endsAt: 1798588800 });
   });
 
-  it('★ 前 100（上游给 150）', () => {
-    assert.equal(RANKED_ELO_TOP, 100);
+  it('★ 前 150（上游给的就是 150，所以这一层其实一条都没丢）', () => {
+    assert.equal(RANKED_ELO_TOP, 150);
     const many = Array.from({ length: 150 }, (_, i) => ({
       rank: i + 1,
       nickname: `u${i}`,
@@ -740,8 +750,17 @@ describe('parseLeaderboard：并列与跳号', () => {
       highest: null,
       phasePoint: 0,
     }));
-    assert.equal(topEloEntries(many).length, 100);
-    assert.equal(topEloEntries(many)[99]?.rank, 100);
+    assert.equal(topEloEntries(many).length, 150, '★ 上游那 150 条**一条都不许少**');
+    assert.equal(topEloEntries(many)[149]?.rank, 150, '★ 第 150 名在（这是用户点名要看的那一行）');
+    /*
+     * ⚠️ 上界那一半：上游哪天给得比 150 多（文档从没承诺过 150 是永久的），
+     *    表格的长度由这个常量说了算 —— 它防的是"上游一变多，页面就被撑爆"。
+     */
+    const more = [
+      ...many,
+      { rank: 151, nickname: 'u150', eloRate: 800, highest: null, phasePoint: 0 },
+    ];
+    assert.equal(topEloEntries(more).length, 150, '★ 超过 150 条时截到 150（上界）');
   });
 
   it('整份不成形状 ⇒ null', () => {
@@ -830,56 +849,337 @@ describe('parseWeekly：id 用响应里的那个', () => {
   });
 });
 
-/** 状态主机的两格：`heartbeatList` 里 monitor 2 的两条（旧→新）+ `uptimeList` 的 24 小时可用率。 */
+/**
+ * 状态主机的**真实形状**（2026-09-17 实测裁下来）：四格 `heartbeatList`
+ * （键是**光秃秃的 id**）各带一串**旧 → 新**的心跳，外加 `uptimeList`。
+ *
+ * ⚠️★ 这份夹具比原来那份**真实**：原来只有 monitor 2 那一格（那时状态栏只显示 Game Server），
+ *    而现在这一栏显示**四格**（用户 2026-09-19：Game Server / API / Store / Wiki
+ *    的"状态 + 最后更新时间"）⇒ 夹具必须四格都有，否则"四格各自取自己那条"这件事
+ *    根本测不到（只有一格在的时候，一个"把同一格印四遍"的实现照样绿）。
+ * ⚠️ 每格放**两条**（状态不同、时间不同）：数组是旧 → 新的，取第一条的实现会取到
+ *    **上一条**（状态与时间都错），而它在界面上看起来完全正常（都是真实取值）。
+ * ⚠️ 四格的时间刻意**互不相同**（实测就是这样：monitor 3 的节拍与 2/4/5 不在一个网格上）
+ *    ⇒ "每一格有自己那个时间"这件事是可断言的。
+ * ⚠️ `ping` 与 `uptimeList` 照实测写上（上游确实给），但我们**不读**它们：
+ *    延迟与 24 小时可用率被用户从状态栏删掉了（2026-09-19）⇒ 它们在形状里**没有位置**，
+ *    下面那条"形状里只有四件事"的断言就是这件事的守卫。
+ */
 const HEARTBEAT_FIXTURE = {
   heartbeatList: {
     2: [
-      { status: 0, time: '2026-09-15 13:35:27', msg: '', ping: null },
-      { status: 1, time: '2026-09-15 13:36:27', msg: '', ping: 380 },
+      { status: 0, time: '2026-09-17 11:15:27', msg: '', ping: null },
+      { status: 1, time: '2026-09-17 11:16:27', msg: '', ping: 268 },
+    ],
+    3: [
+      { status: 1, time: '2026-09-17 11:13:07', msg: '', ping: 164 },
+      { status: 1, time: '2026-09-17 11:18:07', msg: '', ping: 164 },
+    ],
+    4: [
+      { status: 2, time: '2026-09-17 11:14:27', msg: '', ping: 30 },
+      { status: 2, time: '2026-09-17 11:16:27', msg: '', ping: 2 },
+    ],
+    5: [
+      { status: 3, time: '2026-09-17 11:14:28', msg: '', ping: 8 },
+      { status: 3, time: '2026-09-17 11:16:28', msg: '', ping: 1 },
     ],
   },
-  uptimeList: { '2_24': 0.999, '3_24': 1 },
+  uptimeList: { '2_24': 0.999, '3_24': 1, '4_24': 1, '5_24': 1 },
 };
 
-describe('parseHeartbeat：取最后一条心跳', () => {
-  it('★ 取 monitor 2 的**最后一条**（数组是旧→新）', () => {
-    assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), {
-      state: 1,
-      checkedAt: '2026-09-15 13:36:27',
-      ping: 380,
-      uptime24: 0.999,
+/** 那份夹具**期望**解析出来的四格（顺序 = `RANKED_STATUS_COMPONENTS` 那张表）。 */
+const HEARTBEAT_EXPECTED = [
+  { id: '2', nameKey: 'ranked.componentGameServer', state: 1, checkedAt: '2026-09-17 11:16:27' },
+  { id: '3', nameKey: 'ranked.componentApi', state: 1, checkedAt: '2026-09-17 11:18:07' },
+  { id: '4', nameKey: 'ranked.componentStore', state: 2, checkedAt: '2026-09-17 11:16:27' },
+  { id: '5', nameKey: 'ranked.componentWiki', state: 3, checkedAt: '2026-09-17 11:16:28' },
+];
+
+describe('parseHeartbeat：四格组件、各取各自最后一条心跳', () => {
+  it('★★ 四格逐格断言：id / 名字 / 状态 / 最后更新时间（顺序 = 那张表）', () => {
+    /*
+     * ⚠️★ 这条是 2026-09-19 改版的**中心断言**：状态栏从"一格（Game Server）"变成
+     *    "四格（Game Server / API / Store / Wiki）"，四格各自有**自己的**状态与时间。
+     *    一次 deepEqual 同时钉住四件事：顺序、id、名字 key、以及"每格取的是自己那条最后的心跳"
+     *    （夹具里每格两条，取错了会拿到上一条的状态或时间）。
+     */
+    assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), HEARTBEAT_EXPECTED);
+  });
+
+  it('★★ 上游少了某一格 ⇒ 那一格是 `null`（**不是**"故障"，也不是整份消失）', () => {
+    /*
+     * ⚠️★ 这是"宽容解析"在这一层的落点：上游某一刻少了 monitor 4 那一格（或它的数组是空的）
+     *    时，**另外三格照给**，而 Store 那一行照样在界面上（`state: null` ⇒ 印 `—`）。
+     *    三条否决过的做法，每条都有具体代价：
+     *      · 整份返回 null ⇒ 端点回 502，一次"少了一格"变成整个状态栏不可用；
+     *      · 悄悄少一行 ⇒ 用户以为状态栏本来就长这样（而少的那一格可能正是他关心的）；
+     *      · 把 `null` 当成 0（故障）⇒ 替他断言一件我们不知道的事。
+     */
+    const missingStore = {
+      ...HEARTBEAT_FIXTURE,
+      heartbeatList: { ...HEARTBEAT_FIXTURE.heartbeatList, 4: [] },
+    };
+    const parsed = parseHeartbeat(missingStore);
+    assert.ok(parsed, '少了一格**不该**让整份解析失败');
+    assert.equal(parsed.length, 4, '★ 界面上的行数恒为四（表里那四个）');
+    assert.deepEqual(parsed[2], {
+      id: '4',
+      nameKey: 'ranked.componentStore',
+      state: null,
+      checkedAt: null,
     });
+    assert.equal(parsed[2]?.state === null, true, '★ 读不到 ≠ 故障（0 是"故障"）');
+    // 正面对照：另外三格**一个字都没受影响**（少一格不该波及别人）
+    assert.deepEqual(
+      parsed.filter((_, i) => i !== 2),
+      HEARTBEAT_EXPECTED.filter((_, i) => i !== 2),
+    );
+  });
+
+  it('★ 整份不成形状 ⇒ null（响应不是对象 / 四格一个状态都没有）', () => {
+    assert.equal(parseHeartbeat(null), null);
+    assert.equal(parseHeartbeat('nope'), null);
+    assert.equal(parseHeartbeat({ uptimeList: {} }), null, '缺 heartbeatList');
+    /*
+     * ⚠️★ 这一条是"上游换了键"与"四个服务刚好都没数据"之间的分界：四格**全都没有状态** ⇒
+     *    那是我们的适配层对不上了（端点回 502 并记下是哪几个 id），而**不是**
+     *    界面上出现四行整齐的「—」（那种静默降级我们永远查不出来）。
+     */
+    assert.equal(parseHeartbeat({ heartbeatList: { 7: [{ status: 1, time: 'x' }] } }), null);
+    assert.equal(parseHeartbeat({ heartbeatList: {} }), null);
   });
 
   it('★★ `checkedAt` 是**上游给的原样字符串**，不做时区换算（这一条防的是一类真缺陷）', () => {
     /*
-     * ⚠️ 上游那个 `time` 形如 `2026-09-15 13:36:27`，**没有时区**。
+     * ⚠️★ 这是那一格**唯一**需要写下来的判断（`types.ts` 的长注释是全文）：
+     *    上游那个 `time` 形如 `2026-09-17 11:16:27`，**没有时区**。
      *    把它 `new Date(...)` 解析出来的话：JS 对非 ISO 形状按**本机时区**解释 ⇒
-     *    ① 同一份数据在不同机器上算出不同的时刻；② 界面上显示的会随部署机器的 TZ 漂；
-     *    ③ 测试要么在 UTC 机器上过、要么在 UTC+8 机器上红（本题的开发机是 UTC+8，
-     *       所以一条"按本地解析"的实现会当场红 —— 这正是这条断言的用途）。
-     * ⇒ 我们**原样带着这串字符**（界面上也原样显示「最后心跳 13:36:27」），
-     *   不做任何时间戳换算。省掉的是一整类"时间显示得不对"的 bug。
+     *    ① 同一份数据在不同机器上算出不同的时刻；② 界面上显示的会随部署机器的 TZ 漂
+     *    （本仓被一次静默的 **8 小时**偏移烧过）；③ 测试要么在 UTC 机器上过、
+     *    要么在 UTC+8 机器上红（本题的开发机是 UTC+8，所以一条"按本地解析"的实现会当场红）。
+     * ⇒ 判定：**它就是一个字符串，我们一个时间戳都不换算**，界面上原样印
+     *    「最后更新 2026-09-17 11:16:27」；而"这份数据有多旧"由外壳那一行
+     *    `updatedAgoSecs`（**本地**时钟算的）回答 —— 两件事，各说各的。
+     *    下面三条断言把这件事钉死：类型是 string、四格逐个是夹具里那一串、
+     *    换一份夹具就换成那一份的文本（防"其实印的是某个常量"）。
      */
-    const m = parseHeartbeat(HEARTBEAT_FIXTURE);
-    assert.equal(m?.checkedAt, '2026-09-15 13:36:27');
-    assert.notEqual(m?.checkedAt, undefined);
-  });
-
-  it('缺 uptime / 缺 ping 时各是 null（不是 0）', () => {
-    const m = parseHeartbeat({
-      heartbeatList: { 2: [{ status: 3, time: '2026-09-15 13:36:27' }] },
-      uptimeList: {},
+    const parsed = parseHeartbeat(HEARTBEAT_FIXTURE);
+    assert.ok(parsed);
+    for (const component of parsed) {
+      assert.equal(
+        typeof component.checkedAt,
+        'string',
+        `★ ${component.id} 那一格的时间必须是字符串（不是时间戳、不是 Date）`,
+      );
+    }
+    assert.deepEqual(
+      parsed.map((each) => each.checkedAt),
+      HEARTBEAT_EXPECTED.map((each) => each.checkedAt),
+      '★★ 四格各自上游那串文本**逐字**（差了任何一个字符都说明我们在格式化它）',
+    );
+    const other = parseHeartbeat({
+      heartbeatList: { 2: [{ status: 1, time: '2026-01-02 03:04:05' }] },
     });
-    assert.equal(m?.uptime24, null);
-    assert.equal(m?.ping, null);
-    assert.equal(m?.state, 3, '维护态也要认');
+    assert.equal(other?.[0]?.checkedAt, '2026-01-02 03:04:05', '★ 换一份 ⇒ 印那一份（不是常量）');
+    /*
+     * ⚠️ 探针：把上游那串按**本地时区**解析出来的时刻，与按 UTC 解析出来的时刻
+     *    **不是同一个**（在 UTC+8 这台机器上是 8 小时之差）—— 也就是说上面那条
+     *    "当字符串用"的判据**确实**挡住了一类真实的缺陷，而不是形式主义。
+     *    ⚠️ 判据写成"两个解析结果不同"而不是"相差 8 小时"：后者的数字取决于跑测试的机器，
+     *    而这条断言必须在任何 TZ 下都成立（UTC 机器上这两个解析结果相同 ⇒ 那时
+     *    "本地解析"与"UTC 解析"恰好一致，本来就无从分辨）。
+     */
+    const raw = '2026-09-17 11:16:27';
+    const asLocal = new Date(raw).getTime();
+    const asUtc = Date.parse(`${raw.replace(' ', 'T')}Z`);
+    assert.notEqual(
+      asLocal,
+      asUtc,
+      '★ 探针：这台机器上"按本地解析"与"按 UTC 解析"不是同一个时刻 —— 所以"只当文本用"挡住的是真缺陷',
+    );
   });
 
-  it('整份不成形状 ⇒ null（没有 monitor 2 / 数组是空的）', () => {
-    assert.equal(parseHeartbeat({ heartbeatList: {}, uptimeList: {} }), null);
-    assert.equal(parseHeartbeat({ heartbeatList: { 2: [] } }), null);
-    assert.equal(parseHeartbeat(null), null);
+  it('★★ 形状里**只有** id / 名字 / 状态 / 最后更新（延迟与可用率一个字都不读）', () => {
+    /*
+     * ⚠️★ 2026-09-19 用户删掉的四样东西里有两样在这份响应里**还在**（`ping` 与 `uptimeList`）：
+     *    它们不进我们的形状 ⇒ 界面不可能"顺手"再印一个出来，这一层也不为它们写兜底。
+     *    这条断言是那件事的守卫 —— 少了它，"把延迟加回来"不会有任何门禁看得见。
+     */
+    const parsed = parseHeartbeat(HEARTBEAT_FIXTURE);
+    assert.ok(parsed);
+    assert.deepEqual(
+      Object.keys(parsed[0] ?? {}).sort(),
+      ['checkedAt', 'id', 'nameKey', 'state'],
+      '★★ 一格只有这四件事',
+    );
+    assert.equal(
+      JSON.stringify(parsed).includes('ping'),
+      false,
+      '★★ 延迟不在解析结果里（用户把它删了）',
+    );
+    assert.equal(
+      JSON.stringify(parsed).includes('uptime'),
+      false,
+      '★★ 24 小时可用率不在解析结果里（用户把它删了）',
+    );
+  });
+
+  it('★ 四格的名字与 id 来自那张表（`RANKED_STATUS_COMPONENTS`）—— 表变了这里要跟着变', () => {
+    /*
+     * ⚠️★ 这张表是这一栏**唯一**一处从网页上抄来的知识（心跳响应里没有名字，
+     *    `const.ts` 上写着完整来历）。这条断言把"解析结果里的名字"与"表"绑在一起：
+     *    表里改一个名字而夹具没跟上时，这里会红 —— 而**真正**错位（上游换了监视器编号）
+     *    是 API 验不出来的，只能靠人去对一次状态页（`pending.md` 里记着这件事）。
+     */
+    assert.deepEqual(
+      RANKED_STATUS_COMPONENTS.map((each) => each.id),
+      ['2', '3', '4', '5'],
+      '★ 四个监视器 id（文档散文与用户原话的顺序：Game Server / API / Store / Wiki）',
+    );
+    assert.deepEqual(
+      RANKED_STATUS_COMPONENTS.map((each) => each.nameKey),
+      [
+        'ranked.componentGameServer',
+        'ranked.componentApi',
+        'ranked.componentStore',
+        'ranked.componentWiki',
+      ],
+      '★ 四个名字的 key（它们**不在**心跳响应里 —— 见那条注释）',
+    );
+  });
+});
+
+/**
+ * ★★ `GET /phase-leaderboard` —— 实测那一份响应**整份就是 93 字节**
+ * （2026-09-17 原文照抄，只把 `users` 留成空数组：不带 `?predicted=true` 时它就是空的，
+ * 而我们**根本不用它** —— 要的是赛段的时间窗口，不是赛段积分榜）。
+ * ⚠️ `/leaderboard` 的响应里**没有** phase 对象（实测），所以这一格必须走另一个端点。
+ */
+const PHASE_FIXTURE = {
+  status: 'success',
+  data: { phase: { endsAt: 1790726400, number: 1, season: 12 }, users: [] },
+};
+
+describe('parsePhase：赛段的号数与截止时间（③ 顶部那并排的一格）', () => {
+  it('★ 三格逐格（`endsAt` 是**秒**，与赛季起止同一条单位规矩）', () => {
+    assert.deepEqual(parsePhase(PHASE_FIXTURE), {
+      number: 1,
+      endsAt: 1790726400,
+      season: 12,
+    });
+  });
+
+  it('★★ 缺 phase / phase 不是对象 ⇒ null（**不是**三格全 null 的对象）', () => {
+    /*
+     * ⚠️★ 这两种情况的区别是**用户下一步做的事**，所以返回值也必须分开：
+     *    · `null` ⇒ 容器那一路是辅助请求（`fatal: false`），界面说「赛段信息暂时读不到」；
+     *    · "读到了但某一格是空的" ⇒ 那一格印 `—`（或只印另一格）。
+     *    合成一种会让"这次请求失败了"与"上游没给这一格"看起来一模一样。
+     */
+    assert.equal(parsePhase({ status: 'success', data: { users: [] } }), null, '缺 phase');
+    assert.equal(
+      parsePhase({ status: 'success', data: { phase: 'nope', users: [] } }),
+      null,
+      'phase 是个字符串',
+    );
+    assert.equal(
+      parsePhase({ status: 'success', data: { phase: [1, 2], users: [] } }),
+      null,
+      'phase 是数组（`rec()` 排掉数组，理由见它的注释）',
+    );
+    assert.equal(parsePhase({ status: 'error', data: {} }), null, 'status 不是 success');
+    assert.equal(parsePhase(null), null);
+  });
+
+  it('★ 三格**各自**可以是 null（文档 schema 里 number / endsAt 就是可空的）', () => {
+    const half = parsePhase({
+      status: 'success',
+      data: { phase: { number: null, endsAt: null, season: 12 }, users: [] },
+    });
+    assert.deepEqual(half, { number: null, endsAt: null, season: 12 });
+    const garbage = parsePhase({
+      status: 'success',
+      data: { phase: { number: 'x', endsAt: 1790726400, season: 12 }, users: [] },
+    });
+    assert.deepEqual(
+      garbage,
+      { number: null, endsAt: 1790726400, season: 12 },
+      '★ 坏一格只坏那一格（宽容解析的第②档）—— 截止时间照样给',
+    );
+  });
+});
+
+/**
+ * ★★ 用户手输周数那件事的判定（③ 之外的第四处新逻辑）—— 2026-09-19 用户要求
+ * "允许用户直接输入对应周的数字跳转"。
+ *
+ * ⚠️ 这些断言的意义不在"函数算得对"，而在**哪些输入不许发出请求**：
+ * 每一个 `ok: false` 都是一次省下来的、拿访客自己 IP 额度换一屏错误的调用。
+ */
+describe('parseWeekInput：手输的周数（不合法就一个请求都不发）', () => {
+  it('★ 合法：1 … latestId，以及 -1（显示成「第 0 周」的那一周）', () => {
+    assert.deepEqual(parseWeekInput('103', 103), { ok: true, id: 103 });
+    assert.deepEqual(parseWeekInput('1', 103), { ok: true, id: 1 });
+    assert.deepEqual(parseWeekInput('-1', 103), { ok: true, id: -1 }, '-1 是真实存在的最早一周');
+    assert.deepEqual(parseWeekInput(' 52 ', 103), { ok: true, id: 52 }, '手机键盘带上的空格要认');
+  });
+
+  it('★★ 不是整数 ⇒ `not_a_number`（空框 / 字母 / 小数 / 1e3 / +5 / 全角数字）', () => {
+    /*
+     * ⚠️★ 这一档的每一种都会让上游回 400（`/weekly-race/abc` 甚至不是一条路径），
+     *    而发出去只是拿**访客自己**的额度换一屏错误（spec §10 的额度账）。
+     *    ⚠️ `1e3` 与 `+5` 刻意**不认**：它们是数，但不是周号 —— 认了就等于替用户猜一个周数。
+     *    ⚠️ 全角数字同理：`Number('１２３')` 是 NaN，它属于"打错了"。
+     */
+    for (const bad of ['', '   ', 'abc', '1.5', '1e3', '+5', '１２３', '10 3', '0x10']) {
+      assert.deepEqual(
+        parseWeekInput(bad, 103),
+        { ok: false, reason: 'not_a_number' },
+        `★ ${JSON.stringify(bad)} 不是周数`,
+      );
+    }
+  });
+
+  it('★★ `0` / `≤ -2` / 比最新周还大 ⇒ `no_such_week`（这几档我们**已经知道**答案）', () => {
+    /*
+     * ⚠️★ `0` 是最要紧的一条：上游把 0 当**"本周"的别名**（请求 `/weekly-race/0` 拿到的是
+     *    当前那一周）⇒ 放它发出去就会得到"URL 写着 0、屏幕上是第 103 周"那个画面，
+     *    而它**没有任何门禁**看得见（每一格都合法、每个数都是真的）。
+     * ⚠️ `-2/-3` 实测全是 400（`-1` 是唯一的负周）。
+     * ⚠️ `> latestId` 是"未来的周"：**我们已经知道**它不存在，没有理由再去问一次。
+     */
+    assert.deepEqual(parseWeekInput('0', 103), { ok: false, reason: 'no_such_week' }, '0 是别名');
+    assert.deepEqual(parseWeekInput('00', 103), { ok: false, reason: 'no_such_week' });
+    assert.deepEqual(parseWeekInput('-2', 103), { ok: false, reason: 'no_such_week' });
+    assert.deepEqual(parseWeekInput('104', 103), { ok: false, reason: 'no_such_week' });
+    /*
+     * ⚠️ 超长的数字：`Number('99999999999999999999')` 是 1e20（**不是**安全整数），
+     *    拼进路径会得到 `/weekly-race/1e+20` —— 那是把"打错了"变成一次真实的垃圾请求。
+     */
+    assert.deepEqual(parseWeekInput('99999999999999999999', 103), {
+      ok: false,
+      reason: 'no_such_week',
+    });
+  });
+
+  it('★ 还不知道最新周号（`latestId === null`）时**不猜**：比 103 大的数照发', () => {
+    /*
+     * ⚠️★ 这一条是"不编事实"的落点：上游每周都会加一周，猜一个上限会把一个**真的存在**
+     *    的新周挡在门外，而用户读到的是「没有这一周。」—— 一句我们编出来的假话。
+     *    ⇒ 那时只有三种**确定的**不存在会被本地挡掉（0、≤ -2、非整数），
+     *    其余交给上游：它回 400，界面走**已有的** `not_found` 那一档说同一句话。
+     *    ⚠️ 实际走到这一支的窗口很窄（周赛面板渲染时 latestId 通常已经到了）。
+     */
+    assert.deepEqual(parseWeekInput('104', null), { ok: true, id: 104 });
+    assert.deepEqual(parseWeekInput('0', null), { ok: false, reason: 'no_such_week' });
+    assert.deepEqual(parseWeekInput('-2', null), { ok: false, reason: 'no_such_week' });
+    assert.deepEqual(parseWeekInput('abc', null), { ok: false, reason: 'not_a_number' });
+  });
+
+  it('★ 判出来的 id 能拼成一条真路径（`weekPath`）—— 两者是配套的', () => {
+    const verdict = parseWeekInput('52', 103);
+    assert.ok(verdict.ok);
+    assert.equal(weekPath(verdict.id), '/ranked/weekly/52');
   });
 });
 
@@ -960,21 +1260,23 @@ describe('rankedLiveChannel：按域名认平台（不认字符串里出现过�
 });
 
 /* ---------------------------------------------------------------------------
- * 跨**四条**解析函数的判据（spec §11.2 第 1 条）
+ * 跨**五条**解析函数的判据（spec §11.2 第 1 条）
  * ------------------------------------------------------------------------- */
 
 describe('解析是纯函数（spec §11.2 第一条）', () => {
   it('★ 同一份响应解析两次，结果逐字段相同', () => {
-    // ⚠️ 先钉"真的解析出了东西"：四个入口都返回 null 的话，下面四条 deepEqual 是**空过**的。
+    // ⚠️ 先钉"真的解析出了东西"：几个入口都返回 null 的话，下面那几条 deepEqual 是**空过**的。
     assert.ok(parseLive(LIVE_FIXTURE), '这个夹具必须解析得出来');
     assert.ok(parseLeaderboard(LEADERBOARD_FIXTURE), '这个夹具必须解析得出来');
     assert.ok(parseWeekly(WEEKLY_FIXTURE), '这个夹具必须解析得出来');
     assert.ok(parseHeartbeat(HEARTBEAT_FIXTURE), '这个夹具必须解析得出来');
+    assert.ok(parsePhase(PHASE_FIXTURE), '这个夹具必须解析得出来');
 
     assert.deepEqual(parseLive(LIVE_FIXTURE), parseLive(LIVE_FIXTURE));
     assert.deepEqual(parseLeaderboard(LEADERBOARD_FIXTURE), parseLeaderboard(LEADERBOARD_FIXTURE));
     assert.deepEqual(parseWeekly(WEEKLY_FIXTURE), parseWeekly(WEEKLY_FIXTURE));
     assert.deepEqual(parseHeartbeat(HEARTBEAT_FIXTURE), parseHeartbeat(HEARTBEAT_FIXTURE));
+    assert.deepEqual(parsePhase(PHASE_FIXTURE), parsePhase(PHASE_FIXTURE));
   });
 
   it('★★ 解析与排序都不改上游那份原始响应（不改入参、不就地排序）', () => {
@@ -997,16 +1299,19 @@ describe('解析是纯函数（spec §11.2 第一条）', () => {
     );
     assert.deepEqual(LIVE_FIXTURE, before, '上游那份原始响应必须一字未改');
 
-    // 另外三个入口同一类缺陷，一起钉：克隆在前、解析在后，逐个比对。
+    // 另外四个入口同一类缺陷，一起钉：克隆在前、解析在后，逐个比对。
     const lbBefore = structuredClone(LEADERBOARD_FIXTURE);
     const weekBefore = structuredClone(WEEKLY_FIXTURE);
     const beatBefore = structuredClone(HEARTBEAT_FIXTURE);
+    const phaseBefore = structuredClone(PHASE_FIXTURE);
     parseLeaderboard(LEADERBOARD_FIXTURE);
     parseWeekly(WEEKLY_FIXTURE);
     parseHeartbeat(HEARTBEAT_FIXTURE);
+    parsePhase(PHASE_FIXTURE);
     assert.deepEqual(LEADERBOARD_FIXTURE, lbBefore, '排行榜那份原始响应必须一字未改');
     assert.deepEqual(WEEKLY_FIXTURE, weekBefore, '周赛那份原始响应必须一字未改');
     assert.deepEqual(HEARTBEAT_FIXTURE, beatBefore, '心跳那份原始响应必须一字未改');
+    assert.deepEqual(PHASE_FIXTURE, phaseBefore, '赛段那份原始响应必须一字未改');
   });
 });
 

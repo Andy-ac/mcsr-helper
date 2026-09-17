@@ -82,6 +82,7 @@ import {
   RANKED_FETCH_HEADERS,
   RANKED_FETCH_OPTIONS,
   RANKED_LIVE_BATCH,
+  RANKED_STATUS_COMPONENTS,
   RANKED_TABS,
   RANKED_UPSTREAM_ALT,
   RANKED_UPSTREAM_PRIMARY,
@@ -89,6 +90,8 @@ import {
   type RankedLiveData,
   type RankedLiveMatch,
   type RankedLivePlayer,
+  type RankedPhaseData,
+  type RankedStatusComponent,
   type RankedStatusResponse,
   type RankedTab,
   type RankedWeeklyData,
@@ -115,6 +118,7 @@ import {
   RankedWeeklyView,
   type RankedWeeklyViewProps,
   STATUS_KEYS,
+  WEEK_INPUT_ERROR_KEYS,
 } from '@/components/RankedPanels';
 import { ApiError } from '@/lib/api';
 import {
@@ -394,28 +398,64 @@ const render = (node: ReactElement): string => {
  */
 const UPDATED = 7; // 「7 秒前更新」
 const STALE = 42; // 「上次刷新失败了，下面是 42 秒前的数据。」
-const UPSTREAM_TIME = '2026-09-15 13:36:27'; // 上游那串**没有时区**的文本，原样印
-const OTHER_UPSTREAM_TIME = '2026-09-16 08:00:01';
-const PING = 380;
 const PLAYERS = 1234;
-const UPTIME = 0.9812; // ⇒ 界面印 98（`Math.round(0.9812 * 100)`）
-const UPTIME_PCT = 98;
 const ORIGIN = 'mcsrhelper.com'; // 容器给的是 `window.location.hostname`；这里是它的替身
 
 const TWITCH = 'https://twitch.tv/hufterl';
 const KICK = 'https://kick.com/whyip';
 const UNKNOWN_TYPE = 'future.brand_new_node'; // ★ 不在 `TIMELINE_LABEL_KEYS` 里
 
-/** ① 的心跳响应。`state` / `ping` / `uptime24` / `stale` 都可以逐格换掉。 */
-function status(
-  o: Partial<RankedStatusResponse['monitor']> & { stale?: boolean } = {},
-): RankedStatusResponse {
-  const { stale = false, ...monitor } = o;
+/*
+ * ---------------------------------------------------------------------------
+ * ① 状态栏那**四格**（2026-09-19 用户裁决：只留四行 + 在线人数）
+ * ---------------------------------------------------------------------------
+ * ⚠️★ 四个 id 与四个名字 key 是**手抄的**（与 `RANKED_STATUS_COMPONENTS` 那张表逐字对应）：
+ *    表里的值对 `services/api/src/i18n-keys.test.ts` 是看不见的（它扫源码里的字面量
+ *    `t('…')` 调用），所以"四行都在、而且各印各的名字"这件事只有这里能断言。
+ *    表改了而这里没跟上 ⇒ 下面那条 deepEqual 当场红（那正是它该有的代价）。
+ * ⚠️ 四格的时间刻意**互不相同**（实测上游四个监视器的节拍就不在同一个网格上）
+ *    ⇒ "每一格印的是**自己**那个时间"是可断言的（一个把第一个时间印四遍的实现会红）。
+ * ⚠️ 四个状态也刻意不同（1/1/2/3）：一枚"永远印正常"的徽章实现会红。
+ */
+const COMPONENT_IDS = ['2', '3', '4', '5'] as const;
+const COMPONENT_NAME_KEYS = [
+  'ranked.componentGameServer',
+  'ranked.componentApi',
+  'ranked.componentStore',
+  'ranked.componentWiki',
+] as const;
+const COMPONENT_TIMES = [
+  '2026-09-17 11:16:27',
+  '2026-09-17 11:18:07',
+  '2026-09-17 11:16:27',
+  '2026-09-17 11:16:28',
+];
+const COMPONENT_STATES = [1, 1, 2, 3] as const;
+
+/** ① 四格里的一格；`state` / `checkedAt` 都可以逐格换掉（缺格那一档就是 `null`）。 */
+function component(
+  index: 0 | 1 | 2 | 3,
+  o: Partial<RankedStatusComponent> = {},
+): RankedStatusComponent {
   return {
-    monitor: { state: 1, checkedAt: UPSTREAM_TIME, ping: PING, uptime24: UPTIME, ...monitor },
+    id: COMPONENT_IDS[index],
+    nameKey: COMPONENT_NAME_KEYS[index],
+    state: COMPONENT_STATES[index],
+    checkedAt: COMPONENT_TIMES[index],
+    ...o,
+  };
+}
+
+/** ① 的心跳响应（我们那个端点的形状）。`stale` 与四格都可以整份换掉。 */
+function status(
+  o: { components?: RankedStatusComponent[]; stale?: boolean } = {},
+): RankedStatusResponse {
+  return {
+    components: [component(0), component(1), component(2), component(3)],
     serverNow: 1_789_430_400_000,
     fetchedAt: 1_789_430_400_000,
-    stale,
+    stale: false,
+    ...o,
   };
 }
 
@@ -651,12 +691,23 @@ const ELO_USERS: RankedEloData['users'] = [
   { rank: 3, nickname: 'Delta', eloRate: 2350, highest: 2399, phasePoint: 4 }, // ★ 并列第 3
   { rank: 5, nickname: 'Echo', eloRate: 2300, highest: 2350, phasePoint: 1 }, // 跳号：没有第 4 名
 ];
+/*
+ * ★ 赛段（`/phase-leaderboard` 那一次 93 字节的请求给的）—— 用户要的那一格"并排"。
+ * ⚠️ `endsAt` 是**秒**（与赛季起止同一条单位规矩），实测的值是 2026-09-30T00:00:00Z。
+ */
+const ELO_PHASE: RankedPhaseData = { number: 1, endsAt: 1_790_726_400, season: 12 };
 const ELO_DATA: RankedEloData = { season: ELO_SEASON, users: ELO_USERS };
 const ELO_EMPTY: RankedEloData = { season: ELO_SEASON, users: [] };
-/** 105 条 ⇒ 视图只渲染前 100（`RANKED_ELO_TOP`；上游实测给 150）。 */
+/**
+ * 160 条 ⇒ 视图只渲染前 150（`RANKED_ELO_TOP`，2026-09-19 用户口径）。
+ * ⚠️ 上游实测**就是** 150 条（`count` / `page` 被它静默忽略）⇒ 这份"160 条"的夹具
+ * 钉的是**上界**那一半：上游哪天给得更多时，表格的长度由那个常量说了算。
+ * ⚠️ 那个数从 105 改到 160 是**有意的**：105 条配 100 的上限在旧版能红，
+ *    而它配新的 150 就变成一条**空跑**的断言（105 < 150，什么都截不到）。
+ */
 const ELO_MANY: RankedEloData = {
   season: ELO_SEASON,
-  users: Array.from({ length: 105 }, (_, i) => ({
+  users: Array.from({ length: 160 }, (_, i) => ({
     rank: i + 1,
     nickname: `U${String(i)}`,
     eloRate: 2000 - i,
@@ -713,8 +764,16 @@ const VIEW_KEYS = {
     'shown',
     'onLoadMore',
   ],
-  elo: ['elo'],
-  weekly: ['weekly', 'latestId'],
+  /* ⚠️★ `phase` 是 2026-09-19 加的（"并排显示赛段"）：少传它的表现是**静默**的
+     —— 排行榜照常渲染、只是顶上少一格，而"少了的那一格"与"上游没给"长得一样。 */
+  elo: ['elo', 'phase'],
+  /*
+   * ⚠️★ 2026-09-19 加的四格是 ④ 的手输跳转与「本周」（同一类理由：视图是纯视图，
+   *    框里的字与"上一句判定说了什么"必须由**本脚本用不同的 props** 喂进来 ——
+   *    状态住在视图里的话，`renderToStaticMarkup` 不点击、不打字，那两句提示
+   *    一个字都断言不到）。
+   */
+  weekly: ['weekly', 'latestId', 'weekInput', 'onWeekInputChange', 'onWeekJump', 'weekError'],
 } as const;
 
 /**
@@ -908,7 +967,7 @@ const renderLive = (o: Partial<RankedLiveViewProps> = {}, where = '对局'): str
 };
 
 const renderElo = (o: Partial<RankedEloViewProps> = {}, where = '排行榜'): string => {
-  const props: RankedEloViewProps = { ...chrome(), elo: ELO_DATA, ...o };
+  const props: RankedEloViewProps = { ...chrome(), elo: ELO_DATA, phase: ELO_PHASE, ...o };
   assertPropsGiven(
     props as unknown as Record<string, unknown>,
     [...CHROME_KEYS, ...VIEW_KEYS.elo],
@@ -922,6 +981,11 @@ const renderWeekly = (o: Partial<RankedWeeklyViewProps> = {}, where = '周赛'):
     ...chrome(),
     weekly: WEEK_LAST,
     latestId: LATEST_ID,
+    // ★ ④ 那两格 + 两个动作的默认值：空框、没有提示（2026-09-19 加）
+    weekInput: '',
+    onWeekInputChange: noop,
+    onWeekJump: noop,
+    weekError: null,
     ...o,
   };
   assertPropsGiven(
@@ -995,7 +1059,7 @@ for (const [i, tab] of RANKED_TABS.entries()) {
 ok('标签页：四个真链接 + 四串文字逐条 + `aria-current` 跟着 `tab` 走');
 
 // ---------------------------------------------------------------------------
-console.log('② 状况与人数：词条表逐格 + 四态 + ping / uptime / players / checkedAt');
+console.log('② 状况：四格（名字 / 状态 / 最后更新）+ 在线人数，**别的什么都没有**');
 // ---------------------------------------------------------------------------
 /*
  * ★★ 先逐格钉**表**，再渲染产物：对调两格在全仓是**全静默**的
@@ -1020,42 +1084,131 @@ assert.equal(
 );
 const BADGE_SUFFIX = ['down', 'up', 'pending', 'maintenance'] as const;
 
+/*
+ * ★★ 四态逐态渲染：这一次**四格都是同一个状态**，四颗徽章必须都说那一句。
+ *
+ * ⚠️★ 它比改版前那条更强：那时一页只有**一颗**徽章（一个 Game Server），
+ *    "四格各说各的"这件事根本测不到（一个把状态印四遍、或者只认第一格状态的实现
+ *    在旧夹具下也全绿）。现在四颗都在，而且四颗都要对。
+ */
 for (const state of [0, 1, 2, 3] as const) {
-  const html = renderStatus({ status: status({ state }) }, `状况·state=${state}`);
-  const badge = elementsWithClass(html, 'ranked__badge');
-  assert.equal(badge.length, 1, `★ state=${state}：恰好一颗徽章`);
-  assert.equal(
-    textOf(badge[0] ?? ''),
-    fresh(STATUS_KEYS[state]),
-    `★★ state=${state} ⇒ 徽章说的是它**自己那一句**（不是别的三种之一）`,
+  const html = renderStatus(
+    {
+      status: status({
+        components: [
+          component(0, { state }),
+          component(1, { state }),
+          component(2, { state }),
+          component(3, { state }),
+        ],
+      }),
+    },
+    `状况·四格都 state=${state}`,
   );
-  assert.ok(
-    classOf(badge[0] ?? '')
-      .split(/\s+/)
-      .includes(`ranked__badge--${BADGE_SUFFIX[state]}`),
-    `★ state=${state} ⇒ 徽章带上它自己的配色类名 \`.ranked__badge--${BADGE_SUFFIX[state]}\``,
-  );
-  for (const [other, sentence] of STATE_SENTENCES.entries()) {
-    if (other === state) continue;
-    assert.notEqual(
-      textOf(badge[0] ?? ''),
-      sentence,
-      `★★ state=${state} 的徽章**不许**说成 state=${String(other)} 那一句`,
+  const badges = elementsWithClass(html, 'ranked__badge');
+  assert.equal(badges.length, 4, `★ state=${state}：四格 ⇒ 恰好四颗徽章`);
+  for (const [i, badge] of badges.entries()) {
+    assert.equal(
+      textOf(badge),
+      fresh(STATUS_KEYS[state]),
+      `★★ 第 ${String(i + 1)} 格（state=${state}）说它**自己那一句**（不是别的三种之一）`,
     );
+    assert.ok(
+      classOf(badge).split(/\s+/).includes(`ranked__badge--${BADGE_SUFFIX[state]}`),
+      `★ 第 ${String(i + 1)} 格带上它自己的配色类名 \`.ranked__badge--${BADGE_SUFFIX[state]}\``,
+    );
+    for (const [other, sentence] of STATE_SENTENCES.entries()) {
+      if (other === state) continue;
+      assert.notEqual(
+        textOf(badge),
+        sentence,
+        `★★ state=${state} 的徽章**不许**说成 state=${String(other)} 那一句`,
+      );
+    }
   }
 }
 
-/** 正常那一份：四行度量（延迟 / 最后心跳 / 可用率 / 人数）**逐行**钉死。 */
-const stNormal = renderStatus({}, '状况·正常');
+/*
+ * ★★ 上面那两张手抄的表必须与 `const.ts` 里那一张**逐字一致**。
+ *
+ * ⚠️★ 这不是形式主义：`RANKED_STATUS_COMPONENTS` 是这一栏**唯一**一处从网页上抄下来的知识
+ *    （心跳响应里只有 id、没有名字，`const.ts` 上写着完整来历），而"名字与 id 对不上"
+ *    这件事**没有任何 API 能验**。所以至少要让**我们自己的三份抄写**互相对得上：
+ *    表（`const.ts`）、夹具（本文件）、服务端那份响应（`ranked.test.ts` 的夹具）。
+ *    ⚠️ 反过来，上游把监视器**重新编号**是这三处都验不出来的 —— 那一条只能靠人去对状态页
+ *    （`docs/pending.md` 里记着）。
+ */
 assert.deepEqual(
-  metaOf(stNormal),
+  RANKED_STATUS_COMPONENTS.map((each) => each.id),
+  [...COMPONENT_IDS],
+  '★★ 夹具里那四个 id 与 `RANKED_STATUS_COMPONENTS` 逐字一致（表的顺序 = 界面上的行序）',
+);
+assert.deepEqual(
+  RANKED_STATUS_COMPONENTS.map((each) => each.nameKey),
+  [...COMPONENT_NAME_KEYS],
+  '★★ 四个名字 key 也一样（表改了而这里没跟上 ⇒ 界面上会印出裸 key）',
+);
+
+/** 正常那一份：四行 + 大号数字 + 人数那一句。 */
+const stNormal = renderStatus({}, '状况·正常');
+const componentRows = elementsWithClass(stNormal, 'ranked__component');
+assert.equal(
+  componentRows.length,
+  4,
+  `★★ 状态栏恰好**四行**（Game Server / API / Store / Wiki）—— 找到 ${String(componentRows.length)} 行`,
+);
+/*
+ * ★★ 逐行三格：名字 / 状态徽章 / 最后更新。
+ *
+ * ⚠️★ 三格都是**逐行**断言的，而不是"整个产物里有这些字"：
+ *    后者对一个"四行都印同一个名字/同一个时间"的实现照样绿 —— 而那正是这一版
+ *    最容易犯的错（`RANKED_STATUS_COMPONENTS` 是一张表，抄错一格就会重复同一行）。
+ * ⚠️ 时间那一格比的是**自己那个**时间（四格各不相同，见夹具的注释）。
+ */
+for (const [i, row] of componentRows.entries()) {
+  const nameKey = COMPONENT_NAME_KEYS[i] ?? '';
+  const state = COMPONENT_STATES[i] ?? 1;
+  assert.equal(
+    textOf(elementsWithClass(row, 'ranked__compname')[0] ?? ''),
+    fresh(nameKey),
+    `★★ 第 ${String(i + 1)} 行的**名字**（${nameKey}）—— 名字来自我们那张表（心跳响应里没有名字）`,
+  );
+  assert.equal(
+    textOf(elementsWithClass(row, 'ranked__badge')[0] ?? ''),
+    fresh(STATUS_KEYS[state]),
+    `★★ 第 ${String(i + 1)} 行说它**自己**那个状态（不是把某一格的状态印四遍）`,
+  );
+  assert.equal(
+    textOf(elementsWithClass(row, 'ranked__meta')[0] ?? ''),
+    fresh('ranked.componentCheckedAt', { time: COMPONENT_TIMES[i] ?? '' }),
+    `★★ 第 ${String(i + 1)} 行的**最后更新**是它自己那个时间（上游那串文本原样）`,
+  );
+}
+/*
+ * ★★ 「别的什么都没有」—— 这一条是这次改版的**中心断言**，也是它最难写成"恒真"的地方：
+ *
+ * 判据是**整个面板的可见文字逐字等于**那几件的拼接（顺序 = DOM 顺序）：
+ *    标题 → 四行（名字/状态/最后更新）×4 → 大号数字 → 人数那一句
+ * 多任何一件（延迟、可用率、心跳历史、解释性文字）都会让这一条红，
+ * 而"少一件"由上面那些逐格断言兜着 ⇒ 两个方向都钉住了。
+ * ⚠️★ 为什么不用"不许出现某句话"那种写法：删除类的断言在**别人加了一句新话**时
+ *    永远为真（新句子里没有那串字），而这次改版要防的恰恰是"再加一句"。
+ */
+assert.equal(
+  textOf(elementsWithClass(stNormal, 'ranked__panel')[0] ?? ''),
   [
-    fresh('ranked.statusPing', { ms: PING }),
-    fresh('ranked.statusCheckedAt', { time: UPSTREAM_TIME }),
-    fresh('ranked.statusUptime', { pct: UPTIME_PCT }),
+    fresh('ranked.statusTitle'),
+    ...COMPONENT_NAME_KEYS.flatMap((nameKey, i) => [
+      fresh(nameKey),
+      fresh(STATUS_KEYS[COMPONENT_STATES[i] ?? 1]),
+      fresh('ranked.componentCheckedAt', { time: COMPONENT_TIMES[i] ?? '' }),
+    ]),
+    flat(String(PLAYERS)),
     fresh('ranked.players', { n: PLAYERS }),
-  ],
-  '★★ 四行度量按固定顺序（延迟 → 最后心跳 → 可用率 → 人数句），而且**每行说它自己的数**',
+    // ⚠️ 最后这一格是**外壳**那一行新鲜度（四个面板都有），不是状态栏自己的内容
+    fresh('ranked.updatedAgo', { secs: UPDATED }),
+  ].join(''),
+  '★★★ 状态栏这一屏**只有**四行 + 在线人数 + 外壳那一行新鲜度（延迟 / 可用率 / 心跳历史 / 解释性文字都被删掉了）',
 );
 assert.equal(
   textOf(elementsWithClass(stNormal, 'ranked__big')[0] ?? ''),
@@ -1068,57 +1221,86 @@ assert.equal(
   '★ 读到人数时**不**挂占位符那个配色类（正面对照是下面 `players: null` 那一份）',
 );
 /*
- * ⚠️ 可用率是 0–1 的小数，界面上印的是**百分比**：只断言"那一行在"的话，
- *    把 0.9812 原样印出来也照样绿。98 这个数字是 `Math.round(0.9812 * 100)`，
- *    写在期望里（不是从 `UPTIME` 现算的 —— 现算的话"忘了乘 100"会被两边一起漏掉）。
+ * ★★ 被删掉的那四条词条**不许**再留在字典里（2026-09-19 用户口径：
+ *    「不加其他多余的信息」）。⚠️ 没有消费者的 key 留着的代价是具体的：
+ *    下一个人会以为它还挂着某个渲染点，于是"为什么看不到延迟"变成一个要读三个文件
+ *    才能回答的问题（本仓为这种事删过 `shares.moderateHideReason`）。
+ *    ⚠️ 复活的路径是有的（有人想加回延迟）——那时这一条会红，而它红得**正是时候**。
  */
-assert.notEqual(
-  fresh('ranked.statusUptime', { pct: UPTIME_PCT }),
-  fresh('ranked.statusUptime', { pct: UPTIME }),
-  '★ 探针：百分比与那个小数不是同一句话（否则上面那行断言测不出"忘了乘 100"）',
-);
-/* `checkedAt` **原样**印：上游那串没有时区的文本一个字都不许换算。 */
-assert.ok(
-  rawText(stNormal).includes(UPSTREAM_TIME),
-  '★ 上游那串心跳时间**原样**出现在产物里（不做时区换算、不重新格式化）',
-);
-assert.ok(
-  rawText(renderStatus({ status: status({ checkedAt: OTHER_UPSTREAM_TIME }) })).includes(
-    OTHER_UPSTREAM_TIME,
-  ),
-  '★ 换一个上游文本 ⇒ 产物里就是**那一个**（不是把某个常量印出来）',
-);
+for (const gone of [
+  'statusPing',
+  'statusPingUnknown',
+  'statusUptime',
+  'statusCheckedAt',
+] as const) {
+  for (const [lng, dict] of [
+    ['zh-CN', zhCN],
+    ['en', en],
+  ] as const) {
+    assert.equal(
+      gone in (dict.ranked as Record<string, unknown>),
+      false,
+      `★★ \`ranked.${gone}\` 应当已经从 ${lng} 字典里删掉（状态栏只留四格 + 人数）`,
+    );
+  }
+}
 
-/** `ping: null` ⇒ 「延迟未知」（**不是** 0：0 ms 是一个真的测量值）。 */
-const stPingNull = renderStatus({ status: status({ ping: null }) }, '状况·延迟未知');
-assert.equal(
-  metaOf(stPingNull)[0],
-  fresh('ranked.statusPingUnknown'),
-  '★★ `ping: null` ⇒ 那一行说「延迟未知」（不是「延迟 0 ms」）',
+/** ★★ 上游少了某一格 ⇒ 那一行**照样在**，印的是 `—`（**不是**「故障」）。 */
+const stMissing = renderStatus(
+  {
+    status: status({
+      components: [
+        component(0),
+        component(1),
+        // ★ Store 那一格上游没给（或它的数组是空的）：`state` 与 `checkedAt` 都是 null
+        component(2, { state: null, checkedAt: null }),
+        component(3),
+      ],
+    }),
+  },
+  '状况·上游少了一格',
 );
-assert.notEqual(
-  fresh('ranked.statusPingUnknown'),
-  fresh('ranked.statusPing', { ms: 0 }),
-  '★ 探针：「延迟未知」与「延迟 0 ms」是两句不同的话',
-);
-
-/** `uptime24: null` ⇒ **整行不渲染**（不是渲染 0%）。 */
-const stUptimeNull = renderStatus({ status: status({ uptime24: null }) }, '状况·没有可用率');
+const missingRows = elementsWithClass(stMissing, 'ranked__component');
 assert.equal(
-  metaOf(stUptimeNull).length,
-  metaOf(stNormal).length - 1,
-  '★★ `uptime24: null` ⇒ 那一行**整行不在**（"今天没有数据"与"可用率 0%"是两件事）',
+  missingRows.length,
+  4,
+  '★★ 少了一格 ⇒ 界面上的行数**还是四**（悄悄少一行会让用户以为状态栏本来就长这样）',
+);
+const missingRow = missingRows[2] ?? '';
+assert.equal(
+  textOf(elementsWithClass(missingRow, 'ranked__compname')[0] ?? ''),
+  fresh('ranked.componentStore'),
+  '★ 缺的那一行仍然是**它自己那个名字**（Store）',
 );
 assert.equal(
-  metaOf(stUptimeNull).includes(fresh('ranked.statusUptime', { pct: UPTIME_PCT })),
+  textOf(elementsWithClass(missingRow, 'ranked__badge')[0] ?? ''),
+  fresh('ranked.unknown'),
+  '★★ 读不到 ⇒ 占位符 `—`（**不是**「故障」：那是替上游断言一件我们并不知道的事）',
+);
+assert.equal(
+  hasClassOf(elementsWithClass(missingRow, 'ranked__badge')[0] ?? '', 'ranked__badge--unknown'),
+  true,
+  '★ 而且戴的是**中性**的 `--unknown` 配色，不是红色的 `--down`',
+);
+assert.equal(
+  hasClassOf(elementsWithClass(missingRow, 'ranked__badge')[0] ?? '', 'ranked__badge--down'),
   false,
-  '★★ 而且没有任何"0%"之类的话顶上（正面对照就是上面那四行）',
+  '★★ 缺一格**不许**被画成故障（正面对照：上面 state=0 那一份才戴 `--down`）',
 );
 assert.equal(
-  metaOf(stUptimeNull)[1],
-  fresh('ranked.statusCheckedAt', { time: UPSTREAM_TIME }),
-  '★ 掉的是**那一行**，别的行原样（顺序没有被挤乱）',
+  textOf(elementsWithClass(missingRow, 'ranked__meta')[0] ?? ''),
+  fresh('ranked.componentCheckedAt', { time: fresh('ranked.unknown') }),
+  '★ 时间那一格同样说"没有"（「最后更新 —」），不是编一个时刻出来',
 );
+/* 正面对照：另外三格**一个字都没受影响**（少一格不该波及别人）。 */
+for (const [i, row] of missingRows.entries()) {
+  if (i === 2) continue;
+  assert.equal(
+    textOf(elementsWithClass(row, 'ranked__badge')[0] ?? ''),
+    fresh(STATUS_KEYS[COMPONENT_STATES[i] ?? 1]),
+    `★ 第 ${String(i + 1)} 格照旧（上游少了 Store 不该把 API 一起弄没）`,
+  );
+}
 
 /** ★★ `players: 0` 与 `players: null` 是**两句不同的话**、两个不同的画面。 */
 const stZero = renderStatus({ players: 0 }, '状况·没人玩');
@@ -1164,7 +1346,7 @@ assert.ok(
 );
 
 /** `stale: true`（服务端拿了兜底）与外壳那句「上次刷新失败了」**不是**一件事。 */
-const stStale = renderStatus({ status: status({ state: 1, stale: true }) }, '状况·服务端兜底');
+const stStale = renderStatus({ status: status({ stale: true }) }, '状况·服务端兜底');
 assert.equal(
   textOf(elementsWithClass(stStale, 'notice--info')[0] ?? ''),
   fresh('ranked.statusStale'),
@@ -1180,14 +1362,18 @@ assert.notEqual(
   fresh('ranked.refreshFailed', { secs: STALE }),
   '★★ 探针：它与「上次刷新失败了…」**不是**同一句（混成一句会让人去查一个没发生过的网络问题）',
 );
-ok('状况：四态各有各的话 + 四行度量逐行 + 0/null 两句话 + uptime 掉行 + 兜底那一句');
+ok('状况：四格逐格（名字/状态/时间）+ 少一格印「—」+ 全屏只有四行与人数 + 0/null 两句话');
 
 // ---------------------------------------------------------------------------
 console.log('③ 实时高分对局：两侧各五格 + 占位符 + 镜像 + 排序全部渲染 + 展开入口的正反');
 // ---------------------------------------------------------------------------
 /* 冻结值先钉常量，再钉产物：只钉产物的话，常量改了断言跟着走（那是装饰）。 */
 assert.equal(RANKED_LIVE_BATCH, 20, '★★ 冻结的"一批渲染几场"（spec §13，2026-09-19 起）');
-assert.equal(RANKED_ELO_TOP, 100, '★★ 冻结的"排行榜前 100"（spec §13）');
+assert.equal(
+  RANKED_ELO_TOP,
+  150,
+  '★★ 冻结的"排行榜 150 行"（spec §13，2026-09-19 用户口径：显示前 150）',
+);
 
 const live = renderLive({}, '对局·正常');
 const cards = elementsWithClass(live, 'ranked__match');
@@ -1760,16 +1946,89 @@ assert.equal(
   false,
   '★ 起止不是同一个数（把 endsAt 也印成 startsAt 之类的写法会在这里红）',
 );
+
+/*
+ * ★★ 赛段（2026-09-19 用户原话：「排行榜除了显示赛季时间，另外**并排**显示赛段信息」）。
+ *
+ * ⚠️★ "并排"的判据是**同一行**：赛季那四格住在**同一个** `.ranked__meta` 里
+ *    （`metaOf(elo)[0]` 就是那一行）⇒ 把它挪到第二行、或者另起一个 `<p>`，
+ *    这一条会当场红。分成两行会让赛段看起来与赛季不相干，而它是赛季**内部**的划分。
+ * ⚠️ 赛段来自**另一个端点**（`/phase-leaderboard`，93 字节）：`/leaderboard` 里没有
+ *    phase 对象（实测），所以这一格的代价就是那一次额外请求 —— 界面上看不出来。
+ */
+assert.ok(
+  metaOf(elo)[0]?.includes(fresh('ranked.phase', { n: ELO_PHASE.number })),
+  '★★ 赛季那一行里并排着**赛段号**（来自 `/phase-leaderboard`）',
+);
+assert.ok(
+  metaOf(elo)[0]?.includes(fresh('ranked.phaseEndsAt', { when: localDate(ELO_PHASE.endsAt ?? 0) })),
+  '★★ 以及**赛段的截止日**（秒 → 毫秒真的做了，语言也真的传进去了）',
+);
+assert.equal(
+  metaOf(elo).length,
+  1,
+  '★★ 赛季与赛段必须在**同一行**里（`.ranked__meta` 的那一格就是"并排"这件事的判据）',
+);
+/*
+ * ★★ 赛段那一格读不到时**不许**让排行榜变空，也不许静默消失：
+ *    说的是「赛段信息暂时读不到」，而赛季那一行与整张榜照旧。
+ *    ⚠️ 这是容器走辅助路径（`fatal: false`）的那一半 —— 界面上要有话说，
+ *    但**不能**多出"读不到数据 + 重试"（那会让用户以为整页都废了）。
+ */
+const eloNoPhase = renderElo({ phase: null }, '排行榜·赛段读不到');
+assert.ok(
+  metaOf(eloNoPhase)[0]?.includes(fresh('ranked.phaseUnknown')),
+  '★★ 赛段读不到 ⇒ 那一格说「赛段信息暂时读不到」（不是静默消失）',
+);
+assert.ok(
+  metaOf(eloNoPhase)[0]?.includes(fresh('ranked.season', { n: ELO_SEASON.number })),
+  '★★ 而**赛季那一行照旧**（一次 93 字节的失败不许把排行榜弄没）',
+);
+assert.equal(
+  elementsWithClass(eloNoPhase, 'ranked__table')[0]?.match(/<td>/g)?.length,
+  5 * ELO_USERS.length,
+  '★★ 整张榜一个格子都没少（赛段那一格失败与榜本身是两件事）',
+);
+assert.deepEqual(
+  elementsWithClass(eloNoPhase, 'notice'),
+  [],
+  '★★ 而且**不**多一句"读不到数据"（那会让用户以为整页都废了）',
+);
+/* 半份赛段：号数读得出、截止读不出 ⇒ 印号数，不印"读不到"（三格各自可空）。 */
+const eloHalfPhase = renderElo(
+  { phase: { number: 2, endsAt: null, season: 12 } },
+  '排行榜·半个赛段',
+);
+assert.ok(
+  metaOf(eloHalfPhase)[0]?.includes(fresh('ranked.phase', { n: 2 })),
+  '★ 号数读得出就印出来',
+);
+assert.equal(
+  metaOf(eloHalfPhase)[0]?.includes(fresh('ranked.phaseUnknown')),
+  false,
+  '★ 别因为截止读不出就说整格"读不到"（那是另一件事）',
+);
+
 /* `highest: null` ⇒ 占位符；而 `phasePoint: 0` 是**真的值**。 */
 assert.equal(eloRows[1]?.[3], fresh('ranked.unknown'), '★★ `highest: null` ⇒ 那一格印 `—`');
 assert.equal(eloRows[2]?.[4], flat('0'), '★ `phasePoint: 0` ⇒ 印 0（**不是**占位符）');
 assert.equal(eloRows[1]?.[1], flat('Bravo'), '★ 正向对照：同一行别的格子都是真值');
-/* 105 条 ⇒ 只渲染前 100（`topEloEntries` **只截断不重排**）。 */
-const eloMany = renderElo({ elo: ELO_MANY }, '排行榜·105 条');
+/*
+ * 160 条 ⇒ 只渲染前 150（`topEloEntries` **只截断不重排**）。
+ * ⚠️★ 150 是**上游的硬上限**（实测 `count` / `page` 被静默忽略、响应恒为 150 条）
+ *    ⇒ 界面上**没有"下一页"**，也不该有；这条断言钉的是"我们一条都不吞"那一半
+ *    （150 条全在），而"再多也不撑爆页面"由夹具的 160 条钉住。
+ */
+const eloMany = renderElo({ elo: ELO_MANY }, '排行榜·160 条');
 assert.equal(
   elementsWithClass(eloMany, 'ranked__table')[0]?.match(/<td>/g)?.length,
   RANKED_ELO_TOP * 5,
-  `★★ 105 条只渲染前 ${String(RANKED_ELO_TOP)} 名（${String(RANKED_ELO_TOP * 5)} 个格子）`,
+  `★★ 160 条只渲染前 ${String(RANKED_ELO_TOP)} 行（${String(RANKED_ELO_TOP * 5)} 个格子）`,
+);
+assert.equal(
+  elementsWithClass(eloMany, 'ranked__table')[0]?.match(/<td>/g)?.length,
+  RANKED_ELO_TOP * 5,
+  `★★ 160 条只渲染前 ${String(RANKED_ELO_TOP)} 行（${String(RANKED_ELO_TOP * 5)} 个格子）`,
 );
 /* 空集合是**自己的话**（不是"加载中"，也不是"出错了"）。 */
 const eloEmpty = renderElo({ elo: ELO_EMPTY }, '排行榜·空集合');
@@ -1890,6 +2149,9 @@ assert.deepEqual(
  * ★★ 翻页：**上一周**那一格在两种情况下分别是"一条真链接"与"不可点的一格"。
  *    判据是 `href` 在不在（不是"有没有那个文字"）—— 一条 `aria-disabled` 的链接
  *    仍然会被读屏软件念成一个可点的链接，那就是在骗人。
+ * ⚠️★ 2026-09-19 起这一行里是**三**格：上一周 / 下一周 / **本周**（用户要求加的那一颗）。
+ *    手输跳转那一块（`<form class="ranked__weekjump">`）不在这个读取器里 ——
+ *    它不是 `ranked__navbtn`，下面另有一节逐格钉它。
  */
 const navOf = (html: string): { href: string | null; text: string; off: boolean }[] =>
   elementsWithClass(html, 'ranked__navbtn').map((el) => ({
@@ -1898,11 +2160,11 @@ const navOf = (html: string): { href: string | null; text: string; off: boolean 
     off: hasClassOf(el, 'ranked__navbtn--off'),
   }));
 const navZero = navOf(weeklyZero);
-assert.equal(navZero.length, 2, '★ 翻页那一行恰好两格（上一周 / 下一周）');
+assert.equal(navZero.length, 3, '★ 导航那一行恰好三格（上一周 / 下一周 / 本周）');
 assert.deepEqual(
   navZero.map((each) => each.text),
-  [fresh('ranked.weeklyPrev'), fresh('ranked.weeklyNext')],
-  '★ 两格的文字',
+  [fresh('ranked.weeklyPrev'), fresh('ranked.weeklyNext'), fresh('ranked.weeklyThisWeek')],
+  '★ 三格的文字（顺序固定：先翻页，再回本周）',
 );
 assert.equal(
   navZero[0]?.href,
@@ -1916,6 +2178,14 @@ assert.equal(
   '★★ 「下一周」是链接，而且路径跨过 0（`-1 → 1`，**不是** `id + 1`）',
 );
 assert.equal(navZero[1]?.off, false, '★ 正面对照：可点的那一格不带"不可点"类名');
+/*
+ * ★★ 「本周」= 用户 2026-09-19 要的那一颗。落点是**最新周号的路径**（`latestId`，
+ *    来自周赛列表端点那一次响应）。
+ *    ⚠️ 即使当前就在第 0 周（`prevWeekId` 到头了），这一颗也**照常是链接** ——
+ *    它与翻页那一对是两件事（"回本周"永远可达，而"上一周"到最早那一页就没有了）。
+ */
+assert.equal(navZero[2]?.href, weekPath(LATEST_ID), '★★ 「本周」指向**最新那一周**（103）');
+assert.equal(navZero[2]?.off, false, '★ 它永远可点（与"上一周到头了"无关）');
 
 const navOne = navOf(weeklyOne);
 assert.equal(
@@ -1959,7 +2229,172 @@ assert.equal(
   1,
   '★ 但"这一周用的是哪几个种子"照常在 —— 空的是**成绩**，不是这一周',
 );
-ok('周赛：第 0 周 + 四个种子逐格 + 翻页链接/非链接正反 + 五列 + 空态');
+ok('周赛：第 0 周 + 四个种子逐格 + 顶部三格导航（含本周）+ 五列 + 空态');
+
+// ---------------------------------------------------------------------------
+console.log('⑤b ★ 周赛顶部：导航在**最上面** + 手输周数 + 「本周」（2026-09-19 加的两件）');
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 用户原话：「周赛将'上一周/下一周'移至**顶部**，并允许用户直接输入对应周的数字跳转，
+ *    添加'本周'按钮」。
+ *
+ * ⚠️★ "在顶部"这件事的判据只能是**位置**（产物里那三格的文字与改版前一模一样）：
+ *    下面的 `indexOf` 比的是"导航那一行出现在种子/表格**之前**"。
+ *    ⚠️ 一个"两处都渲染"的实现会让 `indexOf` 找到**第一处**（顶部的那个）而全绿 ——
+ *    所以另外要断言这一行**只有一处**（`.ranked__weeknav` 的个数 == 1）。
+ */
+const navAt = weeklyLatest.indexOf('ranked__weeknav');
+assert.ok(navAt >= 0, '★ 导航那一行在产物里（否则下面的位置比较是空跑）');
+assert.equal(
+  elementsWithClass(weeklyLatest, 'ranked__weeknav').length,
+  1,
+  '★★ 导航那一行**只有一处**（底部那个旧的必须已经删掉：两处导航会各自漂）',
+);
+/*
+ * ⚠️ 位置比较用**三个锚点**（周数那一行、四格种子、成绩表）：它们都是改版前排在
+ *    导航**前面**的东西（导航原来挂在表格下面）⇒ 这一行只要还在下面，第一条就红。
+ *    ⚠️ 锚点必须是**唯一**的字符串：`ranked__meta` 这种到处都是的不能当锚点
+ *    （`indexOf` 会命中更靠前的另一处，于是"它在下面"也能绿）。
+ */
+const weekNumberRow = elementsWithClass(weeklyLatest, 'ranked__meta')[0] ?? '';
+assert.notEqual(weekNumberRow, '', '★ 周数与截止那一行在产物里');
+for (const [what, at] of [
+  ['周数与截止那一行', weeklyLatest.indexOf(weekNumberRow)],
+  ['四格种子（含上面那句「种子」）', weeklyLatest.indexOf('ranked__seeds')],
+  ['成绩表', weeklyLatest.indexOf('ranked__table')],
+] as const) {
+  assert.ok(at > 0, `★ ${what}在产物里（否则下面那条比较是空跑）`);
+  assert.ok(navAt < at, `★★ 导航在**${what}之前** —— 用户要求把它移到顶部（原来它挂在表格下面）`);
+}
+assert.ok(
+  navAt > weeklyLatest.indexOf('ranked__title'),
+  '★ 但它**在面板标题之后**（标题是这一块的名字，导航是它的内容）',
+);
+
+/*
+ * ★★ 手输周数那个框（用户："允许用户直接输入对应周的数字跳转"）。
+ *
+ * ⚠️★ 判据挑得刻意具体：
+ *   · 输入框与那颗「跳转」**在同一个 `<form>` 里** —— 那是"回车能跳"的**结构**前提
+ *     （回车提交表单是浏览器原生行为；自己监听键盘要处理 IME / 小键盘，
+ *     而漏掉任何一种的表现都是"回车没反应"）。⚠️ 真的按一下回车这件事
+ *     `renderToStaticMarkup` 证不了（本脚本末尾那段覆盖边界写着这一条）。
+ *   · `type="submit"`（不是 `type="button"`）：不写的话那颗按钮提交不了表单，
+ *     而产物里它与接好线的长得一模一样。
+ *   · `type="text"` + `inputMode="numeric"`，**不是** `type="number"`：
+ *     number 输入框会把字母吃掉（值直接变空串）⇒ 界面就没法说"请输入一个周数"了。
+ *   · `<label class="sr-only" for>` 成对：占位符在输入第一个字之后就没了。
+ */
+const jumpForm = elementsWithClass(weeklyLatest, 'ranked__weekjump')[0] ?? '';
+assert.notEqual(jumpForm, '', '★★ 手输周数那一块在（`<form class="ranked__weekjump">`）');
+const jumpInput = /<input\b[^>]*>/.exec(jumpForm)?.[0] ?? '';
+assert.notEqual(jumpInput, '', '★★ 那个 `<form>` 里有一个输入框');
+assert.equal(
+  attrOf(jumpInput, 'type'),
+  'text',
+  '★★ `type="text"`（number 会把字母吃掉，那我们就没法提示"请输入一个周数"了）',
+);
+/*
+ * ⚠️ 判据写成**不分大小写**：React 19 的 `renderToStaticMarkup` 把 `inputMode` 原样印成
+ *    `inputMode="numeric"`（不是小写），而 HTML 解析属性名时不分大小写 ⇒ 两种写法在浏览器里
+ *    等价。写死小写会让这条断言红在一个与它对错无关的细节上（`attrOf` 是大小写敏感的）。
+ */
+assert.equal(
+  /\binputmode="numeric"/i.test(jumpInput),
+  true,
+  '★ 手机上弹数字键盘（`inputMode="numeric"`）',
+);
+assert.equal(attrOf(jumpInput, 'id'), 'ranked-week-jump', '★ 输入框有 id（label 的 for 指向它）');
+/*
+ * ⚠️ 属性值**不能**用 `fresh()` 比：那一个会把空白删掉（"Jump to week" → "Jumptoweek"），
+ *    而属性里的字是原样的 —— 中文碰巧没有空格，英文会当场红（这一条就是那么量出来的）。
+ */
+assert.equal(
+  attrOf(jumpInput, 'placeholder'),
+  decode(t('ranked.weeklyJump')),
+  '★ 占位符用的是这一栏自己的词条',
+);
+assert.equal(
+  attrOf(elementsWithClass(jumpForm, 'sr-only')[0] ?? '', 'for'),
+  'ranked-week-jump',
+  '★★ `<label class="sr-only" for="ranked-week-jump">` —— 输入框有一个**可访问名字**（占位符会消失）',
+);
+const jumpButtons = buttons(jumpForm);
+assert.equal(jumpButtons.length, 1, '★★ 那个表单里恰好一颗按钮（「跳转」）');
+assert.equal(jumpButtons[0]?.text, fresh('ranked.weeklyJumpGo'), '★★ 它的文字是「跳转」');
+assert.equal(
+  /(?:^|\s)type="submit"(?:\s|$)/.test(jumpButtons[0]?.attrs ?? ''),
+  true,
+  '★★ 它是 `type="submit"`：回车提交表单靠的就是它（`type="button"` 提交不了，而产物里看不出差别）',
+);
+/* 框里的字是**受控**的：喂什么就印什么（容器把用户打的字原样传进来）。 */
+const weeklyTyped = renderWeekly({ weekInput: '95' }, '周赛·框里打着 95');
+assert.equal(
+  attrOf(
+    /<input\b[^>]*>/.exec(elementsWithClass(weeklyTyped, 'ranked__weekjump')[0] ?? '')?.[0] ?? '',
+    'value',
+  ),
+  '95',
+  '★ 输入框是**受控**的（容器给什么就印什么 —— 打了字界面上却不动是最坏的一种静默）',
+);
+assert.equal(
+  elementsWithClass(weeklyTyped, 'ranked__jumperror').length,
+  0,
+  '★ 没填错时不渲染那一句提示（正面对照在下面）',
+);
+
+/*
+ * ★★ 两种"不合法"各自说一句人话（**本地的**、一个请求都不发）。
+ *
+ * ⚠️★ 对照表钉在 `WEEK_INPUT_ERROR_KEYS` 上（它是从 `RankedPanels` 导出的那一张）：
+ *    `not_a_number` ⇒ 「请输入一个周数。」，而"这个周数不存在"（0 / ≤ -2 / 比最新周还大）
+ *    ⇒ **复用** `ranked.errNotFound`（「没有这一周。」）—— 那是**上游**对一个不存在的
+ *    周号回的原话，本地判出来的同一件事没有理由换个说法。
+ *    ⚠️ 这张表的值对 `i18n-keys.test.ts` 是看不见的（表里的值不是字面量调用）
+ *    ⇒ 只有这里能断言"两条 key 在两种语言里都在"。
+ */
+assert.deepEqual(
+  WEEK_INPUT_ERROR_KEYS,
+  { not_a_number: 'ranked.weeklyBadNumber', no_such_week: 'ranked.errNotFound' },
+  '★★ 「输入不合法 → 词条」那张表被改了（两档的话不同，因为用户下一步做的事不同）',
+);
+for (const [lng, dict] of [
+  ['zh-CN', zhCN],
+  ['en', en],
+] as const) {
+  for (const key of Object.values(WEEK_INPUT_ERROR_KEYS)) {
+    const leaf = key.replace(/^ranked\./, '');
+    assert.notEqual(
+      (dict.ranked as Record<string, unknown>)[leaf],
+      undefined,
+      `★★ \`${key}\` 在 ${lng} 字典里必须有值（表里的 key 门禁看不见 —— 少一条界面会印出裸 key）`,
+    );
+  }
+}
+for (const [reason, key] of Object.entries(WEEK_INPUT_ERROR_KEYS)) {
+  const html = renderWeekly({ weekError: t(key) }, `周赛·提示（${reason}）`);
+  assert.equal(
+    textOf(elementsWithClass(html, 'ranked__jumperror')[0] ?? ''),
+    fresh(key),
+    `★★ 判定为 \`${reason}\` 时，那一句提示就是 \`${key}\` 的内容`,
+  );
+  /*
+   * ⚠️★ 提示**不许**顺手把导航那一行弄没、也不许把这一周的数据清掉：
+   *    用户只是打错了一个数，屏幕上的东西一样都不该少（"失败绝不清空"的同一条道理）。
+   */
+  assert.equal(
+    elementsWithClass(html, 'ranked__navbtn').length,
+    3,
+    `★ 有提示时导航三格照旧（${reason}）`,
+  );
+  assert.equal(navOf(html)[2]?.href, weekPath(LATEST_ID), `★ 「本周」照样是链接（${reason}）`);
+}
+assert.notEqual(
+  fresh(WEEK_INPUT_ERROR_KEYS.not_a_number),
+  fresh(WEEK_INPUT_ERROR_KEYS.no_such_week),
+  '★★ 探针：两档的话本身必须不同（否则上面两条是同一条断言）',
+);
+ok('周赛顶部：导航在最上面（只有一处）+ 受控输入框 + 提交键 + 本周 + 两种提示各说一句');
 
 // ---------------------------------------------------------------------------
 console.log('⑥ 五种整体画面（spec §6.6）：正常 / 加载中 / 失败无旧数据 / 失败有旧数据 / 空集合');
@@ -2643,6 +3078,12 @@ const MUST_RENDER = [
   'ranked__badge--down',
   'ranked__badge--pending',
   'ranked__badge--maintenance',
+  /* ★ 2026-09-19 加的：上游少了某一格时那一格戴的中性配色（不是第五种"状态"） */
+  'ranked__badge--unknown',
+  /* ★ 2026-09-19 加的：状态栏那四行（名字 / 状态 / 最后更新） */
+  'ranked__components',
+  'ranked__component',
+  'ranked__compname',
   'ranked__meta',
   'ranked__updated',
   'ranked__big',
@@ -2668,6 +3109,9 @@ const MUST_RENDER = [
   'ranked__weeknav',
   'ranked__navbtn',
   'ranked__navbtn--off',
+  /* ★ 2026-09-19 加的：周赛顶部那个手输框与它下面那一句提示 */
+  'ranked__weekjump',
+  'ranked__jumperror',
 ] as const;
 /*
  * ★★ ⑧ 的本体：调用点在 ⑨ 结束处（`assertRankedClassesHaveRules()`）——
@@ -2957,6 +3401,18 @@ console.log(
 );
 console.log('   · **尺寸、配色与字体**：这里只看类名在不在 `styles.css` 里（⑧），不看它长什么样。');
 console.log(
+  '   ·★ **④ 那个手输框的键盘路径本身**（2026-09-19 加的）：在框里按 **回车**会提交表单，',
+);
+console.log('     那是浏览器原生行为，SSR 里一次都不发生。本脚本钉的是那个结构前提（输入框与');
+console.log('     `type="submit"` 的那颗按钮**在同一个 `<form>` 里**、表单有 `onSubmit`），');
+console.log('     以及"两种不合法的输入各说哪一句话"（⑤b）。真的按一次回车要人在浏览器里做。');
+console.log(
+  '   ·★ **③ 那第二次请求**（赛段 `/phase-leaderboard`）**本身**：它是容器的一个 `pull`，',
+);
+console.log(
+  '     本脚本钉的是"视图拿到 `phase: null` 时说什么、以及排行榜一行都不少"（④ 那一节）。',
+);
+console.log(
   '   · 上游那一侧：解析、排序、筛选与分段的逐值断言在 `services/api/src/ranked-shared.test.ts`，',
 );
 console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
@@ -2966,8 +3422,9 @@ console.log('     心跳端点在 `services/api/src/ranked.test.ts`。');
  * ⚠️ en 比 zh 多一组，是因为 ⑪ 那个"英文产物里不许有汉字"的扫描只在 en 那一遍跑
  *    （`if (LANG === 'en')`，见上面）；两个数差 1 是**正常的**，别把它抹平。
  * ⚠️ 2026-09-19：两边各 +1（③b 那一组：搜索 / 双方都在直播 / 加载更多）。
+ * ⚠️ 2026-09-19（本轮）：两边再各 +1（⑤b 那一组：④ 的顶部导航 / 手输框 / 本周 / 两种提示）。
  */
-const expectedGroups = LANG === 'en' ? 16 : 15;
+const expectedGroups = LANG === 'en' ? 17 : 16;
 assert.equal(
   pass,
   expectedGroups,

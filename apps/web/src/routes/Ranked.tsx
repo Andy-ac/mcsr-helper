@@ -49,18 +49,21 @@
  */
 
 import {
+  parseWeekInput,
   RANKED_LIVE_BATCH,
   RANKED_POLL_MS,
   type RankedEloData,
   type RankedLiveData,
+  type RankedPhaseData,
   type RankedStatusResponse,
   type RankedTab,
   type RankedWeeklyData,
   secondsAgo,
+  weekPath,
 } from '@mcsr/shared/ranked';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams } from 'react-router';
+import { useNavigate, useParams } from 'react-router';
 import {
   type RankedChromeProps,
   RankedEloView,
@@ -68,10 +71,16 @@ import {
   RankedStatusView,
   RankedTabBar,
   RankedWeeklyView,
+  WEEK_INPUT_ERROR_KEYS,
 } from '@/components/RankedPanels';
 import { fetchRankedStatus } from '@/lib/api';
 import { useApiErrorText } from '@/lib/auth';
-import { fetchRankedElo, fetchRankedLive, fetchRankedWeekly } from '@/lib/rankedDirect';
+import {
+  fetchRankedElo,
+  fetchRankedLive,
+  fetchRankedPhase,
+  fetchRankedWeekly,
+} from '@/lib/rankedDirect';
 import { describeRankedError } from '@/lib/rankedErrors';
 import { NotFound } from '@/routes/NotFound';
 
@@ -141,6 +150,7 @@ function mine<T>(loaded: Loaded<T> | null, key: string): T | null {
 export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   const { t } = useTranslation();
   const errorText = useApiErrorText();
+  const navigate = useNavigate();
 
   /** ① 我们的端点（心跳）。`null` = 这一页还没成功取到过。 */
   const [heartbeat, setHeartbeat] = useState<Loaded<RankedStatusResponse> | null>(null);
@@ -150,6 +160,12 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   const [live, setLive] = useState<Loaded<RankedLiveData> | null>(null);
   /** ③ 的排行榜（直连 `/leaderboard`）。 */
   const [elo, setElo] = useState<Loaded<RankedEloData> | null>(null);
+  /**
+   * ★ ③ 的**赛段**（直连 `/phase-leaderboard`，2026-09-19 加）。
+   * ⚠️ 它与 `elo` 各来各的、各留各的旧数据：那一路失败时这里是 `null`，
+   *    而整张榜照常渲染（`RankedEloView.phase` 上写着这件事）。
+   */
+  const [phase, setPhase] = useState<Loaded<RankedPhaseData> | null>(null);
   /** ④ 那一周的榜单（直连 `/weekly-race{,/{id}}`）。 */
   const [weekly, setWeekly] = useState<Loaded<RankedWeeklyData> | null>(null);
   /** 最新一周的周号（只从"本周"那一次响应里学到）。`null` = 还不知道。 */
@@ -189,6 +205,21 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
   const [liveQuery, setLiveQuery] = useState('');
   const [liveBothOnly, setLiveBothOnly] = useState(false);
   const [liveShown, setLiveShown] = useState(RANKED_LIVE_BATCH);
+
+  /*
+   * ★★ ④ 那两格（2026-09-19 用户要求的手输跳转）：框里的字 + 上一句判定的结果。
+   *
+   * ⚠️★ 它们与上面那七个 `loaded` **不是一类**（与 ② 那三格同一条）：上面那一批是
+   *    "这一页取到了什么数据"，这两格是"用户正在打什么、我们上一句说了什么"。
+   *    ⚠️ `weekError` 存的是**已经翻好的那句话**（`WEEK_INPUT_ERROR_KEYS` → `t()`），
+   *    而不是一个 reason 码：视图是纯视图（不吃 `t` 之外的东西），
+   *    而"哪一档说什么"这件事由容器一次做完（渲染自检用 `weekError` 直接喂两句话）。
+   * ⚠️ 换 tab / 翻页时**不清空**（这里没有那样的 effect，与 ② 三格同一条理由）：
+   *    翻到第 95 周时框里还留着"95"是**看得见**的，而清空需要一条 effect，
+   *    effect 的依赖写错会安静地多跑几次 —— 为一件用户看得见、自己改得回来的事不值得。
+   */
+  const [weekInput, setWeekInput] = useState('');
+  const [weekError, setWeekError] = useState<string | null>(null);
 
   /**
    * 正在飞的那一轮取数。
@@ -311,6 +342,17 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
         await pull(fetchRankedLive, setLive);
       } else if (tab === 'elo') {
         await pull(fetchRankedElo, setElo);
+        /*
+         * ★★ ③ 的第二路：赛段（`/phase-leaderboard`，2026-09-19 用户要"并排显示赛段信息"）。
+         *
+         * ⚠️★ `{ fatal: false }`（辅助那一路）：它失败时**一声不响**，
+         *    排行榜照常渲染、只有赛段那一格说"读不到"（`RankedEloView` 里那一句）。
+         *    走 `fatal: true` 的话，一次 93 字节的失败会把这**一整张榜**变成
+         *    「读不到数据」+ 重试 —— 而那张榜其实**画得出来**（同一条理由写在
+         *    下面"历史周补问最新周号"那一支上）。
+         * ⚠️ 顺序是先榜后赛段：榜是主数据，赛段只是顶上多一格。
+         */
+        await pull(fetchRankedPhase, setPhase, { fatal: false });
       } else {
         /*
          * ④ 周赛。`weekId === undefined` = 「本周」（不带 id 的那条路径）；
@@ -485,14 +527,14 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
 
   /*
    * 当前这一页手上**属于它**的那几份数据的时刻（`key` 相符）。用它算一个**唯一**的"有多旧"。
-   * ⚠️ ① 那一页有两路（心跳 + 人数），所以这里可能不止一份 —— 这是 ① 唯一与别的面板
-   *    不同的地方（那一格的注释写着为什么界面仍然只该有**一行**新鲜度）。
-   * ⚠️ 用 `flatMap` 而不是 `filter` + 一个类型守卫：这里的五份数据类型各不相同
+   * ⚠️ 有两页各挂着**两路**（① 心跳 + 人数、③ 排行榜 + 赛段），所以这里可能不止一份
+   *    —— 那两格的注释写着为什么界面仍然只该有**一行**新鲜度。
+   * ⚠️ 用 `flatMap` 而不是 `filter` + 一个类型守卫：这里的六份数据类型各不相同
    *    （`RankedStatusResponse` / `number | null` / `RankedLiveData` / …），
-   *    手写守卫要写成一个它们**共同的上界**，那正好是"把五份数据当成同一种东西"——
+   *    手写守卫要写成一个它们**共同的上界**，那正好是"把六份数据当成同一种东西"——
    *    而这个文件里唯一需要它们的共同点就是"什么时候取到的"。
    */
-  const shownAtMs = [heartbeat, players, live, elo, weekly].flatMap((each) =>
+  const shownAtMs = [heartbeat, players, live, elo, phase, weekly].flatMap((each) =>
     each !== null && each.key === page ? [each.atMs] : [],
   );
   const lastAtMs = shownAtMs.length === 0 ? null : Math.min(...shownAtMs);
@@ -520,6 +562,37 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
    *    读它会让"Twitch 必须带对 parent"这条规则永远只能走到 `no_origin` 那一支。
    */
   const origin = window.location.hostname;
+
+  /**
+   * ★★ ④ 「跳转」/ 回车：把框里的字判成一个周号，合法才导航（2026-09-19）。
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠️★ 判据住在 `parseWeekInput`（纯函数，被 `ranked-shared.test.ts` 逐值钉住）
+   * ---------------------------------------------------------------------------
+   * 不合法时**只放一句话、一个请求都不发**：上游对 `0` / `-2` / `104` 回 400，
+   * 对 `abc` 连路径都拼不出来（`/weekly-race/abc` 是另一个东西，而对空串会拼出
+   * `/weekly-race/` —— 那是"本周"那一条路径）。发出去只是拿访客自己的额度换一屏错误
+   * （spec §10 的额度账就是按"每个访客自己的 IP"算的）。
+   *
+   * ⚠️★ 「没有这一周」那句是**复用**上游那一档的同一个词条（`WEEK_INPUT_ERROR_KEYS`）：
+   *    本地判出来的"这一周不存在"与上游 400 说的"这一周不存在"是**同一件事**，
+   *    换个说法会让用户以为这是两种处境。
+   * ⚠️ 跳转用的是**路径**（`weekPath`）而不是查询串：与翻页那两条链接同一条规矩
+   *    （可刷新、可分享、前进后退落在同一屏上）。
+   * ⚠️ `weekPath(id)` 里的 `id` 是判过的**数**（`Number` 之后的安全整数），
+   *    不会拼出 `1e+21` 那种路径（`parseWeekInput` 挡掉了）。
+   * ⚠️★ 它**不写进任何 effect 的依赖**（它只挂在 `<form onSubmit>` 与按钮上），
+   *    所以这里用普通函数就够了；写成 `useCallback` 反而会让人以为有人在依赖它。
+   */
+  const jumpToWeek = (): void => {
+    const verdict = parseWeekInput(weekInput, latestId);
+    if (!verdict.ok) {
+      setWeekError(t(WEEK_INPUT_ERROR_KEYS[verdict.reason]));
+      return;
+    }
+    setWeekError(null);
+    void navigate(weekPath(verdict.id));
+  };
 
   /** 四个面板共用的那几格（`RankedChromeProps`）。⚠️ 四处必须**逐字相同**，见上面那个 N。 */
   const chrome: RankedChromeProps = {
@@ -568,9 +641,28 @@ export function Ranked({ tab, weekId }: { tab: RankedTab; weekId?: number }) {
           onLoadMore={() => setLiveShown((n) => n + RANKED_LIVE_BATCH)}
         />
       ) : null}
-      {tab === 'elo' ? <RankedEloView {...chrome} elo={mine(elo, page)} /> : null}
+      {tab === 'elo' ? (
+        <RankedEloView {...chrome} elo={mine(elo, page)} phase={mine(phase, page)} />
+      ) : null}
       {tab === 'weekly' ? (
-        <RankedWeeklyView {...chrome} weekly={mine(weekly, page)} latestId={latestId} />
+        <RankedWeeklyView
+          {...chrome}
+          weekly={mine(weekly, page)}
+          latestId={latestId}
+          /*
+           * ★ ④ 手输跳转那两格 + 两个动作（形状与理由见上面那两个 `useState`）。
+           * ⚠️ `onWeekInputChange` 顺手**清掉上一条提示**：用户已经开始改那个数了，
+           *    留着"请输入一个周数"会让它看起来像是针对新值的判断
+           *    （而那个新值可能还没判过）。
+           */
+          weekInput={weekInput}
+          onWeekInputChange={(value) => {
+            setWeekInput(value);
+            setWeekError(null);
+          }}
+          onWeekJump={jumpToWeek}
+          weekError={weekError}
+        />
       ) : null}
     </>
   );

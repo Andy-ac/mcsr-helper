@@ -3192,22 +3192,43 @@ export const en: TranslationSchema = {
      *    `Record<0|1|2|3, string>`): folding "pending" and "maintenance" into
      *    "down" sends people hunting for a problem of their own inside a
      *    **planned** maintenance window.
+     * ⚠️★ Since 2026-09-19 the four sentences are used by **four rows** (the
+     *    status bar is no longer a single Game Server heartbeat).
      */
     statusDown: 'Down',
     statusPending: 'Pending',
     statusMaintenance: 'Maintenance',
-    statusPing: 'Ping {{ms}} ms',
-    /** ⚠️ "unknown" and "0 ms" are two different things; the latter reads impossibly good. */
-    statusPingUnknown: 'Ping unknown',
     /*
-     * ⚠️ `{{time}}` is the upstream string (`2026-09-15 13:36:27`) **verbatim**,
-     *    with **no** zone conversion: it carries no zone, so `new Date()` would
-     *    read it in the machine's own zone -- the value would drift per server
-     *    and the test would turn into a lottery. It exists to answer "how fresh
-     *    is that heartbeat itself".
+     * ★★ The **four components** of the status bar (the user's own words:
+     *    "Game Server, API, Store and Wiki, each with its state and last
+     *    update time").
+     * ⚠️★ These names are **in no API**: the heartbeat body is keyed by bare
+     *    ids (`"2"/"3"/"4"/"5"`) and the names exist only inside the human
+     *    status page's inline `window.preloadData` script -- whose three
+     *    `/api/status-page/…` siblings all 403. So this mapping is the **one**
+     *    part of this section that no API has verified (the full story lives
+     *    on the table in `packages/shared/src/ranked/const.ts`).
+     * ⚠️ Both dictionaries carry the **same** values here: these are the
+     *    upstream's proper nouns, not product copy to translate -- the same
+     *    treatment `ranked.timeline.*` gets.
      */
-    statusCheckedAt: 'Last heartbeat {{time}}',
-    statusUptime: '24h uptime {{pct}}%',
+    componentGameServer: 'Game Server',
+    componentApi: 'API',
+    componentStore: 'Store',
+    componentWiki: 'Wiki',
+    /*
+     * ⚠️★ `{{time}}` is the upstream string (`2026-09-17 11:16:27`)
+     *    **verbatim**, with **no** zone conversion: it carries no zone, so
+     *    `new Date()` would read it in the machine's own zone -- the value
+     *    would drift per server (this repo has been burned by a silent
+     *    eight-hour offset) and the test would turn into a lottery. It answers
+     *    "how fresh is **that heartbeat**", not "how old is what is on your
+     *    screen" (the latter is the chrome's own `updatedAgo` line).
+     * ⚠️ It replaces `statusCheckedAt` ("Last heartbeat {{time}}"), which was
+     *    written for the single-row era; with four rows each one needs its own
+     *    last update, and "last update" is the user's own word.
+     */
+    componentCheckedAt: 'Last update {{time}}',
     players: '{{n}} playing Ranked',
     /*
      * ⚠️★ A different sentence from `playersZero` ("Nobody is playing Ranked
@@ -3227,6 +3248,20 @@ export const en: TranslationSchema = {
      *    indistinguishable on screen from a fresh one.
      */
     statusStale: 'The server is serving a stale fallback copy of this data.',
+    /*
+     * ---- ★ Four keys **deleted** on 2026-09-19 (not an oversight) ----
+     * `statusPing` ("Ping {{ms}} ms"), `statusPingUnknown` ("Ping unknown"),
+     * `statusUptime` ("24h uptime {{pct}}%") and `statusCheckedAt` ("Last
+     * heartbeat {{time}}") are gone from **both** dictionaries: the user's
+     * ruling is that the status bar keeps only the four rows (state + last
+     * update) and the online count, "no other information". Latency, uptime,
+     * the heartbeat history and the single-row heartbeat line have no render
+     * site any more. ⚠️ A key with no consumer costs something concrete: the
+     * next reader assumes it still has a render site, and "why is the latency
+     * not on screen" turns into a three-file question (this repo has deleted
+     * `shares.moderateHideReason` for exactly that reason). The upstream still
+     * sends `ping` / `uptimeList`; we do not read them (`parse.ts` says so).
+     */
 
     // ---- (2) Live top matches (`RankedLiveView`, spec §6.3) ----
     /*
@@ -3316,6 +3351,31 @@ export const en: TranslationSchema = {
      *    mix-up does not throw here -- it prints an absurd date.
      */
     seasonRange: '{{from}} → {{to}}',
+    /*
+     * ★★ "Phase" — the user asked (2026-09-19) that the leaderboard show the
+     *    season window **and, side by side**, the phase information.
+     * ⚠️★ These two sit in the **same row** as `season` / `seasonRange`
+     *    (`.ranked__meta` is a flex row with a gap): a phase is a division
+     *    **inside** a season, and splitting them over two lines makes them look
+     *    unrelated.
+     * ⚠️ They come from a **separate endpoint** (`/phase-leaderboard`, 93 bytes
+     *    measured) because `/leaderboard` carries no phase object at all. That
+     *    second request is the whole cost of this cell.
+     * ⚠️ `{{when}}` is rendered in the **local** time zone, exactly like the
+     *    season range (the upstream sends **seconds**; the view multiplies).
+     */
+    phase: 'Phase {{n}}',
+    phaseEndsAt: 'Ends {{when}}',
+    /*
+     * ⚠️★ This sentence is the **failure** cell and is not the same thing as
+     *    "the upstream sent it but a field is empty" (that one prints `—`).
+     *    The container fetches the phase on the auxiliary path (`fatal: false`),
+     *    so the leaderboard still renders and does **not** grow a "could not
+     *    load" line. ⚠️ This cell must not silently disappear: the user asked
+     *    for it by name, and an absent cell looks exactly like "the upstream
+     *    has none" -- the reader cannot tell whether to retry.
+     */
+    phaseUnknown: 'The phase information is unavailable right now',
     colRank: 'Rank',
     colNickname: 'Nickname',
     colElo: 'Elo',
@@ -3347,6 +3407,30 @@ export const en: TranslationSchema = {
     seedRng: 'RNG',
     weeklyPrev: 'Previous week',
     weeklyNext: 'Next week',
+    /*
+     * ★★ The two things the user asked for on 2026-09-19: let them type a week
+     *    number and jump straight to it, plus a "this week" button (and move
+     *    previous/next **to the top**).
+     * ⚠️ `weeklyJump` is both the placeholder and the label
+     *    (`<label class="sr-only">`): a placeholder disappears after the first
+     *    keystroke, so a placeholder-only control has no name (same reasoning as
+     *    `liveSearch`).
+     * ⚠️ `weeklyThisWeek` is a **real link**, not a button: it points at the
+     *    newest week (`/ranked/weekly/103` once `latestId` is known, the
+     *    id-less `/ranked/weekly` before that) -- both are URLs you can refresh
+     *    and share.
+     * ⚠️★ `weeklyBadNumber` covers **only** "that is not a week number" (empty
+     *    box, letters, decimals, full-width digits). "That week does not exist"
+     *    (0 / ≤ -2 / newer than the newest week) deliberately reuses
+     *    `errNotFound` ("There is no such week.") -- that is the very sentence
+     *    the upstream answers a non-existent week id with, and locally deciding
+     *    the same thing has no reason to word it differently (the table lives on
+     *    `WEEK_INPUT_ERROR_KEYS`).
+     */
+    weeklyJump: 'Jump to week',
+    weeklyJumpGo: 'Go',
+    weeklyThisWeek: 'This week',
+    weeklyBadNumber: 'Enter a week number.',
     colTime: 'Time',
     colEloRank: 'Elo rank',
     weeklyEmpty: 'Nobody has finished this week yet.',
