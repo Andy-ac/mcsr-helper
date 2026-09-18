@@ -90,7 +90,15 @@ const API_PATH = '../../../apps/web/src/lib/api';
 
 /** `describeSeedQueryError` 的结果形状（手写一份：跨包那一头没有类型检查）。 */
 interface SeedQueryFailure {
-  kind: 'not_found' | 'no_match' | 'unavailable' | 'rate_limited' | 'field' | 'other';
+  kind:
+    | 'not_found'
+    | 'no_match'
+    | 'unavailable'
+    | 'rate_limited'
+    /* ★ 2026-09-19 加的第四档：本站**没配上游**（503 seed_not_configured）。 */
+    | 'not_configured'
+    | 'field'
+    | 'other';
   message: string;
   hint?: string;
 }
@@ -242,6 +250,64 @@ describe('describeSeedQueryError：404 ⇒ not_found（按状态码，不按错�
       notFound.kind,
       unavailable.kind,
       '两档的 kind 一样 ⇒ 界面上那两句不同的话里有一句永远不会出现',
+    );
+  });
+
+  it('★★★ 503 `seed_not_configured` ⇒ 它**自己**的一档（"本站没配" ≠ "上游坏了"）', () => {
+    /*
+     * ⚠️★ 这条守的是 2026-09-19 开源前做的一件事：上游地址（`MCSR_SEED_API_BASE`）
+     *    **不再有默认值** —— 上游是第三方的机器，而写接口会往对方的数据库里插记录。
+     *    于是"没配上游"从"不可能发生"变成**自建者的默认状态**，而它必须与
+     *    "上游抖了一下"分开说：
+     *      · 502 `seed_service_unavailable` → "过一会儿再试"，**有**下一次
+     *      · 503 `seed_not_configured`      → 重试一万次也不会有变化
+     *    把两档合成一档的代价不是"少一句话"，而是界面**明确地说一件没发生的事**
+     *    （"这是上游那边的问题" —— 这里根本没有上游）。
+     *
+     * ⚠️ 判据必须是**错误码**，不是状态码：503 上没有这个码时这里掉进的是调用方的
+     *    兜底（`kind: 'other'`，读路径上 `code` 恒为 undefined —— 上一组那两条钉着
+     *    那一侧）。所以下面几条要一起看：单看任何一条，把它写成"按 503 分档"也能通过。
+     */
+    const configured = describeSeedQueryError(
+      new ApiError('HTTP 503', 503, 'seed_not_configured'),
+      t,
+      fallback,
+      'lookup',
+    );
+    const coded503 = describeSeedQueryError(getError(503), t, fallback, 'lookup');
+    /*
+     * ★ 对照物是**真的那一档**（502 + `seed_service_unavailable`，也就是"上游坏了"），
+     *   不是"随便一个别的 kind"：要守的就是这两个码不许被合成一句。
+     */
+    const upstreamDown = describeSeedQueryError(
+      new ApiError('HTTP 502', 502, 'seed_service_unavailable'),
+      t,
+      fallback,
+      'lookup',
+    );
+
+    assert.equal(
+      configured.kind,
+      'not_configured',
+      '★ 这个码必须有它自己的一档 —— 并进 `unavailable` 会让界面说"上游暂时不可用"',
+    );
+    assert.notEqual(
+      configured.kind,
+      upstreamDown.kind,
+      '★ "没配"与"上游坏了"的 kind 相同 ⇒ 两件事在界面上回到了同一句话',
+    );
+    assert.notEqual(
+      configured.kind,
+      coded503.kind,
+      '★ 不带码的 503 不该被这个分支吃掉（它的判据是码，不是状态码）',
+    );
+    // 文案走的是它自己的两条词条（不是 errUnavailable / errUnavailableHint）
+    assert.equal(configured.message, '[seedsPage.errNotConfigured]');
+    assert.equal(configured.hint, '[seedsPage.errNotConfiguredHint]');
+    assert.notEqual(
+      configured.message,
+      upstreamDown.message,
+      '★ 文案与"上游暂时不可用"同句 ⇒ 用户会去等一件不会发生的事',
     );
   });
 });
