@@ -4,8 +4,12 @@
  * ===========================================================================
  * 这个模块为什么必须存在：混合内容（mixed content）
  * ===========================================================================
- * 上游是用户**自己的**服务，地址是 `http://198.51.100.20:8001/api/v2/`，
- * 而本站是 `https://mcsrhelper.com`（见 docs/ranked-seeds-api.md §1、§2）。
+ * 上游是**别人**的服务，而且它长期只有明文 HTTP 一个入口，而本站是 HTTPS。
+ *
+ * ⚠️ 上游地址**不在这个文件里**，也不在任何其它文件里 —— 它只来自环境变量
+ *    `MCSR_SEED_API_BASE`（见下面 upstreamBaseUrl）。原来这里写死过一个
+ *    具体地址（那是 owner 自己的另一台机器），公开之后那等于让每个照抄的人
+ *    都把**陌生人**的服务器当成自己的数据源：查询打过去、写接口把记录插进去。
  *
  * 浏览器**必定**拦掉 https 页面里对 http 的 fetch/XHR —— 不是"可能有问题"，
  * 是必然失败；而且报出来的是 CORS / mixed-content 一类看起来像"上游挂了"
@@ -21,6 +25,11 @@
  *   ✅ 响应形状与错误码由我们统一，前端不需要知道上游长什么样；
  *   ⚠️ 必须**限流** —— 否则我们的用户能把用户自己的上游打挂（routes/seeds.ts）；
  *   ⚠️ 必须**超时** —— 否则上游卡住时我们自己的页面会一直转圈。
+ *
+ * ⚠️ 代理替"别人的服务器"挡在前面，所以还有一条纪律：**适配层与运维配置分开**。
+ *    上游是谁、要不要开写入，是**运维**的事（环境变量）；上游长什么样、
+ *    怎么归一化，是**代码**的事（本文件）。混在一起的代价是"想换个上游地址"
+ *    变成一次发版。
  *
  * ===========================================================================
  * ⚠️ 上游有五处不一致，全都在这里抹平（绝不能漏到界面上）
@@ -60,8 +69,37 @@
  *    而"必须是字符串形态"这条约束现在由 shared 的 `SeedRecord` 承载。
  */
 
-/** 上游地址默认值（用户自己的服务）。可用 MCSR_SEED_API_BASE 覆盖。 */
-const DEFAULT_BASE_URL = 'http://198.51.100.20:8001/api/v2';
+/**
+ * 上游地址。**没有默认值** —— 没配 `MCSR_SEED_API_BASE` 时返回 `null`。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 为什么这里的"默认值"是**空**，而不是一个能跑起来的地址
+ * ---------------------------------------------------------------------------
+ * 这里原来写死过 owner 自己的上游（一个公网 IP + 明文 HTTP）。在公开项目里
+ * 那个默认值有两个后果，两个都不能接受：
+ *   1. **任何人 clone 下来直接跑，都会把请求打到一台陌生人的服务器上**
+ *      —— 查询会消耗对方的机器，而 `POST /save` 会往**对方的数据库**里插记录；
+ *   2. 那个地址是 owner 的私有基础设施，写进公开版本库等于把它公开。
+ *
+ * 所以现在的规矩是"**不配就没有这条功能**"，而不是"不配就用一个别人的地址"：
+ * 返回值是 null ⇒ 调用方（routes/seeds.ts 的 requireUpstream）回一个
+ * **明确的**降级（503 `seed_not_configured`），页面会说"本站没有配置种子数据源"
+ * —— 那是一个用户能看懂、也**不会白等**的答案（重试一万次也不会有变化）。
+ *
+ * ⚠️ 与之对照：配置**写坏**（比如 `not-a-url`）仍然走下面那条 `new URL()` 的
+ *    catch ⇒ `unavailable`（细节进日志）。两者的区别是"配置本身就是坏的"
+ *    与"根本没人配"，而 UI 上该说的话不一样。
+ *
+ * ⚠️ **只有空格**的值按"没配"处理（trim 之后为空 ⇒ null）：这是本仓既有的
+ *    一条纪律 —— `services/api/src/tracking/index.ts` 的 `envValue()` 里写着
+ *    "空值算没配"的理由（`MCSR_YOUTUBE_KEY=` 与"没配"在运维眼里是同一件事，
+ *    当成"配了"只会让每个请求带着空 key 去打上游，然后报一堆 401/403）。
+ */
+export function upstreamBaseUrl(): string | null {
+  const raw = process.env.MCSR_SEED_API_BASE?.trim();
+  if (!raw) return null;
+  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+}
 
 /**
  * 上游请求超时。
@@ -88,13 +126,6 @@ const DEFAULT_BASE_URL = 'http://198.51.100.20:8001/api/v2';
  * 而用户唯一的反应是反复重试，每次都是一次新的上游请求。
  */
 const DEFAULT_TIMEOUT_MS = 15_000;
-
-/** 上游地址（去掉结尾斜杠，便于拼路径）。 */
-export function upstreamBaseUrl(): string {
-  const raw = process.env.MCSR_SEED_API_BASE?.trim();
-  const base = raw && raw.length > 0 ? raw : DEFAULT_BASE_URL;
-  return base.endsWith('/') ? base.slice(0, -1) : base;
-}
 
 /**
  * 超时毫秒数。可用 MCSR_SEED_TIMEOUT_MS 覆盖。
@@ -207,9 +238,24 @@ interface RequestOptions {
 async function request(path: string, options: RequestOptions): Promise<UpstreamResult<unknown>> {
   const label = `${options.method} ${path}`;
 
+  /*
+   * 上游**没配**是运维状态，不是请求失败 —— 正常路径走不到这里：
+   * routes/seeds.ts 的 requireUpstream 在进 handler 之前就把它拦成
+   * 503 seed_not_configured 了（那里也是**唯一**打这句日志的地方，
+   * 而且只打一次，见那边的注释）。
+   *
+   * 这里保留一条兜底，是为了让"有人绕过路由直接调 fetchXxx()"时
+   * 仍然是 `unavailable` 这种**安全的**失败，而不是把一个 `null` 拼进 URL
+   * 得到一个 'null/seed' 这种谁都看不懂的地址。
+   */
+  const base = upstreamBaseUrl();
+  if (base === null) {
+    return { ok: false, kind: 'unavailable', detail: '未配置 MCSR_SEED_API_BASE' };
+  }
+
   let url: string;
   try {
-    const target = new URL(`${upstreamBaseUrl()}${path}`);
+    const target = new URL(`${base}${path}`);
     for (const [name, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined) target.searchParams.set(name, value);
     }

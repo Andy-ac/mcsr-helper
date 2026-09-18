@@ -67,8 +67,12 @@ mkdir -p /etc/systemd/system/caddy.service.d
 cat > /etc/systemd/system/caddy.service.d/mcsr-helper.conf <<EOF
 [Service]
 Environment=MCSR_DOMAIN=${DOMAIN}
-Environment=MCSR_LEGACY_DOMAIN=${MCSR_LEGACY_DOMAIN:-legacy.example.invalid}
 EOF
+# ⚠️ 这里**故意**没有 MCSR_LEGACY_DOMAIN（2026-09-19 删掉的）：旧域名那一段
+#    现在是"由 deploy.sh 生成的一个被 import 的文件"，而不是一个环境变量，
+#    而且它**没有默认值** —— 默认值会被静默继承（见 deploy.sh 里那段说明）。
+#    本脚本只负责把站点跑起来；旧域名跳转由紧随其后的日常部署那一步装。
+#    Caddyfile 里那条 import 匹配不到文件时**不报错**，所以首启不会因此失败。
 
 systemctl daemon-reload
 systemctl enable mcsr-helper-api >/dev/null 2>&1 || true

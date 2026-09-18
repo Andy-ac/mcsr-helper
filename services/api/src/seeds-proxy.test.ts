@@ -4,9 +4,10 @@
  * ===========================================================================
  * ⚠️⚠️ 这个文件**绝不能**产生真实的网络请求
  * ===========================================================================
- * 上游是**用户自己的生产服务**（`http://198.51.100.20:8001`），而其中一个
- * 端点（`POST /seed`）会往他的数据库里**写入**记录。一个跑偏的测试不是
- * "测试失败"，是往用户的生产库里塞脏数据 —— 而那些记录他只能自己去删。
+ * 上游是**别人**的生产服务（谁的上游由 `MCSR_SEED_API_BASE` 决定，地址不在
+ * 版本库里），而其中一个端点（`POST /seed`）会往那台机器的数据库里**写入**记录。
+ * 一个跑偏的测试不是"测试失败"，是往别人的生产库里塞脏数据 ——
+ * 而那些记录只有对方能删。
  *
  * 所以这里有**两道**防线，任何一道单独都不够：
  *   1. `MCSR_SEED_API_BASE` 指向 `http://upstream.invalid/...` —— `.invalid`
@@ -17,7 +18,7 @@
  *      请求落在 `.invalid` 上 —— 多一层"我们真的没打出去"的证据。
  *
  * 另外：这个文件里**没有**任何连通性测试。那种测试的性质是"我的测试能不能
- * 打用户的服务器"，它不该存在。上游的形状已经由 docs/ranked-seeds-api.md
+ * 打别人的服务器"，它不该存在。上游的形状已经由 docs/ranked-seeds-api.md
  * 记录下来，下面用到的载荷就是照着它（外加一次只读实测）写死的。
  */
 import assert from 'node:assert/strict';
@@ -32,8 +33,13 @@ process.env.MCSR_MAIL_DRIVER = 'console';
 process.env.MCSR_SCRYPT_TEST_PARAMS = 'N=1024,r=8,p=1';
 // ★ 不可解析的 TLD，见文件头
 process.env.MCSR_SEED_API_BASE = 'http://upstream.invalid/api/v2';
-// 开发者本机可能恰好开着写开关（那正是它的用途），测试必须从"开"的状态起跑
-delete process.env.MCSR_SEED_WRITE_DISABLED;
+/*
+ * ★ 写入**默认是关的**（2026-09-19 开源前改的极性：原来那个 `..._DISABLED`
+ *   开关缺席时等于"写入是开的"，而它会往别人的库里插记录 —— 见 routes/seeds.ts
+ *   的 writeEnabled）。所以这个文件要测写入，就必须先**显式**打开它，
+ *   而"没打开时的行为"另有专门一条用例守着。
+ */
+process.env.MCSR_SEED_WRITE_ENABLED = '1';
 
 const { clearSeedsCache, seedsRoute } = await import('./routes/seeds');
 const { authRoute } = await import('./routes/auth');
@@ -940,8 +946,21 @@ describe('★ Ranked Seeds 代理：/save 的守卫', () => {
     assert.equal(seedCreateAuditCount(), auditsBefore, '写失败不该记一条 seed.create');
   });
 
-  it('★ 写开关关掉时 503，且没有打上游', async (t) => {
-    process.env.MCSR_SEED_WRITE_DISABLED = '1';
+  it('★ 写入**默认关闭**：不设 MCSR_SEED_WRITE_ENABLED 时 503，且没有打上游', async (t) => {
+    /*
+     * ⚠️★ 这条守的是 2026-09-19 开源前改过来的一件事，改之前它是反的：
+     *    那个开关原来叫 `MCSR_SEED_WRITE_DISABLED`，而且单元模板里那行是
+     *    **注释掉的** —— 也就是"什么都不做 = 写入是开的"。而这个端点会往
+     *    **上游那台机器（别人的数据库）**里插记录：
+     *
+     *      一个自建者照着文档把上游地址配上之后，写入路径**立刻**就是通的。
+     *      他以为自己拿到的是一个只读的种子查询，实际上已经能往对面的库里插数据，
+     *      而对面那台机器的主人不会收到任何通知。
+     *
+     *    所以现在只有显式写 `MCSR_SEED_WRITE_ENABLED=1` 才允许写入，
+     *    而"不设"这一个状态本身必须有断言（它就是自建者的默认状态）。
+     */
+    delete process.env.MCSR_SEED_WRITE_ENABLED;
     try {
       mockUpstream(t);
       const user = await makeUser();
@@ -953,7 +972,7 @@ describe('★ Ranked Seeds 代理：/save 的守卫', () => {
       /*
        * ⚠️ 503 而不是 403。
        *
-       * 403 的含义是"你没这个权限"，而事实是"运维把这个功能关了"。
+       * 403 的含义是"你没这个权限"，而事实是"运维没把这个功能打开"。
        * 前端的文案写的是"种子提交暂时被关掉了 —— 那是我们这边的事，
        * 不是你的问题"，配一个 403 是自相矛盾的：403 会把一个
        * **有权限**的用户说成没权限的。
@@ -964,9 +983,95 @@ describe('★ Ranked Seeds 代理：/save 的守卫', () => {
       // kill switch 在认证之前：连匿名请求也拿 503，不泄漏"这个人存不存在"
       const anonymous = await call('POST', '/api/ranked-seeds/save', { json: saveBody() });
       assert.equal(anonymous.status, 503);
-      assert.equal(calls.length, 0);
+      assert.equal(anonymous.body.error, 'seed_write_disabled');
+      assert.equal(calls.length, 0, '写入没打开时一个上游请求都不该发生');
+
+      /*
+       * 显式的"假值"同样不算打开：`0` / `false` / 空串只是把这句话写出来，
+       * 语义仍然是"关"。⚠️ 这一条防的是"有人把 `=0` 当成打开"——
+       * 而这个端点的错误方向是**静默地打开**，不是静默地关闭。
+       */
+      for (const off of ['0', 'false', '', 'no']) {
+        process.env.MCSR_SEED_WRITE_ENABLED = off;
+        const res = await call('POST', '/api/ranked-seeds/save', {
+          json: saveBody(),
+          cookie: user.cookie,
+        });
+        assert.equal(res.status, 503, `MCSR_SEED_WRITE_ENABLED='${off}' 不该被当成打开`);
+        assert.equal(res.body.error, 'seed_write_disabled');
+      }
     } finally {
-      delete process.env.MCSR_SEED_WRITE_DISABLED;
+      process.env.MCSR_SEED_WRITE_ENABLED = '1';
+    }
+  });
+
+  it('★ 上游没配时：五个端点一起 503 seed_not_configured（不是 500，也不是 502）', async (t) => {
+    /*
+     * ⚠️★ 这条是**自建者的默认状态**，所以它比别的降级用例更重要。
+     *
+     * `MCSR_SEED_API_BASE` 现在没有默认值：上游是第三方的机器，写死一个地址
+     * 等于让每个照抄本仓的人都把请求打到别人的服务器上（写接口还会往对方库里
+     * 插记录）。于是"没配"从"不可能发生"变成"最常见的状态"。
+     *
+     * 而它必须**明确**地降级，而且必须是**它自己的**错误码：
+     *   · 500 internal_error → 被当成崩溃去查堆栈，而配置缺失不是 bug
+     *   · 502 seed_service_unavailable → "上游挂了，过一会儿再试"，
+     *     而这里根本没有上游：重试一万次也一样，**界面还说了件没发生的事**
+     *   · 503 seed_not_configured → 唯一的准确说法（同 platform_not_configured
+     *     那条已有裁决的形状）
+     */
+    delete process.env.MCSR_SEED_API_BASE;
+    try {
+      mockUpstream(t);
+      const endpoints: Array<[string, string, unknown?]> = [
+        ['GET', '/api/ranked-seeds/random'],
+        ['GET', '/api/ranked-seeds/search?overworld=VILLAGE'],
+        ['GET', '/api/ranked-seeds/match/3650001'],
+        ['GET', '/api/ranked-seeds/match/3650001/info'],
+        ['POST', '/api/ranked-seeds/save', saveBody()],
+      ];
+      const user = await makeUser();
+
+      for (const [method, path, json] of endpoints) {
+        const res = await call(method, path, json === undefined ? {} : { json });
+        assert.equal(res.status, 503, `${method} ${path} → ${JSON.stringify(res.body)}`);
+        assert.equal(res.body.error, 'seed_not_configured', `${method} ${path}`);
+        assert.notEqual(res.status, 500, '配置缺失不该报成"服务器出错了"');
+        assert.notEqual(res.status, 502, '这里没有上游，不能说成"上游不可用"');
+      }
+
+      /*
+       * ⚠️ 匿名访客拿到的也是同一句话（那个守卫挂在认证**之前**）：
+       *    这条降级没有泄漏"这个人存不存在"，而自建者看到的正是这一档
+       *    —— 他还没注册就该看懂问题出在配置上。
+       */
+      const anonymous = await call('POST', '/api/ranked-seeds/save', { json: saveBody() });
+      assert.equal(anonymous.status, 503);
+      assert.equal(anonymous.body.error, 'seed_not_configured');
+
+      assert.equal(calls.length, 0, '没配上游时一个上游请求都不该发生');
+      assert.ok(user.cookie.length > 0);
+    } finally {
+      process.env.MCSR_SEED_API_BASE = 'http://upstream.invalid/api/v2';
+    }
+  });
+
+  it('★ 配错的上游地址（`new URL()` 解析不了）仍然是 502，不是 503', async (t) => {
+    /*
+     * ⚠️ 这条与上一条是**边界的两侧**，而且它们说的话不一样：
+     *   · 没配（空）    → 503 seed_not_configured：**有**一个明确的动作该去做
+     *   · 配了但配坏了  → 502 seed_service_unavailable：地址是坏的，
+     *                     与我们自己的适配层/运维状态是两回事，细节进日志
+     * 合成一条的代价是"没配"的人拿不到正确的下一步。
+     */
+    process.env.MCSR_SEED_API_BASE = 'not-a-url';
+    try {
+      mockUpstream(t);
+      const res = await call('GET', '/api/ranked-seeds/random');
+      assert.equal(res.status, 502, JSON.stringify(res.body));
+      assert.equal(res.body.error, 'seed_service_unavailable');
+    } finally {
+      process.env.MCSR_SEED_API_BASE = 'http://upstream.invalid/api/v2';
     }
   });
 

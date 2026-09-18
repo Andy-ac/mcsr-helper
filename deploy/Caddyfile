@@ -195,19 +195,35 @@ www.{$MCSR_DOMAIN} {
 }
 
 # ===========================================================================
-# 跳转：旧域名 → 规范域名
+# 跳转：旧域名 → 规范域名（**默认不存在，必须显式配置**）
 #
-# legacy.example.invalid 是把站点搬到自有域名之前用的地址。
-# 保留跳转而不是直接停掉，有两个原因：
-#   · 已经发出去的链接（聊天记录、书签、别人转发的地址）不会变成死链
-#   · 那个域名在 Spamhaus DBL 上被列名过（phishing 127.0.1.4 + botnet C&C 127.0.1.6）。
-#     让残留引用干净地转到新域名，比让它继续对着一台配置已变的服务器要好。
+# 为什么留这个能力：搬站之后，已经发出去的链接（聊天记录、书签、别人转发的
+# 地址）会指向旧域名。让它们干净地 301 到新域名，比让它们对着一个配置已变的
+# 服务器要好。
 #
-# ⚠️ `{$MCSR_LEGACY_DOMAIN:默认值}` 是 Caddy 的"带默认值的环境变量"语法。
-#    给默认值是必须的，不是保险起见：变量为空时这一行会退化成孤立的 `{`，
-#    Caddy 会把它当成全局选项块解析，然后报出完全误导性的
-#    "unrecognized global option: redir"（这个坑我们在 MCSR_DOMAIN 上踩过一次）。
+# ⚠️⚠️ 为什么这里**没有**默认值了（2026-09-19 开源前改的）：
+#     这里原来硬编码了 owner 搬站前的那个旧域名。公开之后那有两层代价：
+#       1. **默认值会被静默继承** —— clone 下来直接部署的人不会去读这一行，
+#          于是"别人的旧域名"成了他站点的第二个域名，Caddy 还会去为它申请
+#          一张他根本拿不到 DNS 的证书（日志里一堆签发失败）；
+#       2. 那个域名在 Spamhaus DBL 上被列名过（phishing 127.0.1.4 +
+#          botnet C&C 127.0.1.6，见 packages/shared/src/constants.ts）。把站点
+#          和它挂在同一张证书、同一台机器上，是在继承一份自己没做过的坏名声 ——
+#          而 DNSBL 的申诉成本极高。
+#     ⇒ 要保留旧域名跳转的人，自己把域名写进 deploy/deploy.env 的
+#       MCSR_LEGACY_DOMAIN（见 deploy/deploy.env.example），deploy.sh 会生成
+#       下面 import 的那个文件。
+#
+# ⚠️ 为什么用 `import` 而不是内联的 `{$MCSR_LEGACY_DOMAIN} { … }`：
+#     后者在变量为空时会退化成**一个孤立的左花括号**，Caddy 会把它当成全局
+#     选项块解析，然后报出完全误导性的 "unrecognized global option: redir"
+#     （这个坑我们在 MCSR_DOMAIN 上踩过一次，见 deploy.sh 里那段记录）。
+#     而 `import` 一个**匹配不到任何文件**的 glob 是**明确允许**的 ——
+#     Caddy 文档的原话是 "an empty glob pattern is not an error"
+#     （https://caddyserver.com/docs/caddyfile/directives/import）。
+#     ⇒ "没配旧域名"因此是一条正常路径：这里什么都不导入，Caddyfile 依然是合法的。
+#
+# ⚠️ 那个目录由 deploy.sh 维护（每次部署同步），**不要手改里面的文件** ——
+#     下一次部署会覆盖它。留空目录 = 不做旧域名跳转。
 # ===========================================================================
-{$MCSR_LEGACY_DOMAIN:legacy.example.invalid} {
-	redir https://{$MCSR_DOMAIN}{uri} permanent
-}
+import /etc/caddy/mcsr-helper-legacy/*.caddy

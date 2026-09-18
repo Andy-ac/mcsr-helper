@@ -238,16 +238,18 @@ export const MAPPED_SEED_REASONS: readonly string[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * 失败的性质。**界面靠它选下一步**，所以它不是分类学，而是三个真正不同的出路：
+ * 失败的性质。**界面靠它选下一步**，所以它不是分类学，而是真正不同的出路：
  *   · `not_found`  → 这场比赛不在上游（约 20%）→ **补录**（Q15）
  *   · `no_match`   → 条件太窄                  → **放宽条件**
  *   · `unavailable`/`rate_limited` → 等一会儿  → 重试
+ *   · `not_configured` → 本站**没配上游**       → 重试没用，要有人去配（见下）
  */
 export type SeedQueryFailureKind =
   | 'not_found'
   | 'no_match'
   | 'unavailable'
   | 'rate_limited'
+  | 'not_configured'
   | 'field'
   | 'other';
 
@@ -366,6 +368,25 @@ export function describeSeedQueryError(
       };
 
     /*
+     * ★ 本站**没配上游**（503 `seed_not_configured`，2026-09-19 开源前加）。
+     *
+     * ⚠️ 它必须与上面那条分开，因为它说的**不是同一件事**：
+     *    "上游坏了"和"我们根本没接上游"在界面上是两句相反的话
+     *    （一句让你等，一句告诉你等下去没用）。
+     *
+     * 而它现在是**默认状态** —— `MCSR_SEED_API_BASE` 没有默认值（写死一个
+     * 第三方地址等于让每个照抄本仓的人把请求打到别人的机器上），所以自建者
+     * 打开 /seeds 看到的多半就是这一条。文案因此必须包含"下一步是去配上它"，
+     * 而不是"稍后再试"。
+     */
+    case 'seed_not_configured':
+      return {
+        kind: 'not_configured',
+        message: t('seedsPage.errNotConfigured'),
+        hint: t('seedsPage.errNotConfiguredHint'),
+      };
+
+    /*
      * 限流：`retryAfterSec` 是**已经打通**的（ApiError 有它，来自 Retry-After 头
      * 或响应体）。所以这一条是唯一一条现在就能给出准确下一步的分支。
      */
@@ -431,9 +452,10 @@ export interface SeedSaveFailure {
  *   · 409 `seed_exists`          → 已经录过了，别让他再点一次
  *   · 429 `rate_limited`         → 还要等 N 秒（配额记的是成功写入，见文案）
  *   · 502 `seed_service_unavailable` → 上游坏了，等一会儿
- *   · 503 `seed_write_disabled`  → **我们**关掉了（运维开关，不是他的权限问题）
+ *   · 503 `seed_write_disabled`  → **我们**没打开写入（运维开关，不是他的权限问题）
+ *   · 503 `seed_not_configured`  → **我们**根本没配上游（同 503，但下一步不同）
  *
- * 后两个尤其不能混：一个说"上游坏了"，一个说"我们关掉了"，
+ * 后面几条尤其不能混：一个说"上游坏了"，一个说"我们没开"，一个说"我们没配"，
  * 而用户能做的事完全不同（等 vs. 不用等了）。
  */
 export function describeSeedSaveError(
@@ -473,6 +495,18 @@ export function describeSeedSaveError(
       return {
         fieldErrors: {},
         formError: `${t('seedsPage.errUnavailable')} —— ${t('seedsPage.errUnavailableHint')}`,
+        reason,
+      };
+
+    /*
+     * ⚠️ 与 `seed_write_disabled`（上面那条）同样是 503，但两句话说的是
+     *    两件事，所以它必须自己一支："我们没打开写入" vs "我们压根没接上游"。
+     *    合成一句的代价是补录的人去等一个永远不会到来的恢复时间。
+     */
+    case 'seed_not_configured':
+      return {
+        fieldErrors: {},
+        formError: `${t('seedsPage.errNotConfigured')} —— ${t('seedsPage.errNotConfiguredHint')}`,
         reason,
       };
 

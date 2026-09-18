@@ -96,7 +96,19 @@ const KNOWN_CODES: readonly string[] = [
   'seed_exists',
   /** 上游超时 / 不可达 / 5xx / 上游限流 */
   'seed_service_unavailable',
-  /** 写接口被运维开关关掉了（MCSR_SEED_WRITE_DISABLED） */
+  /**
+   * 本站**没有配置上游**（`MCSR_SEED_API_BASE` 为空 ⇒ 整组端点 503）。
+   *
+   * ⚠️★ 它与上面那条**必须**是两个码（2026-09-19 开源前加）：
+   *    上游地址现在**没有默认值**（写死一个第三方地址等于让每个照抄本仓的人
+   *    把请求打到别人的机器上），所以"没配"是**默认状态**而不是罕见情况。
+   *    而"上游坏了"（等一下有用）与"没接上游"（等一下没用）对用户的下一步
+   *    完全相反 —— 复用一条的代价是界面**明确地说一件没发生的事**。
+   *    这与下面 `platform_not_configured` 拒绝复用 `seed_write_disabled` 的
+   *    理由是同一个（见那一条）。
+   */
+  'seed_not_configured',
+  /** 写接口没被打开（默认关闭，必须显式 `MCSR_SEED_WRITE_ENABLED=1`） */
   'seed_write_disabled',
   // ---- 直播频道清单 ----
   /**

@@ -2,8 +2,33 @@
   "name": "mcsr-helper",
   "version": "0.0.0",
   "private": true,
+  "description": "MCSR Helper — a community resource library, calendar, video wall and live tracker for Minecraft speedrunning (React SPA + Hono API + Electron shell).",
+  "license": "MIT",
+  "author": "MCSR Helper contributors",
   "type": "module",
   "packageManager": "pnpm@11.8.0",
+  "//publish": [
+    "⚠️ 发布到 GitHub 之前要改的三个**占位符**（owner 还没给 GitHub 组织名，所以先用 OWNER）：",
+    "   repository / homepage / bugs 里的 `OWNER` 要换成真实的组织或用户名。",
+    "   同一份占位符还出现在 deploy/mcsr-helper-api.service 的 `Documentation=` 那行 —— 一起改。",
+    "",
+    "★ 为什么每个包都保留 `private: true`（**不要**为了发布去掉它）：",
+    "   这五个包是**一个应用的内部结构**，不是一个库的集合：",
+    "     · @mcsr/shared 与 @mcsr/ui 的 exports 直接指向 **TypeScript 源文件**（没有 build 步骤），",
+    "       发到 npm 上消费者装到的是 .ts —— 那需要对方自己配编译，不是一个能用的包；",
+    "     · @mcsr/web / @mcsr/api 是产物（SPA 与服务器进程），发 npm 没有任何意义；",
+    "     · @mcsr/desktop 的成果是**安装包**（electron-builder 产物），也不是 npm 包。",
+    "   ⇒ 这个仓库分发的是**源码**，别人要用是 clone 下来跑（见 CONTRIBUTING.md），",
+    "     而不是 `pnpm add @mcsr/…`。真要发某个包之前，先解决上面那一条（改成发布编译产物）。"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/mcsr-helper.git"
+  },
+  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/mcsr-helper/issues"
+  },
   "engines": {
     "node": ">=22.15"
   },

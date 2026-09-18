@@ -29,10 +29,37 @@ set -a && source deploy/deploy.env && set +a
 
 : "${MCSR_SSH_HOST:?deploy.env 里缺 MCSR_SSH_HOST}"
 : "${MCSR_DOMAIN:?deploy.env 里缺 MCSR_DOMAIN}"
-# 旧域名：只用于 301 跳转到新域名。
-# 给一个默认值而不是允许为空 —— Caddyfile 里那行一旦退化成孤立的花括号，
-# Caddy 会把它当成全局选项块解析，报出与真正原因毫无关系的错误。
-: "${MCSR_LEGACY_DOMAIN:=legacy.example.invalid}"
+
+# ---------- 旧域名（可选，**故意不给默认值**）----------
+# 只用于"旧地址 301 跳到新地址"，让已经发出去的链接（聊天记录、书签、
+# 别人转发的地址）不变成死链。
+#
+# ⚠️★ 这里原来有一个默认值，指向 owner 自己搬站之前用过的那个域名。删掉它
+#    有两个理由，第二个更硬：
+#      1. 默认值会被**静默继承**：clone 下来直接部署的人不会去读这一行，
+#         于是"别人的旧域名"就成了他的站点的第二个域名（Caddy 还会去为它
+#         申请证书，DNS 不在他手里 ⇒ 日志里一堆签发失败）；
+#      2. 那个域名在 Spamhaus DBL 上被列名过（phishing + botnet C&C，
+#         见 packages/shared/src/constants.ts 与 docs/v1-plan.md §域名那段）。
+#         把自己的站点和它挂在同一个证书、同一台机器上，是在继承一份
+#         自己没做过的坏名声 —— 而 DNSBL 的申诉成本极高。
+#    ⇒ 要用旧域名的人必须**自己写出来**（写在 deploy.env 里，见 deploy.env.example）。
+#
+# ⚠️ 值为空 = **不做旧域名跳转**，而不是"报错退出"：Caddyfile 那一段是
+#    `import` 一个匹配不到文件的 glob（明确允许为空，见下面生成那一段的说明），
+#    所以"不配"是一条**正常路径**，不该让部署失败。
+# ⚠️ 别在这里给它任何默认值，也别改成 `:?`（必须有值）—— 前者正是上面第 1 条
+#    要修的东西，后者会让"不需要旧域名"的人部署不了。
+MCSR_LEGACY_DOMAIN="${MCSR_LEGACY_DOMAIN:-}"
+
+# ⚠️ 部署**之前**就把这件事说出来，而不是等日志滚到 Caddy 那一段才发现：
+#    "原来靠那个旧默认值在跳转"的站点，这一次部署会把跳转**去掉**（旧链接变死链）。
+#    这一类"升级动作本身有副作用"的事必须打在开头，读日志的人才会看见。
+if [[ -z "$MCSR_LEGACY_DOMAIN" ]]; then
+  printf '\033[33m⚠️  MCSR_LEGACY_DOMAIN 为空 —— 本次部署不会配置旧域名跳转（并会移除上一次留下的那份）。\n'
+  printf '    如果你的站点以前靠 deploy.sh 的默认值在跳转（那是 owner 的旧域名），\n'
+  printf '    请先在 deploy.env 里把它显式写出来再部署。\033[0m\n'
+fi
 
 WEB_DIR="${MCSR_WEB_DIR:-/srv/mcsr-helper/web}"
 API_DIR="${MCSR_API_DIR:-/srv/mcsr-helper/api}"
@@ -136,8 +163,32 @@ say "上传到 $MCSR_SSH_HOST"
 cat > "$TMP/caddy-domain.conf" <<CADDYENV
 [Service]
 Environment=MCSR_DOMAIN=${MCSR_DOMAIN}
-Environment=MCSR_LEGACY_DOMAIN=${MCSR_LEGACY_DOMAIN}
 CADDYENV
+
+# 旧域名那一段 Caddy 配置（**可选**，默认不生成内容）。
+#
+# ⚠️ 为什么是"生成一个文件"而不是"把域名写进 Caddyfile"：Caddyfile 里那一段
+#    现在是 `import /etc/caddy/mcsr-helper-legacy/*.caddy` —— 导入一个**匹配不到
+#    任何文件的 glob** 是明确允许的（Caddy 文档：an empty glob pattern is not an error），
+#    于是"没配旧域名"这件事在 Caddy 眼里就是"这里什么都不导入"，
+#    不需要任何默认值，也就不会有人**静默继承**别人的旧域名。
+#    （直接写 `{$MCSR_LEGACY_DOMAIN} { … }` 是不行的：变量为空时那一行会退化成
+#     一个孤立的左花括号，Caddy 会把它当全局选项块解析，报出完全误导性的
+#     "unrecognized global option: redir" —— 这个坑在 MCSR_DOMAIN 上踩过一次。）
+#
+# ⚠️ 文件名固定（legacy.caddy），所以换域名时不会在服务器上留下两份跳转。
+# ⚠️ 空文件也要生成：这样下面 scp / rm 两条**清单**始终是同一份
+#    （清单不对齐是本仓踩过的坑，见远程块末尾那条注释）。
+: > "$TMP/legacy-domain.caddy"
+if [[ -n "$MCSR_LEGACY_DOMAIN" ]]; then
+  cat > "$TMP/legacy-domain.caddy" <<LEGACY
+# ⚠️ 由 deploy/deploy.sh 生成，**不要手改**：下一次部署会覆盖它。
+#    来源是 deploy/deploy.env 的 MCSR_LEGACY_DOMAIN（不配则不会有这个文件）。
+${MCSR_LEGACY_DOMAIN} {
+	redir https://${MCSR_DOMAIN}{uri} permanent
+}
+LEGACY
+fi
 
 # 安装包不在常规 scp 列表里：它是可选的，而且 109MB 传起来很慢。
 if [[ -n "$INSTALLER_TGZ" ]]; then
@@ -154,7 +205,8 @@ scp "${SCP_OPTS[@]}" -q \
   deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
   deploy/mcsr-helper-ranked-streams.service deploy/mcsr-helper-ranked-streams.timer \
   deploy/mcsr-helper-live-status.service deploy/mcsr-helper-live-status.timer \
-  "$TMP/caddy-domain.conf" \
+  deploy/seeds.env.example \
+  "$TMP/caddy-domain.conf" "$TMP/legacy-domain.caddy" \
   "$MCSR_SSH_HOST:/tmp/"
 ok "上传完成"
 
@@ -174,9 +226,9 @@ set -euo pipefail
 SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 
 # ---------------------------------------------------------------------------
-# Caddy：域名 drop-in + Caddyfile，两者都每次部署都同步 —— 配置即代码。
+# Caddy：旧域名片段 + 域名 drop-in + Caddyfile，三者都每次部署都同步 —— 配置即代码。
 #
-# ⚠️ 这里踩过四个坑，全记下来：
+# ⚠️ 这里踩过五个坑，全记下来：
 #
 # 1. 最初只在 --bootstrap 时上传 Caddyfile，于是改了它永远不生效。
 #    这类"改了没反应"最难查，因为部署脚本本身报的是成功。
@@ -199,8 +251,39 @@ SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 #         必须 restart 才会被进程看到。
 #         所以下面用 CADDY_NEEDS_RESTART 标记：只有 drop-in 真的变了才重启
 #         （重启会让 TLS 握手短暂不可用，没必要每次都做）。
+#
+# 5. **旧域名那一段要在 Caddyfile 之前装好**（2026-09-19 开源前搬到下面这一段的）。
+#    Caddyfile 用 \`import /etc/caddy/mcsr-helper-legacy/*.caddy\` 接住它，
+#    而"glob 匹配不到文件"是**不报错**的 —— 顺序反过来的话，新 Caddyfile 会
+#    先以"没有旧域名"的样子生效，旧链接静默变成死链，而部署脚本照样报成功。
 # ---------------------------------------------------------------------------
 CADDY_NEEDS_RESTART=0
+
+# ---- 旧域名 301（可选；MCSR_LEGACY_DOMAIN 为空时**移除**它）----
+#
+# ⚠️ 内容由 deploy.sh 生成（不要手改这个目录里的文件，下一次部署会覆盖）。
+# ⚠️ 空值分支**必须真的删掉**旧文件：只"不再生成"的话，上一次部署写下的
+#    那个文件会留在磁盘上、被 glob 继续导入 —— 也就是"我把配置删了，
+#    跳转还活着"，而 Caddyfile 里一个字都看不出它从哪来。
+LEGACY_DIR=/etc/caddy/mcsr-helper-legacy
+if [ -s /tmp/legacy-domain.caddy ]; then
+  \$SUDO mkdir -p "\$LEGACY_DIR"
+  if ! \$SUDO cmp -s /tmp/legacy-domain.caddy "\$LEGACY_DIR/legacy.caddy"; then
+    \$SUDO install -m 0644 /tmp/legacy-domain.caddy "\$LEGACY_DIR/legacy.caddy"
+    echo "    旧域名跳转已更新（'${MCSR_LEGACY_DOMAIN}' → '${MCSR_DOMAIN}'）"
+  else
+    echo "    旧域名跳转未变（'${MCSR_LEGACY_DOMAIN}'）"
+  fi
+else
+  if \$SUDO ls "\$LEGACY_DIR"/*.caddy >/dev/null 2>&1; then
+    \$SUDO rm -f "\$LEGACY_DIR"/*.caddy
+    echo "    ⚠️ MCSR_LEGACY_DOMAIN 为空 —— 已移除旧域名跳转（指向旧域名的链接会变成死链；"
+    echo "       要保留它们就把那个域名写进 deploy/deploy.env 再部署一次）"
+  else
+    echo "    未配置旧域名跳转（MCSR_LEGACY_DOMAIN 为空）"
+  fi
+fi
+
 if [ -f /tmp/caddy-domain.conf ]; then
   DROPIN=/etc/systemd/system/caddy.service.d/mcsr-helper.conf
   if ! \$SUDO cmp -s /tmp/caddy-domain.conf "\$DROPIN"; then
@@ -219,7 +302,11 @@ if [ -f /tmp/Caddyfile ]; then
     echo "    Caddyfile 内容未变，仍会校验并确认生效"
   fi
   \$SUDO install -m 0644 /tmp/Caddyfile /etc/caddy/Caddyfile
-  if \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' MCSR_LEGACY_DOMAIN='${MCSR_LEGACY_DOMAIN}' \
+  # ⚠️ 校验时只需要 MCSR_DOMAIN：旧域名那一段现在是**导入的文件**（见上面第 5 条），
+  #    里面的域名是 deploy.sh 生成时写死的，不再经过环境变量 ——
+  #    所以这里**故意**不再传 MCSR_LEGACY_DOMAIN（传了也没人读，只会让下一个人
+  #    以为 Caddyfile 里还有那个占位符）。
+  if \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' \
        caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
     if [ "\$CADDY_NEEDS_RESTART" = "1" ]; then
       # 首次给新域名签证书会花几秒到几十秒，所以这里等它就绪
@@ -231,7 +318,7 @@ if [ -f /tmp/Caddyfile ]; then
     fi
   else
     echo "    ✗ Caddyfile 校验失败，已保留旧配置继续运行。错误如下："
-    \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' MCSR_LEGACY_DOMAIN='${MCSR_LEGACY_DOMAIN}' \
+    \$SUDO env MCSR_DOMAIN='${MCSR_DOMAIN}' \
       caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -5 || true
   fi
 fi
@@ -299,6 +386,19 @@ if [ -f /tmp/track.env.example ]; then
   \$SUDO install -d -m 0755 /etc/mcsr-helper
   \$SUDO install -m 0644 /tmp/track.env.example /etc/mcsr-helper/track.env.example
   echo "    凭据模板已就位：/etc/mcsr-helper/track.env.example"
+fi
+
+# ⚠️ 种子上游地址的模板（**不是密钥**，但它同样只应该存在于服务器上）：
+#    它有自己的一段说明要讲清楚"不配 = 这条功能不可用"，而且它的真文件
+#    /etc/mcsr-helper/seeds.env 是**唯一**能活过部署的位置 —— 写进单元文件
+#    会被下面那段"单元有变化就 install"静默覆盖掉。见 seeds.env.example 的文件头。
+if [ -f /tmp/seeds.env.example ]; then
+  \$SUDO install -d -m 0755 /etc/mcsr-helper
+  \$SUDO install -m 0644 /tmp/seeds.env.example /etc/mcsr-helper/seeds.env.example
+  if [ ! -f /etc/mcsr-helper/seeds.env ]; then
+    echo "    ⚠️ 还没有 /etc/mcsr-helper/seeds.env —— 种子功能现在返回 503 seed_not_configured，"
+    echo "       模板在 /etc/mcsr-helper/seeds.env.example（照它建一个 0600 的真文件再 restart）"
+  fi
 fi
 if [ "\$TRACK_UNITS_CHANGED" = "1" ]; then
   \$SUDO systemctl daemon-reload
@@ -442,7 +542,8 @@ curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    
 # ⚠️ 这一行必须与上面那条 \`scp\` 的清单**逐项对齐**：漏掉的会以 root 属主的样子
 #    留在 /tmp 里（终审 M7 就是这么抓到的 —— 两个新单元没进这一行，而它不报错、
 #    也不影响部署，只有人把两份清单对起来看才发现）。
-rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
+#    （2026-09-19 加的两个：seeds.env.example、legacy-domain.caddy。）
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
 REMOTE
 ok "部署完成"
 

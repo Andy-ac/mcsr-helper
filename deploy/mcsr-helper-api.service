@@ -10,7 +10,10 @@
 
 [Unit]
 Description=MCSR Helper API
-Documentation=https://github.com/your-org/mcsr-helper
+# ⚠️ 占位符：开源模板里不知道真实仓库地址，发布前把 OWNER 换成 GitHub 上的组织/用户名
+#    （与 package.json 的 repository/homepage/bugs 三处保持一致，清单见 README 末尾
+#     的「发布前要改的占位符」）。
+Documentation=https://github.com/OWNER/mcsr-helper
 After=network-online.target
 Wants=network-online.target
 
@@ -82,23 +85,50 @@ EnvironmentFile=-/etc/mcsr-helper/track.env
 
 # ---- Ranked Seeds 上游代理（M4）----
 #
-# 三个变量都**有代码内的默认值**，所以一个都不设也能正常工作：
-#   MCSR_SEED_API_BASE       默认 http://198.51.100.20:8001/api/v2
-#   MCSR_SEED_TIMEOUT_MS     默认 15000
-#   MCSR_SEED_WRITE_DISABLED 默认关闭（也就是**允许**补录）
+# 三个变量，其中**两个必须显式给**（2026-09-19 开源前改的口径）：
+#   MCSR_SEED_API_BASE        上游地址 —— **没有默认值**，不配 = 这条功能不可用
+#   MCSR_SEED_TIMEOUT_MS      默认 15000（有默认值，一般不用管）
+#   MCSR_SEED_WRITE_ENABLED   默认关闭 —— 不设 = 补录（写接口）被拒
 #
-# ⚠️ 上游是**明文 HTTP** 上的一个公网 IP —— 这正是我们做后端代理的原因：
-#    浏览器在 https 页面上不允许请求 http 资源（混合内容），而种子查询
-#    必须能在线上工作。代理不是"顺手加的一层"，它是这条功能成立的前提。
+# ⚠️⚠️ `MCSR_SEED_API_BASE` 原来有一个写死的默认值（owner 自己的另一台机器）。
+#     公开之后那不能留：上游是**第三方**的机器，而写接口（POST /ranked-seeds/save）
+#     会往那台机器的数据库里**插记录** —— 一个默认值等于让每个照抄本仓的人
+#     都在对别人的服务做写操作。所以现在不配就整组端点回
+#     503 `seed_not_configured`（前端会说"本站没有配置种子数据源"，
+#     而不是一个让人白等的"上游暂时不可用"）。
+#
+# ⚠️⚠️ **部署这一步必须与代码同步做**（否则升级完这个功能就没了）：
+#     生产现在**正在依赖**那个旧默认值。改动上线时必须在服务器上把地址显式补上，
+#     位置是下面那个 EnvironmentFile 指向的文件：
+#
+#         /etc/mcsr-helper/seeds.env      （0600 root，只在这台机器上）
+#
+#     内容一行就够：`MCSR_SEED_API_BASE=<上游地址>`（写入要开再加一行
+#     `MCSR_SEED_WRITE_ENABLED=1`）。模板见 deploy/seeds.env.example。
+#
+#     ⚠️ **不要**改 /etc/systemd/system/mcsr-helper-api.service 本身来加它：
+#        deploy.sh 每次部署都会用版本库里的单元文件覆盖那个路径（`cmp` 之后
+#        install），手改的值会在下一次部署里被**静默抹掉** —— 症状是"部署之后
+#        种子功能突然全 503"，而 deploy.sh 报的是成功。
+#        EnvironmentFile 指向的文件 deploy.sh **不碰**（它只装 .example 模板），
+#        所以那是唯一能活过部署的位置。
+#
+#     ⚠️ 改完必须 `systemctl daemon-reload && systemctl restart mcsr-helper-api`：
+#        EnvironmentFile 与 Environment= 都是**进程启动时**读的，reload 看不到。
+#        与 mail.env / track.env 的纪律完全一样。
+#
+# ⚠️ 上游只有明文 HTTP 一个入口，这正是我们做后端代理的原因：浏览器在 https
+#    页面上不允许请求 http 资源（混合内容），而种子查询必须能在线上工作。
+#    代理不是"顺手加的一层"，它是这条功能成立的前提。
 #    所以**不要**让前端直连上游，也不要把上游地址下发给客户端。
 #
-# ⚠️ 下面这行是**紧急开关**。出事时（被刷、被扫、上游改了 schema 而我们还没跟上）
-#    把注释去掉、`systemctl daemon-reload && systemctl restart mcsr-helper-api`，
-#    写入路径立刻停掉 —— 它会往**上游用户自己的数据库**里插记录。
-#    代码每次请求都读 process.env，所以不需要重新打包和上传产物；
-#    但 restart 是必须的，Environment= 的改动不会被 reload 看到。
+# ⚠️ 写接口的开关现在是**正向**的（`MCSR_SEED_WRITE_ENABLED`，默认关）。
+#    出事时（被刷、被扫、上游改了 schema 而我们还没跟上）的正确动作是：
+#    把那一行删掉（或改成 0），然后 daemon-reload + restart，写入路径立刻停掉。
+#    代码每次请求都读 process.env，所以不需要重新打包和上传产物。
 #
-# Environment=MCSR_SEED_WRITE_DISABLED=1
+# Environment=MCSR_SEED_WRITE_ENABLED=1
+EnvironmentFile=-/etc/mcsr-helper/seeds.env
 
 ExecStart=/usr/bin/node /srv/mcsr-helper/api/server.js
 Restart=always

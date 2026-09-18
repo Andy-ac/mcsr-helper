@@ -5,6 +5,12 @@ build/
 release/
 *.tsbuildinfo
 
+# ---- 测试覆盖率产物 ----
+# 今天 `pnpm test` 走的是 `node --test`，不产生覆盖率；但 `--experimental-test-coverage`
+# 或以后换成别的运行器都会在本仓根目录留下一个 coverage/。它里面是**源码的副本**
+# （带行号的 HTML），提交它等于把整份源码再提交一遍、而且每次跑测试都会变。
+coverage/
+
 # ---- pnpm ----
 .pnpm-store/
 .npmrc.local
@@ -14,6 +20,34 @@ deploy/deploy.env
 .env
 .env.local
 .env.*.local
+
+# ⚠️ 上面那三条曾经**漏掉两类**东西，两类都实测过（`git check-ignore -v` 报"未忽略"）：
+#
+#   1. **deploy/ 下真正的凭据文件**。`deploy.sh` 与 README 让人把密钥填进
+#      `deploy/mail.env` / `deploy/track.env`（现在还有 `deploy/seeds.env`），
+#      而它们一条都不在上面 —— 原来只有 `deploy/deploy.env` 那一条。
+#      ⚠️ 更急的是**重复副本**：名字里带着 `env` 但结尾不是 `.env`
+#      （`track.env.save` / `mail.env.bak`），上面那几条一条都匹配不上，
+#      而一次 `cp track.env track.env.save` 就够了 —— 凭据会被复制一份出来，
+#      原件被忽略、副本却被提交。
+#   2. **Vite 自己会读的 `.env.<mode>`**：`.env.production` / `.env.development` /
+#      `.env.staging` / `.env.test` 都**不匹配** `.env.*.local`（点号的位置不一样）。
+#      ⇒ 一个 `cp .env.example .env.production` 之后填上真值就会被提交进去。
+#
+# 本仓的提交习惯里有 `git add -A`（见下面 .superpowers/ 那段），所以这两类
+# 不是"理论上可能"，是下一次提交就可能发生。
+deploy/*.env
+deploy/*.env.*
+# ⚠️ 这条反向规则**不是**可有可无的：上面那条 `deploy/*.env.*` 会连**模板**一起吞掉
+#    （mail.env.example / track.env.example / seeds.env.example …），
+#    而模板里一个真实值都没有，必须保持可提交 —— 少了它，新克隆的人就没有起点。
+!deploy/*.env.example
+
+# ⚠️ 收全部 `.env.*`（Vite 的 mode 词表是开放的：`--mode preview` 之类我们管不着），
+#    比只列四个已知名字更安全。代价是它会把 `.env.example` 一起吞掉，
+#    所以下面那条反向规则是**必需的**，不是保险起见。
+.env.*
+!.env.example
 
 # ---- 数据库（绝不要提交）----
 #
@@ -70,3 +104,20 @@ tmp/
 # 用的是 `git add -A`，也就是说下一次提交就会把它一起收进去。
 # 发现方式：核对"成员声称没有改任何文件"时跑了 `git check-ignore -v .agent-teams`。
 .agent-teams/
+
+# ---- 编码代理的工具文件（同样先写在这里，而不是等它出现）----
+#
+# ⚠️ 与上面两段同一条理由，但这一段的处境不同：`.superpowers/` 与 `.agent-teams/`
+#    是**运行时状态**，而这三个是**给代理看的指令文件**。
+#
+#    它们不该进公开版本库，不是因为"会变"，而是因为它们写的是**这个仓库自己的
+#    工作方式**（谁在什么情况下跑哪条命令、内部流程、对某几个人的称呼），
+#    对读源码的人没有价值，而一旦提交，就变成一份需要维护的公开文档。
+#    清理时还得记住它们是从哪一次提交进来的 —— 和上面那段数据库注释里写的
+#    "即使后来删掉，历史里也还在"是同一个坑。
+#
+#    本仓是代理参与开发的仓库，这三个名字是这类工具最常用的落点；
+#    `.claude/` 里除了指令还会有本地会话状态，更不该提交。
+CLAUDE.md
+AGENTS.md
+.claude/

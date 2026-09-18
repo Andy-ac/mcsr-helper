@@ -2,8 +2,27 @@
   "name": "@mcsr/api",
   "version": "0.0.0",
   "private": true,
+  "description": "MCSR Helper HTTP API (Hono + node:sqlite) and the scheduled ingestion jobs that run alongside it.",
+  "license": "MIT",
+  "author": "MCSR Helper contributors",
   "type": "module",
   "main": "dist/server.js",
+  "//publish": [
+    "⚠️ 这是**应用内部的一个包**，`private: true` 是故意的（不要为了发布去掉它）：",
+    "   它的产物是一个 esbuild bundle（build.mjs → dist/，由 systemd 直接跑），",
+    "   不是一个能给第三方 `import` 的库；依赖里的 @mcsr/shared 也是 TypeScript 源码。",
+    "   仓库分发的是源码，别人要用是 clone 下来跑，见 CONTRIBUTING.md。",
+    "⚠️ repository/homepage/bugs 里的 OWNER 是**占位符**，发布前要换成真实的 GitHub 组织/用户名。"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/mcsr-helper.git",
+    "directory": "services/api"
+  },
+  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/mcsr-helper/issues"
+  },
   "//scripts": [
     "⚠️ 这里的脚本**故意不使用 `tsx` 这个命令**，一律走 `node --import tsx`。",
     "",

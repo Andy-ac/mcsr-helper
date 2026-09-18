@@ -2,6 +2,24 @@
   "name": "@mcsr/ui",
   "version": "0.0.0",
   "private": true,
+  "description": "The two shared UI components (Button, SeedInput) used by the MCSR Helper web app — deliberately tiny.",
+  "license": "MIT",
+  "author": "MCSR Helper contributors",
+  "//publish": [
+    "⚠️ `private: true` 是故意的：和 @mcsr/shared 一样，exports 指向 **.ts 源码**",
+    "   （没有 build 步骤），发文到 npm 只会给消费者一堆需要自己编译的 TypeScript。",
+    "   见根 package.json 的 //publish。",
+    "⚠️ repository/homepage/bugs 里的 OWNER 是**占位符**，发布前要换成真实的 GitHub 组织/用户名。"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/mcsr-helper.git",
+    "directory": "packages/ui"
+  },
+  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/mcsr-helper/issues"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

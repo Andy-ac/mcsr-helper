@@ -181,6 +181,10 @@ export function apiErrorText(error: unknown, t: Translate): string {
         return t('auth.seedServiceUnavailable');
       case 'seed_write_disabled':
         return t('auth.seedWriteDisabled');
+      // ⚠️ 与上面两条分开：这条不是"上游抖了"，而是"这个站点没接上游" ——
+      //    让用户"稍后再试"是让他去等一件不会自己发生的事。
+      case 'seed_not_configured':
+        return t('auth.seedNotConfigured');
       case 'unauthorized':
         return t('auth.loginAction');
       default:

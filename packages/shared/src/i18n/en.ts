@@ -566,6 +566,14 @@ export const en: TranslationSchema = {
       'The seed service is temporarily unavailable. Please try again shortly.',
     seedWriteDisabled:
       'Seed submission is temporarily switched off — that is on our side, not yours. Please try again later.',
+    /*
+     * ⚠️ Must not be merged with the two above (added 2026-09-19, before open-sourcing).
+     * "This instance has no upstream configured" is now the **default** state, and it
+     * is not a transient failure: retrying changes nothing, and what the reader needs
+     * to know is that their deployment is missing a setting.
+     */
+    seedNotConfigured:
+      'This instance has no seed data source configured — this is not a temporary fault, and retrying will not change it.',
     rateLimited: 'Too many attempts. Try again in {{seconds}} seconds.',
     accountSuspended: 'This account has been suspended.',
     sendFailed: 'The message could not be sent. Please try again later.',
@@ -2333,6 +2341,19 @@ export const en: TranslationSchema = {
      */
     errUnavailableHint:
       'This is a problem on the upstream side, not a mistake on yours. Try again shortly.',
+    /*
+     * ---- This instance has no upstream configured (503 `seed_not_configured`) ----
+     *
+     * ⚠️ The two sentences above are about **the upstream**; these two are about
+     * **this deployment**. The reader's next step is opposite in each case — wait,
+     * versus go and set an address — and this state is now the **default** one
+     * (the upstream address has no default), so for a self-hoster it is likely the
+     * first thing they see. One sentence has to say both "you did nothing wrong"
+     * and "waiting will not help".
+     */
+    errNotConfigured: 'This instance has no seed data source configured',
+    errNotConfiguredHint:
+      'This is not a mistake on your side and not a temporary fault — retrying will not change it. Someone needs to configure the upstream address for this site (MCSR_SEED_API_BASE).',
     errRate: 'Too many requests. Try again in {{seconds}} seconds.',
     errGeneric: 'The search failed',
     /**
@@ -2422,9 +2443,9 @@ export const en: TranslationSchema = {
       'Upstream already has this match ID, so there is nothing to add. Just look it up.',
     saveErrDisabled: 'We have switched submissions off for now',
     /**
-     * ⚠️ The 503 is an operator kill switch (`MCSR_SEED_WRITE_DISABLED`), **not** a
-     * permission problem. The server deliberately sends no Retry-After: nobody knows
-     * when it will be turned back on.
+     * ⚠️ The 503 is an operator switch (`MCSR_SEED_WRITE_ENABLED` — **off by default**;
+     * unset means no writes), **not** a permission problem (that one is 403/401).
+     * The server deliberately sends no Retry-After: nobody knows when it will be on.
      */
     saveErrDisabledHint:
       'This is an operator switch, not a problem with your account. We do not know when it reopens, so we are not giving a time.',

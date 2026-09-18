@@ -2,6 +2,26 @@
   "name": "@mcsr/shared",
   "version": "0.0.0",
   "private": true,
+  "description": "MCSR Helper's shared contract: types, constants, zod schemas, i18n dictionaries and the seed / ranked / tracking domain logic.",
+  "license": "MIT",
+  "author": "MCSR Helper contributors",
+  "//publish": [
+    "⚠️★ `private: true` 在这个包上**尤其重要**（不要为了发布去掉它）：",
+    "   下面 exports 指向的全是 **.ts 源文件**（本仓刻意不给 shared 加 build 步骤 ——",
+    "    前端走 Vite 别名、后端走 esbuild，两边都能直接吃源码，少一份可能漂移的产物）。",
+    "   于是发到 npm 的话，别人装到的是 TypeScript 源码：要么自己配编译，要么直接报错。",
+    "   要用这些类型/逻辑，clone 仓库（CONTRIBUTING.md），不要 `pnpm add @mcsr/shared`。",
+    "⚠️ repository/homepage/bugs 里的 OWNER 是**占位符**，发布前要换成真实的 GitHub 组织/用户名。"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/mcsr-helper.git",
+    "directory": "packages/shared"
+  },
+  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "bugs": {
+    "url": "https://github.com/OWNER/mcsr-helper/issues"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

@@ -176,10 +176,13 @@ app.route('/api', liveRoute);
 /*
  * Ranked Seeds 的上游代理。
  *
- * ⚠️ 它存在的**唯一**理由是：上游是 HTTP（198.51.100.20:8001），而我们站点是 HTTPS ——
+ * ⚠️ 它存在的**唯一**理由是：上游只有明文 HTTP 一个入口，而我们站点是 HTTPS ——
  *    浏览器会直接拦掉混合内容，而报出来的错看起来像 CORS 配置问题，
  *    很容易被误判成"上游挂了"。服务端到服务端不受这个限制。
  *    实测上游也没有任何 CORS 头，所以跨域调用本来也不可能。
+ *
+ * ⚠️ 上游**是谁**由环境变量 `MCSR_SEED_API_BASE` 决定，地址不写在版本库里；
+ *    没配时整组端点回 503 `seed_not_configured`（见 routes/seeds.ts 的 requireUpstream）。
  *
  * ⚠️ 挂载点写全（/api/ranked-seeds），因为 route 文件里用的是相对路径
  *    （/random、/search、/match/:matchId）—— 和上面 videosRoute 自带前缀的写法**相反**。
@@ -228,49 +231,25 @@ app.route('/api/ranked', rankedRoute);
  */
 app.route('/api/tracking', trackingRoute);
 
-// ---------------------------------------------------------------------------
-// TEMP · 仅用于 /embed-test 自检页。删除 apps/web/src/dev/ 时一并删掉这个端点。
-//
-// 为什么要有它：页面里用 document.referrer 判断"浏览器有没有发 Referer"是个**代理指标**，
-// 而且会被同源策略、iframe 拦截等因素污染（我们为此误判过两轮）。
-// 这个端点返回的是**服务器实际收到的 Referer 请求头** —— 也就是 YouTube 那边
-// 会收到的东西，是真正的 ground truth。
-// ---------------------------------------------------------------------------
-app.get('/api/dev/referer-probe', (c) => {
-  const referer = c.req.header('referer') ?? '';
-
-  // 内容协商：自检页优先用 iframe（和 YouTube 嵌入是同一条路径），
-  // 但 iframe 万一被策略挡住，它需要一条退路 —— 用 fetch 再测一次。
-  // 两条路都由同一个 Referrer-Policy 决定，所以退路同样是有效证据。
-  if (c.req.header('accept')?.includes('application/json')) {
-    return c.json({ referer, probeReady: true });
-  }
-
-  const escaped = referer.replace(/[&<>"']/g, (ch) => {
-    const map: Record<string, string> = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    };
-    return map[ch] ?? ch;
-  });
-
-  return c.html(`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="referrer" content="strict-origin-when-cross-origin">
-<title>referer probe</title>
-<style>body{margin:0;padding:10px 12px;background:#12141a;color:#e8eaef;
-font:12px/1.6 ui-monospace,Consolas,monospace}pre{margin:0;white-space:pre-wrap;word-break:break-all}</style>
-</head>
-<body data-referer="${escaped}" data-probe-ready="yes">
-<pre>服务器收到的 Referer = ${referer ? escaped : '(空 —— 浏览器确实没有发送 Referer)'}</pre>
-</body>
-</html>`);
-});
+/*
+ * ---------------------------------------------------------------------------
+ * 这里曾经有一个 `GET /api/dev/referer-probe`（2026-09-19 删除）
+ * ---------------------------------------------------------------------------
+ * 它是一次性诊断工具，配合**已经删掉的** `/embed-test` 自检页
+ * （`apps/web/src/dev/`，2026-09-13 随"删掉公网可达的自检页"一起下线）：
+ * 页面里用 `document.referrer` 判断浏览器有没有发 Referer 是个**代理指标**
+ * （会被同源策略、iframe 拦截污染，我们为此误判过两轮），而这个端点回的是
+ * 服务器**实际收到**的那个头，是真正的 ground truth。
+ *
+ * ⚠️ 删它的理由不是"用不上了"（一个只读的探针本身也不危险），而是：
+ *    它**不鉴权**、而且在公开项目里会把"反射任意请求头"变成一个可被滥用的接口
+ *    —— 谁都拿它当一面镜子，出问题时第一眼看到的会是这个端点。
+ *    它的唯一消费者（那个自检页）早就下线了，所以留着是纯负债。
+ *
+ *    ⇒ 以后再需要这种探针，做成**本地脚本**或临时分支，不要挂进线上路由表。
+ *       Referrer 那条真正的结论已经固化在有测试守着的地方：
+ *       `apps/web/index.html` 的 Referrer-Policy 与 `deploy/Caddyfile` 的同一份策略。
+ */
 
 app.notFound((c) => c.json({ error: 'not_found', path: new URL(c.req.url).pathname }, 404));
 
