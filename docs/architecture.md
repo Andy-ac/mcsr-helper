@@ -213,8 +213,9 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 **本地阶段**
 
 1. 读 `deploy/deploy.env`（**没有就拒绝运行**）并 `source`，所以里面的变量都变成环境变量。
-   必需 `MCSR_SSH_HOST` 与 `MCSR_DOMAIN`；`MCSR_LEGACY_DOMAIN` 走默认值（不允许空 ——
-   空值会把 Caddyfile 那一行塌成裸 `{`，报一个误导性的解析错误）。
+   必需 `MCSR_SSH_HOST` 与 `MCSR_DOMAIN`；`MCSR_LEGACY_DOMAIN` **默认为空**，
+   而空 = 不生成旧域名的 301 片段（Caddyfile 那一处是 `import` 一个空 glob，
+   空 glob 不是错误）、并把上次留下的陈旧片段删掉；显式给了值才生成。
 2. **在本地构建**（`@mcsr/web` + `@mcsr/api` 两个包，**不在服务器上构建**）：产物加起来不到 5 MB，
    而服务器通常很小，在上面跑 Vite 又慢又吃内存。
 3. 打两个 tar 包，`--with-installer` 时再带上 Electron 安装包（`latest.yml` 必须**先于**
@@ -274,7 +275,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 |---|---|
 | `MCSR_SSH_HOST` / `MCSR_SSH_PORT` / `MCSR_SSH_KEY` | 部署目标与私钥路径 |
 | `MCSR_DOMAIN` | 站点域名（同时进 Caddy 的 systemd drop-in） |
-| `MCSR_LEGACY_DOMAIN` | 旧域名的 301 源。**自建部署应该删掉这一块，而不是继承它** |
+| `MCSR_LEGACY_DOMAIN` | 旧域名的 301 源。**默认为空 = 不生成**；自建部署应该留空，而不是把别人的旧域名继承过来 |
 | `MCSR_WEB_DIR` / `MCSR_API_DIR` / `MCSR_API_SERVICE` | 服务器路径与单元名 |
 | `MCSR_BOOTSTRAP` | 是否允许首次初始化（装 Node、Caddy、建用户与目录） |
 | `MCSR_HEALTHCHECK_URL` | 部署后的公网自检地址（可选） |
@@ -303,9 +304,9 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 | `MCSR_MAIL_DRIVER` | `resend` / `file` / `console` | **默认 `console`**：邮件只打进 journald。见第 8 节第 1 条 |
 | `MCSR_MAIL_FROM` / `MCSR_MAIL_FROM_NAME` / `MCSR_MAIL_DIR` | 发信人地址/显示名/`file` 驱动的输出目录 | 用 `resend` 而 `MCSR_MAIL_FROM` 未设 ⇒ 启动时告警，且 `@localhost` 发信人会被拒或进垃圾箱 |
 | `MCSR_YOUTUBE_KEY` / `MCSR_TWITCH_ID` / `MCSR_TWITCH_SECRET` | 采集凭据 | 三个都是可选的：**空字符串等于没配**。没配的平台**跳过并打印原因**（退出码 0），不是崩。注意 Twitch 的 id 与 secret 必须成对 |
-| `MCSR_SEED_API_BASE` | Ranked 种子上游基址 | 默认值指向一个**不由本仓维护**的上游（明文 HTTP）。自建部署**必须**改掉，否则你在别人的库上读；写路径默认也指向它，见下一条 |
+| `MCSR_SEED_API_BASE` | Ranked 种子上游基址 | **没有默认值**：不配就整栏返回 `503 seed_not_configured`（一句明确的话，不是 500）。上游是明文 HTTP，本仓不再指向任何具体地址 |
 | `MCSR_SEED_TIMEOUT_MS` | 种子上游超时 | 默认 15 秒；调小会把上游本来就慢的查询（实测 3–8 秒）判成失败 |
-| `MCSR_SEED_WRITE_DISABLED` | 种子**写**路径的保险丝 | 打开后 `POST /api/ranked-seeds/save` 在鉴权**之前**就回 `503`。⚠️ 出厂单元里这一行是**注释掉的**：不改 `MCSR_SEED_API_BASE` 又打开写端点，就是往别人的库里写 |
+| `MCSR_SEED_WRITE_ENABLED` | 种子**写**路径的开关 | **默认关**：不开就 `POST /api/ranked-seeds/save` 在鉴权**之前**回 `503`。⚠️ 只有在自己配了 `MCSR_SEED_API_BASE`、且确认那个库是你自己的之后，才该打开它 |
 | `MCSR_RANKED_STATUS_URL` / `_TIMEOUT_MS` / `_TTL_MS` | 状态页心跳上游 / 超时 / 缓存 TTL | TTL 默认 30 秒并被夹到 ≤10 分钟（再大就会把"过期数据说成实时"，那是这个端点唯一禁止的形状） |
 | `MCSR_RANKED_LIVE_URL` / `_TIMEOUT_MS` / `_TTL_MS` | `ranked-streams` 作业的上游 / 超时 / 缓存 | 上游不可达 ⇒ 这一轮失败，直播名单不再增长 |
 | `MCSR_SCRYPT_TEST_PARAMS` | 降低密码哈希强度 | **只在 `NODE_ENV=test` 下生效**，且只能降不能升 —— **永远不要在生产设它** |
@@ -328,11 +329,11 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
    Electron 壳）、Caddy 站点块用的是 `{$MCSR_DOMAIN}`、邮件链接回落 `MCSR_PUBLIC_ORIGIN`、
    浏览器直连那一组还被 CSP 的 `connect-src` 钉着。改一半的典型症状是：
    cookie 是 host-only，于是用户在第二个域名上"看起来没登录"。
-3. **以为默认指向的那些东西会为你存在。** 三处默认值都不属于你：种子服务
-   （`services/api/src/seeds/upstream.ts` 里的默认基址，**不由本仓维护**）、桌面端更新源
+3. **以为默认指向的那些东西会为你存在。** 种子服务**没有默认值**了（`MCSR_SEED_API_BASE`
+   不配就整栏 503，写路径也默认关着），但另两处仍是别人的：桌面端更新源
    （`apps/desktop/electron-builder.yml` 的 `publish.url`，指向本仓作者的站点）、
    以及邮件链接与 Electron 壳用的站点源（`packages/shared/src/constants.ts`）。
-   其中种子那个最要紧 —— 它**是可写的**，保险丝 `MCSR_SEED_WRITE_DISABLED` 出厂时是注释掉的。
+   这两处不换，你的自建部署会指向别人的站点（更新源尤其明显：它会提示用户去下载别人的安装包）。
 
 ---
 
