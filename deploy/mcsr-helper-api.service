@@ -10,10 +10,10 @@
 
 [Unit]
 Description=MCSR Helper API
-# ⚠️ 占位符：开源模板里不知道真实仓库地址，发布前把 OWNER 换成 GitHub 上的组织/用户名
+# 仓库地址（改名的话这里与六份 package.json 要一起改）
 #    （与 package.json 的 repository/homepage/bugs 三处保持一致，清单见 README 末尾
 #     的「发布前要改的占位符」）。
-Documentation=https://github.com/OWNER/mcsr-helper
+Documentation=https://github.com/Andy-ac/mcsr-helper
 After=network-online.target
 Wants=network-online.target
 

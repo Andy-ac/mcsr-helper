@@ -181,8 +181,8 @@ YouTube 要求嵌入客户端通过 `Referer` 头标识自己，抑制它会触�
 
 ## 发布前要改的占位符（维护者清单）
 
-仓库里所有指向"这个仓库自己"的 URL 现在都是 `https://github.com/OWNER/mcsr-helper`
-这种**占位符** —— 发布前把 `OWNER` 换成真实的 GitHub 组织或用户名：
+仓库里所有指向"这个仓库自己"的 URL 现在都是 `https://github.com/Andy-ac/mcsr-helper`
+这种**占位符** —— 真实的仓库地址是 `https://github.com/Andy-ac/mcsr-helper`（改名的话这几处要一起改）：
 
 | 位置 | 字段 |
 |---|---|

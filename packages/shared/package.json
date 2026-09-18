@@ -11,16 +11,16 @@
     "    前端走 Vite 别名、后端走 esbuild，两边都能直接吃源码，少一份可能漂移的产物）。",
     "   于是发到 npm 的话，别人装到的是 TypeScript 源码：要么自己配编译，要么直接报错。",
     "   要用这些类型/逻辑，clone 仓库（CONTRIBUTING.md），不要 `pnpm add @mcsr/shared`。",
-    "⚠️ repository/homepage/bugs 里的 OWNER 是**占位符**，发布前要换成真实的 GitHub 组织/用户名。"
+    "⚠️ repository/homepage/bugs 指向的是 GitHub 上的 Andy-ac/mcsr-helper；改名的话六份 package.json 要一起改。"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/mcsr-helper.git",
+    "url": "git+https://github.com/Andy-ac/mcsr-helper.git",
     "directory": "packages/shared"
   },
-  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "homepage": "https://github.com/Andy-ac/mcsr-helper#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/mcsr-helper/issues"
+    "url": "https://github.com/Andy-ac/mcsr-helper/issues"
   },
   "type": "module",
   "exports": {

@@ -8,8 +8,8 @@
   "type": "module",
   "packageManager": "pnpm@11.8.0",
   "//publish": [
-    "⚠️ 发布到 GitHub 之前要改的三个**占位符**（owner 还没给 GitHub 组织名，所以先用 OWNER）：",
-    "   repository / homepage / bugs 里的 `OWNER` 要换成真实的组织或用户名。",
+    "⚠️ 指向本仓库自己的三个 URL（改名时一起改）：",
+    "   repository / homepage / bugs 都指向 github.com/Andy-ac/mcsr-helper。",
     "   同一份占位符还出现在 deploy/mcsr-helper-api.service 的 `Documentation=` 那行 —— 一起改。",
     "",
     "★ 为什么每个包都保留 `private: true`（**不要**为了发布去掉它）：",
@@ -23,11 +23,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/mcsr-helper.git"
+    "url": "git+https://github.com/Andy-ac/mcsr-helper.git"
   },
-  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "homepage": "https://github.com/Andy-ac/mcsr-helper#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/mcsr-helper/issues"
+    "url": "https://github.com/Andy-ac/mcsr-helper/issues"
   },
   "engines": {
     "node": ">=22.15"

@@ -9,16 +9,16 @@
     "⚠️ `private: true` 是故意的：这个包的产物是**安装包**（electron-builder → release/*.exe），",
     "   不是 npm 包。它发布到 npm 没有任何意义（而且它的 publish 目标由 electron-builder.yml",
     "   决定，那是安装包的更新源，与 npm 无关）。见根 package.json 的 //publish。",
-    "⚠️ repository/homepage/bugs 里的 OWNER 是**占位符**，发布前要换成真实的 GitHub 组织/用户名。"
+    "⚠️ repository/homepage/bugs 指向的是 GitHub 上的 Andy-ac/mcsr-helper；改名的话六份 package.json 要一起改。"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/mcsr-helper.git",
+    "url": "git+https://github.com/Andy-ac/mcsr-helper.git",
     "directory": "apps/desktop"
   },
-  "homepage": "https://github.com/OWNER/mcsr-helper#readme",
+  "homepage": "https://github.com/Andy-ac/mcsr-helper#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/mcsr-helper/issues"
+    "url": "https://github.com/Andy-ac/mcsr-helper/issues"
   },
   "type": "module",
   "main": "dist/main.cjs",
