@@ -444,13 +444,15 @@ const rawKeysIn = (markup: string): string[] => [...new Set(markup.match(RAW_KEY
  * ⚠️ 两条探针在**用扫描器去扫产物之前**跑，所以它们才是"先响的那一个"：放在后面的话
  *    一条坏掉的扫描器会先被下面那条断言拦住，你看到的是"产物里有泄漏"，而真正坏的
  *    是扫描器 —— 本仓 §5.74 那句"命令写错时输出长得像这一项没过"的同一类麻烦。
- *    两条都断言**这个函数的产出**（不是另一串常量的性质），而且**各有自己那一刀**：
- *    · 少了"不误报"：一条过宽的正则（`/[A-Za-z]+/g` 那种）会把正常文案里的词也算成泄漏；
- *    · 少了"能命中"：一条永不可能命中的正则会让下面那条断言变成恒真的空跑。
- *    ⚠️ 两刀都实测过（每次只跑本脚本，改完还原、sha256 与改前逐个比对）：
- *      · `RAW_KEY_RE` → `/[A-Za-z]+/g` ⇒ **第一条**探针红（`actual` 是一串普通词）；
- *      · `RAW_KEY_RE` → `/(?:authx|commonx|namex)\./g` ⇒ 第一条绿、**第二条**探针红
- *        （`actual: []` / `expected: ['auth.nameDoesNotExist']`）。
+ *    两条都断言**这个函数的产出**（不是另一串常量的性质）：
+ *    · 第一条管"不误报"：一条过宽的正则（`/[A-Za-z]+/g` 那种）会把正常文案里的词算成泄漏；
+ *    · 第二条管"三个前缀都得命中"：少了任何一支（比如丢掉 `name.` —— 那正是原来那份探针
+ *      字面量的形状），下面那条断言在那一类 key 上就变成空跑。
+ *    ⚠️ 三刀都实测过（每次只跑本脚本，改完还原、sha256 与改前逐个比对）：
+ *      · `RAW_KEY_RE` → `/[A-Za-z]+/g` ⇒ **第一条**红（`actual: ['SpeedRunner','Cancel','key']`）；
+ *      · `RAW_KEY_RE` → `/(?:authx|commonx|namex)\./g` ⇒ 第一条绿、**第二条**红（`actual: []`）；
+ *      · `RAW_KEY_RE` → `/(?:auth|common)\.[A-Za-z]+/g` ⇒ 第二条红
+ *        （`actual: ['auth.foo','common.baz']`，少了 `name.bar`）。
  *    ⇒ 顺序是有意的：先"不误报"再"能命中"，两条才各自都是先响的那一个。
  */
 assert.deepEqual(
@@ -459,9 +461,9 @@ assert.deepEqual(
   '泄漏扫描器不该命中普通文案里的词（否则它会变成噪声，而噪声没人再看）',
 );
 assert.deepEqual(
-  rawKeysIn('auth.nameDoesNotExist'),
-  ['auth.nameDoesNotExist'],
-  '泄漏扫描器本身必须能命中（否则下面那条断言是恒真的空跑）',
+  rawKeysIn('auth.foo name.bar common.baz'),
+  ['auth.foo', 'name.bar', 'common.baz'],
+  '泄漏扫描器必须三个前缀（auth. / common. / name.）都命中 —— 少一支，下面那条断言在那一类 key 上就是空跑',
 );
 
 const samples = [pageHtml, editHtml, shortHtml, savedHtml].join('');
