@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * 角色说明页（`/account` 的 `RoleGuide`）的渲染断言。
+ * 角色说明页（`/me` 的 `RoleGuide`）的渲染断言。
+ * ⚠️ 路由是 `/me`（`apps/web/src/App.tsx` 的 `<Route path="/me" element={<Account />} />`），
+ *    这一段原来写的是 `/account` —— 那个地址**不存在**（改名那一轮漏改的四处之外剩下的一处）。
  *
  * 跑法（从仓库根）：
  *   & "$env:APPDATA\npm\pnpm.cmd" -F @mcsr/web check:roleguide
@@ -11,7 +13,7 @@
  * ---------------------------------------------------------------------------
  * `RoleGuide` 在这之前**没有被任何自检覆盖**：`check:grid` 验网格与卡片、
  * `check:live` 验直播卡、`check:authoring` 验一句文案的映射 —— 它们都不渲染
- * `/account`。而这一页恰恰是**全仓唯一一处"一整张用户可见文案挂在动态 key 上"**：
+ * `/me`。而这一页恰恰是**全仓唯一一处"一整张用户可见文案挂在动态 key 上"**：
  *
  *     t(CAP_DESC[capability] ?? '') || action.label
  *

@@ -17,11 +17,17 @@
  * ===========================================================================
  * ★ 为什么不合成一个函数（两个先例已经写过这条理由，这里是第三次）
  * ===========================================================================
- * 本仓已经有两份"冒号分段时间码"解析：`parseTimecode`（`packages/shared/src/videos.ts:66`，
- * 用户填的起播偏移）与 `parseCompletionInput`（`packages/shared/src/seedPicker.ts:582`，
- * 种子页的完赛时间）。两处都写着同一条纪律 —— `videos.ts:76`：
- * 「冒号后面的段必须是 0–59，否则 `1:99` 会被静默当成 159 秒」；
- * `seedPicker.ts:556-580` 那段注释把"这份重复是**刻意的**、以及它的代价"写得很清楚。
+ * 本仓已经有两份"冒号分段时间码"解析：`parseTimecode`（`packages/shared/src/videos.ts`，
+ * 用户填的起播偏移）与 `parseCompletionInput`（`packages/shared/src/seedPicker.ts`，
+ * 种子页的完赛时间）。两处都写着同一条纪律 —— `videos.ts` 里那一行
+ * 「冒号后面的段必须是 0–59，否则 '1:99' 会被静默当成 159 秒」；
+ * `seedPicker.ts` 的 `parseCompletionInput` 文档注释（「⚠️ 和 `parseTimecode`
+ * （packages/shared/videos.ts）是同一个坑」那一段）把"这份重复是**刻意的**、
+ * 以及它的代价"写得很清楚。
+ * ⚠️ 这一段原来写的是 `videos.ts:66` / `videos.ts:76` / `seedPicker.ts:582` /
+ *    `seedPicker.ts:556-580` 四个**行号**，而 `videos.ts` 那两处**当时就已经错了 5 行**
+ *    （2026-09-24 现读：真值分别是 `parseTimecode` 与那一行警示语，见上面两处内容锚）。
+ *    ⇒ 全部改成内容锚（§5.23）：这一段里只剩内容锚，改行不再需要维护坐标。
  *
  * 这里是第三次刻意不合并，理由比前两次更硬：
  *   · **"段"的含义不同**：那两个是"分:秒 → 秒/毫秒"，这里还有一个根本没有冒号的
@@ -32,7 +38,8 @@
  *     而某个分支写错时红的会是**共用**的那个测试文件。
  *
  * ⚠️ 代价（明知而认下）："冒号后面的段 ≤ 59"这条规则现在住在**三**个地方
- *    （`videos.ts:77`、`seedPicker.ts:596`、本文件），改一处必须同时改另外两处。
+ *    （`videos.ts` 的 `for (let i = 1; i < nums.length; i++)` 那个循环、
+ *    `seedPicker.ts` 的 `if (seconds > 59)`、本文件），改一处必须同时改另外两处。
  *    不搬进 shared 的理由也很具体：`parseTimecode` 在 shared 是因为**浏览器里的表单**
  *    要用它，而这三个解析器只有服务端那三个适配器用（spec §5.6 把位置写死成
  *    「能被 `services/api` 测试跑到的位置」），搬过去只是把它们塞进前端的包里。
@@ -41,9 +48,10 @@
  * ★ 裁决：`MM:SS` 里的 MM 可以超过 59（只有冒号**后面**的段受 0–59 约束）
  * ===========================================================================
  * 两个先例的规则都只约束"冒号后面的段"，不是"任何一段"：
- *   · `parseTimecode` 的循环是 `for (let i = 1; …)`（`videos.ts:77`）⇒ 首段不受约束，
+ *   · `parseTimecode` 的循环是 `for (let i = 1; …)` ⇒ 首段不受约束，
  *     `90` 与 `90:00` 都合法；
- *   · `parseCompletionInput` 给"分"的上限是**四位**（`seedPicker.ts:591`），
+ *   · `parseCompletionInput` 给"分"的上限是**四位**（`seedPicker.ts` 的
+ *     `if (!/^\d{1,4}$/.test(minRaw ?? ''))`），
  *     `1441:00` 是它算得出来的值 —— 之后拒掉它的是那个 24 小时上限，
  *     **不是** 59 那条规则。
  * ⇒ 这里照抄同一读法：`99:00` = 5940、`100:00:00` = 360000 都**接受**；
@@ -51,8 +59,11 @@
  *
  * ⚠️★ 两个先例都还有**下半条**，而这里**刻意只抄了上半条**：在位置规则之外，它们各自
  *    还配一条**总量上限** —— `parseTimecode` 是 `total > MAX_START_OFFSET_SEC`
- *    （24 小时，`videos.ts:25` / `videos.ts:90`），`parseCompletionInput` 是
- *    `ms > MAX_COMPLETION_MS`（也是 24 小时，`seedPicker.ts:551` / `seedPicker.ts:602`）。
+ *    （24 小时；常量在 `videos.ts` 的 `export const MAX_START_OFFSET_SEC`，
+ *    判断在 `return total > MAX_START_OFFSET_SEC ? null : total;`），
+ *    `parseCompletionInput` 是 `ms > MAX_COMPLETION_MS`（也是 24 小时；
+ *    常量在 `seedPicker.ts` 的 `export const MAX_COMPLETION_MS`，
+ *    判断在 `if (ms > MAX_COMPLETION_MS)`）。
  *    ⇒ 本文件**不加**这个上限，因为那条上限是**输入框的领域边界**，不是解析规则：
  *      它限的是"从第几秒开始播"与"这局跑了多久"，两件事都有天然上界；
  *      而"一支视频有多长"**没有** —— bilibili 的直播回放就是 100 小时量级
@@ -122,7 +133,10 @@
 /**
  * 一个数字段最多几位。**理智边界**，不是业务规则。
  *
- * 照抄 `parseTimecode`（`videos.ts:73`）的四位。为什么需要一条上限：`\d+` 配 `Number()`
+ * 照抄 `parseTimecode`（`videos.ts` 的
+ * `if (parts.some((p) => !/^\d{1,4}$/.test(p))) return null;`）的四位。
+ * ⚠️ 这里原来引的是 `videos.ts:73`，2026-09-24 现读**是错的**（真值见上面那个内容锚）。
+ * 为什么需要一条上限：`\d+` 配 `Number()`
  * 在 16 位以上会**静默失真**（`Number('99999999999999999999')` 给的是 `1e20`），
  * 而那正是本文件最想避免的"看起来正常的错数"。四位也顺手挡掉了 `'99999:00'` 这种
  * 一眼是脏数据的输入；代价是时长超过 9999 小时的值会被判成 `null`（现实中不存在）。
@@ -171,7 +185,9 @@ export function parseBilibiliLength(raw: string | null | undefined): number | nu
   if (parts.length !== 2 && parts.length !== 3) return null;
   if (parts.some((part) => !SEGMENT.test(part))) return null;
 
-  // ★ 冒号**后面**的每一段都必须在 0–59 —— 与 `videos.ts:76` 是同一条纪律：
+  // ★ 冒号**后面**的每一段都必须在 0–59 —— 与 `videos.ts` 的
+  // 「冒号后面的段必须是 0–59，否则 '1:99' 会被静默当成 159 秒」是同一条纪律
+  // （⚠️ 原来引的是 `videos.ts:76`，2026-09-24 现读**是错的**）：
   // `'1:99'` 若被静默算成 159 秒，界面上只是多显示一个"看起来正常"的时长，
   // 谁也不会发现。首段不受这条约束（裁决见文件头）。
   for (const part of parts.slice(1)) {
@@ -179,7 +195,9 @@ export function parseBilibiliLength(raw: string | null | undefined): number | nu
   }
 
   // 从右往左补位：最后一段是秒、倒数第二段是分、最前面是时。
-  // 这么写而不是解构，理由照抄 `videos.ts:81-84`：tsconfig 开了 noUncheckedIndexedAccess，
+  // 这么写而不是解构，理由照抄 `videos.ts` 里「从右往左补位」那四行注释
+  // （⚠️ 原来引的是 `videos.ts:81-84`，2026-09-24 现读**是错的**）：tsconfig 开了
+  // noUncheckedIndexedAccess，
   // `parts[i]` 的类型是 `string | undefined` —— 它是对的，数组长度只有运行时才知道；
   // 上面那两条检查已经排除掉了它真是 undefined 的可能。
   const sec = Number(parts[parts.length - 1] ?? '0');

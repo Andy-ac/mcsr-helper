@@ -58,6 +58,12 @@
 //    routes/calendar.ts 取 SITE 用的也是同一个入口。
 import { UPSTREAM_NETHER_FILTERS, UPSTREAM_OVERWORLD_FILTERS } from '@mcsr/shared';
 import { isSeedString, normalizeSeedInput } from '@mcsr/shared/seed';
+// ⚠️ 这两个上限**只在 shared 里有一份**（`FILTER_MAX_CHARS` / `MAX_COMPLETION_MS`）：
+//    前端要用同一个数字提前拦住，所以它必须与前端共享，否则两份一定会漂
+//    （漂移的表现：前端放行、服务端拒绝，或者反过来）。
+//    ⚠️ 别把它们再抄回本文件 —— 曾经这里有一份同值副本，而**没有任何断言**保证
+//    两边相等（`docs/pending.md §5.84④`，2026-09-24 删掉）。
+import { FILTER_MAX_CHARS, MAX_COMPLETION_MS } from '@mcsr/shared/seedPicker';
 import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
 import { type AuthVariables, requireAuth, requireCapability } from '../auth/middleware';
@@ -111,12 +117,8 @@ type SeedsContext = Context<{ Variables: AuthVariables }>;
 const MIN_MATCH_ID = 3_650_001;
 const MIN_SEEDINFO_MATCH_ID = 100_876;
 
-/** 筛选字符串（variations / without）的长度上限与字符集。见 checkVariationFilter。 */
-const FILTER_MAX_CHARS = 512;
+/** 筛选字符串（variations / without）允许的字符集。见 checkVariationFilter。 */
 const FILTER_CHARSET = /^[a-z0-9_:,-]+$/;
-
-/** completion 的上限，毫秒（24 小时）。见 parseSearchFilters 里的说明。 */
-const MAX_COMPLETION_MS = 86_400_000;
 
 // ---------------------------------------------------------------------------
 // 缓存
@@ -457,7 +459,7 @@ function pickFilter(raw: string, allowed: readonly string[]): string | null {
  * `end_spawn:buried:56` 这种），我们加一份白名单意味着**上游新增的词条在我们
  * 这里默认不可用**，而且失败形式是 400 —— 界面上就是"这个选项点了没反应"。
  * 所以放行未知词条，只做两件"防注入"的事：
- *   · 长度上限（512 字符）—— 堵住"有人拿这个参数传一兆字节"
+ *   · 长度上限（`FILTER_MAX_CHARS`，来自 shared）—— 堵住"有人拿这个参数传一兆字节"
  *   · 字符集限制（小写字母/数字/下划线/冒号/逗号/连字符）—— 词条的语法就是这些，
  *     所以任何越界字符都不是"词条没收录"，而是**有人在拿它做别的事**
  * 另有一条明确的排除：`end_spawn:*`（见下）。

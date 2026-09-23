@@ -209,11 +209,44 @@ function VariationRow({
 /**
  * 筛选面板本体。
  *
- * ⚠️ 四个顶层标签**复用** `seedsPage.structure.*` 那几条中文（村庄 / 桥 / …）——
- *    它们就在表里的 `labelKey` 字段上，所以这里 `t(row.labelKey)` 一次取到，
- *    **不**再走 `structureLabel(value.toUpperCase(), t)`：那条路要多一次大写转换，
- *    而"表里的键"与"大写后的值"是两份真相 —— 两边对不上的表现是某一排按钮
- *    印出一个裸词条键（`seedsPage.structure.VILLAGE`），不报错。
+ * ⚠️ 哪几样东西复用了**别处**的词条 —— 口径与 `zh-CN.ts` 的 `seedsPage` 那一块逐条一致
+ *    （那一段是权威口径，改这里之前先读它；这里原来那句是**假的**，见下）：
+ *      · `SEED_PICKER_OVERWORLD`（主世界那一排，5 条）与 `SEED_PICKER_BASTION_TYPES`
+ *        （bastion 类型那一排，4 条）：按钮标签取表里那一行的 `labelKey` 字段，
+ *        值全是 `seedsPage.structure.*`（村庄 / 桥 / …）⇒ 本文件**没有**它们的词条，
+ *        所以 `TopRow` 里就一句 `t(option.labelKey)`，一次取到；
+ *      · `SEED_PICKER_BASTION_BIOMES` / `SEED_PICKER_FORTRESS_BIOMES`（两排群系）：
+ *        同样取 `labelKey`，值走 `seedsPage.variation.*`；
+ *      · **四排的行标题**都不来自上面两处，是 `pickOverworld` / `pickBastionBiome` /
+ *        `pickBastionType` / `pickFortressBiome` 四个新键（下面四个 `label={t('…')}`）。
+ *    ⚠️ 这一段原来把复用关系写反了：**行标题**被说成复用 `structure.*`，紧跟的例子却又是
+ *       那一排**按钮**的取值 —— **两个说法都不对**（终审抓的）。原话逐字留在
+ *       `packages/shared/src/i18n/zh-CN.ts:2470-2471`（那里也写着"两个说法都不对"），
+ *       所以这里不再复述那一句：复述等于让一句已知为假的话多一个副本。
+ *
+ * ⚠️ `structureLabel()`（`apps/web/src/lib/seedLabels.ts`）今天**既不在这条路径上，
+ *    也不是一条被本面板排除掉的备选路径**：它吃的是**大写结构名**（`VILLAGE`），
+ *    唯一的消费方是 `SeedResultCard.tsx`（`:245` / `:249`）—— 本文件既没有 import
+ *    也没有调用它（`git grep -n structureLabel -- apps/web/src/components/SeedPicker.tsx`
+ *    只命中这段注释本身）。旧注释那句"所以这里**不**再走
+ *    `structureLabel(value.toUpperCase(), t)`"描述的是**已删除**的 `SeedFilters.tsx`
+ *    里那条旧写法（`git log --diff-filter=D -- apps/web/src/components/SeedFilters.tsx`
+ *    ⇒ `07f7feb`），那个文件已经不在树里，所以这条对照关系今天没有对象。
+ *
+ * ⚠️ 真的会咬人的是**当前**这条路：`t(option.labelKey)` 拿到的键一旦在词条表里不存在，
+ *    i18next **不报错**，而是把整个 key 印成按钮文字（`seedsPage.structure.VILLAGE`）。
+ *    守着它的是 `apps/web/scripts/seedsrender.tsx` 里这几条（抓的不是同一件事，
+ *    按**内容锚**列，不写行号）：
+ *      · 「⑨ 裸 key 泄漏」那一段：扫**产物原文**里有没有 `seedsPage.*` 形状的裸 key
+ *        （按钮文字与 `title` / `aria-*` 属性都在扫描范围内）—— 缺词条就是它抓；
+ *      · 「组名必须是**词条的值**，不是裸 key」那条：只管四个**行标题**；
+ *      · 「`[5, 5, 4, 5]`」那两条：四张表的长度与四排按钮数；
+ *      · 「词汇表：… 条 labelKey × 两种语言」那一段：把表里那 47 个 `labelKey`
+ *        逐条在两种语言里 `i18n.exists`。
+ *    ⚠️ 那条「19 颗顶层按钮的文字 = `fresh(row.labelKey)`」**抓不到缺词条**：
+ *       键不存在时两边都退化成同一个裸 key，于是相等 —— 别把它当成这里的覆盖。
+ *       另外 `services/api/src/i18n-keys.test.ts` 那条扫 `labelKey:` 字面量的断言
+ *       **不管这张表**：它只走 `apps/web/src` 与 `services/api/src` 两个根。
  *
  * ⚠️ `completion` **不是**一个 prop（它在 `SeedPickerState` 里，Task 3 定的）：
  *    并列传进来的话，页面漏传一格的表现是"完赛时间填了不生效"，
