@@ -55,6 +55,48 @@ bash deploy/deploy.sh
 用「本地构建 + 传产物」而不是「服务器上构建」，是因为香港轻量服务器通常只有 2 核 2G，
 在上面跑 Vite 构建既慢又占内存，而本机只要几十秒。
 
+## ⚠️⚠️ 改 `deploy/**` 之后必须做的一件事：部署后回读
+
+**两条门禁都管不到这个目录。** `biome.json` 的 `files.includes` 只有 `**/*.ts` /
+`**/*.tsx` / `**/*.json`，而全仓**没有任何代码读 `deploy/`** ⇒ 把 `Caddyfile` 那一行 CSP 的
+`connect-src` 改回 `'self'`，`pnpm check` 与 `check:all` 照样 **exit 0**。线上坏了的表现是
+**三个面板在浏览器里静默失效**（浏览器控制台之外没有任何提示），而直连失败
+**在服务端日志里一个字都没有**。`caddy validate` **不算**证据 —— 它只证语法对（§5.78）。
+
+⇒ **规矩**：凡改动 `deploy/` 下任何文件的提交，**提交信息正文里要带"部署后回读命令 + 预期读数"**。
+`deploy.sh` 的线上自检里已经织进了这条回读，而且**不是**一句告警：回读不过 ⇒
+部署命令以 **1** 退出（响应头已经同步到线上了，但那次自检不算过）。
+
+```bash
+# 1) 抓两段响应头（只读；这两个 curl 就是 deploy.sh 自检里做的那一件事）
+curl -sS -D - -o /dev/null -w '<<<%{http_code} %{url_effective}\n' https://<域名>/                  > /tmp/cap.txt
+curl -sS -D - -o /dev/null -w '<<<%{http_code} %{url_effective}\n' https://<域名>/api/ranked/status >> /tmp/cap.txt
+
+# 2) 判（预期值现读 deploy/Caddyfile，不写死任何域名或平台清单）
+bash deploy/verify-csp.sh --headers /tmp/cap.txt
+# 退出码：0 = 四项全过；1 = 有项没过（逐项标出是哪一项）；2 = 判据没跑起来（空输入 / 没找到 Caddyfile）
+```
+
+**预期读数**（正常时四项全过、`exit 0`）：`connect-src` = `'self'` + `Caddyfile` 里那两个域名、
+**无通配符**、`/api/ranked/status` **匿名 200**、`frame-src` 与 `Caddyfile` **逐项相同**
+（今天 = `'self'` + `www.youtube.com` / `www.youtube-nocookie.com` / `player.twitch.tv` /
+`player.bilibili.com` / `www.bilibili.com`）。
+
+**它必须能红，而且不许靠"改线上配置再部署一次"来证明**（那是在生产上造假失败）：把副本里的
+`connect-src` 改成 `'self'` 再喂给它，它必须非零退出并**指名 `connect-src`**：
+
+```bash
+sed "s|connect-src [^;]*|connect-src 'self'|g" /tmp/cap.txt > /tmp/cap-broken.txt
+bash deploy/verify-csp.sh --headers /tmp/cap-broken.txt   # 期望 exit 1，输出里点名 connect-src
+```
+
+⚠️ 回读脚本**只打印状态行与被查的那两个头的取值**，**不打印输入全文** ——
+输入里可能有 `Set-Cookie` 一类的东西，而这个脚本的输出是要贴进提交信息的。
+
+⚠️ **代价（写在这里，别当成没有）**：这条回读住在 `MCSR_HEALTHCHECK_URL` 那条自检里，
+所以 `deploy.env` 里那个变量留空时它**不会跑**（与线上自检本身同进同退）。
+往 `deploy/` 里加东西时，请照这个形状把判据也加进去。
+
 ## 出问题时
 
 ```bash
@@ -144,6 +186,7 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 |---|---|
 | `deploy.env.example` | 部署配置模板，复制成 `deploy.env` 后填写（`deploy.env` 已被 gitignore） |
 | `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物 |
+| `verify-csp.sh` | **部署后回读的判据**：吃一份抓好的响应头文本（stdin 或 `--headers`），核对 CSP 四项与 `/api/ranked/status`；预期值**现读** `Caddyfile`。能单独调用 ⇒ 不碰生产配置就能证明"它会红"（见上面那一节） |
 | `bootstrap-server.sh` | 服务器首次初始化，由 `deploy.sh --bootstrap` 自动上传执行 |
 | `Caddyfile` | 反向代理 + HTTPS + **响应头（Referrer-Policy / CSP）**；旧域名跳转是它 `import` 出来的可选片段 |
 | `mcsr-helper-api.service` | API 的 systemd 单元，含沙箱加固与三个 seeds 变量的说明 |
@@ -151,6 +194,10 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 | `track.env.example` | 视频追踪凭据的模板（真文件在同目录 `track.env`） |
 | `seeds.env.example` | 种子上游地址的模板（真文件在同目录 `seeds.env`；**没有默认值**，见上面那段） |
 
-> `Caddyfile` 里的 `Content-Security-Policy` 中 `frame-src` 列了三个视频平台。
-> **新增视频平台时必须同步改这里**，否则那个平台的视频会静默地播不出来
+> `Caddyfile` 里的 `Content-Security-Policy` 中 `frame-src` 列的是这些 host：
+> `'self'` / `www.youtube.com` / `www.youtube-nocookie.com` / `player.twitch.tv` /
+> `player.bilibili.com` / `www.bilibili.com`（上面那段回读每次部署都会拿它们与线上逐项比对）。
+> **新增嵌入 host 时必须同步改这里**，否则那个平台的视频会静默地播不出来
 > （iframe 被 CSP 拦截，控制台才有报错，界面上什么提示都没有）。
+> ⚠️ 同一个平台也可能有**多个 host**：B站直播走的是 `www.bilibili.com` 那个
+> 「活动播放器」，与视频嵌入用的 `player.bilibili.com` **不是同一个**（`Caddyfile` 里记着这次踩坑）。

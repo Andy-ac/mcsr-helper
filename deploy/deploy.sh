@@ -569,6 +569,40 @@ if [[ -n "${MCSR_HEALTHCHECK_URL:-}" ]]; then
     if curl -fsS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 "$MCSR_HEALTHCHECK_URL"; then
       echo ""
       ok "线上自检通过 —— https://$MCSR_DOMAIN 已可用"
+
+      # ---- CSP 回读（§5.78）----
+      # 为什么必须有这一条：`deploy/Caddyfile` 那一行 CSP 是**安全面上唯一一处**没有任何
+      # 门禁会打开的文件内容 —— biome 只看 `**/*.ts` / `**/*.tsx` / `**/*.json`，
+      # 而全仓没有代码读 `deploy/`。把它改回 `connect-src 'self'` 再跑完整 `check:all`
+      # 是 **exit 0**；线上坏了的表现是"三个面板在浏览器里静默失效"，而直连失败
+      # **在服务端日志里一个字都没有**。`caddy validate` 也不算证据（只证语法对）。
+      #
+      # ⚠️ 抓取那半在这里，判断那半在 `deploy/verify-csp.sh`（可单独喂输入调用）——
+      #    分开是为了让这条判据**在不碰生产配置的前提下能被证明"它会红"**：
+      #    拿一份把 connect-src 改成 'self' 的副本喂进去，它必须非零退出并指名哪一项。
+      # ⚠️ `-D -` 把响应头打到 stdout、`-o /dev/null` 丢掉正文、`-w` 补一行
+      #    `<<<状态码 URL`（裸响应头里没有 URL，判据用它核对第 2 段真的是那个端点）。
+      # ⚠️ 这里**不加 `-f`**：非 2xx 正是要观察的东西，`-f` 会让 curl 提前失败，
+      #    于是"没抓到"看起来像"没那一段"，与"这项没过"分不开（§5.74）。
+      # ⚠️ 抓取失败（curl 非零）一律 `exit 1`，不许当成"跳过"。
+      CSP_CAPTURE="$TMP/csp-headers.txt"
+      CSP_CURL_OK=1
+      curl -sS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 \
+        -D - -o /dev/null -w '<<<%{http_code} %{url_effective}\n' \
+        "https://$MCSR_DOMAIN/" >"$CSP_CAPTURE" 2>/dev/null || CSP_CURL_OK=0
+      curl -sS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 \
+        -D - -o /dev/null -w '<<<%{http_code} %{url_effective}\n' \
+        "https://$MCSR_DOMAIN/api/ranked/status" >>"$CSP_CAPTURE" 2>/dev/null || CSP_CURL_OK=0
+      if [[ "$CSP_CURL_OK" != "1" ]]; then
+        echo "✗ CSP 回读：响应头抓取失败（curl 非零退出）—— 没抓到就不能判通过" >&2
+        exit 1
+      fi
+      if ! bash "$ROOT/deploy/verify-csp.sh" --headers "$CSP_CAPTURE"; then
+        echo "✗ CSP 回读没过（上面逐项标了是哪一项）。Caddyfile 这一轮已经同步到线上了，但这次自检不算过。" >&2
+        echo "  最可能的原因：有人手改了服务器上的 /etc/caddy/Caddyfile（下一次部署会抹掉它）。" >&2
+        exit 1
+      fi
+
       exit 0
     fi
     echo "    第 $i 次未通过，5 秒后重试（首次部署时 Caddy 正在签发证书，属正常）"
