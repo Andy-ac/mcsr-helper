@@ -434,6 +434,26 @@ export const en: TranslationSchema = {
     accountUnverified: 'Email not confirmed',
     accountRole: 'Role',
     accountJoined: 'Joined',
+    /*
+     * ★ "Change your display name" -- the entry point and the feedback that live in
+     *   the display-name row of the account page.
+     *
+     * ⚠️ Only **three** new keys; everything else reuses existing ones, so the same
+     *    word is never maintained in two places:
+     *      · block title / input label -> `auth.displayName`
+     *      · input placeholder         -> `auth.displayNamePlaceholder`
+     *      · "Save" / "Cancel"         -> `common.save` / `common.cancel`
+     *      · too short / too long      -> `auth.err.nameMin` / `auth.err.nameMax`
+     *        (both already live in `fieldIssueText`; on screen they are picked by the
+     *        local check in `DisplayNameField.displayNameError` -- ⚠️ NOT by the server
+     *        400 path: server `issues[]` carry no Zod code, so that path falls back to
+     *        `auth.err.invalid`. That state of affairs is pinned by
+     *        `apps/web/scripts/accountrender.tsx`).
+     */
+    nameEditAction: 'Change',
+    nameSaved: 'Display name updated',
+    namePublicNote:
+      'Your display name is public: it is the name on the resources you add, in the contributor panel and in review records.',
     roleUser: 'Member',
     roleReviewer: 'Reviewer',
     roleEditor: 'Content editor',

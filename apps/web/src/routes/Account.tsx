@@ -2,9 +2,10 @@ import { capabilitiesByType, ROLE_LABEL_KEYS } from '@mcsr/shared/permissions';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
+import { DisplayNameField } from '@/components/DisplayNameField';
 import { Notice } from '@/components/Form';
 import { RoleGuide } from '@/components/RoleGuide';
-import { logout, sendVerifyEmail } from '@/lib/api';
+import { logout, sendVerifyEmail, updateDisplayName } from '@/lib/api';
 import { useApiErrorText, useAuth } from '@/lib/auth';
 import { describeCapabilities } from '@/lib/capabilities';
 
@@ -23,6 +24,19 @@ export function Account() {
 
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'bad'; text: string } | null>(null);
+
+  /*
+   * 昵称这一块自己的三个状态。
+   *
+   * ⚠️ 它们**不能**并进上面那两个：上面的 `busy` / `notice` 是**整页**共用的
+   *    （重发验证邮件、退出登录都在用），而"正在改名"与"改名失败了"只属于昵称那一行 ——
+   *    混在一起的话，点一下改名会让整页的「退出登录」按钮一起变灰，
+   *    而失败提示会跑到页面顶部，离用户刚点的那个输入框一屏远。
+   */
+  const [editingName, setEditingName] = useState(false);
+  const [nameBusy, setNameBusy] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameSaved, setNameSaved] = useState<string | null>(null);
 
   if (loading) {
     return <p className="state">{t('common.loading')}</p>;
@@ -80,6 +94,46 @@ export function Account() {
     }
   }
 
+  /**
+   * 改昵称（`PATCH /api/auth/me`，见 services/api/src/routes/auth.ts）。
+   *
+   * ⚠️★ 成功之后**必须**把拿回来的用户对象塞回 `useAuth` 的缓存（`setUser`）——
+   *    页头/侧边栏显示的那个名字读的就是它（`Layout.tsx:439`）。
+   *    不塞的后果是"页头上还是旧名字，直到用户自己刷新"：他会以为没改成功，
+   *    于是再改一次 —— 而服务端确实改了两次（每次都会写一条审计）。
+   *
+   * ⚠️ 用 `setUser(res.user)` 而不是 `refresh()`：返回值就是**库里重读出来**的整份
+   *    用户对象（`toUserSelf`），所以不必再往返一次 `GET /me`。
+   *    `lib/auth.tsx` 的 `setUser` 注释写着它的用途正是"登录/注册/验证成功后就地
+   *    把用户塞进去，省掉一次往返"—— 这里是同一种用法。
+   */
+  async function onRenameDisplayName(next: string) {
+    setNameError(null);
+    setNameSaved(null);
+    setNameBusy(true);
+    try {
+      const res = await updateDisplayName(next);
+      setUser(res.user);
+      // 收起编辑态：与 MyLiveList 行内保存后的行为一致（保存成功就不再留着输入框）
+      setEditingName(false);
+      setNameSaved(t('auth.nameSaved'));
+    } catch (err) {
+      /*
+       * 服务端 400 那句走**既有的** `apiErrorText`（与其余所有表单同一条路）。
+       *
+       * ⚠️ 如实写清它今天说的是什么：服务端 `issues[]` 里**没有** Zod 的 `code`
+       *    （`routes/auth.ts` 的 `formatIssues` 只发 `field` + `message`），
+       *    而 `fieldIssueText` 是按 `code` 分支的 ⇒ 落到兜底那句
+       *    `auth.err.invalid`（"填写的内容不合法"），**不是**"昵称至少 2 个字符"。
+       *    所以本地那一层（`DisplayNameField` 的 `displayNameError`）不是重复劳动 ——
+       *    具体那句话今天只有它说得出来（断言在 `scripts/accountrender.tsx`）。
+       */
+      setNameError(errorText(err));
+    } finally {
+      setNameBusy(false);
+    }
+  }
+
   async function onLogout() {
     setNotice(null);
     setBusy(true);
@@ -119,8 +173,32 @@ export function Account() {
           <dt>{t('auth.email')}</dt>
           <dd>{user.email}</dd>
 
+          {/*
+            ★ 「改昵称」入口就在这一行里（用户裁决：入口放账号页，不是顶部菜单）。
+            ⚠️ 它**复用这一行**，而不是在表格下面再加一块专门显示昵称的区块 ——
+               后者会让同一个名字在一屏里出现两次，而两块之间没有主次
+               （用户不知道哪一个是"真的"）。
+          */}
           <dt>{t('auth.displayName')}</dt>
-          <dd>{user.displayName}</dd>
+          <dd>
+            <DisplayNameField
+              current={user.displayName}
+              editing={editingName}
+              busy={nameBusy}
+              error={nameError}
+              saved={nameSaved}
+              onEdit={() => {
+                setNameError(null);
+                setNameSaved(null);
+                setEditingName(true);
+              }}
+              onSubmit={onRenameDisplayName}
+              onCancel={() => {
+                setNameError(null);
+                setEditingName(false);
+              }}
+            />
+          </dd>
 
           <dt>{t('auth.accountVerified')}</dt>
           <dd>

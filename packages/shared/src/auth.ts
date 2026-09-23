@@ -123,6 +123,25 @@ export const LoginInputSchema = z.object({
 });
 export type LoginInput = z.infer<typeof LoginInputSchema>;
 
+/**
+ * 「改自己的昵称」的入参。
+ *
+ * ⚠️ 长度规则**复用 `DisplayNameSchema`**，一个字都不另写。
+ *    另写一份的具体后果：注册放行 32 个字、改名只放行 16 个（或者反过来），
+ *    而两次判断都"看起来是对的" —— 用户遇到的是"这个昵称能注册但不能改成它"。
+ *
+ * ⚠️ `.strict()`（与 `live.ts` / `liveShares.ts` 的 body schema 一致）：
+ *    **这个端点的契约里没有 `userId`** —— 改别人的昵称是另一个功能（见
+ *    `routes/auth.ts` 那条路由的说明）。多传一个键当场 400，而不是被静默丢掉：
+ *    静默丢掉的版本里，客户端会以为自己刚刚成功改了一个人的昵称。
+ */
+export const UpdateDisplayNameInputSchema = z
+  .object({
+    displayName: DisplayNameSchema,
+  })
+  .strict();
+export type UpdateDisplayNameInput = z.infer<typeof UpdateDisplayNameInputSchema>;
+
 // ---------------------------------------------------------------------------
 // 响应
 // ---------------------------------------------------------------------------

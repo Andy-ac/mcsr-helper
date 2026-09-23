@@ -616,6 +616,21 @@ export function logout(): Promise<{ ok: true }> {
   return sendJson('POST', '/api/auth/logout');
 }
 
+/**
+ * 改**自己**的昵称（账号页 `/account` 上那个入口）。
+ *
+ * ⚠️ 路径里没有 id —— 服务端的入参 schema 是 `.strict()` 的，只能改自己那一行
+ *    （`services/api/src/routes/auth.ts` 的 `PATCH /me`）。
+ *
+ * ⚠️★ 返回值是**库里重读出来**的完整用户对象（`UserSelf`），不是"新昵称"这一个字符串：
+ *    调用方要拿它**就地更新** `lib/auth.tsx` 缓存的那个 user，页头（`Layout.tsx`）
+ *    才会立刻显示新名字。只回一个字符串的话，调用方得自己拼一个 user 对象出来 ——
+ *    那就是第二份"用户的形状"，迟早与 `toUserSelf` 漂开。
+ */
+export function updateDisplayName(displayName: string): Promise<{ user: UserSelf }> {
+  return sendJson('PATCH', '/api/auth/me', { displayName });
+}
+
 export function sendVerifyEmail(): Promise<{ ok: true; alreadyVerified?: boolean }> {
   return sendJson('POST', '/api/auth/verify/send');
 }

@@ -56,7 +56,7 @@ MCSR 社区的**资源库 / 日历 / 视频与直播聚合**站点 —— 一个
 | 后端 | Hono 4 + `node:sqlite`（Node 内置，没有 ORM），zod 4 做校验。SQLite 迁移是仓库里的 23 个文件，**由进程启动时自动跑**。 |
 | 桌面 | Electron 44 + electron-builder（NSIS 安装包）+ electron-updater。 |
 | 定时作业 | 三个 systemd timer：视频同步（10 分钟）、直播链接收录（5 分钟）、直播状态与人数（3 分钟）。 |
-| 提交闸门 | TypeScript 7（`tsc --noEmit`）+ `node --test`（约 1,200 条）+ Biome + **十一个渲染自检脚本**。 |
+| 提交闸门 | TypeScript 7（`tsc --noEmit`）+ `node --test`（约 1,200 条）+ Biome + **十二个渲染自检脚本**。 |
 | 部署 | Caddy（HTTPS / 安全头 / CSP）+ systemd + 一个 bash 脚本。**没有容器、没有编排。** |
 
 ## 快速开始
@@ -86,7 +86,7 @@ pnpm dev:web          # Web(5173) + API(3001)，浏览器里开发 ← 平时用
 ```
 apps/
   web/          React 前端 —— **唯一**的前端产物（浏览器与 Electron 共用同一套）
-                scripts/ 是那十一个渲染自检脚本（web 层唯一的自动化覆盖）
+                scripts/ 是那十二个渲染自检脚本（web 层唯一的自动化覆盖）
   desktop/      Electron 主进程 + preload + 自动更新 + 打包配置
 services/
   api/          Hono HTTP API + node:sqlite；同一个 bundle 里还有三个定时作业的入口
@@ -110,7 +110,7 @@ docs/           方案、规格与调研事实表。⚠️ 其中一部分是**�
 | `pnpm test` | 全部测试（`node --test`，约 1,200 条） |
 | `pnpm typecheck` / `pnpm lint` / `pnpm format` | 类型检查 / Biome 检查 / 自动修复 |
 | `pnpm -w check` | **门禁①**：typecheck + 全部测试 + lint |
-| `pnpm -F @mcsr/web check:all` | **门禁②**：上面这些 + 十一个渲染自检 × 两种语言 |
+| `pnpm -F @mcsr/web check:all` | **门禁②**：上面这些 + 十二个渲染自检 × 两种语言 |
 | `pnpm deploy` | 部署到服务器（需先配 `deploy/deploy.env`） |
 
 ★ 贡献之前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)：两道门禁、以及几条

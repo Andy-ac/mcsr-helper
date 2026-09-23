@@ -434,6 +434,24 @@ export const zhCN = {
     accountUnverified: '邮箱未验证',
     accountRole: '角色',
     accountJoined: '注册于',
+    /*
+     * ★ 「改我的昵称」—— 账号页上昵称那一行的入口与反馈（2026-09-23）。
+     *
+     * ⚠️ 这里只有**三条**新词条，其余全部复用既有键，理由逐条写清楚
+     *    （每一条都对应一次"再写一份同义文案"的诱惑）：
+     *      · 块标题 / 输入框标签 → `auth.displayName`（就是"昵称"这两个字）；
+     *      · 输入框提示       → `auth.displayNamePlaceholder`；
+     *      · 「保存」/「取消」   → `common.save` / `common.cancel`；
+     *      · 太短 / 太长那两句  → `auth.err.nameMin` / `auth.err.nameMax`
+     *        （`lib/auth.tsx` 的 `fieldIssueText` 里本来就有这两条，界面上由本地校验
+     *          `DisplayNameField` 的 `displayNameError` 选出来 —— ⚠️ **不是**服务端 400
+     *          那条路：服务端的 `issues[]` 里没有 Zod 的 code，那条路落到
+     *          `auth.err.invalid`。现状由 `apps/web/scripts/accountrender.tsx` 钉着）。
+     *    ⇒ 同一个词在两处各养一条，改文案时必然只改一处。
+     */
+    nameEditAction: '修改',
+    nameSaved: '昵称已更新',
+    namePublicNote: '昵称会公开显示：资源作者、贡献者面板和审核记录里都是它。',
     roleUser: '普通用户',
     roleReviewer: '审核员',
     roleEditor: '内容编辑',

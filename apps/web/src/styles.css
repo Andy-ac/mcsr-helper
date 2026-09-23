@@ -1713,6 +1713,43 @@ html:not(.vt) .route-fade {
   font-size: var(--fs-px-sm);
 }
 
+/* ==================================================================
+   改昵称（账号页「昵称」那一行里的入口与行内编辑）
+   ==================================================================
+   ⚠️ 为什么它长在 `.infotable` 的**行内**，而不是另起一块：
+      昵称在一屏里出现两次（表格里的值 + 新块的标题）会让人分不清哪个是
+      "真的"，而两块之间没有任何主次。
+   ⚠️ 值用像素字体：与 `.infotable dd a` 同一条理由 —— 它是界面文字。
+   ⚠️ 那句"昵称会公开显示"用 `--fg-faint`：它是**说明**，不是警告也不是错误，
+      用红/黄会让人以为自己的昵称出了问题（而它只是公开的）。
+      成功那句用 `--grass-bright`：与 `.pill--ok` / `.notice--ok` 同一个绿 ——
+      全站"成功"只有一个颜色，第二个绿会让人以为它是另一种状态。 */
+.namefield__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.namefield__value {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+}
+.namefield__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-faint);
+}
+.namefield__note--ok {
+  color: var(--grass-bright);
+  font-size: 12.5px;
+}
+/* 编辑态整块（`Field` + 两个按钮）已经自带间距，这里只消掉表单默认的外边距 */
+.namefield__form {
+  margin: 0;
+}
+
 /* 同标签的其它条目 */
 .related {
   margin-top: 38px;

@@ -5,7 +5,8 @@
  *   POST /api/auth/register
  *   POST /api/auth/login
  *   POST /api/auth/logout
- *   GET  /api/auth/me
+ *   GET  /api/auth/me               我是谁（未登录 ⇒ 200 + null，见偏离二）
+ *   PATCH /api/auth/me              改自己的昵称（需登录；没有 id 段 —— 改不了别人）
  *   POST /api/auth/verify/send      重发验证邮件（需登录）
  *   POST /api/auth/verify/resend    重发验证邮件（未登录，见下）
  *   POST /api/auth/verify           用 token 完成验证
@@ -55,6 +56,7 @@ import {
   LoginInputSchema,
   PasswordSchema,
   RegisterInputSchema,
+  UpdateDisplayNameInputSchema,
   VerifyResendInputSchema,
 } from '@mcsr/shared/auth';
 import { type Context, Hono } from 'hono';
@@ -82,6 +84,7 @@ import {
   markEmailVerified,
   redeemEmailToken,
   toUserSelf,
+  updateUserDisplayName,
   updateUserPassword,
   writeAudit,
 } from '../users';
@@ -393,6 +396,106 @@ authRoute.get('/me', (c) => {
   const user = c.get('user');
   if (!user) return c.json({ user: null });
   return c.json({ user: toUserSelf(user) });
+});
+
+// ---------------------------------------------------------------------------
+// 改自己的昵称
+// ---------------------------------------------------------------------------
+
+/**
+ * 改**自己**的昵称（账号页 `/account` 上那个入口）。
+ *
+ * ---------------------------------------------------------------------------
+ * 为什么是 `PATCH /me`，而不是 `POST /profile/rename` 之类
+ * ---------------------------------------------------------------------------
+ * 两点，都是"照本仓既有写法"：
+ *   1. **改已有那一行用 PATCH**（`routes/live.ts` 的 `/live/mine/:id` 是同一个动作、
+ *      同一条 `requireAuth`）；POST 在本仓一律是"新建一个东西"。
+ *   2. 路径里**没有 id 段**，所以"改别人"这个功能在形状上就不存在 ——
+ *      不是靠 handler 里记得忽略一个 `userId`（那种记得住的东西迟早会忘）。
+ *      入参 schema 也 `.strict()`：body 里多一个 `userId` 直接 400，
+ *      而不是被静默丢掉（见 `packages/shared/src/auth.ts`）。
+ *
+ * ⚠️ 与**计划**的一处出入，写在这里免得下一个人把它当成漏做：
+ *    `docs/v1-plan.md` 的 M5 端点清单里，改资料写的是 `PATCH /api/users/me`
+ *    （括注"改昵称/头像/locale"）。本轮**没有**走那条路，理由是它今天不存在 ——
+ *    `/api/users/*` 那一族里只有 `/api/admin/users/:id/...`，公开主页 `GET /api/users/:id`
+ *    本身还是 M5 才有的东西。为一个小功能新开一个路由文件 + 一个挂载点，
+ *    换来的是与 `GET /api/auth/me`（"我是谁"今天住在这里）**两个**自我相关的入口。
+ *    代价（如实记下）：M5 真的要做头像 / locale 时，得先决定是把这个端点搬过去、
+ *    还是在两边各留一个 —— 而那是一次有意的合并，不是本轮的疏漏。
+ *    ⚠️ 真搬过去时注意 `PATCH /users/me` 与 `GET /users/:id` 的**注册顺序**
+ *    （Hono 按注册顺序匹配；`/users/me` 必须排在 `/users/:id` 前面，
+ *    否则它会落到"按 id 查一个叫 me 的用户"那一支）—— 那条坑在本仓记过好几次。
+ *
+ * ⚠️ 与上面 `GET /me` 的**刻意不一致**：读自己的信息，未登录返回 `200 + null`
+ *    （那是访客的正常状态，见文件头"偏离二"）；**写**不是正常状态 ——
+ *    没有会话就 401，前端据此去登录页。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 不做唯一性校验，也**不设冷却** —— 两条都是刻意接受的，不是漏写
+ * ---------------------------------------------------------------------------
+ * · 重名：**注册本来就不要求昵称唯一**（`users.display_name` 上只有 `NOT NULL`，
+ *   没有 UNIQUE，见 `db/migrations/004_auth.ts`）。所以改成一个别人正在用的昵称
+ *   **必须成功** —— 否则改名这条路上就凭空多出一条注册没有的规则
+ *   （`services/api/src/auth/display-name.test.ts` 有一条断言钉着它）。
+ *   代价：站上会出现两个同名的人，靠昵称分不清谁是谁。要有唯一昵称是
+ *   **一次产品决定 + 一次迁移**（给那一列加唯一索引前得先把历史重名处理掉）。
+ * · 冷却：用户当场裁决「不限次数」⇒ 这里**不写**"每人每天 N 次"那种判据。
+ *   代价（写出来，免得以后被当成缺陷）：昵称是**公开且被到处引用**的 ——
+ *   资源作者、贡献者面板、审核记录、管理员用户列表、页头都用它。改得越快，
+ *   "那个人"与历史记录对不上得越厉害（一条 2026-09 的审核记录上写的名字，
+ *   可能既不是他提交时的名字、也不是他现在用的名字）。**这一轮不为此加任何冷却。**
+ *
+ * ⚠️ 那么它靠什么限流：`index.ts` 那个**全站** per-IP 限流（`app.use('/api/*')`，
+ *    240 次/分钟/IP）。那是这条路由本来就吃得到的一层 —— auth 这一族**没有**
+ *    共用的 per-IP 桶（`LIMITS` 里每一条都是某个端点自己的），所以这里既不新增桶、
+ *    也不写一条"改名专用"的配额；新增一条就等于偷偷把用户裁决掉的冷却加回来。
+ */
+authRoute.patch('/me', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = UpdateDisplayNameInputSchema.safeParse(body ?? {});
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: formatIssues(parsed.error) }, 400);
+  }
+
+  const now = Date.now();
+  updateUserDisplayName(user.id, parsed.data.displayName, now);
+
+  /*
+   * ⚠️ 审计带**旧值与新值**，因为要回答的是"把什么改成了什么"。
+   *    只记新值等于没记：改名之前的那个名字在别处（贡献者、审核记录）仍然印着，
+   *    排查"这条记录上的名字是谁"时，缺了旧值就断了线索。
+   *    格式跟随 `routes/calendar.ts` 的 `series.rename`（`旧 → 新`）。
+   *
+   * ⚠️ **不拼邮箱**。昵称是公开信息（站上到处都在显示它），写进审计没有问题；
+   *    邮箱不是 —— 审计表在管理界面里是**列出来给人看**的，多拼一个邮箱
+   *    就等于在任何看审计的地方顺手暴露了会员邮箱。要认人，`actor_id` 就够了。
+   */
+  writeAudit({
+    actorId: user.id,
+    action: 'user.rename',
+    entityType: 'user',
+    entityId: user.id,
+    reason: `${user.display_name} → ${parsed.data.displayName}`,
+    ip: clientIp(c),
+    now,
+  });
+
+  /*
+   * ⚠️ 回包里的用户对象必须**重新从库里读一遍**，不是拿 `user` 拼一个新的。
+   *    `c.get('user')` 是这次请求**开始时**那一行：直接回它（或回入参）的话，
+   *    响应里会有一个"看起来改好了"的昵称，而它证明不了库里真的变了 ——
+   *    前端拿它去更新缓存，界面于是显示新名字，而数据层可能什么都没发生。
+   *    重读一次，响应就成了"库里现在是什么"的读数。
+   */
+  const fresh = findUserById(user.id);
+  if (!fresh) return c.json({ error: 'not_found' }, 404);
+
+  return c.json({ user: toUserSelf(fresh) });
 });
 
 // ---------------------------------------------------------------------------

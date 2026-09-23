@@ -134,6 +134,29 @@ export function updateUserPassword(userId: string, passwordHash: string, now: nu
     .run(passwordHash, now, userId);
 }
 
+/**
+ * 改一个用户自己的昵称。
+ *
+ * ⚠️ **没有任何唯一性判据**，这是刻意的（与注册一致）：`display_name` 上只有
+ *    `NOT NULL`、**没有 UNIQUE**（见 `db/migrations/004_auth.ts`），所以注册时
+ *    两个人本来就可以叫同一个名字。这里再加一道"重名就不许改"的检查，
+ *    等于在**改名**这条路上造出一条注册没有的规则 —— 改不到自己原本的名字、
+ *    也改不到任何热门昵称，而这两件事都不是我们想禁的东西。
+ *    代价（写清楚，免得以后被当成缺陷）：站上会出现两个同名的人，
+ *    靠昵称分不清谁是谁；要有唯一昵称是一次产品决定 + 一次迁移（另见
+ *    `routes/auth.ts` 那条路由的注释）。
+ *
+ * ⚠️ 推 `updated_at`（与 `setUserRole` 刻意做的**相反**）：那一列的含义是
+ *    "用户资料最后一次被改"（见 `setUserRole` 上面那段），而改名正是**用户自己**
+ *    改自己的资料；角色是管理员的操作，所以那边不推。两个方向都有先例，
+ *    这里是按字段的语义选的，不是随手抄一个。
+ */
+export function updateUserDisplayName(userId: string, displayName: string, now: number): void {
+  getDb()
+    .prepare('UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?')
+    .run(displayName, now, userId);
+}
+
 export function markEmailVerified(userId: string, now: number): void {
   getDb()
     .prepare(
