@@ -126,7 +126,12 @@ export function Account() {
        *    而 `fieldIssueText` 是按 `code` 分支的 ⇒ 落到兜底那句
        *    `auth.err.invalid`（"填写的内容不合法"），**不是**"昵称至少 2 个字符"。
        *    所以本地那一层（`DisplayNameField` 的 `displayNameError`）不是重复劳动 ——
-       *    具体那句话今天只有它说得出来（断言在 `scripts/accountrender.tsx`）。
+       *    具体那句话今天只有它说得出来。
+       * ⚠️ 钉住这件事的两条断言分工不同，别搞混（`accountrender.tsx` ⑤ 读的是**本地
+       *    构造的夹具**，服务端怎么变它都看不见）：
+       *      · 本地映射（"没有 code 的 issue 落到兜底那句"）= `scripts/accountrender.tsx` ⑤；
+       *      · 服务端 `issues[]` 的形状（只有 `field` + `message`）=
+       *        `services/api/src/auth/display-name.test.ts` 里钉**键集**的那一条。
        */
       setNameError(errorText(err));
     } finally {
@@ -181,6 +186,15 @@ export function Account() {
           */}
           <dt>{t('auth.displayName')}</dt>
           <dd>
+            {/*
+              ⚠️★ `onDirty` 让**服务端**那句红字也在用户一打字时被擦掉：组件里擦的是它自己
+              那句本地校验（`localError`），而服务端那句存在本页的 `nameError` 里、
+              只能由本页清。
+              少了它，服务端报错（401 / 429 / 将来可能收紧的 400）之后继续打字，
+              输入框下面挂着的还是**上一个**输入值的那句话。
+              ⚠️ 这一条**没有**自动化判据：`onChange` 是事件处理器，渲染自检一行都不跑
+                （`accountrender.tsx` 末尾把它列在"没被覆盖"里）。
+            */}
             <DisplayNameField
               current={user.displayName}
               editing={editingName}
@@ -192,6 +206,7 @@ export function Account() {
                 setNameSaved(null);
                 setEditingName(true);
               }}
+              onDirty={() => setNameError(null)}
               onSubmit={onRenameDisplayName}
               onCancel={() => {
                 setNameError(null);

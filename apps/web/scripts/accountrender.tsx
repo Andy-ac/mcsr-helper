@@ -9,15 +9,21 @@
  * ---------------------------------------------------------------------------
  * 为什么账号页**必须**有自己的自检（而不是并进别的脚本）
  * ---------------------------------------------------------------------------
- * 在这之前 `/account` 是**唯一**一个没有任何渲染覆盖的主要页面：
- * `gridrender` / `liverender` / `calendarrender` / `homerender` … 都不渲染它
- * （唯一沾到边的是 `roleguide.tsx`，它只渲染 `RoleGuide` 那一块）。于是账号页上的
+ * 在这之前账号页（真实路由是 `/me` —— `App.tsx` 里那句
+ * `<Route path="/me" element={<Account />} />`）没有任何渲染覆盖。
+ * ⚠️ 但它**不是唯一**一个没有覆盖的页面（这里原来写的是"唯一"，是错的）：
+ * `apps/web/scripts/` 里 import 过 `@/routes/...` 的只有四个文件
+ * （`homerender` → `Home`、`resourcerender` → `ResourceDetail`、`videorender` → `Videos`、
+ * 本脚本 → `Account`）⇒ `Login` / `Register` / `PasswordReset` / `NotFound` 今天
+ * **同样**没有 —— 这是现读那四个 import 数出来的。
+ * 唯一沾到边的是 `roleguide.tsx`，它只渲染 `RoleGuide` 那一块组件（不是整页）。于是账号页上的
  * 任何改动都只有"类型检查过得了"这一层 —— 那是最弱的一层：
  * **词条打错一个字母、块整个没渲染、初值传空**，它一条都看不见
  * （i18next 对未知 key 不报错，原样把 key 显示出来）。
  *
  * ---------------------------------------------------------------------------
- * 守的四件事（每一件都对应一种"门禁全绿但界面是坏的"）
+ * 守的十件事（每一件都对应一种"门禁全绿但界面是坏的"；序号与正文里的 ①…⑩ 一一对应，
+ * 第十件只在 `--en` 那一遍跑）
  * ---------------------------------------------------------------------------
  *   ① **入口在**：整页渲染（真的 `Account`，注入一个已登录用户）里必须有「修改」
  *      那颗按钮、必须显示当前昵称、而且**收起态不许出现「保存」** ——
@@ -25,9 +31,17 @@
  *      还以为自己的昵称丢了）照样能过。
  *   ② **初值**：编辑态必须带着**当前昵称**打开（空输入框 = 用户以为自己名字没了）。
  *      直接喂 props 渲染 `DisplayNameField`：展开是**交互**，静态渲染里到不了。
- *   ③ **两种错误各说各的话**：太短与太长必须是**两句不同的**译文，而且
- *      恰好在下界/上界上的输入要**放行**（否则判据退化成"凡输入都报错"）。
- *   ④ **成功后那句话**：必须真的渲染出来，而且不能与错误那两句是同一句。
+ *   ③ **本地校验**：太短与太长必须是**两句不同的**译文，而且恰好在下界/上界上的输入要**放行**
+ *      （否则判据退化成"凡输入都报错"）。
+ *   ④ **错误那句真的画在表单里**，而且报"太短"时不会同时冒出"太长"那一句。
+ *   ⑤ **服务端 400 那句**走既有映射 —— 如实记录现状（那一条**看不到服务端**，见 ⑤ 的说明）。
+ *   ⑥ **成功后那句话**：必须真的渲染出来，而且不能与错误那几句是同一句。
+ *   ⑦ **「昵称会公开显示」在收起态就说**（只有改完才说 = 用户是在不知情的情况下改了一次资料）。
+ *   ⑧ **裸 key 泄漏**：词条打错一个字母就会以 `auth.xxx` 的形式露在界面上；这一节自带两条
+ *      探针，把**扫描器本身**夹住（见 ⑧ 的说明）。
+ *   ⑨ ★ 一条**读源码**的守卫：改名成功后必须把新用户塞回 `useAuth` 的缓存
+ *      （页头才会立刻换名字；见下面单独那一节）。
+ *   ⑩ **英文那一遍整页零汉字**。
  *
  * ---------------------------------------------------------------------------
  * ⚠️★ 一条**读源码**的守卫：改名成功后必须把新用户塞回 `useAuth` 的缓存
@@ -46,12 +60,19 @@
  *   · 点「修改」会不会真的展开（只验到"把 `editing` 给成 true 会渲染成什么样"）；
  *   · 点保存会不会真的发 `PATCH /api/auth/me`（`renderToStaticMarkup` 一行事件处理器都不跑）；
  *   · 页头（`Layout.tsx`）在 `setUser` 之后会不会真的换名字 —— 见上面那条源码守卫；
- *   · 服务端 400 的真句子（这里喂的是**构造出来的** `ApiError`，不是真的请求）。
- *   这些都列在脚本末尾的输出里。
+ *   · 服务端 400 的真句子（这里喂的是**构造出来的** `ApiError`，不是真的请求）；
+ *   · 用户在编辑框里继续打字会不会真的把上一次那句红字擦掉（`onChange` 也是事件处理器，
+ *     `DisplayNameField` 的 `onDirty` 就是为它加的 —— 但这里一行都不跑）。
+ *   这些都写在脚本末尾的输出里（那份清单说的是"至少这几样"，不是全部边界）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DISPLAY_NAME_MAX, DISPLAY_NAME_MIN, type UserSelf } from '@mcsr/shared/auth';
+import {
+  DISPLAY_NAME_MAX,
+  DISPLAY_NAME_MIN,
+  UpdateDisplayNameInputSchema,
+  type UserSelf,
+} from '@mcsr/shared/auth';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import i18n from 'i18next';
 import * as React from 'react';
@@ -203,6 +224,12 @@ function fieldHtml(props: {
       error: props.error ?? null,
       saved: props.saved ?? null,
       onEdit: () => undefined,
+      /*
+       * ⚠️ `onDirty` 在这里**永远不会被调用**（静态渲染不跑 `onChange`）—— 它只是为了
+       *    props 完整。它接的那件事（用户一打字就擦掉上一次那句红字）属于下面列出的
+       *    "没被覆盖"之一，不是这里的判据。
+       */
+      onDirty: () => undefined,
       onSubmit: () => undefined,
       onCancel: () => undefined,
     }),
@@ -293,11 +320,48 @@ ok('★ 错误那句真的渲染在表单里，而且不会同时冒出另一句
  *   `auth.err.invalid`，**不是**"昵称至少 2 个字符"。
  *   ⇒ 所以本地那一层（③）不是重复劳动：**具体那句话今天只有它说得出来。**
  *
- * ⚠️ 这条断言会**在有人改进服务端时变红**（比如开始发 code、或者换成按 field 分支），
- *    那时应当把它连同上面这段话一起改掉 —— 这正是它存在的意义：
- *    让"服务端那句到底是什么"永远有人确认过，而不是靠读代码猜。
+ * ⚠️★ 这条断言**看不见服务端** —— 这一段原来的说法是反的（原文写着"服务端哪天开始发
+ *    code，它会红"），必须改掉：下面那个 `serverIssues` 是**本地构造**的夹具，
+ *    本脚本连一个服务端模块都没有 import，服务端把 `issues[]` 改成什么样它都看不到。
+ *    ⇒ 把两件事分清：
+ *      · 它会红的场合 = **本地这一层**的映射变了（`lib/auth.tsx` 的 `fieldIssueText`
+ *        换成按 `field` 分支、或者兜底那句的 key 换了）；
+ *      · 它**不会**红的场合 = 服务端开始发 `code`。那件事由**服务端那一侧**的一条断言守着：
+ *        `services/api/src/auth/display-name.test.ts` 里钉 `issues[]` **键集**的那一条
+ *        （键集一旦多出 `code` 就红）。那条红了，就是回来改这里和
+ *        `apps/web/src/components/DisplayNameField.tsx` 里对应说明的信号。
  */
-const serverIssues: FieldIssue[] = [{ field: 'displayName', message: '昵称至少 2 个字符' }];
+/**
+ * 真 schema（`UpdateDisplayNameInputSchema` —— 就是 `PATCH /me` 校验入参的那一个）对
+ * "太短"给出的那句 message。
+ *
+ * ⚠️ 它同时是一条**探针**：`DisplayNameSchema` 哪天不再拒绝 1 个字符（比如 `.min()` 被
+ *    拿掉），这里会抛 —— 上面那段说明（"具体那句话今天只有本地这一层说得出来"）
+ *    的前提也就当场塌了。
+ */
+function schemaShortMessage(): string {
+  const parsed = UpdateDisplayNameInputSchema.safeParse({
+    displayName: 'x'.repeat(DISPLAY_NAME_MIN - 1),
+  });
+  if (parsed.success) {
+    throw new Error(
+      `探针：${String(DISPLAY_NAME_MIN - 1)} 个字符必须被 UpdateDisplayNameInputSchema 拒掉` +
+        '（它不拒 ⇒ 下面那份夹具的前提不成立，"本地那一层是唯一说得出来的"也就不是事实）',
+    );
+  }
+  const message = parsed.error.issues[0]?.message;
+  assert.ok(message, '探针：schema 拒掉时应当给出 message（没有它下面那份夹具是空的）');
+  return message;
+}
+
+/*
+ * 夹具：`message` **从真 schema 取**（见上面几行的 `schemaShortMessage()`），不手抄 ——
+ * 手抄的那句话会悄悄与 `packages/shared/src/auth.ts` 漂开，而漂了也没人知道。
+ * ⚠️ 但要说清楚：`apiErrorText` → `fieldIssueText` **只读 `field` 与 `code`、完全不读
+ *    `message`**。所以这份夹具的 message 取什么值都不影响下面那条断言的结论 ——
+ *    它**不是**"服务端会说那句话"的证据，只是让夹具不至于凭空写。
+ */
+const serverIssues: FieldIssue[] = [{ field: 'displayName', message: schemaShortMessage() }];
 const serverText = apiErrorText(
   new ApiError('API 返回 HTTP 400', 400, 'invalid_input', undefined, serverIssues),
   t as unknown as Parameters<typeof apiErrorText>[1],
@@ -360,16 +424,50 @@ ok('★ 「昵称会公开显示」在收起态就已经说了');
 // ---------------------------------------------------------------------------
 // ⑧ 裸 key 泄漏（打错一个字母就会以 `auth.xxx` 的形式露在界面上）
 // ---------------------------------------------------------------------------
-const samples = [pageHtml, editHtml, shortHtml, savedHtml].join('');
-const leaked = [...new Set(samples.match(/(?:auth|common|name)\.[A-Za-z]+/g) ?? [])];
-assert.deepEqual(leaked, [], `裸 key 泄漏：${leaked.join(', ')}`);
-/* ⚠️ 探针：扫描器本身必须能命中一个明显不存在的 key，否则上面那条是恒真的。 */
-assert.notEqual(
-  /(?:auth|common)\.[A-Za-z]+/.test('auth.nameDoesNotExist'),
-  false,
-  '泄漏扫描器本身必须能命中（否则上面那条断言是恒真的空跑）',
+/*
+ * ⚠️★ 扫描器**只有这一个**（具名的 `RAW_KEY_RE`）："算泄漏"与下面的探针用的是**同一个**
+ *    对象。原来的写法是两处各写一个正则字面量，而且两个长得不一样（探针那份少了 `name`
+ *    那一支）⇒ "把扫描器改坏"这件事**不会有任何断言出声**，而 `ok(...)` 照旧宣称
+ *    "扫描器本身能命中" —— 一条在撒谎的守卫。现在探针断言的是**这个函数的产出**。
+ */
+const RAW_KEY_RE = /(?:auth|common|name)\.[A-Za-z]+/g;
+
+/**
+ * 一段渲染产物里所有的裸 key（去重）。
+ *
+ * ⚠️ 这个 `/g` 对象被反复使用：`String.prototype.match` 每次都会先把 `lastIndex` 归零，
+ *    所以调用之间不互相影响（现测：同一个对象连调两次给出同样的结果）。
+ */
+const rawKeysIn = (markup: string): string[] => [...new Set(markup.match(RAW_KEY_RE) ?? [])];
+
+/*
+ * ⚠️ 两条探针在**用扫描器去扫产物之前**跑，所以它们才是"先响的那一个"：放在后面的话
+ *    一条坏掉的扫描器会先被下面那条断言拦住，你看到的是"产物里有泄漏"，而真正坏的
+ *    是扫描器 —— 本仓 §5.74 那句"命令写错时输出长得像这一项没过"的同一类麻烦。
+ *    两条都断言**这个函数的产出**（不是另一串常量的性质），而且**各有自己那一刀**：
+ *    · 少了"不误报"：一条过宽的正则（`/[A-Za-z]+/g` 那种）会把正常文案里的词也算成泄漏；
+ *    · 少了"能命中"：一条永不可能命中的正则会让下面那条断言变成恒真的空跑。
+ *    ⚠️ 两刀都实测过（每次只跑本脚本，改完还原、sha256 与改前逐个比对）：
+ *      · `RAW_KEY_RE` → `/[A-Za-z]+/g` ⇒ **第一条**探针红（`actual` 是一串普通词）；
+ *      · `RAW_KEY_RE` → `/(?:authx|commonx|namex)\./g` ⇒ 第一条绿、**第二条**探针红
+ *        （`actual: []` / `expected: ['auth.nameDoesNotExist']`）。
+ *    ⇒ 顺序是有意的：先"不误报"再"能命中"，两条才各自都是先响的那一个。
+ */
+assert.deepEqual(
+  rawKeysIn('SpeedRunner 与 Cancel 这两串字不是 key'),
+  [],
+  '泄漏扫描器不该命中普通文案里的词（否则它会变成噪声，而噪声没人再看）',
 );
-ok('★ 渲染结果里没有裸 key 泄漏（且扫描器本身能命中）');
+assert.deepEqual(
+  rawKeysIn('auth.nameDoesNotExist'),
+  ['auth.nameDoesNotExist'],
+  '泄漏扫描器本身必须能命中（否则下面那条断言是恒真的空跑）',
+);
+
+const samples = [pageHtml, editHtml, shortHtml, savedHtml].join('');
+const leaked = rawKeysIn(samples);
+assert.deepEqual(leaked, [], `裸 key 泄漏：${leaked.join(', ')}`);
+ok('★ 渲染结果里没有裸 key 泄漏（同一个扫描器已由上面两条探针夹住：能命中、且不误报）');
 
 // ---------------------------------------------------------------------------
 // ⑨ ★ 读源码的守卫：成功后必须把新用户塞回缓存（页头才会立刻换名字）
@@ -422,10 +520,11 @@ console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
 console.log('⚠️ 这个脚本验的是**渲染**（和一处源码形状）：没有点击、没有请求、也没有真实浏览器。');
-console.log('   具体没被覆盖的四样：');
+console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点「修改」是不是真的展开（只验到"editing=true 会渲染成什么样"）；');
 console.log('     · 点「保存」是不是真的发出 PATCH /api/auth/me（事件处理器一行都不跑）；');
 console.log(
   '     · 页头（Layout.tsx）在 setUser 之后是不是真的换了名字（只钉住 setUser 那一句在）；',
 );
-console.log('     · 服务端 400 的**真实**响应（这里喂的是构造出来的 ApiError，不是请求）。');
+console.log('     · 服务端 400 的**真实**响应（这里喂的是构造出来的 ApiError，不是请求）；');
+console.log('     · 在编辑框里继续打字是不是真的擦掉上一次那句红字（onChange 同样一行都不跑）。');

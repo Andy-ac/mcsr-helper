@@ -239,6 +239,43 @@ describe('改昵称：谁能改', () => {
 
 describe('改昵称：400 要点名字段', () => {
   /*
+   * ★★ `issues[]` 的**键集**必须恰好是 `{ field, message }` —— 这条钉的是**契约的形状**，
+   *    不是某个字段的值。
+   *
+   * 为什么要单独钉它：`apps/web/src/lib/auth.tsx` 的 `fieldIssueText` 是**按 Zod 的 `code`
+   * 分支**的（`case 'too_small'` …），而 `formatIssues` 今天**不发 `code`** ⇒ 服务端那句
+   * 在界面上落到兜底文案（`auth.err.invalid`，见 `displayNameError` 那一带的说明）。
+   * 哪天有人给 `formatIssues` 加上 `code`，**界面上的句子会变**（变成"昵称至少 2 个字符"），
+   * 而 `apps/web/scripts/accountrender.tsx` ⑤ 那条断言**不会红** —— 它读的是脚本自己
+   * 手工构造的夹具（没有 code），看不见服务端的真形状。
+   * ⇒ 所以"服务端开始发 code"这件事**只有这一条能拦住**：
+   *    `Object.keys(issue).sort()` 一旦变成 `['code','field','message']`，它当场红。
+   *    它红了要做的两件事，写在下面那条断言的失败信息里。
+   */
+  it('★ `issues[]` 的键集恰好是 { field, message }（服务端哪天开始发 code ⇒ 红的是这一条）', async () => {
+    const me = await newUser('键集测试');
+
+    const res = await call('PATCH', '/api/auth/me', {
+      json: { displayName: '甲' },
+      cookie: me.cookie,
+    });
+
+    assert.equal(res.status, 400, `期望 400，实际 ${String(res.status)}`);
+    const issue = res.body.issues?.[0];
+    assert.ok(issue, `400 必须带 issues[0]，实际：${JSON.stringify(res.body.issues)}`);
+
+    assert.deepEqual(
+      Object.keys(issue).sort(),
+      ['field', 'message'],
+      '★ `issues[]` 的键集变了。今天 `formatIssues`（routes/auth.ts）只发 `field` + `message`，' +
+        '而 web 层按 `code` 分支选文案（apps/web/src/lib/auth.tsx 的 `fieldIssueText`）—— ' +
+        '键集一变，界面上那句话也就跟着变了。改这一条的同时要回去改：' +
+        '(1) apps/web/scripts/accountrender.tsx ⑤ 那条映射断言与它的说明，' +
+        '(2) apps/web/src/components/DisplayNameField.tsx 里同一件事的说明。',
+    );
+  });
+
+  /*
    * 三条一起看：太短 / 太长 / 只有空白。判据是**同一个形状** ——
    * `issues[].field === 'displayName'`（`formatIssues` 产出的那个形状），
    * 因为前端 `lib/auth.tsx` 的 `fieldIssueText` 就是按 `field` + Zod 的 code

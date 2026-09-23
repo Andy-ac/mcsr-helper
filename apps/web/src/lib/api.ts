@@ -617,7 +617,7 @@ export function logout(): Promise<{ ok: true }> {
 }
 
 /**
- * 改**自己**的昵称（账号页 `/account` 上那个入口）。
+ * 改**自己**的昵称（账号页 `/me` 上那个入口）。
  *
  * ⚠️ 路径里没有 id —— 服务端的入参 schema 是 `.strict()` 的，只能改自己那一行
  *    （`services/api/src/routes/auth.ts` 的 `PATCH /me`）。

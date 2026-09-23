@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Field } from '@/components/Form';
 
 /**
- * 「改我的昵称」那一块（账号页 `/account` 上昵称那一行）。
+ * 「改我的昵称」那一块（账号页 `/me` 上昵称那一行）。
  *
  * ---------------------------------------------------------------------------
  * 为什么它也是**纯展示**组件（props 注入，自己不发请求）
@@ -42,8 +42,11 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
  *    **按 `code` 分支**的（`case 'too_small'` …）⇒ 它落到兜底那句
  *    `auth.err.invalid`（"填写的内容不合法"）。也就是说：**"昵称至少 2 个字符"
  *    这句话，今天只有本地这一层说得出来。**
- *    ⚠️ 这个落差由 `apps/web/scripts/accountrender.tsx` 的一条断言**钉着现状**
- *      （不是认可它）：哪天服务端开始发 `code`，那条断言会红，逼人回来改这里。
+ *    ⚠️ 但那条断言（`accountrender.tsx` 的 ⑤）读的是**本地构造的夹具**，它**看不见服务端**：
+ *      服务端哪天开始发 `code`，**是不会让它红的**。守着"服务端今天只发
+ *      `{ field, message }`"的是**服务端那一侧**的一条断言 ——
+ *      `services/api/src/auth/display-name.test.ts` 里钉 `issues[]` **键集**的那一条。
+ *      那条红了，就是回来改这一段的信号。
  *
  * ⚠️ 抽成**导出的纯函数**是为了让渲染自检能直接驱动它（"太短"与"太长"各说各的话，
  *    而且都不能是空串）。写在 submit 的那个闭包里的话，SSR 里永远碰不到它 ——
@@ -67,6 +70,7 @@ export function DisplayNameField({
   error,
   saved,
   onEdit,
+  onDirty,
   onSubmit,
   onCancel,
 }: {
@@ -82,6 +86,18 @@ export function DisplayNameField({
   saved: string | null;
   /** 点「修改」。 */
   onEdit: () => void;
+  /**
+   * 用户**动过输入框**（每敲一次叫一次）。
+   *
+   * ⚠️★ 这个回调存在的原因：`error` 是**页面**传下来的（服务端那一句），而
+   *    "一改就把上一次的红字擦掉"这件事组件自己**做不了** —— 它只能清自己的
+   *    `localError`。少了这个回调，服务端报错之后继续打字，那句说的是**上一个**
+   *    输入值的红字会一直挂着（界面看的是 `shown = localError ?? error`）。
+   *    ⚠️ 它**不被任何自动化判据覆盖**：`onChange` 是事件处理器，
+   *      `renderToStaticMarkup` 一行都不跑 ⇒ `accountrender.tsx` 末尾把它列进了
+   *      "没被覆盖"的那几样。别在这里写"已验证"。
+   */
+  onDirty: () => void;
   /** 提交新昵称（**已经 trim 过**，而且已经过了本地校验）。 */
   onSubmit: (displayName: string) => void;
   /** 点「取消」：收起编辑态。 */
@@ -101,6 +117,7 @@ export function DisplayNameField({
           initial={current}
           busy={busy}
           error={error}
+          onDirty={onDirty}
           onSubmit={onSubmit}
           onCancel={onCancel}
         />
@@ -142,12 +159,14 @@ function DisplayNameEditor({
   initial,
   busy,
   error,
+  onDirty,
   onSubmit,
   onCancel,
 }: {
   initial: string;
   busy: boolean;
   error: string | null;
+  onDirty: () => void;
   onSubmit: (displayName: string) => void;
   onCancel: () => void;
 }) {
@@ -156,9 +175,10 @@ function DisplayNameEditor({
   const [localError, setLocalError] = useState<string | null>(null);
 
   /*
-   * ⚠️ 本地那句**优先**于服务端那句：本地那句话是"刚刚这一次点击"产生的，
-   *    而 `error` 是**上一次**请求的残留。反过来的话，用户改好长度再点保存，
-   *    输入框下面还挂着一句上一轮的旧话 —— 看起来像又失败了。
+   * ⚠️ 本地那句**优先**于服务端那句：本地那句是"刚刚这一次点击"产生的，
+   *    而 `error` 是**上一次**请求的残留。今天两者同时非 null 的路很窄
+   *    （页面在提交开始时、以及用户一打字时都会清 `error`），这里的 `??`
+   *    是保底的顺序，不是唯一那道防线。
    */
   const shown = localError ?? error;
 
@@ -191,8 +211,14 @@ function DisplayNameEditor({
           autoComplete="nickname"
           onChange={(event) => {
             setValue(event.target.value);
-            // 一改就把上一次的红字擦掉：那句话说的是**上一个**输入值，留着会误导
+            /*
+             * 一改就把上一次的红字擦掉 —— **两句都擦**：本地那句（`localError`）在这里清，
+             * 服务端那句是页面传下来的（`error`），只能通过 `onDirty` 让页面清掉。
+             * ⚠️ 只清本地那一半是上一版的真实缺陷（`31648dd` 里能看到那三行）：那时服务端
+             *    报错之后继续打字，输入框下面挂着的还是**上一个**输入值的那句话。
+             */
             setLocalError(null);
+            onDirty();
           }}
         />
       </Field>
