@@ -70,7 +70,7 @@ import {
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -197,26 +197,71 @@ console.log(
  * ⚠️★ **产物必须比它的输入新** —— 只判"在不在"是不够的（2026-09-24 评审的顺手 1）：
  *    下面两条证明读的是 `dist/main.cjs`，一个**旧的**产物会让它们**静默全绿**，
  *    而那时我证明的是"上一版的代码会拒绝"、报告里写的却是"现在的代码会拒绝"。
- *    输入 = `src/` 下所有 `.ts` + `build.mjs`（打包配置变了产物也该重打）。
  *    代价：改完源码不重新构建，本脚本就**拒绝跑**（退出码 2）—— 那正是要的效果。
+ *
+ * ⚠️★★ 输入集**不许手写一份包清单**（2026-09-24 评审 round 1 的 Important 1）：
+ *    第一版只走 `apps/desktop/src/**` + `build.mjs`，而 `build.mjs` 是 `bundle: true`，
+ *    `src/file-updates.ts` 又 import 了工作区包 ⇒ **`packages/shared/src/fileUpdates.ts`
+ *    会被内联进产物**（构建后的字节里能直接搜到 `compareLocalToLatest` / `needsUpdate` /
+ *    `isDisabledPath` / `compareLocalVersions`）。只改 shared 里那个文件、不重建就跑，
+ *    守卫照样放行 —— 正是这条守卫要堵的失效形态，只是窄了一格；而被改的恰好是
+ *    **证明 1 的 `unknown-local` 前提所依赖的那套规则**。
+ *    ⇒ 输入集改成**从产物自己问出来**：读 `dist/main.cjs.map` 的 `sources`
+ *      （那是 esbuild 为**这一次构建**写下的真清单，加了新 import 也不会漏），
+ *      解析成绝对路径，剔除 `node_modules`（依赖由 lockfile 钉；把它们算进来会让
+ *      `pnpm install` 变成一次假警报），再加上 `build.mjs`（打包配置变了产物也该重打）。
+ *    代价：产物必须带 sourcemap（`build.mjs` 里 `sourcemap: true` 是现成的）；
+ *    它被删掉时退化成一份**兜底清单**（`apps/desktop/src` 下所有 `.ts`、`packages` 下各包的
+ *    `src` 目录、加上 `build.mjs` —— 这里**故意不写 glob**：块注释里"星号紧跟斜杠"会提前把
+ *    注释关掉，本轮又踩了一次），而"用的哪一种"会打在输出里 ——
+ *    兜底是**更窄**的那一种，不是等价物。
  */
-const artifactInputs = [];
-(function walk(dir) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) walk(path);
-    else if (entry.name.endsWith('.ts')) artifactInputs.push(path);
+function collectInputs() {
+  const map = `${MAIN_CJS}.map`;
+  if (existsSync(map)) {
+    const parsed = JSON.parse(readFileSync(map, 'utf8'));
+    const list = (parsed.sources ?? [])
+      .map((s) => resolve(dirname(MAIN_CJS), s))
+      .filter((p) => !p.includes(`${sep}node_modules${sep}`));
+    return { list, how: `dist/main.cjs.map 的 sources（剔掉 node_modules）` };
   }
-})(join(desktopRoot, 'src'));
-artifactInputs.push(join(desktopRoot, 'build.mjs'));
+  const list = [];
+  (function walk(dir) {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith('.ts')) list.push(path);
+    }
+  })(join(desktopRoot, 'src'));
+  for (const pkg of readdirSync(join(repoRoot, 'packages'), { withFileTypes: true })) {
+    if (pkg.isDirectory()) {
+      const dir = join(repoRoot, 'packages', pkg.name, 'src');
+      (function walk(inner) {
+        if (!existsSync(inner)) return;
+        for (const entry of readdirSync(inner, { withFileTypes: true })) {
+          const path = join(inner, entry.name);
+          if (entry.isDirectory()) walk(path);
+          else if (entry.name.endsWith('.ts')) list.push(path);
+        }
+      })(dir);
+    }
+  }
+  return { list, how: '兜底清单（产物没有 sourcemap）：apps/desktop/src + packages/*/src' };
+}
+const { list: rawInputs, how: inputSource } = collectInputs();
+rawInputs.push(join(desktopRoot, 'build.mjs'));
+const artifactInputs = rawInputs.filter((p) => existsSync(p));
+const workspaceInputs = artifactInputs.filter((p) => p.includes(`${sep}packages${sep}`)).length;
 let newestInput = { path: '(一个输入都没有)', mtimeMs: 0 };
 for (const path of artifactInputs) {
-  if (!existsSync(path)) continue;
   const st = statSync(path);
   if (st.mtimeMs > newestInput.mtimeMs) newestInput = { path, mtimeMs: st.mtimeMs };
 }
+console.log(`  输入集来源：${inputSource}`);
 console.log(
-  `  输入里最新的一份：${relative(desktopRoot, newestInput.path)}（${new Date(newestInput.mtimeMs).toISOString()}）；共 ${String(artifactInputs.length)} 个输入`,
+  `  输入里最新的一份：${relative(repoRoot, newestInput.path)}（${new Date(newestInput.mtimeMs).toISOString()}）` +
+    `；共 ${String(artifactInputs.length)} 个输入，其中来自工作区包（packages/）的 ${String(workspaceInputs)} 个`,
 );
 if (mainStat.mtimeMs < newestInput.mtimeMs) {
   bail(
@@ -553,10 +598,18 @@ async function proofTamperedSha512() {
   const updatedPath = join(dir, latestFile.filename);
   console.log(`  ${dir}：${listing(dir)}`);
   console.log(`  正向那一次之后这一条的读数：${String(itemView(state).localVersion)}`);
+  /*
+   * ⚠️★ **结果**与"没抛"要一起判（2026-09-24 评审 round 1 的 Important 2）：
+   *    第一版 fix round 只留了 `positiveError === null`，把结果断言
+   *    （`itemView(state).localVersion === latest.version_number`）降级成了一句打印
+   *    ⇒ **"写盘成功了、但内存里的状态/绑定没跟着刷新"这种回归会全绿**
+   *    （而这正是 `update()` 最后那三行在做的事：重读 → 回填 `liveLocal` → `rebuildItems`）。
+   *    两个条件都留着：前者管"这一步有没有炸"，后者管"炸完之后那一刻的读数对不对"。
+   */
   check(
-    '正向那一次 update() 没有抛（它本来就该成功）',
-    positiveError === null,
-    positiveError?.message ?? '（没有抛）',
+    `正向那一次 update() 没抛，**而且**回给页面的读数就是上游那一版（${latest.version_number}）`,
+    positiveError === null && itemView(state).localVersion === latest.version_number,
+    positiveError === null ? `localVersion=${String(itemView(state).localVersion)}` : `抛了：${positiveError.message}`,
   );
   check(
     '新文件的 sha512 与上游给的**真值**一致（这一条是负向那一条的对照）',
