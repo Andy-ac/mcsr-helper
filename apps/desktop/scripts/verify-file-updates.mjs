@@ -15,8 +15,23 @@
  *
  * ⚠️ 它读的是**构建产物** `apps/desktop/dist/main.cjs`，不是源码：
  *    产物不在（或旧了）就先 `pnpm -F @mcsr/desktop build`（本机 `node` 不是 Electron 时可直接
- *    `node apps/desktop/build.mjs`）。脚本自己会核对产物存在，并把它的字节数与打包时间打出来
- *    （§5.41：声称"我验的是产物"之前先证明被测的确实是产物）。
+ *    `node apps/desktop/build.mjs`）。脚本自己会核对产物存在**且不比它的输入旧**
+ *    （旧了就退出码 2、拒绝跑），并把它的字节数、打包时间与"输入里最新那份"一起打出来
+ *    （§5.41：声称"我验的是产物"之前先证明被测的确实是产物；**只判"在不在"是不够的** ——
+ *      一个旧的产物会让两条证明静默地验上一版的代码）。
+ *
+ * ⚠️★ **没有任何门禁覆盖本文件**（2026-09-24 评审的可选项，实测过）：
+ *    `biome.json` 的 `files.includes` 只收了 ts / tsx / json 三类扩展名 ——
+ *    `biome check apps/desktop/scripts/verify-file-updates.mjs` 的答复是
+ *    "These paths were provided but ignored"（exit 1，`Checked 0 files`）；
+ *    而 `apps/desktop/tsconfig.json` 的 `include` 只有 `src` 下的 `.ts` 与 `build.mjs`
+ *    （`scripts/dist.mjs` 同此，不是本文件独有）。
+ *    ⇒ 本文件**语法烂了、断言写空了，也不会有任何信号**，唯一能发现的是人手动跑一次它自己。
+ *      这不是空话：本轮加这一段注释时就踩了一次 —— 在块注释里写 glob（星号后面紧跟斜杠）
+ *      会**提前把这个注释关掉**，于是整段变成代码、`node` 报 `Unexpected token '*'`。
+ *      没有任何门禁会发现它（`node --check` 也没有人替这个文件跑），是"跑一次"才抓到的。
+ *      为什么不把它挂进门禁：它要联网 + 两份 27 MB，挂进去会把 `pnpm check` 从
+ *      "几十秒、离线能跑"变成"要网络、要几分钟"。代价写在明处，**别以为它被门禁看着**。
  *
  * ⚠️★ **怎么在没有 Electron 的情况下驱动主进程**：把 `require('electron')` 换成桩
  *    （`Module._load` 钩子），然后把产物 `require` 进来。桩提供的是 `app` / `BrowserWindow` /
@@ -55,7 +70,7 @@ import {
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -178,12 +193,42 @@ const mainStat = statSync(MAIN_CJS);
 console.log(
   `  被测产物：${MAIN_CJS}（${String(mainStat.size)}B，打包于 ${mainStat.mtime.toISOString()}）`,
 );
-for (const source of ['src/file-updates.ts', 'src/main.ts']) {
-  const path = join(desktopRoot, source);
-  if (existsSync(path)) {
-    console.log(`    源码 ${source} 的 mtime：${statSync(path).mtime.toISOString()}`);
+/*
+ * ⚠️★ **产物必须比它的输入新** —— 只判"在不在"是不够的（2026-09-24 评审的顺手 1）：
+ *    下面两条证明读的是 `dist/main.cjs`，一个**旧的**产物会让它们**静默全绿**，
+ *    而那时我证明的是"上一版的代码会拒绝"、报告里写的却是"现在的代码会拒绝"。
+ *    输入 = `src/` 下所有 `.ts` + `build.mjs`（打包配置变了产物也该重打）。
+ *    代价：改完源码不重新构建，本脚本就**拒绝跑**（退出码 2）—— 那正是要的效果。
+ */
+const artifactInputs = [];
+(function walk(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) walk(path);
+    else if (entry.name.endsWith('.ts')) artifactInputs.push(path);
   }
+})(join(desktopRoot, 'src'));
+artifactInputs.push(join(desktopRoot, 'build.mjs'));
+let newestInput = { path: '(一个输入都没有)', mtimeMs: 0 };
+for (const path of artifactInputs) {
+  if (!existsSync(path)) continue;
+  const st = statSync(path);
+  if (st.mtimeMs > newestInput.mtimeMs) newestInput = { path, mtimeMs: st.mtimeMs };
 }
+console.log(
+  `  输入里最新的一份：${relative(desktopRoot, newestInput.path)}（${new Date(newestInput.mtimeMs).toISOString()}）；共 ${String(artifactInputs.length)} 个输入`,
+);
+if (mainStat.mtimeMs < newestInput.mtimeMs) {
+  bail(
+    [
+      '产物比它的输入**旧** ⇒ 这两条证明会静默地验证"上一版的代码"：',
+      `      产物 ${MAIN_CJS}（${mainStat.mtime.toISOString()}）`,
+      `      输入 ${newestInput.path}（${new Date(newestInput.mtimeMs).toISOString()}）`,
+      '    先跑 node apps/desktop/build.mjs 再重跑本脚本。',
+    ].join('\n'),
+  );
+}
+console.log('  ✓ 产物不比它的输入旧');
 
 const catalogBody = readFileSync(CATALOG_FILE, 'utf8');
 const catalog = JSON.parse(catalogBody);
@@ -459,8 +504,15 @@ async function proofTamperedSha512() {
   }
 
   console.log(`  更新后 ${dir}：${listing(dir)}`);
-  const afterSha = sha512OfFile(localJar);
-  console.log(`  原文件 sha512（更新后）：${afterSha}`);
+  /*
+   * ⚠️★ 这一格**可能不存在**，所以先看一眼再读（2026-09-24 评审的顺手 2）：
+   *    如果 sha512 那道校验被删掉，`update()` 会**成功** —— 新版落到新文件名上，
+   *    旧那份被 `rmSync` 删掉 ⇒ 在这里直接 `sha512OfFile(localJar)` 会以 ENOENT **崩掉**，
+   *    于是"判据红了"的诊断变成一段栈，而下面那几条准备好的 ✗ 一条都印不出来
+   *    （红是红，但红得没法读 —— §5.74 那一族）。
+   */
+  const afterSha = existsSync(localJar) ? sha512OfFile(localJar) : null;
+  console.log(`  原文件 sha512（更新后）：${afterSha ?? '（原文件不见了！）'}`);
   check('更新被拒绝（抛了）', refusal !== null, refusal?.message ?? '（没有抛）');
   check(
     '拒绝的理由是"sha512 与上游不一致"（不是别的失败撞上来的）',
@@ -473,20 +525,38 @@ async function proofTamperedSha512() {
     `cdn 请求 ${String(cdnBefore)} → ${String(cdnRequests)}`,
   );
   check('原文件还在', existsSync(localJar), listing(dir));
-  check('原文件逐字节没变（前后 sha512 相同）', afterSha === beforeSha, `${beforeSha.slice(0, 16)}…`);
+  check(
+    '原文件逐字节没变（前后 sha512 相同）',
+    afterSha !== null && afterSha === beforeSha,
+    afterSha === null
+      ? '原文件**不见了** —— 它不是"因为被拒绝才没变"，是被换掉了'
+      : `${beforeSha.slice(0, 16)}…`,
+  );
   check('没有留下 .part', readdirSync(dir).every((n) => !n.includes('.part')), listing(dir));
 
   // --- 正向对照：同一个绑定、同一条流程，只把篡改关掉 ⇒ 必须成功 -------------
   console.log('\n## 正向对照：同一套装置，只把"篡改"关掉 ⇒ 更新必须成功');
   tamperSha512 = false;
   state = await invoke(byKey.check, true);
-  state = await invoke(byKey.update, item.id);
+  /*
+   * ⚠️ 这一句也要**包一层**（与上面 afterSha 同一个理由，2026-09-24 评审的顺手 2 那一族）：
+   *    IPC 那一层的 `update()` 把"失败"翻成 reject ⇒ 上面的 sha512 校验一旦被删掉，
+   *    负向那一次就已经把夹具换掉了，这一条会**抛**；不接住的话脚本以未捕获异常收场 ——
+   *    前面辛苦印出来的那些 ✗ 会被一段栈盖住（红是红，但读不出是哪几条）。
+   */
+  let positiveError = null;
+  try {
+    state = await invoke(byKey.update, item.id);
+  } catch (error) {
+    positiveError = error;
+  }
   const updatedPath = join(dir, latestFile.filename);
   console.log(`  ${dir}：${listing(dir)}`);
+  console.log(`  正向那一次之后这一条的读数：${String(itemView(state).localVersion)}`);
   check(
-    '正向那一次更新成功了',
-    itemView(state).localVersion === latest.version_number,
-    String(itemView(state).localVersion),
+    '正向那一次 update() 没有抛（它本来就该成功）',
+    positiveError === null,
+    positiveError?.message ?? '（没有抛）',
   );
   check(
     '新文件的 sha512 与上游给的**真值**一致（这一条是负向那一条的对照）',
@@ -503,11 +573,20 @@ async function proofWrongModId() {
   const dir = join(workRoot, 'B-wrong-mod-id');
   mkdirSync(dir, { recursive: true });
   /*
-   * 默认自己造一份（`zipSync`，真的是合法 zip）—— 理由：**不依赖这台机器上的 MultiMC 实例**，
-   * 换一台机器也能跑。想拿真实第三方 jar 跑就用 `--jar`（本机那份 lithium 在
-   * `D:\MultiMC\instances\1.16.1 - Ranked#1\.minecraft\mods\lithium-1.0+backport-0.6.7+1.16.1.jar`）。
+   * 默认自己造一份（`zipSync`，真的是合法 zip）—— 理由：**不依赖任何本机游戏实例**，
+   * 换一台机器也能跑。想拿**真实的第三方 mod jar** 跑就用 `--jar`（例如你 mods 目录里那份
+   * lithium；本机实测用的是 `lithium-1.0+backport-0.6.7+1.16.1.jar`，里面 `id=lithium`）。
+   * ⚠️ 这份文件会随源码一起公开（`tools/export-public.mjs` 只剔除私有文档与 `tools/`），
+   *    所以这里**不写本机的绝对路径** —— 只说文件名与 id（AGENTS.md：公开件里不出现内部路径）。
+   *
+   * ⚠️★ 文件名**故意不含 mod id**（`foreign-fake.jar`，2026-09-24 评审的必修 1）：
+   *    产品的拒绝文案末尾是 `⇒ 不绑定（${basename(picked)}）`，所以只要夹具的文件名里带着
+   *    `lithium`，"文案里出现了 lithium"这条断言就**恒真** —— 实现退化成"只印文件名"它照样绿，
+   *    而"它报出了**文件里**那个 id"正是这一条要证的事（§5.32① 那一族）。
+   *    ⇒ 夹具名去掉 id，**并且**断言钉的是**带标签的形状**（`mod id 是「lithium」`）：
+   *      即使拿真实 lithium jar（文件名里就有 lithium）跑，这一条也只认标签那一处。
    */
-  const foreignJar = jarArg !== '' ? jarArg : makeJar(join(dir, 'lithium-fake.jar'), {
+  const foreignJar = jarArg !== '' ? jarArg : makeJar(join(dir, 'foreign-fake.jar'), {
     id: 'lithium',
     version: '1.0.0',
   });
@@ -541,14 +620,18 @@ async function proofWrongModId() {
   }
   const stateAfterBind = await invoke(byKey.getState);
   check('绑定被拒绝（抛了）', bindError !== null, bindError?.message ?? '（没有抛）');
+  /*
+   * ⚠️★ 断言钉的是**带标签的形状**，不是"消息里出现过那个 id"（评审的必修 1）：
+   *    后者会被夹具自己的文件名满足（文案末尾印了 `basename`）。
+   */
   check(
-    `拒绝的文案报出了**文件里那个 id**「${foreignMeta.id}」`,
-    typeof bindError?.message === 'string' && bindError.message.includes(foreignMeta.id),
+    `拒绝的文案在**标签位置上**报出了文件里的 id：「mod id 是「${foreignMeta.id}」」`,
+    typeof bindError?.message === 'string' && bindError.message.includes(`mod id 是「${foreignMeta.id}」`),
     bindError?.message ?? '（没有抛）',
   );
   check(
-    `文案也说清了它期待的是「${item.source.modId}」`,
-    typeof bindError?.message === 'string' && bindError.message.includes(item.source.modId),
+    `文案也说清了它期待的是「${item.source.modId}」（同样只看标签那一处）`,
+    typeof bindError?.message === 'string' && bindError.message.includes(`不是「${item.source.modId}」`),
     bindError?.message ?? '（没有抛）',
   );
   check(
