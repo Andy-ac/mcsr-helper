@@ -621,6 +621,33 @@ if [[ -n "${MCSR_HEALTHCHECK_URL:-}" ]]; then
         exit 1
       fi
 
+      # ---- 可追踪文件目录回读（`content/file-catalog.json`）----
+      # 与上面那条 CSP 回读同一个空白：`content/file-catalog.json` 每次部署都被同步到服务器，
+      # 而**没有任何门禁会打开它**（biome 只看 `**/*.ts` / `**/*.tsx` / `**/*.json`，
+      # 全仓没有代码读 `deploy/` 或 `content/` 之外的那份）。漏装/漏进 scp 清单的表现是
+      # "桌面端「本地文件」那一栏整栏为空 + 页面上写着目录拉取失败"，而**这次部署照样报成功**
+      # —— 上面那条 `rm -f /tmp/…file-catalog.json` 只能证明"清理清单里有它"，证不了"装上了"。
+      #
+      # ⚠️ 抓取那半在这里，判断那半在 `deploy/verify-file-catalog.sh`（可单独喂输入调用）——
+      #    分开的理由与 CSP 那条一样：让判据**在不碰生产的前提下能被证明"它会红"**
+      #    （拿一份坏正文喂进去，它必须非零退出并指名哪一项）。
+      # ⚠️ 这里**不加 `-f`**：非 2xx 正是要观察的东西（§5.74）。
+      # ⚠️ 尾标 `<<<状态码 URL` 是**必填**的：正文里没有状态码，而"必须是 200"是第一项判据。
+      CATALOG_CAPTURE="$TMP/catalog-body.txt"
+      CATALOG_CURL_OK=1
+      curl -sS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 \
+        -w '\n<<<%{http_code} %{url_effective}\n' \
+        "https://$MCSR_DOMAIN/api/file-catalog" >"$CATALOG_CAPTURE" 2>/dev/null || CATALOG_CURL_OK=0
+      if [[ "$CATALOG_CURL_OK" != "1" ]]; then
+        echo "✗ 目录回读：响应抓取失败（curl 非零退出）—— 没抓到就不能判通过" >&2
+        exit 1
+      fi
+      if ! bash "$ROOT/deploy/verify-file-catalog.sh" --body "$CATALOG_CAPTURE"; then
+        echo "✗ 目录回读没过（上面标了是哪一项）。这一轮 content/ 已经同步到线上了，但这次自检不算过。" >&2
+        echo "  先确认 /srv/mcsr-helper/content/file-catalog.json 在不在（scp / install / 清理三处清单）。" >&2
+        exit 1
+      fi
+
       exit 0
     fi
     echo "    第 $i 次未通过，5 秒后重试（首次部署时 Caddy 正在签发证书，属正常）"

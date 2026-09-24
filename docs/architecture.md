@@ -51,7 +51,7 @@ mcsr-helper/
 │  ├─ shared/       类型、常量、zod 契约、i18n 词典、种子与 Ranked 领域逻辑
 │  └─ ui/           两个共享组件（刻意保持极小）
 ├─ deploy/          Caddyfile、systemd 单元、一键部署脚本
-├─ content/         resources.json —— 部署时导入的资源种子
+├─ content/         resources.json（部署时导入的资源种子）+ file-catalog.json（**不导入**，接口每次请求现读）
 ├─ docs/            设计文档、事实表与维护者台账
 └─ scripts/         开发辅助脚本（如按端口清理孤儿 dev server）
 ```
@@ -252,7 +252,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 /srv/mcsr-helper/
 ├─ api/        构建产物（server.js + 5 个 CLI）+ data/（mcsr.db、backup-*.db、uploads/）
 ├─ web/        SPA 静态产物
-├─ content/    resources.json
+├─ content/    resources.json（部署时导入）+ file-catalog.json（不导入，`GET /api/file-catalog` 每次请求现读）
 └─ releases/   Electron 安装包 + latest.yml（Caddy 在 /installer/* 对外发）
 /etc/mcsr-helper/     密钥文件（0600 root，见 §7）
 /etc/systemd/system/  7 个单元 + Caddy 的 drop-in
