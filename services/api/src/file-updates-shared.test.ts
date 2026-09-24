@@ -100,6 +100,10 @@ describe('目录 JSON 的校验', () => {
 describe('挑最新版本', () => {
   const src = { gameVersion: '1.16.1', loader: 'fabric', channel: 'release' } as const;
 
+  // ⚠️ 下面这一条**区分不了**两种实现："5.8.26" > "5.8.25" > "5.8.23" 的字符串序
+  //    恰好等于日期序（号大的日期也大），所以"取字符串最大的号"在这里也答 5.8.26。
+  //    「按 date_published 取最新」这条规则的**判据不落在它身上**，落在再下面那条
+  //    **回滚发版**用例（号更小、日期更新）—— 只有它能把"比版本号"那种实现咬红。
   it('上游真的跳过了号：5.8.26 / 5.8.25 / 5.8.23 乱序给出，结果必须是 5.8.26', () => {
     const vs = [
       version({ version_number: '5.8.23', date_published: '2026-09-17T13:37:30Z' }),
@@ -107,6 +111,14 @@ describe('挑最新版本', () => {
       version({ version_number: '5.8.25', date_published: '2026-09-23T10:20:17Z' }),
     ];
     assert.equal(pickLatestVersion(vs, src)?.version_number, '5.8.26');
+  });
+
+  it('★ 回滚发版：号更小、日期更新的那一条才是最新（必须按 date_published 取，不许比号）', () => {
+    const vs = [
+      version({ version_number: '5.8.26', date_published: '2026-09-24T00:33:59Z' }),
+      version({ version_number: '5.8.20', date_published: '2026-09-25T08:12:00Z' }),
+    ];
+    assert.equal(pickLatestVersion(vs, src)?.version_number, '5.8.20');
   });
 
   it('beta 不算 release（这一期只认 channel 指定的那一档）', () => {
