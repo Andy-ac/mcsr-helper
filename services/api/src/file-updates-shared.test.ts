@@ -62,7 +62,12 @@ describe('目录 JSON 的校验', () => {
   it('合法的目录通过，并把 note 之外的字段原样带出来', () => {
     const r = parseFileCatalog(good);
     assert.equal(r.ok, true);
-    if (r.ok) assert.equal(r.catalog.items[0]!.source.project, 'mcsr-ranked');
+    if (r.ok) {
+      // 逐个字段断言"原样带出来"：只查一个嵌套字段的话，一个**重建 item** 的实现也能过。
+      assert.equal(r.catalog.items[0]!.kind, 'mod');
+      assert.equal(r.catalog.items[0]!.name, 'MCSR Ranked');
+      assert.equal(r.catalog.items[0]!.source.project, 'mcsr-ranked');
+    }
   });
 
   it('缺 modId ⇒ 失败，且问题里点名是哪个字段', () => {
@@ -164,7 +169,19 @@ describe('本地 vs 最新', () => {
 
 describe('文件名与状态推导', () => {
   it('用上游的文件名（primary 优先；没有 primary 就取第一个）', () => {
-    assert.equal(jarFileNameFor(version({ version_number: '5.8.26' })), 'mcsrranked-5.8.26.jar');
+    // ★ 两个文件、`primary` 在**第二个**上：只有一个文件时"取 files[0]"的实现也答对，
+    //   这条断言就成了恒真 —— 判据是"选中了 primary 那一个"，不是"恰好只有一个文件"。
+    const twoFiles = version({ version_number: '5.8.26' });
+    twoFiles.files = [
+      {
+        filename: 'mcsrranked-5.8.26-sources.jar',
+        url: 'https://cdn.modrinth.com/x/5.8.26-sources.jar',
+        size: 12_345,
+        hashes: { sha1: 'cc', sha512: 'dd' },
+      },
+      twoFiles.files[0]!,
+    ];
+    assert.equal(jarFileNameFor(twoFiles), 'mcsrranked-5.8.26.jar');
     const noPrimary = version({ version_number: '5.8.26' });
     delete noPrimary.files[0]!.primary;
     assert.equal(jarFileNameFor(noPrimary), 'mcsrranked-5.8.26.jar');
