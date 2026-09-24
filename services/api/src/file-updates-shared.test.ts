@@ -194,7 +194,7 @@ describe('文件名与状态推导', () => {
     assert.equal(isDisabledPath('C:/m/x.DISABLED'), true);
   });
 
-  it('needsUpdate：outdated 与 unknown-local 都要更新，current/unbound/missing/error 不要', () => {
+  it('needsUpdate：outdated 与 unknown-local 都要更新，current/unbound/missing/unchecked/error 不要', () => {
     const base = { localPath: 'x', localVersion: '5.8.22', latestVersion: '5.8.26' };
     assert.equal(
       needsUpdate({
@@ -231,6 +231,14 @@ describe('文件名与状态推导', () => {
       false,
     );
     assert.equal(needsUpdate({ kind: 'missing-file', localPath: 'x' }), false);
+    /*
+     * ⚠️ ★ `unchecked`：已绑定、还没拿到过读数 —— 它**不是**"可更新"。
+     *    这一条钉的是"没有上游期望值时不许编出一个结论"：把它算进一键更新，
+     *    用户点一下就会去更新一个我们**从没读过上游**的条目。
+     *    配套的另一半（`unchecked` 与 `error` 是两件不同的事）在 viewFor 那一侧，
+     *    `apps/desktop` 没有测试运行器 ⇒ 由 .cache 里的桩 electron 探针覆盖。
+     */
+    assert.equal(needsUpdate({ kind: 'unchecked', localPath: 'x' }), false);
     assert.equal(needsUpdate({ kind: 'error', message: 'boom' }), false);
   });
 });

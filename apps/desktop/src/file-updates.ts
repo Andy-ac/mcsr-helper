@@ -500,19 +500,21 @@ function viewFor(item: FileCatalogItem): FileItemView {
   }
   if (!read || !facts) {
     /*
-     * ⚠️ T1 的 `FileItemState` 里**没有**"还没检查过"这一支（合法取值只有
-     *    unbound / missing-file / current / outdated / unknown-local / error），
-     *    所以这里落在 `error` 上、文案说清是"还没检查"。代价：页面按 error 的样式显示这句，
-     *    看起来像出了错；要一个真正的"待检查"状态得改契约（T5/T6 的范围）。
-     *    打包态下这段时间很短（启动检查一完成就换掉），开发态要多等一次点击 ——
-     *    因为打包态才在启动时自动检查（spec §6.4）。
+     * 已绑定、文件也在，但这一次进程里还没拿到过读数 ⇒ `unchecked`（T1 契约里新加的那一支，
+     * 见 `FileItemState` 的注释）。**不再借用 `error`**：那会让界面把"还没检查过"印成
+     * "读取失败：…" —— 对用户说假话（他没读失败，是还没读），而计划的词条里本来就有
+     * "还没检查过"这一格（`files.notChecked`）。
+     * ⚠️ 什么时候会走到这里：① 启动检查跳过了它（`autoUpdate === false`，见 `startUp`）；
+     *    ② 刚绑定、检查还没回来；③ 开发态（不跑启动检查）刚打开。
+     *    代价：这三种情况界面都不显示版本号（`localVersion` 是 null）—— 那是真的：
+     *    这一次进程里我们确实还没读到。
      */
     return {
       item,
       binding,
       localVersion: null,
-      state: { kind: 'error', localPath, message: '还没检查过（点一下「检查」）' },
-      lastCheckedAt,
+      state: { kind: 'unchecked', localPath },
+      lastCheckedAt: null,
     };
   }
   const localVersion = read.version;
@@ -616,19 +618,29 @@ let checkQueue: Promise<unknown> = Promise.resolve();
  * ⚠️★ **一个字节都不写**（spec §6.4 的"只读，不写盘"、§7.2 的"全程零写盘、零下载"）：
  *    它只改内存里的 `current` 与本次读数。状态文件的写入只发生在 bind / unbind /
  *    setAutoUpdate / update 四处（那几处本来就刚读过或刚写过这个文件）。
- *    代价：每次启动后、第一次检查完成之前，页面上的行没有本地版本可显示 ——
- *    打包态这段时间很短（启动检查），开发态要等一次点击或一次绑定。
+ *    代价：每次启动后、第一次检查完成之前，页面上的行是 `unchecked`（不是拿旧读数冒充现值）。
+ *
+ * ⚠️★ `scope` 是**启动检查与手动检查的分界**（2026-09-24 的裁决 ③）：
+ *   · `'auto'`（只有启动那一次用）：**只查 `autoUpdate === true` 的已绑定条目**；
+ *   · `'all'`（页面的「检查」按钮，手动、带不带 `force` 都算）：**查全部已绑定条目**。
+ *   为什么要有这条分界：`autoUpdate` 那个勾选框如果什么都不控制，用户在界面上看到的是一个
+ *   **开不动的开关**（比没有它更坏）；而"我想现在就看一眼"必须有路，所以手动那一路永远查全部。
+ *   代价：关掉开关的条目在启动时不刷新 —— 它显示的是**上一次的读数**（`lastCheckedAt` 就是给
+ *   界面看"这是几时读的"用的）；跨重启之后连上次的读数也没有了（读数只在内存里），
+ *   那时它是 `unchecked`，要点一次「检查」（这是"不吃缓存"那条纪律的另一面，见 `readLocal`）。
  */
-function check(force: boolean): Promise<FileUpdatesState> {
+function check(force: boolean, scope: CheckScope = 'all'): Promise<FileUpdatesState> {
   const run = checkQueue.then(
-    () => doCheck(force),
-    () => doCheck(force),
+    () => doCheck(force, scope),
+    () => doCheck(force, scope),
   );
   checkQueue = run.catch(() => undefined);
   return run;
 }
 
-async function doCheck(force: boolean): Promise<FileUpdatesState> {
+type CheckScope = 'all' | 'auto';
+
+async function doCheck(force: boolean, scope: CheckScope): Promise<FileUpdatesState> {
   const d = deps;
   if (!d) return current;
   /*
@@ -653,6 +665,17 @@ async function doCheck(force: boolean): Promise<FileUpdatesState> {
       // 没绑定的条目没有本地读数可比 ⇒ 一个网络请求都不发
       checked.delete(item.id);
       liveLocal.delete(item.id);
+      continue;
+    }
+    if (scope === 'auto' && binding.autoUpdate !== true) {
+      /*
+       * 启动检查放过关掉开关的条目（裁决 ③ 的 ①）。
+       * ⚠️ 这里**不动 `checked` / `liveLocal`**：上一次的读数要留着 —— 界面靠它显示
+       *    "上一次读到的是什么、几时读的"（`lastCheckedAt`）。删掉的话关掉开关的行会退回
+       *    `unchecked`，看起来反而像坏了。
+       * 代价：启动时这一条不刷新（读数可能是几小时前的），用户点一次「检查」即可 ——
+       * 手动那一路（`scope: 'all'`）永远查全部。
+       */
       continue;
     }
     const read = await readLocal(binding.localPath);
@@ -702,6 +725,10 @@ async function showOpen(options: OpenDialogOptions) {
  *    或者由主进程自己说 —— 这里选后者，并把这件事写在这里以便下次有人问"为什么不显示在页面上"。
  * ⚠️ 代价：这是本仓第一次由主进程弹提示框，文案**不走 i18n**（词条表在 T5/T6 才有）。
  *    只在"不说用户就不可能知道"的场合用它，不要拿它当通用反馈通道。
+ * ⚠️★ **触发条件（控制器 2026-09-24 的裁决 ①，改契约的入口就这一句）**：如果 T5/T6 发现
+ *    需要把"坏状态文件"或"bindFolder 的汇总"**留在页面上**（而不是靠一次原生提示框），
+ *    那就由 T5/T6 提出来扩 `FileUpdatesState` —— 它们是页面那一侧，那时才知道自己真正需要什么形状。
+ *    在那之前这里不改契约：为一个还没有消费者的字段去改 T1 已评审的契约，成本大于收益。
  */
 function notify(title: string, message: string): void {
   console.warn(`[file-updates] ${title}：${message}`);
@@ -763,7 +790,13 @@ async function bind(itemId: unknown): Promise<FileUpdatesState> {
   const existing = stateFile.items[item.id];
   stateFile.items[item.id] = {
     localPath: picked,
-    autoUpdate: existing?.autoUpdate ?? false,
+    /*
+     * 新绑定默认 `autoUpdate: true`（控制器 2026-09-24 的裁决 ③）。
+     * 理由：启动检查**只查 `autoUpdate === true` 的条目** ⇒ 默认 false 的话，新绑的条目
+     * 在下次启动时会被启动检查漏掉，而用户以为它被自动看着（那个勾选框看起来是开着的）。
+     * 用户随时可以关掉；重新绑定时**保留他上次的选择**（`existing?.autoUpdate`）。
+     */
+    autoUpdate: existing?.autoUpdate ?? true,
     localVersion: meta.version,
     localSha512: sha512,
     lastCheckedAt: Date.now(),
@@ -775,7 +808,7 @@ async function bind(itemId: unknown): Promise<FileUpdatesState> {
   liveLocal.set(item.id, { ok: true, version: meta.version });
   current = { ...current, items: rebuildItems() };
   broadcast();
-  // spec §7.1：绑完立刻读一次版本 + 查一次 Modrinth（否则页面上这一行是"还没检查过"）
+  // spec §7.1：绑完立刻读一次版本 + 查一次 Modrinth（否则页面上这一行是 `unchecked`）
   await check(false);
   return current;
 }
@@ -864,8 +897,15 @@ async function bindFolder(): Promise<FileUpdatesState> {
     const existing = stateFile.items[item.id];
     stateFile.items[item.id] = {
       localPath: best.path,
-      // 已有的开关与上次更新记录保留：按目录绑定不该悄悄关掉用户开着的自动更新
-      autoUpdate: existing?.autoUpdate ?? false,
+      /*
+       * 已有的开关与上次更新记录保留：按目录绑定不该悄悄关掉用户开着的自动更新。
+       * ⚠️ 新绑定默认 `true`，与 `bind()` 同一个理由（启动检查只查 `autoUpdate === true` 的条目 ⇒
+       *    默认 false 会让按目录绑上的条目在下次启动被漏掉，而那个勾选框看起来是开着的）。
+       *    ⚠️ 这一半是控制器 ③ 只点了 `bind()`、我把同一条决定**同样应用到按目录绑定**这个入口
+       *    （两个入口建的是同一种记录，默认值不一致会变成"同一件事两种行为"）；若控制器要
+       *    只留 `bind()` 那一半，改回来就是这一行。
+       */
+      autoUpdate: existing?.autoUpdate ?? true,
       localVersion: best.version,
       localSha512: await sha512OfFile(best.path),
       lastCheckedAt: Date.now(),
@@ -1340,16 +1380,23 @@ async function startUp(isPackaged: boolean): Promise<void> {
     return;
   }
   /*
-   * 启动检查查**所有已绑定的条目**，不按 `binding.autoUpdate` 筛选。
+   * 启动检查（spec §6.4：`app.isPackaged` 时启动后检查一次）。
    *
-   * ⚠️ 这是一个**读法**，写下来免得被当成漏了开关：spec 决定 4 说"开关打开 ⇒ 启动时检查并
-   *    高亮/提醒"。若在这里按开关筛选，关掉开关的行在启动后一直显示"还没检查过"，
-   *    而用户会把它读成"功能坏了" —— 页面唯一的数据来源就是 `getState()`，
-   *    "要不要高亮/提醒"是页面按 `binding.autoUpdate` 自己决定的（T6 的那一列）。
-   *    代价：开关关掉时，启动仍会对那一条的 project 发一次版本列表请求（约 220 KB，
-   *    同一个 project 在 30 分钟缓存里只打一次）。
-   *    若控制器要的是另一读法，改的判据也就这一处：`&& stateFile.items[id]?.autoUpdate === true`。
+   * ⚠️★ 查的是 **`autoUpdate === true` 的已绑定条目**（`scope: 'auto'`，控制器 2026-09-24 裁决 ③）。
+   *    分界逐条写在这里，改之前先读完：
+   *      ① **启动检查（这一处）**：只查开着开关的条目 —— 这正是那个勾选框的全部意义
+   *         （spec 决定 4："开关打开 ⇒ 启动时检查并高亮/提醒"）。不筛的话开关什么都不控制，
+   *         用户在界面上看到的是一个**开不动的开关**，比没有它更坏。
+   *      ② **手动「检查」**（`FILE_UPDATES_CHANNELS.check`，带不带 `force`）：查**全部**已绑定条目，
+   *         含关掉开关的 —— "我想现在就看一眼"永远有路，否则关掉开关等于把这个条目从界面上废掉。
+   *      ③ **绑定/按目录绑定之后**：立刻查一次（那一条自己），与开关无关。
+   *   代价（写在明处）：**关掉开关的条目在启动时不刷新** ⇒ 它显示的是**上一次的读数**，
+   *   界面要能看出"这是几时读的"（`FileItemView.lastCheckedAt` 就是给它用的）。
+   *   ⚠️ 跨重启之后连上次的读数也没有了（读数只活在内存里，见 `readLocal` 的注释）⇒
+   *   那种条目显示 `unchecked`，要点一次「检查」—— 这是"不吃缓存"那条纪律的另一面，不是缺陷。
+   *   ⚠️ 新绑定默认就是 `autoUpdate: true`（见 `bind()` / `bindFolder()`），所以用户不会
+   *   "绑了却没被自动看着"。
    */
-  console.log('[file-updates] 启动检查：读本地版本 + 查 Modrinth（结果通过状态推送给页面）');
-  await check(false);
+  console.log('[file-updates] 启动检查：读本地版本 + 查 Modrinth（只查开了自动更新的条目）');
+  await check(false, 'auto');
 }

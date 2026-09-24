@@ -170,13 +170,29 @@ export function compareLocalToLatest(
 
 export interface FileBinding {
   localPath: string;
-  /** 只表示"启动时检查并高亮"。**写盘永远要一次点击**。 */
+  /**
+   * 只表示"启动时检查并高亮"。**写盘永远要一次点击**。
+   *
+   * ⚠️ 它**真的**在筛选（2026-09-24 的裁决）：主进程的启动检查**只查 `autoUpdate === true` 的条目**；
+   *    手动点「检查」永远查全部（那样"我想现在看一下"总有路）。所以关掉开关的代价是
+   *    **启动时那一条不刷新**（界面显示的是上一次的读数，`FileItemView.lastCheckedAt` 就是给它看的）。
+   *    T1 只声明字段，这条纪律的实现与注释在 `apps/desktop/src/file-updates.ts` 的一处（`startUp`）。
+   */
   autoUpdate: boolean;
 }
 
 export type FileItemState =
   | { kind: 'unbound' }
   | { kind: 'missing-file'; localPath: string }
+  /**
+   * 已绑定、文件也在，但**这一次进程里还没有拿到过读数**（还没检查过 / 启动检查跳过了它）。
+   *
+   * ⚠️★ 为什么要有这一支（2026-09-24 的裁决）：没有它的时候"还没检查过"只能挤进 `error`，
+   *    而界面对 `error` 的文案是"读取失败：…" ⇒ **对用户说假话**（他没读失败，是还没读）。
+   *    计划里的词条本来就有"还没检查过"这一格（`files.notChecked`）⇒ 缺的是契约这一边，不是界面。
+   * ⚠️ 它**不是**"可更新"：`needsUpdate` 对它返回 false（没有上游期望值就没法说要不要更新）。
+   */
+  | { kind: 'unchecked'; localPath: string }
   | { kind: 'current'; localPath: string; localVersion: string; latestVersion: string }
   | {
       kind: 'outdated' | 'unknown-local';
@@ -211,7 +227,12 @@ export interface FileUpdatesState {
   lastRun: { at: number; updated: string[]; failed: { itemId: string; message: string }[] } | null;
 }
 
-/** 这一条现在需不需要更新（一键更新的取项判据，网页与主进程共用）。 */
+/**
+ * 这一条现在需不需要更新（一键更新的取项判据，网页与主进程共用）。
+ *
+ * ⚠️ `unchecked`（还没拿到读数）**不算**要更新：没有上游期望值就说"要更新"是编出来的结论。
+ *    测试里有一条断言钉着这件事（`services/api/src/file-updates-shared.test.ts` 的 kind 表）。
+ */
 export function needsUpdate(state: FileItemState): boolean {
   return state.kind === 'outdated' || state.kind === 'unknown-local';
 }
