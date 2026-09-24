@@ -391,10 +391,41 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
    * ⚠️ 兜底文案（「出错了，请稍后再试。」）在这里是真的不够用：它看不出
    *    "部署没送到"（重跑部署）与"文件内容坏了"（改文件）—— 而那正是服务端
    *    把它们分成三个码的原因。这一段的代价因此是**明面上的**：今天用户看到的是兜底那句。
+   *
+   * ★★ 订正（2026-09-24，**Task 7 落地之后**；上面那两段一字未删，但结论变了）：
+   *    上面"更好的说法还没写出来"这句话**不再准确** —— 页面已经在了（Task 5 落的
+   *    浏览器态 `/files`）。现读 `apps/web/src/components/FileUpdatesPanel.tsx` 的
+   *    `fetchCatalog()`：非 200 时它把响应体里的 `error`（这三个码之一）与 `problems`
+   *    拼成一句，交给 `routes/Files.tsx` 那一支的 `files.catalogError`
+   *    ⇒ 用户今天看到的是「目录拉取失败：catalog_unavailable」，而 `catalog_invalid`
+   *    那一支会连服务端的 `problems` 一起印出来
+   *    （「目录拉取失败：catalog_invalid（items.0.source.modId: …）」—— 点名是哪个字段坏了；
+   *    现读确认只有这一支带 `problems`：`routes/fileCatalog.ts` 那两处 500 只回码）。
+   *
+   *    ⇒ 三条**仍然登记在这里**，但理由换了：**没有比那串码更好的说法**。
+   *      码是值班的人唯一能自己动手的线索（`problems` 那一支更是），而三条的下一步
+   *      完全不同 —— 重跑部署 / 查文件本身 / 改文件的某个字段。换成一句"出错了"就是
+   *      把这条线索删掉。（这正是上面 KNOWN_CODES 里那一段说的事，只是当初把
+   *      "页面还没有"当成了理由。）
+   *      ⚠️ 它们**不走** `apiErrorText`：这一页是**自己**接住失败并拼句子的
+   *      （`fetchCatalog` 那一层），而 `apiErrorText` 只认 `code`、会把 `problems` 丢掉。
+   *      ⇒ 路径是"这一栏自己的词条"（`files.catalogError`），与 `at_limit` / `ranked_busy`
+   *      那几行同一个处置。
+   *      ⚠️ 代价（明摆着）：**码本身没有中文说法**，用户看到的是机器串。
+   *      想改就得动 `packages/shared/src/i18n/*.ts` 的两个值 —— 那时这一段的理由要再改一次。
+   *
+   *    ⚠️★ 那句话**只有一半**有自动化判据（如实记，别读多了）：
+   *      `apps/web/scripts/filesrender.tsx` 的 ⑰ 钉住了"`{{reason}}` 必须真的被插进那句"
+   *      （一刀能让它红：把 `catalogError` 的值改成不带 `{{reason}}` 的写法）；
+   *      而"用户**真的**会走到那一屏"**没有**判据 —— 静态渲染一行 effect 都不跑，
+   *      到不了 `useFileUpdates()` 的失败态，那要真浏览器 + 一个真的坏掉的目录（Task 8）。
    */
-  catalog_invalid: '更好的说法在 Task 5 的 /files 页面（FileUpdatesPanel），今天落到兜底文案',
-  catalog_unavailable: '同上；它要说的是"这次部署没把目录文件送到服务器上"',
-  catalog_invalid_json: '同上；它要说的是"目录文件不是 JSON（被手改过或传坏了）"',
+  catalog_invalid:
+    '界面（/files 浏览器态）显示「目录拉取失败：catalog_invalid（<problems>）」—— 码 + 字段级线索，没有更短的中文说法',
+  catalog_unavailable:
+    '界面显示「目录拉取失败：catalog_unavailable」—— 码是唯一指向"重跑部署"的线索',
+  catalog_invalid_json:
+    '界面显示「目录拉取失败：catalog_invalid_json」—— 与上面那条的下一步不同（查文件本身）',
 };
 
 function walk(dir: string, out: string[] = []): string[] {
