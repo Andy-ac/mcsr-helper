@@ -19,10 +19,15 @@
  *     以及七个动作的包装（`FileUpdatesHandlers`）；
  *   · `FileUpdatesPanel`：**拿一份现成的 `state` 渲染**，不取数、不订阅、不跑 effect
  *     ⇒ Task 7 可以喂一份手写的状态进去（表格那一层更纯：它连本地状态都没有）。
- *     ⚠️★ Task 6 给它加了一格**界面态**（`pending`：「我刚点的那一下还在跑」）——
- *     `FileUpdatesState` 里没有这一格，而「检查」那一下要几秒（一次读盘 + 一次网络请求），
- *     少了它就只能在"点了没反应"和"点了弹一句红字"之间二选一。它是**界面态**，
- *     不是第二份真相：全部作用是把那两颗按钮按住、并把「正在检查…」印出来。
+ *     ⚠️★ Task 6 给它加了两格**界面态**（都是"用户刚做了什么"的痕迹，`FileUpdatesState`
+ *     里没有这两格）：
+ *       · `pending`：「我刚点的那一下还在跑」——「检查」要几秒（一次读盘 + 一次网络请求），
+ *         少了它就只能在"点了没反应"和"点了弹一句红字"之间二选一；
+ *       · `confirmingUpdateAll`：「一键更新」的两步确认**还等着回答**（fix round 1 加的，
+ *         为什么必须两段、以及为什么不用 `window.confirm`，见下面 `UpdateAllConfirm`）。
+ *     它们是**界面态**，不是第二份真相：全部作用是把按钮按住 / 把那一步问出来。
+ *     ⚠️ 第二态能被 Task 7 断言，靠的是 `UpdateAllConfirm` 那个**纯 props 组件** ——
+ *     静态渲染不跑事件处理器，面板自己那一格在自检里恒为 `false`（见那个组件的注释）。
  *
  * ===========================================================================
  * ⚠️★ 桌面态与浏览器态是**两个不同的产品**，共用一份状态形状
@@ -206,6 +211,53 @@ export function updateAllTargets(views: readonly FileItemView[]): FileItemView[]
       view.binding.localPath !== '' &&
       needsUpdate(view.state) &&
       !isDisabledPath(view.binding.localPath),
+  );
+}
+
+/**
+ * ★★ 「一键更新」的**第二态**：行内两步确认的那一行（纯 props，给 `count` 就画完）。
+ *
+ * ⚠️★ 为什么不用 `window.confirm`（fix round 1 改的；先前那一版照的是 brief 的原文，
+ *    而那是控制器的笔误）：`ShareBoard.tsx` 那条理由在这里是**决定性的** ——
+ *    「`window.confirm` 在 SSR 里不跑、门禁看不见，还会让"两个 step 在组件里"这件事
+ *    变成两处状态」。也就是说，用它换来的一步确认**拿不到任何自动化判据**，
+ *    而 Task 7 正要给这一页写渲染自检。本仓另有若干同形的记录
+ *    （`VideoCard` / `CalendarSeriesSection` / `LiveManagePanel` / `TagCloud` /
+ *    `TrackedVideos` / `EditResource`），形状照前两处：句子 + 「确认」+「取消」。
+ * ⚠️★ 拆成一个**独立导出的纯组件**是为了让第二态**能被静态渲染出来**：
+ *    `renderToStaticMarkup` 不跑事件处理器 ⇒ 面板里那一格 `confirmingUpdateAll` 在自检里
+ *    恒为 `false`，只有"给 props 就画"的这一层能断言"第二态 = 那句话 + 两颗按钮"。
+ *    ⇒ Task 7 直接 `React.createElement(UpdateAllConfirm, { count: 3, … })` 即可。
+ * ⚠️ `count` **每一帧都按当前的 `targets.length` 现算**（面板那边传的是当次渲染的值）
+ *    ⇒ 这句话不会过期。代价反过来是：一次后台检查把可更新的行清成 0 之后，
+ *    面板会让这一行**自己退回第一态**（见面板里 `showConfirm` 那一处）。
+ * ⚠️ 两颗按钮都用**库里已有的词条**（`common.confirm` / `common.cancel`），
+ *    问话那一句复用 `files.confirmUpdateAll`（它本来就带 `{{count}}`）—— 一个词条都没新造。
+ */
+export function UpdateAllConfirm({
+  count,
+  disabled = false,
+  onConfirm,
+  onCancel,
+}: {
+  /** 这一次**真的会更新几条**（`updateAllTargets().length`，不含被禁用的条目）。 */
+  count: number;
+  /** 现在不能按（有条目正在写盘之类）。两颗都禁用 —— 与 `VideoCard` 的两步确认同形。 */
+  disabled?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="filespanel__confirm">
+      <span className="filespanel__confirmtext">{t('files.confirmUpdateAll', { count })}</span>
+      <button type="button" className="cta" disabled={disabled} onClick={onConfirm}>
+        {t('common.confirm')}
+      </button>
+      <button type="button" className="ghostbtn" disabled={disabled} onClick={onCancel}>
+        {t('common.cancel')}
+      </button>
+    </div>
   );
 }
 
@@ -447,6 +499,17 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
    *   上一次的汇总"。
    */
   const [pending, setPending] = useState<'check' | 'updateAll' | null>(null);
+  /**
+   * ★ 「一键更新」的两步确认**还等着回答**（第一态 = 那颗按钮，第二态 = 确认行）。
+   *
+   * ⚠️ 为什么是**独立**的一格、而不是塞进上面 `pending`：两者说的不是一件事 ——
+   *    `pending` 是"动作已经在跑"，这一格是"还**没**开始跑、在等一句话"。
+   *    合并的话，"确认行还在等"与"更新正在跑"会挤成同一个取值，而两者该禁用的东西也不同
+   *    （前者只在别处忙时禁用，后者要按住整行）。
+   * ⚠️ 静态渲染里它恒为 `false`（`renderToStaticMarkup` 不跑事件处理器）⇒ 第二态的判据
+   *    由 `UpdateAllConfirm` 那个**纯 props 组件**承担（Task 7 直接喂 props，见它的注释）。
+   */
+  const [confirmingUpdateAll, setConfirmingUpdateAll] = useState(false);
 
   /** 一键更新**真的会碰**的那几条（判据与主进程那份逐条对齐，见 `updateAllTargets`）。 */
   const targets = updateAllTargets(views);
@@ -457,6 +520,16 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
    * **一颗都不会动**（它跳过 `.disabled`）。⇒ 下面那句解释必须出现，否则就是"点了没反应"。
    */
   const allUpdatableDisabled = someNeedsUpdate && targets.length === 0;
+  /**
+   * ★ 画**第二态**的那一个判据（第一态 = 那颗普通按钮）。
+   *
+   * ⚠️ 那个 `targets.length > 0` 不是保险：这一问挂在屏幕上时，后台一次检查完全可能把
+   *    那几行清成 `current`（`targets` 变成空）⇒ 那时"将把 **0** 个文件更新到最新版本，
+   *    继续？"是一句废话，而那颗「确认」按下去什么都不会发生。那一档**退回第一态**
+   *    （连同 `allUpdatableDisabled` 那句解释），而 `confirmingUpdateAll` 这一格**不动** ——
+   *    用户从没回答过那个问题，数据恢复之后它再出现是对的（句子里那个数字每次渲染现算）。
+   */
+  const showConfirm = confirmingUpdateAll && targets.length > 0;
 
   /*
    * ⚠️ 四个回调只在**桌面态**才存在（浏览器态一个动作都做不了）：表格那一层拿不到
@@ -481,23 +554,35 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
   };
 
   /**
-   * 「一键更新」= 先问一次（问的是**真的会更新几条**），再交给主进程串行做。
+   * 「一键更新」的**第一步**：只把那一步问出来，**不执行任何动作**。
    *
-   * ⚠️★ `targets.length === 0` 时**不调** `updateAll()`：那一趟会一条都不动，却写一个
-   *    `lastRun = { updated: [], failed: [] }` 回来、界面上冒出"已更新 0 个，失败 0 个"
-   *    —— 一句"我刚才做过一件事"的话，而事实是什么都没发生。这时下面那句解释已经在屏幕上了。
-   * ⚠️ 确认框走 `window.confirm`：**这是 brief 明写的**（Step 3）。代价记在这里，别当成疏漏：
-   *    本仓有五处注释明写"不用 `window.confirm`"（`LiveManagePanel` / `VideoCard` /
-   *    `EditResource` / `CalendarEdit` / `ShareBoard`），理由是"原生弹窗在 Electron 壳里
-   *    样式和整站无关、而且会阻塞渲染"、"在 SSR 里不跑、门禁看不见"。
-   *    这一处照 brief 做的**额外**理由：这个功能的另外两次确认本来就是**原生**弹窗
-   *    （T4 的 `confirmOverwrite` / `confirmEnable` 由主进程弹），而这一步问的是同一类事
-   *    （"要不要真的动你的文件"）。⇒ 若控制器认为这里该改成本仓那套行内两步确认，
-   *    改动是这一段 + 一颗按钮的状态机。
+   * ⚠️★ `targets.length === 0` 时连问都不问（`showConfirm` 也画不出来）：可更新的条目
+   *    **全是已禁用**的那一档，一键更新一条都不会动，问了也是白问 —— 那时该出现的是
+   *    下面那句 `files.updateAllDisabledOnly`。
    */
-  const runUpdateAll = (): void => {
+  const requestUpdateAll = (): void => {
     if (handlers === null || targets.length === 0) return;
-    if (!window.confirm(t('files.confirmUpdateAll', { count: targets.length }))) return;
+    setConfirmingUpdateAll(true);
+  };
+
+  /** 第二态的「取消」：退回第一态，什么都不会发生。 */
+  const cancelUpdateAll = (): void => {
+    setConfirmingUpdateAll(false);
+  };
+
+  /**
+   * 第二态的「确认」：**关掉确认行，再交给主进程串行做**。
+   *
+   * ⚠️ 先关确认行再开跑：这一行的下一个画面是行内的"正在更新 …"（表格那边按
+   *    `busyItemId` 画），留着那颗「确认」只会让人以为还能再点一次。
+   * ⚠️★ 这里再判一次 `targets.length === 0`：`showConfirm` 是**上一次渲染**的结果，
+   *    而这一问可能与一次检查擦肩而过（那一瞬间 `targets` 已是空）。真为空时**不调**
+   *    `updateAll()` —— 那一趟会一条都不动，却写一个 `lastRun = { updated: [], failed: [] }`
+   *    回来、界面上冒出"已更新 0 个，失败 0 个"（一句"我刚才做过一件事"的话，而事实是什么都没发生）。
+   */
+  const confirmUpdateAll = (): void => {
+    setConfirmingUpdateAll(false);
+    if (handlers === null || targets.length === 0) return;
     setPending('updateAll');
     void handlers.updateAll().finally(() => setPending(null));
   };
@@ -589,6 +674,10 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
             ⚠️ 判据是 `someNeedsUpdate`（**含**已禁用的条目）而不是 `targets`：两者只在
             "可更新的条目全是已禁用"这一档不同，那一档按钮**要留着可用**（有东西可更新），
             而点下去由下面那句解释说明为什么不调 `updateAll()`。
+        ★★ 「一键更新」是**两步**：`showConfirm` 为假时是那颗普通按钮（第一步只把问题问出来），
+        为真时换成 `UpdateAllConfirm` 那一行（句子 + 「确认」/「取消」）。
+        ⚠️ 第二态**不是**"正在跑"：那一刻它只是等一句话，所以「选择 mods 目录」与「检查」
+        照旧可用（用户想先看一眼再点头当然可以）；真正跑起来之后 `busy` 会把它们按住。
       */}
       {handlers === null ? null : (
         <div className="filespanel__actions">
@@ -611,19 +700,36 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
           >
             {pending === 'check' ? t('files.checking') : t('files.check')}
           </button>
-          {/*
-            ⚠️ 一键更新走 `.cta`（全站的主操作样式）：这一页真正要用户做的那一下就是它，
-            而「检查」与「选择 mods 目录」是它的前置动作（主按钮必须比它们显眼，
-            见 `styles.css` 的 `.ghostbtn` 那一段）。
-          */}
-          <button
-            type="button"
-            className="cta"
-            disabled={busy || pending !== null || !someNeedsUpdate}
-            onClick={runUpdateAll}
-          >
-            {t('files.updateAll')}
-          </button>
+          {showConfirm ? (
+            /*
+              ★ 第二态（纯组件：Task 7 直接喂 props 就能断言它，见 `UpdateAllConfirm`）。
+              ⚠️ 传的是 `targets.length` **当次渲染**的值 ⇒ 句子里的数字不会过期。
+              ⚠️ `disabled` 用 `busy || pending !== null`：别处正在写盘时不能开跑
+              （主进程的 `updateAll()` 会以「正在更新中：…」拒绝），所以两颗都按住。
+            */
+            <UpdateAllConfirm
+              count={targets.length}
+              disabled={busy || pending !== null}
+              onConfirm={confirmUpdateAll}
+              onCancel={cancelUpdateAll}
+            />
+          ) : (
+            /*
+              ⚠️ 一键更新走 `.cta`（全站的主操作样式）：这一页真正要用户做的那一下就是它，
+              而「检查」与「选择 mods 目录」是它的前置动作（主按钮必须比它们显眼，
+              见 `styles.css` 的 `.ghostbtn` 那一段）。
+              ⚠️ 它的 `onClick` **只**进入待确认态（`requestUpdateAll`）—— 这一颗按钮
+              在任何情况下都不直接写盘（那条能红的判据在探针里：源码形状守卫）。
+            */
+            <button
+              type="button"
+              className="cta"
+              disabled={busy || pending !== null || !someNeedsUpdate}
+              onClick={requestUpdateAll}
+            >
+              {t('files.updateAll')}
+            </button>
+          )}
           {/* ★ 上一次运行的汇总（`runSummary` 那一段写着它什么时候不印）。 */}
           {runSummary === null ? null : <span className="filespanel__run">{runSummary}</span>}
         </div>

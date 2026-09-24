@@ -9366,6 +9366,28 @@ html[data-theme='light'] {
   font-size: var(--fs-px-sm);
 }
 
+/* ★ 「一键更新」的第二态：**行内两步确认**那一行（问话 + 「确认」+「取消」，fix round 1 加的）。
+   ⚠️ 形状照 `VideoCard` / `CalendarSeriesSection` 的 `.video-card__confirm` / `.series__confirm`：
+   本仓的纪律是**不用 `window.confirm`**（原生弹窗在 Electron 壳里样式和整站无关、会阻塞渲染，
+   而且它在 SSR 里不跑 ⇒ 这一步确认拿不到任何自动化判据 —— 最后那条才是决定性的）。
+   ⚠️ `inline-flex` + `flex-wrap`：问话那句在两种语言里长度差很多，窄屏下要能换行，
+   而两颗按钮始终跟在它后面（这里是 `.filespanel__actions` 那一行里的**一个孩子**）。 */
+.filespanel__confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 那一句问话（`files.confirmUpdateAll`，`{{count}}` = 真的会更新几条）。
+   ⚠️ 颜色用 `--fg` 而不是 faint：它是一句**要用户回答**的话，不是脚注；
+   字号与 `.filespanel__hint` 同级、走正文字体（成句的散文，像素字体读长句很累）。 */
+.filespanel__confirmtext {
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
 /* ★ 「一键更新」被禁用时的外观。
    ⚠️★ 为什么只给这一颗补：全站的 `.cta` **没有** `:disabled` 规则（现读：
    `styles.css` 里只有 `.pager button:disabled` 那一条），而 `.cta` 把 background 与
