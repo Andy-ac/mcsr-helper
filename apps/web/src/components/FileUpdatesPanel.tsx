@@ -513,13 +513,30 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
 
   /** 一键更新**真的会碰**的那几条（判据与主进程那份逐条对齐，见 `updateAllTargets`）。 */
   const targets = updateAllTargets(views);
+  /** 标着"可更新"的那些条目（**只看状态**，不看绑定）—— 下面两个判据的同一个基数。 */
+  const updatable = views.filter((view) => needsUpdate(view.state));
   /** 有任一条标着"可更新"（**含已禁用的**）—— 一键更新那颗按钮的可用判据。 */
-  const someNeedsUpdate = views.some((view) => needsUpdate(view.state));
+  const someNeedsUpdate = updatable.length > 0;
   /**
-   * "可更新的条目全是已禁用的"这一档：按钮**可用**（有东西可更新），而一键更新
-   * **一颗都不会动**（它跳过 `.disabled`）。⇒ 下面那句解释必须出现，否则就是"点了没反应"。
+   * ★★ "可更新的条目**全是**已禁用的"这一档：**真的数一遍**（在上面那个基数里数有多少条
+   *    的路径以 `.disabled` 结尾），**不是**从 `targets.length === 0` 推出来。
+   *
+   * ⚠️★ 为什么必须数（fix round 2 改的；先前那一版写的是 `someNeedsUpdate && targets.length === 0`）：
+   *    那个式子在"可更新、但**没绑定**"这一档上也会成立（`targets` 要求绑定，
+   *    `needsUpdate` 不要求）⇒ 界面会印出"可更新的条目都是已禁用的 —— 一键更新会跳过它们"，
+   *    而事实是那些条目**一个文件都没绑**：那是**假话**，而且是这一句存在意义的反面
+   *    （它的全部作用就是解释"为什么一键更新不会动"）。契约允许这种组合
+   *    （`FileItemView.binding: FileBinding | null` 与 `state` 各自独立），Task 7 的手写夹具
+   *    也真会这么造。⇒ 这一格现在算的是它真正要断言的那件事。
+   *
+   * ⚠️ 判据用的是 `isDisabledPath(binding.localPath)` —— 与徽章、与主进程设
+   *    `state.disabled` 时**同一个谓词**（不是第二份判据）。
+   * ⚠️ `updatable.length > 0` 那一半不能省：一个可更新的条目都没有时，"全是已禁用的"
+   *    这句话没有意义（真正的说法是"一条可更新的都没有"），而那时按钮本身已经禁用了。
    */
-  const allUpdatableDisabled = someNeedsUpdate && targets.length === 0;
+  const allUpdatableDisabled =
+    updatable.length > 0 &&
+    updatable.every((view) => view.binding !== null && isDisabledPath(view.binding.localPath));
   /**
    * ★ 画**第二态**的那一个判据（第一态 = 那颗普通按钮）。
    *

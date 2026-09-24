@@ -42,7 +42,7 @@
  *   · `formatClock()` —— 与面板那行元信息**同一个**时间写法（见那个函数的注释）。
  */
 
-import type { FileItemState, FileItemView } from '@mcsr/shared/fileUpdates';
+import { type FileItemState, type FileItemView, isDisabledPath } from '@mcsr/shared/fileUpdates';
 import { useTranslation } from 'react-i18next';
 
 /** 「没有值的那一格 —— 全仓的约定（`CalendarDetail` / `SeedResultCard` 都是它）」
@@ -284,14 +284,25 @@ export function FileUpdateTable({
                   ? progress.percent
                   : null;
               /*
-               * ⚠️★ 「已禁用」这一格**只**从契约字段 `state.disabled` 读 —— 那两支
-               *    （`outdated` / `unknown-local`）之外的状态**没有**这一格，
-               *    所以在别的状态上（比如已是最新的一个 `.jar.disabled` 文件）
-               *    徽章不会出现。这件事不在 Task 6 可修的范围内（要改契约，或由 T4
-               *    在别的支上也标出来）⇒ 记进了报告，别在这里另写一份 `isDisabledPath`
-               *    判据顶上（两份判据会漂，而漂的方向是界面说"没禁用"）。
+               * ★★ 「已禁用」徽章按**文件名**判定（fix round 2 改的；先前那一版读契约字段
+               *    `state.disabled`，而主进程只在 `outdated` / `unknown-local` 两支里设它
+               *    —— `viewFor` 的 `current` 那一支从不设 ⇒ 一个"已是最新"的 `.jar.disabled`
+               *    文件会显示「已是最新」，页面上**没有任何东西**告诉用户"游戏不会加载它"。
+               *    那是日常可达的情形，不是边角）。
+               *
+               * ⚠️★ 这两者**不是同一件事的两个来源**，而是**同一个谓词作用在同一个路径上**：
+               *    主进程设 `state.disabled` 时用的也是 `isDisabledPath(localPath)`
+               *    （`apps/desktop/src/file-updates.ts` 的 `viewFor` 里那一格），
+               *    所以两者**不可能互相打架**（同一个函数的同一次调用结果）。
+               *    分工只有一条：**徽章按路径算**（这样契约里没有 `disabled` 那一格的
+               *    `current` / `unchecked` / `missing-file` / `error` 也能显出来），
+               *    而 `state.disabled` 继续管**更新流程**的语义（单条更新要不要先问、
+               *    一键更新要不要跳过 —— 那是主进程的事，界面只管画）。
+               *    ⇒ 别把徽章改回读 `state.disabled`：那会让最该看见它的那一行看不见。
+               * ⚠️ `unbound` 那一行 `binding === null`（没有路径可判）⇒ 没有徽章，
+               *    那是对的：一个没绑定的行谈不上"禁用了本机哪个文件"。
                */
-              const disabled = (s.kind === 'outdated' || s.kind === 'unknown-local') && s.disabled;
+              const disabled = view.binding !== null && isDisabledPath(view.binding.localPath);
               /** 主操作那颗按钮要调的**那一个**回调（没有它就不画这颗按钮，见 props 的说明）。 */
               const primaryCallback = primary?.action === 'update' ? onUpdate : onBind;
               const showPrimary = withActions && primary !== null && primaryCallback !== undefined;

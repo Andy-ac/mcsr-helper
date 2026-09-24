@@ -9389,9 +9389,11 @@ html[data-theme='light'] {
 }
 
 /* ★ 「一键更新」被禁用时的外观。
-   ⚠️★ 为什么只给这一颗补：全站的 `.cta` **没有** `:disabled` 规则（现读：
-   `styles.css` 里只有 `.pager button:disabled` 那一条），而 `.cta` 把 background 与
-   color 都写死了 ⇒ 浏览器的默认禁用表现被覆盖，禁用与可点**长得一模一样**。
+   ⚠️★ 为什么只给这一颗补：**`.cta` 没有任何 `:disabled` 规则**（fix round 2 把话说准 ——
+   原先这里写的是"`styles.css` 里只有 `.pager button:disabled` 那一条"，那是**假话**：
+   带 `:disabled` 的规则本仓有很多条。承重的那一半从来只是"`.cta` 自己没有"，
+   所以这里**只断言这一件事**，不给别的选择器数数）。而 `.cta` 把 background 与 color
+   都写死了 ⇒ 浏览器的默认禁用表现被覆盖，禁用与可点**长得一模一样**。
    这一颗的禁用含义恰恰是"现在没有可更新的条目"，是最需要看见的那一格；
    不去动全站 `.cta`（那是另一个范围的事，`className="cta" disabled=…` 有十几处）。 */
 .filespanel__actions .cta:disabled {
