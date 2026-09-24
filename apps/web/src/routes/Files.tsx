@@ -54,6 +54,12 @@ export function Files() {
       {/*
         ★ 浏览器态的两件事，紧贴在标题下面（读者第一眼就该看到"这里不是桌面版"）：
         一句说明 + 一个真实的下载入口。桌面壳里这两样都不渲染。
+        ⚠️★ 这一句走的是 `<Notice>`，而 `Notice` 对**字符串子节点**会 `em()`
+        （`components/Form.tsx` 里那句 `typeof children === 'string' ? em(children)`）
+        ⇒ 它里面的 `**` 会变成粗体，**不是**字面星号。这一条值里的标记去掉是照控制器的
+        carry-in（值就是纯文本），**不是**因为这里会印星号 —— 会印星号的是
+        `files.autoHint` 那一处渲染点（裸 `<p>`）。两条理由不同，
+        完整的那一段写在 `packages/shared/src/i18n/zh-CN.ts` 的 `files` 那一节。
       */}
       {desktop ? null : (
         <div className="files__browser">

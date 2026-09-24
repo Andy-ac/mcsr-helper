@@ -4005,12 +4005,22 @@ export const en: TranslationSchema = {
    * ===========================================================================
    * ⚠️★ Two places differ from the plan's table, neither of them a matter of taste
    * ===========================================================================
-   * ① The plan's Chinese `autoHint` / `browserOnly` carry `**…**`. In this repo
-   *    `**` is a **render marker** (`em()` in `components/Emphasis.tsx`): a marked
-   *    value **must** be rendered through `em()`, or the user sees two literal
-   *    asterisks, and both of these are plain sentences rendered as-is. The
-   *    controller ruled on 2026-09-24 to drop the pair (the same note sits on
-   *    `calendar.seriesDeleteNone`).
+   * ① The plan's Chinese `autoHint` / `browserOnly` carry `**…**`, and both were dropped
+   *    on the controller's ruling. ⚠️★ But the two reasons are **not** the same — do not
+   *    merge them (corrected in review, 2026-09-24: this note used to claim both are
+   *    "plain sentences rendered as-is", which is **wrong** for `browserOnly`):
+   *      · `autoHint` renders inside a bare `<p>` (`.filespanel__hint` in
+   *        `components/FileUpdatesPanel.tsx`) and **never** goes through `em()` ⇒ keeping
+   *        the marks would print two literal asterisks. That one really was broken.
+   *      · `browserOnly` renders inside `<Notice>`, and `Notice` runs `em()` on **string**
+   *        children (`components/Form.tsx`: `typeof children === 'string' ? em(children)`)
+   *        ⇒ keeping the marks would **not** print asterisks (they would go bold), so
+   *        dropping them here follows the carry-in (a value is plain text) — it was not
+   *        fixing a defect.
+   *    ⚠️ Folding the two together costs the next reader a wrong belief — that `<Notice>`
+   *      does not handle markers either — and that is how someone ends up removing `em()`
+   *      from a render point.
+   *    📌 The `autoHint` case is the same disposition recorded on `calendar.seriesDeleteNone`.
    * ② The plan's table writes interpolation with **single braces**
    *    (`{count}` / `{time}` / `{reason}` …). i18next does **not** substitute
    *    single braces — it prints them. That is not style: a test guards it

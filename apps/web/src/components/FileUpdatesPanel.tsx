@@ -7,7 +7,13 @@
  * 两条路都要同一份 `FileUpdatesState`（表格、按钮、元信息全按它渲染），而
  * `renderToStaticMarkup` —— Task 7 的渲染自检就是它 —— **不跑 effect**：
  * 取数写在页面里的话，自检渲染这一页只会看到「加载中」，写在里面的每一块都断言不到
- * （`docs/pending.md §5.63`，`ShareIntro` 那边记着同一条）。
+ * ⇒ 那是一条**不可能红**的守卫。两处出处（评审 2026-09-24 订正过一次，别再把它们混起来）：
+ *   · 机制本身（"不点击、不跑 effect"）的现场在 `docs/pending.md §5.73` 那一节（`renderToStaticMarkup`
+ *     **不点击、不跑 effect** ⇒ 自检只看得见"初始产物"）；`components/ShareCard.tsx` 的文件头
+ *     是同一个处置的先例（界面全部搬进纯组件，页面只取数）。
+ *   · §5.63 讲的是另一件事：**守卫把要断言的东西先擦掉了 ⇒ 那条断言恒真**（恒真的守卫
+ *     比没有守卫更坏）。它是"为什么不能靠一条自检兜住这种页面"的理由，不是这条事实的出处 ——
+ *     出处是上面那一条。
  * ⇒ 这个文件里有两样东西，各自只负责一件事：
  *   · `useFileUpdates()`：**取数**（桌面壳 = 订阅 + 首拉 / 浏览器 = 拉目录），
  *     以及七个动作的包装（`FileUpdatesHandlers`）；
@@ -57,7 +63,7 @@ import type {
   FileItemView,
   FileUpdatesState,
 } from '@mcsr/shared/fileUpdates';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Notice } from '@/components/Form';
 
@@ -116,6 +122,61 @@ export interface FileUpdatesPanelProps {
    *   而只有 `useFileUpdates()` 会填它。
    */
   actionError?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 取数那两格（快照 / 失败结论）的归约 —— 纯函数，好让它能被一条探针钉住
+// ---------------------------------------------------------------------------
+
+/** 一次取数结果的两种形态。⚠️ 它们是**两件事**：一份数据，或者一句"没拿到"。 */
+export type FileUpdatesLoadEvent =
+  | { kind: 'snapshot'; state: FileUpdatesState }
+  | { kind: 'failure'; failedAt: 'catalog' | 'state'; reason: string };
+
+/**
+ * 页面手上关于"取数"的全部认识。
+ *
+ * ⚠️★ 做成**三格互斥的联合**而不是 `{ state, failure }` 两个可空格：这样"数据与失败结论
+ * 不可能同时成立"是**类型**保证的，而调用方（`useFileUpdates` 的返回、探针）判的
+ * 就是**页面最终显示哪一屏**（`loading` / `ready` / `failed`）—— 正是缺陷发生的地方。
+ */
+export type FileUpdatesLoad =
+  | { status: 'loading'; state: null; failure: null }
+  | { status: 'ready'; state: FileUpdatesState; failure: null }
+  | { status: 'failed'; state: null; failure: { failedAt: 'catalog' | 'state'; reason: string } };
+
+/** 什么东西都还不知道的起点。 */
+export const NO_LOAD: FileUpdatesLoad = { status: 'loading', state: null, failure: null };
+
+/**
+ * ★★ 取数结果的归约：**数据永远压过一次失败结论**。
+ *
+ * ⚠️★ 为什么必须有这条规则（2026-09-24 评审的必修；我自己的自查修过同一族的第二处）：
+ *    桌面态那两条支路是**独立**的（`onStatus` 推送 / `getState()` 首拉），所以
+ *    "首拉先失败、推送后带来数据"这个顺序**真的会发生**。把失败结论当成"粘住的"状态
+ *    （谁先来谁说了算）会让页面一直停在「拿不到本地文件状态：…」，而手上其实已经有数据 ——
+ *    那一句**已经不成立**的话会一直挂在屏幕上。
+ *    反方向也要防：已经有数据时又把一次失败记上去，同样是把一句过期的话压在数据上面。
+ *    ⇒ 两条都收进这一个函数里（散在两个 `setState` 里就一定有一支会被漏掉）。
+ *
+ * ⚠️ 抽成**纯函数**是因为它只可能这样被验：web 这一层没有测试运行器，而渲染自检
+ *    （`renderToStaticMarkup`）**不跑 effect**（见文件头那两处出处）⇒ 住在 hook 里的话，
+ *    "先失败、后拿到数据"这个顺序**没有任何门禁碰得到**（探针在报告里，
+ *    住在 gitignore 的 `.cache/` 下 ⇒ 那条判据**不可复跑**，脚本内容抄在报告里）。
+ *    代价：多一层间接（hook 里三处 `setLoad` 都走它），换来这条规则可以被当场验红。
+ */
+export function reduceLoad(prev: FileUpdatesLoad, event: FileUpdatesLoadEvent): FileUpdatesLoad {
+  if (event.kind === 'snapshot') {
+    // 数据到手 ⇒ 上一次的失败结论作废（它已经被这份数据推翻了）
+    return { status: 'ready', state: event.state, failure: null };
+  }
+  // 已经有数据 ⇒ 这一次失败**不改画面**（保留那份状态，不记这一句）
+  if (prev.status === 'ready') return prev;
+  return {
+    status: 'failed',
+    state: null,
+    failure: { failedAt: event.failedAt, reason: event.reason },
+  };
 }
 
 /**
@@ -254,10 +315,12 @@ function makeHandlers(
  * 取数。⚠️ 浏览器态与桌面态各一条支路，**互斥**（判据是 `desktopBridge()`）。
  */
 export function useFileUpdates(): FileUpdatesData {
-  const [snapshot, setSnapshot] = useState<FileUpdatesState | null>(null);
-  const [failure, setFailure] = useState<{ failedAt: 'catalog' | 'state'; reason: string } | null>(
-    null,
-  );
+  /*
+   * ★ 快照与失败结论**装在同一个状态里**（`reduceLoad()` 是它们之间唯一的规则）：
+   *   分成两个 `useState` 的话，"数据到手要撤掉失败结论"这件事就得在两个地方各写一遍，
+   *   而漏掉的后果正是评审抓到的那一条 —— 页面永远停在「拿不到本地文件状态」。
+   */
+  const [load, setLoad] = useState<FileUpdatesLoad>(NO_LOAD);
   const [actionError, setActionError] = useState<string | null>(null);
 
   /*
@@ -268,9 +331,14 @@ export function useFileUpdates(): FileUpdatesData {
    */
   const bridge = desktopBridge();
 
+  /** 拿到一份快照（首拉 / 推送 / 动作的返回值都走这里）。 */
+  const accept = useCallback((state: FileUpdatesState) => {
+    setLoad((prev) => reduceLoad(prev, { kind: 'snapshot', state }));
+  }, []);
+
   const handlers = useMemo(
-    () => (bridge ? makeHandlers(bridge.fileUpdates, setSnapshot, setActionError) : null),
-    [bridge],
+    () => (bridge ? makeHandlers(bridge.fileUpdates, accept, setActionError) : null),
+    [bridge, accept],
   );
 
   useEffect(() => {
@@ -279,11 +347,13 @@ export function useFileUpdates(): FileUpdatesData {
       const controller = new AbortController();
       void fetchCatalog(controller.signal).then(
         (catalog) => {
-          setSnapshot(browserState(catalog, null));
+          accept(browserState(catalog, null));
         },
         (error: unknown) => {
           if (isAbort(error)) return;
-          setFailure({ failedAt: 'catalog', reason: reasonOf(error) });
+          setLoad((prev) =>
+            reduceLoad(prev, { kind: 'failure', failedAt: 'catalog', reason: reasonOf(error) }),
+          );
         },
       );
       return () => {
@@ -292,44 +362,49 @@ export function useFileUpdates(): FileUpdatesData {
     }
 
     // ---- 桌面态：先订阅，再立刻拉一次（顺序的代价写在文件头） ----
-    let pushed = false;
-    const unsubscribe = bridge.fileUpdates.onStatus((next) => {
-      pushed = true;
-      setSnapshot(next);
-    });
+    const unsubscribe = bridge.fileUpdates.onStatus(accept);
 
     void bridge.fileUpdates.getState().then(
       (initial) => {
         /*
-         * ⚠️★ 收到过推送就**丢掉**这一份：推送与首拉搬的都是**整份**状态，
-         *    所以推送到达之后的 `getState()` 结果一定不比它新
-         *    （`getState()` 是**调用那一刻**的快照，回包的顺序不保证）。
-         *    不丢的话，表现是"界面上闪回一次旧状态"—— 而旧状态里可能还有
-         *    已经更新过的条目，用户会在那一瞬间看到过期的版本号。
+         * ⚠️ 判据是**当时手上有没有数据**（在 updater 里现读，不靠闭包里的旧值）：
+         *    有 ⇒ 丢掉这一份；没有 ⇒ 收下。
+         *    ⚠️ 不能改成"这一次会话里有没有推送过"那种记法：`getState()` 回包与推送
+         *    谁先到是不保证的，而真正要守的规则只有一条 —— 界面已经有数据时，
+         *    不要用一个更旧（或不更新）的快照把它盖回去。
          */
-        if (!pushed) setSnapshot(initial);
+        setLoad((prev) =>
+          prev.status === 'ready' ? prev : reduceLoad(prev, { kind: 'snapshot', state: initial }),
+        );
       },
       (error: unknown) => {
-        // 已经有推送过 ⇒ 这一页其实有数据，这一次首拉的失败不必惊动用户
-        if (pushed) return;
-        setFailure({ failedAt: 'state', reason: reasonOf(error) });
+        setLoad((prev) =>
+          reduceLoad(prev, { kind: 'failure', failedAt: 'state', reason: reasonOf(error) }),
+        );
       },
     );
 
     return unsubscribe;
-  }, [bridge]);
+  }, [bridge, accept]);
 
-  if (failure !== null) {
-    return {
-      status: 'failed',
-      failedAt: failure.failedAt,
-      reason: failure.reason,
-      handlers,
-      actionError,
-    };
+  /*
+   * ⚠️★ 判据就是**页面最终显示哪一屏**（`FileUpdatesLoad` 那三格是互斥的联合）：
+   *    数据排在失败结论前面 —— 否则"先失败、后拿到数据"会停在失败那一屏。
+   */
+  switch (load.status) {
+    case 'ready':
+      return { status: 'ready', state: load.state, handlers, actionError };
+    case 'failed':
+      return {
+        status: 'failed',
+        failedAt: load.failure.failedAt,
+        reason: load.failure.reason,
+        handlers,
+        actionError,
+      };
+    default:
+      return { status: 'loading', handlers, actionError };
   }
-  if (snapshot === null) return { status: 'loading', handlers, actionError };
-  return { status: 'ready', state: snapshot, handlers, actionError };
 }
 
 /**
@@ -366,13 +441,36 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
 
   return (
     <section className="filespanel">
+      {/*
+        ⚠️★ 这里是**裸 `<p>`**（不经过 `em()`）⇒ 词条值里若带 `**`，用户看到的就是
+        字面星号。`files.autoHint` 那条值里的标记去掉正是**因为这一处**；
+        而 `routes/Files.tsx` 里的 `files.browserOnly` 走 `<Notice>`（那会 `em()`），
+        它去掉标记是照 carry-in。两条理由不同，别混（`zh-CN.ts` 的 `files` 一节写着）。
+      */}
       <p className="filespanel__hint">{t('files.autoHint')}</p>
 
       {/*
-        ⚠️★ 「上次检查」这一行**是必需的，不是装饰**：`autoUpdate` 关掉的条目在
-        启动检查里**不刷新**（T1 的 `FileBinding.autoUpdate` 与 T4 的 `startUp` 那一条
-        裁决）⇒ 表格里那个版本号可能是几小时前的读数，而这一行是用户唯一能看出
-        "它有多旧"的地方。没有它，"关掉开关"与"检查坏了"在界面上一模一样。
+        ⚠️★ 这一行印的是**列表级**的 `state.lastCheckedAt`，而它**只活在主进程的内存里**：
+        状态文件（`apps/desktop/src/file-updates.ts` 的 `StateFile`）里只有**每一条**的
+        `lastCheckedAt`，顶层那一格既不写也不恢复（`initFileUpdates` 那句
+        `current = { ...current, items: rebuildItems() }` 只重建 items）
+        ⇒ 进程一重启它就是 `null`，这一行于是印「还没检查过」。
+
+        ⚠️★★ 它**不是**"用户唯一能看出读数有多旧的地方"（那段话 2026-09-24 评审判为**说过头**，
+        这里改成事实）：逐条的时间有两格 —— `FileItemView.lastCheckedAt`（这一条上次读的时刻）
+        与 `lastKnownLatest.fetchedAt`（上次成功读到上游版本的时刻）—— 而它们**今天一个都没露在界面上**。
+        ⇒ **逐条读数时间归 Task 6 的表格渲染**（`components/FileUpdateTable.tsx`），
+        **不是**这一行的职责：这一行只回答"这份列表级别的读数有多旧"。
+        代价写明：在 Task 6 落地之前，"某一条的读数是不是几小时前的"这件事**看不出来** ——
+        而 `autoUpdate` 关掉的条目在启动检查里确实不会被刷新（T1 的 `FileBinding.autoUpdate`
+        与 T4 的 `startUp`），它今天落在 `unchecked` 上、由那一行自己说"还没检查过"。
+
+        ⚠️ 关于"落盘的旧读数"这种组合（评审提的那个场景）：`viewFor()` 里的
+        `lastCheckedAt` 取的是**进程内**的 `facts?.checkedAt ?? null`
+        （`apps/desktop/src/file-updates.ts:542`），而状态文件里那份逐条的 `lastCheckedAt`
+        **从来没有被读进视图** ⇒ 冷启动后每一行都是 `unchecked` + `lastCheckedAt: null`，
+        与这一行的「还没检查过」是**一致**的。这一行今天不会和某一行互相打脸；
+        真要说它有错，错在**措辞比事实大**（它只有一个列表级含义，却被写成了逐条的含义）。
       */}
       <p className="filespanel__meta">
         {state.lastCheckedAt === null
@@ -420,7 +518,16 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
         </div>
       )}
 
-      {/* Task 6 的表格挂载点（见本组件上面那一段）。 */}
+      {/*
+        Task 6 的表格挂载点（见本组件上面那一段）。
+        ⚠️★ 表格那一层要渲染的东西里，**除了** Task 6 brief 列出的那六条渲染规则之外，
+        还有两样**计划里没提**、但只有它那里有位置的：
+          · `view.lastCheckedAt` / `view.lastKnownLatest.fetchedAt` —— **逐条**读数时间
+            （上面那一行 meta 只有列表级的时间，它管不了"这一条是不是几小时前读的"）；
+          · `state.kind === 'unchecked'` 那一支要用 `files.notChecked`（「还没检查过」）——
+            Task 6 brief 的渲染规则里漏了它，而冷启动之后每一行都是它。
+        这两条 2026-09-24 评审判给 Task 6（我这一轮只留位置与词条，不替它画）。
+      */}
       <div className="filetable" data-views={views.length} />
     </section>
   );
