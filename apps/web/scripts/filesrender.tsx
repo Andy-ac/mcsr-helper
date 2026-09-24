@@ -952,10 +952,11 @@ ok('⑯ `reduceLoad`：失败 → 数据到手撤回失败结论；有数据时�
  * ⚠️★ 这里渲染的是**真的路由页**。静态渲染下 `window.mcsr` 不存在 ⇒ 走的就是浏览器态，
  *    而 `useFileUpdates()` 里的 effect 一行都不跑 ⇒ 这一屏是「加载中…」。
  *    ⇒ 能断言的正是那几件"不依赖数据就该在"的事：标题、说明、以及那句"这里不是桌面版"。
- *    ⚠️ 页面里那个 `<DesktopDownload />` 在 `renderToStaticMarkup` 下**渲染成 `null`**
- *    （它自己会 `fetch('/api/desktop/release')`，静态渲染里 `useAsync` 停在 loading）
- *    ⇒ 这条自检断言的是那句 `files.browserOnly` 的 Notice，**不是**那张下载卡。
- *    下载卡住不住在这里：`homerender.tsx` 那边有它自己的覆盖。
+ *    ⚠️★ 那张下载卡**今天没有任何渲染自检覆盖** —— 现读：`apps/web/scripts/**` 里除了本段注释，
+ *    没有任何地方提到 `DesktopDownload` / `dlcard` / `download.*`（主页那个脚本也没有）。
+ *    它在静态渲染下**永远是 `null`**（要覆盖它得先有一条"取数成功"的路径，或者把取数拆出去）
+ *    ⇒ 如实记在这里、**本任务不改**（那是别人的范围；本段第一版写的是"homerender 那边有覆盖"，
+ *    那是**假的**，现读之后改掉）。
  */
 const pageHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
