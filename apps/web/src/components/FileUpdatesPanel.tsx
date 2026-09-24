@@ -222,9 +222,16 @@ function browserState(catalog: FileCatalog | null, catalogError: string | null):
 function makeHandlers(
   api: DesktopBridge['fileUpdates'],
   apply: (state: FileUpdatesState) => void,
-  fail: (message: string) => void,
+  fail: (message: string | null) => void,
 ): FileUpdatesHandlers {
   const run = async (call: () => Promise<FileUpdatesState>): Promise<void> => {
+    /*
+     * ⚠️★ 开跑之前先把**上一次**的失败结论撤掉。它说的是上一次那个动作，而这一次
+     *    我们还什么都不知道；不撤的话，用户照提示改好、按第二次成功之后，
+     *    上一句红字会一直挂在页面上 —— 那是**已经不再成立**的一句话
+     *    （与 `routes/ShareIntro.tsx` 里"重试前先撤掉失败结论"是同一个形状）。
+     */
+    fail(null);
     try {
       apply(await call());
     } catch (error) {
