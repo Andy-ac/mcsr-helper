@@ -87,16 +87,34 @@ export interface DesktopBridge {
   /**
    * 本地文件自动更新。
    *
-   * ⚠️★ 参数纪律（读 `preload.ts` 文件头那一段再改这里）：
-   *    渲染进程加载的是**远程网页**，所以这里**只有 id 与布尔**，
-   *    **永远不接受路径** —— 路径只存在于主进程自己的状态文件里。
+   * ⚠️★ **入参**纪律（读 `preload.ts` 文件头那一段再改这里）：
+   *    渲染进程加载的是**远程网页**，所以这一组方法的**入参只有 id 与布尔**，
+   *    **入参永远不含路径** —— 要选一个 .jar 或一个 mods 目录，只能由主进程
+   *    弹自己的原生对话框去选（那个对话框是 **Task 4** 要写的，今天还没有）。
+   *
+   * ⚠️⚠️ 但**出参方向是反的，而且必须反**：`getState()` 的返回值与
+   *    `onStatus` 推给页面的那份 `FileUpdatesState` 里**确实带着已绑定条目的绝对路径**
+   *    （`FileItemView.binding.localPath` / `FileItemState.localPath`）——
+   *    这份状态按 `fileUpdates.ts` 里的定义就是**页面唯一的数据来源**，
+   *    路径是它的一部分（页面要靠它指出"正在更新的是哪个文件"）。
+   *    ⇒ **入参不含路径 ≠ 这条通道不搬运路径**。被 XSS 的远程源既能读到这台机器上的
+   *    mods 绝对路径（含用户名），也能按 id 触发写盘（但**指定不了写到哪**）。
+   *    这是本期**有意接受**的代价（把路径从状态里拿掉就等于砍掉页面的一项能力），
+   *    不是"没想过"：写在这里是为了下一次有人把它当缺陷时能看到这是一次决定。
    */
   readonly fileUpdates: {
     getState(): Promise<FileUpdatesState>;
     onStatus(callback: (state: FileUpdatesState) => void): () => void;
-    /** 弹**原生**对话框让用户选一个 .jar；主进程会核对里面的 modId */
+    /**
+     * 弹**原生**对话框让用户选一个 .jar，并核对里面的 modId。
+     * ⚠️ 这一句说的是**将要**实现的主进程那一半（Task 4 落地）—— 本文件只声明契约，
+     *    今天 `apps/desktop/src/main.ts` 里还没有它。
+     */
     bind(itemId: string): Promise<FileUpdatesState>;
-    /** 选一个 mods 目录，按 fabric.mod.json 的 id 自动匹配能对上的条目 */
+    /**
+     * 选一个 mods 目录，按 `fabric.mod.json` 的 id 自动匹配能对上的条目。
+     * ⚠️ 同上：主进程那一半是 Task 4 的，今天还不存在。
+     */
     bindFolder(): Promise<FileUpdatesState>;
     unbind(itemId: string): Promise<FileUpdatesState>;
     /** 只表示"启动时检查并高亮"；**写盘永远要一次点击** */
@@ -108,6 +126,38 @@ export interface DesktopBridge {
     updateAll(): Promise<FileUpdatesState>;
   };
 }
+
+/**
+ * `fileUpdates` 那九条 IPC 通道名 —— **契约的一部分，所以住在契约旁边**。
+ *
+ * 为什么不做成各自的字符串字面量（preload 与主进程各写一遍）：
+ *   通道名是**字符串**，写错一个字母类型检查看不见，而失败形态是静默的 ——
+ *   `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、
+ *   `on` 对着一个不存在的通道名订阅（永远不触发）。这正是本文件开头警告的那一类失效。
+ *   提到这里之后，preload 与主进程（Task 4）**引用同一个常量对象**，
+ *   两边各自手写一遍从而漂移这件事就不可能发生（剩下的只有"两边都忘了注册"，
+ *   那是另一个问题，且那种情况下两处指的是同一串、排障时一眼能对上）。
+ *   代价：`packages/shared` 对桌面端来说**不再"只有类型"** —— preload 现在真的
+ *   把这一份 `desktop.ts` 打进 bundle（那九个字符串各出现一次 + 这段注释）。
+ *   实测（2026-09-24）：`apps/desktop/dist/preload.cjs` 从 4.2kb 变 5.3kb，
+ *   未被引用的 `desktopBridge()` 被 tree-shake 掉了（产物里 0 次出现）。
+ *   ⇒ 用约 1kb 的产物换掉一整类静默失败，这是划算的那一边。
+ *
+ * 键名与 `DesktopBridge['fileUpdates']` 的方法名**逐一对应**（`satisfies` 那一条兜住
+ * "契约加了方法却忘了加通道"）。
+ */
+export const FILE_UPDATES_CHANNELS = {
+  getState: 'mcsr:fileupdates-get-state',
+  /** 状态推送。**同一个串同时用于订阅与取消订阅**（散开写就会漏改一处）。 */
+  onStatus: 'mcsr:fileupdates-status',
+  bind: 'mcsr:fileupdates-bind',
+  bindFolder: 'mcsr:fileupdates-bind-folder',
+  unbind: 'mcsr:fileupdates-unbind',
+  setAutoUpdate: 'mcsr:fileupdates-set-auto',
+  check: 'mcsr:fileupdates-check',
+  update: 'mcsr:fileupdates-update',
+  updateAll: 'mcsr:fileupdates-update-all',
+} as const satisfies Record<keyof DesktopBridge['fileUpdates'], string>;
 
 declare global {
   interface Window {

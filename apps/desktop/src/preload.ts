@@ -1,4 +1,4 @@
-import type { DesktopBridge, UpdateStatus } from '@mcsr/shared/desktop';
+import { type DesktopBridge, FILE_UPDATES_CHANNELS, type UpdateStatus } from '@mcsr/shared/desktop';
 import type { FileUpdatesState } from '@mcsr/shared/fileUpdates';
 import { contextBridge, ipcRenderer } from 'electron';
 
@@ -21,15 +21,28 @@ import { contextBridge, ipcRenderer } from 'electron';
  * 现在的渲染进程加载的是**远程网页**（https://mcsrhelper.com），
  * 不是打包在应用里的本地页面。这放大了上面每一条的重要性：
  * 网页那边一旦有 XSS，攻击者拿到的是这个通道能做的全部事情。
- * 这也是为什么这里的更新通道只能触发"检查 / 下载 / 安装"，
- * 而不能传任意 URL 或路径 —— 它们没有参数。
+ * 这也是为什么这里的更新这一族只能**读一次状态**（`getStatus`）、
+ * 触发"检查 / 下载 / 安装"，而**不能传任意 URL 或路径** —— 它们没有参数。
  *
  * 2026-09-24 加了 `fileUpdates`（本地文件自动更新）。它是**第一组带参数**的能力，
  * 所以上面那条"它们没有参数"不再覆盖全部通道，必须把纪律写清楚：
- * 参数**只有 `itemId` 字符串与布尔**（见下面那一组的 ⚠️★），
- * **永远不接受路径**。代价是"选目录"这类动作只能由主进程弹原生对话框完成、
- * 页面无法指定目标；换来的是这条通道即使被 XSS 全部拿到，
- * 攻击者能做的也只是"在用户自己的 mods 目录里更新目录里已存在的条目"。
+ * **入参**只有 `itemId` 字符串与布尔（见下面那一组的 ⚠️★），**入参永远不含路径**。
+ *
+ * ⚠️⚠️ 但**别把"入参不含路径"读成"这条通道不搬运路径"** —— 方向正好是反的：
+ *   · **读**（`getState` / `onStatus`）：交给页面的那份 `FileUpdatesState` 里，
+ *     每一条都带着**已绑定条目的绝对路径**（`FileItemView.binding.localPath`、
+ *     `FileItemState.localPath`，都定义在 `@mcsr/shared/fileUpdates`）
+ *     ⇒ 一个被 XSS 的远程源**能读到这台机器上的 mods 绝对路径**（含用户名字段）。
+ *   · **写**：只能按 id 触发**已绑定条目**的更新，**指定不了写到哪**
+ *     （路径是主进程自己记下的），所以"写任意文件"做不到。
+ *     代价是"选一个 .jar / 选一个 mods 目录"这类动作只能由主进程弹**原生**对话框完成、
+ *     页面无法指定目标（那一半是 **Task 4** 落地，今天 `main.ts` 里还没有）。
+ *
+ * ⇒ **接受的风险（写在这里，免得被当成"没想过"）**：这份状态按 `fileUpdates.ts`
+ *   里的定义就是**页面唯一的数据来源**，路径是它的一部分（页面要靠它指出"正在更新的
+ *   是哪个文件"）⇒ 本期**有意接受**"被注入的源能看见这些路径与用户名"。
+ *   这是**决定**，不是疏忽。下面那一组里那句"不接受路径 ≠ 参数可信"仍然成立：
+ *   主进程那一侧要自己校验 `itemId` 在目录里存在。
  */
 const bridge: DesktopBridge = {
   isDesktop: true,
@@ -86,51 +99,58 @@ const bridge: DesktopBridge = {
    * 显式写出来，漏一个就红在 `bridge: DesktopBridge` 这一行上。
    *
    * ⚠️★ 参数纪律（上面那段安全约定的具体化，改之前先读它）：
-   *    这一组每个方法的参数**只有 `itemId` 字符串与布尔**，**永远不接受路径** ——
-   *    `bind` / `bindFolder` 要选路径，但选路径的动作发生在**主进程弹的原生对话框**里，
+   *    这一组每个方法的**入参**只有 `itemId` 字符串与布尔，**入参永远不含路径** ——
+   *    `bind` / `bindFolder` 要选路径，但选路径的动作是**主进程弹的原生对话框**
+   *    （⚠️ 那一半是 **Task 4** 实现，今天还不存在），
    *    返回值是"主进程自己记下的绑定"，而不是让页面递进来一个路径。
-   *    理由就是上面那一条：渲染进程加载的是**远程网页**，网页那边一旦有 XSS，
-   *    能传路径就等于允许"更新流程去写任意文件"（该流程后半段要删旧 jar 再改名）。
-   *    主进程那一侧仍然要自己校验 `itemId` 在目录里存在（不接受参数不等于参数可信）。
+   *    ⇒ 结果：这一组**写不了任意文件**（该流程后半段要删旧 jar 再改名，
+   *      所以能传路径才是真的危险）。主进程那一侧仍然要自己校验 `itemId`
+   *      在目录里存在（不接受路径 ≠ 参数可信）。
+   * ⚠️⚠️ 但**读**方向是另一回事：`getState` / `onStatus` 交出去的
+   *    `FileUpdatesState` 里带着已绑定条目的绝对路径（含用户名） ⇒
+   *    文件头那一段写清了这是**本期有意接受**的风险，不是遗漏。
+   * 通道名一律取自 `FILE_UPDATES_CHANNELS`（`@mcsr/shared/desktop`）——
+   *    字符串写错一个字母类型检查看不见，而失败形态是静默的（`invoke` reject /
+   *    `on` 永不触发）；与主进程共用同一个常量对象，两边就不可能各写一份再漂移。
    */
   fileUpdates: {
     getState(): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-get-state') as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.getState) as Promise<FileUpdatesState>;
     },
     onStatus(callback: (state: FileUpdatesState) => void): () => void {
       const listener = (_event: unknown, state: FileUpdatesState): void => callback(state);
-      ipcRenderer.on('mcsr:fileupdates-status', listener);
+      ipcRenderer.on(FILE_UPDATES_CHANNELS.onStatus, listener);
       return () => {
-        ipcRenderer.off('mcsr:fileupdates-status', listener);
+        ipcRenderer.off(FILE_UPDATES_CHANNELS.onStatus, listener);
       };
     },
     bind(itemId: string): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-bind', itemId) as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.bind, itemId) as Promise<FileUpdatesState>;
     },
     bindFolder(): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-bind-folder') as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.bindFolder) as Promise<FileUpdatesState>;
     },
     unbind(itemId: string): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-unbind', itemId) as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.unbind, itemId) as Promise<FileUpdatesState>;
     },
     setAutoUpdate(itemId: string, on: boolean): Promise<FileUpdatesState> {
       return ipcRenderer.invoke(
-        'mcsr:fileupdates-set-auto',
+        FILE_UPDATES_CHANNELS.setAutoUpdate,
         itemId,
         on,
       ) as Promise<FileUpdatesState>;
     },
     check(force?: boolean): Promise<FileUpdatesState> {
       return ipcRenderer.invoke(
-        'mcsr:fileupdates-check',
+        FILE_UPDATES_CHANNELS.check,
         force === true,
       ) as Promise<FileUpdatesState>;
     },
     update(itemId: string): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-update', itemId) as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.update, itemId) as Promise<FileUpdatesState>;
     },
     updateAll(): Promise<FileUpdatesState> {
-      return ipcRenderer.invoke('mcsr:fileupdates-update-all') as Promise<FileUpdatesState>;
+      return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.updateAll) as Promise<FileUpdatesState>;
     },
   },
 };
