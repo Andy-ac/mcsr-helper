@@ -5,21 +5,26 @@
  *    攻击者拿到的是这条通道能做的全部事情。所以：路径**从来不出现在 IPC 参数里**，
  *    只出现在这个文件自己维护的状态文件里；页面只能按 itemId 说"绑定/更新这一条"。
  *
- * ⚠️ 写盘只有一条路：`update()`。它只在用户点击时被调用（`autoUpdate` 只影响"检查并高亮"）。
+ * ⚠️ 写方向**到底能做什么**（2026-09-24 评审的顺手 2 要求把话说准）：远程页面
+ *    **决定不了路径**（它只能给一个目录校验过的 itemId + 布尔），但它**能**按 id 触发对
+ *    **已绑定条目**的写入 —— 也就是"把用户自己的 mods 目录里那一个文件换掉"。
+ *    所以"写不了任意文件"成立，"什么都写不了"不成立；这条通道的爆炸半径就到这里为止。
  *
  * ⚠️ 读方向是反的：交给页面的 `FileUpdatesState` 里**确实带着已绑定条目的绝对路径**
  *    （`FileItemView.binding.localPath` / `FileItemState.localPath`，定义在
  *    `@mcsr/shared/fileUpdates`）。那是页面唯一的数据来源、路径是它的一部分
  *    ⇒ 被注入的远程源能看到这些路径（含用户名）。`preload.ts` 文件头把这条记成一次
- *    **有意接受的代价**，这里不再重复论证；本文件要保证的是**写**方向指定不了目标。
+ *    **有意接受的代价**，这里不再重复论证。
  *
  * ⚠️ 本文件里"上游"一律指 **Modrinth**（`api.modrinth.com` 取元数据、`cdn.modrinth.com`
  *    取字节）：我们服务器只提供"有哪些条目"（目录），**不是信任锚** —— 落盘的内容必须与
  *    上游给的 sha512 对得上，服务器被攻破也推不了任意 jar。
  *
- * ⚠️ 这个模块**没有测试运行器**（`apps/desktop` 只有 typecheck）⇒ 判断逻辑能搬的都搬到了
- *    `@mcsr/shared/fileUpdates`（T1）。本文件里剩下的新判断只有一处（`compareLocalVersions`，
- *    只用于"同一个 mod 在用户目录里有多个副本时先绑哪一份"），它的处境写在它自己的注释里。
+ * ⚠️ 这个模块**没有测试运行器**（`apps/desktop` 只有 typecheck）⇒ 凡是要写断言的纯逻辑都住在
+ *    `@mcsr/shared/fileUpdates`，断言落在 `services/api/src/file-updates-shared.test.ts`。
+ *    本文件里**已经没有**独立的新判断逻辑了（`compareLocalVersions` 在 2026-09-24 的
+ *    顺手 6 里被搬进了 shared）；剩下的都是"读盘 / 打网络 / 弹框"这类需要环境才能跑的编排，
+ *    由 `.cache/task4-probe/` 那套桩 electron 探针覆盖（不可长期复跑）。
  */
 import { createHash } from 'node:crypto';
 import {
@@ -38,8 +43,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { FILE_UPDATES_CHANNELS } from '@mcsr/shared/desktop';
 import {
   compareLocalToLatest,
+  compareLocalVersions,
   type FileCatalog,
   type FileCatalogItem,
+  type FileItemState,
   type FileItemView,
   type FileUpdatesState,
   isDisabledPath,
@@ -80,16 +87,37 @@ export function stateFilePath(): string {
 }
 
 /**
+ * `readStateFile()` 的结果。
+ *
+ * ⚠️★ 为什么是"三态"而不是 `{ state, recovered }`（2026-09-24 评审的必修 2）：
+ *    备份**失败**时，旧写法仍然回一句"已备份成 …"、并交给调用方一个**空状态** ——
+ *    下一步 `initFileUpdates` 就会把那个空状态写回去，**覆盖掉用户原来的坏文件**
+ *    ⇒ 既说假话，又静默丢掉用户的全部绑定路径。
+ *    ⇒ 现在把"备份失败"单独表达成 `fatal`：`state` 是 null（**不许**拿空状态去覆盖），
+ *      调用方必须停住写入并提示用户手动处理那个文件。
+ */
+interface StateFileRead {
+  /** 可以用的状态；`null` = 备份失败，**不许**写盘。 */
+  state: StateFile | null;
+  /** 备份成功后重建为空的说明（给调用方去说）。 */
+  recovered: string | null;
+  /** 读不出来且**备份也失败** ⇒ 停住，别再碰那个文件。 */
+  fatal: string | null;
+}
+
+/**
  * 读状态文件。
  *
  * ⚠️ 坏文件**不许静默丢**：用户亲手选的文件路径在这里，丢了却什么都不说的话，
  *    下一次打开是"什么都没绑定"，而他不知道发生过什么。
  *    所以：备份成 `.corrupt-<ts>` 再重建，并把这件事交给调用方去说
  *    （`initFileUpdates` 会打日志 + 弹一次原生提示框 —— 为什么是提示框见那里）。
+ * ⚠️★ **备份失败时反过来做**：一个字节都不覆盖（`state: null` + `fatal`），
+ *    宁可让这一栏停住并让用户自己去处理那个文件 —— 见 `StateFileRead` 的注释。
  */
-export function readStateFile(): { state: StateFile; recovered: string | null } {
+export function readStateFile(): StateFileRead {
   const file = stateFilePath();
-  if (!existsSync(file)) return { state: { version: 1, items: {} }, recovered: null };
+  if (!existsSync(file)) return { state: { version: 1, items: {} }, recovered: null, fatal: null };
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as StateFile;
     if (parsed.version !== 1 || typeof parsed.items !== 'object' || parsed.items === null) {
@@ -108,29 +136,56 @@ export function readStateFile(): { state: StateFile; recovered: string | null } 
         lastUpdateTo: raw.lastUpdateTo ?? null,
       };
     }
-    return { state: { version: 1, items }, recovered: null };
+    return { state: { version: 1, items }, recovered: null, fatal: null };
   } catch (error) {
     const backup = `${file}.corrupt-${Date.now()}`;
     try {
       renameSync(file, backup);
-    } catch {
-      /* 备份不动也不该让功能起不来 */
+    } catch (backupError) {
+      /*
+       * ⚠️★ 这一步失败 ⇒ **停住**：既不改名、也不回空状态。原先这里是 `catch { /* … *\/ }`
+       * 吞掉错误，然后照样说"已备份成 …"、并让调用方拿空状态把坏文件覆盖掉 ——
+       * 那等于**静默删掉用户全部的绑定路径**（评审必修 2）。
+       * 代价：这一栏在用户手动处理那个文件之前是停住的（`writeStateFile` 会拒绝写入），
+       * 而"改好或删掉它再启动"这句话由 `initFileUpdates` 的提示框说清楚。
+       */
+      return {
+        state: null,
+        recovered: null,
+        fatal:
+          `状态文件读不出来（${String(error)}），而且**备份也失败了**（${messageOf(backupError)}）。` +
+          `⇒ 没有动它、也不会再写它（免得把里面的绑定路径抹掉）。` +
+          `请手动处理这个文件（修好它、或删掉它）然后重启：${file}`,
+      };
     }
     return {
       state: { version: 1, items: {} },
       recovered: `状态文件读不出来（${String(error)}），已备份成 ${basename(backup)}`,
+      fatal: null,
     };
   }
 }
 
-/** 写状态文件：临时文件 + 同卷 rename，绝不留下半个 JSON。 */
+/**
+ * 写状态文件：临时文件 + 同卷 rename，绝不留下半个 JSON。
+ *
+ * ⚠️ 停住态（`stateFileWritable === false`，见 `StateFileRead.fatal`）下**拒绝写**：
+ *    那是"坏文件连备份都失败"时唯一的正确动作 —— 宁可功能不可用，也不许覆盖用户的数据。
+ */
 export function writeStateFile(state: StateFile): void {
+  if (!stateFileWritable) {
+    throw new Error(stateFileBlockedReason ?? '状态文件当前不可写（读不出来且备份失败）');
+  }
   const file = stateFilePath();
   const tmp = `${file}.tmp`;
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
   renameSync(tmp, file);
 }
+
+/** 状态文件能不能写（`false` = 坏文件连备份都失败 ⇒ 什么都不许写）。 */
+let stateFileWritable = true;
+let stateFileBlockedReason: string | null = null;
 
 /**
  * 内存里的状态文件副本 —— 进程内**唯一**权威（磁盘上的那份是它的落盘快照）。
@@ -215,12 +270,19 @@ async function fetchVersions(
     }
   }
   /*
-   * 退避重试用尽：**保留上一次成功的读数**，而不是清空成"未知"。
-   * ⚠️ 代价（别把它读成"这条读数还新鲜"）：界面拿不到"这是几分钟前的"这件事 ——
-   *    T1 的 `FileItemState` 里没有承载"读数时间"的字段（`checkedAt` 在 `FileItemView` 上，
-   *    而它记的是**本次检查**的时间）。要标注"X 分钟前"就得改契约，那属于 T5/T6 的范围。
+   * 退避重试用尽 ⇒ **抛**。
+   *
+   * ⚠️★ 这里曾经写着"保留上一次成功的读数，而不是清空成未知"，并在 `cached` 存在时把它当**正常
+   *    读数**返回 —— 评审（2026-09-24 必修 1）判为**粉饰**，属实：那条路径会让一行显示成
+   *    "已是最新"（正常状态），而 spec §8 要的是状态 `error` + "检查失败：…"
+   *    **并保留上次成功的最新版本、标注它是几时读的**。
+   * ⇒ 现在的分工：**这里只管"这次到底读到了没有"**（读到就返回、没读到就抛），
+   *    "上次读到的是什么、几时读的"由调用方（`doCheck`）用内存里的 `lastKnown` 单独记，
+   *    并随 `FileItemView.lastKnownLatest` 交给页面（`error` 状态下它就是唯一能看的读数）。
+   *    代价：上游一个请求都不通时，每一行都会变成 `error` —— 那正是实情，
+   *    而"上次读数 + 时间"在同一处 display 出来，不像以前那样拿旧数字冒充新数字。
+   * ⚠️ TTL 缓存（30 分钟内、非 `force`）仍然照用：那是**这次**成功的读数，不是过期的。
    */
-  if (cached) return cached.versions;
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
@@ -326,34 +388,13 @@ function sameFilePath(a: string, b: string): boolean {
 /**
  * 用户目录里有同一个 mod 的多份 jar 时，先绑哪一份。
  *
- * ⚠️★ 这**不是**上游的"最新版"规则：上游必须按 `date_published` 选（回滚发版时比版本号会选错，
- *    见 `pickLatestVersion` 的注释）。这里比的是**已经躺在用户目录里的两份副本**，
- *    按数字段逐段比（"5.8.26" > "5.8.15"，字符串序在这里会给错答案）。
- * ⚠️ 解析不出数字段时退化成字符串序：这一支的结果只决定"先绑哪一份"，
- *    用户随时可以用 `bind(itemId)` 指定某一个具体文件。
- * ⚠️ **本任务里唯一新增的判断逻辑，而它住在没有测试运行器的 apps/desktop 里**
- *    ⇒ 今天没有任何断言钉住它。用户那台机器的实际目录里只有一份启用的 jar（spec §3 的读数），
- *    所以人工端到端也覆盖不到它。要让它有判据：把它提到 `packages/shared` 并配一条测试
- *    （像 `services/api/src/seeds-picker-shared.test.ts` 那样）—— 本任务没有做，
- *    因为 inScope 是 apps/desktop，而 T1 已经收口了。
+ * ⚠️ 规则本身住在 `@mcsr/shared/fileUpdates` 的 `compareLocalVersions` 里（2026-09-24 评审的
+ *    顺手 6 把它从本文件搬了过去）：**apps/desktop 没有测试运行器**，留在这里就只能靠
+ *    gitignore 的探针验；搬到 shared 之后 `services/api/src/file-updates-shared.test.ts`
+ *    里有能红的断言钉着它（包括"3.0.10 > 3.0.2"那条字符串序会给错答案的用例）。
+ * ⚠️ 它**不是**上游的"最新版"规则（那是 `pickLatestVersion` 的 `date_published`）——
+ *    两个函数的注释里都写清了这一点，别把其中一个的规则搬到另一个上。
  */
-function compareLocalVersions(a: string, b: string): number {
-  const pa = a.split(/[.\-+_]/);
-  const pb = b.split(/[.\-+_]/);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
-    const sa = pa[i] ?? '';
-    const sb = pb[i] ?? '';
-    const na = /^\d+$/.test(sa) ? Number(sa) : Number.NaN;
-    const nb = /^\d+$/.test(sb) ? Number(sb) : Number.NaN;
-    if (Number.isFinite(na) && Number.isFinite(nb)) {
-      if (na !== nb) return na - nb;
-      continue;
-    }
-    const cmp = sa.localeCompare(sb);
-    if (cmp !== 0) return cmp;
-  }
-  return 0;
-}
 
 // ---------------------------------------------------------------------------
 // 目录（我们服务器上的 GET /api/file-catalog，带 ETag）
@@ -457,16 +498,43 @@ interface CheckFacts {
 const checked = new Map<string, CheckFacts>();
 /** 本次进程里读到的本地事实（key = itemId）。**不吃状态文件里的缓存**，见 `readLocal`。 */
 const liveLocal = new Map<string, LocalRead>();
+/**
+ * 最近一次**成功**读到的最新版本与读到它的时间（key = itemId）。
+ *
+ * ⚠️★ 必修 1 的那一半：`fetchVersions` 失败时**不再**拿过期缓存冒充正常读数，
+ *    于是"上次读到的是什么、几时读的"必须单独记在这里 —— 它随
+ *    `FileItemView.lastKnownLatest` 交给页面（spec §8："保留上次成功的最新版本并标注时间"）。
+ * ⚠️ 只活在内存里（状态文件故意不存最新版本，plan 写死的设计）；
+ *    所以冷启动 + 上游不可达时它是 `null`，那句 `message` 也就照实说"本次还没成功读到过"。
+ * ⚠️ 它只在**检查成功**时更新（`doCheck` 里那两个地方）；`unbind` 时跟着删。
+ */
+const lastKnown = new Map<string, { version: string; fetchedAt: number }>();
 
 function viewFor(item: FileCatalogItem): FileItemView {
   const binding = stateFile.items[item.id] ?? null;
+  /** 各分支共用的那几格（`lastKnownLatest` 只在"从没有过读数"时才该是 null）。 */
+  const view = (
+    b: StateFileItem | null,
+    localVersion: string | null,
+    state: FileItemState,
+    lastCheckedAt: number | null,
+  ): FileItemView => ({
+    item,
+    binding: b,
+    localVersion,
+    state,
+    lastCheckedAt,
+    lastKnownLatest: lastKnown.get(item.id) ?? null,
+  });
   if (!binding || binding.localPath === '') {
+    // 没绑定就谈不上"上次读到的最新版本" ⇒ 这一格是 null（不多借一次历史）
     return {
       item,
       binding: null,
       localVersion: null,
       state: { kind: 'unbound' },
       lastCheckedAt: null,
+      lastKnownLatest: null,
     };
   }
   const localPath = binding.localPath;
@@ -480,23 +548,16 @@ function viewFor(item: FileCatalogItem): FileItemView {
    *    `readLocal` 上面警告的那种"缓存过的版本在文件被换掉之后继续说旧话"。
    */
   if (!existsSync(localPath)) {
-    return {
-      item,
-      binding,
-      localVersion: null,
-      state: { kind: 'missing-file', localPath },
-      lastCheckedAt,
-    };
+    return view(binding, null, { kind: 'missing-file', localPath }, lastCheckedAt);
   }
   const read = liveLocal.get(item.id);
   if (read && !read.ok) {
-    return {
-      item,
+    return view(
       binding,
-      localVersion: null,
-      state: { kind: 'error', localPath, message: `读不出这个文件：${read.detail ?? read.reason}` },
+      null,
+      { kind: 'error', localPath, message: `读不出这个文件：${read.detail ?? read.reason}` },
       lastCheckedAt,
-    };
+    );
   }
   if (!read || !facts) {
     /*
@@ -509,52 +570,44 @@ function viewFor(item: FileCatalogItem): FileItemView {
      *    代价：这三种情况界面都不显示版本号（`localVersion` 是 null）—— 那是真的：
      *    这一次进程里我们确实还没读到。
      */
-    return {
-      item,
-      binding,
-      localVersion: null,
-      state: { kind: 'unchecked', localPath },
-      lastCheckedAt: null,
-    };
+    return view(binding, null, { kind: 'unchecked', localPath }, null);
   }
   const localVersion = read.version;
   if (facts.error) {
-    return {
-      item,
+    // `facts.error` 的文案在 `doCheck` 里写（上游不可达的那种要说清"本次还没成功读到过"）
+    return view(
       binding,
       localVersion,
-      state: { kind: 'error', localPath, message: facts.error },
+      { kind: 'error', localPath, message: facts.error },
       lastCheckedAt,
-    };
+    );
   }
   const latest = facts.latest;
   if (!latest) {
-    return {
-      item,
+    return view(
       binding,
       localVersion,
-      state: {
+      {
         kind: 'error',
         localPath,
         message: `上游没有 ${item.source.gameVersion} / ${item.source.loader} / ${item.source.channel} 的版本`,
       },
       lastCheckedAt,
-    };
+    );
   }
   const cmp = compareLocalToLatest(localVersion, latest, facts.versions);
   if (cmp === 'up-to-date') {
-    return {
-      item,
+    return view(
       binding,
       localVersion,
-      state: {
+      {
         kind: 'current',
         localPath,
         localVersion,
         latestVersion: latest.version_number,
       },
       lastCheckedAt,
-    };
+    );
   }
   const file = primaryFileOf(latest);
   /*
@@ -563,23 +616,21 @@ function viewFor(item: FileCatalogItem): FileItemView {
    *    没有哈希就没有这条判据 ⇒ 报错，而不是"下一份没校验的东西"。
    */
   if (!file?.hashes.sha512) {
-    return {
-      item,
+    return view(
       binding,
       localVersion,
-      state: {
+      {
         kind: 'error',
         localPath,
         message: '上游那一版没有可下载的主文件（或没有 sha512）⇒ 不能校验，拒绝更新',
       },
       lastCheckedAt,
-    };
+    );
   }
-  return {
-    item,
+  return view(
     binding,
     localVersion,
-    state: {
+    {
       kind: cmp,
       localPath,
       localVersion,
@@ -591,7 +642,7 @@ function viewFor(item: FileCatalogItem): FileItemView {
       disabled: isDisabledPath(localPath),
     },
     lastCheckedAt,
-  };
+  );
 }
 
 function rebuildItems(): FileItemView[] {
@@ -689,11 +740,40 @@ async function doCheck(force: boolean, scope: CheckScope): Promise<FileUpdatesSt
       const versions = await fetchVersions(item.source.project, { force, userAgent: d.userAgent });
       const latest = pickLatestVersion(versions, item.source);
       checked.set(item.id, { latest, versions, error: null, checkedAt: Date.now() });
+      /*
+       * 记账"最近一次**成功**读到的最新版本 + 时间"（必修 1 / spec §8）。
+       * ⚠️ 只在 `latest` 非空时记：`pickLatestVersion` 返回 null 表示"上游没有匹配
+       *    gameVersion+loader+channel 的版本"——那是**读到了**（列表拿到了），
+       *    但没有"最新版本"这个事实可记；此时界面显示的是那一句"上游没有 … 的版本"，
+       *    把旧的 lastKnown 顶上去会变成另一种假话。
+       */
+      if (latest) lastKnown.set(item.id, { version: latest.version_number, fetchedAt: Date.now() });
     } catch (error) {
+      /*
+       * 上游拉不到（退避重试用尽 / 断网 / 429 / 5xx）⇒ 状态 `error`，**并保留上次成功的最新版本**。
+       *
+       * ⚠️★ 必修 1：以前这里（配合 `fetchVersions` 回退缓存）会让一行显示成正常状态，
+       *    而 spec §8 要的是 error + "检查失败：…" + 上次读数与它的时间。
+       * ⚠️ 文案分两种，因为这两种情况对用户的意义完全不同：
+       *    · 有上次读数 ⇒ 交给 `lastKnownLatest` 显示（版本 + 时间），这里只说原因；
+       *    · **从没成功读到过**（冷启动 + 网络不通）⇒ 必须**照实说**"本次还没成功读到过"，
+       *      不许编一个版本号（那正是评审判过的"粉饰"）。
+       */
+      const fallback = lastKnown.get(item.id) ?? null;
+      const why = messageOf(error);
+      const message = fallback
+        ? `检查失败：上游拉不到版本列表（${why}）`
+        : `检查失败：上游拉不到版本列表（${why}）—— 本次还没有成功读到过最新版本，这一条现在没有可比对的读数`;
+      /*
+       * ⚠️ 保留上一次的 `latest` / `versions`（如果有）：它们**只**用于显示
+       *    `lastKnownLatest`（`viewFor` 先看 `facts.error`，所以状态仍然是 error、
+       *    `needsUpdate` 仍然是 false）。清掉的话连"上次读到的是 5.8.26"都不剩。
+       */
+      const previous = checked.get(item.id) ?? null;
       checked.set(item.id, {
-        latest: null,
-        versions: [],
-        error: `检查失败：${messageOf(error)}`,
+        latest: previous?.latest ?? null,
+        versions: previous?.versions ?? [],
+        error: message,
         checkedAt: Date.now(),
       });
     }
@@ -971,6 +1051,8 @@ function unbind(itemId: unknown): FileUpdatesState {
   }
   liveLocal.delete(item.id);
   checked.delete(item.id);
+  // "上次成功读到的最新版本"跟着绑定走：解绑之后没有"这一条"了，留着就是多借一次历史
+  lastKnown.delete(item.id);
   current = { ...current, items: rebuildItems() };
   broadcast();
   return current;
@@ -1033,6 +1115,41 @@ async function confirmOverwrite(
       '选「取消」：什么都不会发生，原文件一个字节都不动。',
     ].join('\n'),
     buttons: ['覆盖它', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  };
+  const res = win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box);
+  return res.response === 0;
+}
+
+/**
+ * 被禁用的绑定（`.jar.disabled`）上的单条更新确认（2026-09-24 评审的必修 3）。
+ *
+ * ⚠️★ 为什么必须问：`update()` 会 `rmSync` 掉那个 `.disabled`、把新文件重命名成 `<name>.jar`
+ *    —— **用户点一下按钮就把一个被禁用的 mod 启用了**，而游戏下次启动就会加载它。
+ *    这不是"更新"，是"改变用户设置"，所以要一次明确的点头。
+ * ⚠️ 默认按钮同样是**取消**（呼应"别做用户没要求的事"这个方向）；
+ *    `updateAll` 保持**跳过**（spec §8 明写），所以一键更新不会被一个弹窗挡在中间。
+ * 代价：想更新一个被禁用的副本时多一次点击（这是刻意的）。
+ */
+async function confirmEnable(targetPath: string): Promise<boolean> {
+  const win = dialogParent();
+  const box: MessageBoxOptions = {
+    type: 'warning',
+    title: '这一条现在是禁用状态',
+    message: `${basename(targetPath)} 这一条现在以 .disabled 结尾 —— 游戏不会加载它。`,
+    detail: [
+      '继续更新会把它换成**启用状态**的文件：',
+      `  ${targetPath}`,
+      '',
+      '也就是说，**游戏下次启动会加载它** —— 这改变了你现在的设置（那是禁用的意思）。',
+      '原来那个 .jar.disabled 会被删掉（不进回收站）。',
+      '',
+      '选「继续」：换成一个启用的文件（想保持禁用，更新完把名字改回 .jar.disabled 即可）。',
+      '选「取消」：什么都不会发生。',
+    ].join('\n'),
+    buttons: ['启用它并更新', '取消'],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
@@ -1134,16 +1251,38 @@ async function runUpdate(itemId: string): Promise<UpdateOutcome> {
   }
 
   const localPath = binding.localPath;
-  const targetPath = join(dirname(localPath), state.latestFileName);
+  /*
+   * ⚠️★ 顺手 1：上游给的文件名是**不受我们控制的字符串**，直接 `join` 进去就可能把写入引到
+   *    目标目录之外（`..\\..\\x.jar`）。`basename` 把它压回一个纯文件名 —— 这条通道的第一步
+   *    纪律是"路径由主进程自己决定"，而上游的字符串不该有能力推翻它。
+   *    （上游真给了一个带目录的名字时，我们落盘的是它的文件名部分；URL 与 sha512 仍然是上游的，
+   *     所以校验不受影响、失败也会原样报出来。）
+   */
+  const targetName = basename(state.latestFileName);
+  const targetPath = join(dirname(localPath), targetName);
   const partPath = `${targetPath}.part`;
   const sameTarget = sameFilePath(localPath, targetPath);
   const fromVersion = state.localVersion;
+  const disabling = isDisabledPath(localPath);
 
   current = { ...current, busyItemId: item.id, progress: null };
   broadcast();
   let renamed = false;
   try {
-    // ② 目标位置已经有文件 ⇒ 先问（"同名但不是我们记的那一份"绝不覆盖）
+    /*
+     * ②-a 被禁用的绑定（`.jar.disabled`）：单条更新会把它换成**启用状态**的文件，
+     *     游戏下次启动就会加载它 —— 那是改变用户设置的动作，必须问一次（必修 3）。
+     *     ⚠️ `updateAll` 反过来是**跳过**（spec §8 写明的），所以这里问、那里不问：
+     *        用户点"一键更新"时不该被一个弹窗挡住，而"就更新这一条"是他明确指着一个文件点的。
+     */
+    if (disabling) {
+      const ok = await confirmEnable(targetPath);
+      if (!ok) {
+        return { status: 'skipped', message: '这一条现在是禁用状态（.disabled），用户选择不启用' };
+      }
+    }
+
+    // ②-b 目标位置已经有文件 ⇒ 先问（"同名但不是我们记的那一份"绝不覆盖）
     if (existsSync(targetPath)) {
       const targetHash = await sha512OfFile(targetPath);
       const recorded = binding.localSha512;
@@ -1233,15 +1372,24 @@ async function runUpdate(itemId: string): Promise<UpdateOutcome> {
      * 收尾：把下载到一半的 `.part` 删掉（spec §7.3 第 3 步）。
      * ⚠️ `renamed` 之后出事就不是"原地不动"了 —— 那时 .part 已经不在了（rename 走了），
      *    文案也要说清"文件已经换好"，不能让用户以为白下了一场。
+     * ⚠️★ 顺手 4：**只有真的建过 `.part` 才谈"删掉它"**。原先这里无条件写"（已删掉下载到
+     *    一半的 .part）"—— 而在第②步（覆盖确认 / 禁用确认）失败或 `fetch` 就被拒的情况下
+     *    根本一个字节都没下过，那句话是**谎报清理**。现在按实际做过什么说。
      */
-    try {
-      if (!renamed) rmSync(partPath, { force: true });
-    } catch {
-      /* 删不掉 .part 只影响下一次重试前的清理，不改变结果 */
+    let partNote = '';
+    if (!renamed && existsSync(partPath)) {
+      try {
+        rmSync(partPath, { force: true });
+        partNote = existsSync(partPath)
+          ? '（.part 没能删掉，下次更新前会再清一次）'
+          : '（已清掉下载到一半的 .part）';
+      } catch {
+        partNote = '（.part 没能删掉，下次更新前会再清一次）';
+      }
     }
     const message = renamed
       ? `文件已经换好了，但换完之后的那一步失败：${messageOf(error)}`
-      : `${messageOf(error)}（已删掉下载到一半的 .part）`;
+      : `${messageOf(error)}${partNote}`;
     console.error('[file-updates] 更新失败：', item.id, message);
     return { status: 'failed', message };
   } finally {
@@ -1348,13 +1496,29 @@ export async function initFileUpdates(ctx: {
   };
 
   const read = readStateFile();
-  stateFile = read.state;
-  try {
-    writeStateFile(stateFile);
-  } catch (error) {
-    console.error('[file-updates] 状态文件写不进去：', error);
+  if (read.fatal) {
+    /*
+     * ⚠️★ 坏文件**连备份都失败**（必修 2）：停住写入，并把准确的原因（含那个文件的路径）
+     *    交给用户 —— 这一步的价值就是"宁可不工作，也不抹掉他的绑定路径"。
+     *    这里**故意不写状态文件**（`stateFileWritable = false` ⇒ 后面所有写路径都会拒绝），
+     *    也**故意不**注册成"什么都没绑定"的正常样子去覆盖它。
+     */
+    stateFileWritable = false;
+    stateFileBlockedReason = read.fatal;
+    stateFile = { version: 1, items: {} };
+    console.error('[file-updates] 状态文件停用：', read.fatal);
+    notify('本地文件的状态文件读不出来，而且备份失败', read.fatal);
+  } else {
+    stateFileWritable = true;
+    stateFileBlockedReason = null;
+    stateFile = read.state ?? { version: 1, items: {} };
+    try {
+      writeStateFile(stateFile);
+    } catch (error) {
+      console.error('[file-updates] 状态文件写不进去：', error);
+    }
+    if (read.recovered) notify('本地文件的状态文件读不出来', read.recovered);
   }
-  if (read.recovered) notify('本地文件的状态文件读不出来', read.recovered);
 
   registerIpc();
   current = { ...current, items: rebuildItems() };

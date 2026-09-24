@@ -213,6 +213,21 @@ export interface FileItemView {
   localVersion: string | null;
   state: FileItemState;
   lastCheckedAt: number | null;
+  /**
+   * 最近一次**成功**读到的最新版本，以及读到它的时间。
+   *
+   * ⚠️★ 为什么要有这一格（2026-09-24 评审的必修 1）：spec §8 要求"上游连不上 ⇒ 状态 `error`
+   *    **并保留上次成功的最新版本、标注它是几时读的**"。而 T1 的 `FileItemState` 里没有任何
+   *    一格能同时表达"版本 + 读到它的时间"（`error` 只有 `message`）⇒ 那一句要求当时**做不到**，
+   *    只能让主进程把过期读数当正常读数显示（评审判为"粉饰"，属实）。
+   * ⚠️ 它**只活在内存里**（进程重启就没了）：状态文件**故意**不存最新版本 ——
+   *    那是 plan 里写死的设计（落盘就会某天拿过期数字当事实说"你已是最新"）。
+   *    ⇒ 冷启动 + 网络不可达时它就是 `null`，界面必须诚实地说"本次还没成功读到过"，
+   *      不许编一个（主进程那句 `message` 也照这个口径写）。
+   * ⚠️ 它**不代表"可以更新"**：这次检查失败时 `state` 是 `error`，`needsUpdate` 为 false，
+   *    这一格只是给界面显示"上次看到的是 5.8.26（14:03 读到）"。
+   */
+  lastKnownLatest: { version: string; fetchedAt: number } | null;
 }
 
 /** 推给页面、也由页面当作唯一数据来源的整份状态。 */
@@ -240,4 +255,33 @@ export function needsUpdate(state: FileItemState): boolean {
 /** `.jar.disabled` 这类被禁用的文件名（游戏不会加载它）。 */
 export function isDisabledPath(localPath: string): boolean {
   return localPath.toLowerCase().endsWith('.disabled');
+}
+
+/**
+ * 同一个 mod 在用户目录里有**多个副本**时，哪一个才算"版本更高"。
+ *
+ * ⚠️★ 这**不是**上游的"最新版"规则 —— 上游必须按 `date_published` 选（回滚发版时比版本号会选错，
+ *    见 `pickLatestVersion`）。这里比的是**已经躺在用户目录里的两份副本**，按数字段逐段比：
+ *    `'3.0.10'` > `'3.0.2'`（字符串序恰好相反：`'3.0.2' > '3.0.10'`），所以不能拿字符串比。
+ * ⚠️ 解析不出数字段时退化成字符串序：这一支的结果只决定"先绑哪一份"，
+ *    用户随时可以用 `bind(itemId)` 指定某一个具体文件。
+ * ⚠️ 它住在 shared 而不是主进程里（2026-09-24 评审的顺手 6）：`apps/desktop` 没有测试运行器，
+ *    留在那边就只能靠 gitignore 的探针验；搬过来之后 `services/api` 里有能红的断言钉着它。
+ */
+export function compareLocalVersions(a: string, b: string): number {
+  const pa = a.split(/[.\-+_]/);
+  const pb = b.split(/[.\-+_]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const sa = pa[i] ?? '';
+    const sb = pb[i] ?? '';
+    const na = /^\d+$/.test(sa) ? Number(sa) : Number.NaN;
+    const nb = /^\d+$/.test(sb) ? Number(sb) : Number.NaN;
+    if (Number.isFinite(na) && Number.isFinite(nb)) {
+      if (na !== nb) return na - nb;
+      continue;
+    }
+    const cmp = sa.localeCompare(sb);
+    if (cmp !== 0) return cmp;
+  }
+  return 0;
 }

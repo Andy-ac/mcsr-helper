@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   compareLocalToLatest,
+  compareLocalVersions,
   isDisabledPath,
   jarFileNameFor,
   type ModrinthVersion,
@@ -192,6 +193,26 @@ describe('文件名与状态推导', () => {
     assert.equal(isDisabledPath('C:/m/mcsrranked-5.8.15.jar.disabled'), true);
     assert.equal(isDisabledPath('C:/m/mcsrranked-5.8.22.jar'), false);
     assert.equal(isDisabledPath('C:/m/x.DISABLED'), true);
+  });
+
+  it('★ compareLocalVersions：本地多份副本取"版本最高"的那一份（按数字段，不按字符串）', () => {
+    /*
+     * ⚠️★ 这一条**不是**上游的"最新版"规则（那是 date_published，见上面"回滚发版"那条）：
+     *    这里比的是用户目录里两份副本谁更新。字符串序会说 3.0.2 比 3.0.10 新（错），
+     *    所以这一组数据是**唯一能咬住"按字符串比"的判据** —— 上游真实序列里就有这一对
+     *    （T4 的探针实测过：把 mcsrranked-3.0.10.jar 与 mcsrranked-3.0.2.jar 放进同一个目录，
+     *     `bindFolder` 必须绑 3.0.10）。
+     */
+    assert.ok(compareLocalVersions('3.0.10', '3.0.2') > 0, '3.0.10 比 3.0.2 新（字符串序相反）');
+    assert.ok(compareLocalVersions('3.0.2', '3.0.10') < 0);
+    assert.ok(compareLocalVersions('5.8.26', '5.8.15') > 0);
+    assert.ok(compareLocalVersions('5.8.15', '5.8.22') < 0);
+    assert.equal(compareLocalVersions('5.8.22', '5.8.22'), 0);
+    // 段数不同：短的按"缺段是空串"处理 ⇒ 5.8 < 5.8.1
+    assert.ok(compareLocalVersions('5.8', '5.8.1') < 0);
+    // 非数字段退化成字符串序（例如 1.0.0-beta 与 1.0.0-alpha）
+    assert.ok(compareLocalVersions('1.0.0-beta', '1.0.0-alpha') > 0);
+    assert.equal(compareLocalVersions('1.0.0-beta', '1.0.0-beta'), 0);
   });
 
   it('needsUpdate：outdated 与 unknown-local 都要更新，current/unbound/missing/unchecked/error 不要', () => {
