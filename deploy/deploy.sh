@@ -201,6 +201,7 @@ fi
 scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
   content/resources.json \
+  content/file-catalog.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
   deploy/mcsr-helper-ranked-streams.service deploy/mcsr-helper-ranked-streams.timer \
@@ -493,6 +494,21 @@ if [ -f /tmp/installer.tgz ]; then
   ls -1 /srv/mcsr-helper/releases/ | sed 's/^/      /'
 fi
 
+# ---- 可追踪文件目录（`content/file-catalog.json`）----
+#
+# ⚠️ 它**故意不住在下面那个 `if [ -f /tmp/resources.json ]` 里面**，尽管两者都是
+#    "仓库里的内容文件、每次部署同步"。理由是那一段还包着"\$SUDO 跑 import.js 写库"，
+#    而这个文件**不需要 import**（API 在每次请求时现读，见
+#    `services/api/src/routes/fileCatalog.ts` 的文件头）—— 住进去的话，
+#    只要哪一次 /tmp 里没有 resources.json，这个清单就**不会**被更新，
+#    而表现是接口回 500 `catalog_unavailable`、部署脚本却报成功。
+#    两者唯一共享的东西只有 content 目录。
+if [ -f /tmp/file-catalog.json ]; then
+  mkdir -p /srv/mcsr-helper/content
+  \$SUDO install -m 0644 /tmp/file-catalog.json /srv/mcsr-helper/content/file-catalog.json
+  echo "    文件目录已就位（不需要 import：API 每次请求现读）"
+fi
+
 # ---------- 内容导入 ----------
 #
 # ⚠️ 数据库**只存在于服务器上**，绝不由本地覆盖。
@@ -543,7 +559,9 @@ curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    
 #    留在 /tmp 里（终审 M7 就是这么抓到的 —— 两个新单元没进这一行，而它不报错、
 #    也不影响部署，只有人把两份清单对起来看才发现）。
 #    （2026-09-19 加的两个：seeds.env.example、legacy-domain.caddy。）
-rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
+#    （2026-09-24 加的一个：file-catalog.json —— 它与上面 scp 清单里的
+#      `content/file-catalog.json` 是同一个文件的两端。）
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/file-catalog.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
 REMOTE
 ok "部署完成"
 

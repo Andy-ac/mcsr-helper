@@ -18,6 +18,7 @@ import { authRoute } from './routes/auth';
 import { authoringRoute } from './routes/authoring';
 import { calendarRoute } from './routes/calendar';
 import { desktopRoute } from './routes/desktop';
+import { fileCatalogRoute } from './routes/fileCatalog';
 import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
 import { moderationRoute } from './routes/moderation';
@@ -146,6 +147,15 @@ app.route('/api', marksRoute);
 app.route('/api', adminRoute);
 // 桌面客户端的分发信息（公开读）。见 routes/desktop.ts 的文件头。
 app.route('/api', desktopRoute);
+/*
+ * 可追踪文件目录（公开读）。见 routes/fileCatalog.ts 的文件头。
+ *
+ * ⚠️ 挂载点写全（/api/file-catalog），因为 route 文件里用的是相对路径（'/'）——
+ *    与上面 desktopRoute / videosRoute 那种"自带前缀"的写法**相反**，与下面 sharesRoute
+ *    同形。两种写法不能混：混了的症状是整组路由一起 404，而不是某个端点 404。
+ * ⚠️ 它**每次请求都读盘**（配置即代码，理由写在那个文件里），自己带 ETag + no-cache。
+ */
+app.route('/api/file-catalog', fileCatalogRoute);
 /*
  * ② 直编（`content.author`；硬删走 shared 的谓词 `canHardDelete`）。
  *

@@ -158,6 +158,20 @@ const KNOWN_CODES: readonly string[] = [
    *    出现在这条路上等于让日志说一件没发生的事。
    */
   'platform_not_configured',
+  // ---- 可追踪文件目录（本地文件自动更新，2026-09-24）----
+  /**
+   * 目录 JSON 不合法：字段缺 / 多余 / `id` 重复。
+   *
+   * ⚠️ 它与下面两条**必须**是三个码（而不是一个 500 加不同的 detail），
+   *    理由是下一步完全不同：这一条要**改文件**（响应里的 `problems` 点名是哪个字段），
+   *    `catalog_unavailable` 要**重跑部署**，`catalog_invalid_json` 要查文件本身
+   *    —— 与 `seed_not_configured` vs `seed_service_unavailable` 是同一条纪律。
+   */
+  'catalog_invalid',
+  /** 目录文件读不出来（多半是这次部署没把它送到 `/srv/mcsr-helper/content/`） */
+  'catalog_unavailable',
+  /** 文件在，但它不是一个 JSON（手改过 / 传输被截断） */
+  'catalog_invalid_json',
 ];
 
 /**
@@ -356,6 +370,26 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
    */
   platform_not_configured:
     '界面用的是这一栏自己的词条（tracked.errPlatformNotConfigured，见 apps/web/src/lib/trackedErrors.ts），不走通用映射',
+  /*
+   * ---- 可追踪文件目录（本地文件自动更新，2026-09-24）----
+   *
+   * ⚠️ 这三条与上面 Ranked Seeds 那四条**当初的处境逐字相同**：不是"没有更好的说法"，
+   *    而是"更好的说法还没写出来"。消费者是浏览器态的 `/files` 页面
+   *    （整页显示目录 + 引导装桌面版），它由本期 Task 7 的
+   *    `apps/web/src/components/FileUpdatesPanel.tsx` 落地 —— 今天没有任何前端映射
+   *    认得这三个码。登记在这里是**有意的妥协**（契约测试至少逼着下一个人看见它们），
+   *    ⚠️ 而**不是**"某个页面自己处理"：把还没做的事登记成做完了，本仓判过这一类
+   *    （上面 `video_exists` 那一段就是同一条）。
+   *    ⇒ Task 7 落地时把它们移进那一栏自己的映射（或 apiErrorText），
+   *      并照 Ranked Seeds 那个先例把这里改成"文案在别处"。
+   *
+   * ⚠️ 兜底文案（「出错了，请稍后再试。」）在这里是真的不够用：它看不出
+   *    "部署没送到"（重跑部署）与"文件内容坏了"（改文件）—— 而那正是服务端
+   *    把它们分成三个码的原因。这一段的代价因此是**明面上的**：今天用户看到的是兜底那句。
+   */
+  catalog_invalid: '更好的说法在 Task 7 的 /files 页面（FileUpdatesPanel），今天落到兜底文案',
+  catalog_unavailable: '同上；它要说的是"这次部署没把目录文件送到服务器上"',
+  catalog_invalid_json: '同上；它要说的是"目录文件不是 JSON（被手改过或传坏了）"',
 };
 
 function walk(dir: string, out: string[] = []): string[] {

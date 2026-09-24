@@ -137,6 +137,10 @@ sqlite3 /srv/mcsr-helper/api/data/mcsr.db "VACUUM INTO '/tmp/mcsr-$(date +%F).db
 | `/etc/mcsr-helper/*.env`（**服务器**上，0600 root） | 密钥与服务器侧配置：`mail.env`（`RESEND_API_KEY`）、`track.env`（`MCSR_YOUTUBE_KEY` / `MCSR_TWITCH_ID` / `MCSR_TWITCH_SECRET`）、`seeds.env`（`MCSR_SEED_API_BASE` / `MCSR_SEED_WRITE_ENABLED`） | systemd 单元里的 `EnvironmentFile=` |
 | `deploy/*.env.example` | 上面两类的**模板**（不含任何真实值，可以提交） | 人 |
 
+> `content/` 下的**内容文件**既不是密钥、也不在 `/etc/mcsr-helper/` 下，所以**故意不在上面这张表里**：
+> 它们是仓库里的文件，每次部署被同步到 `/srv/mcsr-helper/content/`（与下面「文件说明」里的
+> `deploy/` 那些也不同 —— 它们不在 `deploy/` 目录下）。见下面「内容文件（`content/`）」那一节。
+
 ⚠️⚠️ **不要把服务器侧的值写进 systemd 单元文件**（`deploy/mcsr-helper-api.service` 之类）：
 那些文件在版本库里，而 `deploy.sh` **每次部署**都会 `cmp` + `install` 覆盖服务器上的同名文件
 —— 在服务器上手改单元会在下一次部署里被**静默抹掉**，而部署脚本报的是成功。
@@ -179,6 +183,31 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 反向的情况更要小心：**原来依赖那个默认值**的站点（也就是生产），
 部署时如果 `deploy.env` 里没有这一行，deploy.sh 会**移除**已有的跳转并打印一条
 ⚠️ 提示（旧链接会变成死链）—— 那就是提醒你去把域名补上。
+
+### 内容文件（`content/`）：每次部署同步，但**不是**每份都要 import
+
+仓库 `content/` 下的文件都会被 `deploy.sh` 上传（scp 清单里各一项）并装到
+`/srv/mcsr-helper/content/`（`install -m 0644`，root 属主；服务以 `mcsr` 跑，只需要读）。
+它们**不是密钥**，所以不住 `/etc/mcsr-helper/` 下；但它们同样是"配置即代码"——
+**在服务器上手改会在下一次部署里被静默抹掉**，与 `Caddyfile` / systemd 单元同一条纪律。
+
+| 文件 | 装到哪 | 需要 import 吗 | 谁读它 |
+|---|---|---|---|
+| `content/resources.json` | `/srv/mcsr-helper/content/resources.json` | **要**：部署时以 `mcsr` 身份跑 `import.js --apply --file …` 把条目写进库（`source='import'`） | 导入脚本（部署时读一次文件），之后是库 |
+| `content/file-catalog.json` | `/srv/mcsr-helper/content/file-catalog.json` | **不要**：它没有查询/编辑需求 ⇒ 不建表、不导入；`GET /api/file-catalog` 在**每次请求**时现读这个文件（配置即代码，理由写在 `services/api/src/routes/fileCatalog.ts` 的文件头） | API 进程（每次请求） |
+
+⚠️ 「不需要 import」有一个**直接代价**，写在这里而不是留着让人自己发现：
+**"部署成功"只证明这个文件到位了，不证明它是对的** —— `deploy.sh` 的线上自检里
+只有 `/api/health` 与 CSP 回读，**没有**这个端点的回读。⇒ 部署完（或怀疑它坏了）时自己回读一次：
+
+```bash
+curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/file-catalog
+```
+
+**预期读数**：`200` + 一行 JSON，`version` 是 `1`、`items` 里有 `mcsrranked`。
+出错时每一类都有自己的 error 名（不吞错误、也不会"回一个空目录"）：
+文件没送到 ⇒ `catalog_unavailable`；JSON 坏了 ⇒ `catalog_invalid_json`；
+字段缺/多/`id` 重复 ⇒ `catalog_invalid` + `problems` 里**点名**是哪个字段。
 
 ## 文件说明
 

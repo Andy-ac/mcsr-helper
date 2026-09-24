@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "mcsrranked",
+      "name": "MCSR Ranked",
+      "kind": "mod",
+      "note": "排位赛客户端模组",
+      "source": {
+        "provider": "modrinth",
+        "project": "mcsr-ranked",
+        "modId": "mcsrranked",
+        "gameVersion": "1.16.1",
+        "loader": "fabric",
+        "channel": "release"
+      }
+    }
+  ]
+}
