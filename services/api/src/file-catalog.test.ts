@@ -98,4 +98,35 @@ describe('GET /api/file-catalog', () => {
     assert.equal(res.status, 500);
     assert.equal(((await res.json()) as { error: string }).error, 'catalog_invalid_json');
   });
+
+  it('★ 失败响应里不回显服务器侧诊断信息（路径与 detail 只进日志）', async () => {
+    /*
+     * ⚠️ 这条断言守的是一件**看起来无关紧要、但端点匿名可打**的事：
+     *    这个接口谁都能请求，所以响应体里不该出现服务器上的绝对路径，
+     *    也不该出现底层引擎的报错原文（`JSON.parse` 的报错文本里**可能带文件内容的片段**）。
+     *    ⇒ 诊断信息改成 `console.error('[file-catalog] …')`：看原因去 journalctl。
+     * ⚠️ 它**能红**：把 `detail`（或 `path`）加回上面任何一条 500 的响应体，这条当场红。
+     */
+    const missing = await call('/api/file-catalog');
+    assert.equal(missing.status, 500);
+    const missingText = await missing.text();
+    // 整个 body **只有** error 一个键 —— `path` / `detail` 加回来就在这里红
+    assert.deepEqual(Object.keys(JSON.parse(missingText) as object).sort(), ['error']);
+    /*
+     * ⚠️ 路径在 JSON 文本里是**转义过**的（Windows 的反斜杠会变成 `\\`），
+     *    所以拿 `JSON.stringify` 之后那个形状去判，而不是拿原始路径字符串 ——
+     *    拿原始的写法在"真的回显了路径"时也匹配不上，那是一条**恒真**的断言。
+     */
+    const escapedDir = JSON.stringify(dir).slice(1, -1);
+    assert.ok(
+      !missingText.includes(escapedDir),
+      `响应体里出现了服务器上的目录路径：${missingText}`,
+    );
+
+    writeFileSync(join(dir, 'file-catalog.json'), '{ 这不是 json');
+    const broken = await call('/api/file-catalog');
+    const brokenText = await broken.text();
+    assert.deepEqual(Object.keys(JSON.parse(brokenText) as object).sort(), ['error']);
+    assert.ok(!brokenText.includes(escapedDir), `响应体里出现了服务器上的目录路径：${brokenText}`);
+  });
 });

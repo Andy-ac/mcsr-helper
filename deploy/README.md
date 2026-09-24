@@ -209,6 +209,16 @@ curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/file-catalog
 文件没送到 ⇒ `catalog_unavailable`；JSON 坏了 ⇒ `catalog_invalid_json`；
 字段缺/多/`id` 重复 ⇒ `catalog_invalid` + `problems` 里**点名**是哪个字段。
 
+⚠️ **失败的原因不在响应体里，它只进日志。** 响应体只回上面那个 error 名
+（`catalog_invalid` 那一档另带 `problems` —— 那是我们自己的字段级说明，不含服务器路径）。
+理由是这条端点**公开无鉴权**：`path` 是服务器上的绝对路径、`detail` 是底层引擎的报错原文
+（JSON 解析失败时那串文本里**可能带文件内容的片段**），而匿名调用者要的只是"能不能拿到目录"。
+⇒ 排障因此**多一步**：
+
+```bash
+sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog] 那一行
+```
+
 ## 文件说明
 
 | 文件 | 作用 |
