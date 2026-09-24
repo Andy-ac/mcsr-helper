@@ -210,21 +210,19 @@ console.log(
  *      （那是 esbuild 为**这一次构建**写下的真清单，加了新 import 也不会漏），
  *      解析成绝对路径，剔除 `node_modules`（依赖由 lockfile 钉；把它们算进来会让
  *      `pnpm install` 变成一次假警报），再加上 `build.mjs`（打包配置变了产物也该重打）。
- *    代价：产物必须带 sourcemap（`build.mjs` 里 `sourcemap: true` 是现成的）；
- *    它被删掉时退化成一份**兜底清单**（`apps/desktop/src` 下所有 `.ts`、`packages` 下各包的
- *    `src` 目录、加上 `build.mjs` —— 这里**故意不写 glob**：块注释里"星号紧跟斜杠"会提前把
- *    注释关掉，本轮又踩了一次），而"用的哪一种"会打在输出里 ——
- *    兜底是**更窄**的那一种，不是等价物。
+ *    代价：产物必须带 sourcemap（`build.mjs` 里 `sourcemap: true` 是现成的）；读不到真清单时
+ *    退化成一份**兜底清单**（`apps/desktop/src` 下所有 `.ts`、`packages` 下各包的 `src` 目录、
+ *    加上 `build.mjs` —— 注释里**故意不写 glob**：块注释里"星号紧跟斜杠"会提前把注释关掉，
+ *    本轮又踩了一次；下面**字符串**里的那个 glob 只是打印给人看的，不进注释所以无害）。
+ *    ⚠️★ 方向是**更宽**、不是更窄（2026-09-24 评审 round 2 的 Low 1）：我照着一句写错的派工文本
+ *      写过"兜底是更窄的那一种"，**事实相反**。实测（把 sourcemap 挪走再跑）：兜底 **35** 个输入、
+ *      其中 **30** 个来自 `packages/`；而 sourcemap 模式是 **11** 个输入、其中 **7** 个来自
+ *      `packages/` ⇒ 兜底是它的**超集**。方向为什么安全：**多算输入只会让守卫更容易拒绝跑**
+ *      （宁可不跑，也不放行一个旧产物），而少算才会放过一个旧产物。
+ *      运行时那行"输入集来源：…"就写着这一趟用的是哪一种，别只看它像不像"有保证"。
  */
-function collectInputs() {
-  const map = `${MAIN_CJS}.map`;
-  if (existsSync(map)) {
-    const parsed = JSON.parse(readFileSync(map, 'utf8'));
-    const list = (parsed.sources ?? [])
-      .map((s) => resolve(dirname(MAIN_CJS), s))
-      .filter((p) => !p.includes(`${sep}node_modules${sep}`));
-    return { list, how: `dist/main.cjs.map 的 sources（剔掉 node_modules）` };
-  }
+/** 兜底清单：产物问不出真清单时用的那一份（**更宽、更保守**，见上面那段注释）。 */
+function fallbackInputs() {
   const list = [];
   (function walk(dir) {
     if (!existsSync(dir)) return;
@@ -236,7 +234,6 @@ function collectInputs() {
   })(join(desktopRoot, 'src'));
   for (const pkg of readdirSync(join(repoRoot, 'packages'), { withFileTypes: true })) {
     if (pkg.isDirectory()) {
-      const dir = join(repoRoot, 'packages', pkg.name, 'src');
       (function walk(inner) {
         if (!existsSync(inner)) return;
         for (const entry of readdirSync(inner, { withFileTypes: true })) {
@@ -244,10 +241,53 @@ function collectInputs() {
           if (entry.isDirectory()) walk(path);
           else if (entry.name.endsWith('.ts')) list.push(path);
         }
-      })(dir);
+      })(join(repoRoot, 'packages', pkg.name, 'src'));
     }
   }
-  return { list, how: '兜底清单（产物没有 sourcemap）：apps/desktop/src + packages/*/src' };
+  return list;
+}
+
+function collectInputs() {
+  const map = `${MAIN_CJS}.map`;
+  const fallbackHow = (why) =>
+    `兜底清单（${why}）：apps/desktop/src 下所有 .ts + packages 下各包的 src`;
+  if (existsSync(map)) {
+    let parsed;
+    try {
+      parsed = JSON.parse(readFileSync(map, 'utf8'));
+    } catch (error) {
+      /*
+       * ⚠️ 坏 map **不静默退化**（2026-09-24 评审 round 2 的 Low 2 顺便包了这一层）：
+       *    它会让这条判据从"最弱的一种"变成"看起来最有保证的一种"是反过来的问题 ——
+       *    产物那一半本身已经可疑了 ⇒ 直接按"判据没跑起来"（退出码 2）报出来，并给出修法。
+       *    （原先这里是个裸的 `JSON.parse`：坏 map 会以栈收场、退出码是 1，读者分不清
+       *      "这条检查没跑成"与"判据没过"。）
+       */
+      bail(
+        `产物带的 sourcemap 读不出来（${error instanceof Error ? error.message : String(error)}）：${map}\n` +
+          '    它是"这一次构建到底由哪些文件构成"的唯一来源。重跑 node apps/desktop/build.mjs 再试。',
+      );
+    }
+    const sources = parsed?.sources;
+    /*
+     * ⚠️★ `sources` 缺失或为空时**必须退回兜底清单**（评审 round 2 的 Low 2）：
+     *    原先 `(parsed.sources ?? [])` 会退化成一个空数组，于是最终输入集**只剩 `build.mjs` 一个**
+     *    ——却仍然打印"sourcemap 模式"的标签 ⇒ **最弱的集合戴着最强的名**（"绿了但什么都没验"那一族）。
+     */
+    if (Array.isArray(sources) && sources.length > 0) {
+      const list = sources
+        .map((s) => resolve(dirname(MAIN_CJS), s))
+        .filter((p) => !p.includes(`${sep}node_modules${sep}`));
+      return { list, how: 'dist/main.cjs.map 的 sources（剔掉 node_modules）' };
+    }
+    return {
+      list: fallbackInputs(),
+      how: fallbackHow(
+        Array.isArray(sources) ? 'map 里的 sources 是空数组' : 'map 里没有 sources',
+      ),
+    };
+  }
+  return { list: fallbackInputs(), how: fallbackHow('产物没有 sourcemap') };
 }
 const { list: rawInputs, how: inputSource } = collectInputs();
 rawInputs.push(join(desktopRoot, 'build.mjs'));
@@ -582,15 +622,17 @@ async function proofTamperedSha512() {
   // --- 正向对照：同一个绑定、同一条流程，只把篡改关掉 ⇒ 必须成功 -------------
   console.log('\n## 正向对照：同一套装置，只把"篡改"关掉 ⇒ 更新必须成功');
   tamperSha512 = false;
-  state = await invoke(byKey.check, true);
   /*
-   * ⚠️ 这一句也要**包一层**（与上面 afterSha 同一个理由，2026-09-24 评审的顺手 2 那一族）：
-   *    IPC 那一层的 `update()` 把"失败"翻成 reject ⇒ 上面的 sha512 校验一旦被删掉，
-   *    负向那一次就已经把夹具换掉了，这一条会**抛**；不接住的话脚本以未捕获异常收场 ——
-   *    前面辛苦印出来的那些 ✗ 会被一段栈盖住（红是红，但读不出是哪几条）。
+   * ⚠️★ **两次 invoke 都包在同一层里**（2026-09-24 评审 round 2 的 Low 3）：
+   *    原先只有 `update()` 被包住，而上面那次 `check(true)` 是裸的 ⇒ 它一旦 reject，
+   *    脚本会在打印任何 ✗ **之前**以栈收场 —— 正是 round 1 为另外两处修掉的形状。
+   *    两次的失败都落在**同一条** ✗ 上（诊断说清是哪一步抛的），不新增判据行。
+   *    ⚠️ `state` 在抛的时候还停在上一步的读数 ⇒ `itemView(state)` 仍可用，
+   *       那一格会显示"抛了：…"而不是把 `localVersion` 当成真读数报出来。
    */
   let positiveError = null;
   try {
+    state = await invoke(byKey.check, true);
     state = await invoke(byKey.update, item.id);
   } catch (error) {
     positiveError = error;
