@@ -1006,7 +1006,7 @@ assert.ok(
 ok('⑰ 浏览器态的整页：标题 + 「只能在桌面版」那句 + 「加载中…」；两条失败分支的话都带码');
 
 // ---------------------------------------------------------------------------
-// ⑱ ★★ 读源码的六条守卫：两步确认真的接在**按钮**上
+// ⑱ ★★ 读源码的七条守卫：两步确认真的接在**按钮**上
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★★ 先说清楚这一段**证不了什么**：`renderToStaticMarkup` 一行事件处理器都不跑
@@ -1030,8 +1030,8 @@ const panelCode = withoutComments(
 );
 
 /*
- * ★★ 六条守卫**每一刀都真的跑过**（在 `apps/web` 里改坏 → 跑本脚本 → 还原 → `sha256`
- *    逐字节核对）。实测读数（跑台是一份 `.cache/` 下的一次性脚本，30 刀的完整读数抄在
+ * ★★ 七条守卫**每一刀都真的跑过**（在 `apps/web` 里改坏 → 跑本脚本 → 还原 → `sha256`
+ *    逐字节核对）。实测读数（跑台是一份 `.cache/` 下的一次性脚本，31 刀的完整读数抄在
  *    `task-7-report.md` §4）：
  *      · `onClick={requestUpdateAll}` → `onClick={confirmUpdateAll}` ⇒ 守卫 2 红
  *        （"那颗「一键更新」按钮的 onClick 必须**只**是 requestUpdateAll"）；
@@ -1039,8 +1039,9 @@ const panelCode = withoutComments(
  *      · 在 `requestUpdateAll` 里补一次 `handlers.updateAll()` ⇒ 守卫 4 红（"今天出现 2 次"）；
  *      · 在 `requestUpdateAll` 里插一句 `window.confirm('x')` ⇒ 守卫 1 红；
  *      · 删掉 `setConfirmingUpdateAll(true);` ⇒ 守卫 5 红；
- *      · `count={targets.length}` → `count={views.length}` ⇒ 守卫 6 红。
- *    ⚠️★ 反面也记一笔（免得下一个人以为锚在按钮上就够了）：**这一条锚在按钮上的守卫
+ *      · `count={targets.length}` → `count={views.length}` ⇒ 守卫 6 红；
+ *      · 删掉 `cancelUpdateAll` 里那一格 `setConfirmingUpdateAll(false)` ⇒ 守卫 7 红。
+ *    ⚠️★ 反面也记一笔（免得下一个人以为锚在按钮上就够了）：**锚在按钮上的那条守卫
  *    抓不到"`requestUpdateAll()` 不再置那一格"**（那一刀下它照旧绿），而守卫 5 抓不到
  *    "接线被别人换掉"。两条各管一半，缺一条就有一半的坏法没人喊。
  */
@@ -1093,8 +1094,32 @@ assert.match(
   '★★ 确认行那个数字必须是 `targets.length`（"点下去真的会更新几条"）—— 写成 `views.length` 就会' +
     '把跳过的那几条也算进去，而用户唯一的读数就是那句话',
 );
+
+// —— 守卫 7：取消那一颗**真的**退回第一态（能红的那一刀：删掉 `cancelUpdateAll` 里那一格 `setConfirmingUpdateAll(false)`）——
+/*
+ * ⚠️★ 判据是"**这个函数自己的函数体**里有没有那一格"，不是"从它的声明往后 200 个字里有没有"
+ *    —— 后者是第一版，而那一刀**没有让它红**：删掉那一格之后，那个窗口里出现的是**下一个函数**
+ *    （`confirmUpdateAll`）里同一句 `setConfirmingUpdateAll(false)`，守卫于是照旧绿。
+ *    "能从声明往后找 200 字"这种锚**跨得过函数边界**，锚不住它想锚的东西
+ *    （本仓 §5.32 的第二类：读数看着有、其实什么都没测）。这一条是跑完那一刀之后改的。
+ */
+const cancelBody = /const\s+cancelUpdateAll\s*=[\s\S]*?\{([\s\S]*?)\n\s*\};/.exec(panelCode);
+assert.ok(
+  cancelBody !== null,
+  '找不到 `cancelUpdateAll` 的函数体（它被改名 / 搬走 / 换了写法 ⇒ 下面那条判据会变成空跑）',
+);
+/*
+ * ⚠️ 判据读的是 `cancelBody[1]`（**函数体**那一格），不是 `cancelBody` 那个 Match：
+ *    函数体被删空时它是**空串**，而 `assert.ok('')` 会在"函数没了"那句上报红 ——
+ *    读到的红点与真正坏了的东西对不上（本仓 §5.74 那一类）。两件事分开断言。
+ */
+assert.ok(
+  cancelBody[1].includes('setConfirmingUpdateAll(false)'),
+  '★★ `cancelUpdateAll()` 必须真的把"待确认"撤回去 —— 它不撤 ⇒ 那颗「取消」点了没反应，' +
+    '而这一行会一直挂在那里等一个用户已经回答过（"不"）的问题',
+);
 ok(
-  '⑱ 源码形状守卫 6 条：两步确认接在**按钮**上、`showConfirm` 由待确认态推出、`updateAll()` 只一处',
+  '⑱ 源码形状守卫 7 条：两步确认接在**按钮**上、`showConfirm` 由待确认态推出、`updateAll()` 只一处',
 );
 
 // ---------------------------------------------------------------------------
