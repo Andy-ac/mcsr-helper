@@ -20,6 +20,7 @@ import path from 'node:path';
 import path2 from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { app, BrowserWindow, ipcMain, screen, session, shell } from 'electron';
+import { initFileUpdates } from './file-updates';
 import {
   checkForUpdates,
   downloadUpdate,
@@ -282,6 +283,24 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on('mcsr:update-check', () => void checkForUpdates());
     ipcMain.on('mcsr:update-download', () => void downloadUpdate());
     ipcMain.on('mcsr:update-install', () => installUpdate());
+
+    /*
+     * 本地文件自动更新（八条 invoke + 一条推给页面的事件）。
+     *
+     * ⚠️ 与上面那三条更新 IPC 同一个理由：注册必须在**创建窗口之前**完成，
+     *    否则存在一个"窗口已经能发消息、主进程还没在监听"的窗口期，
+     *    而那几条消息会被静默丢弃 —— 表现为"点了没反应"，且只在启动瞬间点才会复现。
+     *
+     * ⚠️★ **启动检查也在这一个调用里**（`initFileUpdates` 内部按 `isPackaged` 自己决定跑不跑，
+     *    并在跑的时候打一行日志）。这里**不要**再加第二处负责启动检查的调用：
+     *    两处都负责会出现"启动检查两次"或"谁都没调"，而这两种都不报错 ——
+     *    所以"什么时候检查"的判据走参数进去，不在这个文件里分两处写。
+     */
+    await initFileUpdates({
+      isPackaged: app.isPackaged,
+      appVersion: app.getVersion(),
+      siteOrigin: new URL(APP_URL).origin,
+    });
 
     mainWindow = createMainWindow();
 

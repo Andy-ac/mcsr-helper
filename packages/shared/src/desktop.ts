@@ -137,11 +137,20 @@ export interface DesktopBridge {
  *   提到这里之后，preload 与主进程（Task 4）**引用同一个常量对象**，
  *   两边各自手写一遍从而漂移这件事就不可能发生（剩下的只有"两边都忘了注册"，
  *   那是另一个问题，且那种情况下两处指的是同一串、排障时一眼能对上）。
- *   代价：`packages/shared` 对桌面端来说**不再"只有类型"** —— preload 现在真的
- *   把这一份 `desktop.ts` 打进 bundle（那九个字符串各出现一次 + 这段注释）。
- *   实测（2026-09-24）：`apps/desktop/dist/preload.cjs` 从 4.2kb 变 5.3kb，
- *   未被引用的 `desktopBridge()` 被 tree-shake 掉了（产物里 0 次出现）。
- *   ⇒ 用约 1kb 的产物换掉一整类静默失败，这是划算的那一边。
+ *   代价：`packages/shared` 对桌面端来说**不再"只有类型"** —— preload 与主进程
+ *   （Task 4 的 `file-updates.ts` 直接引用这个常量）都真的把这一份 `desktop.ts` 打进产物。
+ *   可复跑的读数（先 `& "$env:APPDATA\npm\pnpm.cmd" -F @mcsr/desktop build`，再现读文件）：
+ *     `(Get-Item apps/desktop/dist/preload.cjs).Length` ⇒ 5412
+ *     `(Get-Item apps/desktop/dist/main.cjs).Length` ⇒ 1438025
+ *     `Select-String -Path apps/desktop/dist/preload.cjs -Pattern FILE_UPDATES_CHANNELS -AllMatches`
+ *       ⇒ 命中（常量确实在产物里）
+ *   ⚠️ 这里**故意没有再写**下面两句曾经写在这里的话：
+ *     ① "preload.cjs 从 4.2kb 变 5.3kb" —— 那个 4.2kb 是**上一个提交**的产物，而 `build`
+ *        每次都会 `rmSync(dist)` ⇒ 这条读数**不可复跑**；
+ *     ② "未被引用的 `desktopBridge()` 被 tree-shake 掉了（产物里 0 次出现）" —— 这句
+ *        **今天不成立**：现读 `Select-String -Path apps/desktop/dist/preload.cjs -Pattern
+ *        desktopBridge -AllMatches` 命中 2 次。
+ *     ⇒ 判据只留"一条命令能重现"的那种（代价：想知道省了多少字节，只能自己按上面的命令比）。
  *
  * 键名与 `DesktopBridge['fileUpdates']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。
