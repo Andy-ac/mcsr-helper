@@ -459,14 +459,20 @@ const outdatedTable = tableHtml([outdatedView]);
 const outdatedRow = rowOf(outdatedTable, 'outdated');
 const outdatedBadge = resolved('files.outdated');
 /*
- * ★ 硬要求：**文字**承载语义，颜色只是加强。
- *   这两条**必须同时**成立才算"不只靠颜色"：只断言类名（颜色）不算，
- *   只断言文字（它可能是别处的）也不算 —— 所以下面把它们写在同一条上。
+ * ★ 硬要求：**文字**承载语义，颜色只是加强。这条要求由**两条各自成立的判据**共同满足：
+ *   ① `rowOf()` 自己那条正则要求这一段标记是 `data-state="outdated"` 的那一行
+ *      （"这一行是什么"那个读数，见上面 `rowOf` 的说明）；
+ *   ② 下面那条断言："这颗徽章有**文字**、而且是 `badge--update` 那一颗"。
+ * ⚠️★ 这里原来还写着一条 `assert.ok(outdatedTable.includes('data-state="outdated"'))`，
+ *   **它恒真**：`rowOf()` 就是用同一个子串把这一行取出来的 ⇒ 走到这里必然成立。
+ *   写它的本意是"只断言类名不算"（正确），但它落了空，而且旁边那句"所以下面把它们
+ *   写在同一条上"也是**假的**（下面一直是两条独立断言）。2026-09-24 的评审按 ruling AL
+ *   抓掉了它 —— 一处恒真的断言比没有断言更坏：它看起来像有人在看着这件事。
+ *   ⇒ 删掉它，改成 ⑧ 里真正缺的那一条（`.disabled` 路径 + `current` 那一行**也不许**有
+ *   「更新」按钮：那条此前只在"普通路径"的夹具上验过）。
+ *   ⚠️ 要不要在这里**补**一条"`data-state` 真的在产物里"的断言？不要 —— 那只能写成
+ *   `rowOf` 的复制品；`rowOf` 找不到那一行时自己会红，这就是它的判据。
  */
-assert.ok(
-  outdatedTable.includes('data-state="outdated"'),
-  '★ 可更新的那一行必须带 `data-state="outdated"`（这张表的每一行都靠它标注自己是什么）',
-);
 assert.ok(
   outdatedRow.includes(`<span class="badge badge--update">${outdatedBadge}</span>`),
   `★ 「${outdatedBadge}」必须是这一行里一颗有文字的徽章（只看得见灰度的用户拿到的是同一句话）`,
@@ -481,7 +487,7 @@ assert.deepEqual(
   [labelOf('files.update'), labelOf('files.unbind')],
   '★ 可更新的行主操作是「更新」，另外那颗安静的「解除绑定」也在',
 );
-ok('③ `data-state="outdated"` 与徽章文字**同时**在（高亮不只靠颜色），两格是 5.8.22 / 5.8.26');
+ok('③ 徽章文字 + `rowOf` 锁住的 `data-state="outdated"`（高亮不只靠颜色），两格是 5.8.22 / 5.8.26');
 
 // ---------------------------------------------------------------------------
 // ④ `error` 的行：把 `message` **原样**印出来
@@ -615,6 +621,21 @@ assert.ok(
 assert.ok(
   textOf(currentDisabledRow).includes(textOf(resolved('files.upToDate'))),
   '★ 它同时还是「已是最新」——两件事不矛盾（版本对了，文件没启用），不许拿一个盖掉另一个',
+);
+/*
+ * ★★ 这一条是 2026-09-24 评审（Minor 1）点名要补的，也是 ③ 里那条恒真断言换来的那一条：
+ *   「`current` 的行不许有「更新」按钮」此前**只在普通路径的夹具上**验过（⑥ 用的是 `BOUND`）。
+ *   ⚠️ 它**结构上**与 ⑥ 那条一样（同一列、同一颗按钮），换的只是夹具 —— 而这正是要的：
+ *   同一个判据作用在**另一支**夹具上，覆盖的就是另一条路径。
+ *   ⚠️ 为什么 `.disabled` 这一支值得单独验：**"顺手给被禁用的行加一颗「更新」"是有人会想做的事**
+ *   （表里那颗「更新」对被禁用的绑定本来就会先问一次要不要顺带启用 —— 见 `FileUpdateTable.tsx`
+ *   里那颗徽章旁边的注释），而在 `current` 这一行上它没有任何东西可更新（`needsUpdate` 为 false）。
+ */
+assert.equal(
+  labelsIn(currentDisabledRow).includes(labelOf('files.update')),
+  false,
+  '★ `.disabled` 的 `current` 行也不许有「更新」按钮 —— 它已经是最新了（这一条盯的是动作列在' +
+    '`.disabled` 夹具上会不会分叉：⑥ 只验过普通路径）',
 );
 const uncheckedDisabledRow = rowOf(
   tableHtml([viewOf(UNCHECKED, { binding: BOUND_DISABLED })]),
@@ -891,11 +912,18 @@ assert.ok(
  *    第一版正是后者，而"给没有读数的那一行编一个 `formatClock(0)`（00:00）顶上"那一刀
  *    让它**照旧全绿** —— 那种判据只抓得住"拿同一个时刻去填"这一种编法。
  *    （这一条是跑了那一刀之后改的：能红的守卫和"看起来在守卫"的守卫，差别就在这种地方。）
+ *
+ * ⚠️★ 夹具**必须是"已绑定"的那一行**（评审 2026-09-24 随手 1 抓的，第一版打的是 `unboundRow`）：
+ *    错实现里最常见的写法是"**只在有绑定时**才去借一个时间戳"（没绑定就没有文件可读，
+ *    看起来"不填也说得通"），而 `unboundRow` 的 `binding` 是 `null` ⇒ 那一刀恰好落在它的
+ *    条件之外，**那种错实现照样绿**。③ 的 `outdatedRow` 是"已绑定 + `lastCheckedAt: null`"，
+ *    这一支才咬得住。
  */
 assert.equal(
-  /\d{1,2}:\d{2}/.test(textOf(unboundRow)),
+  /\d{1,2}:\d{2}/.test(textOf(outdatedRow)),
   false,
-  '★ `lastCheckedAt === null` ⇒ 一个时间戳都不印（任何"时:分"形状的字都不许出现）',
+  '★ `lastCheckedAt === null` ⇒ 一个时间戳都不印（任何"时:分"形状的字都不许出现）；' +
+    '夹具用的是**已绑定**的那一行（未绑定那一支会让"只在已绑定时才编时间"的错实现漏网）',
 );
 ok('⑮ 行内逐条读数时间：有就读数、`null` 就一个字都不印');
 
@@ -955,8 +983,9 @@ ok('⑯ `reduceLoad`：失败 → 数据到手撤回失败结论；有数据时�
  *    ⚠️★ 那张下载卡**今天没有任何渲染自检覆盖** —— 现读：`apps/web/scripts/**` 里除了本段注释，
  *    没有任何地方提到 `DesktopDownload` / `dlcard` / `download.*`（主页那个脚本也没有）。
  *    它在静态渲染下**永远是 `null`**（要覆盖它得先有一条"取数成功"的路径，或者把取数拆出去）
- *    ⇒ 如实记在这里、**本任务不改**（那是别人的范围；本段第一版写的是"homerender 那边有覆盖"，
- *    那是**假的**，现读之后改掉）。
+ *    ⇒ 如实记在这里、**本任务不改**：它的归属是 **Task 8**（真浏览器 + 真的 `/api/desktop/release`
+ *    响应那一类端到端判据 —— 它自己 `fetch`，静态渲染下拿不到"取数成功"那一屏）。
+ *    ⚠️ 本段第一版写的是"homerender 那边有覆盖"，那是**假的**（现读之后改掉，见上一条）。
  */
 const pageHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
@@ -1007,7 +1036,7 @@ assert.ok(
 ok('⑰ 浏览器态的整页：标题 + 「只能在桌面版」那句 + 「加载中…」；两条失败分支的话都带码');
 
 // ---------------------------------------------------------------------------
-// ⑱ ★★ 读源码的七条守卫：两步确认真的接在**按钮**上
+// ⑱ ★★ 读源码的八条守卫：两步确认真的接在**按钮**上
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★★ 先说清楚这一段**证不了什么**：`renderToStaticMarkup` 一行事件处理器都不跑
@@ -1031,17 +1060,19 @@ const panelCode = withoutComments(
 );
 
 /*
- * ★★ 七条守卫**每一刀都真的跑过**（在 `apps/web` 里改坏 → 跑本脚本 → 还原 → `sha256`
- *    逐字节核对）。实测读数（跑台是一份 `.cache/` 下的一次性脚本，31 刀的完整读数抄在
- *    `task-7-report.md` §4）：
+ * ★★ 八条守卫**每一刀都真的跑过**（在 `apps/web` 里改坏 → 跑本脚本 → 还原 → `sha256`
+ *    逐字节核对）。实测读数（跑台是一份 `.cache/` 下的一次性脚本，完整读数抄在
+ *    `task-7-report.md` §4 与「Fix round 1」）：
  *      · `onClick={requestUpdateAll}` → `onClick={confirmUpdateAll}` ⇒ 守卫 2 红
  *        （"那颗「一键更新」按钮的 onClick 必须**只**是 requestUpdateAll"）；
  *      · `const showConfirm = confirmingUpdateAll && targets.length > 0;` → `= false;` ⇒ 守卫 3 红；
  *      · 在 `requestUpdateAll` 里补一次 `handlers.updateAll()` ⇒ 守卫 4 红（"今天出现 2 次"）；
  *      · 在 `requestUpdateAll` 里插一句 `window.confirm('x')` ⇒ 守卫 1 红；
- *      · 删掉 `setConfirmingUpdateAll(true);` ⇒ 守卫 5 红；
+ *      · 删掉 `setConfirmingUpdateAll(true);` ⇒ 守卫 5 红（**改成取函数体之后重跑过**）；
  *      · `count={targets.length}` → `count={views.length}` ⇒ 守卫 6 红；
- *      · 删掉 `cancelUpdateAll` 里那一格 `setConfirmingUpdateAll(false)` ⇒ 守卫 7 红。
+ *      · 删掉 `cancelUpdateAll` 里那一格 `setConfirmingUpdateAll(false)` ⇒ 守卫 7 红；
+ *      · `onCancel={cancelUpdateAll}` → `onCancel={requestUpdateAll}` ⇒ 守卫 8 红
+ *        （⚠️ 这一刀下守卫 5 / 7 **都绿** —— 它们读函数体，不读接线；见守卫 8 那一段）。
  *    ⚠️★ 反面也记一笔（免得下一个人以为锚在按钮上就够了）：**锚在按钮上的那条守卫
  *    抓不到"`requestUpdateAll()` 不再置那一格"**（那一刀下它照旧绿），而守卫 5 抓不到
  *    "接线被别人换掉"。两条各管一半，缺一条就有一半的坏法没人喊。
@@ -1080,12 +1111,43 @@ assert.equal(
 );
 
 // —— 守卫 5：`requestUpdateAll()` 真的进入待确认态（能红的那一刀：删掉那一格 `setConfirmingUpdateAll(true)`）——
-assert.match(
+/*
+ * ⚠️★ 判据读的是它**自己的函数体**（`{…}` 之间那一格），不是"从声明往后扫 400 个字里有没有"
+ *    —— 后者是第一版，而它和守卫 7 的第一版是**同一个坏形状**：那个窗口**跨得过函数边界**，
+ *    于是"删掉这一格"之后，窗口里出现的是**下一个函数**里同一族的调用，守卫照旧绿。
+ *    （守卫 7 正是被自己的刀证明过这件事的；评审 2026-09-24 随手 2 要求把这一条也改成同一种写法，
+ *    整类消掉。两处的取函数体写法**逐个字母相同**，就是为了下一个人一眼看出它们是同一条纪律。）
+ * ⚠️ 判据读 `body[1]`（函数体那一格），不是那个 Match 的真假：函数体被删空时它是**空串**，
+ *    而 `assert.ok('')` 会在"函数没了"那句上报红 —— 红点会落错地方（§5.74 那一类）。
+ */
+const requestUpdateAllBody = /const\s+requestUpdateAll\s*=[\s\S]*?\{([\s\S]*?)\n\s*\};/.exec(
   panelCode,
-  /const\s+requestUpdateAll[\s\S]{0,400}?setConfirmingUpdateAll\(true\)/,
+);
+assert.ok(
+  requestUpdateAllBody !== null,
+  '找不到 `requestUpdateAll` 的函数体（它被改名 / 搬走 / 换了写法 ⇒ 下面那条判据会变成空跑）',
+);
+assert.ok(
+  requestUpdateAllBody[1].includes('setConfirmingUpdateAll(true)'),
   '★★ `requestUpdateAll()` 必须真的把"待确认"这一格置真 —— 它不置 ⇒ 那颗按钮点了什么都不发生，' +
     '而上面那三条守卫（2 / 3 / 4）**全绿**（这一条**不是**守卫 2 的替代：它抓的是函数体不再干活，' +
     '锚在按钮上的那条抓的是接线被别人换掉）',
+);
+
+// —— 守卫 8：确认行那两颗按钮**各自**接在自己那一步上（能红的那一刀：`onCancel={cancelUpdateAll}` → `onCancel={requestUpdateAll}`）——
+/*
+ * ⚠️★ 补这一条的理由（评审 2026-09-24 随手 2 点名的那一刀）：把 `onCancel` 接成 `requestUpdateAll`
+ *    之后，**守卫 5 与守卫 7 都照旧绿** —— 它们读的是两个函数**自己的函数体**，而这一刀改的是
+ *    **JSX 里的接线**（"取消"这颗按钮指向了哪个函数）。两件事不是一回事：
+ *      · 守卫 7 管"`cancelUpdateAll` 这个函数还干不干活"；
+ *      · 这一条管"那颗「取消」按钮接的是 `cancelUpdateAll`"。
+ *    ⇒ 认下这一刀的人是这里。这也是本组里第三次遇到同一条纪律：**锚要锚在接线被写下的那一处**。
+ */
+assert.match(
+  panelCode,
+  /<UpdateAllConfirm\b[^>]*onConfirm=\{confirmUpdateAll\}[\s\S]{0,200}?onCancel=\{cancelUpdateAll\}/,
+  '★★ 确认行那两颗按钮必须各接自己那一步（`onConfirm={confirmUpdateAll}` / `onCancel={cancelUpdateAll}`）' +
+    '—— 接错（比如「取消」接到 `requestUpdateAll`）⇒ 那颗按钮不再是取消，而这一行会一直挂着',
 );
 
 // —— 守卫 6：确认行里那个数字来自 `targets.length`（能红的那一刀：改成 `views.length`）——
@@ -1120,7 +1182,7 @@ assert.ok(
     '而这一行会一直挂在那里等一个用户已经回答过（"不"）的问题',
 );
 ok(
-  '⑱ 源码形状守卫 7 条：两步确认接在**按钮**上、`showConfirm` 由待确认态推出、`updateAll()` 只一处',
+  '⑱ 源码形状守卫 8 条：两步确认接在**按钮**上（两颗按钮各接自己那一步）、`showConfirm` 由待确认态推出、`updateAll()` 只一处',
 );
 
 // ---------------------------------------------------------------------------
