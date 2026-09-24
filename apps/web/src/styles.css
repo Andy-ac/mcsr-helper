@@ -9311,10 +9311,10 @@ html[data-theme='light'] {
      全仓没有任何门禁发现得了（`docs/pending.md §5.70`，`.mcsr-input` 那个笔误就是这个形状）。
      ⇒ 组件里出现的每一个 `files*` / `filespanel*` / `filetable*` 类名在这里**都必须有规则**。
 
-   ⚠️ `.filetable` 今天只是一个**挂载点**（面板里那个空 div，Task 6 的表格会取代它）
-     —— 所以这里只有"占满宽度、与上面那行按钮隔开"两条。Task 6 会往这一族里补
-     表头 / 行 / 徽章（`.filetable__row[data-state='outdated']` 那些）。
-     ⛔ 别在这里**预先**写出那些类名：写了就等于替 Task 6 猜了一版它还没定的形状。
+   ⚠️ `.filetable` 那一族**在文件末尾**：Task 6 把面板里那个**空挂载点**换成了真表格，
+     并补上表头 / 行 / 徽章 / 左边框那一批类名（`.filetable__table` / `__head` / `__row` …）。
+     写在文件末尾是照本仓"每个任务只往末尾追加自己那一块"的约定
+     （与 `.sidebar__block--files` 那两段注释同一条）。
    ================================================================== */
 
 .files__browser {
@@ -9325,8 +9325,11 @@ html[data-theme='light'] {
   margin: 0 0 24px;
 }
 
-/* 说明那一行（`files.autoHint`）。⚠️ 它是**成段的散文**，所以不指定像素字体
-   （像素字体读长句很累，见文件头的分工），字号与 `.notice__sub` 同级。 */
+/* 说明那一行（`files.autoHint`；以及"可更新的条目全是已禁用"那一档才会出现的
+   `files.updateAllDisabledOnly`）。⚠️ 它是**成段的散文**，所以不指定像素字体
+   （像素字体读长句很累，见文件头的分工），字号与 `.notice__sub` 同级。
+   ⚠️ 两个渲染点共用这一条规则是**有意的**：两者是同一类东西（一句解释），
+   给它们两个长相只会让"哪句话更重"变成随机。 */
 .filespanel__hint {
   color: var(--fg-muted);
   font-size: 12.5px;
@@ -9343,7 +9346,7 @@ html[data-theme='light'] {
   margin: 0 0 12px;
 }
 
-/* 面板那一行按钮（今天只有「选择 mods 目录」；Task 6 的「检查」/「一键更新」并排加进来）。
+/* 面板那一行按钮（「选择 mods 目录」/「检查」/「一键更新」，外加一次运行的汇总）。
    ⚠️ `flex-wrap` 不是保险：同一个按钮的文字在两种语言里长度差很多
    （「选择 mods 目录」vs "Choose mods folder"），窄屏下挤在一行会溢出容器。 */
 .filespanel__actions {
@@ -9354,10 +9357,177 @@ html[data-theme='light'] {
   margin: 0 0 12px;
 }
 
-/* Task 6 的表格挂载点（见上面那一段）。 */
+/* 「已更新 2 个，失败 0 个」——**一次运行的汇总**，跟在按钮后面。
+   ⚠️ 它说的是一句"刚才发生了什么"，所以比按钮弱、比说明行实：字号走等宽
+   （数字对齐），颜色用 `--fg-muted` 而不是 `--fg-faint`（它是结论，不是脚注）。 */
+.filespanel__run {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-px-sm);
+}
+
+/* ★ 「一键更新」被禁用时的外观。
+   ⚠️★ 为什么只给这一颗补：全站的 `.cta` **没有** `:disabled` 规则（现读：
+   `styles.css` 里只有 `.pager button:disabled` 那一条），而 `.cta` 把 background 与
+   color 都写死了 ⇒ 浏览器的默认禁用表现被覆盖，禁用与可点**长得一模一样**。
+   这一颗的禁用含义恰恰是"现在没有可更新的条目"，是最需要看见的那一格；
+   不去动全站 `.cta`（那是另一个范围的事，`className="cta" disabled=…` 有十几处）。 */
+.filespanel__actions .cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------
+   文件更新 · 表格（Task 6）
+
+   ★ 高亮**不只靠颜色**：`.badge--update`（可更新）与 `.badge--disabled`（已禁用）
+     各自带**文字**，而下面那两条规则只是把"可操作"这件事再加一层底色与左边线。
+     一个只看得见灰度的用户拿到的是同样的信息（徽章上的字）。
+   ------------------------------------------------------------------ */
+
+/* 表格本体。⚠️ `overflow-x: auto` 在**外层那个 div**（`.filetable`）上、不在
+   `<table>` 上：五列在窄窗口里装不下时，要滚的是**这张表**，而不是把整页顶出一条
+   横向滚动条（`.tracked__tablescroll` 为同一件事写过完整的一段）。 */
 .filetable {
   width: 100%;
   margin-top: 4px;
+  overflow-x: auto;
+}
+
+.filetable__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.filetable__head th {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  text-align: left;
+  font-weight: normal;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filetable__row td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+/* ★★ 高亮：`outdated` 与 `unknown-local` 是**可操作**的那两支（`needsUpdate` 为真），
+   底色 + 左边线让它们在长列表里一眼找得到。
+   ⚠️★ 为什么左边线是 `inset box-shadow` 而不是 `border-left`：这张表是
+   `border-collapse: collapse`，边框参与列宽计算 ⇒ 给首格加 3px 左边框会把**这一行**
+   的内容整体推右 3px，高亮行与其它行的列就不对齐了（一眼看过去像表格坏了）。
+   `inset` 阴影画在同一条边上、不参与布局。
+   代价：它是**画**上去的、不占位 —— 强制颜色模式下可能看不见；那时靠的还是徽章上的字。 */
+.filetable__row[data-state='outdated'],
+.filetable__row[data-state='unknown-local'] {
+  background: var(--surface-2);
+}
+
+.filetable__row[data-state='outdated'] td:first-child,
+.filetable__row[data-state='unknown-local'] td:first-child {
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+
+/* 文件那一格：名字 + 徽章 + 逐条读数时间 +（error 行的）原因，竖着排。
+   ⚠️ 这一层是 `<td>` **里面**的 div：直接给 `<td>` 设 `display: flex` 会让它不再是
+   表格单元格，整张表的列宽会跟着崩。
+   ⚠️ 故意**不写** `align-items: flex-start`：那样每个孩子的宽度会变成"内容宽"，
+   而 `error` 那句原因（可能很长、带路径）就不会在格子里换行 —— 它会直接把这一列顶宽。
+   走默认的 `stretch`，文字才是按格子宽度换行的。 */
+.filetable__filebox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+
+/* 逐条读数时间（「这一条上次检查：14:03」）。⚠️ 它与面板那行元信息是**两个不同的时钟**
+   （列表级 vs 这一条），所以各自一句话；这一格比徽章弱：徽章说"这一行是什么"，
+   它说"这个读数有多旧"。 */
+.filetable__readat {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* `error` 行的原因（主进程的原话，**原样**印）。⚠️ 走正文字体而不是像素字体：
+   它是成句的话，而且可能很长（带路径、带上游的错误），像素字体读长句很累。 */
+.filetable__err {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* 版本号两格：等宽 + 字号小一档，好让两格扫起来对得上。 */
+.filetable__version {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* 「上次读到 5.8.26（14:03）」/「本次启动还没有成功读到过最新版本。」——挂在版本格下面。
+   ⚠️ 那一格自己印的是 `—`（这一行现在没有最新版读数），所以这句话换行、更弱。 */
+.filetable__latestknown {
+  display: block;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: normal;
+  margin-top: 2px;
+}
+
+/* 操作列：按钮横排、窄窗口里换行（与 `.filespanel__actions` 同一条理由）。 */
+.filetable__actionbox {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* 正在写盘的那一行：操作列换成进度文本。
+   ⚠️ 走等宽字体（进度是数字、会走动 ⇒ 不跳字），颜色用 `--fg-muted`：
+   它是一句"正在进行"的状态，不是错误。 */
+.filetable__busy {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-px-sm);
+}
+
+/* ------------------------------------------------------------------
+   文件更新 · 三个状态徽章（Task 6）
+
+   ★★ 硬要求：`outdated`（可更新）与 `disabled`（已禁用）的差别**必须靠文字**
+   （`files.outdated` vs `files.disabled`，两个不同的字串），颜色只是加强。
+   这里额外用**虚线**给 `disabled` 第二个不依赖颜色的通道 —— 关掉的东西不描实线。
+   ⚠️ 只用主题变量，不写字面色值（`rgba(...)` 也不写）：这一族的底色留白，
+   靠描边与字色区分，缩窄"换一个主题就看不见"的余地。
+   ------------------------------------------------------------------ */
+
+/* 可更新（`outdated` / `unknown-local`）：金色 = 有事情要做。 */
+.badge--update {
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+/* 读取失败 / 文件不见了：红石色 = 有坏消息要处理。
+   ⚠️ 这里不是"删除那类破坏性动作"的用法 —— 它说的是"这一行现在不成立"。 */
+.badge--problem {
+  color: var(--redstone);
+  border-color: var(--redstone);
+}
+
+/* 已禁用（`.jar.disabled`）：灰 + 虚线 —— 一个"关掉"的东西，不是错误。
+   ⚠️ 它旁边那颗「可更新」是金色的实线徽章，两个字串也不一样 ⇒ 两者不靠颜色也分得开。 */
+.badge--disabled {
+  color: var(--fg-faint);
+  border-color: var(--line-strong);
+  border-style: dashed;
 }
 
 

@@ -4044,12 +4044,52 @@ export const en: TranslationSchema = {
     colLocal: 'Local',
     colLatest: 'Latest',
     colAuto: 'Auto',
+    /*
+     * ★ Accessible name for the per-row "Auto" checkbox (`aria-label`, added by Task 6,
+     *   2026-09-24).
+     * ⚠️ Why the item name has to be in it: that column is one identical checkbox per row,
+     *   so without it a screen reader reads a run of identical "Auto" labels — the same
+     *   reason `nav.reorder` spells the section name into its label ("so the reader says
+     *   'reorder the Resources section' instead of a row of identical 'reorder'").
+     * ⚠️ Wording follows `autoHint` ("check on launch"); it must **not** say "update",
+     *   because that checkbox never writes a file.
+     */
+    autoLabel: 'Check "{{name}}" on launch',
     colActions: 'Actions',
     bind: 'Choose file',
     rebind: 'Choose again',
     bindFolder: 'Choose mods folder',
+    /*
+     * ★ Not in the plan's table: **unbinding one item** (`unbind(itemId)` — the channel
+     *   T3 built, the implementation T4 wrote).
+     * ⚠️ Why it needs a consumer (Task 6's ruling; the full reasoning is on the button in
+     *   `apps/web/src/components/FileUpdateTable.tsx`): the T6 brief's `Produces` line lists
+     *   `onUnbind` in the table's interface, and **no render rule** says which state draws
+     *   it ⇒ without it that prop is dead, and `unbind()` has **no other consumer anywhere
+     *   in the UI** (read today: nothing under `apps/web/src` calls it except the panel's
+     *   seven-action wrapper).
+     * ⚠️ It collides with render rule 3 *on the letter* ("the actions column has no button
+     *   on a `current` row"): that rule's load-bearing part is "an up-to-date row offers no
+     *   Update" (which is exactly T7's assertion 5), and this quiet button does not touch
+     *   it. Whether it stays is the controller's call (deleting it = the two places in the
+     *   component).
+     */
+    unbind: 'Unbind',
     update: 'Update',
     updateAll: 'Update all',
+    /*
+     * ★ The explanation for the "every updatable row is disabled" case (added by Task 6).
+     * ⚠️ Why it is needed: `updateAll()` **skips** `.disabled` bindings (spec §8), so in
+     *   that case clicking "Update all" moves nothing — while the button is **enabled**
+     *   (there really are updatable rows, disabled ones included). Without this sentence
+     *   the user sees "I clicked and nothing happened", the silent failure this repo
+     *   keeps writing rules about. The real way out is the **per-row** "Update": a single
+     *   update asks once whether to enable the file as well (T4's `confirmEnable`) —
+     *   so this sentence has to name that button.
+     * ⚠️ It only appears in that case (a permanently visible hint is one nobody reads).
+     */
+    updateAllDisabledOnly:
+      'Every updatable row is disabled — "Update all" skips those (it only updates enabled files). Use the "Update" button on that row.',
     check: 'Check',
     checking: 'Checking…',
     upToDate: 'Up to date',
@@ -4089,6 +4129,20 @@ export const en: TranslationSchema = {
     /** ⚠️ `{{time}}` is the reading time **within this process** (the panel formats it with `formatClock()`). */
     lastChecked: 'Last checked: {{time}}',
     /*
+     * ★ The per-row clock (printed on **every** row of the table, added by Task 6,
+     *   2026-09-24).
+     * ⚠️ This is **not** the same statement as the one above: `lastChecked` prints the
+     *   **list-level** `FileUpdatesState.lastCheckedAt`, while this one prints
+     *   `FileItemView.lastCheckedAt` (when **this item** was last checked). The two can
+     *   differ — an `autoUpdate`-off item is not refreshed by the launch check (T1's
+     *   `FileBinding.autoUpdate` and T4's `startUp`) ⇒ within one process the list-level
+     *   clock can be newer than this row's, so the two sentences have to stay apart.
+     * ⚠️ Both cells are **in-process**: the per-item `lastCheckedAt` in the state file is
+     *   **never** read into the view ⇒ after a restart there is no value, and then this
+     *   prints **nothing at all** (never a fabricated timestamp).
+     */
+    rowChecked: 'This row last checked: {{time}}',
+    /*
      * ★ The next two are **not in the plan's table**; they cover `FileItemView.lastKnownLatest`,
      *   the field T1/T4 added in their fix rounds (spec §8).
      *
@@ -4120,6 +4174,18 @@ export const en: TranslationSchema = {
     actionFailed: 'That step did not work: {{message}}',
     confirmUpdateAll: 'Update {{count}} file(s) to the latest version?',
     busy: 'Updating {{name}}…',
+    /*
+     * ★ The variant with a percentage (the same action's second sentence, added by Task 6).
+     * ⚠️ Why it has to be **two** keys: `FileUpdatesState.progress.percent` is
+     *   `number | null` — when upstream gives no content length the main process has no
+     *   percentage either (its own `total > 0 ? … : null`) ⇒ only the key above can be
+     *   printed then. And i18next does **not** drop an `{{percent}}` with no value — it
+     *   prints the braces verbatim ⇒ this cannot be one key with an optional segment.
+     * ⚠️ The `%` lives in the string, not in the component: both languages need a place
+     *   for it (the component only hands over the number, and it does **not** round it
+     *   again — that would be a second rule for the same thing).
+     */
+    busyPercent: 'Updating {{name}}… ({{percent}}%)',
     runSummary: 'Updated {{ok}}, failed {{failed}}',
     /*
      * ⚠️★ This explanation **must** appear on the page (`routes/Files.tsx`); it is not

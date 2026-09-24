@@ -17,8 +17,12 @@
  * ⇒ 这个文件里有两样东西，各自只负责一件事：
  *   · `useFileUpdates()`：**取数**（桌面壳 = 订阅 + 首拉 / 浏览器 = 拉目录），
  *     以及七个动作的包装（`FileUpdatesHandlers`）；
- *   · `FileUpdatesPanel`：**纯展示**（拿一份现成的 `state` 就渲染）。
- *     它是同步可渲染的 ⇒ Task 7 可以喂一份手写的状态进去。
+ *   · `FileUpdatesPanel`：**拿一份现成的 `state` 渲染**，不取数、不订阅、不跑 effect
+ *     ⇒ Task 7 可以喂一份手写的状态进去（表格那一层更纯：它连本地状态都没有）。
+ *     ⚠️★ Task 6 给它加了一格**界面态**（`pending`：「我刚点的那一下还在跑」）——
+ *     `FileUpdatesState` 里没有这一格，而「检查」那一下要几秒（一次读盘 + 一次网络请求），
+ *     少了它就只能在"点了没反应"和"点了弹一句红字"之间二选一。它是**界面态**，
+ *     不是第二份真相：全部作用是把那两颗按钮按住、并把「正在检查…」印出来。
  *
  * ===========================================================================
  * ⚠️★ 桌面态与浏览器态是**两个不同的产品**，共用一份状态形状
@@ -57,14 +61,17 @@
  */
 
 import { type DesktopBridge, desktopBridge } from '@mcsr/shared/desktop';
-import type {
-  FileCatalog,
-  FileCatalogItem,
-  FileItemView,
-  FileUpdatesState,
+import {
+  type FileCatalog,
+  type FileCatalogItem,
+  type FileItemView,
+  type FileUpdatesState,
+  isDisabledPath,
+  needsUpdate,
 } from '@mcsr/shared/fileUpdates';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { FileUpdateTable, formatClock } from '@/components/FileUpdateTable';
 import { Notice } from '@/components/Form';
 
 /**
@@ -180,26 +187,26 @@ export function reduceLoad(prev: FileUpdatesLoad, event: FileUpdatesLoadEvent): 
 }
 
 /**
- * 把毫秒时间戳写成 `14:03`。
+ * ★ 一键更新**真的会碰**哪几条 —— 与主进程那份筛选逐条对齐。
  *
- * ⚠️ 自己拼而不是 `toLocaleTimeString()`：那个在 `en-US` 下会给出 `02:03 PM`，
- *    而词条里只有 `{{time}}` 一个占位符、没有 AM/PM 的位置 ⇒ 24 小时制是唯一
- *    在两种语言下都成立、且不需要第二条词条的写法。
- * ⚠️ 不带日期是**有意的**：面板读的这一格是**列表级**的 `FileUpdatesState.lastCheckedAt`，
- *    而它**只活在主进程的内存里** —— 状态文件（`apps/desktop/src/file-updates.ts` 的
- *    `StateFile`）里只有**每一条**的 `lastCheckedAt`，顶层那一格既不写也不恢复
- *    （`initFileUpdates` 那一句 `current = { ...current, items: rebuildItems() }` 只重建 items）
- *    ⇒ 它必然是**这一次进程里**某次检查 / 绑定写上去的。
- *    代价：跨零点之后那一刻钟显示的还是昨天的时间。
- *
- * ⚠️ 导出是给 **Task 6** 的：表格那一层要用**同一个**格式化（`error` 行要印
- *    "上次读到 5.8.26（14:03）"）—— 各写一份的话，同一个时间会在同一屏上有两种写法。
+ * ⚠️★ 为什么界面要自己再算一遍：确认框里那个数字必须等于"点下去真的会更新几条"，
+ *    而 `FileUpdatesState` 里没有"这一次会更新哪些"这一格（它只有**跑完之后**的
+ *    `lastRun`）⇒ 只能自己筛。三格判据与 `apps/desktop/src/file-updates.ts` 的
+ *    `updateAll()` 逐格相同：绑定了（`binding` 非空、路径非空）、`needsUpdate(state)`、
+ *    而且**不是 `.disabled`**（一键更新跳过被禁用的绑定 —— spec §8 明写；
+ *    单条的「更新」不跳，它会先问一次要不要把它启用，见 T4 的 `confirmEnable`）。
+ * ⚠️ 代价：这是**第二份**判据，会漂，而漂的方向正是"确认框说 3 个、实际更新 2 个"
+ *    （用户唯一的读数就是那个弹窗）。漂的余地只剩"绑定是不是空的"那一格 ——
+ *    `needsUpdate` / `isDisabledPath` 两边调的都是 T1 那一份实现。
  */
-export function formatClock(at: number): string {
-  const d = new Date(at);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
+export function updateAllTargets(views: readonly FileItemView[]): FileItemView[] {
+  return views.filter(
+    (view) =>
+      view.binding !== null &&
+      view.binding.localPath !== '' &&
+      needsUpdate(view.state) &&
+      !isDisabledPath(view.binding.localPath),
+  );
 }
 
 /** `Error` 之外的抛出物（IPC 那层理论上会给字符串）也要能变成一句人话。 */
@@ -408,26 +415,22 @@ export function useFileUpdates(): FileUpdatesData {
 }
 
 /**
- * 面板本体 —— **纯展示**：给一份状态就渲染，不取数、不订阅。
+ * 面板本体 —— **拿一份现成的状态渲染**：不取数、不订阅、不跑 effect。
  *
- * ⚠️★ 表格是 **Task 6** 的（`components/FileUpdateTable.tsx`）。这里只留一个**挂载点**，
- *    刻意**不预建**表头 / 行 / 徽章 / 按钮：预建的话 Task 6 的第一件事会变成
- *    "先删掉上一轮猜出来的那一版"，而猜错的形状没有任何门禁看得见。
- *    ⚠️ 挂载点上那个 `data-views` 是**给 Task 7 的渲染自检**留的读数：它证明
- *    "面板真的把 N 条视图交给了表格那一层"，而不是只渲染了一个空壳；
- *    ⚠️ 它**不是**表格本身 —— Task 6 会把这一行换成 `<FileUpdateTable … />`，
- *    届时这个属性跟着消失（它没有别的消费者）。
+ * ⚠️★ 表格（`components/FileUpdateTable.tsx`）是 **Task 6** 的：它**纯展示**
+ *    （给 `views` 就画完，连本地状态都没有），面板只负责把 `state.items` 与四个
+ *    动作的回调递下去。T5 当初在这里留了一个**空挂载点**并写明"刻意不预建表格的形状"
+ *    —— 就是为了让 Task 6 不用先删掉一版猜出来的表头/行/徽章；这一轮那个挂载点换成了
+ *    真表格，`data-views`（"面板真的把 N 条视图交给了表格"）跟着搬进表格那一层。
  *
- * ⚠️★ 这一轮**多做了一件**计划表没写的事：「选择 mods 目录」那颗按钮（`files.bindFolder`）。
- *    理由不是"顺手"，而是**不做的话那个功能在界面上根本点不到**：
- *      · 计划里 Task 6 Step 3 给面板列的两颗按钮只有「检查」与「一键更新」，
- *        Task 6 Step 1 给表格列的操作只有「选择文件 / 重新选择 / 更新」；
- *      · 全仓没有任何任务认领 `files.bindFolder` 那一条词条与 `bindFolder()` 那条通道
- *        （T3 建了它、T4 实现了它、`content/file-catalog.json` 的整条路就是为它铺的，
- *        而它今天在界面上**没有消费者**）。
- *    ⇒ 一颗按钮的成本，换"文件夹扫描真的能被用户用到"；若控制器把它判给 Task 6，
- *      搬走它就是五行的事（这一段注释跟着搬）。
- *    ⚠️ 它**不影响** Task 6 要加的那两颗：同一行里并排即可。
+ * ⚠️★ 「选择 mods 目录」那颗按钮（`files.bindFolder`）是 T5 多做的一件，Task 6 接手
+ *    照旧保留（控制器把它判给了 Task 6）：全仓没有任何任务认领 `bindFolder()` 那条通道
+ *    （T3 建了它、T4 实现了它、`content/file-catalog.json` 整条路就是为它铺的），
+ *    搬走它那个功能在界面上就点不到了。它**不影响**新增的那两颗：三颗并排一行。
+ *
+ * ⚠️★ 「检查」与「一键更新」为什么住在**面板**而不是表格：它们是**整张表**的动作
+ *    （一次全量检查 / 一次串行更新），而表格那一层每行一个动作、拿不到"整体"这件事。
+ *    这也是 Task 7 断言"没有可更新的行时一键更新禁用"的那一层。
  */
 export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUpdatesPanelProps) {
   const { t } = useTranslation();
@@ -438,6 +441,85 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
    *    与其让用户点了吃一句报错，不如把按钮按下去没反应的原因写在脸上。
    */
   const busy = state.busyItemId !== null;
+  /*
+   * ★ 「我刚刚点的那一下还在跑」——**界面态**，不是第二份真相（为什么要有它见文件头）。
+   *   它同时管三件事：按住那两颗按钮、把「正在检查…」印出来、以及"跑的过程中不显示
+   *   上一次的汇总"。
+   */
+  const [pending, setPending] = useState<'check' | 'updateAll' | null>(null);
+
+  /** 一键更新**真的会碰**的那几条（判据与主进程那份逐条对齐，见 `updateAllTargets`）。 */
+  const targets = updateAllTargets(views);
+  /** 有任一条标着"可更新"（**含已禁用的**）—— 一键更新那颗按钮的可用判据。 */
+  const someNeedsUpdate = views.some((view) => needsUpdate(view.state));
+  /**
+   * "可更新的条目全是已禁用的"这一档：按钮**可用**（有东西可更新），而一键更新
+   * **一颗都不会动**（它跳过 `.disabled`）。⇒ 下面那句解释必须出现，否则就是"点了没反应"。
+   */
+  const allUpdatableDisabled = someNeedsUpdate && targets.length === 0;
+
+  /*
+   * ⚠️ 四个回调只在**桌面态**才存在（浏览器态一个动作都做不了）：表格那一层拿不到
+   *    回调就不画那颗按钮（见它 props 的说明），`desktop={false}` 是同一件事的第二道闸。
+   * ⚠️ 回调里**不 catch**：失败由 `makeHandlers()` 那一层接住并交给 `files.actionFailed`。
+   */
+  const rowActions =
+    handlers === null
+      ? null
+      : {
+          onBind: (itemId: string) => void handlers.bind(itemId),
+          onUnbind: (itemId: string) => void handlers.unbind(itemId),
+          onToggleAuto: (itemId: string, on: boolean) => void handlers.setAutoUpdate(itemId, on),
+          onUpdate: (itemId: string) => void handlers.update(itemId),
+        };
+
+  /** 「检查」= 强制刷新（重拉一次目录 + 重读每个已绑定文件 + 查上游）。 */
+  const runCheck = (): void => {
+    if (handlers === null) return;
+    setPending('check');
+    void handlers.check(true).finally(() => setPending(null));
+  };
+
+  /**
+   * 「一键更新」= 先问一次（问的是**真的会更新几条**），再交给主进程串行做。
+   *
+   * ⚠️★ `targets.length === 0` 时**不调** `updateAll()`：那一趟会一条都不动，却写一个
+   *    `lastRun = { updated: [], failed: [] }` 回来、界面上冒出"已更新 0 个，失败 0 个"
+   *    —— 一句"我刚才做过一件事"的话，而事实是什么都没发生。这时下面那句解释已经在屏幕上了。
+   * ⚠️ 确认框走 `window.confirm`：**这是 brief 明写的**（Step 3）。代价记在这里，别当成疏漏：
+   *    本仓有五处注释明写"不用 `window.confirm`"（`LiveManagePanel` / `VideoCard` /
+   *    `EditResource` / `CalendarEdit` / `ShareBoard`），理由是"原生弹窗在 Electron 壳里
+   *    样式和整站无关、而且会阻塞渲染"、"在 SSR 里不跑、门禁看不见"。
+   *    这一处照 brief 做的**额外**理由：这个功能的另外两次确认本来就是**原生**弹窗
+   *    （T4 的 `confirmOverwrite` / `confirmEnable` 由主进程弹），而这一步问的是同一类事
+   *    （"要不要真的动你的文件"）。⇒ 若控制器认为这里该改成本仓那套行内两步确认，
+   *    改动是这一段 + 一颗按钮的状态机。
+   */
+  const runUpdateAll = (): void => {
+    if (handlers === null || targets.length === 0) return;
+    if (!window.confirm(t('files.confirmUpdateAll', { count: targets.length }))) return;
+    setPending('updateAll');
+    void handlers.updateAll().finally(() => setPending(null));
+  };
+
+  /**
+   * 一次运行的汇总（`state.lastRun`）。
+   *
+   * ⚠️★ 正在跑的时候**不印**：`lastRun` 是**上一次**的结果，一边跑一边挂着"已更新 2 个"
+   *    就是一句已经不成立的话（`makeHandlers()` 开跑前先撤掉上一次的失败结论，同一形状）。
+   * ⚠️ 失败的行**不在行里另加标注**：它自己那一行还是「可更新」+「更新」按钮
+   *    （brief 明写"失败的行本身保持可重试"），再加一个标记就是同一件事的第二个说法。
+   * ⚠️ 代价（明摆着）：它不会自己淡出（`lastRun` 只活在主进程内存里，页面不刷新它就一直在）
+   *    ⇒ 用户可能几小时后再看到这句而以为"刚才跑过"。按时间淡出要加定时器，而这一层刻意不跑
+   *    effect ⇒ 如实记着，不修。
+   */
+  const runSummary =
+    state.lastRun === null || busy || pending === 'updateAll'
+      ? null
+      : t('files.runSummary', {
+          ok: state.lastRun.updated.length,
+          failed: state.lastRun.failed.length,
+        });
 
   return (
     <section className="filespanel">
@@ -457,13 +539,13 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
         ⇒ 进程一重启它就是 `null`，这一行于是印「还没检查过」。
 
         ⚠️★★ 它**不是**"用户唯一能看出读数有多旧的地方"（那段话 2026-09-24 评审判为**说过头**，
-        这里改成事实）：逐条的时间有两格 —— `FileItemView.lastCheckedAt`（这一条上次读的时刻）
-        与 `lastKnownLatest.fetchedAt`（上次成功读到上游版本的时刻）—— 而它们**今天一个都没露在界面上**。
-        ⇒ **逐条读数时间归 Task 6 的表格渲染**（`components/FileUpdateTable.tsx`），
+        这里改成事实）：逐条的时间有两格 —— `FileItemView.lastCheckedAt`（这一条上次**检查**的时刻）
+        与 `lastKnownLatest.fetchedAt`（上次**成功**读到上游版本的时刻）—— 它们由**表格**印在行里
+        （`components/FileUpdateTable.tsx` 里的 `files.rowChecked` 与 `files.lastKnownLatest`）。
         **不是**这一行的职责：这一行只回答"这份列表级别的读数有多旧"。
-        代价写明：在 Task 6 落地之前，"某一条的读数是不是几小时前的"这件事**看不出来** ——
-        而 `autoUpdate` 关掉的条目在启动检查里确实不会被刷新（T1 的 `FileBinding.autoUpdate`
-        与 T4 的 `startUp`），它今天落在 `unchecked` 上、由那一行自己说"还没检查过"。
+        两者会不一样，而那不是矛盾：`autoUpdate` 关掉的条目在启动检查里不会被刷新
+        （T1 的 `FileBinding.autoUpdate` 与 T4 的 `startUp`）⇒ 同一屏上列表级那个时钟可以
+        比某一行自己的时钟新，行里那一格就是给它看的。
 
         ⚠️ 关于"落盘的旧读数"这种组合（评审提的那个场景）：`viewFor()` 里的
         `lastCheckedAt` 取的是**进程内**的 `facts?.checkedAt ?? null`
@@ -500,7 +582,13 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
         ⚠️ 浏览器态**不渲染这一行**（`handlers === null`）：那里一个写盘 / 选文件的动作
         都做不了，放一颗永远点不动的按钮比不放更糟（`lib/nav.ts` 对 `milestone` 那条
         写着同一句话）。
-        ⚠️ Task 6 的「检查」与「一键更新」会并排加在这一行里。
+        ★ 三颗按钮的可用条件各有自己的判据（都是"点了会怎样"的直接后果）：
+          · 「选择 mods 目录」：`busy` 时禁用（理由见本组件上面那一段）；
+          · 「检查」：`busy` 或**这一次检查还在飞**时禁用；
+          · 「一键更新」：`busy` / 这一次运行还在飞 / **一条可更新的都没有**时禁用。
+            ⚠️ 判据是 `someNeedsUpdate`（**含**已禁用的条目）而不是 `targets`：两者只在
+            "可更新的条目全是已禁用"这一档不同，那一档按钮**要留着可用**（有东西可更新），
+            而点下去由下面那句解释说明为什么不调 `updateAll()`。
       */}
       {handlers === null ? null : (
         <div className="filespanel__actions">
@@ -515,20 +603,58 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
           >
             {t('files.bindFolder')}
           </button>
+          <button
+            type="button"
+            className="ghostbtn"
+            disabled={busy || pending !== null}
+            onClick={runCheck}
+          >
+            {pending === 'check' ? t('files.checking') : t('files.check')}
+          </button>
+          {/*
+            ⚠️ 一键更新走 `.cta`（全站的主操作样式）：这一页真正要用户做的那一下就是它，
+            而「检查」与「选择 mods 目录」是它的前置动作（主按钮必须比它们显眼，
+            见 `styles.css` 的 `.ghostbtn` 那一段）。
+          */}
+          <button
+            type="button"
+            className="cta"
+            disabled={busy || pending !== null || !someNeedsUpdate}
+            onClick={runUpdateAll}
+          >
+            {t('files.updateAll')}
+          </button>
+          {/* ★ 上一次运行的汇总（`runSummary` 那一段写着它什么时候不印）。 */}
+          {runSummary === null ? null : <span className="filespanel__run">{runSummary}</span>}
         </div>
       )}
 
       {/*
-        Task 6 的表格挂载点（见本组件上面那一段）。
-        ⚠️★ 表格那一层要渲染的东西里，**除了** Task 6 brief 列出的那六条渲染规则之外，
-        还有两样**计划里没提**、但只有它那里有位置的：
-          · `view.lastCheckedAt` / `view.lastKnownLatest.fetchedAt` —— **逐条**读数时间
-            （上面那一行 meta 只有列表级的时间，它管不了"这一条是不是几小时前读的"）；
-          · `state.kind === 'unchecked'` 那一支要用 `files.notChecked`（「还没检查过」）——
-            Task 6 brief 的渲染规则里漏了它，而冷启动之后每一行都是它。
-        这两条 2026-09-24 评审判给 Task 6（我这一轮只留位置与词条，不替它画）。
+        ★ "可更新的条目全是已禁用"那一档的解释：一键更新**一颗都不会动**（它跳过
+        `.disabled`），而那一行自己的「更新」是能用的（单条会先问一次要不要顺带启用）。
+        ⚠️ 用的是与 `files.autoHint` **同一行样式**（`.filespanel__hint`）：两者是同一类
+        东西（一句解释），给它们两个长相只会让"哪句话更重"这件事变成随机。
+        ⚠️ 它**只在**这一档出现 —— 别做成常驻的说明（常驻的提示没人再看，本仓记过这一条）。
       */}
-      <div className="filetable" data-views={views.length} />
+      {allUpdatableDisabled ? (
+        <p className="filespanel__hint">{t('files.updateAllDisabledOnly')}</p>
+      ) : null}
+
+      {/*
+        ★ 表格本体（Task 6）—— **纯展示**，见 `components/FileUpdateTable.tsx` 的文件头。
+        ⚠️ `busyItemId` / `progress` 原样递下去：行内的"正在更新…"与进度文本由表格画
+        （它才知道是哪一行）。浏览器态那三个 props 仍然传（`busyItemId: null`、
+        `progress: null`），但一个动作回调都没有 ⇒ 表格不画任何按钮。
+        ⚠️ `desktop={handlers !== null}` 与"有没有回调"是**两件事同时成立**才画按钮
+        （表格 props 的说明）：这里两样都给，判据不会分叉。
+      */}
+      <FileUpdateTable
+        views={views}
+        busyItemId={state.busyItemId}
+        progress={state.progress}
+        desktop={handlers !== null}
+        {...(rowActions ?? {})}
+      />
     </section>
   );
 }
