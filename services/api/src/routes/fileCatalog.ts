@@ -69,11 +69,29 @@ fileCatalogRoute.get('/', (c) => {
 
   const body = JSON.stringify(result.catalog);
   const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
-  if (c.req.header('if-none-match') === etag) return c.body(null, 304);
+  /*
+   * ⚠️★ 304 **必须**把 200 会带的那几个头再带一遍。RFC 7232 §4.1 的原话是：
+   *
+   *   "The server generating a 304 response MUST generate any of the following header fields
+   *    that would have been sent in a 200 (OK) response to the same request:
+   *    Cache-Control, Content-Location, Date, ETag, Expires, and Vary."
+   *
+   * 这条端点上适用的是其中的 **ETag** 与 **Cache-Control**。
+   * ⚠️ 不带 ETag 的代价：客户端拿不到校验器，下一次条件请求只能靠"浏览器自己留着上一份"
+   *    这种运气 —— 而 304 的全部意义就是"你手上那份还能用"。
+   * ⚠️ 而 200 那份的 `content-type` 是**表示元数据**，按同一节的要求 304 **不该**带它
+   *    （"a sender SHOULD NOT generate representation metadata other than the above listed
+   *      fields"），所以下面那个对象里没有它。
+   *
+   * ⇒ 这两个头由**同一个对象**给出（200 在那上面再加 content-type）：
+   *    "200 改了、304 忘了改"这种漂移在这里**不可能发生**，而不是"靠一条测试去发现"
+   *    —— 测试里那条断言（304 的 etag 必须**等于** 200 的）是第二层，不是唯一一层。
+   *    no-cache = "可以存，但每次都要问一句"：这正是我们要的（部署换文件后立刻生效）。
+   */
+  const validator = { etag, 'cache-control': 'no-cache' };
+  if (c.req.header('if-none-match') === etag) return c.body(null, 304, { ...validator });
   return c.body(body, 200, {
     'content-type': 'application/json; charset=utf-8',
-    etag,
-    // no-cache = "可以存，但每次都要问一句"：这正是我们要的（部署换文件后立刻生效）。
-    'cache-control': 'no-cache',
+    ...validator,
   });
 });

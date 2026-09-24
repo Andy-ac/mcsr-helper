@@ -58,6 +58,20 @@ describe('GET /api/file-catalog', () => {
     assert.ok(etag, '必须带 ETag');
     const again = await call('/api/file-catalog', { 'if-none-match': etag! });
     assert.equal(again.status, 304);
+    /*
+     * ⚠️★ 304 **必须**重复 200 那份校验器（RFC 7232 §4.1：304 MUST 带 200 会带的
+     *    Cache-Control / ETag / …）。而判据是**相等**、不是"存在"：
+     *    "带了一个不同的 ETag"同样让客户端拿不到能用的校验器 —— 那比不带更坏，
+     *    因为它看起来像成功（客户端会拿一个配不上任何表示的标签继续条件请求）。
+     */
+    assert.equal(again.headers.get('etag'), etag, '304 的 ETag 必须与 200 的**相同**');
+    assert.equal(
+      again.headers.get('cache-control'),
+      res.headers.get('cache-control'),
+      '304 的 Cache-Control 必须与 200 的相同',
+    );
+    // 304 不带表示元数据（RFC 7232 §4.1 同一条）：正文都没有，content-type 也不该有
+    assert.equal(again.headers.get('content-type'), null);
   });
 
   it('★ 目录缺字段 ⇒ 500 且**点名**是哪个字段（不是少一条、也不是空数组）', async () => {

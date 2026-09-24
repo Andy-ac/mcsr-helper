@@ -375,19 +375,24 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
    *
    * ⚠️ 这三条与上面 Ranked Seeds 那四条**当初的处境逐字相同**：不是"没有更好的说法"，
    *    而是"更好的说法还没写出来"。消费者是浏览器态的 `/files` 页面
-   *    （整页显示目录 + 引导装桌面版），它由本期 Task 7 的
-   *    `apps/web/src/components/FileUpdatesPanel.tsx` 落地 —— 今天没有任何前端映射
+   *    （整页显示目录 + 引导装桌面版），它由本期 **Task 5** 落地
+   *    （`apps/web/src/routes/Files.tsx` + `apps/web/src/components/FileUpdatesPanel.tsx`
+   *    的浏览器态那一支：`fetch('/api/file-catalog')`）—— 今天没有任何前端映射
    *    认得这三个码。登记在这里是**有意的妥协**（契约测试至少逼着下一个人看见它们），
    *    ⚠️ 而**不是**"某个页面自己处理"：把还没做的事登记成做完了，本仓判过这一类
    *    （上面 `video_exists` 那一段就是同一条）。
-   *    ⇒ Task 7 落地时把它们移进那一栏自己的映射（或 apiErrorText），
+   *    ⇒ **Task 5** 落地时把它们移进那一栏自己的映射（或 apiErrorText），
    *      并照 Ranked Seeds 那个先例把这里改成"文案在别处"。
+   *    ⚠️ 这个栏目**没有单独的映射文件**（与 `rankedErrors.ts` / `trackedErrors.ts` 不同）：
+   *      所以"文案在别处"那条改法要看两处 —— 页面（**Task 5**）与它的渲染自检
+   *      （**Task 7** 的 `apps/web/scripts/filesrender.tsx`，逐格守着两种语言）。
+   *      ⚠️ 别把这两件事混成一句"Task 7 的页面"：建页面的是 Task 5，Task 7 的是自检。
    *
    * ⚠️ 兜底文案（「出错了，请稍后再试。」）在这里是真的不够用：它看不出
    *    "部署没送到"（重跑部署）与"文件内容坏了"（改文件）—— 而那正是服务端
    *    把它们分成三个码的原因。这一段的代价因此是**明面上的**：今天用户看到的是兜底那句。
    */
-  catalog_invalid: '更好的说法在 Task 7 的 /files 页面（FileUpdatesPanel），今天落到兜底文案',
+  catalog_invalid: '更好的说法在 Task 5 的 /files 页面（FileUpdatesPanel），今天落到兜底文案',
   catalog_unavailable: '同上；它要说的是"这次部署没把目录文件送到服务器上"',
   catalog_invalid_json: '同上；它要说的是"目录文件不是 JSON（被手改过或传坏了）"',
 };
