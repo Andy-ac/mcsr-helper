@@ -221,6 +221,29 @@ if [[ "$BOOTSTRAP" == "1" ]]; then
 fi
 
 # ---------- 部署 ----------
+#
+# ⚠️⚠️ 下面那个 heredoc 的定界符 REMOTE **故意不加引号** —— 正文需要本地插值
+#     （$WEB_DIR / $API_DIR / $MCSR_DOMAIN / $MCSR_LEGACY_DOMAIN …；
+#      远端要看见字面 $ 的地方一律写 \$，例如 \$SUDO、\$(id -u)）。
+#
+#     代价：定界符没加引号 ⇒ 本地 bash 会对**整个正文**做参数展开**和命令替换**。
+#     所以：**正文里一个反引号都不许有**（连被反斜杠转义的也不要 ——
+#     转义那种虽然安全，但它让"正文里反引号数必须是 0"这条可核对的判据失效）。
+#     正文注释里要引用一个命令/文件名，就用「」包起来，例如「cmp」「enable --now」。
+#
+#     反例（2026-09-24 那次部署的真实代价）：注释里写成反引号包住的那几个词
+#     —— content/file-catalog.json、services/api/src/routes/fileCatalog.ts、
+#     catalog_unavailable、if [ -f /tmp/resources.json ] —— 全被**本地**当命令跑了：
+#     日志里一串 "command not found"、还有一句
+#     "command substitution: line 226: syntax error: unexpected end of file"，
+#     而**部署照样报成功**（失败都落在注释里，展开结果被丢弃）。
+#     这条特别隐蔽：改一个反引号 = **悄悄改了送给服务器的字节**，
+#     而 bash -n 对本地这份文件永远是 0（它不展开 heredoc），什么都看不出来。
+#
+#     核对办法（正文里的反引号数必须是 0；START/END 现读，别写死行号）：
+#       grep -n '^ssh .*<<REMOTE$' deploy/deploy.sh        # START
+#       awk 'NR>START && NR<END' deploy/deploy.sh | tr -cd '\140' | wc -c   # 0
+#       （\140 是八进制 96 = 反引号；这里故意不写那个字符本身。）
 say "解包并重启服务"
 ssh "${SSH_OPTS[@]}" "$MCSR_SSH_HOST" bash -s <<REMOTE
 set -euo pipefail
@@ -247,14 +270,14 @@ SUDO="\$( [ "\$(id -u)" -eq 0 ] && echo '' || echo 'sudo' )"
 #    和坑 1 一模一样。换域名时它会一直监听旧域名、给旧域名签证书，
 #    而部署脚本报成功。
 #
-#    ⚠️⚠️ 而且这条**不能靠 reload 生效**：\`systemctl reload caddy\` 只是让 Caddy
+#    ⚠️⚠️ 而且这条**不能靠 reload 生效**：「systemctl reload caddy」 只是让 Caddy
 #         重新读 Caddyfile，**进程的环境变量还是旧的**。Environment= 的改动
 #         必须 restart 才会被进程看到。
 #         所以下面用 CADDY_NEEDS_RESTART 标记：只有 drop-in 真的变了才重启
 #         （重启会让 TLS 握手短暂不可用，没必要每次都做）。
 #
 # 5. **旧域名那一段要在 Caddyfile 之前装好**（2026-09-19 开源前搬到下面这一段的）。
-#    Caddyfile 用 \`import /etc/caddy/mcsr-helper-legacy/*.caddy\` 接住它，
+#    Caddyfile 用 「import /etc/caddy/mcsr-helper-legacy/*.caddy」 接住它，
 #    而"glob 匹配不到文件"是**不报错**的 —— 顺序反过来的话，新 Caddyfile 会
 #    先以"没有旧域名"的样子生效，旧链接静默变成死链，而部署脚本照样报成功。
 # ---------------------------------------------------------------------------
@@ -353,17 +376,17 @@ fi
 
 # ---- 视频追踪的 timer（每 10 分钟同步一轮）----
 #
-# 与上面那个 api 单元**完全同一套做法**（\`cmp\` 判断未变就跳过 + install + daemon-reload），
-# 只是这里有两个单元文件，所以用一层循环；\`cmp\` 那一条是本仓既有做法：
+# 与上面那个 api 单元**完全同一套做法**（「cmp」 判断未变就跳过 + install + daemon-reload），
+# 只是这里有两个单元文件，所以用一层循环；「cmp」 那一条是本仓既有做法：
 # 无条件 install 会每次部署都改 mtime，于是"文件变没变"这个信息就没了。
 #
 # ⚠️ 只同步**模板**（track.env.example），真正的凭据是 /etc/mcsr-helper/track.env，
 #    由人在服务器上建一次（照 mail.env 的先例，见 deploy/track.env.example）。
 #    模板里没有任何密钥，所以 0644 是对的；真文件必须是 0600 root。
 #
-# ⚠️ \`enable --now\` **每次都执行**：enable 是幂等的，而"只在首次部署时启用"这件事
+# ⚠️ 「enable --now」 **每次都执行**：enable 是幂等的，而"只在首次部署时启用"这件事
 #    本仓在 Caddyfile 上踩过坑（改了配置永远不生效，而部署脚本报成功）。
-#    ⚠️ 单元文件改了要 \`daemon-reload\` 才会被 systemctl 看到 —— 而且 reload 之后
+#    ⚠️ 单元文件改了要 「daemon-reload」 才会被 systemctl 看到 —— 而且 reload 之后
 #    systemd 会按新的 OnCalendar 重新排期，所以**不需要** restart 那个 timer
 #    （restart 只会把"下一次"的时间重新数一遍）。
 # ⚠️ 锁文件所在的 /run/mcsr-helper-track **不在这里建**：那是单元里的
@@ -404,18 +427,18 @@ fi
 if [ "\$TRACK_UNITS_CHANGED" = "1" ]; then
   \$SUDO systemctl daemon-reload
 fi
-# ⚠️ 这一句**故意不吞错误**（不加 \`|| true\`）：装不上 timer 就等于这一轮的功能
+# ⚠️ 这一句**故意不吞错误**（不加 「|| true」）：装不上 timer 就等于这一轮的功能
 #    一次都不会跑，而那种"部署报成功、功能根本不动"正是本仓反复踩过的坑。
 \$SUDO systemctl enable --now mcsr-helper-track.timer
 echo "    追踪 timer 已启用（systemctl list-timers mcsr-helper-track.timer 看下一次）"
 
 # ---- ranked 直播链接收录的 timer（每 5 分钟一轮）----
 #
-# 与上面那一段**逐字同一个形状**（\`cmp\` 判断未变就跳过 + install + daemon-reload +
-# \`enable --now\`），只有三处不一样，都是这个作业自己的性质：
+# 与上面那一段**逐字同一个形状**（「cmp」 判断未变就跳过 + install + daemon-reload +
+# 「enable --now」），只有三处不一样，都是这个作业自己的性质：
 #   · **没有凭据模板** —— 上游是公开端点、这个作业一个密钥都不用，
-#     所以单元里**故意没有** \`EnvironmentFile\`（理由写在那个 .service 里）；
-#   · **RuntimeDirectory 换成了它自己的名字**（\`/run/mcsr-helper-ranked-streams\`）——
+#     所以单元里**故意没有** 「EnvironmentFile」（理由写在那个 .service 里）；
+#   · **RuntimeDirectory 换成了它自己的名字**（「/run/mcsr-helper-ranked-streams」）——
 #     两个作业的锁不能共用一个目录，否则"同时跑"会被误判成"重叠"；
 #     那一条同样**不在这里建**（tmpfs，重启即空，理由与上面一段逐字相同）；
 #   · 5 分钟而不是 10 分钟（时效：跟的是"现在谁在直播"）。
@@ -438,25 +461,25 @@ if [ "\$RANKED_STREAMS_UNITS_CHANGED" = "1" ]; then
 fi
 # ⚠️ 同上面那一条：这一句**故意不吞错误** —— 装不上 timer 就等于这一轮的功能
 #    一次都不会跑（而它正是这一轮唯一新增的"自动"行为）。
-# ⚠️ 部署不校验 \`dist/ranked-streams.js\` 在不在：整个 dist/ 都在 api.tgz 里，
-#    而"缺文件"的表现是 journal 里一行 \`Cannot find module\` + 退出码非零
+# ⚠️ 部署不校验 「dist/ranked-streams.js」 在不在：整个 dist/ 都在 api.tgz 里，
+#    而"缺文件"的表现是 journal 里一行 「Cannot find module」 + 退出码非零
 #    （**响的**，不是静默的），不值得在这里再加一段跨主机的一致性检查。
 \$SUDO systemctl enable --now mcsr-helper-ranked-streams.timer
 echo "    直播收录 timer 已启用（systemctl list-timers mcsr-helper-ranked-streams.timer 看下一次）"
 
 # ---- 直播状态与观看人数的 timer（每 3 分钟一轮，用户第 10 条）----
 #
-# 与上面两段**同一个形状**（\`cmp\` 判断未变就跳过 + install + daemon-reload +
-# \`enable --now\`），只有两处不同，都是这个作业自己的性质：
+# 与上面两段**同一个形状**（「cmp」 判断未变就跳过 + install + daemon-reload +
+# 「enable --now」），只有两处不同，都是这个作业自己的性质：
 #   · **有凭据** —— 它要 Twitch 的 app access token，所以单元里有
-#     \`EnvironmentFile=-/etc/mcsr-helper/track.env\`（与 ranked-streams **相反**）。
+#     「EnvironmentFile=-/etc/mcsr-helper/track.env」（与 ranked-streams **相反**）。
 #     ⇒ 这一段**不需要**再同步什么凭据模板：那个文件是 track 那一段装的（同一个文件）。
-#   · **RuntimeDirectory 换成它自己的名字**（\`/run/mcsr-helper-live-status\`）——
+#   · **RuntimeDirectory 换成它自己的名字**（「/run/mcsr-helper-live-status」）——
 #     三个作业的锁不能共用一个目录，否则"同时跑"会被误判成"重叠"；
 #     那一条同样**不在这里建**（tmpfs，重启即空，理由与上面两段逐字相同）。
-# ⚠️ 它**依赖一个已经跑过的迁移**（023 给 \`live_channels\` 加三列）。部署顺序是
+# ⚠️ 它**依赖一个已经跑过的迁移**（023 给 「live_channels」 加三列）。部署顺序是
 #    "重启 API（跑迁移）→ 启用 timer"，而 API 那一段在这之前 —— 但即便顺序反过来，
-#    症状也只是那一轮写库失败（\`本轮失败（db）\`，退出码非零、日志可见），
+#    症状也只是那一轮写库失败（「本轮失败（db）」，退出码非零、日志可见），
 #    不会静默；下一轮 API 起来之后自己会好。
 LIVE_STATUS_UNITS_CHANGED=0
 for unit in mcsr-helper-live-status.service mcsr-helper-live-status.timer; do
@@ -494,14 +517,14 @@ if [ -f /tmp/installer.tgz ]; then
   ls -1 /srv/mcsr-helper/releases/ | sed 's/^/      /'
 fi
 
-# ---- 可追踪文件目录（`content/file-catalog.json`）----
+# ---- 可追踪文件目录（「content/file-catalog.json」）----
 #
-# ⚠️ 它**故意不住在下面那个 `if [ -f /tmp/resources.json ]` 里面**，尽管两者都是
+# ⚠️ 它**故意不住在下面那个 「if [ -f /tmp/resources.json ]」 里面**，尽管两者都是
 #    "仓库里的内容文件、每次部署同步"。理由是那一段还包着"\$SUDO 跑 import.js 写库"，
 #    而这个文件**不需要 import**（API 在每次请求时现读，见
-#    `services/api/src/routes/fileCatalog.ts` 的文件头）—— 住进去的话，
+#    「services/api/src/routes/fileCatalog.ts」 的文件头）—— 住进去的话，
 #    只要哪一次 /tmp 里没有 resources.json，这个清单就**不会**被更新，
-#    而表现是接口回 500 `catalog_unavailable`、部署脚本却报成功。
+#    而表现是接口回 500 「catalog_unavailable」、部署脚本却报成功。
 #    两者唯一共享的东西只有 content 目录。
 if [ -f /tmp/file-catalog.json ]; then
   mkdir -p /srv/mcsr-helper/content
@@ -555,12 +578,12 @@ sleep 1
 # 本机自检 API
 curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    API 本机自检通过"
 
-# ⚠️ 这一行必须与上面那条 \`scp\` 的清单**逐项对齐**：漏掉的会以 root 属主的样子
+# ⚠️ 这一行必须与上面那条 「scp」 的清单**逐项对齐**：漏掉的会以 root 属主的样子
 #    留在 /tmp 里（终审 M7 就是这么抓到的 —— 两个新单元没进这一行，而它不报错、
 #    也不影响部署，只有人把两份清单对起来看才发现）。
 #    （2026-09-19 加的两个：seeds.env.example、legacy-domain.caddy。）
 #    （2026-09-24 加的一个：file-catalog.json —— 它与上面 scp 清单里的
-#      `content/file-catalog.json` 是同一个文件的两端。）
+#      「content/file-catalog.json」 是同一个文件的两端。）
 rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/file-catalog.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
 REMOTE
 ok "部署完成"
