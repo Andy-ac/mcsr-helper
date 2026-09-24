@@ -1345,13 +1345,55 @@ async function runUpdate(itemId: string): Promise<UpdateOutcome> {
     const after = await readLocal(targetPath);
     if (!after.ok) throw new Error(`换上新文件之后读不出它：${after.detail ?? after.reason}`);
     const now = Date.now();
+    /*
+     * ⚠️★ 写回时**只带去这次更新拥有的那几个字段**，并且以**当前**记录为基
+     *    —— 绝不用下载**之前**抓到的那份 `binding` 整条写回（评审必修 1）。
+     *
+     * 为什么不能整条写回：下载要几十秒，而这期间用户完全可能改「自动更新」那个勾选
+     * （`setAutoUpdate` 是就地改 `stateFile` 并立刻落盘的，它没有忙守卫）⇒
+     * `{...binding}` 会把那个改动**静默**覆盖回旧值（界面只在 `busyItemId` 非空时禁用勾选框，
+     * 那只是"通常挡住了"，不是保证）。整条写回的失败形态是"用户改了、界面回弹、没人报错"。
+     *
+     * 基从哪里取：**内存里的 `stateFile`**（进程内唯一权威，`setAutoUpdate` / `bind` / `unbind`
+     * 都就地改它并立刻落盘）——不重新 `readStateFile()`，因为磁盘那份是本进程自己的快照，
+     * 从磁盘再读一次只会把"唯一权威"拆成两个来源（单实例锁保证了没有第二个写者）。
+     * 代价：状态文件里 `lastCheckedAt` 这一格**不由更新写**（它是"检查"的事实，
+     * 不在这次更新拥有的字段里）—— 换完文件后那一格显示的还是上一次检查/绑定的时间，
+     * 界面上的"这次读数时间"来自内存里的检查事实，所以看不到这个差别。
+     *
+     * `localPath` 也在拥有的字段里：跟踪的路径要跟着上游的文件名走（上游换名是常态）。
+     */
+    const latestRecord = stateFile.items[item.id];
+    if (!latestRecord) {
+      /*
+       * 下载期间这条被 `unbind` 了 ⇒ **不复活**它（用户明确解绑过），也不写状态文件。
+       * 文件确实换好了 ⇒ 仍按 updated 返回；这一行此后在界面上是"未绑定"。
+       */
+      console.warn('[file-updates] 更新期间这一条被解绑了，不再写回它的记录：', item.id);
+      current = { ...current, items: rebuildItems() };
+      return { status: 'updated', from: fromVersion, to: after.version };
+    }
+    if (latestRecord.localPath !== localPath) {
+      /*
+       * 下载期间这条被**重绑到别的文件**了（`bind` / `bindFolder` 会整条换掉记录）。
+       * ⇒ 用户最新的选择赢：这次更新换掉的那个文件已经不是被跟踪的那一份了，
+       *   所以**一个字段都不写**（写 localPath 等于把用户的重新选择顶掉；
+       *   写 version/hash 又是在描述一个不再被跟踪的文件）。只留一行日志。
+       * 文件确实换好了 ⇒ 仍按 updated 返回。
+       */
+      console.warn(
+        '[file-updates] 更新期间这一条被重绑到别的文件了，不再写回它的记录：',
+        item.id,
+        `${localPath} → ${latestRecord.localPath}`,
+      );
+      current = { ...current, items: rebuildItems() };
+      return { status: 'updated', from: fromVersion, to: after.version };
+    }
     stateFile.items[item.id] = {
-      ...binding,
-      // 跟踪的路径跟着上游的文件名走（上游换名是常态：5.8.22 → 5.8.26）
+      ...latestRecord,
       localPath: targetPath,
       localVersion: after.version,
       localSha512: await sha512OfFile(targetPath),
-      lastCheckedAt: now,
       lastUpdateAt: now,
       lastUpdateFrom: fromVersion,
       lastUpdateTo: state.latestVersion,
@@ -1398,13 +1440,59 @@ async function runUpdate(itemId: string): Promise<UpdateOutcome> {
   }
 }
 
-/** IPC 那一层：失败要能被页面看见 ⇒ 翻成 reject（`ipcMain.handle` 会把消息带回去）。 */
+/**
+ * IPC 那一层：失败要能被页面看见 ⇒ 翻成 reject（`ipcMain.handle` 会把消息带回去）。
+ *
+ * ⚠️ 入口先过 `assertNotBusy()`：**批量进行中**（`bulkRunning`）也要拒绝，
+ *    不能只在"某一条正在写盘"时拒绝 —— 见 `assertNotBusy` 的注释。
+ */
 async function update(itemId: unknown): Promise<FileUpdatesState> {
   const item = requireItem(itemId);
+  assertNotBusy();
   const outcome = await runUpdate(item.id);
   if (outcome.status === 'failed') throw new Error(outcome.message);
   // skipped（用户自己按了"取消"）不算错误：状态原样返回，那一行还是"可更新"
   return current;
+}
+
+/**
+ * 批量（`updateAll`）是否在进行中 —— **跨条目**持续到整个批量结束。
+ *
+ * ⚠️★ 为什么需要它（评审必修 2）：`busyItemId` 只表示"**某一个条目**正在写盘"，
+ *    它在条目与条目之间是 `null`，而 `updateAll` 是一串 `runUpdate` ⇒ 那个空档里
+ *    入口守卫（只看 `busyItemId`）会**放行**第二次点击 / 第二次 `updateAll()`
+ *    —— 也就是"守卫只靠调用方（界面）自觉"的形状。
+ *    ⇒ 批量期间用一个持续到结束的标记把它挡住（界面上的 `pending` 是第二层，不是唯一一层）。
+ */
+let bulkRunning = false;
+
+/**
+ * 入口守卫：**单条与批量都不许在另一个写盘流程进行中进来**。
+ *
+ * ⚠️ 两种拒绝的文案不同，因为用户看到的动作不同：
+ *   · `bulkRunning` ⇒ "正在一键更新"（第三次点击/单条更新都撞在这上面）；
+ *   · `busyItemId` 非空 ⇒ "正在更新中：<哪一条>"（两次单条更新撞在一起）。
+ * 两者**都是立刻拒绝**：不排队、也不半执行（排队会让用户以为点了没反应）。
+ */
+function assertNotBusy(): void {
+  if (bulkRunning) throw new Error('正在一键更新（一次只写一个文件）—— 等它跑完再试');
+  if (current.busyItemId !== null) {
+    throw new Error(`正在更新中：${current.busyItemId}（一次只写一个文件）`);
+  }
+}
+
+/**
+ * 让出一次事件循环。
+ *
+ * ⚠️ 两个用途，都是真的：
+ *   ① 两次 27 MB 下载之间、以及批量起手时，主进程能处理积压的 IPC / 渲染消息
+ *      （长时间只跑下载会让窗口看起来卡住）；
+ *   ② 它让"批量进行中、但没有任何条目正在写盘"那一刻**真的可达**（外部消息能落在那里）
+ *      —— 也就是评审必修 2 说的那个空档。⇒ `bulkRunning` 守的不再是一个理论上不可达的状态。
+ * 代价：批量比"一条接一条不停手"多几个事件循环轮次（微秒级）。
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /**
@@ -1418,11 +1506,11 @@ async function update(itemId: unknown): Promise<FileUpdatesState> {
  * ⚠️ 另一种"没更新"会落进 `failed`：用户在覆盖确认框里按了"取消"。`lastRun` 只有
  *    `updated` / `failed` 两栏（T1 定死的形状），没有"跳过"的位置 ⇒ 它带着理由进 `failed`，
  *    汇总会说"失败 1"。代价：那句"失败"其实是用户自己的选择；要分得更细得改契约。
+ * ⚠️ 整个批量期间 `bulkRunning` 为真（`finally` 里清）⇒ 这期间任何 `update()` /
+ *    第二次 `updateAll()` 都被**立刻拒绝**（不是排队，也不是半执行）。
  */
 async function updateAll(): Promise<FileUpdatesState> {
-  if (current.busyItemId !== null) {
-    throw new Error(`正在更新中：${current.busyItemId}（一次只写一个文件）`);
-  }
+  assertNotBusy();
   const targets = current.items.filter(
     (v) =>
       v.binding !== null &&
@@ -1432,14 +1520,22 @@ async function updateAll(): Promise<FileUpdatesState> {
   );
   const updated: string[] = [];
   const failed: { itemId: string; message: string }[] = [];
-  for (const view of targets) {
-    const outcome = await runUpdate(view.item.id);
-    if (outcome.status === 'updated') updated.push(view.item.id);
-    else failed.push({ itemId: view.item.id, message: outcome.message });
+  bulkRunning = true;
+  try {
+    await yieldToEventLoop();
+    for (const view of targets) {
+      const outcome = await runUpdate(view.item.id);
+      if (outcome.status === 'updated') updated.push(view.item.id);
+      else failed.push({ itemId: view.item.id, message: outcome.message });
+      // 条目之间也放一次（见 yieldToEventLoop 的注释）
+      await yieldToEventLoop();
+    }
+    current = { ...current, lastRun: { at: Date.now(), updated, failed } };
+    broadcast();
+    return current;
+  } finally {
+    bulkRunning = false;
   }
-  current = { ...current, lastRun: { at: Date.now(), updated, failed } };
-  broadcast();
-  return current;
 }
 
 // ---------------------------------------------------------------------------
