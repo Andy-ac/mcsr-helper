@@ -48,7 +48,18 @@ Environment=NODE_OPTIONS=--disable-warning=ExperimentalWarning
 Environment=MCSR_PUBLIC_ORIGIN=https://mcsrhelper.com
 Environment=MCSR_MAIL_DRIVER=resend
 Environment=MCSR_MAIL_FROM=noreply@mail.mcsrhelper.com
-Environment=MCSR_MAIL_FROM_NAME=MCSR Helper
+# ⚠️⚠️ 值里有空格 ⇒ **双引号是必须的，不是风格问题**。
+#     systemd 把 Environment= 的整行按空白切成若干个赋值，所以不加引号的
+#     `Environment=MCSR_MAIL_FROM_NAME=MCSR Helper` 会被切成两段：
+#       · MCSR_MAIL_FROM_NAME=MCSR   —— 生效（发件人名字被**静默截断**成 MCSR）
+#       · Helper                     —— 没有等号，systemd 丢掉它，并在**每一次
+#                                       daemon-reload / restart** 往 journal 里写
+#                                       "Invalid environment assignment, ignoring: Helper"
+#     代价：生产上的发件人名字一直显示「MCSR」而不是「MCSR Helper」，
+#     而部署自检一个字都不会说（它只查 systemctl is-active 与本机 /api/health）。
+#     ⇒ 部署后必须回读一次：journalctl -u mcsr-helper-api | grep 'Invalid environment'
+#       必须是**空**的；再发一封真邮件确认收件人看到的是完整名字。
+Environment="MCSR_MAIL_FROM_NAME=MCSR Helper"
 
 # ⚠️⚠️ 密钥**不在这里**，它在服务器上的独立文件：
 #         /etc/mcsr-helper/mail.env     （chmod 600，root 所有）
