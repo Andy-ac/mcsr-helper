@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { Layout } from '@/components/Layout';
 import { Account } from '@/routes/Account';
+import { Files } from '@/routes/Files';
 import { Home } from '@/routes/Home';
 import { Login } from '@/routes/Login';
 import { NotFound } from '@/routes/NotFound';
@@ -196,6 +197,18 @@ export default function App() {
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/reset-password" element={<PasswordReset />} />
           <Route path="/me" element={<Account />} />
+          {/*
+            ★ `/files`（2026-09-24）—— 「文件更新」那一栏。**必须真是一条路由**：
+              侧栏那一行是可点的，而 `check:home`（homerender）有一条守卫读的正是
+              这个文件里有没有 `path="/files"`（"可点的栏目点进去是 404"就靠它）。
+            ⚠️ 不懒加载，形状照 `/me`：这一页本身很小（一个容器 + 一句说明 +
+              桌面态那份状态），拆出去换来的是多一次往返。
+            ⚠️★ 这一页在**浏览器里**与**桌面壳里**是同一份代码、两条数据来源：
+              桌面壳走 `window.mcsr`（`useFileUpdates()` 里的订阅 + 首拉），
+              浏览器走 `GET /api/file-catalog` —— **桌面壳里那一条 HTTP 请求不发**
+              （主进程自己会拉目录，两份来源只会给出两个会漂的答案）。
+          */}
+          <Route path="/files" element={<Files />} />
           {/*
             「我的提交」是审核管线的闭环：驳回理由唯一的读者就是作者。
             ⚠️ 它必须排在 `/me` 之后不影响匹配（`/me` 是精确路径），

@@ -74,6 +74,15 @@ export const NAV_SECTIONS = [
    *    以及 `/ranked` 路由（App.tsx 里必须真有，homerender 有一条守卫）。
    */
   { to: '/ranked', labelKey: 'nav.ranked', block: 'ranked', milestone: '' },
+  /*
+   * 「文件更新」（2026-09-24）—— 放在「我的」之前：它是**工具**，不属于社区内容。
+   *
+   * ⚠️ `block: 'files'` 这个短名同时连着四样东西（改它等于同时改四处）：
+   *    侧栏小方块的 CSS（`.sidebar__block--files`）、首页那一句说明（`home.desc.files`）、
+   *    词条命名空间（`files.*`）、以及 `/files` 路由（App.tsx 里必须真有，homerender 有守卫）。
+   * ⚠️ 真正的本地文件能力**只在桌面版里**：浏览器里这一页是"看目录 + 引导装桌面版"。
+   */
+  { to: '/files', labelKey: 'nav.files', block: 'files', milestone: '' },
   // 「我的」在 M2 就启用了：账号页本身已经能用（看得清验证状态、能重发验证邮件、
   // 能退出登录）。M5 会往它上面叠个人主页、MC 绑定和关注列表。
   { to: '/me', labelKey: 'nav.profile', block: 'profile', milestone: '' },

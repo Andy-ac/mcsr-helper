@@ -90,6 +90,17 @@ export const en: TranslationSchema = {
      *   (the same note sits on `nav.shares`).
      */
     ranked: 'Ranked now',
+    /*
+     * ★ "File updates" (2026-09-24) — checking and updating local files, a
+     *   **desktop-only** capability.
+     * ⚠️ Its sidebar position is just **above** "Profile" (`lib/nav.ts`), so this
+     *   entry sits between `ranked` and `profile` too: the names (here) and the
+     *   order (`NAV_SECTIONS`) are two tables, kept in the same reading order so
+     *   the next person adding a section can see where it goes.
+     * ⚠️ Not "Local files" / "Mods": the page covers the bound mod jars **and**
+     *   the catalog, and "file updates" is the phrase the section is built on.
+     */
+    files: 'File updates',
     profile: 'Profile',
     admin: 'Admin',
     submit: 'Submit',
@@ -161,6 +172,16 @@ export const en: TranslationSchema = {
        */
       ranked:
         'Who is playing right now: live matches, online count, leaderboards and the weekly race.',
+      /*
+       * ⚠️ This line is required by `block: 'files'` in `lib/nav.ts` (the home
+       *    page looks each row up by `home.desc.<block>`; without it the page
+       *    prints a raw key and `check:home` goes red).
+       * ⚠️ The wording says "are current" and **avoids "auto-update"**: writing
+       *    files always takes a click, and that phrase reads as "it will change
+       *    my files by itself" (the page's `files.autoHint` exists to clear that
+       *    up, and a one-line home row has no room to do it).
+       */
+      files: 'Check whether your local mods are current',
       profile:
         'Your account: sign-in state, email verification, what you posted and what you saved.',
     },
@@ -3964,5 +3985,167 @@ export const en: TranslationSchema = {
       enterEndPortal: 'end.enter_end_portal',
       killDragon: 'end.kill_dragon',
     },
+  },
+  /**
+   * "File updates" `/files` (2026-09-24) — the whole page's strings.
+   *
+   * ===========================================================================
+   * ⚠️★ This section has to land with the page, and it serves a table that is
+   * **the next task's** work
+   * ===========================================================================
+   * The table (`components/FileUpdateTable.tsx`) is Task 6 of the 2026-09-24 plan,
+   * and **that task's file list does not include the dictionaries** (it only
+   * touches `FileUpdateTable.tsx` / `FileUpdatesPanel.tsx` / `styles.css`) ⇒ every
+   * word the table shows can only come from Task 5.
+   * Cost: `colFile` / `colLocal` / `colAuto` … have **no render point** when Task 5
+   * lands. The repo's "a key with no consumer does not stay" rule is read here as
+   * "the consumer is the very next task, and that task cannot edit this file" —
+   * so do not delete them on the "nobody uses it" instinct.
+   *
+   * ===========================================================================
+   * ⚠️★ Two places differ from the plan's table, neither of them a matter of taste
+   * ===========================================================================
+   * ① The plan's Chinese `autoHint` / `browserOnly` carry `**…**`. In this repo
+   *    `**` is a **render marker** (`em()` in `components/Emphasis.tsx`): a marked
+   *    value **must** be rendered through `em()`, or the user sees two literal
+   *    asterisks, and both of these are plain sentences rendered as-is. The
+   *    controller ruled on 2026-09-24 to drop the pair (the same note sits on
+   *    `calendar.seriesDeleteNone`).
+   * ② The plan's table writes interpolation with **single braces**
+   *    (`{count}` / `{time}` / `{reason}` …). i18next does **not** substitute
+   *    single braces — it prints them. That is not style: a test guards it
+   *    ("no single-brace interpolation in either dictionary" in
+   *    `services/api/src/i18n-keys.test.ts`), and it really happened once.
+   *    ⇒ All of them are `{{…}}` here. **Not one word of wording changed.**
+   */
+  files: {
+    title: 'File updates',
+    intro: 'Compare local files with the latest upstream versions, and update them when you click.',
+    /*
+     * ⚠️★ This is a **disclaimer**, not decoration: the checkbox is labelled
+     *    "Auto", and it does **not** write anything (T1's `FileBinding.autoUpdate`
+     *    only means "check on launch and highlight"). Without this sentence the
+     *    user reads it as "it will change my mods folder by itself" — and that
+     *    misunderstanding only surfaces after their files have been replaced.
+     */
+    autoHint:
+      '"Auto" only means it checks on launch and highlights. Files are written only when you click.',
+    colFile: 'File',
+    colLocal: 'Local',
+    colLatest: 'Latest',
+    colAuto: 'Auto',
+    colActions: 'Actions',
+    bind: 'Choose file',
+    rebind: 'Choose again',
+    bindFolder: 'Choose mods folder',
+    update: 'Update',
+    updateAll: 'Update all',
+    check: 'Check',
+    checking: 'Checking…',
+    upToDate: 'Up to date',
+    outdated: 'Update available',
+    unbound: 'Not bound',
+    missing: 'File missing',
+    /*
+     * ⚠️ The parenthetical is not padding: renaming a jar to `.jar.disabled` only
+     *    stops the game from loading it — the file is still there and unchanged.
+     *    "Disabled" alone reads as "we turned it off".
+     */
+    disabled: 'Disabled (the game will not load it)',
+    /*
+     * ⚠️★ Not the same statement as `outdated`, and the two must not be merged
+     *    into one "an update exists": this version number does **not** exist
+     *    upstream (a self-built or patched jar) ⇒ "Update" may replace the user's
+     *    own build. Button wording and badge wording are kept apart on purpose
+     *    (the rule lives on `compareLocalToLatest`).
+     */
+    unknownLocal: 'Upstream has no such version',
+    /** Only for a **real** read failure (local read / upstream unreachable). "Never checked" is `notChecked`. */
+    error: 'Failed',
+    /*
+     * ★★ `unchecked` (bound, file present, but **no reading yet in this process**)
+     *    borrows this one.
+     *
+     * ⚠️★ Why it is not a second string: it says "there is no reading yet", and the
+     *    page already says exactly that in **one other place** — the metadata line
+     *    above the list (`lastChecked` pairs with this one) prints it whenever
+     *    `state.lastCheckedAt === null`. Same sentence, so a second key with the
+     *    same value would be two truths waiting to drift (this repo has deleted
+     *    duplicate entries for exactly that).
+     * ⚠️ And it must **never** be folded into `error`: `unchecked` exists precisely
+     *    because saying "failed" there is a lie — nothing failed, nothing was read.
+     */
+    notChecked: 'Not checked yet',
+    /** ⚠️ `{{time}}` is the reading time **within this process** (the panel formats it with `formatClock()`). */
+    lastChecked: 'Last checked: {{time}}',
+    /*
+     * ★ The next two are **not in the plan's table**; they cover `FileItemView.lastKnownLatest`,
+     *   the field T1/T4 added in their fix rounds (spec §8).
+     *
+     * ⚠️★ Why two separate strings: the `error` row says "this attempt failed", and it
+     *    still owes the user "so what version did we last see, and when". When
+     *    `lastKnownLatest` is `null` (cold start plus an unreachable upstream) there is
+     *    **no version to report** ⇒ the honest move is to say so, never to borrow a
+     *    version number from somewhere else.
+     * ⚠️ Nor can it borrow `state.latestVersion`: the `error` variant of
+     *    `FileItemState` has **no** `latestVersion` field at all (only `current` /
+     *    `outdated` / `unknown-local` carry it — see `fileUpdates.ts`).
+     */
+    lastKnownLatest: 'Last read {{version}} ({{time}})',
+    lastKnownNone: 'No successful read of the latest version yet this session.',
+    /*
+     * ★ The sentence for a **failed action** (`bind` / `update` / `updateAll` rejecting).
+     *
+     * ⚠️ Also absent from the plan's table, and it has **nowhere else to live**:
+     *    `FileUpdatesState` has no field for "how this operation went" (T4's
+     *    `apps/desktop/src/file-updates.ts` says so in the `bind()` note — the reject
+     *    message is the only channel back to the renderer). Catch and display both live
+     *    in the handler wrapper in `components/FileUpdatesPanel.tsx`.
+     * ⚠️ Cancelling the file dialog is **not** a failure (the main process returns the
+     *    unchanged state), so every message that shows up here is a real failure.
+     * ⚠️ Cost: `{{message}}` is the **main process's own wording**, which is Chinese ⇒
+     *    this line mixes languages in the English UI. Same accepted cost as the `message`
+     *    on an `error` row (Task 6 is told to print that reason verbatim).
+     */
+    actionFailed: 'That step did not work: {{message}}',
+    confirmUpdateAll: 'Update {{count}} file(s) to the latest version?',
+    busy: 'Updating {{name}}…',
+    runSummary: 'Updated {{ok}}, failed {{failed}}',
+    /*
+     * ⚠️★ This explanation **must** appear on the page (`routes/Files.tsx`); it is not
+     *    optional: a browser user is looking at a table full of "Not bound" rows, and
+     *    their first thought is "why is nothing clickable", not "I need the desktop app".
+     *    This sentence is the answer to the first thought.
+     */
+    browserOnly:
+      'Local file access happens in the desktop app only — a web page cannot touch your disk.',
+    /*
+     * ⚠️★ `{{reason}}` is filled by **different people on the two paths**; do not read it
+     *    as one thing:
+     *   · **browser**: the page fetches `/api/file-catalog` itself, and on failure fills in
+     *     the server's machine-readable code (`catalog_unavailable` / `catalog_invalid` /
+     *     `catalog_invalid_json`, plus `problems` when present). ⚠️ Those three codes have
+     *     no better wording yet (a Task 7 follow-up), so the user sees the code itself —
+     *     reporting the real reason beats replacing it with a generic "something failed".
+     *   · **desktop**: `FileUpdatesState.catalogError` is written by the main process and
+     *     **is already a complete sentence** (T4 prefixes it with 「目录拉取失败：」) ⇒ the
+     *     panel prints it **as is** and does **not** wrap this key around it (that would
+     *     print 「目录拉取失败：目录拉取失败：…」).
+     * ⇒ Cost: the sentence has two sources and two render points (`routes/Files.tsx` and
+     *   the panel); both say why.
+     */
+    catalogError: 'Could not load the catalog: {{reason}}',
+    /*
+     * ★ Not in the plan's table: what to say when **the desktop shell's half of the state
+     *   cannot be read at all**.
+     *
+     * ⚠️ A different thing from `catalogError`: a catalog failure is the main process
+     *    **handing back a state that carries the reason**; this one is "we never even got
+     *    that state" (nobody answers the IPC channel — the silent failure mode
+     *    `shared/desktop.ts` warns about in its header). Without it, that failure sits on
+     *    "Loading…" forever, which is a **lie** (the note in `ShareIntro` records the same
+     *    rule: if you cannot tell "slow" from "gone", you are lying).
+     */
+    stateError: 'Could not read the local state: {{reason}}',
   },
 };

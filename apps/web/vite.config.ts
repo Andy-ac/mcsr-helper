@@ -107,6 +107,31 @@ export default defineConfig({
       '@mcsr/shared/auth': resolvePath('../../packages/shared/src/auth.ts'),
       '@mcsr/shared/permissions': resolvePath('../../packages/shared/src/permissions.ts'),
       '@mcsr/shared/desktop': resolvePath('../../packages/shared/src/desktop.ts'),
+      /*
+       * ⚠️★ 这一条是「文件更新」（2026-09-24）加的 —— 上面那四段注释说的坑
+       *    **第五次**发生了，而这一次是在**写界面之前**补上的（T1 只改了
+       *    `packages/shared/package.json` 的 `exports`，本文件没跟上）。
+       *
+       *    `routes/Files.tsx` / `components/FileUpdatesPanel.tsx` 今天引的
+       *    `FileUpdatesState` / `FileItemView` / `FileCatalog` 都是**类型**
+       *    （`import type`，编译期就被擦掉）⇒ **今天它其实炸不了**。
+       *    而 Task 6 的表格要引 `needsUpdate`（那是**值**）⇒ 那一步会撞上它；
+       *    而 Task 6 的文件清单里**没有这个文件**（它只改三个 web 文件），
+       *    所以别名只能在这里补 —— 补晚一步，Task 6 的正确改动会让
+       *    `check:all` 的 `check-shared-aliases` 变红，而红点在它的范围外。
+       *
+       *    不做这一步的表现与前四次逐字相同：`@mcsr/shared/fileUpdates` 被裸包名
+       *    那条吃成 `.../src/index.ts/fileUpdates`，报
+       *      `Could not load ../../packages/shared/src/index.ts/fileUpdates`，
+       *    **整个 `/files` 页在浏览器里一个字节都渲染不出来**，而
+       *    `pnpm -w check`（走包的 exports）与渲染自检（tsx 不过 Vite）都看不见。
+       *
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       *    （`scripts/check-shared-aliases.mjs` 就是为这一条存在的，它第 1/2/3 条
+       *    查的正是"有自己的一条"与"排在裸包名之上"。）
+       */
+      '@mcsr/shared/fileUpdates': resolvePath('../../packages/shared/src/fileUpdates.ts'),
       '@mcsr/shared/review': resolvePath('../../packages/shared/src/review.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
