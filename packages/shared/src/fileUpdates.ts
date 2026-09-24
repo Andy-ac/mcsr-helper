@@ -129,7 +129,7 @@ export function jarFileNameFor(version: ModrinthVersion): string | null {
  *    ⚠️ 但"跳号"这件事**单独不构成判据**：号与日期同序时，比号大小的实现也答对
  *      （测试里"上游真的跳过了号"那一条正是这种情况，它区分不了两种实现）。
  *      能咬住"比版本号"的是**回滚发版**那一条（号更小、日期更新）。
- *    任何 semver 比较在"号被跳过"或"回滚发版"时都会给出错误的答案，而错误的答案在这里的
+ *    任何 semver 比较在**回滚发版**时都会给出错误的答案，而错误的答案在这里的
  *    表现是"让人从新版退回旧版"，比不更新更糟。
  */
 export function pickLatestVersion(

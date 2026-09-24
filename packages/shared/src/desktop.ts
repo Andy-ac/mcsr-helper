@@ -9,7 +9,16 @@
  * 那个判断的键名（`window.mcsr`）以及更新状态的全部取值，
  * 如果三处各写一份，改一处漏一处的结果是"更新提示永远不出现"——
  * 而这种失效完全静默，没有任何报错。
+ *
+ * 2026-09-24：「本地文件自动更新」（下面的 `fileUpdates`）也走**这条**通道，
+ * 不是另开一个注入点。理由与上面完全同型，而且失效面更大：
+ * 它是**一组方法**，每个方法各自对应一条通道名（`mcsr:fileupdates-*`），
+ * 三处各写一份的话，写错一个通道名或漏掉一个方法的表现同样是"点了没反应"，
+ * 同样不报错 —— 而它比更新提示多一层风险：**它会写盘**。
+ * ⇒ 契约留在这里、`preload.ts` 只做逐方法的转发，是为了让"主进程实现了什么"
+ *   与"页面能调到什么"在类型层面**必须**一致，而不是靠两处人眼对齐。
  */
+import type { FileUpdatesState } from './fileUpdates';
 
 // ---------------------------------------------------------------------------
 // 更新状态
@@ -73,6 +82,30 @@ export interface DesktopBridge {
     download(): void;
     /** 退出应用并安装已经下载好的版本 */
     install(): void;
+  };
+
+  /**
+   * 本地文件自动更新。
+   *
+   * ⚠️★ 参数纪律（读 `preload.ts` 文件头那一段再改这里）：
+   *    渲染进程加载的是**远程网页**，所以这里**只有 id 与布尔**，
+   *    **永远不接受路径** —— 路径只存在于主进程自己的状态文件里。
+   */
+  readonly fileUpdates: {
+    getState(): Promise<FileUpdatesState>;
+    onStatus(callback: (state: FileUpdatesState) => void): () => void;
+    /** 弹**原生**对话框让用户选一个 .jar；主进程会核对里面的 modId */
+    bind(itemId: string): Promise<FileUpdatesState>;
+    /** 选一个 mods 目录，按 fabric.mod.json 的 id 自动匹配能对上的条目 */
+    bindFolder(): Promise<FileUpdatesState>;
+    unbind(itemId: string): Promise<FileUpdatesState>;
+    /** 只表示"启动时检查并高亮"；**写盘永远要一次点击** */
+    setAutoUpdate(itemId: string, on: boolean): Promise<FileUpdatesState>;
+    /** 只读检查（读本地版本 + 查 Modrinth + 比对），零写盘零下载 */
+    check(force?: boolean): Promise<FileUpdatesState>;
+    /** ★ 唯一会写盘的动作（下载 → 校验 → 替换），只在用户点击时调用 */
+    update(itemId: string): Promise<FileUpdatesState>;
+    updateAll(): Promise<FileUpdatesState>;
   };
 }
 

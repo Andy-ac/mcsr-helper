@@ -30,7 +30,8 @@
   },
   "dependencies": {
     "@mcsr/shared": "workspace:*",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
