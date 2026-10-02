@@ -661,7 +661,25 @@ export interface StateFileV2 {
     string,
     { path: string; gameVersion: string | null; autoUpdate: boolean; boundAt: number }
   >;
-  prefs: { bulkChannel: Channel; catalogGameVersion: string; tagFilter: readonly string[] };
+  prefs: {
+    bulkChannel: Channel;
+    catalogGameVersion: string;
+    /**
+     * 这一格是**用户显式选过**第一部分的游戏版本吗（**Ruling 37**，2026-10-03 判修）。
+     *
+     * 为什么需要它：`catalogGameVersion` 的默认值来自"某个已绑定文件夹推断出的版本"
+     * （spec §6.8：默认取已绑定文件夹的版本、取不到 `1.16.1`），而那是一次**自动采纳**；
+     * 用户自己在下拉框里选过之后，spec §6.8 要的是"**按机器记住**"。
+     * 只靠 `catalogGameVersion` 一格分不出这两种情形（用户可能恰好选了与推断值相同的那一版），
+     * 于是每次启动都会再"自动采纳"一次 —— 表现是**用户的显式选择被静默覆盖**。
+     * ⇒ 显式与否单独记一格：**只有 `setCatalogGameVersion` 会把它置 `true`**，
+     *   而主进程只在它为 `false` 时才自动采纳文件夹推断出的版本。
+     * ⚠️ 缺这一格的旧文件（老 v2 / v1 迁移）默认 `false` ⇒ **下次启动仍会采纳一次**
+     *   （Ruling 37 明确接受这一点：那时"用户选过"这件事从来没被记下来过）。
+     */
+    catalogGameVersionChosen: boolean;
+    tagFilter: readonly string[];
+  };
 }
 
 /** 是不是一个"普通对象"（`null` / 数组 / 标量都不是）。坏输入不抛，所以到处要用它。 */
@@ -693,7 +711,13 @@ export function migrateState(raw: unknown): StateFileV2 {
     items: isRecord(record?.items) ? record.items : {},
     catalogBindings: {},
     folders: {},
-    prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
+    prefs: {
+      bulkChannel: 'origin',
+      catalogGameVersion: '1.16.1',
+      // 迁移出来的这份**不能**声称"用户选过"（Ruling 37：没记录过就是没记录过）
+      catalogGameVersionChosen: false,
+      tagFilter: [],
+    },
   };
 }
 

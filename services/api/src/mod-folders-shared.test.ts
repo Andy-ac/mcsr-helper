@@ -340,6 +340,12 @@ test('★ 状态迁移：v1 → v2 只加字段、不删内容；再跑一次不
   assert.deepEqual(v2.folders, {});
   assert.equal(v2.prefs.bulkChannel, 'origin');
   assert.equal(v2.prefs.catalogGameVersion, '1.16.1');
+  /*
+   * ★ Ruling 37（2026-10-03 判修）：迁移出来的这一份**不许**声称"用户选过游戏版本"。
+   *   它如果默认成 `true`，主进程就再也不会去采纳已绑定文件夹推断出的版本
+   *   （spec §6.8 的默认值）—— 全新安装的机器会永远停在 `1.16.1`。
+   */
+  assert.equal(v2.prefs.catalogGameVersionChosen, false);
   assert.deepEqual(v2.prefs.tagFilter, []);
   assert.deepEqual(migrateState(v2), v2);
   /*
