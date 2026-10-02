@@ -407,6 +407,46 @@ describe('版本主体与文件名', () => {
     assert.equal(originFileNameOf('https://x/y/a%3Fb.jar'), null);
     assert.equal(originFileNameOf('这不是 URL'), null);
   });
+
+  it('★ Windows 保留设备名一律拒绝（`NUL.jar` 就是 `NUL`：打开它不写字节，而调用方可能报"已安装"）', () => {
+    for (const name of [
+      'NUL.jar',
+      'CON.jar',
+      'AUX.jar',
+      'PRN.jar',
+      'COM1.jar',
+      'LPT1.jar',
+      'nul.jar',
+    ]) {
+      assert.equal(originFileNameOf(`https://x/y/${name}`), null, `${name} 必须被拒绝`);
+    }
+    // ★ 正向对照：`CONSOLE.jar` **不是**保留名（`(\.|$)` 那个边界）。没有这一条的话，
+    //    "把带字母的名字全拒了"也能让上面全绿。
+    assert.equal(originFileNameOf('https://x/y/CONSOLE.jar'), 'CONSOLE.jar');
+  });
+
+  it('★ 名字长度上限 255（超了要在这里给 `null`，而不是让 NTFS 去报错）', () => {
+    const atLimit = `${'a'.repeat(255 - 4)}.jar`;
+    const overLimit = `${'a'.repeat(256 - 4)}.jar`;
+    assert.equal(atLimit.length, 255);
+    assert.equal(overLimit.length, 256);
+    assert.equal(originFileNameOf(`https://x/y/${atLimit}`), atLimit);
+    assert.equal(originFileNameOf(`https://x/y/${overLimit}`), null);
+  });
+
+  it('★ 退化基名（空干名 / 只有点与空白）一律拒绝：`.jar` 是隐藏文件，两条 release 还会撞同一个落盘路径', () => {
+    for (const name of ['.jar', '..jar', ' .jar', '  .jar']) {
+      assert.equal(originFileNameOf(`https://x/y/${name}`), null, `${name} 必须被拒绝`);
+    }
+    // ★ 正向对照：干名只要有内容就照常通过（拒绝的是"空干名"，不是"以点开头"）。
+    assert.equal(originFileNameOf('https://x/y/.hidden.jar'), '.hidden.jar');
+  });
+
+  it('★ 格式控制符（bidi 之类）拒绝：这个名字要显示给用户 ⇒ a + U+202E + b.jar 是视觉欺骗', () => {
+    assert.equal(originFileNameOf('https://x/y/a\u202eb.jar'), null);
+    // ★ 正向对照：同一个位置换成一个普通字符 ⇒ 照常通过（证明拒的是那个字符，不是整个名字）。
+    assert.equal(originFileNameOf('https://x/y/aXb.jar'), 'aXb.jar');
+  });
 });
 
 describe('判定（只升不降）', () => {
@@ -459,7 +499,26 @@ describe('判定（只升不降）', () => {
     assert.equal(needsUpdate(verdict), false);
   });
 
-  it('★ `needsUpdate` 只认 outdated（把"不等就更新"写进来会让 newer 也进批量）', () => {
+  it('★★ 非数字版本段**不排先后**（`HD_U_F10` vs `HD_U_F9` 上 localeCompare 说"本地更旧" ⇒ 会把新 jar 换成旧的）', () => {
+    const r = release('HD_U_F9');
+    assert.equal(compareLocalToRelease('b'.repeat(128), 'HD_U_F10', r), 'different-build');
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), 'HD_U_F10', [r])), false);
+    assert.equal(compareLocalToRelease('b'.repeat(128), 'HD_U_F9', r), 'different-build');
+    // ★ 正向对照：纯数字主体照样排得动 ⇒ 上面的 different-build 不是"什么都判 different-build"。
+    assert.equal(compareLocalToRelease('b'.repeat(128), '2.7.1', release('2.7.2')), 'older');
+  });
+
+  it('★ `manual` 的 release 即使判成 `older` 也不进批量（spec §8：它只给"打开原网页"）', () => {
+    const auto = release('2.7.2');
+    const manual = { ...auto, download: 'manual' as const };
+    const verdict = judgeRelease('b'.repeat(128), '2.7.1', [manual]);
+    assert.equal(verdict.kind, 'older');
+    assert.equal(needsUpdate(verdict), false);
+    // ★ 正向对照：同一形状、`download` 是 `auto` ⇒ 进批量（证明这道闸认的是 download，不是别的）。
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), '2.7.1', [auto])), true);
+  });
+
+  it('★ `needsUpdate` 只认 older（把"不等就更新"写进来会让 newer 也进批量）', () => {
     const verdicts = [
       judgeRelease('a'.repeat(128), '2.3+1.16.1', [release('2.3+1.16-1.16.1', 'a'.repeat(128))]),
       judgeRelease('b'.repeat(128), '2.3+1.16.1', [release('2.3+1.16-1.16.1')]),

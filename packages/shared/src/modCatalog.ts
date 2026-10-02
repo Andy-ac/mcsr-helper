@@ -445,9 +445,25 @@ export function versionBodyOf(version: string): string {
   return plus === -1 ? version : version.slice(0, plus);
 }
 
-/** Windows 上非法的文件名字符 + 控制字符。 */
+/** Windows 上非法的文件名字符 + 控制字符 + **格式控制符**（bidi 覆盖之类，名字要显示给人看）。 */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 控制字符正是**要被排除**的那一类 —— 拿掉 `\u0000-\u001f` 就等于放它们落盘
-const BAD_NAME = /[\u0000-\u001f<>:"|?*\\/]/;
+const BAD_NAME = /[\u0000-\u001f\p{Cf}<>:"|?*\\/]/u;
+
+/** 只收 `.jar`：这是这个模块唯一会写盘的东西。 */
+const JAR_SUFFIX = '.jar';
+
+/** NTFS 单组件上限 255 个 UTF-16 单元 ⇒ 超了要在这里给 `null`，而不是让文件系统去报错。 */
+const MAX_FILE_NAME_LENGTH = 255;
+
+/**
+ * Win32 **连扩展名一起**保留的设备名 —— `NUL.jar` 就是 `NUL`。
+ *
+ * ⚠️★ 放它们过去，`join(目录, name)` 打开的是设备而不是文件：`NUL` 写入"成功"但字节被丢弃
+ *    （调用方若校验的是**下载下来的字节**而不是**落盘的文件**，就会报"已安装"），
+ *    `CON`/`COM1`/`LPT1` 打开控制台/串口。这正是上面那句"必须拒绝"要挡的东西。
+ * ⚠️ `(\.|$)` 是必需的：`CON` 与 `CON.jar` 都是保留名，而 `CONSOLE.jar` **不是**。
+ */
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 
 /**
  * 从下载地址推出落盘的文件名。
@@ -471,13 +487,24 @@ export function originFileNameOf(url: string): string | null {
   } catch {
     return null;
   }
+  // 防御性的：下面 `.jar` 那一条**已经**拒绝空名（空串不以 `.jar` 结尾），所以这一行不是判据。
+  // 留着是因为"空名 / `.` / `..`"正是最容易被顺手补一个默认名的那一处 —— 把契约定在这里看得见。
   if (decoded === '' || decoded === '.' || decoded === '..') return null;
+  if (decoded.length > MAX_FILE_NAME_LENGTH) return null;
   if (BAD_NAME.test(decoded)) return null;
-  if (!decoded.toLowerCase().endsWith('.jar')) return null;
+  if (!decoded.toLowerCase().endsWith(JAR_SUFFIX)) return null;
+  // 退化基名（`.jar` = 空干名、`  .jar` = 只有空白）既是隐藏文件，也会让两条 release 撞同一个
+  // 落盘路径 ⇒ 干名必须真的有内容（点与空白都不算内容）。
+  const stem = decoded.slice(0, -JAR_SUFFIX.length);
+  if (stem.replace(/[.\s]/g, '') === '') return null;
+  if (WINDOWS_RESERVED_NAME.test(decoded)) return null;
   return decoded;
 }
 
 export type LocalComparison = 'same' | 'different-build' | 'older' | 'newer' | 'unknown';
+
+/** 版本主体的形状：纯数字段用 `.` 连起来（`5.1.0` / `2.3` / `2.7.1`）。**只有这个形状才敢排先后。** */
+const NUMERIC_BODY = /^[0-9]+(\.[0-9]+)*$/;
 
 /**
  * 本地那份 vs 官方那一条。
@@ -485,20 +512,36 @@ export type LocalComparison = 'same' | 'different-build' | 'older' | 'newer' | '
  * 判据链（**只有第一层是硬结论**）：
  *   ① `sha512` 相等 ⇒ `same`。与版本号字符串**完全无关** —— 它证的是"你手上这份字节
  *      就是官方发的那一份"。（实测：18 个真实 jar 里 7 个命中，且没有"命中了别的版本"的。）
- *   ② 不相等 ⇒ 比**版本主体**：相等 ⇒ `different-build`；更旧 ⇒ `older`；更新 ⇒ `newer`；
- *      比不出大小 ⇒ 也是 `different-build`（主体字符串不同但比较判等）。
+ *   ② 不相等 ⇒ 比**版本主体**：相等 ⇒ `different-build`；两边主体都是纯数字段（`NUMERIC_BODY`）
+ *      时才敢排先后 —— 更旧 ⇒ `older`、更新 ⇒ `newer`。
  *   ③ 读不出本地版本 ⇒ `unknown`。
+ *   其余（非数字段、或比不出大小）一律 `different-build`。
  */
 export function compareLocalToRelease(
   localSha512: string | null,
   localVersion: string | null,
   release: ModRelease,
 ): LocalComparison {
+  // ⚠️ `localSha512 !== null` 是**防御性**的：参数类型允许 null，而 `release.sha512` 必填。
   if (localSha512 !== null && localSha512 === release.sha512) return 'same';
   if (localVersion === null) return 'unknown';
   const local = versionBodyOf(localVersion);
   const target = versionBodyOf(release.version);
   if (local === target) return 'different-build';
+  /*
+   * ★ 非数字段上**不排先后**（这一条是承重的，不是保守的美化）。
+   *
+   * 为什么：`compareLocalVersions` 是 v1 用来比**两个本地副本**的 —— 那种场合"谁在前"只影响
+   * 先绑哪一个，用户随时能改；而**这里它决定"是否自动替换"**。非数字段上它退化成 `localeCompare`，
+   * 那不是一个能支撑自动替换的判据：实测 `compareLocalVersions('HD_U_F10','HD_U_F9') = -1`
+   * ⇒ 得出"本地更旧" ⇒ **把更新的本地 jar 换成更旧的上游包**（正是 mcsrranked 那条断言禁止的降级）。
+   * ⇒ 一律归 `different-build`（要人显式点，不进批量）。
+   *
+   * ⚠️ 代价（写下来）：带字母后缀的版本从此**不排序、不进批量**。可接受：1.16.1 合法集里那些需要
+   *    更新的版本主体**全是纯数字**（`5.1.0`/`2.7.1`/`2.3`/…）⇒ 18 个真实 jar 的判定一字不变；
+   *    而 OptiFine 那种字母版本本来就是 `manual`（见 `needsUpdate`）。
+   */
+  if (!(NUMERIC_BODY.test(local) && NUMERIC_BODY.test(target))) return 'different-build';
   // 复用 v1 的比较器（返回符号数）。它按数字段逐段比，解析不出数字段时退化成字符串序。
   // ⚠️ 它内部用 localeCompare ⇒ 只用来**定"谁前谁后"**，不用来决定"要不要写盘"（那是 sha512 的活）。
   const cmp = compareLocalVersions(local, target);
@@ -512,7 +555,7 @@ export type ReleaseVerdict =
   | { kind: 'older'; release: ModRelease }
   | { kind: 'newer'; release: ModRelease }
   | { kind: 'unknown'; release: ModRelease }
-  | { kind: 'ambiguous'; releases: ModRelease[] }
+  | { kind: 'ambiguous'; releases: readonly ModRelease[] }
   | { kind: 'missing-release' };
 
 /**
@@ -530,6 +573,8 @@ export function judgeRelease(
 ): ReleaseVerdict {
   if (candidates.length === 0) return { kind: 'missing-release' };
   if (candidates.length > 1) {
+    // ⚠️ `localSha512 !== null` 是**防御性**的（参数类型允许 null）：`ModRelease.sha512` 是必填字段，
+    //    所以真正的判据是下面那个 `find`，这一层只表达"没有哈希就没法定案"的意图。
     if (localSha512 !== null) {
       const exact = candidates.find((candidate) => candidate.sha512 === localSha512);
       if (exact) return { kind: 'same', release: exact };
@@ -543,10 +588,16 @@ export function judgeRelease(
 /**
  * 这一行能不能进**批量**更新。
  *
- * ★ `older` 是**唯一**进批量的状态。`newer`（本地更新）进批量 = 降级；
- *   `different-build`（同版本号不同字节）与 `ambiguous`（不知道该装哪个）
- *   都要人显式点一下 —— 同一版本号的两种打包不该由程序替用户选。
+ * ★ `older` **且** `download === 'auto'` 是进批量的唯一组合。
+ *   · `newer`（本地更新）进批量 = 降级；
+ *   · `different-build`（同版本号不同字节）与 `ambiguous`（不知道该装哪个）都要人显式点一下
+ *     —— 同一版本号的两种打包不该由程序替用户选；
+ *   · `manual` 的 release **连"更新按钮"都不给**（spec §8 / schema 的注释：只给"打开原网页"），
+ *     当然更不能进批量。实测 555 条里只有 `optifine`/`optifine-light`（54 条）是 `manual`，
+ *     而它们的版本**正好是字母方案** —— 也就是上面那条数字段守卫归到 `different-build` 的那一类。
+ *   规则收在这一个函数里，调用方不必自己记得过滤 `download`。
  */
 export function needsUpdate(verdict: ReleaseVerdict): boolean {
-  return verdict.kind === 'older';
+  if (verdict.kind !== 'older') return false;
+  return verdict.release.download === 'auto';
 }
