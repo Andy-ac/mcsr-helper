@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -153,6 +154,67 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
       },
     };
     assert.notStrictEqual(catalogBytes(buildCatalog(base)), catalogBytes(buildCatalog(changed)));
+  });
+
+  /*
+   * ★★ Ruling 65：把"**目录漂了要红**"做成一条真在门禁里跑的测试。
+   *
+   * 现场（Task 7 的评审者现读发现的）：`docs/architecture.md` 的内容文件那一行**声称**
+   * "手改 `content/mod-catalog.json` 会被下一次 `--check` 判红"，而**没有任何自动化在跑 `--check`**：
+   * `catalog:check`（`services/api/package.json`）**不在** `pnpm -w check` 里、仓库**没有 CI**，
+   * 而上面那条"可复现"只证明"**两次生成相同**"（`catalogBytes` 返回常量也能通过它）
+   * —— 它**从不与提交进仓库的那份字节比**。⇒ "快照与目录不一致"今天不会被任何门禁抓住。
+   *
+   * 所以这一条把 `--check` 的裁决搬进门禁：**已提交的两份快照 + `content/mod-overrides.json`
+   * ⇒ 重新生成的字节必须逐字节等于 `content/mod-catalog.json`**。
+   * `source.sha256` 由**快照文件自己的字节**算，且与 CLI 的 `build()` 逐字同形
+   * （`readFileSync(…, 'utf8')` 之后哈希那个**字符串**）—— 这样这条测试与 `--check` 是同一件事，
+   * 而不是"另一套算法碰巧也绿"。
+   *
+   * ⚠️ 刻意**不** spawn 子进程、不联网、不嵌套 pnpm（本仓对嵌套 pnpm 有明确禁令：
+   *    症状是零输出 + 退出码 −1）。
+   *
+   * ⚠️ 它红了该怎么办：**不是**把这条断言改成新的读数 —— 那正好会让"目录漂了"重新变成
+   *    没人看得见的事（§5.32 的第 ④ 类：读数看着有、其实什么都没测）。
+   *    正确动作：① 撤掉对 `content/mod-catalog.json` 的手改；或 ② 跑
+   *    `pnpm -F @mcsr/api catalog:write` 重新生成，并先 `git diff content/upstream/`
+   *    说清**上游真的改了什么**（快照一刷新，规模读数那条断言也会一起红，那是正确行为）。
+   */
+  it('★ 重新生成的字节 == 提交进仓库的那份字节（Ruling 65：--check 不在任何门禁里）', async () => {
+    const { buildCatalog, catalogBytes } = (await import('./modCatalogBuild')) as {
+      buildCatalog: (input: unknown) => unknown;
+      catalogBytes: (catalog: unknown) => string;
+    };
+    const mods = read('content/upstream/mods.json');
+    const extra = read('content/upstream/extra.json');
+    const sha256 = (data: string | Buffer): string =>
+      createHash('sha256').update(data).digest('hex');
+
+    const regenerated = catalogBytes(
+      buildCatalog({
+        modsRaw: JSON.parse(mods),
+        extraRaw: JSON.parse(extra),
+        overrides: JSON.parse(read('content/mod-overrides.json')),
+        sha256: { mods: sha256(mods), extra: sha256(extra) },
+      }),
+    );
+
+    // ⚠️ 比的是**字节**（不是两个大字符串的 deepEqual）：失败时要在消息里给读数与偏移，
+    //    而不是把 400 KB 的 diff 倒进测试输出（那会让真正的错因淹没在输出里）。
+    const committed = readFileSync(join(ROOT, 'content/mod-catalog.json'));
+    const regeneratedBytes = Buffer.from(regenerated, 'utf8');
+    const sameLength = committed.length === regeneratedBytes.length;
+    const firstDiff = sameLength ? committed.findIndex((b, i) => b !== regeneratedBytes[i]) : -1;
+    assert.ok(
+      committed.equals(regeneratedBytes),
+      `目录**漂了**：由已提交快照 + 人工配置重新生成的是 ${regeneratedBytes.length} 字节` +
+        `（sha256=${sha256(regeneratedBytes)}），而 content/mod-catalog.json 是 ${committed.length} 字节` +
+        `（sha256=${sha256(committed)}）` +
+        `${sameLength ? `，第一个不同的字节在偏移 ${firstDiff}` : '（长度就已经不同）'}。\n` +
+        '正确动作：撤掉对 content/mod-catalog.json 的手改，或跑 `pnpm -F @mcsr/api catalog:write` ' +
+        '重新生成并先 `git diff content/upstream/` 说清上游改了什么。\n' +
+        '⚠️ **不要**把这条断言改成新的读数。',
+    );
   });
 });
 
