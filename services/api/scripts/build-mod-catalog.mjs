@@ -12,10 +12,10 @@
  * 退出码：0 = 通过；1 = 不一致（真的漂了）；2 = 这条检查**自己没跑成**（读不懂输入、参数不对）——
  *         与 `deploy/verify-file-catalog.sh` 同一套话术：**别把"没跑"读成"通过"**。
  *
- * ★ 参数契约（评审 Important 2）：这个文件**不在任何门禁的覆盖里**（biome 的 include 不含
- *   biome 的 include 只列了 ts / tsx / json（`.mjs` 一个都不查）、
- *   `services/api/tsconfig.json` 的 include 也不含 `scripts/`），所以它自己的契约
- *   只能由它自己执行 —— 否则"拼错一个旗标"就会静默地"什么都没做，退出 0"：
+ * ★ 参数契约（评审 Important 2）：这个文件**不在任何门禁的覆盖里**（biome 的 include 只列了
+ *   ts / tsx / json，`.mjs` 一个都不查；`services/api/tsconfig.json` 的 include 也不含
+ *   `scripts/`），所以它自己的契约只能由它自己执行 —— 否则"拼错一个旗标"就会静默地
+ *   "什么都没做，退出 0"：
  *   · 不认识的旗标 ⇒ 2；
  *   · 一个模式旗标都没给 ⇒ 2（至少要 `--refresh` / `--write` / `--check` / `--stats` 之一）；
  *   · `--write` 与 `--check` 同时给 ⇒ 2（一个要写产物、一个要拿产物比字节；同时给只会得到一个

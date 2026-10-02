@@ -212,11 +212,19 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 ⇒ 即便如此，部署完（或怀疑它坏了）时仍然可以自己回读一次：
 
 ```bash
-curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/file-catalog
-curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/mod-catalog
+# ① 抓成文件。⚠️ `-w` 写的那行「<<<状态码 URL」尾标是判据脚本的**必填**输入
+#    （正文里没有状态码，"必须是 200"就判不了 ⇒ 没有尾标 = 退出码 2），别只打到屏幕上。
+curl -sS -w '\n<<<%{http_code} %{url_effective}\n' https://<域名>/api/file-catalog > /tmp/file-catalog.txt
+curl -sS -w '\n<<<%{http_code} %{url_effective}\n' https://<域名>/api/mod-catalog  > /tmp/mod-catalog.txt
+
+# ② 交给判据脚本，拿一份**自动裁决**（在仓库根目录跑；这是与 `deploy.sh` 自检同一个脚本）。
+#    退出码：0 = 三项全过 / 1 = 有一项没过（脚本标出是哪一项）/ 2 = 判据**没跑起来**。
+bash deploy/verify-file-catalog.sh --body /tmp/file-catalog.txt
+bash deploy/verify-mod-catalog.sh  --body /tmp/mod-catalog.txt   # ⚠️ v2 只认 --body（不吃 stdin）
 ```
 
-**预期读数**：`200` + 一份 JSON 正文（上面两条各看一次）；
+**预期读数**（判据脚本会自己逐项打印；只用 ① 看正文的话，就是下面这几样）：
+`200` + 一份 JSON 正文；
 `/api/file-catalog` 的 `version` 是 `1`、`items` 里有 `mcsrranked`；
 `/api/mod-catalog` 的 `schema` 是 `2`、`releases` 是非空数组。
 出错时每一类都有自己的 error 名（不吞错误、也不会"回一个空目录"）：

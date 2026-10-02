@@ -35,7 +35,7 @@ function contentDir(): string {
 
 modCatalogRoute.get('/', (c) => {
   const file = join(contentDir(), 'mod-catalog.json');
-  // ⚠️ 变量名与 `routes/fileCatalog.ts` 那两处**反过来一一对应**（raw = 文件内容、
+  // ⚠️ 变量名与 `routes/fileCatalog.ts` 那两处**同向一一对应**（raw = 文件内容、
   //    parsed = 解析结果）—— 这个文件的价值就是"与 v1 逐行对应"，名字反了会先骗到读的人。
   let raw: string;
   try {

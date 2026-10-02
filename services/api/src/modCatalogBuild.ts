@@ -85,7 +85,7 @@ function strArray(value: unknown, path: string, fallback: string[] = []): string
  *
  * ⇒ **只有 100% 的那几个**才升级成"必须有"（`str()` 管的四个本来就是硬要求，这里管数组与 `size`）。
  *   ⚠️ `dependencies` 与 release 级的 `obsolete` **不在其中**：它们的"没有"是数据的**常态**
- *   （419/554 条确实没有依赖、554/555 条确实没有 obsolete 标记），继续走 fallback 是**对的** ——
+ *   （419/555 条确实没有依赖、554/555 条确实没有 obsolete 标记），继续走 fallback 是**对的** ——
  *   把它们改成"必须有"会让生成器在下一次刷新时对**合法**数据抛错。
  *
  * ⚠️★ 为什么这件事值得两个新函数：缺一个 100% 字段时，旧的 `strArray` fallback 会把
