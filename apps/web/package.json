@@ -67,6 +67,7 @@
     "check:video": "tsx --tsconfig tsconfig.json scripts/videorender.tsx",
     "check:account": "tsx --tsconfig tsconfig.json scripts/accountrender.tsx",
     "check:files": "tsx --tsconfig tsconfig.json scripts/filesrender.tsx && tsx --tsconfig tsconfig.json scripts/filesrender.tsx --en",
+    "check:folders": "tsx --tsconfig tsconfig.json scripts/foldersrender.tsx && tsx --tsconfig tsconfig.json scripts/foldersrender.tsx --en",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
