@@ -1,0 +1,133 @@
+{
+  "note": "来源：一个真实的 1.16.1 排位实例的 mods 目录（2026-10-02 列目录 + 逐个读 fabric.mod.json 与 sha512）。只保留公开信息（文件名、字节数、modid、内部版本、内容哈希），不含任何本机路径。",
+  "gameVersion": "1.16.1",
+  "jars": [
+    {
+      "fileName": "antigone-1.16.1-2.0.0.jar",
+      "size": 4359,
+      "modid": "antigone",
+      "version": "2.0.0",
+      "sha512": "b385e7615c644c0f354b85409f95c137413483796057a0755b4f2677b8acf3eb0dda8c55d7fb4358dd5e3c44f28c63816c787336b54ac3759ca8424bfc108493"
+    },
+    {
+      "fileName": "antiresourcereload-5.1.0+1.16.1.jar",
+      "size": 10022,
+      "modid": "antiresourcereload",
+      "version": "5.1.0+1.16.1",
+      "sha512": "7077c1ef45bc60194e3551a9140788fefd012431ca6c8b6c6bf370d2b7aae28008ab45fbdecba122a6c8f4056806039a4847279fba10ffc1eab40d7a345e5468"
+    },
+    {
+      "fileName": "atum-2.7.1+1.16-1.16.1.jar",
+      "size": 71164,
+      "modid": "atum",
+      "version": "2.7.1+1.16-1.16.1",
+      "sha512": "eebbf102b877aee48d75d79ee0cba4d2f215f02fc5347478f561d25009636ce33734cf12265a6a410551e3e68c0ab04b8a544f18e8933b3a0974e96e6a1c0c0b"
+    },
+    {
+      "fileName": "chunkumulator-1.0.3+MC1.16.1.jar",
+      "size": 22626,
+      "modid": "chunkumulator",
+      "version": "1.0.3+MC1.16.1",
+      "sha512": "ea7ad85a2fcdb5fe34a2659fabe35e8dc8e21d9c9af055c3b93c19da208b69d67a842c44ea9e46cc974fb63a43449799a8fa2ee1acac4314604cd0ddc73b86f3"
+    },
+    {
+      "fileName": "krypton-1.16.1-backport-0.1.3-SNAPSHOT+2021-02-20.jar",
+      "size": 118220,
+      "modid": "krypton",
+      "version": "0.1.3-SNAPSHOT+2021-02-20",
+      "sha512": "b9e6ff4daaa6fc68357535a937b5950f1e8f5a5bc4ade56df71cc95feb5ef91fee687d90b4904b49bf0af260d46e6c2f89cc78c2271fec59f4c68819ba0c6de7"
+    },
+    {
+      "fileName": "lazydfu-0.1.2.jar",
+      "size": 15517,
+      "modid": "lazydfu",
+      "version": "0.1.2",
+      "sha512": "20b1cd3e62051c7d7498ecdc49912acb918fc4748d469c67c078cc97197289760e64b9339a4d4a03d175f648c8be8601d131776a9a6bdb8832cecdda6fc46498"
+    },
+    {
+      "fileName": "lazystronghold-1.1.3+1.16.1.jar",
+      "size": 13884,
+      "modid": "lazystronghold",
+      "version": "1.1.3",
+      "sha512": "b489c7918a7df733b36eff593767fd09b5cc62dc661536db49078d3a6e411d4a1e97a9c54093ad36ff3aef3ba40eb86e9645d3bdeed1e28bfe8fa77bac4f215b"
+    },
+    {
+      "fileName": "lithium-1.0+backport-0.6.7+1.16.1.jar",
+      "size": 356163,
+      "modid": "lithium",
+      "version": "1.0+backport-0.6.7+1.16.1",
+      "sha512": "53f67abf325558d760d7d2f44ec8bbd14dc7180a6e137f1aed54b37aeb0d3b574b59f75970b5765d30e60df48aed3e27d632759452b1e66c5a123776f858ed31"
+    },
+    {
+      "fileName": "mcsrranked-5.8.26.jar",
+      "size": 27738025,
+      "modid": "mcsrranked",
+      "version": "5.8.26",
+      "sha512": "491447889a75d2caa315b50955a519c7ced36b3ac5530369ffbd7c21b25d305969f97442ff4e49fad84cd0e24ef1a355d54e81fb4e14237ca905e07610b825f8"
+    },
+    {
+      "fileName": "sleepbackground-4.1+1.16.1.jar",
+      "size": 21403,
+      "modid": "sleepbackground",
+      "version": "4.1+1.16.1",
+      "sha512": "8ffb1d7eb62b5b7b6afcd0a0ce00a0f614eb9449a122b515980beecf75505d0903ae00f56f2b9b64ccb75ec9c48259c4d5694e748b54ae07ba8f4798bc7ec683"
+    },
+    {
+      "fileName": "sodium-2.5.0+1.16.1.jar",
+      "size": 476862,
+      "modid": "sodium",
+      "version": "2.5.0+1.16.1",
+      "sha512": "eafafc56ce53869f0d2f3d693089c9dedf65f4c32311462fdf990a783bd00b20a4502be8b8688e7a00a2bcff7f8993dbddb9970f5f52cbe6c606b78dad25ead7"
+    },
+    {
+      "fileName": "speedrunapi-2.0+1.16.1.jar",
+      "size": 154526,
+      "modid": "speedrunapi",
+      "version": "2.0+1.16.1",
+      "sha512": "4b2d8d3172df7ecedcde9c3adbe3db4547962ff95ec2e60e722259699bac2a00e12a8368fea9f6e88cc31b3b1a4b5b2206f78d3a4808672281fbf6d78e44e997"
+    },
+    {
+      "fileName": "speedrunapi-2.1+1.16-1.16.1.jar",
+      "size": 154621,
+      "modid": "speedrunapi",
+      "version": "2.1+1.16-1.16.1",
+      "sha512": "911386dffd572a263b273f85e815000bfdfd9a074e02cf9e10b4d4f354f097573b13de13d7e203aae41b3e23b26c6b04b21ece751e6d29ee138886bd139a6d00"
+    },
+    {
+      "fileName": "SpeedRunIGT-16.0+1.16.1.jar",
+      "size": 853264,
+      "modid": "speedrunigt",
+      "version": "16.0+1.16.1",
+      "sha512": "4b87dac0ca08c3594d8a4e55f127a07c5df0f4d8c44200e15858580f5d57a296e9456b01c0fd39c313f4b49db1fcead823b91d101fbadc7a6574fc0f31f8398a"
+    },
+    {
+      "fileName": "standardsettings-2.3+1.16.1.jar",
+      "size": 69493,
+      "modid": "standardsettings",
+      "version": "2.3+1.16.1",
+      "sha512": "7bd34f2376b949601b27ea39ab8a882e4cb3e23fdfdacba0c9708b95d12194a3680b458043b13cea1a3d15061b4e2eb382558d334e1d199913bb61c0f127c791"
+    },
+    {
+      "fileName": "state-output-1.2.0+1.16-1.18.1.jar",
+      "size": 12247,
+      "modid": "state-output",
+      "version": "1.2.0+1.16-1.18.1",
+      "sha512": "8905af615942464f3acb56874ce16aa0b58a0f8ae0dd6be2607d30379b49e8ae3061d40af02990ec4f602be2d63a68e144f5922a40e3d0286b2c76514fe88521"
+    },
+    {
+      "fileName": "voyager-1.0.1.jar",
+      "size": 4649,
+      "modid": "voyager",
+      "version": "1.0.1",
+      "sha512": "7af0abc76408cf67dbc3d59a153dad16904cc93a9078aaa8b68e8ee2baf49ea40587e6ec0af0152b0b5195254d28445368e7ec2f9344676a5b3b8e85db3b75f0"
+    },
+    {
+      "fileName": "worldpreview-6.3.0+1.16.1.jar",
+      "size": 66722,
+      "modid": "worldpreview",
+      "version": "6.3.0+1.16.1",
+      "sha512": "9476dabe9367e26056458b2e95633122de5783a02f135e5148ed23eb2b1c806ab6daa420fbaaf5a86c59f16fa09d3973118b0a4e2ffd98b92b1dcb433d687f9a"
+    }
+  ],
+  "disabled": ["mcsrranked-5.8.15.jar.disabled", "multiseeds-4.2.0-Beta.jar.disabled"]
+}
