@@ -460,6 +460,22 @@ describe('判定（只升不降）', () => {
     assert.equal(compareLocalToRelease('b'.repeat(128), '2.3+1.16.1', r), 'different-build');
   });
 
+  it('★★ 每段都是数字就照常排（`1.16.1-2.6.13` 是 replaymod 的真实形状：`-` 也是分词符，不是"字母后缀"）', () => {
+    const r = release('1.16.1-2.6.13');
+    // 判据是"比较器可不可靠"，不是"整串像不像版本号"：分词后每段都是数字 ⇒ 全程数值比较。
+    assert.equal(compareLocalToRelease('b'.repeat(128), '1.16.1-2.6.12', r), 'older');
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), '1.16.1-2.6.12', [r])), true);
+    // 另一侧：本地更新 ⇒ 仍然不许进批量（同一个形状）。
+    assert.equal(compareLocalToRelease('b'.repeat(128), '1.16.1-2.6.14', r), 'newer');
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), '1.16.1-2.6.14', [r])), false);
+  });
+
+  it('★ 全数字段、段数不等 ⇒ 少的那一段判为更旧（`1.0` < `1.0.1`；这个比较器在全数字段下没有洞）', () => {
+    assert.equal(compareLocalToRelease('b'.repeat(128), '1.0', release('1.0.1')), 'older');
+    assert.equal(compareLocalToRelease('b'.repeat(128), '1.0.1', release('1.0')), 'newer');
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), '1.0', [release('1.0.1')])), true);
+  });
+
   it('★ 本地更旧 ⇒ older（唯一进批量的状态）', () => {
     const r = release('2.7.2+1.16-1.16.1');
     assert.equal(compareLocalToRelease('b'.repeat(128), '2.7.1+1.16-1.16.1', r), 'older');

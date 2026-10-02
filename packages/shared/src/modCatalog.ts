@@ -503,8 +503,34 @@ export function originFileNameOf(url: string): string | null {
 
 export type LocalComparison = 'same' | 'different-build' | 'older' | 'newer' | 'unknown';
 
-/** 版本主体的形状：纯数字段用 `.` 连起来（`5.1.0` / `2.3` / `2.7.1`）。**只有这个形状才敢排先后。** */
-const NUMERIC_BODY = /^[0-9]+(\.[0-9]+)*$/;
+/** 比较器的一段：**字符全是数字**才算可靠（理由见 `isSortableBody`）。 */
+const NUMERIC_SEGMENT = /^[0-9]+$/;
+
+/**
+ * 这个版本主体能不能**安全排序**。
+ *
+ * 判据不是"整串长得像不像版本号"，而是"`compareLocalVersions` 这次会不会走到它那条**不可靠**的路上"：
+ * 它按 `[.\-+_]` 分词、逐段比 —— 两段都解析得出数字时走数值比较；**只要有一段的字符不全是数字**，
+ * 它就退化成 `localeCompare`（那不是一个能支撑"要不要自动替换"的判据）。
+ * ⇒ 于是"每一段都是数字"**恰好等价于**"它这次没走那条退化路"。判据钉在这上面才不多不少。
+ *
+ * 为什么"整串是 `^[0-9]+(\.[0-9]+)*$`"是**过严**的：`1.16.1-2.6.13`（replaymod 的真实形状）
+ * 被它整串拒掉，可分词之后是 `['1','16','1','2','6','13']` —— 每段都是数字、全程数值比较、
+ * **排序可靠**。把可靠的形状也拒掉，等于白丢一次自动更新，还会让"为什么不给我更新"没答案。
+ *
+ * ⚠️ 代价（写下来，**实测、不是零代价**）：带**非数字段**的主体从此不排序、不进批量。
+ *    实测（`content/mod-catalog.json`，555 条 release / 1761 个键）两次独立读数一致：
+ *    含非数字段的 release **77** 条（auto 23 / manual 54）、去重键 **174** 个（auto 119 / manual 55），
+ *    其中落在 1.16.1 且 `download=auto` 的是 **4** 个 mod ——
+ *    `custom-map-resetter`（`1.4.1-1.16.x`，那个 `x`）、`krypton`（`0.1.3-SNAPSHOT`）、
+ *    `noverworld`（`2.3.2-BASTION`）、`pogworld`（`1.4.0-BIOMES`）：这些行上"本地是另一种打包"
+ *    从 `older`（自动）变成 `different-build`（要人点一下）。方向是保守的那一侧（少自动、不降级）。
+ *    （`replaymod` 的 `1.16.1-2.6.13` **不在**这 4 个里：按分词它每段都是数字，照常排序。）
+ *    而 OptiFine 那种字母版本本来就是 `manual`（见 `needsUpdate`），不受影响。
+ */
+function isSortableBody(body: string): boolean {
+  return body.split(/[.\-+_]/).every((segment) => NUMERIC_SEGMENT.test(segment));
+}
 
 /**
  * 本地那份 vs 官方那一条。
@@ -512,10 +538,10 @@ const NUMERIC_BODY = /^[0-9]+(\.[0-9]+)*$/;
  * 判据链（**只有第一层是硬结论**）：
  *   ① `sha512` 相等 ⇒ `same`。与版本号字符串**完全无关** —— 它证的是"你手上这份字节
  *      就是官方发的那一份"。（实测：18 个真实 jar 里 7 个命中，且没有"命中了别的版本"的。）
- *   ② 不相等 ⇒ 比**版本主体**：相等 ⇒ `different-build`；两边主体都是纯数字段（`NUMERIC_BODY`）
- *      时才敢排先后 —— 更旧 ⇒ `older`、更新 ⇒ `newer`。
+ *   ② 不相等 ⇒ 比**版本主体**：相等 ⇒ `different-build`；两边主体都 `isSortableBody` 时才敢排先后
+ *      —— 更旧 ⇒ `older`、更新 ⇒ `newer`。
  *   ③ 读不出本地版本 ⇒ `unknown`。
- *   其余（非数字段、或比不出大小）一律 `different-build`。
+ *   其余（含非数字段、或比不出大小）一律 `different-build`。
  */
 export function compareLocalToRelease(
   localSha512: string | null,
@@ -529,24 +555,16 @@ export function compareLocalToRelease(
   const target = versionBodyOf(release.version);
   if (local === target) return 'different-build';
   /*
-   * ★ 非数字段上**不排先后**（这一条是承重的，不是保守的美化）。
+   * ★ 只在**比较器真的不可靠**时才拒绝排序（这一条是承重的，不是保守的美化）。
    *
    * 为什么：`compareLocalVersions` 是 v1 用来比**两个本地副本**的 —— 那种场合"谁在前"只影响
-   * 先绑哪一个，用户随时能改；而**这里它决定"是否自动替换"**。非数字段上它退化成 `localeCompare`，
-   * 那不是一个能支撑自动替换的判据：实测 `compareLocalVersions('HD_U_F10','HD_U_F9') = -1`
+   * 先绑哪一个，用户随时能改；而**这里它决定"是否自动替换"**。它在非数字段上退化成 `localeCompare`，
+   * 那就不是一个能支撑自动替换的判据：实测 `compareLocalVersions('HD_U_F10','HD_U_F9') = -1`
    * ⇒ 得出"本地更旧" ⇒ **把更新的本地 jar 换成更旧的上游包**（正是 mcsrranked 那条断言禁止的降级）。
-   * ⇒ 一律归 `different-build`（要人显式点，不进批量）。
-   *
-   * ⚠️ 代价（写下来，**已用真目录量化、不是零代价**）：带字母后缀的版本从此**不排序、不进批量**。
-   *    18 个真实 jar 的判定一字不变（1.16.1 那 9 个 `older` 的主体全是纯数字）。但不止 OptiFine：
-   *    实测 555 条 release / 1761 个键里，官方主体非数字的键 **235** 个（auto 180 / manual 55），
-   *    其中落在 1.16.1 且 `download=auto` 的有 5 个 mod —— `custom-map-resetter`（`1.4.1-1.16.x`）、
-   *    `krypton`（`0.1.3-SNAPSHOT`）、`noverworld`（`2.3.2-BASTION`）、`pogworld`（`1.4.0-BIOMES`）、
-   *    `replaymod`（`1.16.1-2.6.13`）：这些行上"本地是另一种打包"从 `older`（自动）变成
-   *    `different-build`（要人点一下）。方向是保守的那一侧（少自动、不降级）。
-   *    而 OptiFine 那种字母版本本来就是 `manual`（见 `needsUpdate`），不受影响。
+   * ⇒ 有非数字段就一律归 `different-build`（要人显式点，不进批量）；**全数字段照常排序**
+   *   （这一点很重要：判据是"比较器可靠不可靠"，不是"字符串像不像版本号"）。
    */
-  if (!(NUMERIC_BODY.test(local) && NUMERIC_BODY.test(target))) return 'different-build';
+  if (!(isSortableBody(local) && isSortableBody(target))) return 'different-build';
   // 复用 v1 的比较器（返回符号数）。它按数字段逐段比，解析不出数字段时退化成字符串序。
   // ⚠️ 它内部用 localeCompare ⇒ 只用来**定"谁前谁后"**，不用来决定"要不要写盘"（那是 sha512 的活）。
   const cmp = compareLocalVersions(local, target);
