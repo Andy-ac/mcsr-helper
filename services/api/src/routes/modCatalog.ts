@@ -14,7 +14,8 @@
  * 错误码为什么复用 v1 那三个
  * ===========================================================================
  * 仓库里有一条断言在扫"服务端返回的每个 error 码都在显式清单里"
- * （`i18n-keys.test.ts` 的错误码契约那一段）。复用 `catalog_unavailable` /
+ * （`error-codes.test.ts` 的 `KNOWN_CODES` 与 `serverCodesFromSource` 那个扫描器）。
+ * 复用 `catalog_unavailable` /
  * `catalog_invalid_json` / `catalog_invalid` 就不必去动那份契约；
  * 两个端点的响应体各自独立，不存在命名空间冲突。
  *
@@ -34,28 +35,39 @@ function contentDir(): string {
 
 modCatalogRoute.get('/', (c) => {
   const file = join(contentDir(), 'mod-catalog.json');
-  let text: string;
+  // ⚠️ 变量名与 `routes/fileCatalog.ts` 那两处**反过来一一对应**（raw = 文件内容、
+  //    parsed = 解析结果）—— 这个文件的价值就是"与 v1 逐行对应"，名字反了会先骗到读的人。
+  let raw: string;
   try {
-    text = readFileSync(file, 'utf8');
+    raw = readFileSync(file, 'utf8');
   } catch (error) {
     console.error('[mod-catalog] 读不出目录文件:', file, error);
     return c.json({ error: 'catalog_unavailable' }, 500);
   }
 
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    raw = JSON.parse(text);
+    parsed = JSON.parse(raw);
   } catch (error) {
     console.error('[mod-catalog] 目录文件不是合法 JSON:', file, error);
     return c.json({ error: 'catalog_invalid_json' }, 500);
   }
 
-  const result = parseModCatalog(raw);
+  const result = parseModCatalog(parsed);
   if (!result.ok) {
     console.error('[mod-catalog] 目录内容不合法:', file, result.problems);
     return c.json({ error: 'catalog_invalid', problems: result.problems }, 500);
   }
 
+  /*
+   * ⚠️★ 上面三步（读盘 / `JSON.parse` / 严格校验）都在下面那个 304 判断**之前** ⇒
+   *    304 省的是**带宽**，不是服务端的工作量：这是 425 KB 的目录，一个条件请求照样把它
+   *    整体读进来、解析、再跑一遍 zod 严格校验（端点公开无鉴权 ⇒ 条件请求打满就是一次放大）。
+   *    仍然接受这个代价：① 目录是**配置**、每次部署才换一次，正常流量下 ETag 的命中率远高于
+   *    写盘频率；② 要省掉这次校验就得把"校验结论"缓存起来，而那会让"部署换了文件"与
+   *    "内存里那份还是旧的"重新分叉 —— `fileCatalog.ts` 的文件头已经否掉过一次这种缓存。
+   *    （v1 那句"文件几 KB"在这里不成立，所以代价写在明处，不靠那句话兜着。）
+   */
   const body = JSON.stringify(result.catalog);
   const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
   /*

@@ -54,10 +54,26 @@ describe('GET /api/mod-catalog', () => {
     const res = await call('/api/mod-catalog');
     assert.equal(res.status, 200);
     const etag = res.headers.get('etag');
-    assert.ok(etag);
+    assert.ok(etag, '必须带 ETag');
     assert.equal(res.headers.get('cache-control'), 'no-cache');
     const cached = await call('/api/mod-catalog', { headers: { 'if-none-match': etag } });
     assert.equal(cached.status, 304);
+    /*
+     * ⚠️★ 304 **必须**重复 200 那份校验器（RFC 7232 §4.1：304 MUST 带 200 会带的
+     *    Cache-Control / ETag / …）。而判据是**相等**、不是"存在"：
+     *    "带了一个不同的 ETag"同样让客户端拿不到能用的校验器 —— 那比不带更坏，
+     *    因为它看起来像成功（客户端会拿一个配不上任何表示的标签继续条件请求）。
+     *    ⚠️ 结构上两支共用同一个 `validator` 对象 ⇒ 这三条是**第二层**守卫（漂移在这里
+     *    已经不可能发生），而不是唯一一层；补它们是为了覆盖广度，不是为了补一个洞。
+     */
+    assert.equal(cached.headers.get('etag'), etag, '304 的 ETag 必须与 200 的**相同**');
+    assert.equal(
+      cached.headers.get('cache-control'),
+      res.headers.get('cache-control'),
+      '304 的 Cache-Control 必须与 200 的相同',
+    );
+    // 304 不带表示元数据（RFC 7232 §4.1 同一条）：正文都没有，content-type 也不该有
+    assert.equal(cached.headers.get('content-type'), null);
   });
 
   it('★ 目录缺字段 ⇒ 500 且**点名**是哪个字段', async () => {
@@ -69,6 +85,12 @@ describe('GET /api/mod-catalog', () => {
     const body = (await res.json()) as { error: string; problems?: string[] };
     assert.equal(body.error, 'catalog_invalid');
     assert.match((body.problems ?? []).join(' '), /releases\.0\.sha512/);
+    /*
+     * ⚠️ `problems` 按设计**留着**（那是调用方唯一能自己动手修的线索，见路由的文件头），
+     *    但它同样不许把服务器侧路径带出去 —— 与测试 4 那两条是同一个判据，
+     *    区别只是这一支多一个**合法**的 `problems` 键（所以不能用"只有 error"那把尺子）。
+     */
+    assert.equal(JSON.stringify(body).includes(JSON.stringify(dir).slice(1, -1)), false);
   });
 
   it('文件不存在 / JSON 坏掉 ⇒ 500 且 error 分得清是哪一种', async () => {
@@ -83,19 +105,41 @@ describe('GET /api/mod-catalog', () => {
     assert.equal(((await res.json()) as { error: string }).error, 'catalog_invalid_json');
   });
 
-  it('★ 失败响应里不回显服务器侧诊断信息（路径只进日志）', async () => {
-    writeFileSync(join(dir, 'mod-catalog.json'), '{ 坏');
-    const text = await (await call('/api/mod-catalog')).text();
-    assert.equal(text.includes(dir), false);
-    assert.equal(text.includes('\\'), false);
+  it('★ 失败响应里不回显服务器侧诊断信息（键集合 + 路径子串，两个 500 分支各一遍）', async () => {
     /*
-     * ⚠️ 上面第一条在 Windows 上是**恒真**的：路径进了 JSON 文本就是转义过的
-     *    （`C:\…` 会写成 `C:\\…`），拿原始路径去 `includes` 永远匹配不上 ——
-     *    真的回显了路径时它也不红。⇒ 判据要钉在 `JSON.stringify` 之后那个形状上
-     *    （v1 那条测试的同一处就是这么写的）。
+     * ⚠️ 这条守的是一件**看起来无关紧要、但端点匿名可打**的事：这个接口谁都能请求，
+     *    所以响应体里不该出现服务器上的绝对路径，也不该出现底层引擎的报错原文
+     *    （`JSON.parse` 的报错文本里**可能带文件内容的片段**）。
+     * ⚠️★ 承重的那条判据是**整个 body 只有 `error` 一个键**，而不是"没搜到路径子串"：
+     *    子串判据只挡得住"路径"这一种泄露 —— 一个**非路径**的 `detail`（比如 `JSON.parse`
+     *    的消息，它带文件内容片段）在子串判据下照样漏过去，而键集合判据当场红。
+     *    两个只回 `{ error }` 的分支各走一遍（v1 `file-catalog.test.ts` 那两条同形）。
+     * ⚠️ 第三条分支 `catalog_invalid` **按设计**多带一个 `problems`（调用方唯一能自己动手
+     *    修的线索），所以它不能用 `['error']` 这条判据 —— 它由测试 2 单独守。
+     * ⚠️ 它**能红**：往任一条 500 的响应体里加 `path` / `detail`，下面那个 `deepEqual` 当场红。
      */
+    // ⚠️ 路径进了 JSON 文本是**转义过**的（`C:\…` 会写成 `C:\\…`），所以判据要钉在
+    //    `JSON.stringify` 之后那个形状上；拿原始路径去 `includes` 在 Windows 上是**恒真**的。
     const escapedDir = JSON.stringify(dir).slice(1, -1);
-    assert.equal(text.includes(escapedDir), false);
+
+    // ① 文件不存在那一支
+    const missing = await call('/api/mod-catalog');
+    assert.equal(missing.status, 500);
+    const missingText = await missing.text();
+    assert.deepEqual(Object.keys(JSON.parse(missingText) as object).sort(), ['error']);
+    assert.equal(missingText.includes(dir), false);
+    assert.equal(missingText.includes('\\'), false);
+    assert.equal(missingText.includes(escapedDir), false);
+
+    // ② 文件在、但不是合法 JSON 那一支
+    writeFileSync(join(dir, 'mod-catalog.json'), '{ 坏');
+    const broken = await call('/api/mod-catalog');
+    assert.equal(broken.status, 500);
+    const brokenText = await broken.text();
+    assert.deepEqual(Object.keys(JSON.parse(brokenText) as object).sort(), ['error']);
+    assert.equal(brokenText.includes(dir), false);
+    assert.equal(brokenText.includes('\\'), false);
+    assert.equal(brokenText.includes(escapedDir), false);
   });
 
   it('★ v1 那条端点与这个子路径不串（同一个前缀下两个路由各走各的）', async () => {
