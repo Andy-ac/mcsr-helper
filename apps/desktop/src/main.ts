@@ -21,6 +21,7 @@ import path2 from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { app, BrowserWindow, ipcMain, screen, session, shell } from 'electron';
 import { initFileUpdates } from './file-updates';
+import { initModFolders } from './mod-folders';
 import {
   checkForUpdates,
   downloadUpdate,
@@ -301,6 +302,20 @@ if (!app.requestSingleInstanceLock()) {
       appVersion: app.getVersion(),
       siteOrigin: new URL(APP_URL).origin,
     });
+
+    /*
+     * mod 目录行 + mod 文件夹（2026-10-03，Plan 2 / Task 4）。
+     *
+     * ⚠️ 与上一条同一个理由：**注册必须在创建窗口之前**完成，否则存在一个"窗口已经能
+     *    发消息、主进程还没在监听"的窗口期，那十四条 `invoke` 会被静默丢弃 ——
+     *    表现是"点了没反应"，且只在启动瞬间点才会复现。
+     * ⚠️ v1 的 `initFileUpdates` 一个字没动（它在上面，先跑）：两个模块读的是**同一个**
+     *    状态文件（`userData/file-tracking.json`），顺序在这里是有意义的 ——
+     *    v1 那种"坏文件 ⇒ 备份 + 重建 + 弹框"必须先发生，新模块读到的才是一份干净的状态。
+     * ⚠️ 这一行之前 `apps/desktop/src/main.ts` 里没有新模块的任何东西；除了 import
+     *    与这一句之外，这个文件里没有第二处改动。
+     */
+    await initModFolders({ isPackaged: app.isPackaged });
 
     mainWindow = createMainWindow();
 
