@@ -1,0 +1,34 @@
+{
+  "mirrors": [
+    {
+      "id": "gh-proxy",
+      "label": "gh-proxy.com",
+      "prefix": "https://gh-proxy.com/",
+      "hosts": ["github.com"]
+    }
+  ],
+  "tagLabels": {
+    "legal": { "zh": "合法", "en": "Legal" },
+    "extra": { "zh": "其他", "en": "Other" },
+    "obsolete": { "zh": "已弃用", "en": "Obsolete" },
+    "accessibility": { "zh": "无障碍", "en": "Accessibility" },
+    "mac-only": { "zh": "仅 macOS", "en": "macOS only" },
+    "rsg-only": { "zh": "仅随机种子", "en": "Random seed only" },
+    "ssg-only": { "zh": "仅固定种子", "en": "Set seed only" },
+    "ranked": { "zh": "排位", "en": "Ranked" }
+  },
+  "tags": {
+    "mcsrranked": ["ranked"]
+  },
+  "upstream": {
+    "mcsrranked": { "provider": "modrinth", "project": "I9W1u5Ac" }
+  },
+  "downloadRules": [
+    {
+      "host": "optifine.net",
+      "mode": "manual",
+      "reason": "2026-10-02 实测从本机连不上（curl http=000、Invoke-WebRequest 503）⇒ 只给「打开原网页」"
+    }
+  ],
+  "default": "auto"
+}

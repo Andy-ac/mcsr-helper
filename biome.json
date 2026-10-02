@@ -6,6 +6,8 @@
       "**/*.ts",
       "**/*.tsx",
       "**/*.json",
+      "!**/mod-catalog.json",
+      "!**/upstream",
       "!**/dist",
       "!**/release",
       "!**/node_modules",
