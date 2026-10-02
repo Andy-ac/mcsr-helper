@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import type { ModRelease } from '@mcsr/shared/modCatalog';
 import {
   buildIndex,
   mirrorsFor,
   mirrorUrl,
+  modFor,
   modTagsOf,
   parseModCatalog,
   parseModCatalogWire,
@@ -245,6 +249,26 @@ describe('展开与查找', () => {
     assert.deepEqual(rowsForGameVersion(built, '1.7.10'), []);
   });
 
+  it('★ 查询给的数组是副本：`.sort()` 返回的数组不会静默改掉索引', () => {
+    // ⚠️ 这一条**故意**不碰 describe 级的 `built`：那里只有一个索引实例，
+    //    就地变异会污染同一文件后面所有用到它的用例（评审点名的那个陷阱）。
+    assert.ok(catalog.ok);
+    const index = buildIndex(catalog.catalog);
+
+    const candidates = releasesFor(index, 'atum', '1.16.1');
+    const raw = candidates as ModRelease[];
+    raw.push({ ...raw[0]!, version: 'pushed' });
+    raw.sort((a, b) => (a.version < b.version ? 1 : -1));
+    assert.equal(raw[0]!.version, 'pushed');
+    // 索引没被这次就地改动碰到：长度还是 1、顺序还是目录里那条。
+    assert.equal(releasesFor(index, 'atum', '1.16.1').length, 1);
+    assert.equal(releasesFor(index, 'atum', '1.16.1')[0]!.version, '2.7.2+1.16-1.16.1');
+
+    // `modTagsOf` 同理：它交出去的如果是 `mod.tags` 原数组，一次就地 `.push()` 就改掉了目录。
+    (modTagsOf(catalog.catalog.mods[0]!) as string[]).push('MUTATED');
+    assert.deepEqual(modTagsOf(catalog.catalog.mods[0]!), ['legal']);
+  });
+
   it('★ 标签查得到显示名；查不到时返回 null（**不许**回退成 key：那会让缺陷看不见）', () => {
     assert.ok(catalog.ok);
     assert.deepEqual(tagLabelOf(catalog.catalog, 'legal'), { zh: '合法', en: 'Legal' });
@@ -265,5 +289,56 @@ describe('展开与查找', () => {
       mirrorUrl(mirror, 'https://github.com/a/b.jar'),
       'https://gh-proxy.com/https://github.com/a/b.jar',
     );
+  });
+});
+
+/**
+ * `buildIndex` 的**真目录**读数。
+ *
+ * ⚠️ 为什么这里要看 `content/mod-catalog.json` 而不是又造一份夹具：
+ *    上面那一段用的是**最小**夹具（一个 mod、一条 release ⇒ 两个游戏版本），
+ *    而 `gameVersions` 的读数在夹具上是 2 —— 于是"把 `versions.add(...)` 删掉"
+ *    这种坏法在该夹具下**照样绿**。这条断言必须钉在真目录的**规模**上才有意义。
+ *
+ * ⚠️ 输入在不在（AGENTS §5.74）：路径写错了要**当场**说出来，
+ *    而不是让断言在 `undefined` 上静默变成另一条检查。
+ */
+const REAL_CATALOG_PATH = resolve(
+  import.meta.dirname,
+  '..',
+  '..',
+  '..',
+  'content',
+  'mod-catalog.json',
+);
+
+function catalogFromRepo(path: string): unknown {
+  assert.ok(existsSync(path), `真目录不在这里（路径写错？）：${path}`);
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+describe('展开与查找：真目录的读数', () => {
+  const parsed = parseModCatalog(catalogFromRepo(REAL_CATALOG_PATH));
+
+  it('★ gameVersions 是全部目标版本的去重集合（索引真的收集了它们，不是空数组）', () => {
+    assert.ok(parsed.ok, `真目录必须合法：${JSON.stringify(parsed.ok ? [] : parsed.problems)}`);
+    const index = buildIndex(parsed.catalog);
+    // 107 = 555 条 release 的 targetVersions 去重后的项数。
+    assert.equal(index.gameVersions.length, 107);
+    assert.ok(index.gameVersions.includes('1.16.1'));
+    // 钉住**代码单元序**（不是数值序）：读这个字段的消费者（版本下拉框）必须自己带比较器。
+    // 真目录里第一处分歧就在这两个之间（'1.2' 本身不是一个版本，别拿它做判据）。
+    assert.ok(
+      index.gameVersions.indexOf('1.10') < index.gameVersions.indexOf('1.2.1'),
+      '预期是代码单元序：1.10 排在 1.2.1 前面（数值序会反过来）',
+    );
+  });
+
+  it('★ modFor：已知 modid 拿得到那条 mod，未知的拿 null（不许拿一个假对象顶上）', () => {
+    assert.ok(parsed.ok, `真目录必须合法：${JSON.stringify(parsed.ok ? [] : parsed.problems)}`);
+    const index = buildIndex(parsed.catalog);
+    const first = parsed.catalog.mods[0]!;
+    assert.equal(modFor(index, first.modid)?.modid, first.modid);
+    assert.equal(modFor(index, 'ghost'), null);
   });
 });

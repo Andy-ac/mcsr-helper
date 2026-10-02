@@ -303,16 +303,24 @@ export function releaseKey(modid: string, gameVersion: string): string {
 }
 
 export interface ModIndex {
-  /** ★ 值是**数组**：`(modid, 游戏版本)` 实测不是唯一键（`optifine|1.7.2`、`speedrunigt|26.1`）。 */
+  /**
+   * ★ 值是**数组**：`(modid, 游戏版本)` 实测不是唯一键（`optifine|1.7.2`、`speedrunigt|26.1`）。
+   * ⚠️ 这个 Map 是索引的**内部状态**，按引用活着：要用 `releasesFor` 去查（它给副本），
+   *    不要把它取出来就地改 —— `rowsForGameVersion` 就是在这个 Map 上遍历的。
+   */
   byPair: Map<string, ModRelease[]>;
   byModid: Map<string, ModEntry>;
-  /** 全部游戏版本（代码单元序 —— 界面上"哪个排前面"是另一个决定，不在这里做）。 */
+  /**
+   * 全部游戏版本，**代码单元序**（`'1.16.1'` 排在 `'1.7.10'` **前面**）。
+   * ⚠️ 消费者需要数值比较器，**不要**直接把这个数组当成可展示的顺序
+   *    （版本下拉框那种"哪个排前面"是另一个决定，不在这里做）。
+   */
   gameVersions: string[];
 }
 
 /**
  * 把目录展开成查找表。**只做一次**，调用方拿着它查 ——
- * 555 条 release 展开成 1761 个键，每次调用都重算是 O(n)（48 行 × 1761 会明显卡）。
+ * 555 条 release 展开成 1761 个键，每次调用都重算是 O(n)。
  */
 export function buildIndex(catalog: ModCatalog): ModIndex {
   const byPair = new Map<string, ModRelease[]>();
@@ -333,9 +341,23 @@ export function buildIndex(catalog: ModCatalog): ModIndex {
   };
 }
 
-/** 某个 mod 在某个游戏版本下的候选（0 / 1 / 2+ 条）。 */
-export function releasesFor(index: ModIndex, modid: string, gameVersion: string): ModRelease[] {
-  return index.byPair.get(releaseKey(modid, gameVersion)) ?? [];
+/**
+ * 某个 mod 在某个游戏版本下的候选（0 / 1 / 2+ 条）。
+ *
+ * ⚠️ 返回的**数组**是副本（`readonly`）：命中与不命中给的都是新数组，
+ *    调用方 `.sort()` / `.push()` 都不会动到索引（`rowsForGameVersion` 就是在这个索引上遍历的）。
+ * ⚠️ 但副本是**浅**的：里面的 `ModRelease` **还是目录里那些对象**（只读地看它们没问题，
+ *    别去改它们的字段）。要深拷贝就得先说服自己值得那份代价。
+ * ⚠️ **候选没有按版本排序**：顺序继承自目录（生成器按 `(modid, version, url)` 的
+ *    代码单元序排）。想挑"最新"必须自己带比较器 —— 直接拿 `releases[0]` 当最新，
+ *    在 `9.x` vs `10.x`（以及任何进位到两位数的字段）上会挑错。
+ */
+export function releasesFor(
+  index: ModIndex,
+  modid: string,
+  gameVersion: string,
+): readonly ModRelease[] {
+  return index.byPair.get(releaseKey(modid, gameVersion))?.slice() ?? [];
 }
 
 export function modFor(index: ModIndex, modid: string): ModEntry | null {
@@ -345,12 +367,15 @@ export function modFor(index: ModIndex, modid: string): ModEntry | null {
 /**
  * 某个游戏版本下的全部行（第一部分那张表就是它）。
  * 顺序 = `mods` 的顺序（生成器已按 modid 排好）⇒ 稳定、可断言。
+ *
+ * ⚠️ 每一行里的 `releases` 同样**没有按版本排序**（理由见 `releasesFor`），
+ *    而且类型是 `readonly` —— 调用方要排就排自己的副本。
  */
 export function rowsForGameVersion(
   index: ModIndex,
   gameVersion: string,
-): { mod: ModEntry; releases: ModRelease[] }[] {
-  const rows: { mod: ModEntry; releases: ModRelease[] }[] = [];
+): readonly { mod: ModEntry; releases: readonly ModRelease[] }[] {
+  const rows: { mod: ModEntry; releases: readonly ModRelease[] }[] = [];
   for (const mod of index.byModid.values()) {
     const releases = releasesFor(index, mod.modid, gameVersion);
     if (releases.length > 0) rows.push({ mod, releases });
@@ -358,8 +383,12 @@ export function rowsForGameVersion(
   return rows;
 }
 
-export function modTagsOf(mod: ModEntry): string[] {
-  return mod.tags;
+/**
+ * 这个 mod 的标签。⚠️ 返回**副本**（`readonly`）：`mod.tags` 是目录对象的字段，
+ * 交给调用方的如果是原数组，一次就地 `.sort()` 就会改掉那份目录。
+ */
+export function modTagsOf(mod: ModEntry): readonly string[] {
+  return [...mod.tags];
 }
 
 /**
