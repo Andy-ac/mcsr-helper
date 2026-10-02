@@ -133,12 +133,17 @@ export interface CatalogRowView {
   tagLabels: readonly string[];
   /** 该 `(modid, gameVersion)` 下的全部候选（0 / 1 / 2+ 条，顺序继承目录）。 */
   candidates: readonly ModRelease[];
-  /** 唯一候选才有值；0 个（`missing-release`）或 >1 个（`ambiguous`）都是 `null`。 */
+  /**
+   * 这一行的**目标**（界面上"官方版本"那一格、也是判定用的那一条）：
+   * 传了上游解析结果 ⇒ 上游那条；否则 ⇒ 目录在这一版下**唯一**那条候选。
+   * 0 个（`missing-release`）或 >1 个（`ambiguous`）、而该 modid 又没有上游时是 `null`。
+   */
   official: ModRelease | null;
+  /** 拿**目标**（不是候选集合）判出来的状态。 */
   verdict: ReleaseVerdict;
-  /** 全部候选都是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
+  /** 目标是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
   manual: boolean;
-  /** `needsUpdate` 的结果（含 `download === 'auto'` 与排序守卫）+ "必须有唯一候选"。 */
+  /** `needsUpdate(verdict)` 的结果（含 `download === 'auto'` 与排序守卫）+ "必须有目标"。 */
   batchable: boolean;
   /** 这一行绑定的本地文件（没有绑定时 `null`）。 */
   binding: { localPath: string; localVersion: string | null } | null;
@@ -154,6 +159,24 @@ export interface PlanCatalogRowsInput {
     string,
     { localPath: string; localVersion: string | null; localSha512: string | null }
   >;
+  /**
+   * 上游（Modrinth）解析出来的"最新"那一条，**键 = `modid`**。
+   * 判据来源：spec §7.2 / D1 —— `mod.upstream != null` 时**目标换成上游解析的那条**
+   * （这一期只有 `mcsrranked` → Modrinth）。
+   *
+   * 三条纪律：
+   *   · **可选**：没传、或该 modid 不在表里 ⇒ 行为与本参数不存在时**逐字相同**
+   *     （目标 = 目录里唯一那条候选）。⇒ 抓取失败只是退化成今天的行为，不是一条错误路径。
+   *   · **由调用方去抓**：本文件不做 I/O（见文件头第二节），上游是 I/O ⇒ 读数由外面传进来。
+   *   · **只改目标，不动 `candidates`** —— 界面要能显示"这条来自目录 / 这条来自上游"。
+   *
+   * ⚠️ 现读 `content/mod-catalog.json` 的读数：只有 `mcsrranked` 一条 mod 有 `upstream`
+   *    （`modrinth:I9W1u5Ac`）；它在 `(modid, 游戏版本)` 上只有 **1** 对
+   *    （`mcsrranked|1.16.1`），**0** 对是多候选的，且它的 release **全是**
+   *    `download: 'auto'` ⇒ 今天"传了上游"与"目录单候选"唯一的不同就是**目标那条 release**
+   *    （目录 `5.8.22` / 上游 `5.8.26`）。
+   */
+  upstreamLatest?: ReadonlyMap<string, ModRelease>;
 }
 
 /**
@@ -165,7 +188,7 @@ export interface PlanCatalogRowsInput {
  *    那会让契约多一个"调用方必须先建索引"的隐藏前提。
  */
 export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
-  const { catalog, gameVersion, tagFilter, bindings } = input;
+  const { catalog, gameVersion, tagFilter, bindings, upstreamLatest } = input;
   const index = buildIndex(catalog);
   const rows: CatalogRowView[] = [];
 
@@ -175,12 +198,22 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
 
     const rowId = releaseKey(mod.modid, gameVersion);
     const binding = bindings.get(rowId) ?? null;
+    /*
+     * ★ 目标：① 传了上游解析结果 ⇒ 上游那条（spec §7.2 / D1）；
+     *        ② 否则目录在这一版下**唯一**一条候选 ⇒ 用它；
+     *        ③ 0 条（`missing-release`）或 >1 条（`ambiguous`）⇒ 没有唯一目标 ⇒ `null`。
+     * ⚠️ 判定必须拿**目标**做，不能拿候选集合做：`ReleaseVerdict` 的单候选分支把
+     *    被判的那条 release **装在自己身上**（`{ kind: 'older', release }`）⇒ 拿候选判、
+     *    拿上游当"官方版本"，`verdict.release` 与 `official` 就会指向两条不同的 release，
+     *    而界面两格都会显示 ⇒ 用户看到"官方 5.8.26、状态：比 5.8.22 旧"。
+     */
+    const upstreamTarget = upstreamLatest?.get(mod.modid) ?? null;
+    const target = upstreamTarget ?? (releases.length === 1 ? releases[0]! : null);
     const verdict = judgeRelease(
       binding?.localSha512 ?? null,
       binding?.localVersion ?? null,
-      releases,
+      target !== null ? [target] : releases,
     );
-    const only = releases.length === 1 ? releases[0]! : null;
 
     rows.push({
       rowId,
@@ -190,21 +223,27 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
       tags,
       tagLabels: tagLabelsOf(catalog, tags),
       candidates: releases,
-      official: only,
+      official: target,
       verdict,
       /*
-       * 空集合的 `every` 恒真 ⇒ `length > 0` 不是多余的：少了它，一条
-       * `missing-release` 的行会被标成 `manual`（界面上等于给出一个"打开原网页"、
-       * 但那个网页不存在）。`rowsForGameVersion` 今天只交出非空候选，
-       * 所以这一条是**防御性**的 —— 把契约定在这里看得见。
+       * `manual` 说的是**目标**（"这一行给不给更新按钮"），所以两种情形：
+       *   · 有目标 ⇒ 就看目标那一条的 `download`；
+       *   · 没有目标（`missing-release` / `ambiguous`）⇒ 候选**全都**是 `manual` 才算
+       *     （`optifine|1.7.2` 那一对就是：两个候选都 manual，界面只能给"打开原网页"）。
+       * ⚠️ `length > 0` 不是多余的：空集合的 `every` 恒真，少了它一条 `missing-release`
+       *    的行会被标成 `manual`（等于给出一个"打开原网页"、但那个网页不存在）。
+       *    那一支今天到不了（`rowsForGameVersion` 只交出非空候选）—— 把契约定在这里看得见。
        */
-      manual: releases.length > 0 && releases.every((release) => release.download === 'manual'),
+      manual:
+        target !== null
+          ? target.download === 'manual'
+          : releases.length > 0 && releases.every((release) => release.download === 'manual'),
       /*
        * ★ 进批量的唯一组合收在 `needsUpdate` 里（`older` 且 `download === 'auto'`，
-       *   且**两边版本主体都能安全排序**）。这里只补一个前提：**必须有唯一候选** ——
+       *   且**两边版本主体都能安全排序**）。这里只补一个前提：**必须有目标** ——
        *   `ambiguous` 不知道"该更新成哪一个"，`missing-release` 没有目标。
        */
-      batchable: only !== null && needsUpdate(verdict),
+      batchable: target !== null && needsUpdate(verdict),
       binding: binding
         ? { localPath: binding.localPath, localVersion: binding.localVersion }
         : null,
