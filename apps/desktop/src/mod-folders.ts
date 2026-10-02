@@ -337,6 +337,7 @@ function placeholderState(): ModFoldersState {
     catalogRows: [],
     folders: [],
     missing: [],
+    missingStatus: 'catalog-unavailable',
     notices: [],
     busy: false,
     lastRun: null,
@@ -403,14 +404,36 @@ function buildState(): ModFoldersState {
     for (const row of folders[index]?.rows ?? []) trackedModids.add(row.modid);
   });
 
+  /*
+   * ★ **判修 2**（2026-10-03 复审）：`missing: []` 有两种完全不同的原因 ——
+   *   "真的没有缺的"（`'ok'`）与"我们还不知道你有没有"（另外三种）。
+   *   光看数组这两者**在数据上分不开**，界面只能靠文案猜，而猜错的方向正好是
+   *   "还没扫描读数"被读成"你不缺任何 mod"。⇒ 结构化地标出来，界面只在 `'ok'` 时显示清单。
+   * ⚠️ 优先级是有意的：**目录都没有** ⇒ 什么都列不出来（`'catalog-unavailable'`）；
+   *   **路径不存在**比"还没扫"更具体、更能动手（`'folder-missing'`）——
+   *   而且两者的修法**不同**：前者要把目录放回去或解绑，后者点一次「重扫」就会补上
+   *   （`'folder-missing'` 的说明里**不许**出现"重扫"：`rescan` 对不存在的目录
+   *   只会把读数再删一次，叫人去点一个修不好它的按钮是给错动作）。
+   */
+  const missingFolders = entries.filter(([, entry]) => !isDirectory(entry.path)).length;
+  const missingStatus: ModFoldersState['missingStatus'] =
+    catalog === null
+      ? 'catalog-unavailable'
+      : missingFolders > 0
+        ? 'folder-missing'
+        : foldersWithoutReading > 0
+          ? 'folder-unscanned'
+          : 'ok';
   const missing =
-    catalog === null || foldersWithoutReading > 0
-      ? []
-      : missingMods({ catalog, gameVersion, trackedModids });
-  const missingSuppressed =
-    foldersWithoutReading === 0
-      ? null
-      : `有 ${String(foldersWithoutReading)} 个已绑定文件夹还没有扫描读数 ⇒ 缺失清单暂时空着（"没扫过"不等于"你没有"；点一次「重扫」或让页面重新拉一次状态）`;
+    missingStatus === 'ok' ? missingMods({ catalog: catalog!, gameVersion, trackedModids }) : [];
+  const missingNote =
+    missingStatus === 'folder-unscanned'
+      ? `有 ${String(foldersWithoutReading)} 个已绑定文件夹还没有扫描读数 ⇒ 缺失清单暂时空着（"没扫过"不等于"你没有"；点一次「重扫」或让页面重新拉一次状态就会补上）`
+      : missingStatus === 'folder-missing'
+        ? `有 ${String(missingFolders)} 个已绑定文件夹的路径不存在 ⇒ 缺失清单暂时空着（它们里面的文件现在读不到：把目录放回去、或者解绑它）`
+        : missingStatus === 'catalog-unavailable'
+          ? '目录还没拉到 ⇒ 缺失清单暂时空着（先解决目录不可用：点一次「重扫」重拉目录）'
+          : null;
 
   return {
     catalogStatus,
@@ -420,8 +443,9 @@ function buildState(): ModFoldersState {
     catalogRows,
     folders,
     missing,
+    missingStatus,
     // 目录与缺失清单那两条**不是** push 进 notices 的：它们是"这一次读数的结论"，条件不成立时该消失
-    notices: [catalogError, missingSuppressed, ...notices].filter(
+    notices: [catalogError, missingNote, ...notices].filter(
       (note): note is string => note !== null,
     ),
     busy,

@@ -599,7 +599,25 @@ export interface ModFoldersState {
   bulkChannel: Channel;
   catalogRows: readonly CatalogRowView[];
   folders: readonly ModFolderView[];
+  /**
+   * 底部缺失清单。
+   *
+   * ⚠️★ **它空着有两种完全不同的原因**（2026-10-03 复审的**判修 2**）：
+   *    "真的没有缺的" 与 "我们**还不知道**你有没有" —— 光看 `missing: []` 这两者
+   *    **在数据上分不开**，界面（T7/T8）只能靠文案猜，而猜错的方向正好是
+   *    "还没扫描读数"被读成"你不缺任何 mod"。
+   *    ⇒ 配一格**结构化**的 `missingStatus`：界面只在 `'ok'` 时显示清单，
+   *      其余三种显示那一句说明（并且**不要**对 `'folder-missing'` 说"点重扫"——
+   *      重扫修不了一个被移走的目录）。
+   */
   missing: readonly MissingModView[];
+  /**
+   * 缺失清单现在**能不能当作结论**（判修 2；值语义见下面每一支）。
+   *
+   * 优先级（`buildState` 里按这个顺序判）：`'catalog-unavailable'` ⇒ `'folder-missing'`
+   * ⇒ `'folder-unscanned'` ⇒ `'ok'`。前三种一律 `missing: []` + 一条说明。
+   */
+  missingStatus: 'ok' | 'folder-unscanned' | 'folder-missing' | 'catalog-unavailable';
   /** 例：迁移时"已转为文件夹跟踪：<mod 名>"、"这条绑定读不出来，保留原样"。 */
   notices: readonly string[];
   busy: boolean;
