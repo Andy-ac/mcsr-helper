@@ -57,6 +57,7 @@ import {
   pickLatestVersion,
   primaryFileOf,
 } from '@mcsr/shared/fileUpdates';
+import { migrateState, type StateFileV2 } from '@mcsr/shared/modFolders';
 import type { MessageBoxOptions, OpenDialogOptions } from 'electron';
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { unzipSync } from 'fflate';
@@ -75,9 +76,31 @@ interface StateFileItem {
   lastUpdateFrom: string | null;
   lastUpdateTo: string | null;
 }
-interface StateFile {
-  version: 1;
-  items: Record<string, StateFileItem>;
+
+/**
+ * 状态文件的形状 = **v2**（`@mcsr/shared/modFolders` 的 `StateFileV2`），只多一处收窄：
+ * `items` 在这里是"规范化过的 v1 条目"（`readStateFile()` 逐条补默认值的那一步保证的）。
+ *
+ * ⚠️★ 为什么收窄而不是直接用 `StateFileV2`（2026-10-02 Task 3）：`StateFileV2.items` 是
+ *    `Record<string, unknown>`（它面向"从盘上读来的东西"），而本文件有二十多处直接读
+ *    `items[id].localPath / autoUpdate / localSha512 / …`。不收窄就要在那二十多处各写一次
+ *    cast —— 比在这里收窄一次更差（多的是**没有校验**的 cast）。代价：`readStateFile()` 里
+ *    那次 `as StateFile` 是**由紧随其后的规范化循环兑现的**（见那里的注释）。
+ * ⚠️ `version: 1` **保留**（老客户端 0.0.4 读它，spec §13.4）：它读到的多出来的键会被
+ *    它那句 `as StateFile` 原样忽略。v2 的 `stateVersion: 2` 与 `folders` /
+ *    `catalogBindings` / `prefs` 由 `migrateState()` 补。
+ * ⚠️ `items` 由本文件**原样保留**：本文件从不剪枝、重写或迁移它（v2 的字段与它并存）。
+ */
+type StateFile = StateFileV2 & { items: Record<string, StateFileItem> };
+
+/**
+ * 空状态 = 迁移一份"什么都没有"的输入。
+ *
+ * ⚠️ 默认值只住在 `migrateState()` 里，这里**不抄第二份**（抄一份的下场是两处默认值漂开，
+ *    而漂开的表现是"全新安装的机器上 folders 是 undefined"这种读不出来的状态）。
+ */
+function emptyState(): StateFile {
+  return migrateState({}) as StateFile;
 }
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -114,17 +137,29 @@ interface StateFileRead {
  *    （`initFileUpdates` 会打日志 + 弹一次原生提示框 —— 为什么是提示框见那里）。
  * ⚠️★ **备份失败时反过来做**：一个字节都不覆盖（`state: null` + `fatal`），
  *    宁可让这一栏停住并让用户自己去处理那个文件 —— 见 `StateFileRead` 的注释。
+ * ⚠️★ **形状闸门在迁移之前**（2026-10-02 Task 3）：`migrateState()` 对任何输入都不抛
+ *    （它保证"写下去也安全"，那是它的判据之一）⇒ 如果先过它，一个**能 parse 但形状不对**
+ *    的文件（`{}`、`[]`、`{"version":2}`…）会静默变成"干净的空 v2"，于是下面那条
+ *    "备份成 .corrupt-<ts> 再重建 + 告诉用户"的路**永远不会走到**：用户什么都看不到，
+ *    而他原来那个文件还在原地。所以老判据（`version` / `items`）仍然先判，再迁移。
  */
 export function readStateFile(): StateFileRead {
   const file = stateFilePath();
-  if (!existsSync(file)) return { state: { version: 1, items: {} }, recovered: null, fatal: null };
+  if (!existsSync(file)) return { state: emptyState(), recovered: null, fatal: null };
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as StateFile;
     if (parsed.version !== 1 || typeof parsed.items !== 'object' || parsed.items === null) {
       throw new Error('unexpected shape');
     }
+    /*
+     * v1 的文件（没有 `stateVersion`）⇒ `migrateState()` 补出 `stateVersion: 2` /
+     * `catalogBindings` / `folders` / `prefs`，并把 v1 的 `items` **原样**带过来；
+     * v2 的文件 ⇒ 它原样返回（幂等）。这里那个 `as StateFile` 由**下面那个循环**兑现：
+     * 每条都被写成完整的 `StateFileItem`（缺的字段补默认值），所以 `items` 确实收窄了。
+     */
+    const migrated = migrateState(parsed) as StateFile;
     const items: Record<string, StateFileItem> = {};
-    for (const [id, raw] of Object.entries(parsed.items)) {
+    for (const [id, raw] of Object.entries(migrated.items)) {
       items[id] = {
         localPath: String(raw.localPath ?? ''),
         autoUpdate: raw.autoUpdate === true,
@@ -136,7 +171,7 @@ export function readStateFile(): StateFileRead {
         lastUpdateTo: raw.lastUpdateTo ?? null,
       };
     }
-    return { state: { version: 1, items }, recovered: null, fatal: null };
+    return { state: { ...migrated, items }, recovered: null, fatal: null };
   } catch (error) {
     const backup = `${file}.corrupt-${Date.now()}`;
     try {
@@ -159,7 +194,7 @@ export function readStateFile(): StateFileRead {
       };
     }
     return {
-      state: { version: 1, items: {} },
+      state: emptyState(),
       recovered: `状态文件读不出来（${String(error)}），已备份成 ${basename(backup)}`,
       fatal: null,
     };
@@ -193,7 +228,7 @@ let stateFileBlockedReason: string | null = null;
  * ⚠️ 只由 `initFileUpdates` 从磁盘读一次，之后每次改动都 `writeStateFile(stateFile)` 落盘。
  *    不每次现读：绑定的是一次点击的结果，两个读来源会漂。
  */
-let stateFile: StateFile = { version: 1, items: {} };
+let stateFile: StateFile = emptyState();
 
 // ---------------------------------------------------------------------------
 // jar 元数据
@@ -1655,8 +1690,10 @@ function registerIpc(): void {
  *    顺序仍然是安全的：八条 handler 已经注册好了，页面加载完之后 `getState()` 一定能拿到值。
  *
  * ⚠️ 启动时无条件写一次状态文件：让"这个功能有没有跑起来"有一个看得见、可核对的产物
- *    （全新安装时内容是 `{"version":1,"items":{}}`），同时把"坏文件重建为空"这个结果立刻落盘。
- *    代价：每次启动都写一个几十字节的 JSON（即使内容没变）。
+ *    （全新安装时写的是 `emptyState()` 那一份：`version: 1` + `stateVersion: 2` +
+ *    空的 `items` / `catalogBindings` / `folders` / 默认的 `prefs`，实测 199 字节），
+ *    同时把"坏文件重建为空"这个结果立刻落盘。
+ *    代价：每次启动都写一个几百字节的 JSON（即使内容没变）。
  */
 export async function initFileUpdates(ctx: {
   isPackaged: boolean;
@@ -1680,13 +1717,13 @@ export async function initFileUpdates(ctx: {
      */
     stateFileWritable = false;
     stateFileBlockedReason = read.fatal;
-    stateFile = { version: 1, items: {} };
+    stateFile = emptyState();
     console.error('[file-updates] 状态文件停用：', read.fatal);
     notify('本地文件的状态文件读不出来，而且备份失败', read.fatal);
   } else {
     stateFileWritable = true;
     stateFileBlockedReason = null;
-    stateFile = read.state ?? { version: 1, items: {} };
+    stateFile = read.state ?? emptyState();
     try {
       writeStateFile(stateFile);
     } catch (error) {
