@@ -205,6 +205,7 @@ function normalizePrefs(raw: unknown): StateFileV2['prefs'] {
   const fallback: StateFileV2['prefs'] = {
     bulkChannel: 'origin',
     catalogGameVersion: '1.16.1',
+    catalogGameVersionChosen: false,
     tagFilter: [],
   };
   if (raw === undefined) return fallback;
@@ -229,6 +230,14 @@ function normalizePrefs(raw: unknown): StateFileV2['prefs'] {
   if (gameVersion !== undefined && (typeof gameVersion !== 'string' || gameVersion === '')) {
     throw badStateShape('prefs.catalogGameVersion');
   }
+  /*
+   * Ruling 37 那一格：**缺就补 `false`**（老 v2 / v1 迁移过来的文件从没记过"用户选过"
+   * ⇒ 下次启动仍会采纳一次，那是判修明确接受的），类型不对 ⇒ 坏文件（与上面两格同口径）。
+   */
+  const chosen = raw.catalogGameVersionChosen;
+  if (chosen !== undefined && typeof chosen !== 'boolean') {
+    throw badStateShape('prefs.catalogGameVersionChosen');
+  }
   const tags = raw.tagFilter;
   if (tags !== undefined && (!Array.isArray(tags) || !tags.every((t) => typeof t === 'string'))) {
     throw badStateShape('prefs.tagFilter');
@@ -236,6 +245,7 @@ function normalizePrefs(raw: unknown): StateFileV2['prefs'] {
   return {
     bulkChannel,
     catalogGameVersion: typeof gameVersion === 'string' ? gameVersion : fallback.catalogGameVersion,
+    catalogGameVersionChosen: chosen === true,
     tagFilter: tags === undefined ? [] : [...(tags as string[])],
   };
 }
@@ -339,6 +349,19 @@ export function readStateFile(): StateFileRead {
  *
  * ⚠️ 停住态（`stateFileWritable === false`，见 `StateFileRead.fatal`）下**拒绝写**：
  *    那是"坏文件连备份都失败"时唯一的正确动作 —— 宁可功能不可用，也不许覆盖用户的数据。
+ *
+ * ⚠️★ **合并写**（2026-10-03 Task 4 复审的 **Ruling 38**）：写之前把磁盘上的那份读回来，
+ *    再把我们手里这份的键**盖上去** —— 磁盘上有、而我们这份里没有的键**照原样留着**。
+ *    为什么必须这样：这个文件有**两个写者**（v1 的本地文件跟踪 + 新的 mod 文件夹），
+ *    而 v1 那些写盘点写的是"它读进来时的那份快照"⇒ 一个写者的整份重写会把另一个写者的
+ *    键**抹掉**（或者更常见：把它们的值**退回**上次读盘时的样子）。
+ *    ⚠️ 代价（认，方向是保守的）：一个键如果只存在于磁盘（例如将来另一个版本写的、
+ *      或人工加进去的），它在我们的内存对象里不存在 ⇒ 这一趟它会**活着**，
+ *      而不是被"我们这份比较新"这个假设删掉。多留一个不认识的键比丢一个用户的绑定轻。
+ *    ⚠️ 它**不**负责"两个模块的内存副本不打架"那件事 —— 那一半靠
+ *      `sharedStateFile()`（两个模块共用**同一个对象**，见那里的注释）：
+ *      只要各自的副本是陈旧的，"把磁盘的键合上来"救不了它们（它们**自己就有**那些键，
+ *      值却是旧的）。两层一起才成立。
  */
 export function writeStateFile(state: StateFile): void {
   if (!stateFileWritable) {
@@ -347,13 +370,41 @@ export function writeStateFile(state: StateFile): void {
   const file = stateFilePath();
   const tmp = `${file}.tmp`;
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+  writeFileSync(tmp, JSON.stringify(mergeWithDisk(file, state), null, 2), 'utf8');
   renameSync(tmp, file);
+}
+
+/**
+ * 磁盘上那份里"我们这份没有的键" —— 读不回来 / 不是 JSON / 不是对象时按"没有可合并的"
+ * 处理（`null`）：这一趟写下去的就是我们手里这份（**不抛** —— 写盘这一步不该因为
+ * 读回失败而停住，那会让一次绑定整个失败）。
+ */
+function mergeWithDisk(file: string, state: StateFile): StateFile {
+  if (!existsSync(file)) return state;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return state;
+  }
+  if (!plainObject(parsed)) return state;
+  // 我们这份赢（它更新），磁盘独有的键活着
+  return { ...parsed, ...state } as StateFile;
 }
 
 /** 状态文件能不能写（`false` = 坏文件连备份都失败 ⇒ 什么都不许写）。 */
 let stateFileWritable = true;
 let stateFileBlockedReason: string | null = null;
+
+/**
+ * 状态文件**读过了**吗（由 `initFileUpdates` 置位）。
+ *
+ * ⚠️ 它护的是 `sharedStateFile()` 的调用方：那一位拿到的是"进程里那份权威对象"，
+ *    而**只有 `initFileUpdates` 从磁盘读过一次**。没读过就把它交出去，等于让新模块
+ *    在一个"什么都没读到"的空对象上做改动，然后把它写回磁盘 —— 那会抹掉用户的绑定。
+ *    ⇒ 没读过时**抛**（比静默拿一个空状态好）。
+ */
+let stateFileReady = false;
 
 /**
  * 内存里的状态文件副本 —— 进程内**唯一**权威（磁盘上的那份是它的落盘快照）。
@@ -362,6 +413,36 @@ let stateFileBlockedReason: string | null = null;
  *    不每次现读：绑定的是一次点击的结果，两个读来源会漂。
  */
 let stateFile: StateFile = emptyState();
+
+/**
+ * 进程内那份状态文件对象 —— **两个模块共用同一个对象**（2026-10-03 Task 4 复审的
+ * **Ruling 38** 的核心那一半）。
+ *
+ * 为什么"共用同一个对象"才是那条判据真正的修法：那个文件有**两个写者**
+ * （v1 的本地文件跟踪 + 新的 mod 文件夹），而两个写者都是"整份写出自己内存里那份"。
+ * 只要各持一份副本，写出去的那一份就一定带着**另一个写者读盘时的旧值**：
+ * 判据②"v1 写一次之后 v2 的 `folders` / `catalogBindings` / `prefs` 仍在"看着能过
+ * （它们**确实**还在 v1 那份快照里），可**值是旧的** —— 启动之后绑的文件夹会凭空消失。
+ * 而"写之前把磁盘上的键合上来"（`mergeWithDisk`）救不了这一半：v1 那份里**有**这些键，
+ * 合并只会把它的旧值盖回去。
+ * ⇒ 唯一的解法是让"内存里那份"只有**一份**：谁改了，另一个写者下一次写出去的就是
+ *    **改过之后**的内容。
+ * ⚠️ 代价（认）：v1 与 mod 文件夹从此**共享可变状态** —— 新模块对 `items` 的删除
+ *    （§13.1 的"已转为文件夹跟踪"）对 v1 立即可见（那是**有意的**：那条绑定确实不该再存在）。
+ *    v1 自己那些字段的语义一个字没变（它读写的是同一个对象、同一批键）。
+ * ⚠️ 没读过盘就抛（见 `stateFileReady`）。
+ */
+export function sharedStateFile(): StateFile {
+  if (!stateFileReady) {
+    throw new Error('状态文件还没读（initFileUpdates 必须先跑）—— 这一个对象是磁盘那份的权威副本');
+  }
+  return stateFile;
+}
+
+/** 状态文件现在能不能写；不能写时给出原因（`null` = 能写）。与 `sharedStateFile()` 配套。 */
+export function stateFileBlocked(): string | null {
+  return stateFileWritable ? null : (stateFileBlockedReason ?? '状态文件当前不可写');
+}
 
 // ---------------------------------------------------------------------------
 // jar 元数据
@@ -1899,6 +1980,14 @@ export async function initFileUpdates(ctx: {
     }
     if (read.recovered) notify('本地文件的状态文件读不出来', read.recovered);
   }
+  /*
+   * ★ 从这一行起，`sharedStateFile()` 才允许被别的模块拿走（Ruling 38）：
+   *   上面两条分支都已经把"进程内那份权威对象"安置好了（停住态给的是空对象 +
+   *   `stateFileWritable = false` ⇒ 谁也写不进去）。
+   *   ⚠️ 顺序是承重的：`main.ts` 里 `initModFolders` 排在 `initFileUpdates` **之后**，
+   *      而新模块正是靠这一位来拒绝"在一个还没读过盘的空对象上做改动"。
+   */
+  stateFileReady = true;
 
   registerIpc();
   current = { ...current, items: rebuildItems() };
