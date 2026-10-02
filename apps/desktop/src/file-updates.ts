@@ -308,7 +308,7 @@ let current: FileUpdatesState = {
   lastRun: null,
 };
 
-function broadcast(): void {
+export function broadcast(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(FILE_UPDATES_CHANNELS.onStatus, current);
@@ -364,7 +364,7 @@ async function readLocal(localPath: string): Promise<LocalRead> {
  * ⚠️ 用流而不是 `readFileSync`：`readJarMeta` 那一步已经把整份文件读进内存一次，
  *    再整份读一次就是峰值多 27 MB。代价：这个函数是 async（调用点本来就在 async 里）。
  */
-function sha512OfFile(path: string): Promise<string> {
+export function sha512OfFile(path: string): Promise<string> {
   return new Promise((done, fail) => {
     const hash = createHash('sha512');
     const stream = createReadStream(path);
@@ -1164,7 +1164,7 @@ async function confirmEnable(targetPath: string): Promise<boolean> {
  * ⚠️ 不重试：这是 27 MB 的字节，重试要重新下完（spec 只在元数据那一步要了退避重试）。
  *    失败时调用方会把 `.part` 删掉 —— 原文件一个字节都没动。
  */
-async function downloadTo(
+export async function downloadTo(
   partPath: string,
   url: string,
   expectedSize: number,
@@ -1474,7 +1474,7 @@ let bulkRunning = false;
  *   · `busyItemId` 非空 ⇒ "正在更新中：<哪一条>"（两次单条更新撞在一起）。
  * 两者**都是立刻拒绝**：不排队、也不半执行（排队会让用户以为点了没反应）。
  */
-function assertNotBusy(): void {
+export function assertNotBusy(): void {
   if (bulkRunning) throw new Error('正在一键更新（一次只写一个文件）—— 等它跑完再试');
   if (current.busyItemId !== null) {
     throw new Error(`正在更新中：${current.busyItemId}（一次只写一个文件）`);
@@ -1491,7 +1491,7 @@ function assertNotBusy(): void {
  *      —— 也就是评审必修 2 说的那个空档。⇒ `bulkRunning` 守的不再是一个理论上不可达的状态。
  * 代价：批量比"一条接一条不停手"多几个事件循环轮次（微秒级）。
  */
-function yieldToEventLoop(): Promise<void> {
+export function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
