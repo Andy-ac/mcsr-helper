@@ -112,8 +112,8 @@ const argOf = (name) => {
 const KEEP = process.argv.includes('--keep');
 const PHASE = argOf('--phase') || 'main';
 const CASE = argOf('--case');
-if (PHASE !== 'main' && PHASE !== 'state-file') {
-  console.error(`✗ --phase 只接受 main / state-file，收到「${PHASE}」`);
+if (PHASE !== 'main' && PHASE !== 'state-file' && PHASE !== 'prefs') {
+  console.error(`✗ --phase 只接受 main / state-file / prefs，收到「${PHASE}」`);
   process.exit(2);
 }
 
@@ -158,10 +158,13 @@ const listing = (dir) =>
         .join(' | ')
     : '（目录不在）';
 
-if (CASE !== '' && !['a', 'b', 'c'].includes(CASE)) {
-  bail(`--case 只接受 a / b / c，收到「${CASE}」`);
+if (PHASE === 'state-file' && !['a', 'b', 'c'].includes(CASE)) {
+  bail(`--phase state-file 的 --case 只接受 a / b / c，收到「${CASE}」`);
 }
-if (PHASE === 'state-file' && CASE === '') bail('--phase state-file 必须带 --case a|b|c');
+if (PHASE === 'prefs' && !['d', 'e'].includes(CASE)) {
+  bail(`--phase prefs 的 --case 只接受 d / e，收到「${CASE}」`);
+}
+if (PHASE === 'prefs' && CASE === '') bail('--phase prefs 必须带 --case d|e');
 
 // ---------------------------------------------------------------------------
 // 前置：产物在不在、是不是这一版（照 `verify-file-updates.mjs` 的输入集守卫）
@@ -415,6 +418,22 @@ if (UPSTREAM_PROJECT === undefined) {
   bail(`夹具前提不成立：${MOD_CATALOG_FILE} 里 ${MCSRRANKED} 没有 upstream`);
 }
 
+/**
+ * "在 1.16.1 下**恰好一条**候选"的 modid 清单。
+ *
+ * ⚠️ 这是**缺失清单的判据本身**（`missingMods`：`releases.length !== 1` 的行一律不出现，
+ *    因为"该装哪一个"没有唯一答案 —— spec §7.5）。⇒ 期望条数与夹具 modid 都从这里推，
+ *    **不手抄一个数字**：目录换了、判据改了，这两个读数会跟着变，而不是变成一句假话。
+ */
+const oneRelease1161 = modCatalog.mods
+  .map((mod) => mod.modid)
+  .filter(
+    (modid) =>
+      modCatalog.releases.filter(
+        (release) => release.modid === modid && release.targetVersions.includes('1.16.1'),
+      ).length === 1,
+  );
+
 function makeJar(path, meta) {
   writeFileSync(path, Buffer.from(zipSync({ 'fabric.mod.json': strToU8(JSON.stringify(meta)) })));
   return path;
@@ -598,29 +617,85 @@ async function mainPhase() {
   const goneDir = join(workRoot, 'E-gone');
   mkdirSync(goneDir, { recursive: true });
 
+  /*
+   * **F-pre（判修 1 / Ruling 34）**：一个**在启动之前就已经绑好**、而且 `autoUpdate: false`
+   * 的文件夹，里面放一份真 jar。它是"漏扫的文件夹"唯一的构造方式：
+   * 启动那一路只扫开着开关的文件夹 ⇒ 这一个在启动后**没有读数**，
+   * 而它正是"缺失清单会不会被污染"那两条判据的夹具。
+   * ⚠️ jar 里那个 modid 要**在目录里**、在 1.16.1 下有**唯一**一条候选
+   *    （缺失清单只列唯一候选的行），并且与 A-mods 里的 `antigone` **不同** ——
+   *    否则"它被算成已跟踪"这件事分不清是哪个文件夹贡献的。
+   */
+  const preDir = join(workRoot, 'F-pre');
+  mkdirSync(preDir, { recursive: true });
+  const trackedInPre = oneRelease1161.find((modid) => modid !== ANTIGONE);
+  if (trackedInPre === undefined) {
+    bail(`${MOD_CATALOG_FILE} 里找不到"1.16.1 下唯一候选且 modid ≠ antigone"的 mod，构造不出判修 1 的夹具`);
+  }
+  const preJar = makeJar(join(preDir, `${trackedInPre}-1.16.1.jar`), {
+    id: trackedInPre,
+    version: '1.0.0',
+  });
+
   console.log(`  夹具目录：${workRoot}`);
   console.log(`  A-mods：${listing(modsDir)}`);
+  console.log(`  F-pre（预绑定、autoUpdate=false）：${listing(preDir)}`);
   console.log(`  .minecraft/instances/demo：${listing(instanceDir)}`);
 
-  // ---- 预置 v1 状态文件（必须在 require 产物**之前**）---------------------
+  // ---- 预置状态文件（必须在 require 产物**之前**）-------------------------
   /*
    * 两条 v1 绑定要两个**不同的键**，而仓库里那份 `content/file-catalog.json` 只有
    * **一条** item（现读：`items.length === 1`，id = `mcsrranked`）⇒ 第二条用一个合成键。
    * 这是合法的：`readStateFile()` 保留 `items` 里所有键（不按目录剪枝），
    * 而这一条要验的正是"归属只是多写一份 catalogBindings、items 里一个字段都不许动"。
+   *
+   * ⚠️ 这一份是 **v2**（`stateVersion: 2` + 三格齐全）—— 判修 1 需要在启动**之前**
+   *    就有一个 `autoUpdate: false` 的已绑定文件夹，而 `folders` 只有 v2 才有。
+   *    v1 那份 `items` 照旧写在里面（§13.1 与归属那两条判据要的就是它）。
    */
   const insideId = fileCatalog.items[0].id;
   const outsideId = `${insideId}-legacy`;
   if (fileCatalog.items.length === 0) bail(`${FILE_CATALOG_FILE} 里一条 item 都没有，构造不出夹具`);
+  /*
+   * ⚠️ Ruling 38 那一段要**真的调一次 v1 的 `bind`** 才能让它写盘，而 v1 的 `bind()`
+   *    自己会校验 jar 里的 modid 与目录条目一致（`meta.id !== item.source.modId` ⇒ 拒）
+   *    ⇒ 那份夹具必须是**那个 modid** 的 jar（拿 `a-2.0.jar` 去喂会被 v1 正当拒绝，
+   *    而"拒绝了所以没写盘"看起来正好像"写盘没抹掉东西"—— 那是一条恒真的读数）。
+   */
+  const v1Dir = join(workRoot, 'G-v1');
+  mkdirSync(v1Dir, { recursive: true });
+  const v1Jar = makeJar(join(v1Dir, 'mcsrranked-5.8.26.jar'), {
+    id: fileCatalog.items[0].source.modId,
+    version: '5.8.26',
+  });
   const seeded = {
     version: 1,
+    stateVersion: 2,
     items: {
       [insideId]: legacyItem(jarNew, '2.0', sha512Of(jarNew)),
       [outsideId]: legacyItem(legacyJar, '1.5', sha512Of(legacyJar)),
     },
+    catalogBindings: {},
+    folders: {
+      'pre-folder': {
+        path: preDir,
+        gameVersion: null,
+        autoUpdate: false,
+        boundAt: 1,
+      },
+    },
+    prefs: {
+      bulkChannel: 'origin',
+      catalogGameVersion: '1.16.1',
+      catalogGameVersionChosen: false,
+      tagFilter: [],
+    },
   };
   writeFileSync(stateFile(), JSON.stringify(seeded, null, 2), 'utf8');
-  console.log(`  预置 v1 状态文件：items = ${insideId}（落在 A-mods 内）/ ${outsideId}（在 A-mods 外）`);
+  console.log(
+    `  预置 v2 状态文件：items = ${insideId}（落在 A-mods 内）/ ${outsideId}（在 A-mods 外）；` +
+      `folders = pre-folder（F-pre，autoUpdate=false）`,
+  );
 
   loadArtifact();
   const registered = await waitForHandlers();
@@ -682,6 +757,59 @@ async function mainPhase() {
     );
   });
   if (folderId === '') return { workRoot, ok: false };
+
+  // =========================================================================
+  /*
+   * ★ **判修 1 / Ruling 34**（2026-10-03 复审）：一个**没扫过**的已绑定文件夹
+   *   不许污染底部缺失清单。实测过的那把刀：`autoUpdate: false` 的文件夹启动后不扫，
+   *   而 `trackedModids` 从"文件夹行"推 ⇒ `missing` 会把整个 1.16.1 目录（48 行）列出来。
+   *   两半都要判：**补扫**（页面第一次要状态时）与**没读数就不许下结论**（清单空着 + 说明）。
+   */
+  await section('★ 判修 1 / Ruling 34：没扫过的文件夹不许污染缺失清单（含 getState 补扫）', async () => {
+    const preView = () =>
+      state.folders.find((f) => resolve(f.path).toLowerCase() === resolve(preDir).toLowerCase());
+    const pre = preView();
+    check(
+      `（前置）预绑定的 F-pre 在状态里、而且**启动这一趟没扫它**（autoUpdate=false ⇒ 0 行）`,
+      pre !== undefined && pre.autoUpdate === false && pre.rows.length === 0,
+      pre === undefined ? '（没有这个文件夹）' : `autoUpdate=${String(pre.autoUpdate)} rows=${String(pre.rows.length)}`,
+    );
+    check(
+      `还没有读数的文件夹 ⇒ 缺失清单**空着**（不许把整个目录列成"你缺这些"）`,
+      state.missing.length === 0,
+      `missing = ${String(state.missing.length)} 条`,
+    );
+    check(
+      `而且**说出来**（notices 里有一条讲清缺失清单为什么空着）`,
+      state.notices.some((note) => note.includes('没有扫描读数')),
+      JSON.stringify(state.notices),
+    );
+
+    const before = preView()?.rows.length ?? -1;
+    state = await invoke(MOD_CH.getState);
+    const after = preView();
+    check(
+      `第一次 getState 把该扫的扫掉（补扫：${String(before)} 行 → ${String(after?.rows.length ?? -1)} 行）`,
+      after !== undefined && after.rows.length === 1 && after.rows[0].modid === trackedInPre,
+      after === undefined ? '（没有这个文件夹）' : JSON.stringify(after.rows.map((r) => r.modid)),
+    );
+    check(
+      `扫完之后缺失清单是**真的**那一份：条数 = 1.16.1 下唯一候选的 mod 数（${String(oneRelease1161.length)}）− 已跟踪的 2 个`,
+      state.missing.length === oneRelease1161.length - 2,
+      `missing = ${String(state.missing.length)} 条（期望 ${String(oneRelease1161.length - 2)}）`,
+    );
+    check(
+      `（前置）它确实 > 0 ⇒ 下面那条"不在里面"不是空集上的恒真`,
+      state.missing.length > 0,
+      `missing = ${String(state.missing.length)} 条`,
+    );
+    check(
+      `两个**真的在**文件夹里的 modid 都不在缺失清单里（${ANTIGONE} 在 A-mods、${trackedInPre} 在 F-pre）`,
+      !state.missing.some((m) => m.modid === ANTIGONE) &&
+        !state.missing.some((m) => m.modid === trackedInPre),
+      JSON.stringify(state.missing.filter((m) => m.modid === ANTIGONE || m.modid === trackedInPre)),
+    );
+  });
 
   // =========================================================================
   await section('③ §13.1：落在新绑定文件夹里的 v1 绑定被解除，并如实报告', async () => {
@@ -930,6 +1058,94 @@ async function mainPhase() {
   });
 
   // =========================================================================
+  /*
+   * ★ **Ruling 38**（2026-10-03 复审）：这个状态文件有**两个写者**（v1 的本地文件跟踪 +
+   *   新的 mod 文件夹），而两个写者都是"整份写出自己内存里那份"。
+   *   判据两条（就是判修文本里那两条）：**互不抹掉** —— 而且看的是**值是不是当前的**，
+   *   不只是"键还在不在"（键在、值退回上次读盘时的样子，正是那条 bug 的形态）。
+   *   第三把刀量的是**合并写**那一半：磁盘上独有的键不许被一次写入抹掉。
+   */
+  await section('★ Ruling 38：两个写者共用一份状态文件，谁的字段都不许被对方抹掉', async () => {
+    // ---- 先把"v2 这一侧"的当前值记下来（它们必须活过下面那次 v1 写入）----
+    const v2Before = readStateFileJson();
+    const foldersBefore = Object.values(v2Before?.folders ?? {}).map((f) => f.path);
+    const bindingBefore = v2Before?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath;
+    const bulkBefore = v2Before?.prefs?.bulkChannel?.mirrorId;
+    check(
+      '（前置）v2 这一侧此刻有东西可丢：≥2 个文件夹、一条目录行绑定、bulkChannel 是镜像',
+      foldersBefore.length >= 2 && bindingBefore !== undefined && bulkBefore === 'gh-proxy',
+      `folders=${String(foldersBefore.length)} binding=${String(bindingBefore)} bulk=${String(bulkBefore)}`,
+    );
+
+    /*
+     * 一次**真的 v1 写入**：`mcsr:fileupdates-bind` 会把 `items[insideId]` 写出来并落盘
+     * （`bind()` → `writeStateFile`）。⚠️ 它后面还会 `check(false)` ⇒ 那一趟会去查 Modrinth
+     * （本探针的 fetch 钩子会拒 ⇒ 退避重试三次 ≈ 1.2 秒）。这是**成本**，不是缺陷。
+     */
+    openQueue = [{ canceled: false, filePaths: [v1Jar] }];
+    await invoke(FILE_CH.bind, insideId);
+    const v1Write = readStateFileJson();
+    check(
+      '① v1 写了一次之后，v2 那三格**还在、而且是当前值**（文件夹没退回启动时那份、绑定与通道没被抹掉）',
+      JSON.stringify(Object.values(v1Write?.folders ?? {}).map((f) => f.path)) ===
+        JSON.stringify(foldersBefore) &&
+        v1Write?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath === bindingBefore &&
+        v1Write?.prefs?.bulkChannel?.mirrorId === bulkBefore &&
+        v1Write?.stateVersion === 2,
+      JSON.stringify({
+        folders: Object.values(v1Write?.folders ?? {}).map((f) => f.path),
+        binding: v1Write?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath,
+        bulk: v1Write?.prefs?.bulkChannel,
+      }),
+    );
+    check(
+      '① 而 v1 自己那次写入确实生效了（items 里那条是刚绑的 jar ⇒ 上面那条不是"什么都没发生"）',
+      resolve(v1Write?.items?.[insideId]?.localPath ?? '').toLowerCase() ===
+        resolve(v1Jar).toLowerCase(),
+      JSON.stringify(v1Write?.items?.[insideId] ?? null),
+    );
+
+    // ---- 反过来：一次 v2 写入之后，v1 的 items 逐字段仍在 ----
+    const v1ItemBefore = readStateFileJson()?.items?.[insideId];
+    state = await invoke(MOD_CH.setTagFilter, ['legal']);
+    const v2Write = readStateFileJson();
+    check(
+      '② v2 写了一次之后，v1 的 `items` 里那条**逐字段**仍在（多写一份，不是搬走/重写）',
+      v2Write?.items?.[insideId] !== undefined &&
+        Object.entries(v1ItemBefore ?? {}).every(([k, v]) => v2Write.items[insideId][k] === v),
+      JSON.stringify(v2Write?.items?.[insideId] ?? null),
+    );
+    check(
+      '② 而 v2 自己那次写入确实生效了（tagFilter 落盘 ⇒ 上面那条不是"什么都没发生"）',
+      v2Write?.prefs?.tagFilter?.[0] === 'legal',
+      JSON.stringify(v2Write?.prefs?.tagFilter ?? null),
+    );
+
+    /*
+     * 第三把刀：**磁盘上独有的键**。手工往盘上加一个 v1/v2 都不认识的顶层键，
+     * 然后再让两个写者各写一次 —— 合并写（`mergeWithDisk`）会留着它，
+     * 而"整份重写"会把它删掉。
+     */
+    const withExtra = { ...(readStateFileJson() ?? {}), probeOnlyKey: { keep: 'me' } };
+    writeFileSync(stateFile(), JSON.stringify(withExtra, null, 2), 'utf8');
+    state = await invoke(MOD_CH.setTagFilter, []);
+    const afterV2 = readStateFileJson();
+    check(
+      '③ 磁盘上独有的顶层键活过了一次 v2 写入（合并写，不是整份重写）',
+      afterV2?.probeOnlyKey?.keep === 'me',
+      JSON.stringify(afterV2?.probeOnlyKey ?? null),
+    );
+    openQueue = [{ canceled: false, filePaths: [v1Jar] }];
+    await invoke(FILE_CH.bind, insideId);
+    const afterV1 = readStateFileJson();
+    check(
+      '③ 也活过了一次 v1 写入',
+      afterV1?.probeOnlyKey?.keep === 'me',
+      JSON.stringify(afterV1?.probeOnlyKey ?? null),
+    );
+  });
+
+  // =========================================================================
   await section('⑨ 路径不存在：绑定保留、标记出来（不是删掉它）', async () => {
     openQueue = [{ canceled: false, filePaths: [goneDir] }];
     state = await invoke(MOD_CH.bindFolder);
@@ -1123,11 +1339,138 @@ async function stateFilePhase() {
 }
 
 // ===========================================================================
+// 相位三：Ruling 37 —— 用户显式选过的游戏版本必须按机器记住（case d/e）
+// ===========================================================================
+async function prefsPhase() {
+  const workRoot = mkdtempSync(join(tmpdir(), `verify-mod-folders-prefs-${CASE}-`));
+  currentUserDataDir = join(workRoot, 'userData');
+  mkdirSync(currentUserDataDir, { recursive: true });
+
+  /*
+   * 夹具：一个**能推断出 1.16.1** 的文件夹（`.minecraft` + `mmc-pack.json`，
+   * 与主相位那一份同形），而预置的 `catalogGameVersion` 是 **1.8.9** ——
+   * 两者不同，"启动时会不会被覆盖"才分得出来。
+   */
+  const instanceDir = join(workRoot, '.minecraft', 'instances', 'demo');
+  const instanceMods = join(instanceDir, 'mods');
+  mkdirSync(instanceMods, { recursive: true });
+  writeFileSync(
+    join(instanceDir, 'mmc-pack.json'),
+    JSON.stringify({ components: [{ uid: 'net.minecraft', version: '1.16.1' }] }),
+  );
+  /*
+   * 里面放一份真 jar：等待信号（下面那个"目录 ok 且文件夹已扫"的推送）靠它分辨
+   * "启动那一路跑完了" —— 一个**空**目录扫出来也是 0 行，于是一个**还没扫**的空目录
+   * 与"扫过了、里面什么都没有"满足同一个条件（那条等待就失去分辨力了）。
+   */
+  makeJar(join(instanceMods, 'present.jar'), { id: ANTIGONE, version: '2.0.0' });
+
+  const prefsBase = { bulkChannel: 'origin', catalogGameVersion: '1.8.9', tagFilter: [] };
+  const seed = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {
+      'f-auto': { path: instanceMods, gameVersion: null, autoUpdate: true, boundAt: 1 },
+    },
+    /*
+     * case d：**用户选过**（`catalogGameVersionChosen: true`）⇒ 1.8.9 必须活下来；
+     * case e：老文件**没有这一格** ⇒ 归一化补 `false`，下次启动仍会采纳一次（1.16.1）。
+     */
+    prefs:
+      CASE === 'd'
+        ? { ...prefsBase, catalogGameVersionChosen: true }
+        : prefsBase,
+  };
+  writeFileSync(stateFile(), JSON.stringify(seed, null, 2), 'utf8');
+  console.log(
+    `  预置状态文件（case ${CASE}）：catalogGameVersion=1.8.9，chosen=${CASE === 'd' ? 'true' : '（缺这一格 ⇒ 补 false）'}；` +
+      `已绑定文件夹推断出 1.16.1`,
+  );
+
+  /*
+   * ⚠️★ 上游夹具先切成"可达"：这一相位要等的是**启动那一路的最后一次 rebuild**
+   *    （`startUp` 的 `adoptFolderGameVersion()` 排在它的扫盘循环之后、`rebuild()` 之前），
+   *    而在"不可达"模式下那一次要多等三次退避重试（≈1.2 秒）—— 等的久不是问题，
+   *    **等错东西**才是：固定 `sleep` 会在"启动还没跑到 adopt"时读到一份旧状态，
+   *    于是 case d 那条"没被覆盖"**恒真**（假绿），case e 那条则红得莫名其妙。
+   */
+  upstreamMode = 'ok';
+  loadArtifact();
+  const registered = await waitForHandlers();
+  check('（前置）这一相位也把 14 条通道注册起来了', registered);
+
+  /*
+   * 等 `startUp` 真正跑完：判据是**推给页面的那份状态**（`onStatus`）里
+   * `catalogStatus === 'ok'`（目录抓到了）**且**那个文件夹已经有一行（扫盘循环跑过了）。
+   * 这一相位**不主动调 `getState`**（那会由 `ensureScans` 自己产生一份同样形状的推送，
+   * 让上面那个信号失去分辨力）—— 于是唯一能满足它的就是 `startUp` 的最后一次 rebuild。
+   */
+  let pushed = null;
+  for (let i = 0; i < 400; i += 1) {
+    const last = pushes.filter((p) => p.channel === MOD_CH.onStatus).at(-1)?.payload ?? null;
+    if (last !== null && last.catalogStatus === 'ok' && last.folders.some((f) => f.rows.length > 0)) {
+      pushed = last;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  check(
+    '（前置）启动那一路跑完了（拿到一份"目录 ok 且已绑定文件夹已扫"的推送）',
+    pushed !== null,
+    pushed === null ? '（等不到）' : `catalogStatus=${String(pushed.catalogStatus)}`,
+  );
+  const state = pushed ?? { folders: [] };
+  const after = readStateFileJson();
+
+  if (CASE === 'd') {
+    check(
+      '用户显式选过（chosen: true）⇒ 状态里**仍是 1.8.9**（没被文件夹推断出的 1.16.1 覆盖）',
+      state.gameVersion === '1.8.9',
+      `state.gameVersion=${String(state.gameVersion)}`,
+    );
+    check(
+      '磁盘上的 `prefs.catalogGameVersion` **也仍是 1.8.9**（不是"内存里看着对、盘上被改写"）',
+      after?.prefs?.catalogGameVersion === '1.8.9',
+      JSON.stringify(after?.prefs ?? null),
+    );
+    check(
+      '`catalogGameVersionChosen` 仍是 true（这一位没被归一化掉）',
+      after?.prefs?.catalogGameVersionChosen === true,
+      String(after?.prefs?.catalogGameVersionChosen),
+    );
+  } else {
+    check(
+      '老文件（缺这一格 ⇒ 补 false）⇒ 采纳已绑定文件夹推断出的 1.16.1（Ruling 37 明确接受这一次）',
+      state.gameVersion === '1.16.1',
+      `state.gameVersion=${String(state.gameVersion)}`,
+    );
+    check(
+      '磁盘上也被采纳地写成 1.16.1，而 `catalogGameVersionChosen` 补成了 `false`（不是 true）',
+      after?.prefs?.catalogGameVersion === '1.16.1' && after?.prefs?.catalogGameVersionChosen === false,
+      JSON.stringify(after?.prefs ?? null),
+    );
+  }
+  check(
+    '（对照）那个文件夹确实推断得出 1.16.1（否则上面几条比的是"推断不出来"）',
+    state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion === '1.16.1',
+    String(state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion),
+  );
+
+  server.close();
+  if (!KEEP) rmSync(workRoot, { recursive: true, force: true });
+  return { workRoot };
+}
+
+// ===========================================================================
 // 跑
 // ===========================================================================
 let result;
 if (PHASE === 'state-file') {
   result = await stateFilePhase();
+} else if (PHASE === 'prefs') {
+  result = await prefsPhase();
 } else {
   result = await mainPhase();
   // 三条 readStateFile 加固的判据在子进程里跑（各要一份全新的模块状态）
@@ -1140,6 +1483,20 @@ if (PHASE === 'state-file') {
     });
     check(
       `（子进程）case ${c} 的三条判据全成立`,
+      child.status === 0,
+      `子进程退出码 ${String(child.status)}`,
+    );
+  }
+  // Ruling 37 那两条也各要一份全新的模块状态（"启动时会不会覆盖"是启动那一刻的事）
+  console.log('\n## ★ Ruling 37：用户选的游戏版本按机器记住（两条，各起一个子进程）');
+  for (const c of ['d', 'e']) {
+    const child = spawnSync(process.execPath, [self, '--phase', 'prefs', '--case', c], {
+      stdio: 'inherit',
+      cwd: repoRoot,
+      env: { ...process.env, MCSR_VERIFY_REEXEC: '1' },
+    });
+    check(
+      `（子进程）prefs case ${c} 的三条判据全成立`,
       child.status === 0,
       `子进程退出码 ${String(child.status)}`,
     );
