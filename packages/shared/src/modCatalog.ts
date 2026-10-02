@@ -40,6 +40,7 @@
  *    调用方只读自己认识的字段，这没问题；但**不许**把解析结果再原样回写给服务端。
  */
 import { z } from 'zod';
+import { compareLocalVersions } from './fileUpdates';
 
 /**
  * 一个 GitHub 加速站。
@@ -419,4 +420,133 @@ export function mirrorsFor(catalog: ModCatalog, url: string): ModMirror[] {
  */
 export function mirrorUrl(mirror: ModMirror, url: string): string {
   return `${mirror.prefix}${url}`;
+}
+
+// ---------------------------------------------------------------------------
+// 判定与文件名
+// ---------------------------------------------------------------------------
+
+/**
+ * 版本主体 = `+` 之前的那一段。
+ *
+ * 为什么需要它（**这是承重判据，不是美化**）：实测同一版本号有两种写法 ——
+ * 用户机器上 `standardsettings-2.3+1.16.1.jar` 内部写 `2.3+1.16.1`，
+ * 而官方那条 release 写 `2.3+1.16-1.16.1`。
+ * 若不先剥 `+`，`compareLocalVersions` 会切成
+ * `['2','3','1','16','1']` vs `['2','3','1','16','1','16','1']` ⇒ 判成"本地更旧"，
+ * 于是一条已经装好的同版本 mod 会被判成"可更新"（并在批量里被替换掉）。
+ *
+ * ⚠️ 代价（写下来）：`+` 之后的构建元数据被丢掉了，所以"主体相同、元数据不同、字节也不同"
+ *    的两个 build 会被归为 `different-build`（保守：不进批量、要人显式点）。
+ *    这个失败形态目前**没有现场**（18 个真实 jar 里没出现过）。
+ */
+export function versionBodyOf(version: string): string {
+  const plus = version.indexOf('+');
+  return plus === -1 ? version : version.slice(0, plus);
+}
+
+/** Windows 上非法的文件名字符 + 控制字符。 */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 控制字符正是**要被排除**的那一类 —— 拿掉 `\u0000-\u001f` 就等于放它们落盘
+const BAD_NAME = /[\u0000-\u001f<>:"|?*\\/]/;
+
+/**
+ * 从下载地址推出落盘的文件名。
+ *
+ * ⚠️★ URL 里来的名字是**不可信输入**：它会被 `join(dir, name)` 直接拼成写盘路径 ⇒
+ *    必须 `decodeURIComponent` **之后**再检查（`%2F` 解出来就是 `/`，而 `pathname` 上
+ *    看到的是编码过的形式，很容易漏）。
+ * 返回 `null` 表示"这个名字不能用来落盘" ⇒ 调用方必须**拒绝这次更新**，不许退回一个默认名。
+ */
+export function originFileNameOf(url: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const last = pathname.split('/').pop() ?? '';
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(last);
+  } catch {
+    return null;
+  }
+  if (decoded === '' || decoded === '.' || decoded === '..') return null;
+  if (BAD_NAME.test(decoded)) return null;
+  if (!decoded.toLowerCase().endsWith('.jar')) return null;
+  return decoded;
+}
+
+export type LocalComparison = 'same' | 'different-build' | 'older' | 'newer' | 'unknown';
+
+/**
+ * 本地那份 vs 官方那一条。
+ *
+ * 判据链（**只有第一层是硬结论**）：
+ *   ① `sha512` 相等 ⇒ `same`。与版本号字符串**完全无关** —— 它证的是"你手上这份字节
+ *      就是官方发的那一份"。（实测：18 个真实 jar 里 7 个命中，且没有"命中了别的版本"的。）
+ *   ② 不相等 ⇒ 比**版本主体**：相等 ⇒ `different-build`；更旧 ⇒ `older`；更新 ⇒ `newer`；
+ *      比不出大小 ⇒ 也是 `different-build`（主体字符串不同但比较判等）。
+ *   ③ 读不出本地版本 ⇒ `unknown`。
+ */
+export function compareLocalToRelease(
+  localSha512: string | null,
+  localVersion: string | null,
+  release: ModRelease,
+): LocalComparison {
+  if (localSha512 !== null && localSha512 === release.sha512) return 'same';
+  if (localVersion === null) return 'unknown';
+  const local = versionBodyOf(localVersion);
+  const target = versionBodyOf(release.version);
+  if (local === target) return 'different-build';
+  // 复用 v1 的比较器（返回符号数）。它按数字段逐段比，解析不出数字段时退化成字符串序。
+  // ⚠️ 它内部用 localeCompare ⇒ 只用来**定"谁前谁后"**，不用来决定"要不要写盘"（那是 sha512 的活）。
+  const cmp = compareLocalVersions(local, target);
+  if (cmp === 0) return 'different-build';
+  return cmp < 0 ? 'older' : 'newer';
+}
+
+export type ReleaseVerdict =
+  | { kind: 'same'; release: ModRelease }
+  | { kind: 'different-build'; release: ModRelease }
+  | { kind: 'older'; release: ModRelease }
+  | { kind: 'newer'; release: ModRelease }
+  | { kind: 'unknown'; release: ModRelease }
+  | { kind: 'ambiguous'; releases: ModRelease[] }
+  | { kind: 'missing-release' };
+
+/**
+ * 把"本地读数 + 候选"归成一种行状态。
+ *
+ * ⚠️★ 候选多于一个时**先用本地的 sha512 定案**：实测 `(modid, 游戏版本)` 真有 2 个重复键
+ *    （`optifine|1.7.2` → `HD_U_E1`/`HD_U_F7`；`speedrunigt|26.1` → `14.2+26.1.x`/`14.2+26.1`）。
+ *    用户手上那一份到底是哪一个，只有字节能回答；答不上来就是 `ambiguous`（**不猜**，
+ *    由界面要求人明确选一个，且不进批量）。
+ */
+export function judgeRelease(
+  localSha512: string | null,
+  localVersion: string | null,
+  candidates: readonly ModRelease[],
+): ReleaseVerdict {
+  if (candidates.length === 0) return { kind: 'missing-release' };
+  if (candidates.length > 1) {
+    if (localSha512 !== null) {
+      const exact = candidates.find((candidate) => candidate.sha512 === localSha512);
+      if (exact) return { kind: 'same', release: exact };
+    }
+    return { kind: 'ambiguous', releases: [...candidates] };
+  }
+  const only = candidates[0]!;
+  return { kind: compareLocalToRelease(localSha512, localVersion, only), release: only };
+}
+
+/**
+ * 这一行能不能进**批量**更新。
+ *
+ * ★ `older` 是**唯一**进批量的状态。`newer`（本地更新）进批量 = 降级；
+ *   `different-build`（同版本号不同字节）与 `ambiguous`（不知道该装哪个）
+ *   都要人显式点一下 —— 同一版本号的两种打包不该由程序替用户选。
+ */
+export function needsUpdate(verdict: ReleaseVerdict): boolean {
+  return verdict.kind === 'older';
 }

@@ -5,16 +5,21 @@ import { describe, it } from 'node:test';
 import type { ModRelease } from '@mcsr/shared/modCatalog';
 import {
   buildIndex,
+  compareLocalToRelease,
+  judgeRelease,
   mirrorsFor,
   mirrorUrl,
   modFor,
   modTagsOf,
+  needsUpdate,
+  originFileNameOf,
   parseModCatalog,
   parseModCatalogWire,
   releaseKey,
   releasesFor,
   rowsForGameVersion,
   tagLabelOf,
+  versionBodyOf,
 } from '@mcsr/shared/modCatalog';
 
 /** 一份最小的合法目录。**故意只有一个 mod、一条 release** —— 它测的是形状，不是数据。 */
@@ -340,5 +345,130 @@ describe('展开与查找：真目录的读数', () => {
     const first = parsed.catalog.mods[0]!;
     assert.equal(modFor(index, first.modid)?.modid, first.modid);
     assert.equal(modFor(index, 'ghost'), null);
+  });
+});
+
+/** 造一条 release —— 只填判定用得到的字段。 */
+function release(
+  version: string,
+  sha512 = 'e'.repeat(128),
+): {
+  modid: string;
+  version: string;
+  url: string;
+  sha1: string;
+  sha512: string;
+  size: number;
+  targetVersions: string[];
+  dependencies: string[];
+  obsolete: boolean;
+  intermediary: string[];
+  download: 'auto';
+} {
+  return {
+    modid: 'atum',
+    version,
+    url: `https://github.com/x/y/atum-${version}.jar`,
+    sha1: 'f'.repeat(40),
+    sha512,
+    size: 1,
+    targetVersions: ['1.16.1'],
+    dependencies: [],
+    obsolete: false,
+    intermediary: ['net.fabricmc:intermediary'],
+    download: 'auto',
+  };
+}
+
+describe('版本主体与文件名', () => {
+  it('★ 剥掉 `+` 之后的构建元数据（这是 standardsettings 那一例的承重判据）', () => {
+    assert.equal(versionBodyOf('2.3+1.16.1'), '2.3');
+    assert.equal(versionBodyOf('2.3+1.16-1.16.1'), '2.3');
+    assert.equal(versionBodyOf('5.8.26'), '5.8.26');
+    assert.equal(versionBodyOf('0.1.3-SNAPSHOT+2021-02-20'), '0.1.3-SNAPSHOT');
+  });
+
+  it('★ 文件名从 URL 末段取，`%2B` 解成 `+`', () => {
+    assert.equal(
+      originFileNameOf('https://github.com/a/b/GhostRunner-4.0%2B1.16.1.jar'),
+      'GhostRunner-4.0+1.16.1.jar',
+    );
+    assert.equal(
+      originFileNameOf('https://cdn.modrinth.com/data/x/y/FSG-Mod-5.3.0%2BMC1.16.1.jar'),
+      'FSG-Mod-5.3.0+MC1.16.1.jar',
+    );
+  });
+
+  it('★ 路径穿越与非法名字一律拒绝（URL 里来的名字是不可信输入）', () => {
+    assert.equal(originFileNameOf('https://x/y/..%2F..%2Fz.jar'), null);
+    assert.equal(originFileNameOf('https://x/y/a%5Cb.jar'), null);
+    assert.equal(originFileNameOf('https://x/y/'), null);
+    assert.equal(originFileNameOf('https://x/y/notajar.txt'), null);
+    assert.equal(originFileNameOf('https://x/y/a%3Fb.jar'), null);
+    assert.equal(originFileNameOf('这不是 URL'), null);
+  });
+});
+
+describe('判定（只升不降）', () => {
+  it('★ sha512 相等 ⇒ same，**与版本号字符串无关**', () => {
+    const r = release('2.3+1.16-1.16.1', 'a'.repeat(128));
+    assert.equal(compareLocalToRelease('a'.repeat(128), '2.3+1.16.1', r), 'same');
+  });
+
+  it('★ 主体相同、字节不同 ⇒ different-build（standardsettings 的真实形状）', () => {
+    const r = release('2.3+1.16-1.16.1');
+    assert.equal(compareLocalToRelease('b'.repeat(128), '2.3+1.16.1', r), 'different-build');
+  });
+
+  it('★ 本地更旧 ⇒ older（唯一进批量的状态）', () => {
+    const r = release('2.7.2+1.16-1.16.1');
+    assert.equal(compareLocalToRelease('b'.repeat(128), '2.7.1+1.16-1.16.1', r), 'older');
+    assert.equal(needsUpdate(judgeRelease('b'.repeat(128), '2.7.1+1.16-1.16.1', [r])), true);
+  });
+
+  it('★★ 本地更新 ⇒ newer，且**绝不**进批量（mcsrranked 5.8.26 vs mc.sr 5.8.22）', () => {
+    const r = release('5.8.22');
+    const verdict = judgeRelease('b'.repeat(128), '5.8.26', [r]);
+    assert.equal(verdict.kind, 'newer');
+    assert.equal(needsUpdate(verdict), false, '本地比上游新时把它替换掉 = 降级');
+  });
+
+  it('★ 没有候选 ⇒ missing-release', () => {
+    assert.equal(judgeRelease(null, null, []).kind, 'missing-release');
+  });
+
+  it('★ 两个候选时，本地的 sha512 能定案就定案（实测有 2 个这样的键）', () => {
+    const a = release('HD_U_E1', 'a'.repeat(128));
+    const b = release('HD_U_F7', 'b'.repeat(128));
+    const verdict = judgeRelease('b'.repeat(128), null, [a, b]);
+    assert.equal(verdict.kind, 'same');
+    assert.equal(verdict.kind === 'same' ? verdict.release.version : null, 'HD_U_F7');
+  });
+
+  it('★ 两个候选、本地都不是 ⇒ ambiguous，且不进批量（不猜）', () => {
+    const a = release('HD_U_E1', 'a'.repeat(128));
+    const b = release('HD_U_F7', 'b'.repeat(128));
+    const verdict = judgeRelease('c'.repeat(128), '1.0', [a, b]);
+    assert.equal(verdict.kind, 'ambiguous');
+    assert.equal(needsUpdate(verdict), false);
+  });
+
+  it('★ 读不出本地版本 ⇒ unknown，不进批量', () => {
+    const verdict = judgeRelease(null, null, [release('1.0')]);
+    assert.equal(verdict.kind, 'unknown');
+    assert.equal(needsUpdate(verdict), false);
+  });
+
+  it('★ `needsUpdate` 只认 outdated（把"不等就更新"写进来会让 newer 也进批量）', () => {
+    const verdicts = [
+      judgeRelease('a'.repeat(128), '2.3+1.16.1', [release('2.3+1.16-1.16.1', 'a'.repeat(128))]),
+      judgeRelease('b'.repeat(128), '2.3+1.16.1', [release('2.3+1.16-1.16.1')]),
+      judgeRelease('b'.repeat(128), '1.0', [release('2.0')]),
+    ];
+    assert.deepEqual(
+      verdicts.map((v) => v.kind),
+      ['same', 'different-build', 'older'],
+    );
+    assert.deepEqual(verdicts.map(needsUpdate), [false, false, true]);
   });
 });
