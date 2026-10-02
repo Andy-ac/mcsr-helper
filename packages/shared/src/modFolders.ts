@@ -610,24 +610,19 @@ export interface ModFoldersState {
   } | null;
 }
 
-/**
- * **编译期**断言（Ruling 23）：状态里那一格与状态文件里那一格必须是同一个类型。
- *
- * 为什么需要它：`ModFoldersState` 今天**还没有任何消费者** —— 它由主进程（Task 4）组装、
- * 由页面读，本仓此刻没有任何一处**建立**或**读**它的字段 ⇒ 只把字段写得准是验不了的：
- * 从上面删掉 `bulkChannel`，**一个字都不会红**。这一条把"删了没人发现"变成"删了立刻红"。
- *
- * ⚠️ 方向：类型对不上时它解析成 `never`，于是下面那个 `true` 赋不过去 ⇒ 红；
- *    字段被删掉时上面那个索引访问先红（`TS2339`）⇒ 也是红。
- * ⚠️ 代价（认）：这是一个**没有任何运行时用途**的导出值（一个 `true`）。
- *    留着它是刻意的 —— 换成 `expect<T extends true>` 那种写法**抓不住 `never`**
- *    （`never` 对任何约束都成立），那又变成装饰了。
+/*
+ * ⚠️ 这里原先有一条**编译期断言**（`BulkChannelIsPersisted` / `BULK_CHANNEL_IS_PERSISTED`，
+ * Ruling 23）：`ModFoldersState['bulkChannel']` 必须与 `StateFileV2['prefs']['bulkChannel']`
+ * 是同一个类型。它存在的唯一理由是"当时**没有任何代码**构造或读 `ModFoldersState`" ——
+ * 从上面删掉那一格，`tsc` 一个字都不会红。
+ * 2026-10-03（Task 4）删掉了它：`apps/desktop/src/mod-folders.ts` 一落地，
+ * 那个字段就被**真实代码消费**了 —— `buildState()` 里
+ * `bulkChannel: state.prefs.bulkChannel` 这一句（读盘那一份的 `prefs` 直接喂给页面那一份）
+ * 同时钉住了"字段在不在"与"两边是不是同一个类型"：
+ *   · `ModFoldersState` 里删掉 `bulkChannel` ⇒ 那一句的**多写一个键**会红（对象字面量的多余属性）；
+ *   · `StateFileV2.prefs` 里删掉它 ⇒ 那一句的**读**会红（`TS2339`）。
+ * ⇒ 那条断言成了多余的公开符号（Ruling 25）。
  */
-export type BulkChannelIsPersisted =
-  ModFoldersState['bulkChannel'] extends StateFileV2['prefs']['bulkChannel'] ? true : never;
-
-/** 上面那条断言的落地点：它唯一的用途就是被 `tsc` 检查，不是给谁调用的值。 */
-export const BULK_CHANNEL_IS_PERSISTED: BulkChannelIsPersisted = true;
 
 /** v1 状态文件里的一条绑定，喂给 `attributeLegacyBindings`（由主进程读盘后组装）。 */
 export interface LegacyBinding {
