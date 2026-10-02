@@ -1,5 +1,11 @@
-import { type DesktopBridge, FILE_UPDATES_CHANNELS, type UpdateStatus } from '@mcsr/shared/desktop';
+import {
+  type DesktopBridge,
+  FILE_UPDATES_CHANNELS,
+  MOD_FOLDERS_CHANNELS,
+  type UpdateStatus,
+} from '@mcsr/shared/desktop';
 import type { FileUpdatesState } from '@mcsr/shared/fileUpdates';
+import type { Channel, ModFoldersState } from '@mcsr/shared/modFolders';
 import { contextBridge, ipcRenderer } from 'electron';
 
 /**
@@ -151,6 +157,131 @@ const bridge: DesktopBridge = {
     },
     updateAll(): Promise<FileUpdatesState> {
       return ipcRenderer.invoke(FILE_UPDATES_CHANNELS.updateAll) as Promise<FileUpdatesState>;
+    },
+  },
+
+  /*
+   * ---------------------------------------------------------------------------
+   * mod 目录行 + mod 文件夹（2026-10-02）
+   * ---------------------------------------------------------------------------
+   * 与上面那一组**同一条纪律**（显式逐个方法转发、通道名一律取自常量、
+   * **入参不含路径**），这里只重复这一组特有的两条：
+   *
+   *   · `channel` 是 `'origin'` 或 `{ mirrorId }` 这样的 **id**，**不是 URL** ——
+   *     页面指定不了主进程去哪儿取字节（地址由主进程拿目录里的 `mirrors[]` 拼）。
+   *   · `releaseKey` 是页面**从它自己渲染的那一行**带回来的 key，主进程按它在目录里
+   *     查 release。⇒ 这条通道能按 id 触发写盘，但**写哪里、下什么都不是页面说了算**。
+   *
+   * ⚠️ **读**方向与上面一组同样反过来：`getState` / `onStatus` 交出去的
+   *    `ModFoldersState` 里带着已绑定文件夹的**绝对路径**（含用户名）—— 那是
+   *    "页面唯一的数据来源"的一部分，本期**有意接受**（文件头那一段写着这条决定）。
+   *
+   * ⚠️ 主进程那一半（`ipcMain.handle` 的注册）是 **Task 4** 的，今天还不存在 ⇒
+   *    此刻这几条 `invoke` 一律 reject（Electron 的 "No handler registered for
+   *    'mcsr:modfolders-…'"）。这是"契约与转发先落地、行为随后"，**不是静默失败**：
+   *    通道名与契约同源（上面那个常量），Task 4 接上之后这里一个字符都不用改。
+   */
+  modFolders: {
+    getState(): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.getState) as Promise<ModFoldersState>;
+    },
+    onStatus(callback: (state: ModFoldersState) => void): () => void {
+      const listener = (_event: unknown, state: ModFoldersState): void => callback(state);
+      ipcRenderer.on(MOD_FOLDERS_CHANNELS.onStatus, listener);
+      return () => {
+        ipcRenderer.off(MOD_FOLDERS_CHANNELS.onStatus, listener);
+      };
+    },
+    bindFolder(): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.bindFolder) as Promise<ModFoldersState>;
+    },
+    unbindFolder(folderId: string): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.unbindFolder,
+        folderId,
+      ) as Promise<ModFoldersState>;
+    },
+    rescan(folderId?: string): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.rescan, folderId) as Promise<ModFoldersState>;
+    },
+    setFolderGameVersion(folderId: string, gameVersion: string | null): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setFolderGameVersion,
+        folderId,
+        gameVersion,
+      ) as Promise<ModFoldersState>;
+    },
+    setFolderAutoUpdate(folderId: string, on: boolean): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setFolderAutoUpdate,
+        folderId,
+        on,
+      ) as Promise<ModFoldersState>;
+    },
+    setBulkChannel(channel: Channel): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setBulkChannel,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
+    updateMod(
+      folderId: string,
+      modid: string,
+      releaseKey: string,
+      channel: Channel,
+    ): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.updateMod,
+        folderId,
+        modid,
+        releaseKey,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
+    updateCatalogRow(
+      rowId: string,
+      releaseKey: string,
+      channel: Channel,
+    ): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.updateCatalogRow,
+        rowId,
+        releaseKey,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
+    updateFolderAll(folderId: string, channel: Channel): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.updateFolderAll,
+        folderId,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
+    downloadMissing(
+      modid: string,
+      gameVersion: string,
+      folderId: string,
+      channel: Channel,
+    ): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.downloadMissing,
+        modid,
+        gameVersion,
+        folderId,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
+    setCatalogGameVersion(gameVersion: string): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setCatalogGameVersion,
+        gameVersion,
+      ) as Promise<ModFoldersState>;
+    },
+    setTagFilter(tags: readonly string[]): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setTagFilter,
+        tags,
+      ) as Promise<ModFoldersState>;
     },
   },
 };

@@ -19,6 +19,7 @@
  *   与"页面能调到什么"在类型层面**必须**一致，而不是靠两处人眼对齐。
  */
 import type { FileUpdatesState } from './fileUpdates';
+import type { Channel, ModFoldersState } from './modFolders';
 
 // ---------------------------------------------------------------------------
 // 更新状态
@@ -125,6 +126,100 @@ export interface DesktopBridge {
     update(itemId: string): Promise<FileUpdatesState>;
     updateAll(): Promise<FileUpdatesState>;
   };
+
+  /**
+   * mod 目录行 + mod 文件夹（2026-10-02）。
+   *
+   * ⚠️★ **入参**纪律（与上面 `fileUpdates` 那一段**同一条**，理由也全在那里）：
+   *    渲染进程加载的是**远程网页**，所以这一组方法的入参只有 **id、游戏版本字符串、
+   *    标签字符串数组与布尔**（`folderId` / `modid` / `rowId` / `releaseKey` /
+   *    `gameVersion` / `tags` / `channel`），**入参永远不含路径** —— 要选一个 mods 目录，
+   *    只能由主进程弹自己的原生对话框去选（所以 `bindFolder()` **一个参数都没有**；
+   *    那一半是 **Task 4** 要写的，今天 `apps/desktop` 里还没有）。
+   * ⚠️★ **`channel` 只是一个 id，永远不是一个 URL**：`Channel`（`@mcsr/shared/modFolders`）
+   *    是 `'origin'` 或 `{ mirrorId }`，下载地址由主进程拿目录里的 `mirrors[]` 自己拼
+   *    （`channelUrl` ⇒ `mirrorUrl`）—— 渲染进程**永远不能让主进程去下载一个它给出的地址**。
+   *    这是 v1 立的规矩，这一组**不许破**：被注入的页面能按 id 触发写盘，
+   *    但**指定不了写到哪（路径是主进程记下的）、也指定不了从哪儿取**。
+   * ⚠️ 四条写盘通道（`updateMod` / `updateCatalogRow` / `updateFolderAll` /
+   *    `downloadMissing`）还多要一个 `releaseKey`：那是渲染进程**从它自己渲染的那一行**
+   *    带回来的字符串，主进程**按它在目录里查 release**（查不到就抛）。让页面递一个
+   *    release 对象或一个地址，都等于把"下载什么"交给页面 ⇒ **只收 key**。
+   *
+   * ⚠️⚠️ 出参方向是反的，而且必须反（`fileUpdates` 那段写着同一件事）：`getState()` 的
+   *    返回值与 `onStatus` 推给页面的那份 `ModFoldersState` 里**确实带着已绑定文件夹的
+   *    绝对路径**（`ModFolderView.path`，以及目录行绑定里的 `CatalogRowView.binding.localPath`）
+   *    —— 这份状态按 `modFolders.ts` 里的定义就是**页面唯一的数据来源**，路径是它的一部分
+   *    （页面靠它指出"正在更新的是哪个目录里的哪个文件"）。
+   *    ⇒ **入参不含路径 ≠ 这条通道不搬运路径**；这是本期**有意接受**的代价，不是没想过。
+   *
+   * ── 状态对象：这一组只搬 T1 那一份，不另造平行类型 ──
+   *    除 `onStatus`（它返回取消订阅的函数）外，每个方法都返回**整份** `ModFoldersState`：
+   *    `catalogStatus` / `gameVersion` / `tagFilter` / `catalogRows`（`CatalogRowView[]`）/
+   *    `folders`（`ModFolderView[]`）/ `missing`（`MissingModView[]`）/ `notices` / `busy` /
+   *    `lastRun`。出参只声明**这一个**类型（`@mcsr/shared/modFolders`）：再写一份"给 IPC 用的"
+   *    平行类型，两份必然有一天不一致，而表现是页面显示的与主进程判定的不是同一件事。
+   *
+   * ── 为什么第一部分的两个筛选器也是通道、而不是页面自己的 localStorage ──
+   *    `gameVersion`（`setCatalogGameVersion`）与 `tagFilter`（`setTagFilter`）是
+   *    **按机器记住**的（spec §6.8）⇒ 它们住在**主进程的 `prefs`** 里、随状态文件
+   *    （`StateFileV2.prefs` 的 `catalogGameVersion` / `tagFilter`）一起持久化，
+   *    读回来的那一份就是状态里的 `gameVersion` / `tagFilter`。
+   *    渲染进程再用 localStorage 记一份，等于同一个选择有**两处**记忆 —— 两处必然有一天
+   *    不一致（一处说旧版本、一处说新版本），所以它**只能是通道**。
+   *
+   * ── `bindFolder` 重名：有意为之，不是忘了改名（spec §6.7）──
+   *    `FILE_UPDATES_CHANNELS.bindFolder`（v1）**保留原样**：老客户端 0.0.4 仍按它调，
+   *    一个字母都不动。新 UI **不调用它**，改调 `MOD_FOLDERS_CHANNELS.bindFolder`
+   *    （语义也换了：v1 那条是"按 jar 名匹配条目"，这条是"建一个文件夹实体"）。
+   *    代价（认）：新桌面版里 v1 那条 `bindFolder` 成了**没有入口的代码** ——
+   *    为了让 0.0.4 用户行为一字不变，这是**有意接受**的；下一期确认没人用 0.0.4 再删。
+   *
+   * ⚠️ 这一块加上之后，`preload.ts` 里那个 `const bridge: DesktopBridge` **少实现一个方法
+   *    就红在那一行上**（它的注释里写着这条纪律）—— 这正是"契约与转发必须同时到位"的兜底。
+   */
+  readonly modFolders: {
+    getState(): Promise<ModFoldersState>;
+    /** 状态推送。**同一个串同时用于订阅与取消订阅**（散开写就会漏改一处）。 */
+    onStatus(callback: (state: ModFoldersState) => void): () => void;
+    /** 弹**原生**目录对话框，建一个"文件夹实体"（无入参 ⇒ 选哪里由主进程决定）。 */
+    bindFolder(): Promise<ModFoldersState>;
+    unbindFolder(folderId: string): Promise<ModFoldersState>;
+    /** 不带 `folderId` = 全部重扫；只读（不下载、不写盘）。 */
+    rescan(folderId?: string): Promise<ModFoldersState>;
+    /**
+     * 改这个文件夹的游戏版本。
+     * ⚠️ `null` **不是**"不改"：它是"交回自动推断"（`resolveGameVersion` 读不出来时
+     * 所有行都是 `unknown-version`、不给更新按钮 —— spec §8）。
+     */
+    setFolderGameVersion(folderId: string, gameVersion: string | null): Promise<ModFoldersState>;
+    /** 只表示"启动时检查并高亮"；**写盘永远要一次点击**（与 v1 同一条语义）。 */
+    setFolderAutoUpdate(folderId: string, on: boolean): Promise<ModFoldersState>;
+    /** "全部更新"用哪条通道（一次点击驱动 N 个下载 ⇒ 必须有个默认，spec §6.8）。 */
+    setBulkChannel(channel: Channel): Promise<ModFoldersState>;
+    /** ★ 写盘：把该文件夹里这一行换成 `releaseKey` 那条 release（**Task 5** 实现）。 */
+    updateMod(
+      folderId: string,
+      modid: string,
+      releaseKey: string,
+      channel: Channel,
+    ): Promise<ModFoldersState>;
+    /** ★ 写盘：第一部分（目录行）那一行的绑定走**同一段**写盘（**Task 5** 实现）。 */
+    updateCatalogRow(rowId: string, releaseKey: string, channel: Channel): Promise<ModFoldersState>;
+    /** ★ 批量写盘：只有该文件夹里 `batchable` 的行会进（**Task 6** 实现）。 */
+    updateFolderAll(folderId: string, channel: Channel): Promise<ModFoldersState>;
+    /** ★ 装一个缺失清单里的 mod（**Task 6** 实现）；`gameVersion` 决定装哪一版。 */
+    downloadMissing(
+      modid: string,
+      gameVersion: string,
+      folderId: string,
+      channel: Channel,
+    ): Promise<ModFoldersState>;
+    /** 第一部分选中的游戏版本 —— 与 `tagFilter` 一样住主进程 `prefs`（见上面那一段）。 */
+    setCatalogGameVersion(gameVersion: string): Promise<ModFoldersState>;
+    /** 第一部分的标签筛选，**"与"语义**（留下的行必须同时带全部所选标签）。 */
+    setTagFilter(tags: readonly string[]): Promise<ModFoldersState>;
+  };
 }
 
 /**
@@ -198,3 +293,41 @@ export function desktopBridge(): DesktopBridge | null {
   const bridge = (globalThis as { mcsr?: DesktopBridge }).mcsr;
   return bridge?.isDesktop ? bridge : null;
 }
+
+/**
+ * `modFolders` 那十四条 IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
+ * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
+ * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
+ * 通道名订阅（永远不触发）。preload 与主进程（Task 4 的 `mod-folders.ts`）
+ * **引用同一个常量对象**，两边各自手写一遍从而漂移就不可能发生。
+ *
+ * ⚠️ **v1 那九条一个字节都不动**（`FILE_UPDATES_CHANNELS` 原样保留）：老客户端 0.0.4
+ *    读的是那些串，改一个字母就是"点了没反应"。这一组**只加**。
+ * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
+ *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
+ * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`，需要缩写的地方
+ *    （`setFolderAutoUpdate` ⇒ `-set-folder-auto`）与 v1 的 `-set-auto` 同型。
+ *
+ * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
+ * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
+ * 才咬得住**：写成可选成员（`readonly modFolders?:`）时 `keyof` 会塌成 `never`、
+ * `Record<never, string>` 接受任何对象 ⇒ 少写一条也不报错 —— 那就成了装饰。
+ */
+export const MOD_FOLDERS_CHANNELS = {
+  getState: 'mcsr:modfolders-get-state',
+  /** 状态推送。**同一个串同时用于订阅与取消订阅**（与 v1 同一条纪律）。 */
+  onStatus: 'mcsr:modfolders-status',
+  bindFolder: 'mcsr:modfolders-bind-folder',
+  unbindFolder: 'mcsr:modfolders-unbind-folder',
+  rescan: 'mcsr:modfolders-rescan',
+  setFolderGameVersion: 'mcsr:modfolders-set-folder-version',
+  setFolderAutoUpdate: 'mcsr:modfolders-set-folder-auto',
+  setBulkChannel: 'mcsr:modfolders-set-bulk-channel',
+  updateMod: 'mcsr:modfolders-update-mod',
+  updateCatalogRow: 'mcsr:modfolders-update-catalog-row',
+  updateFolderAll: 'mcsr:modfolders-update-folder-all',
+  downloadMissing: 'mcsr:modfolders-download-missing',
+  setCatalogGameVersion: 'mcsr:modfolders-set-catalog-version',
+  setTagFilter: 'mcsr:modfolders-set-tag-filter',
+} as const satisfies Record<keyof DesktopBridge['modFolders'], string>;
