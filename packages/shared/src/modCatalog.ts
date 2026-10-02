@@ -287,3 +287,107 @@ export function parseModCatalogWire(raw: unknown): ModCatalogParseResult {
   if (!parsed.success) return { ok: false, problems: problemsOf(parsed.error) };
   return { ok: true, catalog: parsed.data };
 }
+
+// ---------------------------------------------------------------------------
+// 展开与查找
+// ---------------------------------------------------------------------------
+
+/**
+ * 判定层的键：`modid|游戏版本`。
+ *
+ * ⚠️ 分隔符只此一处。生成器**不许**让 modid 里出现 `|`（它在 `buildCatalog` 里会报错），
+ *    否则这个键会有歧义 —— 两个不同的 mod 拼出同一个键，表现是"某一行的版本号串了门"。
+ */
+export function releaseKey(modid: string, gameVersion: string): string {
+  return `${modid}|${gameVersion}`;
+}
+
+export interface ModIndex {
+  /** ★ 值是**数组**：`(modid, 游戏版本)` 实测不是唯一键（`optifine|1.7.2`、`speedrunigt|26.1`）。 */
+  byPair: Map<string, ModRelease[]>;
+  byModid: Map<string, ModEntry>;
+  /** 全部游戏版本（代码单元序 —— 界面上"哪个排前面"是另一个决定，不在这里做）。 */
+  gameVersions: string[];
+}
+
+/**
+ * 把目录展开成查找表。**只做一次**，调用方拿着它查 ——
+ * 555 条 release 展开成 1761 个键，每次调用都重算是 O(n)（48 行 × 1761 会明显卡）。
+ */
+export function buildIndex(catalog: ModCatalog): ModIndex {
+  const byPair = new Map<string, ModRelease[]>();
+  const versions = new Set<string>();
+  for (const release of catalog.releases) {
+    for (const gameVersion of release.targetVersions) {
+      versions.add(gameVersion);
+      const key = releaseKey(release.modid, gameVersion);
+      const list = byPair.get(key);
+      if (list) list.push(release);
+      else byPair.set(key, [release]);
+    }
+  }
+  return {
+    byPair,
+    byModid: new Map(catalog.mods.map((mod) => [mod.modid, mod])),
+    gameVersions: [...versions].sort(),
+  };
+}
+
+/** 某个 mod 在某个游戏版本下的候选（0 / 1 / 2+ 条）。 */
+export function releasesFor(index: ModIndex, modid: string, gameVersion: string): ModRelease[] {
+  return index.byPair.get(releaseKey(modid, gameVersion)) ?? [];
+}
+
+export function modFor(index: ModIndex, modid: string): ModEntry | null {
+  return index.byModid.get(modid) ?? null;
+}
+
+/**
+ * 某个游戏版本下的全部行（第一部分那张表就是它）。
+ * 顺序 = `mods` 的顺序（生成器已按 modid 排好）⇒ 稳定、可断言。
+ */
+export function rowsForGameVersion(
+  index: ModIndex,
+  gameVersion: string,
+): { mod: ModEntry; releases: ModRelease[] }[] {
+  const rows: { mod: ModEntry; releases: ModRelease[] }[] = [];
+  for (const mod of index.byModid.values()) {
+    const releases = releasesFor(index, mod.modid, gameVersion);
+    if (releases.length > 0) rows.push({ mod, releases });
+  }
+  return rows;
+}
+
+export function modTagsOf(mod: ModEntry): string[] {
+  return mod.tags;
+}
+
+/**
+ * 标签的显示名。
+ *
+ * ⚠️ 查不到时返回 `null`，**不**回退成标签本身：没有名字就是目录的缺陷
+ *    （严格校验会在服务端拦住它），界面上显示一个英文 key 正是"看得见的缺陷"。
+ */
+export function tagLabelOf(catalog: ModCatalog, tag: string): ModTagLabel | null {
+  return catalog.tagLabels[tag] ?? null;
+}
+
+/** 这个 URL 上有哪些**适用**的镜像（按 `hosts` 匹配）。不是 URL ⇒ 空数组。 */
+export function mirrorsFor(catalog: ModCatalog, url: string): ModMirror[] {
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return [];
+  }
+  return catalog.mirrors.filter((mirror) => mirror.hosts.includes(host));
+}
+
+/**
+ * 镜像地址 = `prefix` + 原 URL（直拼）。
+ * 实测过：加速站原样透传字节（`anchiale-3.2.0+1.8.x.jar` 经 gh-proxy.com 取回的 sha512 与官方一致）。
+ * ⚠️ 因此**校验一步都不能省**：镜像改了内容只会导致 sha512 对不上（失败），不会写坏文件。
+ */
+export function mirrorUrl(mirror: ModMirror, url: string): string {
+  return `${mirror.prefix}${url}`;
+}

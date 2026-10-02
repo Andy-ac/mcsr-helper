@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
+import {
+  buildIndex,
+  mirrorsFor,
+  mirrorUrl,
+  modTagsOf,
+  parseModCatalog,
+  parseModCatalogWire,
+  releaseKey,
+  releasesFor,
+  rowsForGameVersion,
+  tagLabelOf,
+} from '@mcsr/shared/modCatalog';
 
 /** 一份最小的合法目录。**故意只有一个 mod、一条 release** —— 它测的是形状，不是数据。 */
 function minimal(): Record<string, unknown> {
@@ -193,4 +204,66 @@ describe('未知键在每一层都必须被严格侧拒绝、被宽松侧接受'
       assert.equal(parseModCatalogWire(raw).ok, true);
     });
   }
+});
+
+describe('展开与查找', () => {
+  const catalog = parseModCatalog(minimal());
+  const built = catalog.ok ? buildIndex(catalog.catalog) : null;
+
+  it('★ 一个 mod 一条 release 覆盖两个游戏版本 ⇒ 两个键都查得到', () => {
+    assert.ok(built);
+    assert.equal(releasesFor(built, 'atum', '1.16').length, 1);
+    assert.equal(releasesFor(built, 'atum', '1.16.1').length, 1);
+    assert.equal(releasesFor(built, 'atum', '1.20').length, 0);
+  });
+
+  it('★ 重复键保留**全部**候选（覆盖式 Map 会把歧义悄悄抹平）', () => {
+    assert.ok(built);
+    const raw = minimal();
+    const clone = {
+      ...(raw.releases as Record<string, unknown>[])[0],
+      version: '2.7.3',
+      url: 'https://github.com/x/y/atum-2.7.3.jar',
+    };
+    (raw.releases as unknown[]).push(clone);
+    const parsed = parseModCatalog(raw);
+    assert.ok(parsed.ok);
+    assert.equal(releasesFor(buildIndex(parsed.catalog), 'atum', '1.16.1').length, 2);
+  });
+
+  it('键是 modid|游戏版本，且分隔符只此一处', () => {
+    assert.equal(releaseKey('atum', '1.16.1'), 'atum|1.16.1');
+  });
+
+  it('rowsForGameVersion 只出该版本有 release 的 mod', () => {
+    assert.ok(built);
+    const rows = rowsForGameVersion(built, '1.16.1');
+    assert.deepEqual(
+      rows.map((r) => r.mod.modid),
+      ['atum'],
+    );
+    assert.deepEqual(rowsForGameVersion(built, '1.7.10'), []);
+  });
+
+  it('★ 标签查得到显示名；查不到时返回 null（**不许**回退成 key：那会让缺陷看不见）', () => {
+    assert.ok(catalog.ok);
+    assert.deepEqual(tagLabelOf(catalog.catalog, 'legal'), { zh: '合法', en: 'Legal' });
+    assert.equal(tagLabelOf(catalog.catalog, '不存在'), null);
+    assert.deepEqual(modTagsOf(catalog.catalog.mods[0]!), ['legal']);
+  });
+
+  it('★ 镜像只看 host：GitHub 有、Modrinth 没有（非 GitHub 来源不该出现镜像按钮）', () => {
+    assert.ok(catalog.ok);
+    assert.equal(mirrorsFor(catalog.catalog, 'https://github.com/a/b/c.jar').length, 1);
+    assert.equal(mirrorsFor(catalog.catalog, 'https://cdn.modrinth.com/data/x/y/z.jar').length, 0);
+    assert.equal(mirrorsFor(catalog.catalog, '这不是 URL').length, 0);
+  });
+
+  it('镜像地址是前缀直拼（所以 prefix 必须以 / 结尾，那条在 schema 里拦）', () => {
+    const mirror = { id: 'm', label: 'm', prefix: 'https://gh-proxy.com/', hosts: ['github.com'] };
+    assert.equal(
+      mirrorUrl(mirror, 'https://github.com/a/b.jar'),
+      'https://gh-proxy.com/https://github.com/a/b.jar',
+    );
+  });
 });
