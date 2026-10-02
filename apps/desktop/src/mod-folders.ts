@@ -1,5 +1,5 @@
 /**
- * mod 目录行 + mod 文件夹 —— **主进程那一侧**（Plan 2 / Task 4：读路径）。
+ * mod 目录行 + mod 文件夹 —— **主进程那一侧**（Plan 2 / Task 4：读路径；Task 5：单行写路径）。
  *
  * ===========================================================================
  * 这一份负责什么（边界写下来，免得下一个人以为它管得比实际宽）
@@ -9,14 +9,19 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十五条 IPC 的注册**（其中 `onStatus` 只推、不 handle）。
+ *   · **十五条 IPC 的注册**（其中 `onStatus` 只推、不 handle）；
+ *   · ★ **单行写盘**（Task 5）：`updateMod` / `updateCatalogRow` —— 前者是文件夹那一侧的行，
+ *     后者是第一部分（目录行）的绑定，**两者共用 `installRelease` 同一段写盘**
+ *     （spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**；
+ *     批量（整夹更新 / 缺失下载）是 Task 6 的，今天仍然拒绝（`notYetWritePath`）。
  *   · **判断一条都不在这里**：`planCatalogRows` / `planFolderView` / `missingMods` /
- *     `attributeLegacyBindings` / `migrateState` / `channelUrl` 全部来自
- *     `@mcsr/shared/modFolders`（T1）——那里才有能红的断言钉着
+ *     `attributeLegacyBindings` / `migrateState` / `channelUrl` / `originFileNameOf`
+ *     全部来自 `@mcsr/shared`（T1 / Plan 1）——那里才有能红的断言钉着
  *     （`services/api/src/mod-folders-shared.test.ts`），而 `apps/desktop` **没有测试运行器**。
- *   · **I/O 也不在这里**：`readJarMeta` / `sha512OfFile` / `readStateFile` /
- *     `writeStateFile` / `fetchVersions` / `pickDirectory` / `pickOneJar` / `notify`
- *     全部**复用** `./file-updates`（Task 3 抽出来的那一批 + 本任务只加 `export` 的四个）。
+ *   · **I/O 也不在这里**：`readJarMeta` / `sha512OfFile` / `downloadTo` /
+ *     `installDownloadedFile` / `assertNotBusy` / `readStateFile` / `writeStateFile` /
+ *     `fetchVersions` / `pickDirectory` / `pickOneJar` / `notify`
+ *     全部**复用** `./file-updates`（Task 3 抽出来的那一批）。
  *     复制一份的下场与本仓踩过的每一次都同型：两份迟早漂，而漂的那一份在动用户的文件。
  *
  * ===========================================================================
@@ -53,8 +58,8 @@
  *     而"目录不可用"时我们没有目录可判 ⇒ 视图只给表头（`rows` / `unrecognized` 都空）。
  *     退而求其次喂一份**空目录**是错的：那会把每一份扫描读数都标成"清单外 mod"。
  */
-import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
@@ -66,12 +71,14 @@ import {
   type ModIndex,
   type ModRelease,
   modFor,
+  originFileNameOf,
   parseModCatalogWire,
   releasesFor,
 } from '@mcsr/shared/modCatalog';
 import {
   attributeLegacyBindings,
   type Channel,
+  channelUrl,
   type FolderScanEntry,
   type LegacyBinding,
   type ModFoldersState,
@@ -82,7 +89,10 @@ import {
 } from '@mcsr/shared/modFolders';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import {
+  assertNotBusy,
+  downloadTo,
   fetchVersions,
+  installDownloadedFile,
   notify,
   pickDirectory,
   pickOneJar,
@@ -182,12 +192,17 @@ function pushNotice(text: string): void {
 }
 
 /*
- * 这两格今天**永远是 false / null**：写盘路径（Task 5/6）才会动它们。
- * ⚠️ 它们现在是 `const`（biome 的 `useConst`：本轮没有任何赋值）⇒ T5/T6 落地时
- *    会分别改成 `let` 并在这里赋值，而不是在组装状态那一处再改一遍。
+ * 写盘期间的两格（Task 5 起**真的会变**；Task 4 里它们是 `const false` / `const null`，
+ * 被 biome 的 `useConst` 钉住 —— 那是"本轮没有任何赋值"的实情，不是设计）。
+ *
+ * · `busy`：一次写盘流程从起手到收尾都是 `true`（页面据此禁用按钮，v1 的 `busyItemId` 同一个意思）。
+ *   ⚠️ 它与 v1 的 `bulkRunning` / `busyItemId` **不是同一个标记**：v1 那两个只覆盖 v1 的写盘，
+ *   而这个模块自己的并发由 `writeRun` 再挡一层（见那里的注释）。
+ * · `lastRun`：**上一次运行的结果**（spec §7.4 的批量汇总；单行更新也是一次运行 ⇒ 一条记录）。
+ *   失败时也写（`failed: [{modid, reason}]`）—— IPC 那一侧会 reject，而这句话关掉之后就再也查不到了。
  */
-const busy = false;
-const lastRun: ModFoldersState['lastRun'] = null;
+let busy = false;
+let lastRun: ModFoldersState['lastRun'] = null;
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -1168,22 +1183,39 @@ function requireFolder(folderId: unknown): {
   return { folderId, entry };
 }
 
-function requireRowId(rowId: unknown): { rowId: string; modid: string; gameVersion: string } {
-  if (typeof rowId !== 'string' || rowId === '') {
-    throw new Error('非法参数：rowId 必须是非空字符串');
+/**
+ * `rowId` 与 `releaseKey` 是**同一个形状**（Plan 1 的 `releaseKey(modid, gameVersion)`：
+ * `modid|游戏版本`，分隔符只此一处），而"这一对必须在目录里查得到"是同一条判据
+ * ⇒ 解析**只留一份**，`what` 只影响文案。
+ *
+ * ⚠️ 为什么"查得到"必须是两条（`modFor` 非空 **且** `releasesFor` 非空）：
+ *    mod 在 `mods[]` 里、但这一版一条 release 都没有，是 spec §8 的 `missing-release`
+ *    （界面显示"这个游戏版本下清单里没有它"）⇒ 它同样**没有东西可更新**。
+ */
+function requirePairKey(
+  value: unknown,
+  what: string,
+): { key: string; modid: string; gameVersion: string } {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error(`非法参数：${what} 必须是非空字符串`);
   }
-  const bar = rowId.indexOf('|');
-  if (bar <= 0) {
-    throw new Error(`rowId 的形状不对（应当是「modid|游戏版本」）：${rowId}`);
+  const bar = value.indexOf('|');
+  if (bar <= 0 || bar === value.length - 1) {
+    throw new Error(`${what} 的形状不对（应当是「modid|游戏版本」）：${value}`);
   }
-  const modid = rowId.slice(0, bar);
-  const gameVersion = rowId.slice(bar + 1);
+  const modid = value.slice(0, bar);
+  const gameVersion = value.slice(bar + 1);
   const index = requireIndex();
   if (modFor(index, modid) === null) throw new Error(`目录里没有这个 mod：${modid}`);
   if (releasesFor(index, modid, gameVersion).length === 0) {
-    throw new Error(`目录里没有这一行（${modid} 在 ${gameVersion} 下没有 release）：${rowId}`);
+    throw new Error(`目录里没有这一条（${modid} 在 ${gameVersion} 下没有 release）：${value}`);
   }
-  return { rowId, modid, gameVersion };
+  return { key: value, modid, gameVersion };
+}
+
+function requireRowId(rowId: unknown): { rowId: string; modid: string; gameVersion: string } {
+  const pair = requirePairKey(rowId, 'rowId');
+  return { rowId: pair.key, modid: pair.modid, gameVersion: pair.gameVersion };
 }
 
 /** 游戏版本必须是目录里真的出现过的那一个（"9.9.9"这类输入当场拒）。 */
@@ -1226,18 +1258,365 @@ function requireKnownTags(tags: unknown): string[] {
   return tags as string[];
 }
 
+// ---------------------------------------------------------------------------
+// 写路径（Task 5）：**全仓唯一会写用户 mods 目录的地方**
+// ---------------------------------------------------------------------------
+
+/** 一次就位的结果（`alreadyCurrent` = 幂等那一支：**一个请求都没发、一个字节都没动**）。 */
+interface InstallOutcome {
+  targetPath: string;
+  alreadyCurrent: boolean;
+  /** 就位之后没能删掉的旧文件（"部分成功"：新文件已在位，这些还在）。 */
+  leftovers: readonly string[];
+}
+
 /**
- * Task 5/T6 才实现的那四条写盘通道。
+ * 上一次尝试留下的 `.part`（v1 `runUpdate` 的先例：下一轮开始前清一次残留）。
  *
- * ⚠️★ **为什么把它们也注册**：这一组的全部十五条都是"契约的一部分"
+ * ⚠️ 名字里的随机段（`.<uuid>.part`）让"这次要写的那个"与"上次留下的那个"**永不重名**
+ *    ⇒ 清残留**只能按前缀扫**（`<targetName>.` 开头、`.part` 结尾）。
+ *    不扫的话，下一次更新会在残留旁边再写一个新 `.part`，而旧的一直留在用户的 mods 目录里
+ *    （v1 `runUpdate` 的 ② 做的就是这件事：开始下载前先清一次）。
+ * ⚠️ 只扫**我们自己那个前缀**（`<targetName>.`）：同一个目录里 v1 给**别的**文件留的
+ *    `.part` 不属于这一条 ⇒ 删它是越界（v1 下一轮自己会清，见 `runUpdate` ② 那一段）。
+ */
+function stalePartsOf(targetDir: string, targetName: string): string[] {
+  const prefix = `${targetName}.`;
+  let names: string[];
+  try {
+    names = readdirSync(targetDir);
+  } catch {
+    return []; // 目录都读不动 ⇒ 后面 downloadTo 会给出真正的错误，不必在这里造一个
+  }
+  return names
+    .filter((name) => name.startsWith(prefix) && name.endsWith('.part'))
+    .map((name) => join(targetDir, name));
+}
+
+/**
+ * 把一条 release **就位**到 `targetDir`（spec §7.3 的第 2–8 步）。
+ *
+ * ⚠️★ **两个写入口共用这一份**（`updateMod` 与 `updateCatalogRow`）：两处各写一遍必然漂，
+ *    而漂的那一份在**动用户的文件**。这也是本任务把"写盘那一段"抽出来的全部理由。
+ *
+ * 每一步与它的刀：
+ *   ① `originFileNameOf(release.url)` —— 落盘文件名**唯一**的来源（basename + 拒穿越 /
+ *      保留名 / 非 `.jar`）；上游那个名字是**不可信输入**，`join(dir, name)` 直接就是写盘路径。
+ *      `null` ⇒ 抛（**不许**退回一个默认名：那会把"这个名字不能用"变成"悄悄落到别处"）。
+ *   ② `targetPath = join(targetDir, targetName)`。
+ *   ③ **幂等**：目标已在位（sha512 一致）⇒ 直接返回，**一个请求都不发**（spec §7.3 第 4 步）。
+ *      ⚠️ 读不动（被另一个进程用 `FileShare.None` 占着时**我们自己也 EBUSY** —— 探针 ⑭ 的现场）
+ *         ⇒ **不判"已就位"**：没有证据就不许说"它是这一份"。继续走就位那一步是对的 ——
+ *         那一步会给出准确的病因（"文件被占用…什么都没改"）。把它当成 IO 错误直接抛，
+ *         用户看到的是 `EBUSY: resource busy or locked`，而不是"可能游戏正在运行"。
+ *   ④ 地址由 `channelUrl` 在目录里解析（通道是 **id**，不是地址；`null` ⇒ 抛）——
+ *      **不许退回原地址顶上**：镜像 id 对不上就说明这一次请求不成立（spec §6.5 / D5）。
+ *   ⑤ 清掉上一次留下的 `.part`（见 `stalePartsOf`）。
+ *   ⑥ 下载到 `targetPath + '.<uuid>.part'`：sha512 与字节数两条校验都在 `downloadTo` 里
+ *      （v1 `runUpdate` ④ 的原样搬移 ⇒ 两个调用方走的是同一条判据）。
+ *   ⑦ `installDownloadedFile` 就位：同名旧文件先挪成 `.<uuid>.old`，再 rename 就位；
+ *      被占用时**它自己抛，而且用户的文件一个字节都没动**（挪走的那份会放回去）。
+ *   ⑧ 删旧文件：`oldCopies ∪ {movedOld}`，逐个删；**删失败 ⇒ 报告"部分成功"，不回滚**。
+ *
+ * ⚠️★ **`.part` 是调用方的**（Ruling 30）：`installDownloadedFile` 一个字节都不碰它 ⇒
+ *    下面那个 `catch` 负责删。"下载失败 / 校验没过 / 就位失败"三条路都落在同一个 `catch` 里。
+ * ⚠️ **不传 `onProgress`**：`ModFoldersState` 里没有承载进度的字段（T1 的契约没有它）。
+ *    传一个什么都不做的回调只是装饰；要进度条得先给契约加一格，那时这里才接得上。
+ */
+async function installRelease(opts: {
+  targetDir: string;
+  release: ModRelease;
+  channel: Channel;
+  /**
+   * 调用方**已经知道**的、这条 release 在**该目录**里的旧副本（绝对路径）。
+   *
+   * ⚠️ brief 钉的签名是 `{ targetDir, release, channel }`，这一格是**加出来的**（报告里写明了）：
+   *    "旧副本"只有调用方知道（文件夹那一侧来自扫描读数 `oldCopies` **∪ 主文件名**；
+   *    目录行那一侧来自 `catalogBindings[rowId].localPath`），而**删它们的那段代码必须只有一份**
+   *    （spec §7.3 第 8 步）—— 让两个调用方各删一遍，正是本函数要消灭的那种漂移。
+   * ⚠️ 等于 `targetPath` 的会被跳过：名字相同时 `installDownloadedFile` 已经把它挪成 `.old`，
+   *    不跳就会把**刚就位的新文件**删掉。
+   */
+  oldCopies?: readonly string[];
+}): Promise<InstallOutcome> {
+  const { targetDir, release, channel } = opts;
+  if (!isDirectory(targetDir)) throw new Error(`这个位置不是目录（拒绝写盘）：${targetDir}`);
+  const known = catalog;
+  if (known === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
+
+  const targetName = originFileNameOf(release.url);
+  if (targetName === null) {
+    throw new Error(
+      `这个地址推不出安全的文件名（路径穿越 / 保留名 / 不是 .jar）⇒ 拒绝落盘：${release.url}`,
+    );
+  }
+  const targetPath = join(targetDir, targetName);
+
+  if (existsSync(targetPath)) {
+    let alreadyThere = false;
+    try {
+      alreadyThere = (await sha512OfFile(targetPath)) === release.sha512;
+    } catch (error) {
+      // 读不出来 ⇒ 没有证据说"它已经是这一份"（见上面 ③ 的注释）
+      console.warn('[mod-folders] 目标读不出来，不能判「已就位」：', targetPath, error);
+    }
+    if (alreadyThere) {
+      // 说出来（不然"为什么这次没下载"在日志里看不出来）；页面那一侧不需要推送任何东西
+      console.log('[mod-folders] 目标已经是这一份（一个请求都不发）：', targetPath);
+      return { targetPath, alreadyCurrent: true, leftovers: [] };
+    }
+  }
+
+  const url = channelUrl(known, release, channel);
+  if (url === null) {
+    const which = channel === 'origin' ? 'origin' : channel.mirrorId;
+    throw new Error(`这个通道下拿不到下载地址（通道 ${which}）：${release.url}`);
+  }
+
+  for (const stale of stalePartsOf(targetDir, targetName)) {
+    try {
+      rmSync(stale, { force: true });
+      console.warn('[mod-folders] 清掉了上一次留下的半成品：', stale);
+    } catch (error) {
+      console.warn('[mod-folders] 半成品清不掉（继续下载）：', stale, error);
+    }
+  }
+
+  const partPath = `${targetPath}.${randomUUID()}.part`;
+  let movedOld: string | null = null;
+  try {
+    await downloadTo({
+      url,
+      partPath,
+      expectedSha512: release.sha512,
+      expectedSize: release.size,
+    });
+    movedOld = (await installDownloadedFile({ partPath, targetPath })).movedOld;
+  } catch (error) {
+    // Ruling 30：`.part` 由**调用方**删（`installDownloadedFile` 不碰它）
+    try {
+      rmSync(partPath, { force: true });
+    } catch (cleanupError) {
+      console.warn('[mod-folders] 半成品删不掉，请手动清理：', partPath, cleanupError);
+    }
+    throw error;
+  }
+
+  const leftovers: string[] = [];
+  for (const path of [...(opts.oldCopies ?? []), ...(movedOld === null ? [] : [movedOld])]) {
+    if (path === '' || normalizedPath(path) === normalizedPath(targetPath)) continue;
+    try {
+      rmSync(path, { force: true });
+    } catch (error) {
+      leftovers.push(path);
+      console.warn('[mod-folders] 旧副本删不掉，请手动清理：', path, error);
+    }
+  }
+  if (leftovers.length > 0) {
+    /*
+     * ⚠️ "部分成功"**必须说出来**（spec §7.3 第 8 步）：新文件已经在位了，把这次判失败
+     *    等于对用户说"没换成"（与事实相反）。⇒ 一条 notice（页面看得见）+ 返回值。
+     */
+    pushNotice(
+      `部分成功：新文件已经就位（${basename(targetPath)}），但 ${String(leftovers.length)} 个旧副本没删掉（${leftovers.map((path) => basename(path)).join('、')}）`,
+    );
+  }
+  return { targetPath, alreadyCurrent: false, leftovers };
+}
+
+/**
+ * 一次写盘流程的外壳：**忙标记 + 收尾时的 `lastRun` + 推状态**。单行与（T6 的）批量共用。
+ *
+ * ⚠️★ **并发只靠 `assertNotBusy()` 是不够的**：它看的是 v1 的两个标记
+ *    （`bulkRunning` / 正在写的那一条），**看不见这个模块自己的 `busy`** ⇒ 两次单行更新
+ *    会同时进来、同时下载，然后**先后就位同一个目标**（第二次会把第一次刚装好的那份
+ *    挪成 `.old` 再放一份同样的上去）。结果碰巧是对的，过程在**反复写盘**。
+ *    ⇒ 这里再挡一层（`busy` 非空 ⇒ 立刻拒，不排队）。
+ * ⚠️ `busy` 在**起手**就推给页面（`rebuild()` 一次），不是等做完才说 —— 按钮要在那几十秒里禁用。
+ * ⚠️ 失败**先写 `lastRun.failed` 再抛**：IPC 会 reject（页面弹一句），而 `lastRun` 是
+ *    "上一次运行到底怎么了"的读数 —— 只留那句话的话，用户一关就再也查不到了。
+ */
+async function writeRun(modid: string, work: () => Promise<void>): Promise<ModFoldersState> {
+  if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
+  busy = true;
+  rebuild();
+  try {
+    await work();
+  } catch (error) {
+    busy = false;
+    lastRun = { updated: [], skipped: [], failed: [{ modid, reason: messageOf(error) }] };
+    rebuild();
+    throw error;
+  }
+  busy = false;
+  lastRun = { updated: [modid], skipped: [], failed: [] };
+  rebuild();
+  return modFoldersState();
+}
+
+/**
+ * ★ 写盘：把**文件夹里**这一行换成 `releaseKey` 那条 release（spec §7.3）。
+ *
+ * 入参只有 id 与 key（**没有路径、没有地址**）：目标目录来自主进程自己那份状态，
+ * 下载地址由 `channelUrl` 在目录里解析。
+ *
+ * ⚠️★ "这一行装哪一条 release"**不在这里重新推导**（`resolveTarget` / `judgeRelease` 是 T1 的活）：
+ *    行视图里的 `official` 就是页面显示为"官方版本"的那一条，也就是"页面点更新时看到的目标"
+ *    ⇒ 拿它去装，界面说的与写盘做的才是同一件事。有没有上游、候选几条，全部由那份视图回答
+ *    （`official === null` ⇒ 没有目标 ⇒ 拒，spec §8 的 `missing-release` / `ambiguous`）。
+ * ⚠️ 游戏版本必须是**这个文件夹的有效版本**（`releaseKey` 里那个）：拿 1.7.10 那条 release
+ *    往 1.16.1 的文件夹里装是**静默降级**，而它看起来完全正常。
+ */
+export async function updateMod(
+  folderId: unknown,
+  modid: unknown,
+  releaseKey: unknown,
+  channel: unknown,
+): Promise<ModFoldersState> {
+  assertNotBusy();
+  const { folderId: id, entry } = requireFolder(folderId);
+  const chan = requireChannel(channel);
+  const key = requirePairKey(releaseKey, 'releaseKey');
+  if (typeof modid !== 'string' || modid === '') {
+    throw new Error('非法参数：modid 必须是非空字符串');
+  }
+  if (key.modid !== modid) {
+    throw new Error(`releaseKey 说的 mod 与这一行对不上：${key.key} vs ${modid}`);
+  }
+  if (!isDirectory(entry.path)) {
+    throw new Error(`这个文件夹的路径现在不是目录（不给更新）：${entry.path}`);
+  }
+  const view = folderView(id, entry);
+  if (view.gameVersion === null) {
+    throw new Error(
+      `这个文件夹的游戏版本还不知道（${basename(entry.path)}）⇒ 不给更新（spec §8：先给它选一个游戏版本）`,
+    );
+  }
+  if (key.gameVersion !== view.gameVersion) {
+    throw new Error(
+      `releaseKey 说的游戏版本（${key.gameVersion}）不是这个文件夹的（${view.gameVersion}）：${key.key}`,
+    );
+  }
+  const row = view.rows.find((candidate) => candidate.modid === key.modid);
+  if (row === undefined) {
+    throw new Error(`这个文件夹里没有 ${key.modid} 的行（还没扫过？先点一次「重扫」）：${id}`);
+  }
+  const release = row.official;
+  if (release === null) {
+    throw new Error(
+      `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${key.key}`,
+    );
+  }
+  /*
+   * 旧副本 = **主文件 ∪ 扫描读数给出的其余副本**。
+   * ⚠️ 主文件也要删（它在"旧副本"这个数组之外）：它正是被替换的那一份，而目标文件名
+   *    与它不同名时 `installDownloadedFile` **不会**碰它（它只挪 `targetPath`）⇒
+   *    不删的话目录里会同时留着被替换掉的那个旧版本（v1 `runUpdate` 的同一步做的也是这件事：
+   *    路径不同就 `rmSync(localPath)`）。同名时 `installRelease` 会跳过它（那已由 `.old` 负责）。
+   */
+  const oldCopies = [
+    join(entry.path, row.fileName),
+    ...row.oldCopies.map((name) => join(entry.path, name)),
+  ];
+  return writeRun(key.modid, async () => {
+    await installRelease({ targetDir: entry.path, release, channel: chan, oldCopies });
+    // spec §7.3 第 9 步：重扫该文件夹（**强制**，不吃缓存：目录刚刚被我们改过）
+    await queueScan(id, entry.path, { onlyIfMissing: false });
+  });
+}
+
+/**
+ * ★ 写盘：**第一部分**（目录行）那一行的绑定走**同一段**写盘（spec §7.5 的"下载到 ▾"也是它）。
+ *
+ * 与 `updateMod` 的差别只有"目标在哪儿"：
+ *   · 目录 = 那条绑定的 `dirname(localPath)`（路径是主进程记下来的，页面给不了）；
+ *   · 装完之后 `catalogBindings[rowId]` 要跟着改（否则这一行还指着**刚被删掉的那份旧文件**）。
+ *
+ * ⚠️ "这一行"必须在**当前**游戏版本下（`prefs.catalogGameVersion`）查得到：页面上能点的那一行
+ *    就是它（`requireRowId` 只保证"目录里有这一对"，那是**任意**游戏版本）。
+ */
+export async function updateCatalogRow(
+  rowId: unknown,
+  releaseKey: unknown,
+  channel: unknown,
+): Promise<ModFoldersState> {
+  assertNotBusy();
+  const row = requireRowId(rowId);
+  const chan = requireChannel(channel);
+  const key = requirePairKey(releaseKey, 'releaseKey');
+  if (key.modid !== row.modid || key.gameVersion !== row.gameVersion) {
+    throw new Error(`releaseKey（${key.key}）与这一行（${row.rowId}）对不上`);
+  }
+  const view = current.catalogRows.find((candidate) => candidate.rowId === row.rowId);
+  if (view === undefined) {
+    throw new Error(
+      `这一行不在当前游戏版本（${requireState().prefs.catalogGameVersion}）下 ⇒ 更新不了它：${row.rowId}`,
+    );
+  }
+  const release = view.official;
+  if (release === null) {
+    throw new Error(
+      `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${row.rowId}`,
+    );
+  }
+  const binding = requireState().catalogBindings[row.rowId];
+  if (binding === undefined || binding.localPath === '') {
+    throw new Error(`这一行还没有绑定本地文件（先绑定一次 —— 这一期不替用户挑文件）：${row.rowId}`);
+  }
+  const targetDir = dirname(binding.localPath);
+  return writeRun(row.modid, async () => {
+    const outcome = await installRelease({
+      targetDir,
+      release,
+      channel: chan,
+      oldCopies: [binding.localPath],
+    });
+    /*
+     * 绑定跟着走（v1 `runUpdate` 的"写回"那一步的对应物）。
+     * ⚠️ 基从**内存里**现取（`requireState()` 是同一个对象），而且**下载期间被解绑就不复活它**：
+     *    下载要几十秒，用户完全可能在这期间解绑 ⇒ 整条写回会把它变回来（v1 评审必修 1 的现场）。
+     * ⚠️ 版本号**现读那个文件**（v1 同一步："不是相信我们刚写的东西"）；读不出来就用 release 上
+     *    那个字符串并记一行日志 —— **不抛**：文件已经就位了，为一个标签判失败是对用户说反话。
+     */
+    let localVersion = release.version;
+    try {
+      localVersion = readJarMeta(outcome.targetPath).version;
+    } catch (error) {
+      console.warn('[mod-folders] 换上新文件之后读不出它的版本（用 release 上那一版）：', error);
+    }
+    const st = requireState();
+    const now = st.catalogBindings[row.rowId];
+    if (now === undefined) {
+      console.warn('[mod-folders] 更新期间这一行被解绑了，不再写回它：', row.rowId);
+    } else {
+      now.localPath = outcome.targetPath;
+      now.localVersion = localVersion;
+      now.localSha512 = release.sha512;
+      // 这一格今天没有消费者（`buildState` 不读它），但**它就是事实**：这个文件里装的是这一行的 release
+      now.releaseKey = row.rowId;
+      persist();
+    }
+    // 装到了某个已绑定文件夹里 ⇒ 那个文件夹的读数也过期了（§13.1 允许这种绑定存在）
+    const inside = folderContaining(outcome.targetPath);
+    if (inside !== null) {
+      const entry = st.folders[inside];
+      if (entry !== undefined) await queueScan(inside, entry.path, { onlyIfMissing: false });
+    }
+  });
+}
+
+/**
+ * 还没实现的写盘通道（**Task 6**）：整夹更新与缺失下载。
+ *
+ * ⚠️★ **为什么它们也注册着**：这一组的全部十五条都是"契约的一部分"
  *    （`preload.ts` 已经逐条转发），而"没注册"与"注册了但拒绝"在页面上的表现
- *    完全一样（都是 `invoke` reject）⇒ 少注册四条的话，Task 5/6 的复审分不清
+ *    完全一样（都是 `invoke` reject）⇒ 少注册两条的话，Task 6 的复审分不清
  *    "还没实现"与"通道名写错了"。这里抛的是一句**说得清**的话。
- *    代价（认）：今天调用它们一定失败 —— 报告里写明了，T5/T6 落地时替换这四行。
+ *    代价（认）：今天调用它们一定失败 —— 报告里写明了，T6 落地时替换这两行。
  */
 function notYetWritePath(what: string): never {
   throw new Error(
-    `写盘路径还没实现（${what} 是 Task 5/6 的）—— 这四条通道已经注册，但今天调用一定失败`,
+    `写盘路径还没实现（${what} 是 Task 6 的）—— 这两条通道已经注册，但今天调用一定失败`,
   );
 }
 
@@ -1288,9 +1667,22 @@ function registerIpc(): void {
     setCatalogGameVersion(gameVersion),
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.setTagFilter, (_event, tags: unknown) => setTagFilter(tags));
-  // Task 5/6 替换这四行（见 `notYetWritePath`）
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.updateMod, () => notYetWritePath('updateMod'));
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.updateCatalogRow, () => notYetWritePath('updateCatalogRow'));
+  /*
+   * ★ Task 5：两条写盘通道。入参一律 `unknown`（与上面十条同一条纪律 —— 校验在函数体里）。
+   *    ⚠️ 这两条**收 `releaseKey`**（只有它们收）：页面把它自己渲染那一行的 key 带回来，
+   *    主进程按它在目录里查 —— 这是"页面能指定下载哪一个"的唯一入口。
+   */
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.updateMod,
+    (_event, folderId: unknown, modid: unknown, releaseKey: unknown, channel: unknown) =>
+      updateMod(folderId, modid, releaseKey, channel),
+  );
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.updateCatalogRow,
+    (_event, rowId: unknown, releaseKey: unknown, channel: unknown) =>
+      updateCatalogRow(rowId, releaseKey, channel),
+  );
+  // Task 6 替换这两行（见 `notYetWritePath`）
   ipcMain.handle(MOD_FOLDERS_CHANNELS.updateFolderAll, () => notYetWritePath('updateFolderAll'));
   ipcMain.handle(MOD_FOLDERS_CHANNELS.downloadMissing, () => notYetWritePath('downloadMissing'));
 }

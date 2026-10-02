@@ -13,6 +13,13 @@
  *   node apps/desktop/scripts/verify-mod-folders.mjs --phase state-file --case a|b|c
  *       ↑ §13.1/`readStateFile` 加固那三条**由主相位自己 spawn 的子进程**跑
  *         （每条要一份全新的模块状态 ⇒ 必须新进程），平时不用手敲。
+ *   node apps/desktop/scripts/verify-mod-folders.mjs --phase write
+ *       ↑ ★ Task 5 的写路径（单行更新 + 四条负向证明）。**也由主相位 spawn**：
+ *         它要一份被劫持过的目录（url / sha512 指向本机桩），而目录是**启动时抓的、
+ *         之后缓存在模块里** ⇒ 与主相位那份目录同进程是验不了的。
+ *         ⚠️ 这一相位要 Windows：负向证明 ⑦ 必须由**另一个进程**用
+ *            `[System.IO.File]::Open(p,'Open','Read','None')` 占住文件（Node 的
+ *            `fs.open` 四种模式与只读属性**都挡不住 rename** —— T3 实测）。
  *
  * ⚠️ 它读的是**构建产物** `apps/desktop/dist/main.cjs`，不是源码：
  *    产物不在（或比它的输入旧）就**拒绝跑**（退出码 2）—— 一个旧产物会让全部判据
@@ -30,7 +37,7 @@
  *   2 = 判据**根本没跑起来**（产物不在 / 制品不新鲜 / 夹具造不出来）
  *       ⇒ 2 与 0 分开：§5.74 的教训是"这条检查没跑"会长得像"这项没过"，更糟的是长得像"通过"。
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -45,7 +52,7 @@ import {
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -114,8 +121,8 @@ const PHASE = argOf('--phase') || 'main';
 const CASE = argOf('--case');
 /** `--reuse-user-data <目录>`：case g 用它做一次**真重启**（读 case f 留下的那份状态）。 */
 const REUSE_USER_DATA = argOf('--reuse-user-data');
-if (PHASE !== 'main' && PHASE !== 'state-file' && PHASE !== 'prefs') {
-  console.error(`✗ --phase 只接受 main / state-file / prefs，收到「${PHASE}」`);
+if (PHASE !== 'main' && PHASE !== 'state-file' && PHASE !== 'prefs' && PHASE !== 'write') {
+  console.error(`✗ --phase 只接受 main / state-file / prefs / write，收到「${PHASE}」`);
   process.exit(2);
 }
 
@@ -436,6 +443,62 @@ const oneRelease1161 = modCatalog.mods
       ).length === 1,
   );
 
+/**
+ * F-pre（判修 1）用的那个 modid：**第一个**"1.16.1 下唯一候选、且不是 antigone"的 mod。
+ *
+ * ⚠️ 它原先算在 `mainPhase()` 里；Task 5 把它提上来 —— 写路径那四个"被劫持"的 release
+ *    必须与它（以及 antigone / mcsrranked）**不同的 modid**，否则夹具会互相污染。
+ */
+const trackedInPre = oneRelease1161.find((modid) => modid !== ANTIGONE);
+if (trackedInPre === undefined) {
+  bail(`${MOD_CATALOG_FILE} 里找不到"1.16.1 下唯一候选且 modid ≠ antigone"的 mod`);
+}
+
+// ---------------------------------------------------------------------------
+// ★ Task 5：写路径的夹具（**只在 `--phase write` 里生效**）
+// ---------------------------------------------------------------------------
+/*
+ * 四个被**劫持**的 release：`url` 换成本机桩上的地址、`sha512` / `size` 换成我们自己的字节。
+ * 为什么必须劫持：真的去 GitHub 下 27 MB 既不是"离线可跑"，也让"sha512 对不上"这一条
+ * 无从构造（那一条要的正是"服务端回的字节与目录里写的 sha512 不一致"）。
+ *
+ * ⚠️★ 只改 `url` / `sha512` / `size`：**不动 `targetVersions`、不增删 release** ⇒
+ *    "1.16.1 下唯一候选"的 mod 集合与条数一个都不变（主相位那些计数判据不受影响）。
+ *    而 `WRITE` 为假时这整段**一行都不执行** ⇒ 主相位看到的是仓库里那份目录，逐字不变。
+ */
+const WRITE = PHASE === 'write';
+const writeMods = WRITE
+  ? oneRelease1161.filter(
+      (modid) => modid !== ANTIGONE && modid !== trackedInPre && modid !== MCSRRANKED,
+    )
+  : [];
+if (WRITE && writeMods.length < 4) {
+  bail(
+    `构造不出写路径的夹具：要 4 个"1.16.1 下唯一候选"的 mod（且不是 antigone / ${trackedInPre} / ${MCSRRANKED}），只找到 ${String(writeMods.length)} 个`,
+  );
+}
+const MOD_BAD = writeMods[0] ?? '';
+const MOD_GOOD = writeMods[1] ?? '';
+const MOD_BUSY = writeMods[2] ?? '';
+const MOD_TRAV = writeMods[3] ?? '';
+
+/** 夹具 jar 里写的**内部版本号**（故意与目录里 release 的版本字符串不同：见写相位 ⑰ 的刀）。 */
+const FIXTURE_JAR_VERSION = '1.0.0';
+const SERVED_JAR_VERSION = '9.9.9';
+
+/** 一个**真 zip**（产品的 `readJarMeta` 读得动）。`extra=true` ⇒ 字节与"官方那一份"不同。 */
+function probeJar(modid, version, extra = false) {
+  const entries = { 'fabric.mod.json': strToU8(JSON.stringify({ id: modid, version })) };
+  if (extra) entries['extra.txt'] = strToU8('这一条让字节与目录里那一份不同（同 modid、不同 sha512）');
+  return Buffer.from(zipSync(entries));
+}
+const sha512OfBuffer = (bytes) => createHash('sha512').update(bytes).digest('hex');
+
+/** 桩上"哪条路径回什么"。写相位之外是空的 ⇒ 主相位的桩行为逐字不变。 */
+const downloads = new Map();
+/** 每一次真的落到下载那条路上的请求（catalog 请求不算）。 */
+const downloadLog = [];
+
 function makeJar(path, meta) {
   writeFileSync(path, Buffer.from(zipSync({ 'fabric.mod.json': strToU8(JSON.stringify(meta)) })));
   return path;
@@ -500,14 +563,15 @@ const UPSTREAM_VERSIONS = [
 ];
 
 // ---------------------------------------------------------------------------
-// 本机 HTTP 桩：只服务 `/api/mod-catalog` 与 `/api/file-catalog`
+// 本机 HTTP 桩：只服务 `/api/mod-catalog`、`/api/file-catalog`，以及（仅写相位）下载路径
 // ---------------------------------------------------------------------------
-const catalogBody = JSON.stringify(modCatalog);
 const fileCatalogBody = readFileSync(FILE_CATALOG_FILE, 'utf8');
 const server = createServer((req, res) => {
   if (req.url === '/api/mod-catalog') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(catalogBody);
+    // ⚠️ **现序列化**（不是开头算一次）：写路径那一支要在这之前把 release 的 url / sha512 换掉，
+    //    而目录是启动时抓的 ⇒ 序列化必须晚于那次改动（`loadArtifact()` 在它之后）。
+    res.end(JSON.stringify(modCatalog));
     return;
   }
   if (req.url === '/api/file-catalog') {
@@ -515,10 +579,113 @@ const server = createServer((req, res) => {
     res.end(fileCatalogBody);
     return;
   }
+  /*
+   * ★ Task 5：下载路径。`downloads` 在写相位里才被填（key = 路径前缀，value = 字节）；
+   *   主相位里它是空的 ⇒ 这一段的判据在主相位**不可能**被触发（桩的行为逐字不变）。
+   */
+  for (const [prefix, entry] of downloads) {
+    if (!req.url.startsWith(prefix)) continue;
+    downloadLog.push({ url: req.url, prefix });
+    res.writeHead(200, {
+      'content-type': 'application/java-archive',
+      'content-length': String(entry.bytes.length),
+    });
+    if (entry.chunkDelayMs === undefined) {
+      res.end(entry.bytes);
+      return;
+    }
+    /*
+     * ⚠️ 慢的那一条（入口守卫）：先回一半、停一下、再回另一半 ⇒ 第一个 updateMod 会**停在下载里**
+     *   几百毫秒，第二个调用才有机会撞上 `busy`。不做成"永不回完"是因为那要额外的收尾逻辑，
+     *   而这里要的只是"窗口真的存在"。
+     */
+    const half = Math.ceil(entry.bytes.length / 2);
+    res.write(entry.bytes.subarray(0, half));
+    setTimeout(() => res.end(entry.bytes.subarray(half)), entry.chunkDelayMs);
+    return;
+  }
   res.writeHead(404).end('no');
 });
 await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const siteOrigin = `http://127.0.0.1:${String(server.address().port)}`;
+
+/**
+ * ★ Task 5：把四条 release 与三条镜像改成"指向本机桩"，并备好桩要回的字节。
+ *
+ * 记录下来的每一格：
+ *   · `release` —— 目录里那一条（**已被就地改过**：url / sha512 / size）；
+ *   · `targetName` —— `originFileNameOf(release.url)` 会给出的那个名字（落盘目标名）；
+ *   · `official` —— 目录里写的 sha512/size 对应的字节（桩回的就是它）；
+ *   · `served` —— 桩**实际**回的字节（`bad` 那一支故意与 `official` 不同）。
+ *
+ * ⚠️ 只加两条镜像（id 前缀 `probe-`）并把它们的 `hosts` 写成桩的 host：
+ *    `channelUrl` 的两层判据（id 在不在表里 / host 匹不匹配）因此都真的走过一遍。
+ */
+function buildWriteFixture() {
+  if (!WRITE) return null;
+  const host = new URL(siteOrigin).host;
+  /** 一条 release 的夹具：劫持 url，并把桩上的路径登记好。 */
+  const hijack = (modid, mirrorId, pathName, servedExtra) => {
+    const release = modCatalog.releases.find(
+      (candidate) => candidate.modid === modid && candidate.targetVersions.includes('1.16.1'),
+    );
+    if (release === undefined) bail(`夹具前提不成立：${modid} 在 1.16.1 下没有 release`);
+    const official = probeJar(modid, SERVED_JAR_VERSION);
+    const served = servedExtra ? probeJar(modid, SERVED_JAR_VERSION, true) : official;
+    modCatalog.mirrors.push({
+      id: mirrorId,
+      label: `探针桩（${mirrorId}）`,
+      prefix: `${siteOrigin}/mirror-${mirrorId.replace('probe-', '')}/`,
+      hosts: [host],
+    });
+    const name = `${pathName}.jar`;
+    release.url = `${siteOrigin}/origin/${name}`;
+    release.sha512 = sha512OfBuffer(official);
+    release.size = official.length;
+    downloads.set(`/mirror-${mirrorId.replace('probe-', '')}/`, { bytes: served });
+    return { modid, release, targetName: name, official, served, mirrorId };
+  };
+
+  const bad = hijack(MOD_BAD, 'probe-bad', 'probe-bad', true);
+  const good = hijack(MOD_GOOD, 'probe-good', 'probe-good-2.0.0', false);
+  const busy = hijack(MOD_BUSY, 'probe-busy', 'probe-busy', false);
+  /*
+   * `slow`：**不劫持新 release** —— 它复用 `good` 那条的字节（同一个 sha512），
+   * 只是路径慢一半。它要证的是"自己正在写的时候，第二次调用进不来"。
+   */
+  downloads.set('/mirror-slow/', { bytes: good.served, chunkDelayMs: 400 });
+  modCatalog.mirrors.push({
+    id: 'probe-slow',
+    label: '探针桩（probe-slow）',
+    prefix: `${siteOrigin}/mirror-slow/`,
+    hosts: [host],
+  });
+  /*
+   * 路径穿越那一条：URL 里 `%2F` 解出来是 `/`（`pathname` 上看到的是编码过的形式，
+   * 很容易漏）⇒ `originFileNameOf` 必须给 `null`，而**一个请求都不该发出去**。
+   */
+  const trav = modCatalog.releases.find(
+    (candidate) => candidate.modid === MOD_TRAV && candidate.targetVersions.includes('1.16.1'),
+  );
+  if (trav === undefined) bail(`夹具前提不成立：${MOD_TRAV} 在 1.16.1 下没有 release`);
+  trav.url = 'https://github.com/x/..%2F..%2Fevil.jar';
+  trav.sha512 = sha512OfBuffer(probeJar(MOD_TRAV, SERVED_JAR_VERSION));
+  trav.size = 1;
+  return {
+    bad,
+    good,
+    busy,
+    trav: { modid: MOD_TRAV, release: trav, mirrorId: 'probe-trav' },
+  };
+}
+const writeFixture = buildWriteFixture();
+if (WRITE) {
+  const names = [writeFixture.bad, writeFixture.good, writeFixture.busy].map(
+    (entry) => `${entry.modid}→${entry.mirrorId}（目标名 ${entry.targetName}）`,
+  );
+  console.log(`  写相位的劫持夹具：${names.join('；')}`);
+  console.log(`  穿越那一条：${writeFixture.trav.modid} → ${writeFixture.trav.release.url}`);
+}
 
 /**
  * fetch 钩子：本地桩放行；`api.modrinth.com` 按 `upstreamMode` 就地喂夹具；
@@ -630,10 +797,7 @@ async function mainPhase() {
    */
   const preDir = join(workRoot, 'F-pre');
   mkdirSync(preDir, { recursive: true });
-  const trackedInPre = oneRelease1161.find((modid) => modid !== ANTIGONE);
-  if (trackedInPre === undefined) {
-    bail(`${MOD_CATALOG_FILE} 里找不到"1.16.1 下唯一候选且 modid ≠ antigone"的 mod，构造不出判修 1 的夹具`);
-  }
+  // `trackedInPre` 在文件头上算（Task 5 提到那里：写路径的夹具要避开它）
   const preJar = makeJar(join(preDir, `${trackedInPre}-1.16.1.jar`), {
     id: trackedInPre,
     version: '1.0.0',
@@ -1583,6 +1747,624 @@ async function prefsPhase() {
 }
 
 // ===========================================================================
+// 相位三：写路径（Task 5）—— 四条负向证明 + 两个写入口
+// ===========================================================================
+/*
+ * ⚠️★ 为什么必须**单独一个进程**（照 `state-file` / `prefs` 的理由）：
+ *    被劫持的目录（release 的 url / sha512、镜像表）要在**产物加载之前**就位 ——
+ *    而目录是启动时抓的、之后缓存在模块里 ⇒ "另换一套目录夹具"只能靠新进程。
+ *    主相位因此一个字节的目录都没变（`WRITE` 那一支在主相位里不执行）。
+ */
+
+/**
+ * 用**另一个进程**把文件按 `FileShare.None` 占住。
+ *
+ * ⚠️★ 为什么非得是另一个进程（T3 实测，2026-10-02）：Node 的 `fs.open`（`r` / `r+` / `a` / `w`）
+ *    **四种都挡不住 rename**，置只读属性也挡不住 —— 只有
+ *    `[System.IO.File]::Open(p,'Open','Read','None')` 这种"不给别人任何共享"的句柄
+ *    才会让 `rename` 得到 `EBUSY`。（`rmSync` 那种情况下是 `EPERM`，也一起复现了。）
+ * ⚠️ 占着的时候**我们自己的 `readFileSync` 也会 EBUSY** ⇒ 调用方必须在 `release()`
+ *    **之后**才去量"原文件字节没变"（否则量到的是一次读失败，而不是字节）。
+ */
+async function holdFileExclusively(path) {
+  const script = `$h = [System.IO.File]::Open('${path}', 'Open', 'Read', 'None'); [Console]::Out.WriteLine('HELD'); Start-Sleep -Seconds 120`;
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  let err = '';
+  let spawnError = null;
+  child.stdout.on('data', (chunk) => {
+    out += String(chunk);
+  });
+  child.stderr.on('data', (chunk) => {
+    err += String(chunk);
+  });
+  child.on('error', (error) => {
+    spawnError = error;
+  });
+  const exited = new Promise((done) => child.on('exit', done));
+  for (let i = 0; i < 240 && !out.includes('HELD') && spawnError === null; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const held = out.includes('HELD');
+  return {
+    held,
+    detail: held
+      ? `powershell.exe 占住了（pid ${String(child.pid)}）`
+      : `没占住：${spawnError?.message ?? `${out}${err}`}`,
+    release: async () => {
+      child.kill();
+      await exited;
+    },
+  };
+}
+
+async function writePhase() {
+  const fx = writeFixture;
+  if (fx === null) bail('写路径的夹具没建起来（PHASE 不是 write？）');
+  if (process.platform !== 'win32') {
+    bail("负向证明 ⑦ 需要 Windows：只有 [System.IO.File]::Open(...,'None') 能得到 EBUSY");
+  }
+
+  /*
+   * ⚠️ `workRoot` 放进一个**专属的父目录**：负向证明 ⑥ 要证的正是"临时目录**之外**
+   *    一个文件都没多"，而"外面"如果直接是 `tmpdir()`，别的进程随时在往里写东西 ⇒
+   *    那个读数不可复现（§5.38：报 0 之前先找出第二条读数证明这个 0 是测出来的）。
+   */
+  const parentRoot = mkdtempSync(join(tmpdir(), 'verify-mod-folders-write-parent-'));
+  const workRoot = join(parentRoot, 'run');
+  mkdirSync(workRoot);
+  currentUserDataDir = join(workRoot, 'userData');
+  mkdirSync(currentUserDataDir);
+
+  const dirBad = join(workRoot, 'mods-bad');
+  const dirTrav = join(workRoot, 'mods-trav');
+  const dirBusy = join(workRoot, 'mods-busy');
+  const dirSlow = join(workRoot, 'mods-slow');
+  const dirGood = join(workRoot, 'mods-good');
+  const dirCat = join(workRoot, 'cat-row');
+  for (const dir of [dirBad, dirTrav, dirBusy, dirSlow, dirGood, dirCat]) mkdirSync(dir);
+
+  const badLocal = join(dirBad, 'bad-1.0.jar');
+  writeFileSync(badLocal, probeJar(fx.bad.modid, FIXTURE_JAR_VERSION));
+  const travLocal = join(dirTrav, 'trav-1.0.jar');
+  writeFileSync(travLocal, probeJar(fx.trav.modid, FIXTURE_JAR_VERSION));
+  const goodLocal = join(dirGood, 'good-1.0.jar');
+  writeFileSync(goodLocal, probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+  const slowLocal = join(dirSlow, 'slow-1.0.jar');
+  writeFileSync(slowLocal, probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+  /* 被占住的那个文件**名字就是目标名**（第 7 步要挪的正是它），字节与"官方那一份"不同。 */
+  const busyTarget = join(dirBusy, fx.busy.targetName);
+  writeFileSync(busyTarget, probeJar(fx.busy.modid, FIXTURE_JAR_VERSION, true));
+  /* 目录行那一侧的绑定：一个**不在任何已绑定文件夹里**的 jar（否则 §13.1 会把它解绑）。 */
+  const catOld = join(dirCat, 'cat-old.jar');
+  writeFileSync(catOld, probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+
+  /*
+   * ⚠️ 状态文件必须在 `loadArtifact()` **之前**写好（启动时读一次）；
+   *    `catalogGameVersionChosen: true` 是故意的：不让 `startUp` 的"自动采纳"动游戏版本。
+   */
+  const seeded = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {},
+    prefs: {
+      bulkChannel: 'origin',
+      catalogGameVersion: '1.16.1',
+      catalogGameVersionChosen: true,
+      tagFilter: [],
+    },
+  };
+  writeFileSync(stateFile(), JSON.stringify(seeded, null, 2), 'utf8');
+
+  console.log(`  夹具（写相位）：${workRoot}`);
+  for (const [name, dir] of [
+    ['mods-bad', dirBad],
+    ['mods-trav', dirTrav],
+    ['mods-busy', dirBusy],
+    ['mods-slow', dirSlow],
+    ['mods-good', dirGood],
+    ['cat-row', dirCat],
+  ]) {
+    console.log(`  ${name}：${listing(dir)}`);
+  }
+  console.log(`  父目录（⑥ 要证的"外面"）：${parentRoot} ⇒ ${listing(parentRoot)}`);
+
+  loadArtifact();
+  const registered = await waitForHandlers();
+  if (!registered) bail('十四条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+
+  /** 绑一个夹具目录（走原生的目录对话框桩）。 */
+  const bindAt = async (dir) => {
+    openQueue = [{ canceled: false, filePaths: [dir] }];
+    const bound = await invoke(MOD_CH.bindFolder);
+    const folder = folderByPath(bound, dir);
+    if (folder === undefined) bail(`绑不上夹具目录：${dir}`);
+    return folder.folderId;
+  };
+  /**
+   * 绑一个夹具目录 + 把它的游戏版本定成 1.16.1。
+   * ⚠️ 不用 `.minecraft` 那一套（`mmc-pack.json`）：`setFolderGameVersion` 是**用户显式选版本**
+   *    那条路，而它正好也是"路径推断不出来时"的正常入口（spec §8）。
+   */
+  const prepare = async (dir) => {
+    const id = await bindAt(dir);
+    const after = await invoke(MOD_CH.setFolderGameVersion, id, '1.16.1');
+    const folder = after.folders.find((candidate) => candidate.folderId === id);
+    if (folder?.gameVersion !== '1.16.1' || folder.rows.length === 0) {
+      bail(`夹具目录没有可更新的行：${dir}（rows=${String(folder?.rows.length)}）`);
+    }
+    return id;
+  };
+  const rowOf = (state, dir, modid) =>
+    folderByPath(state, dir)?.rows.find((row) => row.modid === modid);
+  const goodReqs = () => downloadLog.filter((entry) => entry.prefix === '/mirror-good/').length;
+  const slowReqs = () => downloadLog.filter((entry) => entry.prefix === '/mirror-slow/').length;
+  const noPartsOrOlds = (dir) =>
+    !readdirSync(dir).some((name) => name.includes('.part') || name.endsWith('.old'));
+
+  // =========================================================================
+  // ⑫ = brief ⑤：sha512 对不上 ⇒ 不落盘
+  // =========================================================================
+  await section('⑫（brief ⑤）sha512 对不上 ⇒ 目标不落盘、没有 .part 残留', async () => {
+    const id = await prepare(dirBad);
+    const targetPath = join(dirBad, fx.bad.targetName);
+    const beforeListing = listing(dirBad);
+    const beforeLocal = sha512Of(badLocal);
+    const beforeReqs = downloadLog.length;
+    let refused = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.bad.modid, `${fx.bad.modid}|1.16.1`, {
+        mirrorId: fx.bad.mirrorId,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    console.log(`  桩上收到的下载请求：${String(beforeReqs)} → ${String(downloadLog.length)}`);
+    console.log(`  ${basename(dirBad)}：${listing(dirBad)}`);
+    check('updateMod 抛了', refused !== null, refused?.message ?? '（没有抛）');
+    check(
+      '理由说的是 sha512 对不上（不是别的失败撞上来的）',
+      typeof refused?.message === 'string' && refused.message.includes('sha512 与上游不一致'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 确实去下了字节（请求数 +1）⇒ 拒绝发生在"下完之后比对"那一步，不是这条路没跑起来',
+      downloadLog.length === beforeReqs + 1,
+      `请求数 ${String(beforeReqs)} → ${String(downloadLog.length)}`,
+    );
+    check('目标文件**不存在**（对不上就不落盘）', !existsSync(targetPath), listing(dirBad));
+    check(
+      '★ 没有 `.part` 残留（删 `.part` 是**调用方**的活 —— Ruling 30）',
+      !readdirSync(dirBad).some((name) => name.includes('.part')),
+      listing(dirBad),
+    );
+    check('也没有 `.old` 残留', noPartsOrOlds(dirBad), listing(dirBad));
+    check('整个目录逐字没变（只有夹具那一份 jar）', listing(dirBad) === beforeListing, listing(dirBad));
+    check(
+      '夹具那一份的字节也没变',
+      sha512Of(badLocal) === beforeLocal,
+      `${beforeLocal.slice(0, 16)}…`,
+    );
+    const state = await invoke(MOD_CH.getState);
+    check('失败之后 busy 回到 false（按钮要能再点）', state.busy === false, String(state.busy));
+    check(
+      '而且 lastRun 里如实记着这一条失败了',
+      state.lastRun?.failed?.[0]?.modid === fx.bad.modid && state.lastRun.updated.length === 0,
+      JSON.stringify(state.lastRun),
+    );
+  });
+
+  // =========================================================================
+  // ⑬ = brief ⑥：路径穿越被拒
+  // =========================================================================
+  await section('⑬（brief ⑥）路径穿越被拒：临时目录之外一个文件都没多', async () => {
+    const id = await prepare(dirTrav);
+    const outsideBefore = listing(parentRoot);
+    const insideBefore = listing(dirTrav);
+    const beforeReqs = downloadLog.length;
+    let refused = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.trav.modid, `${fx.trav.modid}|1.16.1`, 'origin');
+    } catch (error) {
+      refused = error;
+    }
+    /*
+     * `join(dir, '..%2F..%2Fevil.jar')` 那种名字被 `originFileNameOf` 拦住了；
+     * **如果它没被拦住**，落点会是这几处（`decodeURIComponent` 之后是 `../../evil.jar`）。
+     */
+    const escapes = [
+      join(dirTrav, 'evil.jar'),
+      join(workRoot, 'evil.jar'),
+      join(parentRoot, 'evil.jar'),
+      join(tmpdir(), 'evil.jar'),
+    ];
+    console.log(`  父目录：${outsideBefore} → ${listing(parentRoot)}`);
+    check('updateMod 抛了（`..%2F..%2Fevil.jar` 不许落盘）', refused !== null, refused?.message ?? '（没有抛）');
+    check(
+      '理由说的是"推不出安全的文件名"（判据在**文件名**那一层，不是下载之后）',
+      typeof refused?.message === 'string' && refused.message.includes('推不出安全的文件名'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 一个请求都没发（拒绝发生在解析文件名那一步，不是"下了之后才发现"）',
+      downloadLog.length === beforeReqs,
+      `请求数 ${String(beforeReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '★ `mkdtemp` 的**父目录**逐字没变（清单证明：目标目录之外没有被写任何东西）',
+      listing(parentRoot) === outsideBefore,
+      `${outsideBefore} → ${listing(parentRoot)}`,
+    );
+    check('目标那个目录也逐字没变', listing(dirTrav) === insideBefore, listing(dirTrav));
+    check(
+      '几个可能的逃逸位置都没有 `evil.jar`',
+      escapes.every((path) => !existsSync(path)),
+      escapes.filter((path) => existsSync(path)).join(' | ') || '（都没有）',
+    );
+  });
+
+  // =========================================================================
+  // ⑭ = brief ⑦：被另一个进程占住 ⇒ 不动任何东西
+  // =========================================================================
+  await section('⑭（brief ⑦）目标被占住 ⇒ 报「文件被占用」、用户文件不变、没有 .old / .part', async () => {
+    const id = await prepare(dirBusy);
+    const targetPath = join(dirBusy, fx.busy.targetName);
+    const beforeListing = listing(dirBusy);
+    const beforeBytes = readFileSync(targetPath);
+    const beforeReqs = downloadLog.length;
+    const holder = await holdFileExclusively(targetPath);
+    console.log(`  占住 ${basename(targetPath)}：${holder.detail}`);
+    if (!holder.held) bail(`占住文件的仪器没工作（这一条判据没跑起来）：${holder.detail}`);
+    let refused = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.busy.modid, `${fx.busy.modid}|1.16.1`, {
+        mirrorId: fx.busy.mirrorId,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    /*
+     * ⚠️★ **先松开锁再量原文件**：被 `FileShare.None` 占着的时候我们自己的 `readFileSync`
+     *    也会 EBUSY ⇒ 那时量到的是一次读失败，不是"字节没变"（brief ⑦ 的原话）。
+     */
+    await holder.release();
+    const afterListing = listing(dirBusy);
+    const afterBytes = readFileSync(targetPath);
+    console.log(`  ${basename(dirBusy)}：${afterListing}`);
+    check('（前置）真的占住了（占不住的话下面几条量的是"根本没锁"）', holder.held, holder.detail);
+    check('updateMod 抛了', refused !== null, refused?.message ?? '（没有抛）');
+    check(
+      '★ 报的是"文件被占用，可能游戏正在运行"（不是别的失败撞上来的）',
+      typeof refused?.message === 'string' && refused.message.includes('文件被占用'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '而且说清了"什么都没改"',
+      typeof refused?.message === 'string' && refused.message.includes('什么都没改'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 确实去下了字节（请求数 +1）⇒ 失败发生在**就位**那一步，而不是"目标读不动就早退了"',
+      downloadLog.length === beforeReqs + 1,
+      `请求数 ${String(beforeReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '★ 用户的目标文件**逐字节没变**（松开锁之后量的）',
+      afterBytes.equals(beforeBytes),
+      `${String(beforeBytes.length)}B → ${String(afterBytes.length)}B`,
+    );
+    check(
+      '没有 `.old` 残留（挪走的那份要么没挪、要么被放回去了）',
+      !readdirSync(dirBusy).some((name) => name.endsWith('.old')),
+      afterListing,
+    );
+    check(
+      '★ 也没有 `.part` 残留（Ruling 30：`installDownloadedFile` 不碰它，**调用方**删）',
+      !readdirSync(dirBusy).some((name) => name.includes('.part')),
+      afterListing,
+    );
+    check('整个目录逐字没变（连夹具那一份都在）', afterListing === beforeListing, afterListing);
+  });
+
+  // =========================================================================
+  // ⑮ 入口守卫：两种"忙"都不许进来
+  // =========================================================================
+  await section('⑮ 入口守卫：v1 批量进行中 / 自己正在写 ⇒ 都不许进来', async () => {
+    const id = await prepare(dirSlow);
+    const key = `${fx.good.modid}|1.16.1`;
+    const targetPath = join(dirSlow, fx.good.targetName);
+
+    /*
+     * (a) v1 的一键更新进行中。`updateAll` 的**同步前缀**里就 `bulkRunning = true`，
+     *     然后才 `await yieldToEventLoop()` ⇒ 不 await 它、紧接着调 updateMod，
+     *     那一枪一定打在"批量进行中"这个窗口里（不是靠 sleep 撞运气）。
+     */
+    const beforeBulk = downloadLog.length;
+    const bulk = invoke(FILE_CH.updateAll);
+    let refusedBulk = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.good.modid, key, { mirrorId: 'probe-slow' });
+    } catch (error) {
+      refusedBulk = error;
+    }
+    await bulk;
+    check(
+      'v1 的一键更新进行中 ⇒ updateMod 立刻拒绝（v1 的教训：批量期间单行也要拒）',
+      typeof refusedBulk?.message === 'string' && refusedBulk.message.includes('一键更新'),
+      refusedBulk?.message ?? '（没有抛）',
+    );
+    check(
+      '而且那一次一个请求都没发、目标文件也没被创建',
+      downloadLog.length === beforeBulk && !existsSync(targetPath),
+      `请求数 ${String(beforeBulk)} → ${String(downloadLog.length)}；${listing(dirSlow)}`,
+    );
+
+    /*
+     * (b) 自己正在写。桩上的 `/mirror-slow/` 先回一半、停 400ms、再回另一半
+     *     ⇒ 第一个 updateMod 会**停在下载里**，第二枪才有窗口可打。
+     */
+    const slow = invoke(MOD_CH.updateMod, id, fx.good.modid, key, { mirrorId: 'probe-slow' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const midState = await invoke(MOD_CH.getState);
+    let refusedBusy = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.good.modid, key, { mirrorId: 'probe-slow' });
+    } catch (error) {
+      refusedBusy = error;
+    }
+    let slowError = null;
+    try {
+      await slow;
+    } catch (error) {
+      slowError = error;
+    }
+    check(
+      '（前置）第一个 updateMod 自己成功了（否则下面几条量的是"两次都失败"）',
+      slowError === null && existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
+      slowError?.message ?? listing(dirSlow),
+    );
+    check('★ 写盘期间 `busy` 是 true（页面据此禁用行内按钮）', midState.busy === true, String(midState.busy));
+    check(
+      '★ 自己正在写的时候第二次调用被拒（不是排队、也不是同时写两次）',
+      typeof refusedBusy?.message === 'string' && refusedBusy.message.includes('正在更新中'),
+      refusedBusy?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 慢的那条路径只被请求了 1 次（第二次没有插进来又下一次）',
+      slowReqs() === 1,
+      `请求数 ${String(slowReqs())}`,
+    );
+    const state = await invoke(MOD_CH.getState);
+    check(
+      '跑完之后 busy 回到 false、lastRun 记的是这一条成功',
+      state.busy === false && state.lastRun?.updated?.[0] === fx.good.modid,
+      JSON.stringify({ busy: state.busy, lastRun: state.lastRun }),
+    );
+  });
+
+  // =========================================================================
+  // ⑯ = brief ⑧：幂等 ⇒ 一个下载请求都不发
+  // =========================================================================
+  await section('⑯（brief ⑧）幂等：已在位 ⇒ 一个下载请求都不发', async () => {
+    const id = await prepare(dirGood);
+    const key = `${fx.good.modid}|1.16.1`;
+    const targetPath = join(dirGood, fx.good.targetName);
+    const beforeReqs = goodReqs();
+    let first = null;
+    try {
+      first = await invoke(MOD_CH.updateMod, id, fx.good.modid, key, {
+        mirrorId: fx.good.mirrorId,
+      });
+    } catch (error) {
+      first = error;
+    }
+    console.log(`  正向那次之后 ${basename(dirGood)}：${listing(dirGood)}`);
+    check(
+      '（前置）第一次更新成功 —— 这也是"写盘真的能成"的正向读数',
+      first !== null && !(first instanceof Error),
+      first instanceof Error ? first.message : `busy=${String(first.busy)}`,
+    );
+    check(
+      '★ 目标就位，而且 sha512 = 目录里写的那一条',
+      existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
+      listing(dirGood),
+    );
+    check('旧的那份（good-1.0.jar）被删掉（就位后清旧副本那一步）', !existsSync(goodLocal), listing(dirGood));
+    check('没有 `.part` / `.old` 残留', noPartsOrOlds(dirGood), listing(dirGood));
+    check(
+      '桩上 `/mirror-good/` 的请求数正好 +1',
+      goodReqs() === beforeReqs + 1,
+      `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
+    );
+    const row = first instanceof Error ? undefined : rowOf(first, dirGood, fx.good.modid);
+    check(
+      '★ 重扫之后这一行读作"已是最新"，而且版本读自**那个文件**（jar 里写的是 9.9.9）',
+      row?.verdict?.kind === 'same' &&
+        row?.localVersion === SERVED_JAR_VERSION &&
+        row?.fileName === fx.good.targetName,
+      JSON.stringify({
+        verdict: row?.verdict?.kind,
+        localVersion: row?.localVersion,
+        fileName: row?.fileName,
+      }),
+    );
+    check(
+      'busy 回到 false、lastRun 记的是成功',
+      first instanceof Error ? false : first.busy === false && first.lastRun?.updated?.[0] === fx.good.modid,
+      first instanceof Error ? first.message : JSON.stringify(first.lastRun),
+    );
+
+    // ---- 第二次：同一个目标、同一份字节 ⇒ 一个请求都不许发（spec §7.3 第 4 步）----
+    const beforeSecond = goodReqs();
+    const bytesBefore = readFileSync(targetPath);
+    const listingBefore = listing(dirGood);
+    let second = null;
+    try {
+      second = await invoke(MOD_CH.updateMod, id, fx.good.modid, key, {
+        mirrorId: fx.good.mirrorId,
+      });
+    } catch (error) {
+      second = error;
+    }
+    check(
+      '★ 第二次 updateMod 成功返回（不是靠抛错"恰好"没下载）',
+      second !== null && !(second instanceof Error),
+      second instanceof Error ? second.message : 'ok',
+    );
+    check(
+      '★★ 一个下载请求都没发（桩上的请求数没动）',
+      goodReqs() === beforeSecond,
+      `请求数 ${String(beforeSecond)} → ${String(goodReqs())}`,
+    );
+    check(
+      '★★ 而且目录逐字节没变（不是"下了、又写回同样的字节"）',
+      listing(dirGood) === listingBefore && readFileSync(targetPath).equals(bytesBefore),
+      listing(dirGood),
+    );
+  });
+
+  // =========================================================================
+  // ⑰ 第一部分（目录行）走的是同一段写盘
+  // =========================================================================
+  await section('⑰ updateCatalogRow：第一部分那一行走的是**同一段**写盘', async () => {
+    const rowId = `${fx.good.modid}|1.16.1`;
+    openQueue = [{ canceled: false, filePaths: [catOld] }];
+    const bound = await invoke(MOD_CH.bindCatalogRow, rowId);
+    check(
+      '（前置）绑定成功（读 jar 里的 modid = 这一行的 modid）',
+      bound.catalogRows.find((row) => row.rowId === rowId)?.binding?.localPath === catOld,
+      listing(dirCat),
+    );
+    const targetPath = join(dirCat, fx.good.targetName);
+    const beforeReqs = goodReqs();
+    let state = null;
+    try {
+      state = await invoke(MOD_CH.updateCatalogRow, rowId, rowId, { mirrorId: fx.good.mirrorId });
+    } catch (error) {
+      state = error;
+    }
+    console.log(`  ${basename(dirCat)}：${listing(dirCat)}`);
+    check(
+      'updateCatalogRow 成功',
+      state !== null && !(state instanceof Error),
+      state instanceof Error ? state.message : 'ok',
+    );
+    check(
+      '★ 目标就位、字节 = 目录里那一条（文件名来自 `release.url` —— 两个写入口共用同一段）',
+      existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
+      listing(dirCat),
+    );
+    check('旧那份（cat-old.jar）也被删掉', !existsSync(catOld), listing(dirCat));
+    check('没有 `.part` / `.old` 残留', noPartsOrOlds(dirCat), listing(dirCat));
+    check(
+      '只发了 1 个请求（`/mirror-good/`）',
+      goodReqs() === beforeReqs + 1,
+      `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
+    );
+    const binding = readStateFileJson()?.catalogBindings?.[rowId];
+    check(
+      '★ 绑定跟着走了：localPath → 新文件、localSha512 = 目录里那一条、releaseKey = 这一行',
+      binding !== undefined &&
+        resolve(binding.localPath).toLowerCase() === resolve(targetPath).toLowerCase() &&
+        binding.localSha512 === fx.good.release.sha512 &&
+        binding.releaseKey === rowId,
+      JSON.stringify(binding ?? null),
+    );
+    check(
+      '★ 而版本号是**从那个文件里读的**（jar 内部写的是 9.9.9、目录里那条 release 写的是别的）',
+      binding?.localVersion === SERVED_JAR_VERSION,
+      `${String(binding?.localVersion)}（release 上是 ${fx.good.release.version}）`,
+    );
+    const row = state instanceof Error ? undefined : state.catalogRows.find((r) => r.rowId === rowId);
+    check('这一行现在读作"已是最新"', row?.verdict?.kind === 'same', String(row?.verdict?.kind));
+  });
+
+  // =========================================================================
+  // ⑱（brief 之外的一条）同名旧文件被换掉 + 旧副本删不掉 ⇒ 报告"部分成功"
+  // =========================================================================
+  /*
+   * 这一条补的是 spec §7.3 第 7–8 步里**没有别的地方会走到**的两支：
+   *   · 目标位置上**已经有一个同名文件**（真实世界里最常见：同一个 mod、同一个文件名、
+   *     不同的构建）⇒ `installDownloadedFile` 会先把它挪成 `.<uuid>.old`，就位之后**必须删掉**它
+   *     （不删的话用户的 mods 目录里会一直躺着一个 `.old`）；
+   *   · 旧副本**删不掉**（这里用另一个进程占住它）⇒ 新文件已经就位，所以**不许判失败**，
+   *     但也不许装没看见 ⇒ `lastRun.updated` 里是成功、`notices` 里有一条"部分成功"。
+   */
+  await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删不掉 ⇒ 报告"部分成功"', async () => {
+    const dir = join(workRoot, 'mods-partial');
+    mkdirSync(dir);
+    const targetPath = join(dir, fx.good.targetName);
+    // 同名、不同字节（同一个 mod 的另一种构建）⇒ 走"先挪成 .old"那一支
+    writeFileSync(targetPath, probeJar(fx.good.modid, FIXTURE_JAR_VERSION, true));
+    // 旧副本（版本更低 ⇒ 被 planner 归到 `oldCopies`），下面会被另一个进程占住
+    const lockedOld = join(dir, 'old-0.5.jar');
+    writeFileSync(lockedOld, probeJar(fx.good.modid, '0.5.0'));
+    const beforeLocked = readFileSync(lockedOld);
+
+    const id = await prepare(dir);
+    const holder = await holdFileExclusively(lockedOld);
+    console.log(`  占住旧副本 ${basename(lockedOld)}：${holder.detail}`);
+    if (!holder.held) bail(`占住文件的仪器没工作（这一条判据没跑起来）：${holder.detail}`);
+    const beforeReqs = goodReqs();
+    let state = null;
+    try {
+      state = await invoke(MOD_CH.updateMod, id, fx.good.modid, `${fx.good.modid}|1.16.1`, {
+        mirrorId: fx.good.mirrorId,
+      });
+    } catch (error) {
+      state = error;
+    }
+    await holder.release();
+    const afterListing = listing(dir);
+    console.log(`  ${basename(dir)}：${afterListing}`);
+    check(
+      '★ updateMod **没有抛**（新文件已经就位 ⇒ 判失败是对用户说反话）',
+      state !== null && !(state instanceof Error),
+      state instanceof Error ? state.message : 'ok',
+    );
+    check(
+      '★ 目标就位、字节 = 目录里那一条',
+      existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
+      afterListing,
+    );
+    check(
+      '★ 挪走的那个 `.old` 被删掉了（目录里一个 `.old` 都没有）',
+      !readdirSync(dir).some((name) => name.endsWith('.old')),
+      afterListing,
+    );
+    check(
+      '删不掉的那份旧副本**还在**、而且逐字节没变（"部分成功" = 新文件在位、旧的没删掉）',
+      existsSync(lockedOld) && readFileSync(lockedOld).equals(beforeLocked),
+      afterListing,
+    );
+    check(
+      '★ 而且**说出来**了（notices 里有一条"部分成功"）',
+      state instanceof Error ? false : state.notices.some((note) => note.includes('部分成功')),
+      state instanceof Error ? state.message : JSON.stringify(state.notices),
+    );
+    check(
+      'lastRun 记的是**成功**（不是失败）',
+      state instanceof Error
+        ? false
+        : state.lastRun?.updated?.[0] === fx.good.modid && state.lastRun.failed.length === 0,
+      state instanceof Error ? state.message : JSON.stringify(state.lastRun),
+    );
+    check(
+      '只发了 1 个请求',
+      goodReqs() === beforeReqs + 1,
+      `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
+    );
+  });
+
+  server.close();
+  return { workRoot: parentRoot, ok: failures === 0 };
+}
+
+// ===========================================================================
 // 跑
 // ===========================================================================
 let result;
@@ -1590,6 +2372,8 @@ if (PHASE === 'state-file') {
   result = await stateFilePhase();
 } else if (PHASE === 'prefs') {
   result = await prefsPhase();
+} else if (PHASE === 'write') {
+  result = await writePhase();
 } else {
   result = await mainPhase();
   // 三条 readStateFile 加固的判据在子进程里跑（各要一份全新的模块状态）
@@ -1622,6 +2406,22 @@ if (PHASE === 'state-file') {
       `子进程退出码 ${String(child.status)}`,
     );
   }
+  /*
+   * ★ Task 5：写路径（单行更新 + 四条负向证明）。**也起一个子进程**：它要一套被劫持过的
+   * 目录（release 的 url / sha512、镜像表），而目录是启动时抓的、缓存在模块里 ——
+   * 与主相位那份目录同进程是验不了的。子进程的逐条读数由它自己打到 stdout（stdio 继承）。
+   */
+  console.log('\n## ⑫–⑰ 写路径（Task 5）：单行更新与它的负向证明（一个子进程）');
+  const writeChild = spawnSync(process.execPath, [self, '--phase', 'write'], {
+    stdio: 'inherit',
+    cwd: repoRoot,
+    env: { ...process.env, MCSR_VERIFY_REEXEC: '1' },
+  });
+  check(
+    '（子进程）写相位的全部判据成立',
+    writeChild.status === 0,
+    `子进程退出码 ${String(writeChild.status)}`,
+  );
 }
 
 console.log(`\n  临时目录：${result.workRoot}${KEEP ? '（--keep：保留）' : ''}`);
