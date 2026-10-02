@@ -265,6 +265,17 @@ function normalizedPath(path: string): string {
   return process.platform === 'win32' ? full.toLowerCase() : full;
 }
 
+/**
+ * 两个路径是不是**同一个文件**（Windows 大小写不敏感 ⇒ 先归一）。
+ *
+ * ⚠️ 空串在这里一律**不相等**（`resolve('')` 是当前工作目录，那不是一个文件）——
+ *    调用方在拿它判"要不要跳过/拒绝"时，空串必须落到"不匹配"那一侧。
+ */
+function samePath(a: string, b: string): boolean {
+  if (a === '' || b === '') return false;
+  return normalizedPath(a) === normalizedPath(b);
+}
+
 /** `path` 是不是落在 `dir` 里面（§13.1 的判据**只按路径**，spec §13.1）。 */
 function isInsideFolder(path: string, dir: string): boolean {
   if (path === '') return false;
@@ -1338,6 +1349,14 @@ async function installRelease(opts: {
    *    不跳就会把**刚就位的新文件**删掉。
    */
   oldCopies?: readonly string[];
+  /**
+   * 调用方**打算替换的那一份文件**（路径 + 上一次读到的 sha512；读不出来就是 `null`）。
+   *
+   * ⚠️ 这是 **Ruling 48**（2026-10-03 复审）要的那一格：行视图来自**缓存的**扫描读数，
+   *    用户在两次扫描之间把那个 jar 换掉之后，`verdict` 判的还是**旧读数** ⇒
+   *    必须拿"上次读到的 sha512"与"现在盘上的 sha512"对一次，才挡得住"扫描之后被换过的文件"。
+   */
+  replacing?: { path: string; sha512: string | null };
 }): Promise<InstallOutcome> {
   const { targetDir, release, channel } = opts;
   if (!isDirectory(targetDir)) throw new Error(`这个位置不是目录（拒绝写盘）：${targetDir}`);
@@ -1353,17 +1372,44 @@ async function installRelease(opts: {
   const targetPath = join(targetDir, targetName);
 
   if (existsSync(targetPath)) {
-    let alreadyThere = false;
+    let onDisk: string | null = null;
     try {
-      alreadyThere = (await sha512OfFile(targetPath)) === release.sha512;
+      onDisk = await sha512OfFile(targetPath);
     } catch (error) {
       // 读不出来 ⇒ 没有证据说"它已经是这一份"（见上面 ③ 的注释）
       console.warn('[mod-folders] 目标读不出来，不能判「已就位」：', targetPath, error);
     }
-    if (alreadyThere) {
+    if (onDisk !== null && onDisk === release.sha512) {
       // 说出来（不然"为什么这次没下载"在日志里看不出来）；页面那一侧不需要推送任何东西
       console.log('[mod-folders] 目标已经是这一份（一个请求都不发）：', targetPath);
       return { targetPath, alreadyCurrent: true, leftovers: [] };
+    }
+    /*
+     * ★ **Ruling 48**（2026-10-03 复审）：**扫描之后被换过的文件不许被覆盖**。
+     *
+     * 上面那次 `sha512OfFile` 是幂等判据顺路算出来的 ⇒ **复用它**再判一次（几乎免费）：
+     *   · 目标**就是**我们要替换的那一份（路径逐字相同）：
+     *       盘上的读数与"扫描时那份读数"对不上 ⇒ **拒**（"这个文件在扫描之后变过"）。
+     *       扫描时那份读数是 `null`（当时就读不出来）⇒ 比不了 ⇒ 放行（报告里注明了这一支）。
+     *   · 目标**不是**我们要替换的那一份：
+     *       它是目录里记着的**旧副本** ⇒ 放行（那本来就是这次要清掉的东西）；
+     *       我们**没见过**它 ⇒ **拒**（扫描之后多出来的文件，我们不知道那是什么，
+     *       而"覆盖一个不知道是什么的文件"正是这条闸要防的事）。
+     * ⚠️ 为什么"等于 `release.sha512`"已经在上面返回了：那一支是幂等（一个请求都不发）。
+     */
+    const recorded = opts.replacing !== undefined && samePath(opts.replacing.path, targetPath);
+    const knownOld = (opts.oldCopies ?? []).some((path) => samePath(path, targetPath));
+    const scanned = opts.replacing?.sha512 ?? null;
+    if (recorded) {
+      if (onDisk !== null && scanned !== null && onDisk !== scanned) {
+        throw new Error(
+          `这个文件在扫描之后变过（现在 ${onDisk.slice(0, 16)}…，扫描时是 ${scanned.slice(0, 16)}…）⇒ 先重新扫描再更新：${targetPath}`,
+        );
+      }
+    } else if (!knownOld) {
+      throw new Error(
+        `这个位置上已经有一个文件，而它既不是这次要替换的那一份、也不是目录里记着的旧副本 ⇒ 拒绝覆盖：${targetPath}`,
+      );
     }
   }
 
@@ -1404,7 +1450,8 @@ async function installRelease(opts: {
 
   const leftovers: string[] = [];
   for (const path of [...(opts.oldCopies ?? []), ...(movedOld === null ? [] : [movedOld])]) {
-    if (path === '' || normalizedPath(path) === normalizedPath(targetPath)) continue;
+    // 等于 `targetPath` 的就是**刚就位的新文件**（同名旧文件已由 `.old` 负责）⇒ 绝不删它
+    if (path === '' || samePath(path, targetPath)) continue;
     try {
       rmSync(path, { force: true });
     } catch (error) {
@@ -1435,13 +1482,20 @@ async function installRelease(opts: {
  * ⚠️ `busy` 在**起手**就推给页面（`rebuild()` 一次），不是等做完才说 —— 按钮要在那几十秒里禁用。
  * ⚠️ 失败**先写 `lastRun.failed` 再抛**：IPC 会 reject（页面弹一句），而 `lastRun` 是
  *    "上一次运行到底怎么了"的读数 —— 只留那句话的话，用户一关就再也查不到了。
+ * ⚠️★ **空转不许冒充"已更新"**（(e)，2026-10-03 复审）：幂等那一支一个字节都没写 ⇒
+ *    `work()` 返回一句"为什么没动"的原因，那一趟就记进 `lastRun.skipped` 而**不是** `updated`
+ *    （写进 `updated` 会让界面说"已更新 1 项"，而盘上什么都没变）。`work()` 返回 `null` = 真的更新了。
  */
-async function writeRun(modid: string, work: () => Promise<void>): Promise<ModFoldersState> {
+async function writeRun(
+  modid: string,
+  work: () => Promise<string | null>,
+): Promise<ModFoldersState> {
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
   rebuild();
+  let skipped: string | null = null;
   try {
-    await work();
+    skipped = await work();
   } catch (error) {
     busy = false;
     lastRun = { updated: [], skipped: [], failed: [{ modid, reason: messageOf(error) }] };
@@ -1449,9 +1503,45 @@ async function writeRun(modid: string, work: () => Promise<void>): Promise<ModFo
     throw error;
   }
   busy = false;
-  lastRun = { updated: [modid], skipped: [], failed: [] };
+  lastRun =
+    skipped === null
+      ? { updated: [modid], skipped: [], failed: [] }
+      : { updated: [], skipped: [{ modid, reason: skipped }], failed: [] };
   rebuild();
   return modFoldersState();
+}
+
+/**
+ * ★ **Ruling 47**（2026-10-03 复审判修 1）：写盘前**必须拒掉那两类"不许装"的行**。
+ *
+ * 为什么非有不可：`official` 对**每一种判定**都非空（`resolveTarget` 只要有一条候选就给目标），
+ * 而写路径读的正是它 ⇒ 在一个 `newer` 行上（本地比清单里更**新**），写路径会下更**旧**的那条
+ * `official`、把用户更新的 jar 挪成 `.old` **再删掉** —— D1 的"只升不降"就只由**远程页面**执行了，
+ * 而这个仓库的渲染进程加载的**就是远程网页**（`preload.ts` 文件头那一段）⇒ 主进程必须兜住。
+ * `manual` 的行同理：spec §8 说那种行**连更新按钮都不给**。
+ *
+ * ⚠️★ **判据只该是这两类**（评审同时纠正了"拿 `needsUpdate`/`batchable` 当闸"的想法）：
+ *   · `different-build`（同版本号、字节不同）**正是**"用户显式点一下"的合法情形（spec §8、`manual` 那段），
+ *     拿批量那套判据会把这一支误杀；
+ *   · `same` 也必须放行 —— "点第二次"走的正是它，而那就是幂等那条判据本身。
+ * ⚠️ 这**不是**"重推判据"（brief 那句"内核决定"）：`verdict` / `manual` 就**在写路径刚读的那个
+ *    对象上**（`planFolderView` / `planCatalogRows` 算好的，T1 的 `shared/modFolders.ts`）——
+ *    消费它 ≠ 在写路径里重新 `judgeRelease`。
+ */
+function assertUpdatable(row: { manual: boolean; verdict: { kind: string } }, what: string): void {
+  if (row.manual) {
+    throw new Error(`这一条是 manual（只给打开原网页，连更新按钮都不该有）⇒ 不给更新：${what}`);
+  }
+  const kind = row.verdict.kind;
+  if (kind === 'newer') {
+    throw new Error(`本地这一份比清单里的更新（newer）⇒ 不给更新（只升不降）：${what}`);
+  }
+  if (kind === 'unknown') {
+    throw new Error(`本地版本读不出来（unknown）⇒ 不知道会换掉什么，不给更新：${what}`);
+  }
+  if (kind === 'unknown-version') {
+    throw new Error(`这个文件夹的游戏版本还不知道 ⇒ 不给更新：${what}`);
+  }
 }
 
 /**
@@ -1507,6 +1597,8 @@ export async function updateMod(
       `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${key.key}`,
     );
   }
+  // ★ Ruling 47：`newer` / `manual` / 说不清本地是什么的，一律**在动盘之前**拒
+  assertUpdatable(row, key.key);
   /*
    * 旧副本 = **主文件 ∪ 扫描读数给出的其余副本**。
    * ⚠️ 主文件也要删（它在"旧副本"这个数组之外）：它正是被替换的那一份，而目标文件名
@@ -1514,14 +1606,20 @@ export async function updateMod(
    *    不删的话目录里会同时留着被替换掉的那个旧版本（v1 `runUpdate` 的同一步做的也是这件事：
    *    路径不同就 `rmSync(localPath)`）。同名时 `installRelease` 会跳过它（那已由 `.old` 负责）。
    */
-  const oldCopies = [
-    join(entry.path, row.fileName),
-    ...row.oldCopies.map((name) => join(entry.path, name)),
-  ];
+  const mainPath = join(entry.path, row.fileName);
+  const oldCopies = [mainPath, ...row.oldCopies.map((name) => join(entry.path, name))];
   return writeRun(key.modid, async () => {
-    await installRelease({ targetDir: entry.path, release, channel: chan, oldCopies });
+    const outcome = await installRelease({
+      targetDir: entry.path,
+      release,
+      channel: chan,
+      oldCopies,
+      // ★ Ruling 48：把"扫描时那个文件的读数"带过去（扫描之后被换过 ⇒ 拒）
+      replacing: { path: mainPath, sha512: row.localSha512 },
+    });
     // spec §7.3 第 9 步：重扫该文件夹（**强制**，不吃缓存：目录刚刚被我们改过）
     await queueScan(id, entry.path, { onlyIfMissing: false });
+    return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
   });
 }
 
@@ -1559,6 +1657,8 @@ export async function updateCatalogRow(
       `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${row.rowId}`,
     );
   }
+  // ★ Ruling 47：与 `updateMod` 同一道闸（`newer` / `manual` / `unknown` 一律拒）
+  assertUpdatable(view, row.rowId);
   const binding = requireState().catalogBindings[row.rowId];
   if (binding === undefined || binding.localPath === '') {
     throw new Error(`这一行还没有绑定本地文件（先绑定一次 —— 这一期不替用户挑文件）：${row.rowId}`);
@@ -1570,6 +1670,8 @@ export async function updateCatalogRow(
       release,
       channel: chan,
       oldCopies: [binding.localPath],
+      // ★ Ruling 48：绑定时读到的 sha512 就是这一条"扫描读数"
+      replacing: { path: binding.localPath, sha512: binding.localSha512 },
     });
     /*
      * 绑定跟着走（v1 `runUpdate` 的"写回"那一步的对应物）。
@@ -1602,6 +1704,7 @@ export async function updateCatalogRow(
       const entry = st.folders[inside];
       if (entry !== undefined) await queueScan(inside, entry.path, { onlyIfMissing: false });
     }
+    return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
   });
 }
 

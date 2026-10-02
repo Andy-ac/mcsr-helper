@@ -458,29 +458,41 @@ if (trackedInPre === undefined) {
 // ★ Task 5：写路径的夹具（**只在 `--phase write` 里生效**）
 // ---------------------------------------------------------------------------
 /*
- * 四个被**劫持**的 release：`url` 换成本机桩上的地址、`sha512` / `size` 换成我们自己的字节。
+ * **六个**被**劫持**的 release：`url` 换成本机桩上的地址、`sha512` / `size` 换成我们自己的字节。
  * 为什么必须劫持：真的去 GitHub 下 27 MB 既不是"离线可跑"，也让"sha512 对不上"这一条
  * 无从构造（那一条要的正是"服务端回的字节与目录里写的 sha512 不一致"）。
  *
- * ⚠️★ 只改 `url` / `sha512` / `size`：**不动 `targetVersions`、不增删 release** ⇒
- *    "1.16.1 下唯一候选"的 mod 集合与条数一个都不变（主相位那些计数判据不受影响）。
- *    而 `WRITE` 为假时这整段**一行都不执行** ⇒ 主相位看到的是仓库里那份目录，逐字不变。
+ * ⚠️★ 只改 `url` / `sha512` / `size`（外加 Ruling 47 那个夹具要的 `download: 'manual'`）：
+ *    **不动 `targetVersions`、不增删 release** ⇒ "1.16.1 下唯一候选"的 mod 集合与条数一个都不变
+ *    （主相位那些计数判据不受影响）。而 `WRITE` 为假时这整段**一行都不执行**
+ *    ⇒ 主相位看到的是仓库里那份目录，逐字不变。
  */
 const WRITE = PHASE === 'write';
-const writeMods = WRITE
+/** 版本主体"每一段都是数字"（`isSortableBody` 的判据）—— `newer` 那个夹具必须先满足它。 */
+const sortableBodyOf = (version) =>
+  version.split(/[.\-+_]/).every((segment) => /^[0-9]+$/.test(segment));
+const writePool = WRITE
   ? oneRelease1161.filter(
       (modid) => modid !== ANTIGONE && modid !== trackedInPre && modid !== MCSRRANKED,
     )
   : [];
-if (WRITE && writeMods.length < 4) {
+const MOD_NEWER = writePool.find((modid) => {
+  const release = modCatalog.releases.find(
+    (candidate) => candidate.modid === modid && candidate.targetVersions.includes('1.16.1'),
+  );
+  return release !== undefined && sortableBodyOf(release.version);
+});
+const writeMods = writePool.filter((modid) => modid !== MOD_NEWER);
+if (WRITE && (MOD_NEWER === undefined || writeMods.length < 5)) {
   bail(
-    `构造不出写路径的夹具：要 4 个"1.16.1 下唯一候选"的 mod（且不是 antigone / ${trackedInPre} / ${MCSRRANKED}），只找到 ${String(writeMods.length)} 个`,
+    `构造不出写路径的夹具：要 6 个"1.16.1 下唯一候选"的 mod（其中一个的版本主体要可排序，做 \`newer\` 那一支），只找到 ${String(writePool.length)} 个`,
   );
 }
 const MOD_BAD = writeMods[0] ?? '';
 const MOD_GOOD = writeMods[1] ?? '';
 const MOD_BUSY = writeMods[2] ?? '';
 const MOD_TRAV = writeMods[3] ?? '';
+const MOD_MANUAL = writeMods[4] ?? '';
 
 /** 夹具 jar 里写的**内部版本号**（故意与目录里 release 的版本字符串不同：见写相位 ⑰ 的刀）。 */
 const FIXTURE_JAR_VERSION = '1.0.0';
@@ -650,6 +662,16 @@ function buildWriteFixture() {
   const good = hijack(MOD_GOOD, 'probe-good', 'probe-good-2.0.0', false);
   const busy = hijack(MOD_BUSY, 'probe-busy', 'probe-busy', false);
   /*
+   * ★ Ruling 47 的两个夹具（都在**没动盘**这一侧）：
+   *   · `newer`：这一行的判定必须是 `newer` ⇒ 本地那个 jar 的内部版本要**比 release 更新**
+   *     而且**两边的主体都可排序**（`MOD_NEWER` 是按这条挑的，见上面那段）；
+   *   · `manual`：把这条 release 的 `download` 改成 `'manual'` —— 那是"连更新按钮都不该有"的那一类
+   *     （spec §8）。只动 `download` 一格，release 的条数与 `targetVersions` 都不变。
+   */
+  const newer = hijack(MOD_NEWER ?? '', 'probe-newer', 'probe-newer', false);
+  const manual = hijack(MOD_MANUAL, 'probe-manual', 'probe-manual', false);
+  manual.release.download = 'manual';
+  /*
    * `slow`：**不劫持新 release** —— 它复用 `good` 那条的字节（同一个 sha512），
    * 只是路径慢一半。它要证的是"自己正在写的时候，第二次调用进不来"。
    */
@@ -675,6 +697,8 @@ function buildWriteFixture() {
     bad,
     good,
     busy,
+    newer,
+    manual,
     trav: { modid: MOD_TRAV, release: trav, mirrorId: 'probe-trav' },
   };
 }
@@ -684,6 +708,9 @@ if (WRITE) {
     (entry) => `${entry.modid}→${entry.mirrorId}（目标名 ${entry.targetName}）`,
   );
   console.log(`  写相位的劫持夹具：${names.join('；')}`);
+  console.log(
+    `  Ruling 47 的夹具：newer=${writeFixture.newer.modid}（release ${writeFixture.newer.release.version}）；manual=${writeFixture.manual.modid}（download 改成 manual）`,
+  );
   console.log(`  穿越那一条：${writeFixture.trav.modid} → ${writeFixture.trav.release.url}`);
 }
 
@@ -1905,6 +1932,23 @@ async function writePhase() {
   const slowReqs = () => downloadLog.filter((entry) => entry.prefix === '/mirror-slow/').length;
   const noPartsOrOlds = (dir) =>
     !readdirSync(dir).some((name) => name.includes('.part') || name.endsWith('.old'));
+  /*
+   * ★ (b)（2026-10-03 复审）：**不许拿 `instanceof Error` 当成功判据** ——
+   *    `handler` 若什么都没返回，`value` 是 `undefined`，而 `undefined !== null` 与
+   *    `!(undefined instanceof Error)` **都是真** ⇒ 那一条会"绿着"什么都没验。
+   *    ⇒ 成功一律要**形状**：真的是那份 `ModFoldersState`（两个数组都在）。
+   *    读数用 `resultDetail`：抛了就说抛了什么，不是状态就把 `typeof` / 字段数印出来。
+   */
+  const isState = (value) =>
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray(value.folders) &&
+    Array.isArray(value.catalogRows);
+  const resultDetail = (value) => {
+    if (value instanceof Error) return value.message;
+    if (typeof value !== 'object' || value === null) return `typeof ${typeof value}`;
+    return `拿到了 ${String(Object.keys(value).length)} 个字段的对象`;
+  };
 
   // =========================================================================
   // ⑫ = brief ⑤：sha512 对不上 ⇒ 不落盘
@@ -2165,8 +2209,8 @@ async function writePhase() {
     console.log(`  正向那次之后 ${basename(dirGood)}：${listing(dirGood)}`);
     check(
       '（前置）第一次更新成功 —— 这也是"写盘真的能成"的正向读数',
-      first !== null && !(first instanceof Error),
-      first instanceof Error ? first.message : `busy=${String(first.busy)}`,
+      isState(first) && first.busy === false,
+      resultDetail(first),
     );
     check(
       '★ 目标就位，而且 sha512 = 目录里写的那一条',
@@ -2180,7 +2224,7 @@ async function writePhase() {
       goodReqs() === beforeReqs + 1,
       `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
     );
-    const row = first instanceof Error ? undefined : rowOf(first, dirGood, fx.good.modid);
+    const row = isState(first) ? rowOf(first, dirGood, fx.good.modid) : undefined;
     check(
       '★ 重扫之后这一行读作"已是最新"，而且版本读自**那个文件**（jar 里写的是 9.9.9）',
       row?.verdict?.kind === 'same' &&
@@ -2194,8 +2238,8 @@ async function writePhase() {
     );
     check(
       'busy 回到 false、lastRun 记的是成功',
-      first instanceof Error ? false : first.busy === false && first.lastRun?.updated?.[0] === fx.good.modid,
-      first instanceof Error ? first.message : JSON.stringify(first.lastRun),
+      isState(first) && first.busy === false && first.lastRun?.updated?.[0] === fx.good.modid,
+      isState(first) ? JSON.stringify(first.lastRun) : resultDetail(first),
     );
 
     // ---- 第二次：同一个目标、同一份字节 ⇒ 一个请求都不许发（spec §7.3 第 4 步）----
@@ -2212,8 +2256,21 @@ async function writePhase() {
     }
     check(
       '★ 第二次 updateMod 成功返回（不是靠抛错"恰好"没下载）',
-      second !== null && !(second instanceof Error),
-      second instanceof Error ? second.message : 'ok',
+      isState(second),
+      resultDetail(second),
+    );
+    /*
+     * ★ **(e)**（2026-10-03 复审）：**空转不许冒充"已更新"** —— 这一趟一个字节都没写，
+     *   所以它必须落在 `lastRun.skipped` 里（带一句为什么），而 `updated` 要是空的；
+     *   否则界面会说"已更新 1 项"，而盘上什么都没变。
+     */
+    check(
+      '★ 空转如实报成 `skipped`（`lastRun.updated` 空着，说清"已经是这一份"）',
+      isState(second) &&
+        second.lastRun?.updated?.length === 0 &&
+        second.lastRun?.skipped?.[0]?.modid === fx.good.modid &&
+        second.lastRun.skipped[0].reason.includes('已经是这一份'),
+      isState(second) ? JSON.stringify(second.lastRun) : resultDetail(second),
     );
     check(
       '★★ 一个下载请求都没发（桩上的请求数没动）',
@@ -2248,11 +2305,7 @@ async function writePhase() {
       state = error;
     }
     console.log(`  ${basename(dirCat)}：${listing(dirCat)}`);
-    check(
-      'updateCatalogRow 成功',
-      state !== null && !(state instanceof Error),
-      state instanceof Error ? state.message : 'ok',
-    );
+    check('updateCatalogRow 成功', isState(state), resultDetail(state));
     check(
       '★ 目标就位、字节 = 目录里那一条（文件名来自 `release.url` —— 两个写入口共用同一段）',
       existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
@@ -2279,7 +2332,7 @@ async function writePhase() {
       binding?.localVersion === SERVED_JAR_VERSION,
       `${String(binding?.localVersion)}（release 上是 ${fx.good.release.version}）`,
     );
-    const row = state instanceof Error ? undefined : state.catalogRows.find((r) => r.rowId === rowId);
+    const row = isState(state) ? state.catalogRows.find((r) => r.rowId === rowId) : undefined;
     check('这一行现在读作"已是最新"', row?.verdict?.kind === 'same', String(row?.verdict?.kind));
   });
 
@@ -2323,8 +2376,8 @@ async function writePhase() {
     console.log(`  ${basename(dir)}：${afterListing}`);
     check(
       '★ updateMod **没有抛**（新文件已经就位 ⇒ 判失败是对用户说反话）',
-      state !== null && !(state instanceof Error),
-      state instanceof Error ? state.message : 'ok',
+      isState(state),
+      resultDetail(state),
     );
     check(
       '★ 目标就位、字节 = 目录里那一条',
@@ -2343,20 +2396,189 @@ async function writePhase() {
     );
     check(
       '★ 而且**说出来**了（notices 里有一条"部分成功"）',
-      state instanceof Error ? false : state.notices.some((note) => note.includes('部分成功')),
-      state instanceof Error ? state.message : JSON.stringify(state.notices),
+      isState(state) && state.notices.some((note) => note.includes('部分成功')),
+      isState(state) ? JSON.stringify(state.notices) : resultDetail(state),
     );
     check(
       'lastRun 记的是**成功**（不是失败）',
-      state instanceof Error
-        ? false
-        : state.lastRun?.updated?.[0] === fx.good.modid && state.lastRun.failed.length === 0,
-      state instanceof Error ? state.message : JSON.stringify(state.lastRun),
+      isState(state) &&
+        state.lastRun?.updated?.[0] === fx.good.modid &&
+        state.lastRun.failed.length === 0,
+      isState(state) ? JSON.stringify(state.lastRun) : resultDetail(state),
     );
     check(
       '只发了 1 个请求',
       goodReqs() === beforeReqs + 1,
       `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
+    );
+  });
+
+  // =========================================================================
+  // ⑲ ★ Ruling 47：`newer` / `manual` 的行**在动盘之前**就要拒
+  // =========================================================================
+  /*
+   * 这一条补的是评审判修 1：`official` 对**每一种判定**都非空，而写路径读的正是它 ⇒
+   * 在一个 `newer` 行（本地比清单里更**新**）上，写路径会下更旧的那条 official、
+   * 把用户更新的 jar 挪成 `.old` **再删掉** —— D1 的"只升不降"就只剩远程页面在执行了。
+   *
+   * ⚠️ 两个夹具的**前提**必须各自先立住（不然下面两条会因为别的原因"绿"）：
+   *   · `newer`：判定的确算出 `newer`（本地 jar 的内部版本比 release 更新、两边主体都可排序）；
+   *   · `manual`：这一行的 `manual` 的确是 `true`（那条 release 的 `download` 是 `manual`）。
+   * ⚠️ 而"目标文件逐字节不变"这一句**单独是恒真的**（什么都没干当然没变）⇒
+   *   它必须与"一个请求都没发"和**拒的原文**配对，才是在证"闸在动盘之前拦住了"。
+   *   （"闸真的会红"由报告里那把刀给：去掉拒绝 ⇒ 这一整段红。）
+   */
+  await section('⑲（★ Ruling 47）`newer` / `manual` 的行：拒绝、一个请求都不发、盘上没动', async () => {
+    const dirNewer = join(workRoot, 'mods-newer');
+    mkdirSync(dirNewer);
+    const newerTarget = join(dirNewer, fx.newer.targetName);
+    // 本地这一份**比 release 更新**（99.0.0 vs 目录里那条），字节也与 official 不同
+    writeFileSync(newerTarget, probeJar(fx.newer.modid, '99.0.0', true));
+    const newerId = await prepare(dirNewer);
+    const newerState = await invoke(MOD_CH.getState);
+    const newerRow = rowOf(newerState, dirNewer, fx.newer.modid);
+    const newerBefore = readFileSync(newerTarget);
+    const beforeNewerReqs = downloadLog.length;
+    let newerRefused = null;
+    try {
+      await invoke(MOD_CH.updateMod, newerId, fx.newer.modid, `${fx.newer.modid}|1.16.1`, {
+        mirrorId: fx.newer.mirrorId,
+      });
+    } catch (error) {
+      newerRefused = error;
+    }
+    check(
+      '（前置）这一行的判定真的是 `newer`（夹具成立：本地比清单里那条更新）',
+      newerRow?.verdict?.kind === 'newer' && newerRow?.official !== null,
+      `verdict=${String(newerRow?.verdict?.kind)} official=${String(newerRow?.official?.version)}`,
+    );
+    check(
+      '★ `newer` 的行 ⇒ 拒（D1 的"只升不降"由**主进程**兜住，不再只靠页面）',
+      typeof newerRefused?.message === 'string' && newerRefused.message.includes('newer'),
+      newerRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 而且**一个请求都没发**（闸在就位/下载之前 ⇒ 更旧的那条 official 从来没被取过）',
+      downloadLog.length === beforeNewerReqs,
+      `请求数 ${String(beforeNewerReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '用户手里那份**逐字节没变**（没有被挪成 `.old`、更没有"挪走再删掉"）',
+      readFileSync(newerTarget).equals(newerBefore),
+      `${listing(dirNewer)}；sha512 ${sha512Of(newerTarget).slice(0, 16)}…`,
+    );
+    check('没有 `.old` / `.part` 残留', noPartsOrOlds(dirNewer), listing(dirNewer));
+
+    // ---- `manual`（spec §8：这种行连更新按钮都不该有） ----
+    const dirManual = join(workRoot, 'mods-manual');
+    mkdirSync(dirManual);
+    // ⚠️ 本地版本故意写**很低**（0.0.1）⇒ 判定不会是 `newer` ⇒ **只有 `manual` 那道闸能拒它**
+    //    （不然这一条会被 `newer` 那道闸"顺手"拦住，读数就分不清是哪一条在起作用）
+    writeFileSync(join(dirManual, 'manual-1.0.jar'), probeJar(fx.manual.modid, '0.0.1'));
+    const manualId = await prepare(dirManual);
+    const manualState = await invoke(MOD_CH.getState);
+    const manualRow = rowOf(manualState, dirManual, fx.manual.modid);
+    const beforeManualReqs = downloadLog.length;
+    let manualRefused = null;
+    try {
+      await invoke(MOD_CH.updateMod, manualId, fx.manual.modid, `${fx.manual.modid}|1.16.1`, {
+        mirrorId: fx.manual.mirrorId,
+      });
+    } catch (error) {
+      manualRefused = error;
+    }
+    check(
+      '（前置）这一行真的是 `manual`，**而且判定不是 `newer`**（⇒ 拒它的只能是 manual 那道闸）',
+      manualRow?.manual === true && manualRow?.verdict?.kind !== 'newer',
+      `manual=${String(manualRow?.manual)} verdict=${String(manualRow?.verdict?.kind)}`,
+    );
+    check(
+      '★ `manual` 的行 ⇒ 拒（只给"打开原网页"的那一类不许装）',
+      typeof manualRefused?.message === 'string' && manualRefused.message.includes('manual'),
+      manualRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '而且一个请求都没发、临时目录里也没有目标文件',
+      downloadLog.length === beforeManualReqs &&
+        !existsSync(join(dirManual, fx.manual.targetName)),
+      `请求数 ${String(beforeManualReqs)} → ${String(downloadLog.length)}；${listing(dirManual)}`,
+    );
+    check('两次拒绝之后 `busy` 回到 false（拒绝不该把模块卡在忙态）', manualState.busy === false, String(manualState.busy));
+  });
+
+  // =========================================================================
+  // ⑳ ★ Ruling 48：扫描之后被换过的文件不许被覆盖
+  // =========================================================================
+  /*
+   * 这一条补的是判修 2：行视图来自**缓存的**扫描读数 ⇒ 用户在两次扫描之间把那个 jar 换掉之后，
+   * 上面那道 `verdict` 闸判的仍然是**旧读数**。修法用的是幂等那一步**本来就要算的那次 sha512**：
+   * 盘上的读数与"扫描时那份读数"对不上 ⇒ 拒。
+   *
+   * ⚠️ 前提同样要先立住：这一行的判定是 `older`（否则 Ruling 47 那道闸会先开火，
+   *    而下面那条就会因为**别的原因**绿）；而"状态里记的 sha512"与"盘上现在的 sha512"
+   *    必须是**两个不同的读数**（这就是那个洞本身）。
+   */
+  await section('⑳（★ Ruling 48）扫描之后被换过的文件 ⇒ 拒、一个请求都不发、字节不变', async () => {
+    const dirStale = join(workRoot, 'mods-stale');
+    mkdirSync(dirStale);
+    const targetPath = join(dirStale, fx.good.targetName);
+    const bytesAtScan = probeJar(fx.good.modid, FIXTURE_JAR_VERSION);
+    writeFileSync(targetPath, bytesAtScan);
+    const id = await prepare(dirStale);
+    const scannedRow = rowOf(await invoke(MOD_CH.getState), dirStale, fx.good.modid);
+    // ★ 扫描之后**用户自己换掉了那个 jar**（同名、同 modid、不同字节）
+    const bytesNow = probeJar(fx.good.modid, FIXTURE_JAR_VERSION, true);
+    writeFileSync(targetPath, bytesNow);
+    /*
+     * ⚠️ 前置读数**必须在开枪之前**取（§5.19 的"前后各读一次"）：
+     *    放到调用之后取的话，这一支被判红时读到的已经是**被覆盖之后**的字节，
+     *    于是"两个读数不一致"这条前置会跟着红 —— 那不是夹具不成立，是量晚了。
+     */
+    const diskBefore = readFileSync(targetPath);
+    const diskShaBefore = sha512Of(targetPath);
+    const beforeReqs = downloadLog.length;
+    let refused = null;
+    try {
+      await invoke(MOD_CH.updateMod, id, fx.good.modid, `${fx.good.modid}|1.16.1`, {
+        mirrorId: fx.good.mirrorId,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    check(
+      '（前置）这一行的判定是 `older`（不是 `newer`/`manual` ⇒ 下面拒的不是 Ruling 47 那道闸）',
+      scannedRow?.verdict?.kind === 'older',
+      `verdict=${String(scannedRow?.verdict?.kind)}`,
+    );
+    check(
+      '（前置）**两个读数真的不一致**：状态里记的是扫描那一刻的 sha512，盘上现在（开枪之前）是另一份',
+      scannedRow?.localSha512 === sha512OfBuffer(bytesAtScan) &&
+        diskShaBefore === sha512OfBuffer(bytesNow) &&
+        scannedRow?.localSha512 !== diskShaBefore,
+      `扫描时 ${String(scannedRow?.localSha512).slice(0, 16)}… → 盘上 ${diskShaBefore.slice(0, 16)}…`,
+    );
+    check(
+      '★ 拒（"这个文件在扫描之后变过 ⇒ 先重新扫描再更新"）',
+      typeof refused?.message === 'string' && refused.message.includes('扫描之后变过'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 而且**一个请求都没发**（下次之前就看出来了）',
+      downloadLog.length === beforeReqs,
+      `请求数 ${String(beforeReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '★ 盘上那份**逐字节没变**（我们不知道它是什么，所以一个字节都不许动）',
+      readFileSync(targetPath).equals(diskBefore),
+      `${listing(dirStale)}；sha512 ${sha512Of(targetPath).slice(0, 16)}…`,
+    );
+    check('没有 `.old` / `.part` 残留', noPartsOrOlds(dirStale), listing(dirStale));
+    const after = await invoke(MOD_CH.getState);
+    check(
+      '这一支**在 writeRun 里面**⇒ 失败也留了读数（`lastRun.failed` 里有它，且说的是"扫描之后变过"）',
+      after.lastRun?.failed?.[0]?.modid === fx.good.modid &&
+        after.lastRun.failed[0].reason.includes('扫描之后变过'),
+      JSON.stringify(after.lastRun),
     );
   });
 
@@ -2411,7 +2633,7 @@ if (PHASE === 'state-file') {
    * 目录（release 的 url / sha512、镜像表），而目录是启动时抓的、缓存在模块里 ——
    * 与主相位那份目录同进程是验不了的。子进程的逐条读数由它自己打到 stdout（stdio 继承）。
    */
-  console.log('\n## ⑫–⑰ 写路径（Task 5）：单行更新与它的负向证明（一个子进程）');
+  console.log('\n## ⑫–⑳ 写路径（Task 5）：单行更新与它的负向证明（一个子进程）');
   const writeChild = spawnSync(process.execPath, [self, '--phase', 'write'], {
     stdio: 'inherit',
     cwd: repoRoot,
