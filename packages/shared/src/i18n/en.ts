@@ -4223,5 +4223,126 @@ export const en: TranslationSchema = {
      *    rule: if you cannot tell "slow" from "gone", you are lying).
      */
     stateError: 'Could not read the local state: {{reason}}',
+    /*
+     * ===================================================================
+     * Part one: catalog rows (2026-10-03, Task 7)
+     * ===================================================================
+     * ⚠️★ Why every key below keeps the `files.` prefix (instead of opening a new
+     *    `mods.` / `folders.` namespace): `/files` is this page's namespace, and the
+     *    **raw-key leak scanner** (`RAW_KEY_RE` in `FileUpdateTable.tsx`, shared by v1's
+     *    ⑲ and T7's ⑬) only knows `files.` and `common.` ⇒ keeping the prefix means this
+     *    batch is watched **without touching the scanner** (a new prefix plus a forgotten
+     *    scanner extension means raw keys on that branch go unnoticed).
+     */
+    partOneTitle: 'Part one: mods in the catalog',
+    /*
+     * ⚠️★ Both filter choices live in the main process's `prefs` (spec §6.8 "remembered
+     *    per machine", `desktop.ts`'s `setCatalogGameVersion` / `setTagFilter`) ⇒ the
+     *    component is controlled: it draws the state's copy and keeps **no** second one
+     *    in the renderer (two memories always drift apart one day).
+     */
+    catalogGameVersion: 'Game version',
+    /*
+     * ⚠️ "all must match" is not padding: tag filtering has **AND** semantics (a row
+     *    survives only if it carries every selected tag, spec §6.8 / D4) ⇒ without it the
+     *    user reads multi-select as OR and wonders why everything vanished.
+     */
+    catalogTags: 'Tags (all must match)',
+    /*
+     * ⚠️ It also **re-fetches the catalog** (`rescan` in `apps/desktop/src/mod-folders.ts`
+     *    starts with `await queueLoadCatalog()`), so the label has to say so: when the
+     *    catalog is unavailable this is the page's **only** "try again" entry point
+     *    (v1 has its own "Check"; this channel has no equivalent).
+     */
+    catalogRescan: 'Rescan (re-fetch catalog)',
+    /*
+     * ★ Ruling 42: the first `getState()` **waits for a catch-up scan** (reading every
+     *   jar's id, version and hash), so the very first frame has to say "scanning" —
+     *   otherwise the user reads it as "this page is broken".
+     */
+    catalogScanning: 'Scanning…',
+    catalogScanningHint:
+      'The first load waits for a local scan (reading every jar id, version and hash); that can take a few seconds.',
+    catalogUnavailable:
+      'The catalog has not been fetched yet, so this list has nothing to show ("Rescan" fetches it again).',
+    catalogNoRows:
+      'No mods to list for this game version (the tag filter may also have removed every row).',
+    catalogAllCurrent: 'Every mod in this table is up to date - there is nothing to update.',
+    /* ⚠️ The main process writes one file at a time (`busy`), and rejects a second write. */
+    catalogBusy:
+      'A file is being written - every row button is disabled until it finishes (one file at a time).',
+    colMod: 'Mod',
+    colStatus: 'Status',
+    /*
+     * ★★ Ruling 13: the target (`official`) is **not guaranteed** to be in `candidates` —
+     *    with an upstream target it comes from upstream (see `resolveTarget`) ⇒ only
+     *    `targetSource` may say where that cell came from; the UI must never infer it.
+     */
+    targetSource: {
+      catalog: 'Legal pinned version',
+      upstream: 'Upstream latest',
+    },
+    /*
+     * ★ Four "report only, no button" states (spec §7.2 steps 4/5 and §8). Each keeps its
+     *   **own** wording: folding them into one "cannot update" deletes the reason, which is
+     *   the only lead the user has.
+     */
+    verdictNewer: 'Local is newer',
+    verdictDifferentBuild: 'Same version, different bytes',
+    verdictUnknown: 'Cannot compare',
+    verdictAmbiguous: 'More than one candidate',
+    hintNewer:
+      'Your local build is newer than the pinned one - we report it, never replace it (this list never downgrades).',
+    hintDifferentBuild:
+      'Same version number, different bytes - we do not replace it automatically; decide yourself which build you want.',
+    hintUnknown:
+      'The local version cannot be read (or the version numbers cannot be ordered) - this row is never updated automatically.',
+    /*
+     * ★ Ruling 47: a `manual` release (the 54 OptiFine ones) gets **no update button at
+     *   all** — the main process's `assertUpdatable` rejects it ⇒ this sentence is what
+     *   the UI owes the user instead.
+     */
+    hintManual:
+      'This one can only be downloaded by hand from its original page (OptiFine ships that way).',
+    /*
+     * ★★ `ambiguous` (two candidates, e.g. `optifine|1.7.2` / `speedrunigt|26.1`):
+     *    `official` is `null` ⇒ the main process has **no** entry point that can install
+     *    it (`updateCatalogRow`'s "no target right now") ⇒ the UI must not draw a button
+     *    that would be refused; the only way out is the original page. The sentence has to
+     *    carry both halves ("we do not guess" + "we do not install one for you").
+     */
+    hintAmbiguous:
+      'This row has two candidates - we will not guess and we will not install one for you. Confirm yourself which one applies and use the links below to open the original pages.',
+    candidate: 'Candidate: {{version}}',
+    /*
+     * ★ Per-row actions for part one (spec §6.8): bind local file / update (origin) /
+     *   update (mirror, GitHub sources only) / open original page.
+     * ⚠️ The two update buttons must be **two keys**: the mirror one only exists for
+     *   GitHub sources (D5), and printing the same sentence on both leaves the user
+     *   unable to tell which channel they pressed.
+     */
+    bindLocal: 'Bind local file',
+    updateOrigin: 'Update (origin)',
+    updateMirror: 'Update (mirror)',
+    openPage: 'Open original page',
+    /*
+     * ★★ The previous run's summary (spec §7.4 / Ruling 52 item 5 / T6 §9.6 item 2).
+     * ⚠️★ The wording has to say "**last** run": when a folder batch is refused **before**
+     *    `bulkRun`, `lastRun` is not touched at all (all six of those guards sit before
+     *    it) ⇒ the copy on screen may describe the previous run, and calling it "just now"
+     *    would put a statement on screen that is no longer true.
+     * ⚠️ `skipped` must be printed **per row** (`lastRunSkipped`): a bare count leaves the
+     *    user unable to tell which of their mods was left alone — and "how many were
+     *    skipped and why" is what spec §7.4 asks for.
+     */
+    lastRunSummary: 'Last run: {{ok}} updated, {{skipped}} skipped, {{failed}} failed',
+    lastRunSkipped: 'Skipped {{modid}}: {{reason}}',
+    /*
+     * ★ A separate key from `stateError`: this one is about the **new** channel
+     *   (`modFolders.getState()`), that one about v1's (`fileUpdates`). The failure
+     *   causes differ (channel nobody registered vs. the main process throwing), so they
+     *   are not merged.
+     */
+    partOneStateError: 'Cannot get the mod catalog state: {{reason}}',
   },
 };

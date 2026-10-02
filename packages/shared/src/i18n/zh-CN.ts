@@ -3816,6 +3816,109 @@ export const zhCN = {
      *    （`ShareIntro` 的注释里记着同一条：分不出"慢"和"挂了"就是撒谎）。
      */
     stateError: '拿不到本地文件状态：{{reason}}',
+    /*
+     * ===================================================================
+     * 第一部分：目录行（2026-10-03，Task 7）
+     * ===================================================================
+     * ⚠️★ 这一批为什么全用 `files.` 前缀（而不是新开一个 `mods.` / `folders.`）：
+     *    `/files` 这一页的词条命名空间就是 `files.`，而**裸 key 泄漏扫描器**
+     *    （`FileUpdateTable.tsx` 的 `RAW_KEY_RE`，v1 的 ⑲ 与 T7 的 ⑬ 共用同一个对象）
+     *    认的正是 `files.` 与 `common.` 两个前缀 ⇒ 用同一个前缀，这一批词条的泄漏
+     *    **不需要改扫描器**就有人看着（新开前缀而忘了扩扫描器 = 那一支上的裸 key 空跑）。
+     */
+    partOneTitle: '第一部分：目录里的 mod',
+    /*
+     * ⚠️★ 两个筛选器的**选择**住在主进程的 `prefs` 里（spec §6.8「按机器记住」，
+     *    `desktop.ts` 的 `setCatalogGameVersion` / `setTagFilter`）⇒ 组件是受控的：
+     *    它只画状态里那一份，**不**在渲染进程里再存一份（两处必然有一天不一致）。
+     */
+    catalogGameVersion: '游戏版本',
+    /*
+     * ⚠️「同时满足」不是装饰：标签筛选是**"与"**语义（留下的行必须同时带全部所选标签，
+     *    spec §6.8 / D4）⇒ 不说清的话用户以为多选是"或"，选两个之后看到"怎么全空了"。
+     */
+    catalogTags: '标签（同时满足）',
+    /*
+     * ⚠️ 它同时**重拉目录**（`apps/desktop/src/mod-folders.ts` 的 `rescan`：
+     *    `await queueLoadCatalog()`），所以那句话要写在按钮上 —— 目录拉不到时它是
+     *    页面上**唯一**的"再试一次"入口（v1 那边有独立的「检查」，这一期没有对应通道）。
+     */
+    catalogRescan: '重扫（重拉目录）',
+    /*
+     * ★ Ruling 42：第一次 `getState()` 会**先等一次补扫**（读每个 jar 的内部版本与哈希），
+     *   所以从第一帧起就要说"正在扫描" —— 否则用户看到的是"这一页挂了"。
+     */
+    catalogScanning: '正在扫描…',
+    catalogScanningHint:
+      '第一次打开这一页要等一次本地扫描（读每个 jar 的内部版本与哈希），可能要几秒。',
+    catalogUnavailable:
+      '目录还没拉到 —— 这一栏现在列不出任何东西（「重扫（重拉目录）」会再拉一次）。',
+    catalogNoRows: '这个游戏版本下没有可列出的 mod（也可能是当前的标签筛选把行都挡掉了）。',
+    catalogAllCurrent: '这张表里的 mod 都已是最新 —— 没有可更新的行。',
+    /* ⚠️ 主进程一次只写一个文件（`busy` 那一格），第二次写会以"正在更新中"拒 ⇒ 先说清。 */
+    catalogBusy: '正在写盘 —— 这期间每一行的按钮都不能点（一次只写一个文件）。',
+    colMod: 'mod',
+    colStatus: '状态',
+    /*
+     * ★★ Ruling 13：目标（`official`）**不保证**在候选里 —— 有上游目标时它来自上游
+     *    （`resolveTarget` 的注释：`official` 与 `verdict.release` 都可能是上游那条）
+     *    ⇒ "这一格是哪来的"只能由 `targetSource` 说出来，**不许**界面自己推断。
+     */
+    targetSource: {
+      catalog: '合法指定版本',
+      upstream: '上游最新',
+    },
+    /*
+     * ★ 四支"只提示、不给按钮"的状态（spec §7.2 的 ④/⑤ 与 §8）。它们**各有各的**说法：
+     *   合成一句"不能更新"就把"为什么"删掉了，而那是用户唯一能行动的线索。
+     */
+    verdictNewer: '本地更新',
+    verdictDifferentBuild: '同版本号、字节不同',
+    verdictUnknown: '比不出来',
+    verdictAmbiguous: '候选多于一条',
+    hintNewer: '本地这一版比官方新 —— 只提示，不替换（这一栏只升不降）。',
+    hintDifferentBuild: '版本号相同、文件字节不同 —— 不自动替换，请自己确认要用哪一份。',
+    hintUnknown: '读不出本地版本（或版本号没法比大小）—— 这一行不会被自动更新。',
+    /*
+     * ★ Ruling 47：`manual` 的 release（OptiFine 那 54 条）**连更新按钮都不给** ——
+     *   主进程的 `assertUpdatable` 会拒它 ⇒ 界面欠的就是这一句。
+     */
+    hintManual: '这一条只能到原网页手动下载（例如 OptiFine 就是手动下载的那一类）。',
+    /*
+     * ★★ `ambiguous`（两个候选，如 `optifine|1.7.2` / `speedrunigt|26.1`）：
+     *    `official` 是 `null` ⇒ 主进程**没有任何入口**能装它（`updateCatalogRow` 那句
+     *    "这一行现在没有目标"）⇒ 界面**不许**画一颗会被拒的按钮，出路只有去原网页。
+     *    这句话必须把这层意思说全（"不替你猜"+"不替你装"），否则用户会一直找那颗按钮。
+     */
+    hintAmbiguous:
+      '这一行有两个候选 —— 程序不替你猜，也不会替你装。请自己确认该装哪一个，点底下的链接去原网页。',
+    candidate: '候选：{{version}}',
+    /*
+     * ★ 第一部分每行的动作（spec §6.8「每行操作」）：绑定本地文件 / 更新（原始）/
+     *   更新（镜像，仅 GitHub 来源）/ 打开原网页。
+     * ⚠️ 两颗更新按钮**必须是两条词条**：镜像那颗只在 GitHub 来源出现（D5），
+     *   而两颗显示成同一句话时用户分不出自己按的是哪条通道。
+     */
+    bindLocal: '绑定本地文件',
+    updateOrigin: '更新（原始）',
+    updateMirror: '更新（镜像）',
+    openPage: '打开原网页',
+    /*
+     * ★★ 上一次运行的汇总（spec §7.4 / Ruling 52⑤ / T6 §9.6 第 2 条）。
+     * ⚠️★ 措辞必须是"**上一次**运行"：整夹更新在 `bulkRun` **之前**被拒时 `lastRun`
+     *    根本不动（现读那六条都在 `bulkRun` 之前）⇒ 屏幕上那一份可能说的是上一次，
+     *    写成"刚才"就是把一句不成立的结论挂在界面上。
+     * ⚠️ `skipped` 要**逐条**印（`lastRunSkipped`）：只印一个数字的话，用户不知道
+     *    自己哪几个 mod 没被碰 —— 而"跳过了几条及原因"是 spec §7.4 明写的要求。
+     */
+    lastRunSummary: '上一次运行：已更新 {{ok}} 个，跳过 {{skipped}} 个，失败 {{failed}} 个',
+    lastRunSkipped: '跳过 {{modid}}：{{reason}}',
+    /*
+     * ★ 与 `stateError` 是两条：这一条说的是**新通道**（`modFolders.getState()`）拿不到，
+     *   而 `stateError` 说的是 v1 那条（老的 `fileUpdates`）。两者的失败原因不同
+     *   （通道没人注册 / 主进程那半边抛），所以不合并。
+     */
+    partOneStateError: '拿不到 mod 目录状态：{{reason}}',
   },
 };
 

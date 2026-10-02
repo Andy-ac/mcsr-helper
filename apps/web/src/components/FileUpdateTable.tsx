@@ -43,6 +43,7 @@
  */
 
 import { type FileItemState, type FileItemView, isDisabledPath } from '@mcsr/shared/fileUpdates';
+import type { CatalogRowView, Channel, TargetSource } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
 
 /** 「没有值的那一格 —— 全仓的约定（`CalendarDetail` / `SeedResultCard` 都是它）」
@@ -479,6 +480,336 @@ export function FileUpdateTable({
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// 第一部分：目录行那一张表（2026-10-03，Task 7）
+// ===========================================================================
+/*
+ * ⚠️★ 为什么它住在**这个文件**：计划的任务表把"第一部分：两个筛选器、双通道按钮、
+ *    只升不降的提示、`manual` 行只给「打开原网页」"判给了
+ *    `FileUpdatesPanel.tsx` + `FileUpdateTable.tsx` 两个文件（它们是这一页的
+ *    "数据层"与"表"）⇒ 目录行这一族与 v1 那一族同住一张表，人只有一处要找。
+ * ⚠️ v1 那个 `FileUpdateTable`（上面）**一个字节都没动**：它继续按
+ *    `FileItemView[]` 渲染，老客户端 0.0.4 看到的东西与今天逐字相同
+ *    （`apps/web/scripts/filesrender.tsx` 的 20 组断言盯着它）。
+ */
+
+/**
+ * ★★ 镜像 id —— **这是 Web 这一侧唯一一份"目录配置"的副本**（写在这里是有代价的）。
+ *
+ * ⚠️★ 为什么必须写死：镜像按钮的通道入参只能是 `{ mirrorId }`（`Channel` 的定义：
+ *    **是 id，不是 URL**），而 `ModFoldersState` / `CatalogRowView` **都没有**目录的
+ *    镜像表（现读 T1 的 `packages/shared/src/modFolders.ts`：`mirrors` 只活在
+ *    `ModCatalog` 里，而目录在**主进程**手上）。⇒ 渲染进程想知道"这条 release 有什么
+ *    镜像、id 叫什么"，今天**没有**任何一格可以读。
+ * ⚠️★ 代价（明摆着，且**必须**让下一次的人看见）：目录里那条镜像的 `id`/`hosts`
+ *    改了、或者加了第二条镜像，**这一页不会跟着变**（`isGitHubRelease` 那份 host 判据
+ *    同理）—— 而失败形态是"点了镜像按钮，主进程拒"（`requireChannel` 的
+ *    "目录里没有这条镜像"）或"镜像按钮根本不出现"。
+ * ⚠️ 本仓的规矩是**配置即代码**（`content/mod-catalog.json`），所以这里算一处已知的
+ *    重复；正确的修法是**给状态加一格镜像表**（`mirrors: ModMirror[]`），那是
+ *    `packages/shared/src/modFolders.ts` + `apps/desktop/src/mod-folders.ts` 的改动
+ *    （不在 Task 7 的文件边界里）⇒ 已记进 Task 7 报告，等控制器裁决。
+ * ⚠️ 今天的现读读数：目录里**只有一条**镜像（`content/mod-catalog.json` 的
+ *    `mirrors[0].id = 'gh-proxy'`，`hosts: ['github.com']`）。
+ */
+export const ROW_MIRROR_ID = 'gh-proxy';
+
+/**
+ * 这条 release 的地址是不是 GitHub 的（D5：**只有** GitHub 来源才有镜像按钮）。
+ *
+ * ⚠️★ 判据与上面那条 id 是同一处代价的两半：目录里记的是 `mirrors[].hosts`，
+ *    而渲染进程读不到它 ⇒ 这里只能按**主机名**判（`hosts: ['github.com']` 的对应物）。
+ *    ⚠️ 主进程那一侧才是权威（`channelUrl` ⇒ `mirrorsFor` 会真的查 `hosts`）：
+ *    这里判错方向是"多给一颗按钮"，那时主进程会拒（"这个通道下拿不到下载地址"）。
+ */
+export function isGitHubRelease(url: string): boolean {
+  try {
+    return new URL(url).host === 'github.com';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 「打开原网页」要打开的地址。
+ *
+ * ⚠️ 优先 `official.url`（那是**目标**那一条）；`official` 为 `null`（多候选）时退回
+ *    第一个候选的地址 —— 那仍然是目录里的一条真实地址，**不是**编出来的。
+ *    ⚠️ 多候选那一行会把**每一个**候选各自列一条链接（见下），所以调用方对
+ *    `ambiguous` 那一支**不画**这颗通用的链接（否则同一行三个"打开原网页"）。
+ */
+export function originPageOf(row: CatalogRowView): string | null {
+  return row.official?.url ?? row.candidates[0]?.url ?? null;
+}
+
+/**
+ * 状态徽章（判定的四支 + 两处"没有目标/没有绑定"）。
+ *
+ * ⚠️ 做成 `Record<…, …>` 而不是 `switch` + `default`：`ReleaseVerdict` 加一支时这里
+ *    会当场编译失败（与上面 v1 那张 `STATE_BADGES` 同一条纪律）。
+ * ⚠️★ `'missing-release'` **到不了**（`rowsForGameVersion` 只返回"这个游戏版本下有
+ *    release"的 mod ⇒ 候选至少一条，spec §7.2 的那一支在第一部分不可达）
+ *    ⇒ 它是 `null`：**不画**徽章，也不给它词条（那会是"为一条到不了的路径写文案"）。
+ */
+const VERDICT_BADGES: Record<
+  CatalogRowView['verdict']['kind'],
+  { label: string; className: string } | null
+> = {
+  same: { label: 'files.upToDate', className: 'badge' },
+  older: { label: 'files.outdated', className: 'badge badge--update' },
+  newer: { label: 'files.verdictNewer', className: 'badge' },
+  'different-build': { label: 'files.verdictDifferentBuild', className: 'badge' },
+  unknown: { label: 'files.verdictUnknown', className: 'badge' },
+  ambiguous: { label: 'files.verdictAmbiguous', className: 'badge' },
+  'missing-release': null,
+};
+
+/**
+ * 各支欠的那句**解释**（为什么这一行不给更新按钮）。
+ *
+ * ⚠️★ 三支必须各有各的说法（spec §8）：`newer` / `different-build` / `unknown` 的
+ *    **后果**都是"不更新"，但**原因**不同，而原因是用户唯一能行动的线索。
+ * ⚠️ `ambiguous` 与 `manual` 的解释在下面按各自的判据取（它们与本地读数无关）。
+ */
+const VERDICT_HINTS: Partial<Record<CatalogRowView['verdict']['kind'], string>> = {
+  newer: 'files.hintNewer',
+  'different-build': 'files.hintDifferentBuild',
+  unknown: 'files.hintUnknown',
+  ambiguous: 'files.hintAmbiguous',
+};
+
+/** 未绑定那一行借 `files.unbound`（v1 那张表的第一颗徽章就是它，同一个意思）。 */
+const UNBOUND_BADGE = { label: 'files.unbound', className: 'badge' };
+
+/**
+ * 目标来源 → 词条（Ruling 13）。
+ *
+ * ⚠️ 写成显式映射而不是 `` t(`files.targetSource.${row.targetSource}`) ``：后者是**动态
+ *    key**，字典少一条时类型检查看不见，而 `targetSource` 是联合类型 ⇒ 这里少一支会
+ *    当场编译失败。
+ */
+const TARGET_SOURCE_LABELS: Record<TargetSource, string> = {
+  catalog: 'files.targetSource.catalog',
+  upstream: 'files.targetSource.upstream',
+};
+
+export interface ModCatalogTableProps {
+  /** 第一部分的**唯一**数据来源（`ModFoldersState.catalogRows`）。 */
+  rows: readonly CatalogRowView[];
+  /**
+   * 是不是桌面壳（有动作层）。**缺省当作 true**，显式 `false` 才是只读（浏览器态 /
+   * 老客户端 / 自检里没喂回调的那一次）。
+   *
+   * ⚠️ 与 v1 那张表同一条纪律：判据是 `desktop !== false` **且**那个动作的回调真的在手
+   *    —— 不画一颗点不动的按钮。
+   */
+  desktop?: boolean;
+  /**
+   * 正在写盘（`ModFoldersState.busy`）⇒ 每一行的按钮都**禁用**（不是消失）。
+   *
+   * ⚠️ 主进程一次只写一个文件（`busy` 那句"正在更新中（一次只写一个文件）"）⇒
+   *    与其让用户点了吃一句红字，不如把"现在不能点"写在脸上。
+   */
+  busy?: boolean;
+  /** 「绑定本地文件」⇒ `bindCatalogRow(rowId)`（唯一入口，路径由主进程的对话框产生）。 */
+  onBindLocal?: (rowId: string) => void;
+  /** 「更新（原始）」「更新（镜像）」⇒ `updateCatalogRow(rowId, rowId, channel)`。 */
+  onUpdate?: (rowId: string, channel: Channel) => void;
+}
+
+/**
+ * 目录行那张表 —— **纯展示**（给 `rows` 就同步渲染完：不取数、不订阅、不跑 effect）。
+ *
+ * ⚠️★ 每行给**几颗**按钮是按 §6.8 的"每行操作"表和 Ruling 47/48 算的，
+ *    而且判据都写在下面那三行 `showUpdate` / `showBind` / `mirror` 上：
+ *      · `manual` ⇒ **一颗都不给**（主进程必拒），只有「打开原网页」；
+ *      · 已绑定 + `batchable` ⇒ 「更新（原始）」+（GitHub 来源时）「更新（镜像）」；
+ *      · 未绑定 ⇒ 「绑定本地文件」（`updateCatalogRow` 对没绑定的行会拒）；
+ *      · 其余（`newer` / `different-build` / `unknown` / `same` / `ambiguous`）
+ *        ⇒ 只解释，不画更新按钮。
+ */
+export function ModCatalogTable({
+  rows,
+  desktop,
+  busy = false,
+  onBindLocal,
+  onUpdate,
+}: ModCatalogTableProps) {
+  const { t } = useTranslation();
+  /** 有没有动作层（与 v1 那张表同一个名字、同一条理由）。 */
+  const withActions = desktop !== false;
+
+  return (
+    /*
+     * ⚠️ `data-catalog-rows` 是"面板真的把 N 行交给了表"唯一的读数（v1 那张表的
+     *    `data-views` 是同一个东西）；它**值不变**（仍是 `rows.length`）。
+     */
+    <div className="filetable" data-catalog-rows={rows.length}>
+      <table className="filetable__table">
+        <thead className="filetable__head">
+          <tr>
+            <th>{t('files.colMod')}</th>
+            <th>{t('files.colLocal')}</th>
+            <th>{t('files.colLatest')}</th>
+            <th>{t('files.colStatus')}</th>
+            <th>{t('files.colActions')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            /** 未绑定 ⇒ 那一格是「未绑定」；否则按判定给徽章（见 `VERDICT_BADGES`）。 */
+            const badge = row.binding === null ? UNBOUND_BADGE : VERDICT_BADGES[row.verdict.kind];
+            /*
+             * ⚠️★ `manual` 的**解释优先**：一个 manual 的行完全可能同时是 `older`
+             *    （本地旧了、但只能手动下）⇒ 那时"为什么没有按钮"的答案是"它只能手动下"，
+             *    而不是"比不出来"。
+             */
+            const hintKey = row.manual ? 'files.hintManual' : VERDICT_HINTS[row.verdict.kind];
+            /*
+             * ⚠️★ 多候选那一行**不画**通用的「打开原网页」：它会把每一个候选各自列一条
+             *    链接（见状态那一格），再多一颗就是同一行三个同样的链接。
+             */
+            const page = row.verdict.kind === 'ambiguous' ? null : originPageOf(row);
+            /*
+             * ★★ 下面这三行就是"给不给按钮"的**全部**判据（Ruling 47/48 的落点）：
+             *   主进程会拒的一律不画。
+             */
+            const mirror = row.official !== null && isGitHubRelease(row.official.url);
+            const showUpdate =
+              withActions && onUpdate !== undefined && row.batchable && !row.manual;
+            const showBind =
+              withActions && onBindLocal !== undefined && row.binding === null && !row.manual;
+
+            return (
+              <tr
+                className="filetable__row"
+                data-verdict={row.verdict.kind}
+                data-row-id={row.rowId}
+                key={row.rowId}
+              >
+                <td>
+                  <div className="filetable__filebox">
+                    {/* ⚠️ `row.name` 是产品名，不翻译（与 v1 那一行同一条）。 */}
+                    <span>{row.name}</span>
+                    <span className="badges">
+                      {/*
+                        ⚠️ 标签显示名来自目录（`tagLabels`，与 `tags` **逐位对应**）——
+                        原样印出来：目录里没有它的名字时它是 key 本身，那正是"看得见的缺陷"
+                        （`tagLabelOf` 的注释）。**不**在这里另做一份映射表。
+                        ⚠️ 用 `.tagchip--static`（纯展示的标签片，`pointer-events: none`）：
+                        `.tagchip` 本来是**交互式**的（标签筛选那一行用它），这里只是显示。
+                      */}
+                      {row.tagLabels.map((label, index) => (
+                        <span className="tagchip tagchip--static" key={row.tags[index] ?? label}>
+                          {label}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                </td>
+                {/*
+                  ⚠️ 两格读数：本地那一格是绑定的 `localVersion`（没有绑定 ⇒ `—`），
+                  目标那一格是 `official.version`（多候选 ⇒ `—`）。
+                  **不许**填 0、也不许拿候选的版本号顶上"官方版本"。
+                */}
+                <td className="filetable__version">{row.binding?.localVersion ?? DASH}</td>
+                <td className="filetable__version">
+                  {row.official?.version ?? DASH}
+                  {/*
+                    ★ Ruling 13：来源必须标出来 —— 有上游目标时 `official` **不在**
+                    `candidates` 里，所以用户不能靠"它是不是候选之一"去猜。
+                  */}
+                  <span className="filetable__latestknown">
+                    {t(TARGET_SOURCE_LABELS[row.targetSource])}
+                  </span>
+                </td>
+                <td>
+                  {badge === null ? null : (
+                    <span className={badge.className}>{t(badge.label)}</span>
+                  )}
+                  {hintKey === undefined ? null : <span>{t(hintKey)}</span>}
+                  {/*
+                    ★ 多候选：把**每一个**候选都列出来（版本号 + 它自己的原网页）。
+                    这里**没有**"选一个"的控件，理由写在 `files.hintAmbiguous` 那一段注释里
+                    （契约收不了这个选择 ⇒ 画一个点了没用的控件就是 Ruling 47/48 反对的东西）。
+                  */}
+                  {row.verdict.kind !== 'ambiguous' ? null : (
+                    <ul>
+                      {row.candidates.map((candidate) => (
+                        <li key={candidate.url}>
+                          {t('files.candidate', { version: candidate.version })}
+                          <a
+                            className="ghostbtn"
+                            href={candidate.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {t('files.openPage')}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </td>
+                <td>
+                  <div className="filetable__actionbox">
+                    {showUpdate ? (
+                      <button
+                        type="button"
+                        className="ghostbtn"
+                        disabled={busy}
+                        /* ★ 原始通道（`'origin'` = release 自己的地址）。 */
+                        onClick={() => onUpdate?.(row.rowId, 'origin')}
+                      >
+                        {t('files.updateOrigin')}
+                      </button>
+                    ) : null}
+                    {showUpdate && mirror ? (
+                      <button
+                        type="button"
+                        className="ghostbtn"
+                        disabled={busy}
+                        /*
+                         * ★ 镜像通道：**只送 id**（`Channel` 是 id，不是 URL ——
+                         * 地址由主进程按目录里的 `prefix` 拼）。`ROW_MIRROR_ID` 那一份
+                         * 重复的代价写在它的注释里。
+                         */
+                        onClick={() => onUpdate?.(row.rowId, { mirrorId: ROW_MIRROR_ID })}
+                      >
+                        {t('files.updateMirror')}
+                      </button>
+                    ) : null}
+                    {showBind ? (
+                      <button
+                        type="button"
+                        className="ghostbtn"
+                        disabled={busy}
+                        /* ⚠️ 入参只有 rowId：`.jar` 的路径由主进程自己的对话框产生。 */
+                        onClick={() => onBindLocal?.(row.rowId)}
+                      >
+                        {t('files.bindLocal')}
+                      </button>
+                    ) : null}
+                    {page === null ? null : (
+                      /*
+                       * ★ 「打开原网页」是**链接**、不是按钮：它不写盘、也不经过主进程
+                       * （`manual` 的行只有它 —— Ruling 47）。
+                       */
+                      <a className="ghostbtn" href={page} target="_blank" rel="noopener noreferrer">
+                        {t('files.openPage')}
+                      </a>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -74,9 +74,10 @@ import {
   isDisabledPath,
   needsUpdate,
 } from '@mcsr/shared/fileUpdates';
+import type { CatalogRowView, Channel, ModFoldersState } from '@mcsr/shared/modFolders';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileUpdateTable, formatClock } from '@/components/FileUpdateTable';
+import { FileUpdateTable, formatClock, ModCatalogTable } from '@/components/FileUpdateTable';
 import { Notice } from '@/components/Form';
 
 /**
@@ -778,6 +779,469 @@ export function FileUpdatesPanel({ state, handlers, actionError = null }: FileUp
         desktop={handlers !== null}
         {...(rowActions ?? {})}
       />
+    </section>
+  );
+}
+
+// ===========================================================================
+// 第一部分：目录行那一块（2026-10-03，Task 7）
+// ===========================================================================
+/*
+ * 这一块与上面那一半（v1）**共用同一份组件文件**，但它们是两个**独立**的数据源：
+ *   · v1：`useFileUpdates()`（老通道 `fileUpdates`，老客户端 0.0.4 与浏览器态都用它）；
+ *   · 第一部分：`useModFolders()`（新通道 `modFolders`，这一期的主线）。
+ * ⚠️★ 为什么新 UI 里**不再渲染 v1 那张带写盘按钮的表**（Ruling 49）：
+ *    v1 的 `assertNotBusy()` 看不见本模块的 `busy`（反向那一半不可修 —— 不许改 v1）
+ *    ⇒ 两个界面同时开着写盘通道时，用户能在"文件夹那一侧正在写"的时候点 v1 的「更新」。
+ *    结构性消除的办法就是：`modFolders` 在的客户端里**只**画第一部分（与第二部分的）
+ *    按钮，v1 那七条写盘通道在这一页上没有入口。代价（明摆着，记在 Task 7 报告里）：
+ *    老客户端之外的客户端**没有** v1 的「解除绑定」可用（新契约里没有
+ *    `unbindCatalogRow` 这一条）—— 那是一条**契约缺口**，不是这里漏画了一颗按钮。
+ */
+
+/** 把契约里**某一个**动作的入参搬过来，返回值换成 `Promise<void>`（与 v1 那条同型）。 */
+type ModFoldersAction<K extends keyof DesktopBridge['modFolders']> = (
+  ...args: Parameters<DesktopBridge['modFolders'][K]>
+) => Promise<void>;
+
+/**
+ * 第一部分要用的五个动作。
+ *
+ * ⚠️ 返回值是 `Promise<void>`：`makeModFoldersHandlers()` 已经把主进程返回的**整份状态**
+ *    落到界面上了，按钮那一层不需要（也拿不到）自己去 setState —— 那条规矩只有一处实现。
+ * ⚠️ `updateCatalogRow` 的签名**不是**契约那一个：契约是
+ *    `(rowId, releaseKey, channel)`，而 `releaseKey` 与 `rowId` 是**同一个形状**
+ *    （`modid|游戏版本`，主进程的 `requirePairKey` 会拿它跟 `rowId` 对一遍），
+ *    **指定不了"哪一个候选"**（主进程自己取 `view.official`）⇒ 这一层把那个参数
+ *    收进实现里（页面只说得清"哪一行、走哪条通道"）。
+ */
+export interface ModFoldersHandlers {
+  setCatalogGameVersion: ModFoldersAction<'setCatalogGameVersion'>;
+  setTagFilter: ModFoldersAction<'setTagFilter'>;
+  bindCatalogRow: ModFoldersAction<'bindCatalogRow'>;
+  updateCatalogRow: (rowId: string, channel: Channel) => Promise<void>;
+  rescan: ModFoldersAction<'rescan'>;
+}
+
+// ---------------------------------------------------------------------------
+// 取数那两格（快照 / 失败结论）的归约 —— 纯函数，好让它能被一条断言钉住
+// ---------------------------------------------------------------------------
+
+export type ModFoldersLoadEvent =
+  | { kind: 'snapshot'; state: ModFoldersState }
+  | { kind: 'failure'; reason: string };
+
+/** 与 v1 的 `FileUpdatesLoad` 同型（三格互斥的联合 ⇒ "数据与失败不可能同时成立"是类型保证的）。 */
+export type ModFoldersLoad =
+  | { status: 'loading'; state: null; failure: null }
+  | { status: 'ready'; state: ModFoldersState; failure: null }
+  | { status: 'failed'; state: null; failure: string };
+
+export const NO_MOD_FOLDERS_LOAD: ModFoldersLoad = {
+  status: 'loading',
+  state: null,
+  failure: null,
+};
+
+/**
+ * ★★ 取数结果的归约：**数据永远压过一次失败结论**（与 v1 的 `reduceLoad` 同一条规则）。
+ *
+ * ⚠️★ 为什么这一层也要有它：桌面态那两条支路是**独立**的
+ *    （`onStatus` 推送 / `getState()` 首拉），而 Ruling 42 说首拉**可能等一次补扫**
+ *    ⇒ "首拉先失败、推送后带来数据"这个顺序真的会发生。把失败结论当成"粘住的"
+ *    （谁先来谁说了算）会让页面一直停在「拿不到状态」，而手上其实已经有数据。
+ *    反方向也要防：已经有数据时又把一次失败记上去，同样是把一句过期的话压在数据上面。
+ */
+export function reduceModFoldersLoad(
+  prev: ModFoldersLoad,
+  event: ModFoldersLoadEvent,
+): ModFoldersLoad {
+  if (event.kind === 'snapshot') {
+    return { status: 'ready', state: event.state, failure: null };
+  }
+  if (prev.status === 'ready') return prev;
+  return { status: 'failed', state: null, failure: event.reason };
+}
+
+/**
+ * 五个动作的包装（与 v1 的 `makeHandlers()` 同型）。
+ *
+ * ⚠️ 两件事**只有这一处实现**：把主进程返回的状态落到界面上；以及接住 `reject`。
+ * ⚠️ 开跑之前先撤掉**上一次**的失败结论（它说的是上一次那个动作）。
+ */
+function makeModFoldersHandlers(
+  api: DesktopBridge['modFolders'],
+  apply: (state: ModFoldersState) => void,
+  fail: (message: string | null) => void,
+): ModFoldersHandlers {
+  const run = async (call: () => Promise<ModFoldersState>): Promise<void> => {
+    fail(null);
+    try {
+      apply(await call());
+    } catch (error) {
+      fail(reasonOf(error));
+    }
+  };
+
+  return {
+    setCatalogGameVersion: (gameVersion: string) =>
+      run(() => api.setCatalogGameVersion(gameVersion)),
+    setTagFilter: (tags: readonly string[]) => run(() => api.setTagFilter(tags)),
+    bindCatalogRow: (rowId: string) => run(() => api.bindCatalogRow(rowId)),
+    /*
+     * ★ `releaseKey` 传的就是 `rowId`：两者形状相同（`modid|游戏版本`），而**哪一个候选**
+     *   是主进程按它自己那份状态取的（`view.official`）—— 页面指定不了。
+     */
+    updateCatalogRow: (rowId: string, channel: Channel) =>
+      run(() => api.updateCatalogRow(rowId, rowId, channel)),
+    rescan: () => run(() => api.rescan()),
+  };
+}
+
+/** `useModFolders()` 的产物。⚠️ 只有 `ready` 那一支有动作层（其余三支没有东西可动）。 */
+export type ModFoldersData =
+  /**
+   * 桌面壳里**没有** `modFolders`（0.0.4 的老客户端、或纯浏览器）⇒ 这一页走 v1 那条路
+   * （那是正确降级：spec §6.8 的"老客户端的第一部分只有一行"说的就是这件事）。
+   */
+  | { status: 'unavailable' }
+  /**
+   * 第一次拉状态**还没回来**（Ruling 42：它可能先等一次补扫）⇒ 页面必须说"正在扫描…"，
+   * 否则用户看到的是"这一页挂了"。
+   */
+  | { status: 'loading' }
+  | { status: 'failed'; reason: string }
+  | {
+      status: 'ready';
+      state: ModFoldersState;
+      handlers: ModFoldersHandlers;
+      actionError: string | null;
+    };
+
+/**
+ * 取数（**只有桌面壳里、而且 `modFolders` 真的在**才会跑）。
+ *
+ * ⚠️★ 顺序与 v1 那条**逐字相同**：**先订阅，再立刻 `getState()`**。主进程在应用启动时
+ *    就会抓目录、扫文件夹，而这一页要等远程网页加载完才挂载 ⇒ 检查早于订阅时那一次推送
+ *    **没有任何人收到**，表现是"界面上永远停在加载中"，而完全不报错。
+ * ⚠️★ 判据是 `desktopBridge()?.modFolders` 在不在，**不是** `desktopBridge()` 在不在：
+ *    0.0.4 的壳有 `mcsr` 但**没有** `modFolders`（`shared/desktop.ts` 的契约是 0.0.5 才有的）
+ *    ⇒ 那种客户端必须继续走 v1 那条路（spec §6.8 / D9.3），一个字节都不变。
+ */
+export function useModFolders(): ModFoldersData {
+  const [load, setLoad] = useState<ModFoldersLoad>(NO_MOD_FOLDERS_LOAD);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  /*
+   * ⚠️ 与 v1 那一条同型：`desktopBridge()` 每次读拿到的是同一个对象（preload 在页面脚本
+   *    之前注入），所以可以拿它当 effect 的依赖。
+   */
+  const api = desktopBridge()?.modFolders ?? null;
+
+  const accept = useCallback((state: ModFoldersState) => {
+    setLoad((prev) => reduceModFoldersLoad(prev, { kind: 'snapshot', state }));
+  }, []);
+
+  const handlers = useMemo(
+    () => (api === null ? null : makeModFoldersHandlers(api, accept, setActionError)),
+    [api, accept],
+  );
+
+  useEffect(() => {
+    // 浏览器 / 老客户端：这一栏根本不存在（`Files.tsx` 会走 v1 那一条路）。
+    if (api === null) return;
+    const unsubscribe = api.onStatus(accept);
+    void api.getState().then(
+      (initial) => {
+        // ⚠️ 已经有数据 ⇒ 丢掉这一份（推送与首拉谁先到是不保证的；不要用更旧的盖回去）。
+        setLoad((prev) =>
+          prev.status === 'ready'
+            ? prev
+            : reduceModFoldersLoad(prev, { kind: 'snapshot', state: initial }),
+        );
+      },
+      (error: unknown) => {
+        setLoad((prev) => reduceModFoldersLoad(prev, { kind: 'failure', reason: reasonOf(error) }));
+      },
+    );
+    return unsubscribe;
+  }, [api, accept]);
+
+  if (api === null) return { status: 'unavailable' };
+  if (load.status === 'failed') return { status: 'failed', reason: load.failure };
+  if (load.status === 'ready') {
+    /*
+     * ⚠️ `handlers` 在这里一定非空（`api !== null` 时 `useMemo` 就给了它），
+     *    但类型推断看不出来 ⇒ 用一个显式的判据而不是 `!`：`!` 会把"哪天有人把
+     *    `handlers` 的构造挪走"这种改动变成一次运行期崩溃（点了没反应那一种）。
+     */
+    if (handlers === null) return { status: 'loading' };
+    return { status: 'ready', state: load.state, handlers, actionError };
+  }
+  return { status: 'loading' };
+}
+
+/**
+ * 第一次拉状态那一屏（**Ruling 42**）：它可能先等一次补扫（读每个 jar 的内部版本与哈希）。
+ *
+ * ⚠️★ 做成一个**独立导出的纯组件**的理由与 `UpdateAllConfirm` 同一个：`renderToStaticMarkup`
+ *    不跑 effect，而自检里没有 preload（`window.mcsr` 是 `undefined`）⇒ `useModFolders()`
+ *    在自检里恒为 `unavailable`。它单独导出来，那一屏的文字才**能被断言**。
+ */
+export function ModCatalogScanning() {
+  const { t } = useTranslation();
+  return (
+    <section className="filespanel">
+      <p className="filespanel__hint">{t('files.catalogScanning')}</p>
+      <p className="filespanel__meta">{t('files.catalogScanningHint')}</p>
+    </section>
+  );
+}
+
+/**
+ * 点一个标签之后的**全量**标签数组（`setTagFilter` 收的是全量，spec §6.8 的"与"语义）。
+ *
+ * ⚠️ 保序（加在末尾、去掉时不动其余的顺序）：顺序也变了的话，"同一个选择"会变成两个
+ *    不同的值 —— 多一次无谓的写盘，而且 `prefs` 里那份与用户看到的不是同一个东西。
+ */
+export function toggleTag(tags: readonly string[], tag: string): string[] {
+  return tags.includes(tag) ? tags.filter((item) => item !== tag) : [...tags, tag];
+}
+
+/**
+ * 标签多选的**选项表**。
+ *
+ * ⚠️★ 它的来源只有"当前这一份状态"：`ModFoldersState` **没有**目录的标签全集
+ *    （现读 T1 的契约：只有 `catalogRows`，而它是**按当前 `tagFilter` 筛过的**）。
+ *    ⇒ 选项 = 这张表里出现过的标签 ∪ **已选**的那些（已选的必须一直在，否则用户
+ *    取消不掉一个把行都筛掉的标签）。
+ *    代价（明摆着）：选中一个标签之后，与它**互斥**的标签会因为"没有一行同时带两者"
+ *    而从选项里消失，用户得先取消再换 —— 如实记在 Task 7 报告里（要列全集得给状态加一格）。
+ */
+export function tagOptionKeys(
+  rows: readonly CatalogRowView[],
+  selected: readonly string[],
+): string[] {
+  const keys: string[] = [];
+  for (const row of rows) {
+    for (const tag of row.tags) if (!keys.includes(tag)) keys.push(tag);
+  }
+  for (const tag of selected) if (!keys.includes(tag)) keys.push(tag);
+  return keys;
+}
+
+/** 标签 key ⇒ 显示名（**来自目录**的 `tagLabels`，与 `tags` 逐位对应；查不到就是 key 本身）。 */
+function tagLabelFor(rows: readonly CatalogRowView[], tag: string): string {
+  for (const row of rows) {
+    const index = row.tags.indexOf(tag);
+    if (index !== -1) return row.tagLabels[index] ?? tag;
+  }
+  return tag;
+}
+
+/**
+ * 游戏版本下拉的选项表。
+ *
+ * ⚠️★ 与 `tagOptionKeys` 同一个缺口：`ModFoldersState` 没有目录的游戏版本表
+ *    ⇒ 选项 = 当前选中的那一版 ∪ 已绑定文件夹推断出的版本（后者正是 spec §6.8 说的
+ *    "默认取已绑定文件夹的版本"的来源）。**不许**在这里硬写一份版本列表：
+ *    那是一份会漂的第二真相（目录才是版本表的唯一出处）。
+ * ⚠️ 顺序 = 状态里的顺序（当前的在前、文件夹按状态里的顺序）⇒ 可复现、不依赖比较器。
+ */
+export function gameVersionOptions(state: ModFoldersState): string[] {
+  const versions = [state.gameVersion];
+  for (const folder of state.folders) {
+    if (folder.gameVersion !== null && !versions.includes(folder.gameVersion)) {
+      versions.push(folder.gameVersion);
+    }
+  }
+  return versions;
+}
+
+export interface ModCatalogSectionProps {
+  state: ModFoldersState;
+  /**
+   * 动作层。`null` = 只读（浏览器态 / 老客户端那一侧的自检夹具）。
+   * ⚠️ 产品里第一部分**只在** `modFolders` 在的客户端渲染 ⇒ 这里总是有 handlers；
+   *    `null` 这一支留着是因为"没有动作层就不画按钮"必须是**一个判据**，
+   *    而不是"今天恰好不会发生"（自检里那条反面断言盯的就是它）。
+   */
+  handlers: ModFoldersHandlers | null;
+  /** 一次动作失败的原话（`null` = 没失败过）。与 v1 那一格同一个意思。 */
+  actionError?: string | null;
+}
+
+/**
+ * 第一部分本体：两个筛选器 + 目录行那张表。
+ *
+ * ⚠️★ **纯 props**（不取数、不订阅、不跑 effect）—— 与上面的 v1 面板同一条理由：
+ *    自检只能喂一份手写的 `ModFoldersState` 进来（`renderToStaticMarkup` 不跑 effect）。
+ * ⚠️★ 两个筛选器的选择**不在这里存**：它们只画 `state.gameVersion` / `state.tagFilter`
+ *    （主进程 `prefs` 里那一份），交互只发通道 —— 一处记忆（spec §6.8 / `desktop.ts`）。
+ */
+export function ModCatalogSection({ state, handlers, actionError = null }: ModCatalogSectionProps) {
+  const { t } = useTranslation();
+  const rows = state.catalogRows;
+  const versions = gameVersionOptions(state);
+  const tagKeys = tagOptionKeys(rows, state.tagFilter);
+  /**
+   * ★ 第三处空态：**全部已最新**。判据是每一行都判成 `same`（按 sha512 相等），
+   *   而不是"没有 `batchable` 的行" —— 后者会把 `newer` / `different-build` 那些
+   *   "本地不是最新、但不该自动动"的行也算进来（那时说"都已是最新"是假话）。
+   * ⚠️ 那一档**留着表**：行还在（绑定 / 打开原网页都只能在这里做），藏掉整张表就是删能力。
+   */
+  const allCurrent = rows.length > 0 && rows.every((row) => row.verdict.kind === 'same');
+  /** ⚠️ 一次运行的汇总**正在跑的时候不印**（它说的是上一次，见下面那一段）。 */
+  const lastRun = state.busy ? null : state.lastRun;
+
+  /*
+   * ⚠️ 回调只在**有动作层**时存在（表格那一层拿不到回调就不画那颗按钮）；
+   *    回调里**不 catch**：失败由 `makeModFoldersHandlers()` 那一层接住并显示。
+   */
+  const rowActions =
+    handlers === null
+      ? {}
+      : {
+          onBindLocal: (rowId: string) => void handlers.bindCatalogRow(rowId),
+          onUpdate: (rowId: string, channel: Channel) =>
+            void handlers.updateCatalogRow(rowId, channel),
+        };
+
+  return (
+    <section className="filespanel">
+      <h2>{t('files.partOneTitle')}</h2>
+      {/*
+        ★ 两个筛选维度（D4）：游戏版本 × 标签（"与"语义）。
+        ⚠️ 两者的选择都**受控于状态**（主进程的 `prefs`）⇒ 这里没有 `useState`：
+        两处记忆必然有一天不一致（一处说旧版本、一处说新版本），而且完全不报错。
+      */}
+      <div className="filters">
+        <label>
+          {t('files.catalogGameVersion')}
+          <select
+            className="filters__select"
+            value={state.gameVersion}
+            disabled={handlers === null}
+            onChange={(event) => {
+              // ⚠️ 失败不在这里 catch：handlers 那一层已经接住并显示（与 v1 同一条）。
+              if (handlers !== null) void handlers.setCatalogGameVersion(event.target.value);
+            }}
+          >
+            {versions.map((version) => (
+              <option key={version} value={version}>
+                {version}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="tagcloud">
+          <span className="tagcloud__label">{t('files.catalogTags')}</span>
+          {tagKeys.map((tag) => {
+            const on = state.tagFilter.includes(tag);
+            return (
+              <button
+                key={tag}
+                type="button"
+                className={on ? 'tagchip tagchip--on' : 'tagchip'}
+                aria-pressed={on}
+                disabled={handlers === null}
+                onClick={() => {
+                  if (handlers !== null)
+                    void handlers.setTagFilter(toggleTag(state.tagFilter, tag));
+                }}
+              >
+                {tagLabelFor(rows, tag)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/*
+        ⚠️ `notices` **原样印出来**（迁移提示 "已转为文件夹跟踪：…"、缺失清单被压住的说明、
+        目录错误）：它们由主进程写好，T7 这一层不重新措辞（多套一层就是
+        "目录拉取失败：目录拉取失败：…"那一种）。代价：那句话是**中文**写死的
+        —— 与 v1 的 `catalogError` / `actionFailed` 是同一条已接受的代价。
+      */}
+      {state.notices.map((note) => (
+        <Notice kind="info" key={note}>
+          {note}
+        </Notice>
+      ))}
+      {actionError === null ? null : (
+        <Notice kind="bad">{t('files.actionFailed', { message: actionError })}</Notice>
+      )}
+
+      {/*
+        ★ 正在写盘那一句（`busy`）：主进程一次只写一个文件 ⇒ 那期间每一行的按钮都禁用，
+        把"现在不能点"写在脸上比让用户吃一句"正在更新中"强。
+      */}
+      {state.busy ? <p className="filespanel__hint">{t('files.catalogBusy')}</p> : null}
+
+      {/*
+        ★★ 上一次运行的汇总（`lastRun`）—— 含**逐条**跳过的行与原因（spec §7.4 / Ruling 52⑤）。
+        ⚠️★ `lastRun` 是**上一次**的结果：整夹在 `bulkRun` 之前被拒时它**根本不动**
+        （T6 §9.6 第 2 条）⇒ 措辞写"上一次"，而且**正在跑的时候一个字都不印**
+        （`lastRun` 已经在上面的 `const` 里按 `busy` 清成 `null` 了）——
+        把上一次的结果挂在这一趟旁边，就是在说一句不成立的话。
+      */}
+      {lastRun === null ? null : (
+        <div className="filespanel__run">
+          <span>
+            {t('files.lastRunSummary', {
+              ok: lastRun.updated.length,
+              skipped: lastRun.skipped.length,
+              failed: lastRun.failed.length,
+            })}
+          </span>
+          <ul>
+            {lastRun.skipped.map((skip) => (
+              <li key={skip.modid}>
+                {t('files.lastRunSkipped', { modid: skip.modid, reason: skip.reason })}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/*
+        ★ 三处空态的第一处：**目录不可用**。它与"这个版本下没有 mod"必须分得开
+        （前者那几十行很可能就在目录里，只是我们没拉到）⇒ 说法不同、而且这一档
+        **不画表**，再给一个唯一的"再试一次"入口（`rescan` 会重拉目录）。
+      */}
+      {state.catalogStatus !== 'ok' ? (
+        <>
+          <Notice kind="bad">{t('files.catalogUnavailable')}</Notice>
+          {handlers === null ? null : (
+            <div className="filespanel__actions">
+              <button
+                type="button"
+                className="ghostbtn"
+                disabled={state.busy}
+                onClick={() => void handlers.rescan()}
+              >
+                {t('files.catalogRescan')}
+              </button>
+            </div>
+          )}
+        </>
+      ) : rows.length === 0 ? (
+        /* ★ 第二处空态：目录 OK、但这个版本下（或当前筛选下）一行都没有。**不画空壳表。** */
+        <div className="state state--empty">
+          <p>{t('files.catalogNoRows')}</p>
+        </div>
+      ) : (
+        <>
+          {/* ★ 第三处空态（一句话，不是"藏掉整张表"）：全部已最新。 */}
+          {allCurrent ? <p className="filespanel__hint">{t('files.catalogAllCurrent')}</p> : null}
+          <ModCatalogTable
+            rows={rows}
+            desktop={handlers !== null}
+            busy={state.busy}
+            {...rowActions}
+          />
+        </>
+      )}
     </section>
   );
 }
