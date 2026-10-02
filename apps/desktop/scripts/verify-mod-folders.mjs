@@ -1928,8 +1928,10 @@ async function writePhase() {
   };
   const rowOf = (state, dir, modid) =>
     folderByPath(state, dir)?.rows.find((row) => row.modid === modid);
-  const goodReqs = () => downloadLog.filter((entry) => entry.prefix === '/mirror-good/').length;
-  const slowReqs = () => downloadLog.filter((entry) => entry.prefix === '/mirror-slow/').length;
+  /** 桩上某条路径前缀收到过几个**下载**请求（目录请求不算 —— `downloadLog` 只记下载那一段）。 */
+  const reqsOf = (prefix) => downloadLog.filter((entry) => entry.prefix === prefix).length;
+  const goodReqs = () => reqsOf('/mirror-good/');
+  const slowReqs = () => reqsOf('/mirror-slow/');
   const noPartsOrOlds = (dir) =>
     !readdirSync(dir).some((name) => name.includes('.part') || name.endsWith('.old'));
   /*
@@ -1953,6 +1955,12 @@ async function writePhase() {
   // =========================================================================
   // ⑫ = brief ⑤：sha512 对不上 ⇒ 不落盘
   // =========================================================================
+  /*
+   * ⚠️ `singleRowBadUrl` 是给 **㉒**（brief ⑩）用的：缺失下载要证"走的是同一段"，
+   *    判据之一就是"它请求的地址与这里这条逐字相同"（⇒ 同一份 `originFileNameOf` + 同一条地址解析）。
+   *    只在**真的多了一个请求**时才记（否则红的那一趟会把上一次的请求误记成这一条的）。
+   */
+  let singleRowBadUrl = null;
   await section('⑫（brief ⑤）sha512 对不上 ⇒ 目标不落盘、没有 .part 残留', async () => {
     const id = await prepare(dirBad);
     const targetPath = join(dirBad, fx.bad.targetName);
@@ -1967,6 +1975,8 @@ async function writePhase() {
     } catch (error) {
       refused = error;
     }
+    const badCall = downloadLog.slice(beforeReqs);
+    singleRowBadUrl = badCall.length === 1 ? badCall[0].url : null;
     console.log(`  桩上收到的下载请求：${String(beforeReqs)} → ${String(downloadLog.length)}`);
     console.log(`  ${basename(dirBad)}：${listing(dirBad)}`);
     check('updateMod 抛了', refused !== null, refused?.message ?? '（没有抛）');
@@ -2580,6 +2590,407 @@ async function writePhase() {
         after.lastRun.failed[0].reason.includes('扫描之后变过'),
       JSON.stringify(after.lastRun),
     );
+  });
+
+  // =========================================================================
+  // ㉑（brief ⑨）★ Task 6：整夹更新**只碰 batchable 的那一行**，其余按原因如实报 skipped
+  // =========================================================================
+  /*
+   * 三条读数合起来才是在证 spec §7.4（少任何一条都会退化成恒真）：
+   *   ① 那一行 `batchable` 的**真的被更新了**（目标就位 + 字节 = 目录里那条 + 旧副本被清）
+   *      —— 只写"另外两行没动"的话，任何一次"整夹什么都没干"都能让它绿；
+   *   ② 另外两行**各自带着自己的原因**进 `lastRun.skipped`（`newer` 与 `different-build`）；
+   *   ③ 那两行**一个下载请求都没发**、字节逐字没变 ⇒ "跳过"不是"下了之后又没就位"。
+   * ⚠️ 三行的判定**必须在开枪之前各自立住**（`older` / `newer` / `different-build`），
+   *    否则"没动"可能只是因为那一行根本没有目标（spec §8 的 `missing-release`）。
+   */
+  await section('㉑（brief ⑨）整夹更新：只更新 batchable 的那一行，其余如实报 skipped', async () => {
+    const dir = join(workRoot, 'mods-batch');
+    mkdirSync(dir);
+    // ① 可批量：本地 1.0.0 比清单里那条**旧**，两边主体都可排序 ⇒ `older` + `download:auto`
+    writeFileSync(join(dir, 'good-1.0.jar'), probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+    // ② `newer`：本地 99.0.0 比清单里那条**新**（`fx.newer` 就是按这条挑的夹具，见上面那段）
+    writeFileSync(join(dir, 'newer-99.jar'), probeJar(fx.newer.modid, '99.0.0', true));
+    // ③ `different-build`：本地那一份的主体含**非数字段** ⇒ 比较器不可靠 ⇒ 要人显式点一下
+    writeFileSync(join(dir, 'busy-1.0.jar'), probeJar(fx.busy.modid, FIXTURE_JAR_VERSION));
+
+    const id = await prepare(dir);
+    const before = await invoke(MOD_CH.getState);
+    const rows = folderByPath(before, dir)?.rows ?? [];
+    const rowFor = (modid) => rows.find((row) => row.modid === modid);
+    const kinds = rows.map(
+      (row) => `${row.modid}:${row.verdict.kind}${row.batchable ? '+batchable' : ''}`,
+    );
+    console.log(`  三行的判定：${kinds.join(' | ')}`);
+    check(
+      '（前置）三行齐了，判定各是 older / newer / different-build',
+      rowFor(fx.good.modid)?.verdict.kind === 'older' &&
+        rowFor(fx.newer.modid)?.verdict.kind === 'newer' &&
+        rowFor(fx.busy.modid)?.verdict.kind === 'different-build',
+      kinds.join(' | '),
+    );
+    check(
+      '（前置）**只有第一条**是可批量的（否则"只更新一条"会因为别的行也能批量而红）',
+      rows.filter((row) => row.batchable).length === 1 &&
+        rowFor(fx.good.modid)?.batchable === true,
+      kinds.join(' | '),
+    );
+
+    const targetPath = join(dir, fx.good.targetName);
+    const goodBefore = goodReqs();
+    const newerBefore = reqsOf('/mirror-newer/');
+    const busyBefore = reqsOf('/mirror-busy/');
+    const newerBytes = readFileSync(join(dir, 'newer-99.jar'));
+    const diffBytes = readFileSync(join(dir, 'busy-1.0.jar'));
+    let state = null;
+    try {
+      state = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.good.mirrorId });
+    } catch (error) {
+      state = error;
+    }
+    console.log(`  批量之后 ${basename(dir)}：${listing(dir)}`);
+    console.log(
+      `  lastRun：${isState(state) ? JSON.stringify(state.lastRun) : resultDetail(state)}`,
+    );
+    check('updateFolderAll 成功返回（不是靠抛错"恰好"没写）', isState(state), resultDetail(state));
+    check(
+      '★ `lastRun.updated` **只含那一条**（多一条少一条都红）',
+      isState(state) &&
+        state.lastRun?.updated?.length === 1 &&
+        state.lastRun.updated[0] === fx.good.modid,
+      isState(state) ? JSON.stringify(state.lastRun?.updated) : resultDetail(state),
+    );
+    const skipped = isState(state) ? (state.lastRun?.skipped ?? []) : [];
+    check(
+      '★ 另外两条**如实报成 skipped**（各一条，modid 就是那两行）',
+      skipped.length === 2 &&
+        skipped.some((entry) => entry.modid === fx.newer.modid) &&
+        skipped.some((entry) => entry.modid === fx.busy.modid),
+      JSON.stringify(skipped),
+    );
+    check(
+      '★ 而且**原因各自说得清**（`newer` 那条说 newer、`different-build` 那条说 different-build）',
+      (skipped.find((entry) => entry.modid === fx.newer.modid)?.reason ?? '').includes('newer') &&
+        (skipped.find((entry) => entry.modid === fx.busy.modid)?.reason ?? '').includes(
+          'different-build',
+        ),
+      JSON.stringify(skipped),
+    );
+    check(
+      '`lastRun.failed` 是空的（这一趟没有失败）',
+      isState(state) && state.lastRun?.failed?.length === 0,
+      isState(state) ? JSON.stringify(state.lastRun?.failed) : resultDetail(state),
+    );
+    check(
+      '★ 可批量那一行**真的装上了**：目标就位、sha512 = 目录里那条',
+      existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
+      listing(dir),
+    );
+    check('它旧的那份（good-1.0.jar）被清掉', !existsSync(join(dir, 'good-1.0.jar')), listing(dir));
+    check(
+      '★★ 被跳过的两行**一个下载请求都没发**（`/mirror-newer/` 与 `/mirror-busy/` 计数没动）',
+      reqsOf('/mirror-newer/') === newerBefore && reqsOf('/mirror-busy/') === busyBefore,
+      `newer ${String(newerBefore)} → ${String(reqsOf('/mirror-newer/'))}；busy ${String(busyBefore)} → ${String(reqsOf('/mirror-busy/'))}`,
+    );
+    check(
+      '★ 而可批量那一行只发了 1 个请求（`/mirror-good/` +1）',
+      goodReqs() === goodBefore + 1,
+      `请求数 ${String(goodBefore)} → ${String(goodReqs())}`,
+    );
+    check(
+      '★★ 被跳过的两份文件**逐字节没变**（"跳过"不是"下了又没就位"、更不是"挪走再删"）',
+      readFileSync(join(dir, 'newer-99.jar')).equals(newerBytes) &&
+        readFileSync(join(dir, 'busy-1.0.jar')).equals(diffBytes),
+      listing(dir),
+    );
+    check('没有 `.part` / `.old` 残留', noPartsOrOlds(dir), listing(dir));
+    check('跑完之后 `busy` 回到 false', isState(state) && state.busy === false, String(state?.busy));
+    const after = isState(state) ? rowOf(state, dir, fx.good.modid) : undefined;
+    check(
+      '重扫之后那一行读作"已是最新"，而且文件名就是 `originFileNameOf` 推出来的那个',
+      after?.verdict?.kind === 'same' && after?.fileName === fx.good.targetName,
+      `verdict=${String(after?.verdict?.kind)} fileName=${String(after?.fileName)}（批量前 ${String(rowFor(fx.good.modid)?.fileName)}）`,
+    );
+
+    /*
+     * ★ 第二趟：**一行都不需要下载**（三行全是 skipped）⇒ 整个批量里**唯一可能让出事件循环的
+     *    地方就是那几处 `yieldToEventLoop()`**。在起手之前登记一个 immediate：
+     *    · 有让出 ⇒ 它会在批量**还没跑完**的时候先轮到自己（那一刻 `batchFinished` 还是 false）；
+     *    · 一次都不让出 ⇒ 函数体在一个 microtask 里就跑完了，那个 immediate 只能等到之后
+     *      才轮得到（`batchFinished` 那时已经是 true）⇒ **这一条红**。
+     * ⚠️ 它证的是"这一趟里**至少**让出过一次"，**不是**"每条之间各让出一次"——
+     *    后者在外部不可观测（让出的次数没有读数）；逐条那一半由代码阅读钉住（循环体末尾那一句）。
+     */
+    let batchFinished = false;
+    let yieldedWhileRunning = false;
+    setImmediate(() => {
+      yieldedWhileRunning = !batchFinished;
+    });
+    const beforeSecond = downloadLog.length;
+    let second = null;
+    try {
+      second = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.good.mirrorId }).then(
+        (value) => {
+          batchFinished = true;
+          return value;
+        },
+      );
+    } catch (error) {
+      second = error;
+    }
+    check(
+      '★ 批量在跑的过程中**让出过事件循环**（spec §7.4 的 `yieldToEventLoop()`）',
+      yieldedWhileRunning === true,
+      `起手之前登记的 immediate 在批量跑完之前执行了吗：${String(yieldedWhileRunning)}`,
+    );
+    check(
+      '★ 幂等：第二趟一行都不用下（`updated` 空、三条全在 `skipped` 里）',
+      isState(second) &&
+        second.lastRun?.updated?.length === 0 &&
+        second.lastRun?.skipped?.length === 3,
+      isState(second) ? JSON.stringify(second.lastRun) : resultDetail(second),
+    );
+    check(
+      '★ 而且"已经是这一份"那一行**说得出原因**（不是空着一条）',
+      (isState(second) ? (second.lastRun?.skipped ?? []) : []).some(
+        (entry) => entry.modid === fx.good.modid && entry.reason.includes('已经是这一份'),
+      ),
+      isState(second) ? JSON.stringify(second.lastRun?.skipped) : resultDetail(second),
+    );
+    check(
+      '★★ 第二趟**一个请求都没发**（桩上的请求总数没动）',
+      downloadLog.length === beforeSecond,
+      `请求数 ${String(beforeSecond)} → ${String(downloadLog.length)}`,
+    );
+  });
+
+  // =========================================================================
+  // ㉒（brief ⑩）★ Task 6：缺失下载走的是**同一段**（`originFileNameOf` + sha512）
+  // =========================================================================
+  /*
+   * brief 特别点名了"不许拿『文件不在』当判据"—— 那一句**单独是恒真的**（这条通道什么都没干也成立）。
+   * ⇒ 这里的读数互相印证：
+   *   ① 桩上**真的收到了那一个请求**（`/mirror-bad/` +1）⇒ 拒绝发生在"下完之后比对 sha512"那一步；
+   *   ② 拒的**原文**是那条 sha512 的（不是别的失败撞上来的）；
+   *   ③ 请求的地址与**单行更新**（⑫）那条**逐字相同** ⇒ 同一条地址解析 + 同一份 `originFileNameOf`
+   *      （落盘名就是那个地址的最后一段）。
+   */
+  await section('㉒（brief ⑩）缺失下载：同一段 originFileNameOf + sha512 ⇒ 坏字节被拒、不落盘', async () => {
+    const dir = join(workRoot, 'mods-missing');
+    mkdirSync(dir);
+    // 这个文件夹里**没有**要下的那个 mod（这里放的是另一行，好让 `prepare` 的 rows 非空）
+    writeFileSync(join(dir, 'busy-1.0.jar'), probeJar(fx.busy.modid, FIXTURE_JAR_VERSION));
+    const id = await prepare(dir);
+    const targetPath = join(dir, fx.bad.targetName);
+    const beforeListing = listing(dir);
+    const beforeBadReqs = reqsOf('/mirror-bad/');
+    const beforeLog = downloadLog.length;
+    const view = folderByPath(await invoke(MOD_CH.getState), dir);
+    console.log(
+      `  缺失下载的目标：${fx.bad.modid}|1.16.1 → ${fx.bad.targetName}（${basename(dir)} 里没有它的行）`,
+    );
+    let refused = null;
+    try {
+      await invoke(MOD_CH.downloadMissing, fx.bad.modid, '1.16.1', id, {
+        mirrorId: fx.bad.mirrorId,
+      });
+    } catch (error) {
+      refused = error;
+    }
+    const asked = downloadLog.slice(beforeLog);
+    console.log(
+      `  桩上收到的下载请求：${String(beforeLog)} → ${String(downloadLog.length)}（${asked.map((entry) => entry.url).join(' ')}）`,
+    );
+    check(
+      '（前置）这个文件夹的行里**没有**要下的那个 modid（"缺失"的定义，spec §7.5）',
+      view !== undefined && view.rows.every((row) => row.modid !== fx.bad.modid),
+      (view?.rows ?? []).map((row) => row.modid).join(' | '),
+    );
+    check(
+      '★ 拒了，而且理由是 **sha512 对不上**（与单行更新走的是同一条校验）',
+      typeof refused?.message === 'string' && refused.message.includes('sha512 与上游不一致'),
+      refused?.message ?? '（没有抛）',
+    );
+    check(
+      '★★ 桩上**真的收到了那一个请求**（`/mirror-bad/` +1）⇒ 拒发生在"下完之后比对"，不是这条路没跑起来',
+      reqsOf('/mirror-bad/') === beforeBadReqs + 1 && asked.length === 1,
+      `请求数 ${String(beforeBadReqs)} → ${String(reqsOf('/mirror-bad/'))}；本次记到 ${String(asked.length)} 条`,
+    );
+    check(
+      '★★ 请求的地址与**单行更新**（⑫）那条逐字相同 ⇒ 同一份 `originFileNameOf` + 同一条地址解析',
+      singleRowBadUrl !== null && asked[0]?.url === singleRowBadUrl,
+      `${String(asked[0]?.url)} vs ${String(singleRowBadUrl)}`,
+    );
+    check('★ 目标文件**不存在**（对不上就不落盘）', !existsSync(targetPath), listing(dir));
+    check(
+      '★ 没有 `.part` 残留（删 `.part` 是**调用方**的活 —— Ruling 30）',
+      !readdirSync(dir).some((name) => name.includes('.part')),
+      listing(dir),
+    );
+    check('也没有 `.old` 残留', noPartsOrOlds(dir), listing(dir));
+    check('整个目录逐字没变', listing(dir) === beforeListing, listing(dir));
+    const after = await invoke(MOD_CH.getState);
+    check(
+      '这一支在 `writeRun` 里面 ⇒ 失败也留了读数（`lastRun.failed` 里有它、且说的是 sha512）',
+      after.lastRun?.failed?.[0]?.modid === fx.bad.modid &&
+        after.lastRun.failed[0].reason.includes('sha512'),
+      JSON.stringify(after.lastRun),
+    );
+    check('失败之后 `busy` 回到 false（按钮要能再点）', after.busy === false, String(after.busy));
+  });
+
+  // =========================================================================
+  // ㉓（brief 之外、但 spec §7.5/§9 要求的三条）缺失下载**起手就拒**的那三支
+  // =========================================================================
+  /*
+   * 这三条都在**动盘之前**（一个请求都不发），而它们各自的"如果坏了会怎么红"互不相同：
+   *   ① **已经有它了** ⇒ 拒。这一条是**承重**的：渲染进程加载的是**远程网页**，
+   *      主进程不许把"页面只在缺失时才调我"当前提 —— 少了它，一次过期读数就会把同一个 mod
+   *      以**另一个文件名**再下一份进同一个目录（游戏会同时加载两份）；
+   *   ② **manual**（spec §8：只给"打开原网页"） ⇒ 拒。这是 `assertUpdatable` 那道闸里在
+   *      缺失下载这一侧**唯一还成立**的一半（`newer`/`unknown` 要"本地那一份"才判得出来，
+   *      而缺失就是没有那一份）；
+   *   ③ **这个文件夹的游戏版本 ≠ 要下的那一版** ⇒ 拒。缺失清单按界面选中的版本算，
+   *      而"下载到 ▾"选的是另一个文件夹 ⇒ 不判这一条就是**静默装进一个别的游戏版本的目录**。
+   */
+  await section('㉓ 缺失下载的三条拒绝：已经有它了 / manual / 版本不匹配', async () => {
+    const dir = join(workRoot, 'mods-missing-guards');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'busy-1.0.jar'), probeJar(fx.busy.modid, FIXTURE_JAR_VERSION));
+    const id = await prepare(dir);
+    const beforeListing = listing(dir);
+    const beforeReqs = downloadLog.length;
+    const otherVersion = [...new Set(modCatalog.releases.flatMap((r) => r.targetVersions))].find(
+      (version) => version !== '1.16.1',
+    );
+    if (otherVersion === undefined) bail('目录里只有一个游戏版本 ⇒ 造不出"版本不匹配"那一条');
+    const attempts = [
+      {
+        what: '已经有它了（这个文件夹里有它的行）',
+        args: [fx.busy.modid, '1.16.1', id, { mirrorId: fx.busy.mirrorId }],
+        expect: '已经有',
+      },
+      {
+        /*
+         * ⚠️ 三条都走**镜像**而不是 `'origin'`：桩只对 `/mirror-` 开头的那几条前缀记请求
+         *    ⇒ 走 origin 的话"一个请求都没发"这一条**永远量不出差别**（§5.32 ①）。
+         */
+        what: 'manual（只给打开原网页）',
+        args: [fx.manual.modid, '1.16.1', id, { mirrorId: fx.manual.mirrorId }],
+        expect: 'manual',
+      },
+      {
+        what: `版本不匹配（文件夹是 1.16.1，要下的是 ${otherVersion}）`,
+        args: [fx.bad.modid, otherVersion, id, { mirrorId: fx.bad.mirrorId }],
+        expect: '别的游戏版本',
+      },
+    ];
+    for (const attempt of attempts) {
+      let refused = null;
+      const before = downloadLog.length;
+      try {
+        await invoke(MOD_CH.downloadMissing, ...attempt.args);
+      } catch (error) {
+        refused = error;
+      }
+      check(
+        `★ ${attempt.what} ⇒ 拒（理由里说得清是哪一条）`,
+        typeof refused?.message === 'string' && refused.message.includes(attempt.expect),
+        refused?.message ?? '（没有抛）',
+      );
+      check(
+        `★ ${attempt.what} ⇒ 一个请求都没发`,
+        downloadLog.length === before,
+        `请求数 ${String(before)} → ${String(downloadLog.length)}`,
+      );
+    }
+    check(
+      '三条拒绝之后目录逐字没变（一个文件都没多、也没少）',
+      listing(dir) === beforeListing,
+      listing(dir),
+    );
+    check(
+      '桩上的请求总数没动（三条都没跑到下载那一步）',
+      downloadLog.length === beforeReqs,
+      `请求数 ${String(beforeReqs)} → ${String(downloadLog.length)}`,
+    );
+    const after = await invoke(MOD_CH.getState);
+    check('三条拒绝之后 `busy` 回到 false', after.busy === false, String(after.busy));
+  });
+
+  // =========================================================================
+  // ㉔（spec §7.4 的字面：中途不因为一条失败而停）一条失败**不中断**整批
+  // =========================================================================
+  /*
+   * ⚠️ 夹具的顺序是**载荷性**的：失败的那一行必须排在**前面**（`probe-bad.jar` < `z-good.jar`，
+   *    扫描顺序就是文件名字典序）—— 失败排在最后的话，"后面那行还是被更新了"就与
+   *    "第一行失败之后整批就停了"分不开（那种夹具**恒真**）。
+   * 失败用 **Ruling 48** 那一支（扫描之后文件被换过）：它在 `installRelease` 里拒，
+   * 也就是**在整批的 try 里面** —— 正是"一条失败"该有的形态（不是起手那几条整批拒绝）。
+   */
+  await section('㉔ 一条失败不中断整批：前面的行失败，后面的行照常被更新', async () => {
+    const dir = join(workRoot, 'mods-batch-partial');
+    mkdirSync(dir);
+    // ① **排前面**的那一行：目标名就是 `probe-bad.jar`，扫描之后会被换掉（Ruling 48 会拒）
+    const stalePath = join(dir, fx.bad.targetName);
+    const bytesAtScan = probeJar(fx.bad.modid, FIXTURE_JAR_VERSION);
+    writeFileSync(stalePath, bytesAtScan);
+    // ② 排后面的那一行：本地 1.0.0 < 清单里那条 ⇒ `older` + auto ⇒ 可批量，而且能装成功
+    writeFileSync(join(dir, 'z-good.jar'), probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+
+    const id = await prepare(dir);
+    const view = folderByPath(await invoke(MOD_CH.getState), dir);
+    const rows = view?.rows ?? [];
+    check(
+      '（前置）两行都可批量，而且**失败那一行排在前面**（否则"没中断"这条恒真）',
+      rows.length === 2 && rows.every((row) => row.batchable) && rows[0]?.modid === fx.bad.modid,
+      rows.map((row) => `${row.modid}:${row.verdict.kind}${row.batchable ? '+batchable' : ''}`).join(' | '),
+    );
+    // ★ 扫描之后用户自己把那个 jar 换掉 ⇒ 这一行会在 installRelease 里被拒
+    const bytesNow = probeJar(fx.bad.modid, FIXTURE_JAR_VERSION, true);
+    writeFileSync(stalePath, bytesNow);
+    const goodBefore = goodReqs();
+    let state = null;
+    try {
+      state = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.good.mirrorId });
+    } catch (error) {
+      state = error;
+    }
+    console.log(
+      `  lastRun：${isState(state) ? JSON.stringify(state.lastRun) : resultDetail(state)}`,
+    );
+    check('整批**没有抛**（一条失败不许把它变成一次 reject）', isState(state), resultDetail(state));
+    check(
+      '★ 失败那一行如实进 `lastRun.failed`，说的是"扫描之后变过"',
+      isState(state) &&
+        state.lastRun?.failed?.length === 1 &&
+        state.lastRun.failed[0].modid === fx.bad.modid &&
+        state.lastRun.failed[0].reason.includes('扫描之后变过'),
+      isState(state) ? JSON.stringify(state.lastRun?.failed) : resultDetail(state),
+    );
+    check(
+      '★★ **后面那一行照常被更新了** ⇒ 整批真的越过了那条失败继续往下跑（spec §7.4）',
+      isState(state) &&
+        state.lastRun?.updated?.length === 1 &&
+        state.lastRun.updated[0] === fx.good.modid &&
+        existsSync(join(dir, fx.good.targetName)) &&
+        sha512Of(join(dir, fx.good.targetName)) === fx.good.release.sha512,
+      isState(state)
+        ? `updated=${JSON.stringify(state.lastRun?.updated)}；${listing(dir)}`
+        : resultDetail(state),
+    );
+    check(
+      '★ 而且它只发了 1 个请求（失败那条**没有**走到下载那一步）',
+      goodReqs() === goodBefore + 1,
+      `请求数 ${String(goodBefore)} → ${String(goodReqs())}`,
+    );
+    check(
+      '被拒的那一份**逐字节没变**（我们不知道它是什么 ⇒ 一个字节都不许动）',
+      readFileSync(stalePath).equals(bytesNow),
+      listing(dir),
+    );
+    check('没有 `.part` / `.old` 残留', noPartsOrOlds(dir), listing(dir));
+    check('整批结束之后 `busy` 回到 false', isState(state) && state.busy === false, String(state?.busy));
   });
 
   server.close();
