@@ -2993,6 +2993,171 @@ async function writePhase() {
     check('整批结束之后 `busy` 回到 false', isState(state) && state.busy === false, String(state?.busy));
   });
 
+  // =========================================================================
+  // ㉕ ★ 评审判修：**游戏版本未知**那两条路 + `downloadMissing` 的两条起手拒绝
+  // =========================================================================
+  /*
+   * 评审判修 1 / 2（两条都是**证据**缺口，不是产品缺陷）：
+   *
+   * ★ **整夹更新在"游戏版本未知"时故意不整体拒绝** —— 它依赖 `planFolderView` 在
+   *   `gameVersion === null` 时**对每个 modid 给一行 `unknown-version` 且不可批量**
+   *   （`packages/shared/src/modFolders.ts` 的两处短路）。那一段一旦回归（比如有人"顺手"
+   *   让它早返回空行），`lastRun` 就会是 `{updated:[],skipped:[],failed:[]}` ——
+   *   **正是模块自己在"没扫过 ≠ 它是空的"那一处明令禁止的那种读法**（界面会说"你已经是最新的"）。
+   *   ⇒ 夹具：**路径里没有 `.minecraft`**（`resolveGameVersion` 因此给 `null`）且**不手选版本**
+   *   的文件夹；断言 `updated` 空、**请求数 0**、`skipped.length === rows.length`、每条 reason
+   *   都提到 `unknown-version`、而且这一趟**没有抛**（"逐行如实报"不是"整批拒"）。
+   *
+   * ★ `downloadMissing` 的两条**起手拒绝**（brief 点名的那两条）此前**一条读数都没有**：
+   *   · 文件夹路径现在不是目录（spec §8：路径不存在不给更新按钮）；
+   *   · 文件夹的**有效游戏版本未知**（spec §8：未选之前所有行都是 `unknown-version`）。
+   *   两条都与 ㉓ 的三条（已经有它了 / manual / 版本不匹配）**不是同一支** —— 这里各给一条读数。
+   * ⚠️ 两条调用都走**镜像**（理由同 ㉓：桩只对 `/mirror-` 开头的前缀记请求）。
+   */
+  await section('㉕ 游戏版本未知：整夹逐行报 unknown-version（不是 0/0/0）+ 缺失下载的两条起手拒绝', async () => {
+    // ---- (a) 游戏版本未知的文件夹：只绑、不调 setFolderGameVersion -----------------
+    const noVerDir = join(workRoot, 'mods-noversion');
+    mkdirSync(noVerDir);
+    writeFileSync(join(noVerDir, 'good-1.0.jar'), probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+    writeFileSync(join(noVerDir, 'newer-99.jar'), probeJar(fx.newer.modid, '99.0.0', true));
+    // ⚠️ 用 `bindAt`（**不是** `prepare`）：`prepare` 会调 `setFolderGameVersion`，那就没有"未知"了
+    const noVerId = await bindAt(noVerDir);
+    const noVerView = folderByPath(await invoke(MOD_CH.getState), noVerDir);
+    const noVerRows = noVerView?.rows ?? [];
+    console.log(
+      `  版本未知的夹具：gameVersion=${String(noVerView?.gameVersion)}；行=${noVerRows.map((row) => `${row.modid}:${row.verdict.kind}${row.batchable ? '+batchable' : ''}`).join(' | ')}`,
+    );
+    check(
+      '（前置）这个文件夹的有效游戏版本真的是 `null`（路径里没有 `.minecraft`、也没手选过）',
+      noVerView !== undefined && noVerView.gameVersion === null,
+      `gameVersion=${String(noVerView?.gameVersion)}（路径 ${noVerDir}）`,
+    );
+    check(
+      '（前置）行**在**，而且每行都是 `unknown-version` + 不可批量（整夹不整体拒所依赖的正是这一条）',
+      noVerRows.length === 2 &&
+        noVerRows.every((row) => row.verdict.kind === 'unknown-version' && !row.batchable),
+      noVerRows.map((row) => `${row.modid}:${row.verdict.kind}`).join(' | '),
+    );
+
+    const beforeBatchReqs = downloadLog.length;
+    let batchState = null;
+    try {
+      batchState = await invoke(MOD_CH.updateFolderAll, noVerId, { mirrorId: fx.good.mirrorId });
+    } catch (error) {
+      batchState = error;
+    }
+    console.log(
+      `  整夹在版本未知的文件夹上：${isState(batchState) ? JSON.stringify(batchState.lastRun) : resultDetail(batchState)}`,
+    );
+    check(
+      '★ 整夹**没有抛**（版本未知不是"整批拒"，而是逐行如实报 —— spec §7.4 的形状）',
+      isState(batchState),
+      resultDetail(batchState),
+    );
+    const noVerRun = isState(batchState) ? batchState.lastRun : null;
+    check(
+      '★ `updated` 是空的（一行都没装）',
+      noVerRun?.updated?.length === 0,
+      JSON.stringify(noVerRun?.updated),
+    );
+    check(
+      '★★ `skipped` **一条不少**（`skipped.length === rows.length`）—— 不是 0/0/0 那种"看起来已经最新"',
+      noVerRun?.skipped?.length === noVerRows.length && noVerRows.length > 0,
+      `skipped=${String(noVerRun?.skipped?.length)}，rows=${String(noVerRows.length)}`,
+    );
+    check(
+      '★ 而且每一条 reason 都说得清是 `unknown-version`（不是空着一条）',
+      (noVerRun?.skipped ?? []).every((entry) => entry.reason.includes('unknown-version')),
+      JSON.stringify(noVerRun?.skipped),
+    );
+    check(
+      '`failed` 是空的（这一趟没有失败）',
+      noVerRun?.failed?.length === 0,
+      JSON.stringify(noVerRun?.failed),
+    );
+    check(
+      '★★ 一个下载请求都没发（不可批量 ⇒ 连目标都不去取）',
+      downloadLog.length === beforeBatchReqs,
+      `请求数 ${String(beforeBatchReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '跑完之后 `busy` 回到 false',
+      isState(batchState) && batchState.busy === false,
+      String(batchState?.busy),
+    );
+
+    // ---- (b) `downloadMissing`：这个文件夹的游戏版本未知 ⇒ 起手拒 ------------------
+    const beforeNoVerReqs = downloadLog.length;
+    let noVerRefused = null;
+    try {
+      await invoke(MOD_CH.downloadMissing, fx.bad.modid, '1.16.1', noVerId, {
+        mirrorId: fx.bad.mirrorId,
+      });
+    } catch (error) {
+      noVerRefused = error;
+    }
+    check(
+      '★ 缺失下载：文件夹的**有效游戏版本未知** ⇒ 拒，理由说的是这一条',
+      typeof noVerRefused?.message === 'string' && noVerRefused.message.includes('游戏版本还不知道'),
+      noVerRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 而且一个请求都没发',
+      downloadLog.length === beforeNoVerReqs,
+      `请求数 ${String(beforeNoVerReqs)} → ${String(downloadLog.length)}`,
+    );
+
+    // ---- (c) `downloadMissing`：路径现在不是目录 ⇒ 起手拒 -------------------------
+    const goneDir = join(workRoot, 'mods-gone');
+    mkdirSync(goneDir);
+    writeFileSync(join(goneDir, 'x-1.0.jar'), probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+    // 先绑上（**并且**给了版本 1.16.1）：这样"路径不是目录"就是**唯一**还能拒它的那一条
+    const goneId = await prepare(goneDir);
+    const goneBefore = listing(goneDir);
+    rmSync(goneDir, { recursive: true, force: true });
+    const beforeGoneReqs = downloadLog.length;
+    let goneRefused = null;
+    try {
+      await invoke(MOD_CH.downloadMissing, fx.bad.modid, '1.16.1', goneId, {
+        mirrorId: fx.bad.mirrorId,
+      });
+    } catch (error) {
+      goneRefused = error;
+    }
+    /*
+     * ⚠️★ 判据必须是"**入口那一句**"（`路径现在不是目录` + `不给下载`），不能只写 `不是目录`：
+     *    `installRelease` 自己还有一句"这个位置不是目录（拒绝写盘）" ⇒ 只写那三个字的话，
+     *    入口那条闸**删掉之后这一条仍然是绿的**（实测：第一版就是这么写的，刀 K13 只红了 1 条）。
+     */
+    check(
+      '★ 缺失下载：文件夹**路径现在不是目录** ⇒ 拒，而且拒的是**入口那一句**（不是 installRelease 那句）',
+      typeof goneRefused?.message === 'string' &&
+        goneRefused.message.includes('路径现在不是目录') &&
+        goneRefused.message.includes('不给下载'),
+      goneRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 而且一个请求都没发',
+      downloadLog.length === beforeGoneReqs,
+      `请求数 ${String(beforeGoneReqs)} → ${String(downloadLog.length)}`,
+    );
+    check(
+      '★ 那个被删掉的目录**没有被重新建出来**（拒绝发生在任何写盘动作之前）',
+      !existsSync(goneDir),
+      `${goneBefore} → ${listing(goneDir)}`,
+    );
+    check(
+      '★ 整夹那一趟也没往那个版本未知的文件夹里写任何东西',
+      listing(noVerDir) === 'good-1.0.jar | newer-99.jar',
+      listing(noVerDir),
+    );
+    check(
+      '两次拒绝之后 `busy` 回到 false',
+      (await invoke(MOD_CH.getState)).busy === false,
+      '',
+    );
+  });
+
   server.close();
   return { workRoot: parentRoot, ok: failures === 0 };
 }
