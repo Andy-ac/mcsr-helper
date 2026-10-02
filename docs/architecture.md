@@ -301,6 +301,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 | `UPLOAD_DIR` | 上传图片根目录 | 默认 `./data/uploads`；**必须**落在单元的 `ReadWritePaths` 之内，否则写不进去 |
 | `MCSR_RELEASES_DIR` | 读 `latest.yml` 的位置 | 没有它 ⇒ `/api/desktop/release` 404，首页不显示下载入口（这是正常状态，不是错误） |
 | `MCSR_CONTENT_DIR` | 读 `file-catalog.json` 的位置（桌面端「本地文件」那一栏的条目来源） | 默认 `/srv/mcsr-helper/content`；**只在本地开发/测试时**指到别处（`file-catalog.test.ts` 就是靠它造坏目录）。文件不在 / 内容不合法 ⇒ `GET /api/file-catalog` **500**（不是空目录 —— 空目录的表现是"界面上什么都没有"，没人会去查原因） |
+| `content/mod-catalog.json` | mc.sr 的 mod 目录（`GET /api/mod-catalog` 的条目来源） | schema 2 / 70 个 mod / 555 条 release；**由 `services/api/scripts/build-mod-catalog.mjs` 从 `content/upstream/` 的快照 + `content/mod-overrides.json` 生成**，手改它会被下一次 `--check` 判红；文件不在 / 内容不合法 ⇒ **500**（不是空目录）。⚠️ 仓库里这一份与 `content/upstream/` 被 `biome.json` 的 `files.includes` **排除在格式化之外**（`!**/mod-catalog.json`、`!**/upstream`）：它们是**机器产物 / 上游快照，字节由来源决定**（生成物要能重新生成后逐字节相等，快照要能逐字节等于上游响应），所以格式化检查对它们不成立；手写的那几份（`content/resources.json`、`content/file-catalog.json`、`content/mod-overrides.json`）**仍然被检查** |
 | `MCSR_PUBLIC_ORIGIN` | 邮件里验证/重置链接的绝对前缀 | 错了 ⇒ 链接指向错误的主机；而 cookie 是 host-only，用户会"看起来没登录" |
 | `MCSR_MAIL_DRIVER` | `resend` / `file` / `console` | **默认 `console`**：邮件只打进 journald。见第 8 节第 1 条 |
 | `MCSR_MAIL_FROM` / `MCSR_MAIL_FROM_NAME` / `MCSR_MAIL_DIR` | 发信人地址/显示名/`file` 驱动的输出目录 | 用 `resend` 而 `MCSR_MAIL_FROM` 未设 ⇒ 启动时告警，且 `@localhost` 发信人会被拒或进垃圾箱 |

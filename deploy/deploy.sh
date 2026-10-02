@@ -202,6 +202,7 @@ scp "${SCP_OPTS[@]}" -q \
   "$TMP/web.tgz" "$TMP/api.tgz" \
   content/resources.json \
   content/file-catalog.json \
+  content/mod-catalog.json \
   deploy/mcsr-helper-api.service deploy/Caddyfile deploy/bootstrap-server.sh \
   deploy/mcsr-helper-track.service deploy/mcsr-helper-track.timer deploy/track.env.example \
   deploy/mcsr-helper-ranked-streams.service deploy/mcsr-helper-ranked-streams.timer \
@@ -532,6 +533,12 @@ if [ -f /tmp/file-catalog.json ]; then
   echo "    文件目录已就位（不需要 import：API 每次请求现读）"
 fi
 
+if [ -f /tmp/mod-catalog.json ]; then
+  mkdir -p /srv/mcsr-helper/content
+  \$SUDO install -m 0644 /tmp/mod-catalog.json /srv/mcsr-helper/content/mod-catalog.json
+  echo "    mod 目录已就位（不需要 import：API 每次请求现读）"
+fi
+
 # ---------- 内容导入 ----------
 #
 # ⚠️ 数据库**只存在于服务器上**，绝不由本地覆盖。
@@ -584,7 +591,7 @@ curl -fsS --max-time 5 http://127.0.0.1:3001/api/health >/dev/null && echo "    
 #    （2026-09-19 加的两个：seeds.env.example、legacy-domain.caddy。）
 #    （2026-09-24 加的一个：file-catalog.json —— 它与上面 scp 清单里的
 #      「content/file-catalog.json」 是同一个文件的两端。）
-rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/file-catalog.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
+rm -f /tmp/installer.tgz /tmp/web.tgz /tmp/api.tgz /tmp/Caddyfile /tmp/mcsr-helper-api.service /tmp/bootstrap-server.sh /tmp/resources.json /tmp/file-catalog.json /tmp/mod-catalog.json /tmp/caddy-domain.conf /tmp/legacy-domain.caddy /tmp/mcsr-helper-track.service /tmp/mcsr-helper-track.timer /tmp/track.env.example /tmp/seeds.env.example /tmp/mcsr-helper-ranked-streams.service /tmp/mcsr-helper-ranked-streams.timer /tmp/mcsr-helper-live-status.service /tmp/mcsr-helper-live-status.timer
 REMOTE
 ok "部署完成"
 
@@ -676,6 +683,21 @@ if [[ -n "${MCSR_HEALTHCHECK_URL:-}" ]]; then
       if ! bash "$ROOT/deploy/verify-file-catalog.sh" --body "$CATALOG_CAPTURE"; then
         echo "✗ 目录回读没过（上面标了是哪一项）。这一轮 content/ 已经同步到线上了，但这次自检不算过。" >&2
         echo "  先确认 /srv/mcsr-helper/content/file-catalog.json 在不在（scp / install / 清理三处清单）。" >&2
+        exit 1
+      fi
+
+      MOD_CATALOG_CAPTURE="$TMP/mod-catalog-body.txt"
+      MOD_CATALOG_CURL_OK=1
+      curl -sS ${CURL_RESOLVE[@]+"${CURL_RESOLVE[@]}"} --max-time 10 \
+        -w '\n<<<%{http_code} %{url_effective}\n' \
+        "https://$MCSR_DOMAIN/api/mod-catalog" >"$MOD_CATALOG_CAPTURE" 2>/dev/null || MOD_CATALOG_CURL_OK=0
+      if [[ "$MOD_CATALOG_CURL_OK" != "1" ]]; then
+        echo "✗ mod 目录回读：响应抓取失败（curl 非零退出）—— 没抓到就不能判通过" >&2
+        exit 1
+      fi
+      if ! bash "$ROOT/deploy/verify-mod-catalog.sh" --body "$MOD_CATALOG_CAPTURE"; then
+        echo "✗ mod 目录回读没过（上面标了是哪一项）。这一轮 content/ 已经同步到线上了，但这次自检不算过。" >&2
+        echo "  先确认 /srv/mcsr-helper/content/mod-catalog.json 在不在（scp / install / 清理三处清单）。" >&2
         exit 1
       fi
 

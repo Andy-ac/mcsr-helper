@@ -195,19 +195,29 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 |---|---|---|---|
 | `content/resources.json` | `/srv/mcsr-helper/content/resources.json` | **要**：部署时以 `mcsr` 身份跑 `import.js --apply --file …` 把条目写进库（`source='import'`） | 导入脚本（部署时读一次文件），之后是库 |
 | `content/file-catalog.json` | `/srv/mcsr-helper/content/file-catalog.json` | **不要**：它没有查询/编辑需求 ⇒ 不建表、不导入；`GET /api/file-catalog` 在**每次请求**时现读这个文件（配置即代码，理由写在 `services/api/src/routes/fileCatalog.ts` 的文件头） | API 进程（每次请求） |
+| `content/mod-catalog.json` | `/srv/mcsr-helper/content/mod-catalog.json` | **不要**：同 `content/file-catalog.json`（没有查询/编辑需求 ⇒ 不建表、不导入）；`GET /api/mod-catalog` 在**每次请求**时现读这个文件（理由写在 `services/api/src/routes/modCatalog.ts` 的文件头） | API 进程（每次请求） |
 
 ⚠️ 「不需要 import」有一个**直接代价**，写在这里而不是留着让人自己发现：
-**"部署成功"只证明这个文件到位了，不证明它是对的** —— `deploy.sh` 的线上自检里
-只有 `/api/health` 与 CSP 回读，**没有**这个端点的回读。⇒ 部署完（或怀疑它坏了）时自己回读一次：
+这两份目录不进数据库，所以**没有任何一次 SQL 层面的校验** —— 它们到没到位、能不能用，
+只能由端点自己的回读来证明。`deploy.sh` 的线上自检就是干这个的：`/api/health` 通过之后
+先回读 CSP，再依次回读 `/api/file-catalog` 与 `/api/mod-catalog`
+（判据脚本分别是 `deploy/verify-file-catalog.sh` / `deploy/verify-mod-catalog.sh`），
+**任一条回读不过就 `exit 1`、整次部署算失败**（⚠️ 整块自检住在 `MCSR_HEALTHCHECK_URL` 里：
+那个变量在 `deploy.env` 里留空时它不跑 —— 见上面「改 `deploy/**` 之后必须做的一件事」那一节）。
+⇒ 即便如此，部署完（或怀疑它坏了）时仍然可以自己回读一次：
 
 ```bash
 curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/file-catalog
+curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/mod-catalog
 ```
 
-**预期读数**：`200` + 一行 JSON，`version` 是 `1`、`items` 里有 `mcsrranked`。
+**预期读数**：`200` + 一份 JSON 正文（上面两条各看一次）；
+`/api/file-catalog` 的 `version` 是 `1`、`items` 里有 `mcsrranked`；
+`/api/mod-catalog` 的 `schema` 是 `2`、`releases` 是非空数组。
 出错时每一类都有自己的 error 名（不吞错误、也不会"回一个空目录"）：
 文件没送到 ⇒ `catalog_unavailable`；JSON 坏了 ⇒ `catalog_invalid_json`；
-字段缺/多/`id` 重复 ⇒ `catalog_invalid` + `problems` 里**点名**是哪个字段。
+字段缺/多/`id` 重复 ⇒ `catalog_invalid` + `problems` 里**点名**是哪个字段
+（两条端点共用这同一套 error 名）。
 
 ⚠️ **失败的原因不在响应体里，它只进日志。** 响应体只回上面那个 error 名
 （`catalog_invalid` 那一档另带 `problems` —— 那是我们自己的字段级说明，不含服务器路径）。
