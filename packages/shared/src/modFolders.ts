@@ -42,7 +42,14 @@
  */
 
 import { compareLocalVersions } from './fileUpdates';
-import type { ModCatalog, ModEntry, ModRelease, ReleaseVerdict } from './modCatalog';
+import type {
+  ModCatalog,
+  ModEntry,
+  ModMirror,
+  ModRelease,
+  ModTagLabel,
+  ReleaseVerdict,
+} from './modCatalog';
 import {
   buildIndex,
   judgeRelease,
@@ -578,12 +585,64 @@ export function batchTargets(rows: readonly { batchable: boolean }[]): number {
 // 状态文件 v2
 // ---------------------------------------------------------------------------
 
+/**
+ * 一个标签的**选项**：键 + 两种语言的显示名（`ModFoldersState.tags` 的元素）。
+ *
+ * ⚠️ 与 `CatalogRowView.tagLabels`（那份只有 `zh`，见 `tagLabelsOf`）**不是**同一件事：
+ *    那一格是"这一行有哪些标签"，只能按目录的 `zh` 印；这一格是"这个标签叫什么名字"，
+ *    两种语言都在 ⇒ 英文界面上的标签 chip 从它取文案。
+ * ⚠️ 没有显示名的标签（目录缺陷）两种语言都退化成 key 本身（与 `tagLabelsOf` 同一条纪律）。
+ */
+export interface TagOptionView {
+  key: string;
+  labels: ModTagLabel;
+}
+
+/**
+ * 这条 release 的地址能用**状态里那份镜像表**里的哪几条。
+ *
+ * ⚠️★ 规则**一个字都不在这里重写**：主机匹配只有 `mirrorsFor` 一份实现，本函数只是把
+ *    "状态里只有镜像表、没有整份目录"这件事喂进去 —— `mirrorsFor` 读的就只有
+ *    `catalog.mirrors` 这一格（现读它的函数体），所以那份目录的其余字段对它没有意义。
+ *    代价：这里有一次 `as ModCatalog` 的类型断言（把一份只装了 `mirrors` 的对象说成目录）。
+ *    ⇒ 它必须**留在这里**、和契约同住：散到调用方去写，就等于让"哪条镜像适用"有两个版本，
+ *    而两个版本的分歧表现是"镜像按钮点了被主进程拒"（`channelUrl` ⇒ `mirrorsFor` 会给 `null`）。
+ * ⚠️ 顺序 = 目录里的顺序（配置即代码的顺序，可复现）；渲染进程要挑一条时应取第一条。
+ */
+export function mirrorsForUrl(mirrors: readonly ModMirror[], url: string): readonly ModMirror[] {
+  return mirrorsFor({ mirrors } as ModCatalog, url);
+}
+
 /** 界面状态（渲染进程拿到的全部东西）。 */
 export interface ModFoldersState {
   catalogStatus: 'ok' | 'unavailable' | 'invalid';
   /** 界面当前选中的游戏版本（默认 = 某个已绑定文件夹推断出的版本，否则 `1.16.1`）。 */
   gameVersion: string;
+  /**
+   * 目录里**全部**游戏版本（`ModIndex.gameVersions` 的副本，代码单元序）。
+   *
+   * ⚠️★ 为什么它必须在状态里（**Ruling 58**，2026-10-03 评审）：第一部分的游戏版本下拉是
+   *    D4 的一个筛选维度，而**只有** `gameVersion` 一格时，没绑定文件夹的客户端上那个
+   *    下拉**只有一个选项**（目录里实测有 **107** 个版本）—— 那个维度等于不存在。
+   *    修法只能在状态这一层：在渲染进程里硬写一份版本清单就是"会漂的第二份真相"
+   *    （目录才是版本表的唯一出处，`buildIndex` 已经算好了它）。
+   * ⚠️ 目录不可用时是**空数组**（不是"猜一个版本表"）：界面那一档会说明目录没拉到。
+   */
+  gameVersions: readonly string[];
   tagFilter: readonly string[];
+  /**
+   * 目录里**全部**标签（键 + 两种语言的显示名）—— 标签多选的**选项源**与 chip 的
+   * **文案源**（**Ruling 58**）。
+   *
+   * ⚠️★ 为什么不是从 `catalogRows[].tags` 里凑：那是**按当前 `tagFilter` 筛过**的
+   *    （`planCatalogRows` 留下的行必须带全部所选标签）⇒ 选中一个标签之后，与它互斥的
+   *    标签会因为"没有一行同时带两者"而从选项里消失，用户得先取消再换 —— 那是把筛选器
+   *    弄坏，不是"选项少了一个"。
+   * ⚠️ 判定口径与主进程的 `requireKnownTags` **逐字相同**：`tagLabels` 的键 ∪
+   *    各个 mod 真的带着的标签（目录里可能有"有标签、没显示名"的缺陷 ⇒ 那时两种语言的
+   *    显示名都退化成 key 本身，与 `tagLabelsOf` 的退化同一条纪律：缺陷要看得见）。
+   */
+  tags: readonly TagOptionView[];
   /**
    * "全部更新"当前用的通道（**Ruling 23** 加的这一格）。
    *
@@ -597,6 +656,20 @@ export interface ModFoldersState {
    *    —— 按机器记住；见 `desktop.ts` 里 `setBulkChannel` / `setTagFilter` 那一段。
    */
   bulkChannel: Channel;
+  /**
+   * 目录里的**镜像表**（`ModCatalog.mirrors` 的副本：`id` / `label` / `prefix` / `hosts`）。
+   *
+   * ⚠️★ 为什么它必须在状态里（**Ruling 55**，2026-10-03 评审）：第一部分的"更新（镜像）"
+   *    那颗按钮要**两个**来自目录的事实 —— ①这条 release 的主机在不在某条镜像的 `hosts`
+   *    里（**给不给这颗按钮**）；②那条镜像的 **id**（通道入参 `{ mirrorId }`，地址由主进程
+   *    按 `prefix` 拼）。状态里没有它，渲染进程就只能**硬写**这两样（T7 的第一版正是如此：
+   *    写死了 `'gh-proxy'` + `'github.com'`）⇒ 目录一改（改 id、加第二条镜像、把
+   *    `github.com` 从 `hosts` 拿掉），那一页会**静默**画出"会被主进程拒的按钮"，
+   *    而**没有任何门禁看得见**（spec §14.1 明说镜像列表是**配置**、正因如此才可撤换）。
+   * ⚠️ 目录不可用时是**空数组** ⇒ 镜像按钮一律不出现（那一刻主进程也查不到镜像，
+   *    `requireChannel` 会拒 —— 界面与主进程的判断因此一致）。
+   */
+  mirrors: readonly ModMirror[];
   catalogRows: readonly CatalogRowView[];
   folders: readonly ModFolderView[];
   /**

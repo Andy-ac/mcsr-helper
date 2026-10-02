@@ -74,7 +74,7 @@ import {
   isDisabledPath,
   needsUpdate,
 } from '@mcsr/shared/fileUpdates';
-import type { CatalogRowView, Channel, ModFoldersState } from '@mcsr/shared/modFolders';
+import type { Channel, ModFoldersState } from '@mcsr/shared/modFolders';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileUpdateTable, formatClock, ModCatalogTable } from '@/components/FileUpdateTable';
@@ -819,6 +819,8 @@ export interface ModFoldersHandlers {
   setCatalogGameVersion: ModFoldersAction<'setCatalogGameVersion'>;
   setTagFilter: ModFoldersAction<'setTagFilter'>;
   bindCatalogRow: ModFoldersAction<'bindCatalogRow'>;
+  /** ★ Ruling 60：解绑第一部分的一行（有绑定就必须能解绑）。 */
+  unbindCatalogRow: ModFoldersAction<'unbindCatalogRow'>;
   updateCatalogRow: (rowId: string, channel: Channel) => Promise<void>;
   rescan: ModFoldersAction<'rescan'>;
 }
@@ -888,6 +890,8 @@ function makeModFoldersHandlers(
       run(() => api.setCatalogGameVersion(gameVersion)),
     setTagFilter: (tags: readonly string[]) => run(() => api.setTagFilter(tags)),
     bindCatalogRow: (rowId: string) => run(() => api.bindCatalogRow(rowId)),
+    /* ★ Ruling 60：成对的那一条（界面只在已绑定的行上画那颗按钮）。 */
+    unbindCatalogRow: (rowId: string) => run(() => api.unbindCatalogRow(rowId)),
     /*
      * ★ `releaseKey` 传的就是 `rowId`：两者形状相同（`modid|游戏版本`），而**哪一个候选**
      *   是主进程按它自己那份状态取的（`view.official`）—— 页面指定不了。
@@ -1009,53 +1013,46 @@ export function toggleTag(tags: readonly string[], tag: string): string[] {
 }
 
 /**
- * 标签多选的**选项表**。
+ * 标签多选的**选项表**（Ruling 58：来自状态里那一格**目录的标签全集**）。
  *
- * ⚠️★ 它的来源只有"当前这一份状态"：`ModFoldersState` **没有**目录的标签全集
- *    （现读 T1 的契约：只有 `catalogRows`，而它是**按当前 `tagFilter` 筛过的**）。
- *    ⇒ 选项 = 这张表里出现过的标签 ∪ **已选**的那些（已选的必须一直在，否则用户
- *    取消不掉一个把行都筛掉的标签）。
- *    代价（明摆着）：选中一个标签之后，与它**互斥**的标签会因为"没有一行同时带两者"
- *    而从选项里消失，用户得先取消再换 —— 如实记在 Task 7 报告里（要列全集得给状态加一格）。
+ * ⚠️★ 不再从 `catalogRows[].tags` 里凑（T7 第一版的写法，已删）：那些行是**按当前
+ *    `tagFilter` 筛过**的 ⇒ 选中一个标签之后，与它互斥的标签会因为"没有一行同时带两者"
+ *    而从选项里消失，用户得先取消再换。
+ * ⚠️ 已选但**不在**全集里的键（目录换过之后 `prefs` 里留下的旧值）仍然要出现 ——
+ *    否则用户取消不掉一个把行都筛掉的标签（那时页面会只剩"没有行"那一屏）。它排在最后，
+ *    顺序因此仍由"目录的顺序 + 已选的顺序"决定（可复现）。
  */
-export function tagOptionKeys(
-  rows: readonly CatalogRowView[],
-  selected: readonly string[],
-): string[] {
-  const keys: string[] = [];
-  for (const row of rows) {
-    for (const tag of row.tags) if (!keys.includes(tag)) keys.push(tag);
-  }
-  for (const tag of selected) if (!keys.includes(tag)) keys.push(tag);
+export function tagOptionKeys(state: ModFoldersState): string[] {
+  const keys = state.tags.map((option) => option.key);
+  for (const tag of state.tagFilter) if (!keys.includes(tag)) keys.push(tag);
   return keys;
 }
 
-/** 标签 key ⇒ 显示名（**来自目录**的 `tagLabels`，与 `tags` 逐位对应；查不到就是 key 本身）。 */
-function tagLabelFor(rows: readonly CatalogRowView[], tag: string): string {
-  for (const row of rows) {
-    const index = row.tags.indexOf(tag);
-    if (index !== -1) return row.tagLabels[index] ?? tag;
-  }
-  return tag;
+/**
+ * 标签 key ⇒ 显示名（**状态里那一格**两种语言都有 ⇒ 按当前语言取）。
+ *
+ * ⚠️ 查不到时退回 **key 本身**（不是猜一个名字）：目录里没有它的显示名就是目录的缺陷，
+ *    界面上显示 key 正是"看得见的缺陷"（与 `tagLabelsOf` 的退化同一条纪律）。
+ */
+function tagLabelFor(state: ModFoldersState, tag: string, lang: 'zh' | 'en'): string {
+  return state.tags.find((option) => option.key === tag)?.labels[lang] ?? tag;
 }
 
 /**
- * 游戏版本下拉的选项表。
+ * 游戏版本下拉的选项表（Ruling 58：来自状态里那一格**目录的版本全集**）。
  *
- * ⚠️★ 与 `tagOptionKeys` 同一个缺口：`ModFoldersState` 没有目录的游戏版本表
- *    ⇒ 选项 = 当前选中的那一版 ∪ 已绑定文件夹推断出的版本（后者正是 spec §6.8 说的
- *    "默认取已绑定文件夹的版本"的来源）。**不许**在这里硬写一份版本列表：
- *    那是一份会漂的第二真相（目录才是版本表的唯一出处）。
- * ⚠️ 顺序 = 状态里的顺序（当前的在前、文件夹按状态里的顺序）⇒ 可复现、不依赖比较器。
+ * ⚠️★ 不再从"当前值 ∪ 已绑定文件夹推断出的版本"里凑（T7 第一版的写法，已删）：那样
+ *    没绑定文件夹的客户端上这个下拉**只有一个选项**，而目录里实测有 **107** 个版本
+ *    ⇒ D4 的那个维度等于不存在。
+ * ⚠️ 当前选中的那一版**必须在选项里**：目录换过之后 `prefs.catalogGameVersion` 可能指向
+ *    一个已经不在目录里的版本（`setCatalogGameVersion` 只在**写**的时候校验），
+ *    而 `<select value=X>` 里没有 X 时浏览器会**静默选中第一个选项** —— 那一屏就在撒谎。
+ *    ⇒ 不在全集里就把它补在最前面（用户看得见自己选的是哪个，也看得见它已经不在目录里）。
  */
 export function gameVersionOptions(state: ModFoldersState): string[] {
-  const versions = [state.gameVersion];
-  for (const folder of state.folders) {
-    if (folder.gameVersion !== null && !versions.includes(folder.gameVersion)) {
-      versions.push(folder.gameVersion);
-    }
-  }
-  return versions;
+  return state.gameVersions.includes(state.gameVersion)
+    ? [...state.gameVersions]
+    : [state.gameVersion, ...state.gameVersions];
 }
 
 export interface ModCatalogSectionProps {
@@ -1080,10 +1077,15 @@ export interface ModCatalogSectionProps {
  *    （主进程 `prefs` 里那一份），交互只发通道 —— 一处记忆（spec §6.8 / `desktop.ts`）。
  */
 export function ModCatalogSection({ state, handlers, actionError = null }: ModCatalogSectionProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const rows = state.catalogRows;
   const versions = gameVersionOptions(state);
-  const tagKeys = tagOptionKeys(rows, state.tagFilter);
+  const tagKeys = tagOptionKeys(state);
+  /**
+   * 标签显示名的语言（与表格那一层同一个判据：`i18n.language` 形如 `zh-CN` / `en`）。
+   * ⚠️ 目录两种语言都给了（`TagOptionView.labels`）⇒ 英文界面上不该出现中文标签名。
+   */
+  const labelLang: 'zh' | 'en' = i18n.language?.startsWith('en') ? 'en' : 'zh';
   /**
    * ★ 第三处空态：**全部已最新**。判据是每一行都判成 `same`（按 sha512 相等），
    *   而不是"没有 `batchable` 的行" —— 后者会把 `newer` / `different-build` 那些
@@ -1103,6 +1105,8 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
       ? {}
       : {
           onBindLocal: (rowId: string) => void handlers.bindCatalogRow(rowId),
+          /* ★ Ruling 60：解绑那一颗接的是新通道（`unbindCatalogRow`）。 */
+          onUnbindLocal: (rowId: string) => void handlers.unbindCatalogRow(rowId),
           onUpdate: (rowId: string, channel: Channel) =>
             void handlers.updateCatalogRow(rowId, channel),
         };
@@ -1150,7 +1154,7 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
                     void handlers.setTagFilter(toggleTag(state.tagFilter, tag));
                 }}
               >
-                {tagLabelFor(rows, tag)}
+                {tagLabelFor(state, tag, labelLang)}
               </button>
             );
           })}
@@ -1205,13 +1209,24 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
       )}
 
       {/*
-        ★ 三处空态的第一处：**目录不可用**。它与"这个版本下没有 mod"必须分得开
-        （前者那几十行很可能就在目录里，只是我们没拉到）⇒ 说法不同、而且这一档
-        **不画表**，再给一个唯一的"再试一次"入口（`rescan` 会重拉目录）。
+        ★★ 目录不可用那一档（**判修 1**，2026-10-03 评审）。
+        ⚠️★ 第一版是"`catalogStatus !== 'ok'` ⇒ 不画表"，而那会把**存在的行藏掉**并印一句
+        假话：重新抓目录失败**不会清空**已经加载的那一份（`mod-folder-catalog.ts` 只置状态；
+        目录本身留着 —— spec §8 要求保留缓存）⇒ 缓存里那几行明明在，用户却看到
+        "这一栏现在列不出任何东西"，而且**丢掉**了绑定与「打开原网页」。
+        同一个文件里 v1 那半边自己的规矩正好相反（`FileUpdateTable.tsx`：
+        "**不清空** `catalog` 是 spec §8 的要求，缓存里那几条会照常渲染成行"）。
+        ⇒ 现在的判据按**行**分两支：
+          · 一行都没有 ⇒ 那条**阻塞**说法（`files.catalogUnavailable`）+ 「重扫」；
+          · 有行 ⇒ 一条**非阻塞**的说明（`files.catalogUnavailableRows`：这几行是上一次的
+            读数）+ 照常画表（绑定 / 打开原网页 / 更新都还能用）。
+        ⚠️ 「重扫」两支都给（它是这一页唯一的"再试一次"入口：`rescan` 内含重拉目录）。
       */}
-      {state.catalogStatus !== 'ok' ? (
+      {state.catalogStatus === 'ok' ? null : (
         <>
-          <Notice kind="bad">{t('files.catalogUnavailable')}</Notice>
+          <Notice kind={rows.length === 0 ? 'bad' : 'info'}>
+            {rows.length === 0 ? t('files.catalogUnavailable') : t('files.catalogUnavailableRows')}
+          </Notice>
           {handlers === null ? null : (
             <div className="filespanel__actions">
               <button
@@ -1225,11 +1240,18 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
             </div>
           )}
         </>
-      ) : rows.length === 0 ? (
-        /* ★ 第二处空态：目录 OK、但这个版本下（或当前筛选下）一行都没有。**不画空壳表。** */
-        <div className="state state--empty">
-          <p>{t('files.catalogNoRows')}</p>
-        </div>
+      )}
+
+      {rows.length === 0 ? (
+        /*
+         * ★ 第二处空态：一行都没有。⚠️ 目录不可用那一档**已经**说了原因（上面那条 Notice）
+         *   ⇒ 这里不能再印"这个游戏版本下没有行"（那是另一件不同的事：目录 OK 而没有行）。
+         */
+        state.catalogStatus === 'ok' ? (
+          <div className="state state--empty">
+            <p>{t('files.catalogNoRows')}</p>
+          </div>
+        ) : null
       ) : (
         <>
           {/* ★ 第三处空态（一句话，不是"藏掉整张表"）：全部已最新。 */}
@@ -1238,6 +1260,8 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
             rows={rows}
             desktop={handlers !== null}
             busy={state.busy}
+            mirrors={state.mirrors}
+            tagLabels={state.tags}
             {...rowActions}
           />
         </>

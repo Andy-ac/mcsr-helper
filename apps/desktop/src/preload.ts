@@ -206,6 +206,12 @@ const bridge: DesktopBridge = {
         rowId,
       ) as Promise<ModFoldersState>;
     },
+    unbindCatalogRow(rowId: string): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.unbindCatalogRow,
+        rowId,
+      ) as Promise<ModFoldersState>;
+    },
     unbindFolder(folderId: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(
         MOD_FOLDERS_CHANNELS.unbindFolder,

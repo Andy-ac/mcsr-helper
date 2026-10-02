@@ -1,4 +1,4 @@
-/**
+﻿/**
  * mod 目录行 + mod 文件夹（Plan 2）—— **桌面读路径的可复跑探针**（Task 4 建骨架）。
  *
  * ⚠️ 这不是门禁的一部分，也不在任何 `check` / `check:all` 里。它**离线可跑**：
@@ -1180,6 +1180,51 @@ async function mainPhase() {
           bindJar,
         String(state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding?.localPath),
       );
+      /*
+       * ★★ Ruling 60（2026-10-03 评审）：`unbindCatalogRow` —— 有绑定就必须能解绑。
+       *
+       * ⚠️ 为什么这一条是**载荷性**的：新 UI 在 `modFolders` 存在的客户端里只渲染第一部分
+       *    ⇒ v1 的 `unbind(itemId)` 在那一页上不可达；这一组契约原先只有 `bindCatalogRow`
+       *    ⇒ 绑错的行、T4 迁移采纳的行都**永远解不掉**。这条通道就是补上的那一半。
+       * ⚠️ 三条读数：①那一格从 `catalogBindings` 里消失（**磁盘上**也要消失）；
+       *    ②视图里那一行的 `binding` 变回 `null`；③**用户磁盘上的 jar 一个字节没动**
+       *    （解绑 ≠ 删文件 —— 与 v1 的 `unbind` 同一条语义）。
+       * ⚠️ 最后把它**再绑回来**：后面的判据（v2 写入那几条）要"一条目录行绑定"这个前提。
+       */
+      const boundBefore =
+        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] !== undefined;
+      state = await invoke(MOD_CH.unbindCatalogRow, `${ANTIGONE}|1.16.1`);
+      const afterUnbind = readStateFileJson();
+      check(
+        '★ unbindCatalogRow ⇒ 那一格从 catalogBindings（磁盘）里消失、视图里那一行的 binding 变回 null',
+        boundBefore &&
+          afterUnbind?.catalogBindings?.[`${ANTIGONE}|1.16.1`] === undefined &&
+          state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding === null,
+        JSON.stringify(afterUnbind?.catalogBindings ?? {}),
+      );
+      check(
+        '★ 解绑**不动**用户磁盘上的那个 jar（解绑 ≠ 删文件）',
+        existsSync(bindJar),
+        existsSync(bindJar) ? bindJar : `${bindJar} 不见了`,
+      );
+      openQueue = [{ canceled: false, filePaths: [bindJar] }];
+      state = await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
+      check(
+        '（还原）重新绑定之后那一格回来了（后面几条判据的前提）',
+        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] !== undefined,
+        JSON.stringify(readStateFileJson()?.catalogBindings ?? {}),
+      );
+      let badUnbind = null;
+      try {
+        await invoke(MOD_CH.unbindCatalogRow, `${ANTIGONE}`);
+      } catch (error) {
+        badUnbind = error;
+      }
+      check(
+        '解绑一个形状不对的 rowId ⇒ 拒绝（不猜是哪一行）',
+        badUnbind !== null,
+        badUnbind?.message ?? '（没有抛）',
+      );
     }
     let bad = null;
     try {
@@ -1430,6 +1475,72 @@ async function mainPhase() {
         last.bulkChannel !== undefined,
       last === undefined ? '（一次都没推）' : `catalogStatus=${String(last.catalogStatus)}`,
     );
+    /*
+     * ★★★ Ruling 58 / Ruling 55（2026-10-03 评审判修）：状态里那三格
+     *   "目录的**全集**与**配置**" —— 界面读它们，不许自己硬写一份。
+     *
+     * ⚠️★ 为什么它们必须在状态里（判修 2 / 4 的现场）：
+     *   · 只有 `gameVersion` 一格时，没绑定文件夹的客户端上那个版本下拉**只有一个选项**
+     *     （目录里实测有 100+ 个版本）⇒ D4 的那个维度等于不存在；
+     *   · 没有 `mirrors` 时，渲染进程只能写死"镜像 id + 主机名"⇒ 目录一改（改 id、
+     *     加第二条镜像、把 `github.com` 从 `hosts` 拿掉）那一页就**静默**画出
+     *     "会被主进程拒的按钮"，而没有任何门禁看得见。
+     * ⚠️ 判据的来源是**仓库里那份目录文件**（本探针的 HTTP 桩就是拿它在喂的，
+     *    见文件头）：三格都必须与它一致 —— 而不是"非空就行"（那会让"少了一半版本"
+     *    这种坏法照样绿）。
+     */
+    const catalogFile = JSON.parse(readFileSync(MOD_CATALOG_FILE, 'utf8'));
+    /*
+     * ⚠️ 这一行**照 `buildIndex()` 的规则**（`ModIndex.gameVersions`：`releases[].targetVersions`
+     *    的并集）算一遍 —— 探针是独立仪器，它不 import 被测代码；两处规则若漂了，
+     *    这条断言正是会发现它的地方。
+     */
+    const expectedVersions = [
+      ...new Set(catalogFile.releases.flatMap((release) => release.targetVersions ?? [])),
+    ].sort();
+    check(
+      `★ gameVersions = 目录里全部游戏版本（${String(expectedVersions.length)} 个，判修 2）`,
+      Array.isArray(last?.gameVersions) &&
+        JSON.stringify([...last.gameVersions].sort()) === JSON.stringify(expectedVersions),
+      Array.isArray(last?.gameVersions)
+        ? `状态 ${String(last.gameVersions.length)} 个 / 目录 ${String(expectedVersions.length)} 个`
+        : '（那一格不是数组）',
+    );
+    check(
+      '★ 而且当前选中的那一版必须在里面（界面那个 `<select>` 的 value 靠它）',
+      Array.isArray(last?.gameVersions) && last.gameVersions.includes(last.gameVersion),
+      `gameVersion=${String(last?.gameVersion)}`,
+    );
+    /*
+     * ⚠️ 标签那一格的判据与主进程的 `requireKnownTags()` **同一个集合**：
+     *    `tagLabels` 的键 ∪ 各个 mod 带着的标签（目录里可能有"有标签、没显示名"的缺陷）。
+     */
+    const expectedTags = [
+      ...new Set([
+        ...Object.keys(catalogFile.tagLabels ?? {}),
+        ...catalogFile.mods.flatMap((mod) => mod.tags ?? []),
+      ]),
+    ];
+    check(
+      `★ tags = 目录里的标签全集（${String(expectedTags.length)} 个）+ 两种语言的显示名（判修 2）`,
+      Array.isArray(last?.tags) &&
+        expectedTags.every((key) => last.tags.some((option) => option.key === key)) &&
+        last.tags.every(
+          (option) =>
+            typeof option?.key === 'string' &&
+            typeof option?.labels?.zh === 'string' &&
+            option.labels.zh !== '' &&
+            typeof option?.labels?.en === 'string' &&
+            option.labels.en !== '',
+        ),
+      Array.isArray(last?.tags) ? `状态 ${String(last.tags.length)} 个` : '（那一格不是数组）',
+    );
+    check(
+      '★ mirrors = 目录里的镜像表（判修 4：镜像按钮的 id 与主机判据都从它来）',
+      Array.isArray(last?.mirrors) &&
+        JSON.stringify(last.mirrors) === JSON.stringify(catalogFile.mirrors ?? []),
+      JSON.stringify(last?.mirrors ?? null),
+    );
     const onDisk = readStateFileJson();
     check(
       '状态文件仍是 v1 的 version: 1 + stateVersion: 2（老客户端读的那一格没被改成 2）',
@@ -1490,7 +1601,7 @@ async function stateFilePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 14 条通道注册起来了', registered);
+  check('（前置）这一相位也把 15 条通道注册起来了', registered);
 
   // 给启动那一路（目录抓取 + 扫盘）一点时间落盘
   await new Promise((r) => setTimeout(r, 1500));
@@ -1654,7 +1765,7 @@ async function prefsPhase() {
   upstreamMode = 'ok';
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 14 条通道注册起来了', registered);
+  check('（前置）这一相位也把 15 条通道注册起来了', registered);
 
   /*
    * 等 `startUp` 真正跑完：判据是**推给页面的那份状态**（`onStatus`）里

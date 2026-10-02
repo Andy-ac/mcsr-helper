@@ -4265,6 +4265,19 @@ export const en: TranslationSchema = {
       'The first load waits for a local scan (reading every jar id, version and hash); that can take a few seconds.',
     catalogUnavailable:
       'The catalog has not been fetched yet, so this list has nothing to show ("Rescan" fetches it again).',
+    /*
+     * ★★ Fix round 1, item 1 (2026-10-03 review): the catalog failed **this** time while the
+     *    cached rows are still here.
+     *
+     * ⚠️★ Why it has to be a **separate** key (the one above cannot be reused): a failed
+     *    catalog fetch does **not** clear the loaded copy (spec §8 keeps the cache) ⇒
+     *    "this list is empty" and "the catalog is unavailable" are two independent facts.
+     *    Folding them into one key lies to the user (the cached rows are right there) and
+     *    throws away binding and "Open original page" along with them.
+     * ⚠️ The wording has to say these rows are from the **previous** fetch.
+     */
+    catalogUnavailableRows:
+      'The catalog could not be fetched this time - the rows below are from the previous fetch (bind, open page and update still work).',
     catalogNoRows:
       'No mods to list for this game version (the tag filter may also have removed every row).',
     catalogAllCurrent: 'Every mod in this table is up to date - there is nothing to update.',

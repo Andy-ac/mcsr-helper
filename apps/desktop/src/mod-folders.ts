@@ -65,6 +65,8 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import {
+  buildIndex,
+  type ModCatalog,
   type ModIndex,
   type ModRelease,
   modFor,
@@ -82,6 +84,7 @@ import {
   missingMods,
   planCatalogRows,
   planFolderView,
+  type TagOptionView,
 } from '@mcsr/shared/modFolders';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import {
@@ -316,6 +319,10 @@ function placeholderState(): ModFoldersState {
   return {
     catalogStatus: catalogStatusOf(),
     gameVersion: '1.16.1',
+    // 目录还没读到 ⇒ 这三格**空着**（不是猜一个）：界面据此把选项表画成"只有当前值"
+    gameVersions: [],
+    tags: [],
+    mirrors: [],
     tagFilter: [],
     bulkChannel: 'origin',
     catalogRows: [],
@@ -326,6 +333,25 @@ function placeholderState(): ModFoldersState {
     busy: false,
     lastRun: null,
   };
+}
+
+/**
+ * 目录里的**标签全集**（Ruling 58）：`tagLabels` 的键 ∪ 各个 mod 真的带着的标签。
+ *
+ * ⚠️★ 口径必须与主进程的 `requireKnownTags()` **逐字相同**（同一个 `usable` 集合）：
+ *    那个集合决定 `setTagFilter` 收不收这个键 ⇒ 两边不一致的表现是"界面上有一个选项、
+ *    点下去被拒"（或者反过来：一个合法的键在界面上选不到）。
+ * ⚠️ 没有显示名的标签两种语言都退化成 key 本身（目录缺陷要看得见，与 `tagLabelsOf` 同一条）。
+ * ⚠️ 顺序：`tagLabels` 的键（目录 JSON 里的顺序）在前、mod 带出来的标签按 `mods` 顺序在后
+ *    ⇒ 可复现（界面不排序，直接照这个顺序画）。
+ */
+function tagOptionsOf(catalog: ModCatalog): TagOptionView[] {
+  const keys = new Set<string>(Object.keys(catalog.tagLabels));
+  for (const mod of catalog.mods) for (const tag of mod.tags) keys.add(tag);
+  return [...keys].map((key) => ({
+    key,
+    labels: catalog.tagLabels[key] ?? { zh: key, en: key },
+  }));
 }
 
 /**
@@ -423,6 +449,19 @@ function buildState(): ModFoldersState {
   return {
     catalogStatus: catalogStatusOf(),
     gameVersion,
+    /*
+     * ★ 三格"目录的全集与配置"（Ruling 58 / Ruling 55，2026-10-03 判修）：
+     *   界面**读它们**，不许自己硬写一份 —— 见 `ModFoldersState` 上那三段注释。
+     * ⚠️ 目录不可用时三格都空着（那时界面上该出现的是"目录还没拉到"，不是一份猜的选项表）。
+     * ⚠️ `buildIndex` 在这里多跑一次（`planCatalogRows` 内部也建一份索引）：目录是**快照**、
+     *   555 条 release ⇒ 这一步是启动期的一次内存计算（spec §15 已接受同一类的代价）；
+     *   要省它就得把索引当参数贯穿整条状态组装路径，那会让"状态组装"与"索引"两件事耦合。
+     *   ⚠️ `gameVersions` **不排序**：`buildIndex` 给的是代码单元序（`modCatalog.ts:319`
+     *   明写"不要直接把它当成可展示的顺序"）⇒ 排序是**界面**的决定（今天界面照拍的顺序画）。
+     */
+    gameVersions: known === null ? [] : buildIndex(known).gameVersions,
+    tags: known === null ? [] : tagOptionsOf(known),
+    mirrors: known?.mirrors ?? [],
     tagFilter: [...st.prefs.tagFilter],
     bulkChannel: st.prefs.bulkChannel,
     catalogRows,
@@ -783,6 +822,29 @@ async function bindCatalogRow(rowId: unknown): Promise<ModFoldersState> {
     releaseKey: null,
     autoUpdate: false,
   };
+  persist();
+  rebuild();
+  return modFoldersState();
+}
+
+/**
+ * 解绑第一部分的一行（**Ruling 60**）：把 `catalogBindings[rowId]` 那一格删掉，重算并推送。
+ *
+ * ⚠️★ 为什么必须有它：新 UI 只渲染第一部分 ⇒ v1 的 `unbind(itemId)` 在那一页上不可达，
+ *    而这一组契约原先只有 `bindCatalogRow` ⇒ **绑定了就永远解不掉**（绑错的行、T4 迁移
+ *    采纳的行都留在那里）。这是把 v1 的一处能力还回来，不是新增一种行为。
+ * ⚠️ 它**不动用户磁盘上的文件**（解绑 ≠ 删文件）：删的只是一格状态。与 v1 的 `unbind`
+ *    同一条语义（那条也只是把 `items[itemId]` 里的绑定清掉）。
+ * ⚠️ 没有这一格绑定就**拒**（不静默成功）：与 `unbindFolder` 对不存在的 folderId 同一条
+ *    纪律 —— 界面只在已绑定的行上画那颗按钮，真收到"没绑定的行"说明状态漂了，那要看得见。
+ */
+function unbindCatalogRow(rowId: unknown): ModFoldersState {
+  const row = requireRowId(rowId);
+  const st = requireState();
+  if (st.catalogBindings[row.rowId] === undefined) {
+    throw new Error(`这一行还没有绑定本地文件（没有可解的绑定）：${row.rowId}`);
+  }
+  delete st.catalogBindings[row.rowId];
   persist();
   rebuild();
   return modFoldersState();
@@ -1674,6 +1736,10 @@ function registerIpc(): void {
   ipcMain.handle(MOD_FOLDERS_CHANNELS.bindFolder, () => bindFolder());
   ipcMain.handle(MOD_FOLDERS_CHANNELS.bindCatalogRow, (_event, rowId: unknown) =>
     bindCatalogRow(rowId),
+  );
+  /* ★ Ruling 60：与上一条成对（有绑定就必须要能解绑）。 */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindCatalogRow, (_event, rowId: unknown) =>
+    unbindCatalogRow(rowId),
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindFolder, (_event, folderId: unknown) =>
     unbindFolder(folderId),

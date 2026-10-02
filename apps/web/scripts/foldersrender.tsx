@@ -42,17 +42,18 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh 16 组、en 17 组（⑰ 只在 `--en` 那一遍跑）。
+ * zh 18 组、en 19 组（⑱ 零汉字扫描只在 `--en` 那一遍跑）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import type { ModRelease } from '@mcsr/shared/modCatalog';
-import type { CatalogRowView, ModFoldersState } from '@mcsr/shared/modFolders';
+import { type CatalogRowView, type ModFoldersState, mirrorsForUrl } from '@mcsr/shared/modFolders';
 import i18n from 'i18next';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
+import { MemoryRouter } from 'react-router';
 import {
   ModCatalogScanning,
   ModCatalogSection,
@@ -62,6 +63,7 @@ import {
   toggleTag,
 } from '@/components/FileUpdatesPanel';
 import { ModCatalogTable, RAW_KEY_RE, rawKeysIn } from '@/components/FileUpdateTable';
+import { Files } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -138,13 +140,40 @@ const keep = (markup: string): string => {
  *     （`packages/shared/src/modFolders.ts` 的 `tagLabelsOf` 写着这件事：这一层没有
  *     locale 参数）⇒ 真实目录里它**是中文**。夹具换成中文的话，⑱ 那条"英文产物零汉字"
  *     就得给扫描开一个豁免口子 —— 而开了口子的扫描在**最该抓人的那一处**是瞎的。
- *     代价：这条断言只说"显示名原样印出来"，不说"它是哪种语言"（那是 T1/T8 的事）。
+ *     ⚠️ 2026-10-03 之后行里那些 chip 的文案改成从 `state.tags`（两种语言都有）取
+ *     ⇒ `TAG_LABEL` 只是**查不到时的退路**，夹具仍然让它保持 ASCII。
  *   · `NOTE`：`ModFoldersState.notices[]` 由主进程写（中文），T7 只负责原样印。
  *   · `SKIP_REASON`：`lastRun.skipped[].reason` 同理（T6 的 `skipReasonOf`）。
  */
 const TAG_LABEL = 'tag-legal';
+const TAG_KEY = 'legal';
+/** 主进程写好的那两句（`notices` 与 `lastRun.skipped[].reason`）：这一层只负责原样印。 */
 const NOTE = 'MIGRATION-NOTICE-31337: adopted into folder tracking';
 const SKIP_REASON = 'SKIP-REASON-4242: local build is newer';
+/**
+ * 状态里那一格**标签全集**（Ruling 58）：两种语言的显示名都在。
+ * ⚠️ 夹具这里用 ASCII（`legal-label` / `legal-label-en`）而不是真目录里的「合法 / Legal」：
+ *    ⑱ 的零汉字扫描要在**英文那一遍**跑，而中文显示名只在 `zh` 那一支里用得到。
+ *    这一条只说"按当前语言取显示名"，不说"目录里那两个名字长什么样"。
+ */
+const TAG_OPTION = {
+  key: TAG_KEY,
+  labels: { zh: 'legal-label-zh', en: 'legal-label-en' },
+};
+/**
+ * 状态里那一格**镜像表**（Ruling 55）：`content/mod-catalog.json` 的真实形状
+ * （现读：一条 `gh-proxy`、`hosts: ['github.com']`、`prefix` 以 `/` 结尾）。
+ * ⚠️ 夹具里**故意**把它留成"目录给的那一份"：④ 那组会拿它做**有/无/主机不匹配**三种输入，
+ *    而"Web 侧写死一份"的那种坏法正是被判据挡住的东西。
+ */
+const MIRROR = {
+  id: 'gh-proxy',
+  label: 'gh-proxy.com',
+  prefix: 'https://gh-proxy.com/',
+  hosts: ['github.com'],
+};
+/** 一条**主机不匹配**的镜像（`hosts` 里没有 github.com）：它不该让镜像按钮出现。 */
+const MIRROR_OTHER_HOST = { ...MIRROR, id: 'other-mirror', hosts: ['example.com'] };
 /** 「没有值的那一格」——与两张表里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
 
@@ -283,17 +312,37 @@ const ROW_UNBOUND: CatalogRowView = {
   binding: null,
 };
 
-/** 已是最新（`same`）：第三处空态那一档。 */
+/**
+ * 已是最新（`same`）：第三处空态那一档。
+ * ⚠️ 2026-10-03 的 Minor ② 之后，"多候选但本地命中其中一个"也是 `same` 而 `official`
+ *    仍为 `null` ⇒ 那一支由 `ROW_SAME_AMBIGUOUS` 单独造（两组判据不能共用一个夹具）。
+ */
 const ROW_SAME: CatalogRowView = {
   ...ROW_GITHUB,
   verdict: { kind: 'same', release: SODIUM_NEW },
   batchable: false,
 };
 
+/**
+ * ★ 多候选 + **本地字节命中了其中一个**（真实形状：`official === null` 而判定是 `same`）。
+ * 这是 2026-10-03 评审 Minor ② 的现场：那一行的「打开原网页」必须指向**命中的那一个**，
+ * 而候选清单也必须照常列出来。
+ */
+const ROW_SAME_AMBIGUOUS: CatalogRowView = {
+  ...ROW_AMBIGUOUS,
+  binding: { localPath: 'D:\\mods\\speedrunigt.jar', localVersion: '0.1.3' },
+  verdict: { kind: 'same', release: SODIUM_NEW },
+};
+
 function stateOf(rows: CatalogRowView[], extra: Partial<ModFoldersState> = {}): ModFoldersState {
   return {
     catalogStatus: 'ok',
     gameVersion: '1.16.1',
+    /* ★ Ruling 58：版本全集与标签全集（选项表的唯一来源）。 */
+    gameVersions: ['1.16.1'],
+    tags: [TAG_OPTION],
+    /* ★ Ruling 55：镜像表（镜像按钮的唯一来源）。 */
+    mirrors: [MIRROR],
     tagFilter: [],
     bulkChannel: 'origin',
     catalogRows: rows,
@@ -308,11 +357,12 @@ function stateOf(rows: CatalogRowView[], extra: Partial<ModFoldersState> = {}): 
 }
 
 const noop = (): void => undefined;
-/** 五个动作的包装 —— **值不会被执行**（静态渲染一行事件处理器都不跑），只为把 props 填满。 */
+/** 六个动作的包装 —— **值不会被执行**（静态渲染一行事件处理器都不跑），只为把 props 填满。 */
 const HANDLERS: ModFoldersHandlers = {
   setCatalogGameVersion: async () => undefined,
   setTagFilter: async () => undefined,
   bindCatalogRow: async () => undefined,
+  unbindCatalogRow: async () => undefined,
   updateCatalogRow: async () => undefined,
   rescan: async () => undefined,
 };
@@ -332,7 +382,7 @@ const sectionHtml = (
     ),
   );
 
-/** 只渲染那张表（⑫ 的"没有动作层"那两条要单独喂 props）。 */
+/** 只渲染那张表（⑪ 的"没有动作层"那两条要单独喂 props）。 */
 const tableHtml = (
   rows: readonly CatalogRowView[],
   props: Partial<React.ComponentProps<typeof ModCatalogTable>> = {},
@@ -343,7 +393,10 @@ const tableHtml = (
         rows,
         desktop: true,
         busy: false,
+        mirrors: [MIRROR],
+        tagLabels: [TAG_OPTION],
         onBindLocal: noop,
+        onUnbindLocal: noop,
         onUpdate: noop,
         ...props,
       }),
@@ -390,6 +443,11 @@ function linksIn(markup: string): { href: string; label: string }[] {
   }));
 }
 
+/** `<select>` 里**全部**选项的 `value`（按渲染顺序；Ruling 58 之后它是"全集"的读数）。 */
+function optionValues(markup: string): string[] {
+  return [...markup.matchAll(/<option\b[^>]*\bvalue="([^"]*)"/g)].map((m) => m[1]);
+}
+
 /**
  * `<select>` 里被选中的那一个 `value`。
  *
@@ -424,55 +482,85 @@ const withoutComments = (source: string): string =>
 console.log(`【${LANG}】文件更新页 · 第一部分（目录行）`);
 
 // ---------------------------------------------------------------------------
-// ① 两个筛选维度：游戏版本下拉（默认 = 已绑定文件夹的版本，否则 1.16.1）+ 标签多选
+// ① 两个筛选维度：游戏版本下拉（选项 = 状态里的**全集**）+ 标签多选
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 两个筛选器的**选择**住在主进程的 `prefs` 里（spec §6.8"按机器记住"）⇒ 组件是
  *    **受控**的：它只画 `state.gameVersion` / `state.tagFilter`，自己不存一份
  *    （两处记忆必然有一天不一致 —— `desktop.ts` 的那一段写着）。这一组断言的就是
  *    "产物里选中的是**状态里那一个**"。
- * ⚠️★ 游戏版本的**选项表**只有状态里知道的那几个：`ModFoldersState` 没有目录的
- *    游戏版本表（现读 T1 的契约：只有 `gameVersion` 一格），所以选项 = 当前选中值
- *    ∪ 已绑定文件夹推断出的版本。代价写在报告里（要列全目录的版本表得给状态加一格）。
+ * ⚠️★ **选项表来自状态**（Ruling 58，2026-10-03 判修 2）：`state.gameVersions` 是目录的
+ *    版本全集（实测 **107** 个）。T7 第一版在 Web 侧拿"当前值 ∪ 已绑定文件夹的版本"凑，
+ *    没绑文件夹的客户端上那个下拉**只有一个选项** ⇒ D4 的那个维度等于不存在。
+ *    ⇒ 这一组的判据是"目录给几个就给几个"，而不是"凑出来的那几个"。
  */
 const defaultState = stateOf([ROW_GITHUB]);
 const defaultHtml = sectionHtml(defaultState);
 assert.equal(
   selectedOption(defaultHtml),
   '1.16.1',
-  '★ 没有已绑定文件夹时，游戏版本下拉的默认值必须是 `1.16.1`（spec §6.8）',
+  '★ 没有已绑定文件夹时，游戏版本下拉的默认值必须是 `1.16.1`（spec §6.8 / T4 采纳的那一版）',
 );
-const folderState = stateOf([ROW_GITHUB], {
-  gameVersion: '1.20.1',
-  folders: [
-    {
-      folderId: 'f1',
-      path: 'D:\\instances\\a\\.minecraft\\mods',
-      pathExists: true,
-      gameVersion: '1.20.1',
-      autoUpdate: false,
-      rows: [],
-      unrecognized: [],
-    },
-  ],
+/*
+ * ★★ 判修 2 的核心判据：**一个文件夹都没绑**，而目录给了两个版本 ⇒ 下拉里就该有两个。
+ *    （T7 第一版在这里只画得出一个 —— 那正是这一条要红的地方。）
+ *    ⚠️ 夹具故意不给 `folders`：'1.7.10' 只可能来自 `state.gameVersions`。
+ */
+const versionsState = stateOf([ROW_GITHUB], {
+  gameVersion: '1.16.1',
+  gameVersions: ['1.7.10', '1.16.1'],
 });
-const folderHtml = sectionHtml(folderState);
+const versionsHtml = sectionHtml(versionsState);
+assert.deepEqual(
+  optionValues(versionsHtml),
+  ['1.7.10', '1.16.1'],
+  '★★ 下拉的选项表必须来自状态里的 `gameVersions`（目录的全集，Ruling 58）——' +
+    '一个文件夹都没绑时也要列得全目录的版本（T7 第一版这里只有一个选项）',
+);
 assert.equal(
-  selectedOption(folderHtml),
-  '1.20.1',
-  '★ 有已绑定文件夹时，下拉选中的必须是**状态里那个**版本（默认值 = 文件夹推断出的版本）——' +
-    '写死 1.16.1 的话，用户看到的是"我选的版本没了"',
+  selectedOption(versionsHtml),
+  '1.16.1',
+  '★ 而选中的仍然是状态里那一版（选项多了，选择不许跟着变）',
+);
+/*
+ * ⚠️★ 反面：`prefs` 里那一版**不在**目录的全集里（目录换过之后的旧值）时，
+ *    它必须**仍然是一个选项** —— `<select value=X>` 里没有 X 时浏览器会静默选中第一个，
+ *    那一屏就在撒谎（用户看到的是"我的选择被改掉了"，而状态里那一格没变）。
+ */
+const staleState = stateOf([ROW_GITHUB], {
+  gameVersion: '1.99.9',
+  gameVersions: ['1.16.1'],
+});
+const staleHtml = sectionHtml(staleState);
+assert.equal(
+  selectedOption(staleHtml),
+  '1.99.9',
+  '★ 状态里那一版不在目录全集里时，它仍要出现在选项里并被选中（否则浏览器会静默选中第一个 = 撒谎）',
 );
 assert.ok(
-  textOf(folderHtml).includes('1.20.1'),
-  '★ 那个版本要真的印在选项里（选中一个不存在的选项 = 浏览器回退到第一个）',
+  optionValues(staleHtml).includes('1.16.1'),
+  '★ 反面：全集里那一版也照常在（补一个旧值不等于把全集顶掉）',
 );
-const tagFilterState = stateOf([ROW_GITHUB], { tagFilter: ['legal'] });
+/*
+ * ★ 标签多选：选项来自 `state.tags`（全集 + 两种语言），按下态来自 `state.tagFilter`。
+ *   ⚠️ chip 的文案按**当前语言**取（`labels[lang]`）—— 这是 2026-10-03 顺带修掉的一条：
+ *   行里的 `CatalogRowView.tagLabels` 只有 `zh`，英文界面上它会是中文。
+ */
+const tagFilterState = stateOf([ROW_GITHUB], { tagFilter: [TAG_KEY] });
 const tagFilterHtml = sectionHtml(tagFilterState);
 assert.ok(
-  tagFilterHtml.includes('aria-pressed="true"') &&
-    textOf(tagFilterHtml).includes(textOf(TAG_LABEL)),
-  '★ 标签多选必须把已选的标签画成"按下"状态（标签显示名来自目录，原样印出来）',
+  tagFilterHtml.includes('aria-pressed="true"'),
+  '★ 标签多选必须把已选的标签画成"按下"状态（`aria-pressed`）',
+);
+assert.ok(
+  textOf(tagFilterHtml).includes(textOf(TAG_OPTION.labels[LANG === 'en' ? 'en' : 'zh'])),
+  `★ 标签 chip 的文案按当前语言取（${LANG}）—— 目录两种语言都给了（Ruling 58）`,
+);
+assert.equal(
+  textOf(tagFilterHtml).includes(textOf(TAG_OPTION.labels.zh)) &&
+    textOf(tagFilterHtml).includes(textOf(TAG_OPTION.labels.en)),
+  false,
+  '★ 反面：同一遍渲染里**只该出现一种语言**的标签名（两种都印 = 取错了那一格）',
 );
 assert.ok(
   textOf(tagFilterHtml).includes(textOf(resolved('files.catalogGameVersion'))) &&
@@ -480,41 +568,103 @@ assert.ok(
   '★ 两个筛选器各自要有名字（没有名字的那一格，用户不知道自己在筛什么）',
 );
 ok(
-  '① 两个筛选器：版本下拉选中状态里那一版（无文件夹时 1.16.1、有则文件夹的版本）+ 标签多选的按下态',
+  '① 两个筛选器：版本下拉 = 状态里的**版本全集**（含补进去的旧值）、标签多选按下态 + 按语言取显示名',
 );
 
 // ---------------------------------------------------------------------------
-// ② 一行 GitHub 来源 ⇒ **两颗**按钮（原始 / 镜像）；cdn 来源 ⇒ 只有原始（D5）
+// ② 一行 GitHub 来源 ⇒ **两颗**按钮（原始 / 镜像）；镜像那一颗**由状态决定**（Ruling 55）
 // ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组是 2026-10-03 判修 4（**Ruling 55**）的落点，判据分四刀：
+ *   ① 状态里有那条镜像、且它的 `hosts` 认这个主机 ⇒ **两颗**（原始 / 镜像）；
+ *   ② 状态里**没有**镜像（`mirrors: []`）⇒ 只剩原始那一颗 —— 这是"Web 侧写死一份目录配置"
+ *      那一刀会**立刻**红的地方（写死时这一档照样会画出镜像按钮）；
+ *   ③ 有一条镜像、但 `hosts` 不认这个主机 ⇒ 也只剩原始（主机匹配住在 `mirrorsFor` 里）；
+ *   ④ 非 GitHub 来源（`cdn.modrinth.com`）⇒ 只剩原始（D5）。
+ * ⚠️ 镜像按钮的**文案**与"送哪个 id"是两件事：静态渲染看不见事件处理器 ⇒ 通道由 ⑯ 的
+ *    接线守卫兜着（它的判据是 `mirror.id`，也就是**状态里那一条**的 id）。
+ */
 const githubRow = rowOf(tableHtml([ROW_GITHUB]), 'sodium');
 assert.deepEqual(
-  labelsIn(githubRow),
+  labelsIn(githubRow).filter((label) => label !== labelOf('files.unbind')),
   [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
-  '★ GitHub 来源的那一行必须**两颗**按钮：原始 + 镜像（D5 / D6）—— 少一颗就是少一条通道',
+  '★ GitHub 来源、且状态里有认这个主机的镜像 ⇒ **两颗**按钮：原始 + 镜像（D5 / D6）',
+);
+const noMirrorRow = rowOf(tableHtml([ROW_GITHUB], { mirrors: [] }), 'sodium');
+assert.deepEqual(
+  labelsIn(noMirrorRow).filter((label) => label !== labelOf('files.unbind')),
+  [labelOf('files.updateOrigin')],
+  '★★ 状态里的镜像表是**空**的 ⇒ 只画原始那一颗（写死一份目录配置的坏法在这里立刻红）',
+);
+const otherHostRow = rowOf(tableHtml([ROW_GITHUB], { mirrors: [MIRROR_OTHER_HOST] }), 'sodium');
+assert.deepEqual(
+  labelsIn(otherHostRow).filter((label) => label !== labelOf('files.unbind')),
+  [labelOf('files.updateOrigin')],
+  '★★ 有镜像、但它的 `hosts` 不认这条 release 的主机 ⇒ 也不画镜像按钮（主机判据住在 `mirrorsFor`）',
 );
 const cdnRow = rowOf(tableHtml([ROW_CDN]), 'sodium');
 assert.deepEqual(
-  labelsIn(cdnRow),
+  labelsIn(cdnRow).filter((label) => label !== labelOf('files.unbind')),
   [labelOf('files.updateOrigin')],
-  '★★ 只有 GitHub 来源才有镜像按钮（D5）：非 GitHub 的行多一颗镜像 ⇒ 主进程会拒（`mirrorsFor` 的主机判据）',
+  '★★ 非 GitHub 来源没有镜像按钮（D5）：多一颗 ⇒ 主进程会拒（`mirrorsFor` 的主机判据）',
 );
-ok('② GitHub 来源两颗按钮（原始 / 镜像），cdn 来源只有原始（D5）');
+/*
+ * ★★ 那四刀背后是**同一个函数**：`mirrorsForUrl()`（`packages/shared/src/modFolders.ts`，
+ *    它只是把状态里那份镜像表喂给 `mirrorsFor` —— 主机匹配**只有一处实现**）。
+ *    这里直接量它，是因为"Web 侧自己写一份主机判断"正是判修 4 要消灭的那件事：
+ *    一条坏掉的实现可以让上面四刀全绿（只要它在这几个夹具上恰好同结果）。
+ */
+assert.deepEqual(
+  mirrorsForUrl([MIRROR], GITHUB_URL).map((m) => m.id),
+  [MIRROR.id],
+  '★ `mirrorsForUrl`：`hosts` 认这个主机 ⇒ 返回那一条（**id 从状态来**，不是写死的）',
+);
+assert.deepEqual(
+  mirrorsForUrl([MIRROR], CDN_URL),
+  [],
+  '★ `mirrorsForUrl`：主机不在 `hosts` 里 ⇒ 空数组（与主进程 `channelUrl` 的判据同一份实现）',
+);
+assert.deepEqual(
+  mirrorsForUrl([MIRROR], 'not-a-url'),
+  [],
+  '★ `mirrorsForUrl`：地址解不出来 ⇒ 空数组（不抛：这一层是纯判断）',
+);
+ok(
+  '② 镜像按钮完全由状态里的 `mirrors` 决定（有/无/主机不匹配/非 GitHub 四刀）+ 判据共用 `mirrorsForUrl`',
+);
 
 // ---------------------------------------------------------------------------
-// ③ `manual` 的行（OptiFine）⇒ 一颗按钮都没有，只有「打开原网页」
+// ③ `manual` 的行（OptiFine）⇒ **没有更新按钮**，只有「打开原网页」（+ 已绑定时能解绑）
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 这是 Ruling 47/48 的落点：**不给一个主进程会拒的按钮**。`manual` 的 release
  *    在 `assertUpdatable` 那一层被拒（"这一条只能到原网页手动下载"）⇒ 界面上画一颗
- *    「更新」就是让用户白点一次、吃一句红字。
- * ⚠️ 断言写成"**一颗按钮都没有**"（不是"没有更新按钮"）：多出来的任何一颗（哪怕是一颗
- *    「绑定本地文件」）都会让这条红 —— brief 的字面是"只有『打开原网页』"。
+ *    「更新」就是让用户白点一次、吃一句红字。`bindCatalogRow` 也不该给（`updateCatalogRow`
+ *    对它是"没有目标"；而这一期没有"给 manual 行绑定"的用途）。
+ * ⚠️★ 但 **2026-10-03 的 Ruling 60 之后**，"已绑定"的行会多一颗安静的「解除绑定」——
+ *    它不是"主进程会拒的按钮"（`unbindCatalogRow` 就是为它加的），所以这一组不再写成
+ *    "一颗按钮都没有"，而是**逐颗点名**：既不能多出更新按钮、也不许把解绑那颗藏掉。
+ *    （原来的断言是 `buttonsIn(manualRow).length === 0`，那一条**必须改** —— 改的
+ *    理由与新旧文本都记在报告里。）
  */
 const manualRow = rowOf(tableHtml([ROW_MANUAL]), 'optifine');
 assert.deepEqual(
-  buttonsIn(manualRow).length,
+  labelsIn(manualRow),
+  [labelOf('files.unbind')],
+  '★ `manual` 且已绑定的行：**没有**更新按钮、**没有**「绑定本地文件」，只有那一颗「解除绑定」（Ruling 47/60）',
+);
+assert.deepEqual(
+  labelsIn(manualRow).filter(
+    (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
+  ),
+  [],
+  '★ `manual` 的行不许有更新按钮（主进程的 `assertUpdatable` 必拒）',
+);
+const manualUnboundRow = rowOf(tableHtml([{ ...ROW_MANUAL, binding: null }]), 'optifine');
+assert.deepEqual(
+  buttonsIn(manualUnboundRow).length,
   0,
-  '★ `manual` 的行**一颗按钮都不许有**（主进程会拒；brief 的字面是"只有『打开原网页』"）',
+  '★ `manual` 且**未绑定**的行：一颗按钮都没有（既没有更新、也没有「绑定本地文件」）',
 );
 assert.deepEqual(
   linksIn(manualRow).map((l) => l.label),
@@ -526,7 +676,7 @@ assert.equal(
   OPTIFINE_URL,
   '★ 那个链接要指向 release 自己的地址（`official.url`）——指向别处等于把用户送去别的地方',
 );
-ok(`③ \`manual\` 的行一颗按钮都没有，只有「打开原网页」（href = release.url）`);
+ok(`③ \`manual\` 的行没有更新按钮（已绑定只剩「解除绑定」那样一颗安静的按钮），只有「打开原网页」`);
 
 // ---------------------------------------------------------------------------
 // ④ `newer` / `different-build` / `unknown` 三支：只解释，**不给**更新按钮
@@ -559,11 +709,14 @@ for (const [name, row, key] of [
 /*
  * ★ 反面：这三支与"可更新"那一支**长得要分得开**（同一张表里）。
  *   `ROW_GITHUB` 是同一份夹具的"该给按钮"那一侧 ⇒ 两边都断言，判据才不会退化成空跑。
+ *   ⚠️ 数的是**更新**那两颗（`ROW_GITHUB` 是已绑定的 ⇒ 还有一颗「解除绑定」，见 ③）。
  */
 assert.equal(
-  labelsIn(githubRow).length,
+  labelsIn(githubRow).filter(
+    (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
+  ).length,
   2,
-  '★ 反面：可更新的那一行**确实**有按钮（否则上面三条"没有按钮"是空跑）',
+  '★ 反面：可更新的那一行**确实**有那两颗更新按钮（否则上面三条"没有按钮"是空跑）',
 );
 ok('④ newer / different-build / unknown 三支各自有解释、都没有更新按钮（可更新的那一行有）');
 
@@ -592,10 +745,42 @@ assert.ok(
 );
 assert.deepEqual(
   labelsIn(ambiguousRow),
-  [],
-  '★ 多候选那一行**不许**有更新按钮：`official` 是 `null` ⇒ 主进程必拒（Ruling 47/48）',
+  [labelOf('files.unbind')],
+  '★ 多候选那一行**不许**有更新按钮（`official` 是 `null` ⇒ 主进程必拒，Ruling 47/48）；' +
+    '它是已绑定的 ⇒ 只留那一颗「解除绑定」（Ruling 60）',
 );
-ok('⑤ ambiguous：全部候选都列出来 + 「程序不替你猜」那句解释，且一颗按钮都没有');
+/*
+ * ★★ Minor ①（2026-10-03 评审）：那一格印的是 `—`（没有目标），旁边**不许**再写来源。
+ *    "对一个不存在的目标声称来源"是同一类假话（与"给会被拒的按钮"同族）。
+ */
+assert.equal(
+  textOf(ambiguousRow).includes(textOf(resolved('files.targetSource.catalog'))) ||
+    textOf(ambiguousRow).includes(textOf(resolved('files.targetSource.upstream'))),
+  false,
+  '★ `official === null` 的行**一个字都不许**印"来源"（那一格是 `—`，印来源就是对一个不存在的目标声称来源）',
+);
+/*
+ * ★★ Minor ②（2026-10-03 评审）：多候选 + **本地字节命中了其中一个** ⇒ 判定是 `same`
+ *    而 `official` 仍是 `null`。那一行的「打开原网页」必须指向**命中的那一个**
+ *    （不再退回 `candidates[0]`），而且候选清单**照常列出来**。
+ */
+const sameAmbiguousRow = rowOf(tableHtml([ROW_SAME_AMBIGUOUS]), 'speedrunigt');
+/** 命中的那一条 = 夹具 `verdict.release`（`SODIUM_NEW`）—— 不是 `candidates[0]`（`SODIUM_OLD`）。 */
+const matchedUrl = SODIUM_NEW.url;
+assert.deepEqual(
+  linksIn(sameAmbiguousRow).map((l) => l.href),
+  [...ROW_SAME_AMBIGUOUS.candidates.map((c) => c.url), matchedUrl],
+  '★★ 命中候选的那一行：候选清单照常列出来（DOM 顺序在状态那一格），而「打开原网页」指向' +
+    '**命中的那一个**（`SODIUM_NEW`，不是 `candidates[0]` 的 `SODIUM_OLD`）（Minor ②）',
+);
+assert.notEqual(
+  matchedUrl,
+  ROW_SAME_AMBIGUOUS.candidates[0]?.url,
+  '★ 夹具自钉：命中那一条必须**不是**第一条候选（否则上面那条断言测不出"退回 candidates[0]"那一刀）',
+);
+ok(
+  '⑤ ambiguous：全部候选都列出来 + 「程序不替你猜」那句、没有更新按钮（只留解绑）、不印来源、命中候选时链接指向那一个',
+);
 
 // ---------------------------------------------------------------------------
 // ⑥ 目标来源按 `targetSource` 标出来（Ruling 13）—— **不假设 `official ∈ candidates`**
@@ -650,8 +835,8 @@ ok('⑦ 未绑定：只有「绑定本地文件」+ 「未绑定」徽章 + 本�
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 三处**必须分得开**（这是这一组存在的全部理由）：
- *   · 目录不可用 ⇒ 空数组（区别只在 `catalogStatus`）—— 说"没有行"就是撒谎
- *     （那 48 行很可能就在目录里，只是我们没拉到）；
+ *   · 目录不可用 **且一行都没有** ⇒ 那条**阻塞**说法（"列不出任何东西"）+ 不画表；
+ *   · 目录不可用 **但缓存里还有行** ⇒ 一条**非阻塞**的说明 + **照常画表**（**判修 1**）；
  *   · 目录 OK + 0 行 ⇒ 真的没有（今天只有"标签筛选挡掉了"这一种可达路径）；
  *   · 有行、但全是 `same` ⇒ 有东西可看、只是没有可更新的。
  */
@@ -660,7 +845,7 @@ const unavailableHtml = sectionHtml(
 );
 assert.ok(
   textOf(unavailableHtml).includes(textOf(resolved('files.catalogUnavailable'))),
-  '★ 目录不可用那一档必须说"目录还没拉到"（与"这个版本下没有 mod"是两句不同的话）',
+  '★ 目录不可用**且一行都没有**时必须说"目录还没拉到"（与"这个版本下没有 mod"是两句不同的话）',
 );
 assert.equal(
   textOf(unavailableHtml).includes(textOf(resolved('files.catalogNoRows'))),
@@ -670,7 +855,44 @@ assert.equal(
 assert.equal(
   unavailableHtml.includes('filetable__table'),
   false,
-  '★ 目录不可用时不画表（一张空壳表的下方本该有行）',
+  '★ 目录不可用**且没有行**时不画表（一张空壳表的下方本该有行）',
+);
+/*
+ * ★★★ 判修 1（2026-10-03 评审，本轮最该修的一条）：**目录这次没拉到、而缓存里还有行**。
+ *
+ * 现场：重新抓目录失败**不会清空**已经加载的那一份（`mod-folder-catalog.ts` 只置状态，
+ * 目录本身留着 —— spec §8 要求保留缓存）⇒ T7 第一版按 `catalogStatus !== 'ok'` 一刀切，
+ * 把**存在的行藏掉**、并印一句"这一栏现在列不出任何东西"（假话）。对照组就在同一个文件里：
+ * v1 那半边写着"**不清空** `catalog` 是 spec §8 的要求，缓存里那几条会照常渲染成行"。
+ * ⚠️ 这一组的四刀：行在、表在、按钮在、而且那句话换成**非阻塞**的那条（"上一次拉到的"）。
+ *    （第一版的判据只建模了"行为空"那一种 ⇒ **抓不到**这一刀。）
+ */
+const staleRowsHtml = sectionHtml(
+  stateOf([ROW_GITHUB, ROW_UNBOUND], {
+    catalogStatus: 'unavailable',
+    missingStatus: 'catalog-unavailable',
+  }),
+);
+const staleGithubRow = rowOf(staleRowsHtml, 'sodium');
+assert.ok(
+  staleRowsHtml.includes('filetable__table'),
+  '★★★ 目录不可用但**缓存里还有行** ⇒ 表必须照常画（判修 1：藏掉它 = 丢掉绑定与打开原网页）',
+);
+assert.deepEqual(
+  labelsIn(staleGithubRow).filter(
+    (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
+  ),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★★ 而那些行的按钮**照常可用**（缓存下来的目录行仍然能更新 —— 主进程那一侧也照常按目录判）',
+);
+assert.ok(
+  textOf(staleRowsHtml).includes(textOf(resolved('files.catalogUnavailableRows'))),
+  '★★★ 那一档的话必须换成"下面这几行是**上一次**拉到的"（不是"这一栏列不出任何东西"）',
+);
+assert.equal(
+  textOf(staleRowsHtml).includes(textOf(resolved('files.catalogUnavailable'))),
+  false,
+  '★★★ 有行时**不许**再印"列不出任何东西"那句 —— 那就是这一条判修要消灭的假话',
 );
 const noRowsHtml = sectionHtml(stateOf([]));
 assert.ok(
@@ -691,7 +913,9 @@ assert.ok(
   allCurrentHtml.includes('filetable__table'),
   '★ 那一档**留着表**（行还在：绑定 / 打开原网页都只能在这里做）—— 藏掉整张表就是删掉能力',
 );
-ok('⑧ 三处空态分得开：目录不可用（无表）/ 真的没有行（无表）/ 全部已最新（留着表）');
+ok(
+  '⑧ 四处空态分得开：目录不可用（无行则无表）/ 目录不可用但**有行**（表照常）/ 真的没有行 / 全部已最新',
+);
 
 // ---------------------------------------------------------------------------
 // ⑨ 正在写盘（`busy`）⇒ 每一行的按钮都禁用 + 那一句解释
@@ -710,8 +934,8 @@ assert.equal(
 );
 assert.equal(
   buttonsIn(busyRow).length,
-  2,
-  '★ 反面：`busy` 时按钮是"禁用"，不是"消失"（消失 = 用户不知道它们去哪了）',
+  3,
+  '★ 反面：`busy` 时按钮是"禁用"，不是"消失"（`ROW_GITHUB` 是已绑定的 ⇒ 两颗更新 + 一颗解绑，共 3 颗）',
 );
 assert.ok(
   textOf(busyHtml).includes(textOf(resolved('files.catalogBusy'))),
@@ -723,7 +947,7 @@ assert.equal(
   false,
   '★ 反面：不在写盘时按钮必须**可用**（禁用过头 = 这个功能没有出路）',
 );
-ok('⑨ `busy`：两颗按钮都在但都禁用 + 一句解释；不忙时可用');
+ok('⑨ `busy`：三颗按钮都在但都禁用 + 一句解释；不忙时可用');
 
 // ---------------------------------------------------------------------------
 // ⑩ 上一次运行的汇总：**逐条**印出跳过的行与原因；正在跑时一个字都不印
@@ -799,15 +1023,48 @@ assert.equal(
 const withActionsHtml = sectionHtml(stateOf([ROW_GITHUB, ROW_UNBOUND]));
 assert.equal(
   buttonsIn(rowOf(withActionsHtml, 'sodium')).length,
-  2,
-  '★ 反面：可更新的那一行确实有两颗按钮（上面那条否则是空跑）',
+  3,
+  '★ 反面：已绑定 + 可更新的那一行确实有三颗（两颗更新 + 一颗解绑）（上面那条否则是空跑）',
 );
 assert.equal(
   buttonsIn(rowOf(withActionsHtml, 'lithium')).length,
   1,
-  '★ 反面：未绑定的那一行确实有那一颗「绑定本地文件」',
+  '★ 反面：未绑定的那一行确实有那一颗「绑定本地文件」（它没有解绑可点：没有绑定）',
 );
-ok('⑪ 没有动作层 ⇒ 每一行的操作列都是空的；有动作层 ⇒ 按钮真的在（2 + 1）');
+ok('⑪ 没有动作层 ⇒ 每一行的操作列都是空的；有动作层 ⇒ 按钮真的在（3 + 1）');
+
+// ---------------------------------------------------------------------------
+// ⑪b `unbindCatalogRow` 那颗按钮（**Ruling 60**）：绑定了就必须能解绑
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 为什么这一组必须存在：新 UI 在 `modFolders` 存在的客户端里**只**渲染第一部分
+ *    （Ruling 49）⇒ v1 的 `unbind(itemId)` 在那一页上**不可达**，而这一组契约原先只有
+ *    `bindCatalogRow` ⇒ **绑定了就永远解不掉**（绑错的行、T4 迁移采纳的行都留在那里）。
+ *    `unbindCatalogRow` 就是补上的那条通道，界面这一侧的落点就是这一颗按钮。
+ * ⚠️ 判据分三层，缺一层就有一条坏法没人喊：
+ *   ① **已绑定**的行有它（未绑定的行**没有**它 —— 没有绑定可解）；
+ *   ② 它在**只读**（没有动作层）时不画（与其余按钮同一条闸）；
+ *   ③ 它接的是**新通道**（⑯ 的接线守卫钉住 `handlers.unbindCatalogRow`）。
+ */
+const boundRowHtml = rowOf(tableHtml([ROW_GITHUB]), 'sodium');
+assert.deepEqual(
+  labelsIn(boundRowHtml),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror'), labelOf('files.unbind')],
+  '★ 已绑定的行要有那一颗「解除绑定」（Ruling 60：绑定了就必须能解绑）',
+);
+assert.equal(
+  labelsIn(rowOf(tableHtml([ROW_UNBOUND]), 'lithium')).includes(labelOf('files.unbind')),
+  false,
+  '★ 未绑定的行**不许**有「解除绑定」（没有绑定可解；主进程也会拒）',
+);
+assert.equal(
+  labelsIn(rowOf(tableHtml([{ ...ROW_GITHUB, binding: null }]), 'sodium')).includes(
+    labelOf('files.unbind'),
+  ),
+  false,
+  '★ 反面同上：同一份夹具把 `binding` 拿掉之后，那一颗必须消失（判据是绑定，不是行本身）',
+);
+ok('⑪b Ruling 60：已绑定的行有「解除绑定」，未绑定的行没有（判据只看 `binding`）');
 
 // ---------------------------------------------------------------------------
 // ⑫ `toggleTag()`：标签筛选是**"与"**语义，增删都要保序
@@ -905,8 +1162,8 @@ ok('⑭ `reduceModFoldersLoad`：失败 → 数据到手撤回失败结论；有
  * ⚠️★ Ruling 42 的现场：第一次 `getState()` 会**先等一次补扫**（读每个 jar 的内部
  *    版本与哈希），真机可能几秒 ⇒ 页面从第一帧就该说"正在扫描"，否则用户看到的是
  *    "这一页挂了"。那一屏由 `ModCatalogScanning` 画（纯组件 ⇒ 这里渲得出来）。
- * ⚠️ 钩子**真的**会进那一屏这件事，这个脚本证不了（没有 preload ⇒ `window.mcsr`
- *    是 undefined ⇒ `useModFolders()` 只会给 `unavailable`）—— 边界写在文件头。
+ * ⚠️ "钩子**真的**会进那一屏"由 **⑰** 证（给 `globalThis.mcsr` 放一份桩，然后真的渲染
+ *    `Files` —— 第一帧就是它）。这一组只管那一屏的**文案**。
  */
 const scanningHtml = keep(html(React.createElement(ModCatalogScanning, null)));
 assert.ok(
@@ -935,18 +1192,31 @@ const panelCode = withoutComments(
   readFileSync(new URL('../src/components/FileUpdatesPanel.tsx', import.meta.url), 'utf8'),
 );
 
-// —— 守卫 1：★ 镜像那条分支的判据来自 `isGitHubRelease(...)`（能红的那一刀：改成恒真）——
+// —— 守卫 1：★★ 镜像那一颗的判据与 id **都来自状态**（能红的那一刀：改回硬编码）——
 /*
- * ⚠️ 这一条就是 brief 的 Step 4 点名的那一刀：把判据写成恒真（`const mirror = true`）⇒
- *    ② 里那条"cdn 来源只有原始"**必须**红。锚点写在**按钮出现的那一处**（`{mirror ?`），
- *    不是锚在 `isGitHubRelease` 的声明上（锚在声明上时，"把调用换掉"那一刀全绿 ——
- *    v1 的现场就是这么来的）。
+ * ⚠️★ 这一条是 2026-10-03 判修 4（**Ruling 55**）的守卫：T7 第一版在 Web 侧写死了
+ *    `ROW_MIRROR_ID = 'gh-proxy'` 与一个按 `github.com` 判主机名的函数。那一版**能过**
+ *    ② 里"有/无镜像"的两刀（只要夹具恰好同结果）—— 而目录一改就静默画出"会被主进程拒
+ *    的按钮"。⇒ 判据是**源码形状**：镜像的可用性与 id 必须来自参数 `mirrors`，
+ *    而"目录配置"那两个字符串**一个字都不许**留在这一页里。
+ * ⚠️ 能红它的刀（跑过的读数在报告里）：把 `mirrorsForUrl(mirrors, …)` 换成
+ *    `row.official.url.includes('github.com')` 再配一个写死的 `'gh-proxy'`。
  */
 assert.match(
   tableCode,
-  /const\s+mirror\s*=\s*row\.official\s*!==\s*null\s*&&\s*isGitHubRelease\(row\.official\.url\)/,
-  '★★ 「只有 GitHub 来源才给镜像按钮」的判据必须来自 `isGitHubRelease(row.official.url)`' +
-    '（写成恒真 ⇒ 非 GitHub 的行也会画镜像按钮，而主进程会拒）',
+  /const\s+applicable\s*=\s*hasTarget\s*\?\s*mirrorsForUrl\(mirrors,\s*row\.official!\.url\)/,
+  '★★ 镜像按钮的可用性必须来自**状态里的镜像表**（`mirrorsForUrl(mirrors, …)`，Ruling 55）',
+);
+assert.match(
+  tableCode,
+  /mirrorId:\s*mirror\.id/,
+  '★★ 镜像通道送的 id 必须来自**那一条镜像对象**（`mirror.id`），不是 Web 侧写死的字符串',
+);
+assert.equal(
+  tableCode.includes('gh-proxy') || tableCode.includes('isGitHubRelease'),
+  false,
+  '★★ 这一页里**不许**再出现写死的目录配置（`gh-proxy` / `isGitHubRelease`）：' +
+    '那是一份会漂的第二真相，而失败形态是"点了被主进程拒"（判修 4 / Ruling 55）',
 );
 
 // —— 守卫 2：★★ 两颗更新按钮各送**自己那条通道**（能红的那一刀：把镜像那一颗改成 `'origin'`）——
@@ -954,15 +1224,15 @@ assert.match(
  * ⚠️★ 为什么不能只断言"有两颗按钮"：两颗都送 `'origin'` 也能过 ② —— 而那样镜像按钮
  *    是个**假**按钮（用户以为走了加速站，其实没有）。判据是两颗按钮各自
  *    `onUpdate?.(row.rowId, …)` 的**第二个实参**：一颗字面量 `'origin'`、
- *    一颗 `{ mirrorId: ROW_MIRROR_ID }`。
+ *    一颗 `{ mirrorId: mirror.id }`。
  * ⚠️ 两者之间的窗口是**实测**的（`{0,400}` 曾经差 32 个字符 —— 实测 gap = 432）：
  *    它是"同一个操作列里那两颗按钮"的距离，不是"往后随便找"。窗口放这么宽是因为
  *    中间还夹着 `<button>` 的属性与 JSX 注释（注释被剥掉，但换行与缩进留着）。
  */
 assert.match(
   tableCode,
-  /onUpdate\?\.\(row\.rowId,\s*'origin'\)[\s\S]{0,800}?onUpdate\?\.\(row\.rowId,\s*\{\s*mirrorId:\s*ROW_MIRROR_ID\s*\}\)/,
-  "★★ 两颗更新按钮必须各送自己那条通道（第一颗 `'origin'`、第二颗 `{ mirrorId: ROW_MIRROR_ID }`）" +
+  /onUpdate\?\.\(row\.rowId,\s*'origin'\)[\s\S]{0,800}?onUpdate\?\.\(row\.rowId,\s*\{\s*mirrorId:\s*mirror\.id\s*\}\)/,
+  "★★ 两颗更新按钮必须各送自己那条通道（第一颗 `'origin'`、第二颗 `{ mirrorId: mirror.id }`）" +
     '—— 两颗都送 `\'origin\'` 时"镜像按钮"是个假按钮，而产物里看不出来',
 );
 
@@ -973,7 +1243,30 @@ assert.match(
   '★ 「打开原网页」的 href 必须来自那一行的 release（`originPageOf(row)`）—— 写死一个地址等于把用户送去别处',
 );
 
-// —— 守卫 4：★ 筛选器的两个动作各自接在自己那条通道上（能红的那一刀：`setTagFilter` 接成 `setCatalogGameVersion`）——
+// —— 守卫 4：★★ 解绑那一颗接的是**新通道**（能红的那一刀：`onUnbindLocal` 接成 `bindCatalogRow`）——
+/*
+ * ⚠️★ Ruling 60 的产品判据在 ⑪b（有按钮）；这一条钉的是**那颗按钮走哪条通道** ——
+ *    静态渲染看不见事件处理器 ⇒ 接错了（比如接到 `bindCatalogRow`）产物一模一样，
+ *    只有这条守卫会出声。两根线都断言：表格那一层收 `onUnbindLocal`、
+ *    面板那一层把它接到 `handlers.unbindCatalogRow`。
+ */
+assert.match(
+  tableCode,
+  /onClick=\{\(\)\s*=>\s*onUnbindLocal\?\.\(row\.rowId\)\}/,
+  '★★ 「解除绑定」那一颗必须调 `onUnbindLocal(row.rowId)`（接错 = 那颗按钮干别的事）',
+);
+assert.match(
+  panelCode,
+  /onUnbindLocal:\s*\(rowId: string\)\s*=>\s*void handlers\.unbindCatalogRow\(rowId\)/,
+  '★★ 面板那一层必须把 `onUnbindLocal` 接到 `handlers.unbindCatalogRow`（Ruling 60 的新通道）',
+);
+assert.equal(
+  panelCode.match(/handlers\.unbindCatalogRow\(/g)?.length,
+  1,
+  '★★ `handlers.unbindCatalogRow(` 只许出现一次（就是那颗解绑按钮的接线）',
+);
+
+// —— 守卫 5：★ 筛选器的两个动作各自接在自己那条通道上（能红的那一刀：`setTagFilter` 接成 `setCatalogGameVersion`）——
 /*
  * ⚠️ 锚在**控件**上（`<select … onChange=` 与那颗标签按钮的 `onClick=`）：锚在函数体上
  *    的话，"把接线换掉"那一刀全绿（v1 的 ⑱ 就是被这一刀证明的）。
@@ -989,6 +1282,16 @@ assert.match(
   panelCode,
   /onClick=\{[\s\S]{0,300}?handlers\.setTagFilter\(toggleTag\(state\.tagFilter, tag\)\)/,
   '★ 标签多选的 `onClick` 必须调 `setTagFilter(toggleTag(state.tagFilter, tag))`（接错 ⇒ 标签筛不动）',
+);
+/*
+ * ★★ 判修 1 的**形状**守卫（产品判据在 ⑧）：那一档必须按**行数**分两支 ——
+ *    "一行都没有"才是阻塞说法，有行时是另一句 + 照常画表。写成 `catalogStatus !== 'ok'`
+ *    一刀切就是那条判修要消灭的假话。
+ */
+assert.match(
+  panelCode,
+  /rows\.length === 0 \? t\('files\.catalogUnavailable'\) : t\('files\.catalogUnavailableRows'\)/,
+  '★★ 目录不可用那一档的**说法**必须按行数分（缓存里还有行 ⇒ 说"上一次拉到的"，判修 1）',
 );
 assert.ok(
   panelCode.includes('localStorage') === false,
@@ -1011,23 +1314,110 @@ assert.equal(
   '★★ 同一个判据给 `handlers.setTagFilter(`：只许出现一次（那个标签按钮的 `onClick`）',
 );
 ok(
-  '⑯ 源码形状守卫 4 条：镜像判据非恒真、两颗更新按钮各送自己的通道、原网页链接来自 release、两个筛选器各接自己那条通道且只有一处',
+  '⑯ 源码形状守卫 5 组：镜像判据与 id 都来自状态（无硬编码）、两颗更新按钮各送自己的通道、原网页链接来自 release、解绑接新通道、两个筛选器各接自己那条通道且只有一处、判修 1 的说法按行数分',
 );
 
 // ---------------------------------------------------------------------------
-// ⑰ 英文那一遍：全部渲染产物零汉字
+// ⑰ ★★ 页面**第一帧**就是「正在扫描…」（Ruling 42，真的渲染 `Files` 那一页）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 为什么这一组能证到"钩子真的会进那一屏"（T7 报告的 §9 原先把它写成"证不了"，
+ *    2026-10-03 评审指出**读得出来**，于是把它变成了断言）：
+ *      · `useModFolders()` 的**初始** state 就是 `NO_MOD_FOLDERS_LOAD`（`loading`）
+ *        —— 这一格不依赖任何 IPC 回包；
+ *      · `Files.tsx` 把 `mods.status === 'loading'` 映到 `<ModCatalogScanning />`；
+ *      · 静态渲染就跑**第一次渲染** ⇒ 只要"桌面壳那一支"在场，第一帧必然是那一屏。
+ *    ⇒ 这一组在渲染 `Files` 之前给 `globalThis.mcsr` 放一份**桩**（`isDesktop: true` +
+ *    两个子对象），渲染完**立刻删掉**（别的组不能受影响 —— 它们量的是浏览器态/纯 props）。
+ *    ⚠️ 桩里的方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
+ *    `desktopBridge()?.modFolders` 判成"在"。
+ * ⚠️ 能红它的刀：把 `Files.tsx` 的 `loading` 那一支换成 `null`（或换成 v1 的
+ *    `common.loading`）⇒ 这一条红。
+ */
+assert.equal(
+  NO_MOD_FOLDERS_LOAD.status,
+  'loading',
+  '★ `useModFolders()` 的起点必须是 `loading`（Ruling 42 的那一屏靠它，不靠任何回包）',
+);
+const stubBridge = {
+  isDesktop: true,
+  platform: 'test',
+  versions: { electron: '0', chrome: '0', node: '0' },
+  update: {
+    onStatus: () => () => undefined,
+    getStatus: async () => ({ state: 'idle' }),
+    check: () => undefined,
+    download: () => undefined,
+    install: () => undefined,
+  },
+  fileUpdates: {
+    getState: async () => ({}),
+    onStatus: () => () => undefined,
+    bind: async () => ({}),
+    bindFolder: async () => ({}),
+    unbind: async () => ({}),
+    setAutoUpdate: async () => ({}),
+    check: async () => ({}),
+    update: async () => ({}),
+    updateAll: async () => ({}),
+  },
+  modFolders: {
+    getState: async () => ({}),
+    onStatus: () => () => undefined,
+    bindFolder: async () => ({}),
+    bindCatalogRow: async () => ({}),
+    unbindCatalogRow: async () => ({}),
+    unbindFolder: async () => ({}),
+    rescan: async () => ({}),
+    setFolderGameVersion: async () => ({}),
+    setFolderAutoUpdate: async () => ({}),
+    setBulkChannel: async () => ({}),
+    updateMod: async () => ({}),
+    updateCatalogRow: async () => ({}),
+    updateFolderAll: async () => ({}),
+    downloadMissing: async () => ({}),
+    setCatalogGameVersion: async () => ({}),
+    setTagFilter: async () => ({}),
+  },
+};
+Object.assign(globalThis, { mcsr: stubBridge });
+const firstFrameHtml = keep(
+  html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
+);
+delete (globalThis as { mcsr?: unknown }).mcsr;
+assert.ok(
+  textOf(firstFrameHtml).includes(textOf(resolved('files.catalogScanning'))),
+  '★★ 桌面壳里的**第一帧**必须是「正在扫描…」（Ruling 42：首拉可能等一次补扫，' +
+    '否则用户看到的是"这一页挂了"）',
+);
+assert.equal(
+  textOf(firstFrameHtml).includes(textOf(resolved('common.loading'))),
+  false,
+  '★ 那一帧**不许**是 v1 的「加载中…」（两个世代的取数不是同一件事：`modFolders` 那一支在的壳里，' +
+    '这一页的第一句话必须是"正在扫描"）',
+);
+assert.equal(
+  (globalThis as { mcsr?: unknown }).mcsr,
+  undefined,
+  '★ 桩必须已经删掉（否则后面任何一组都会在"桌面壳"那一支上渲染 —— 那是另一条路）',
+);
+ok('⑰ 第一帧（真桌面壳桩）：`Files` 直接画「正在扫描…」，不是 v1 的「加载中…」（Ruling 42）');
+
+// ---------------------------------------------------------------------------
+// ⑱ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
 if (LANG === 'en') {
   /*
    * ⚠️★ 只在 `--en` 那一遍跑（词条泄漏只有英文渲染下才暴露：中文环境里 `t()` 会回退到 zh）。
-   * ⚠️ 样本里**没有**中文夹具：`TAG_LABEL` / `NOTE` / `SKIP_REASON` 都是 ASCII（见文件头）；
-   *    真实目录的标签显示名与主进程的 `notices` / `reason` 是中文，而那是**已接受的代价**
-   *    （`CatalogRowView.tagLabels` 只带 zh）—— 这里**不开豁免口子**：
-   *    开口子的扫描在**最该抓人的那一处**是瞎的。
+   * ⚠️ 样本里**没有**中文夹具：`TAG_LABEL` / `TAG_OPTION` / `NOTE` / `SKIP_REASON` 都是 ASCII；
+   *    真实的标签显示名两种语言都在状态里（`TagOptionView.labels`）⇒ 这一遍用的就是 `en`
+   *    那一份（2026-10-03 的判修顺带修掉了"英文界面上标签名是中文"）。
+   *    主进程写死的 `notices` / `skipped[].reason` 仍然是中文，而那是**已接受的代价**
+   *    —— 这里**不开豁免口子**：开口子的扫描在**最该抓人的那一处**是瞎的。
    */
   const han = textOf(samples.join('')).match(/[\u4e00-\u9fff]+/g) ?? [];
   assert.deepEqual(han, [], `英文界面里出现了中文：${han.slice(0, 8).join(' / ')}`);
-  ok('⑰ 英文那一遍：全部渲染产物零汉字');
+  ok('⑱ 英文那一遍：全部渲染产物零汉字');
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,9 +1427,9 @@ if (LANG === 'en') {
  * ⚠️ 组数是**手抄的**（本仓惯例，`filesrender.tsx` 末段写着同一条）：它防的是
  *    "把某一段整块摘掉" —— 删掉一整组断言之后脚本照样绿、照样打印"通过 N 项"，
  *    只有这个数字会变。⇒ 改脚本就要一起改这里（改的时候**现数**，别估）。
- * ⚠️ en 比 zh 多 1：⑰ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
+ * ⚠️ en 比 zh 多 1：⑱ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
  */
-const expectedGroups = LANG === 'en' ? 17 : 16;
+const expectedGroups = LANG === 'en' ? 19 : 18;
 assert.equal(
   pass,
   expectedGroups,
@@ -1049,17 +1439,13 @@ assert.equal(
 console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
-console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯ 的几条源码形状）：');
+console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯ 的源码形状）：');
 console.log('   没有点击、没有请求、没有真实浏览器、也没有主进程。');
 console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点一下真的走了哪条通道 / 真的弹了原生对话框 —— 静态渲染不跑事件处理器，');
 console.log('       ⑯ 只钉住"那条接线在、而且只有一条"；');
-console.log('     · `useModFolders()` 的三条支路（订阅 / 首拉 / 失败）：没有 preload ⇒');
-console.log('       `window.mcsr` 是 undefined ⇒ 自检里它只会停在 `unavailable`（浏览器态）；');
-console.log('     · 「正在扫描…」**真的**会出现（⑮ 只钉住那一屏的组件本身）；');
-console.log(
-  '     · 主进程写死的中文（`notices` / `skipped[].reason` / 标签显示名）—— 夹具是 ASCII；',
-);
+console.log('     · `useModFolders()` 的另外两条支路（订阅回包 / 失败）：⑰ 只证了**第一帧**；');
+console.log('     · 主进程写死的中文（`notices` / `skipped[].reason`）—— 夹具是 ASCII；');
 console.log(
   '     · 真实目录的 48 行 / 两个重复键 / 54 条 manual（那是 T1/T3 的单测与目录本身的事）。',
 );

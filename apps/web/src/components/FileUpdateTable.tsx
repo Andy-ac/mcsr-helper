@@ -43,7 +43,14 @@
  */
 
 import { type FileItemState, type FileItemView, isDisabledPath } from '@mcsr/shared/fileUpdates';
-import type { CatalogRowView, Channel, TargetSource } from '@mcsr/shared/modFolders';
+import type { ModMirror } from '@mcsr/shared/modCatalog';
+import {
+  type CatalogRowView,
+  type Channel,
+  mirrorsForUrl,
+  type TagOptionView,
+  type TargetSource,
+} from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
 
 /** 「没有值的那一格 —— 全仓的约定（`CalendarDetail` / `SeedResultCard` 都是它）」
@@ -497,53 +504,34 @@ export function FileUpdateTable({
  *    （`apps/web/scripts/filesrender.tsx` 的 20 组断言盯着它）。
  */
 
-/**
- * ★★ 镜像 id —— **这是 Web 这一侧唯一一份"目录配置"的副本**（写在这里是有代价的）。
- *
- * ⚠️★ 为什么必须写死：镜像按钮的通道入参只能是 `{ mirrorId }`（`Channel` 的定义：
- *    **是 id，不是 URL**），而 `ModFoldersState` / `CatalogRowView` **都没有**目录的
- *    镜像表（现读 T1 的 `packages/shared/src/modFolders.ts`：`mirrors` 只活在
- *    `ModCatalog` 里，而目录在**主进程**手上）。⇒ 渲染进程想知道"这条 release 有什么
- *    镜像、id 叫什么"，今天**没有**任何一格可以读。
- * ⚠️★ 代价（明摆着，且**必须**让下一次的人看见）：目录里那条镜像的 `id`/`hosts`
- *    改了、或者加了第二条镜像，**这一页不会跟着变**（`isGitHubRelease` 那份 host 判据
- *    同理）—— 而失败形态是"点了镜像按钮，主进程拒"（`requireChannel` 的
- *    "目录里没有这条镜像"）或"镜像按钮根本不出现"。
- * ⚠️ 本仓的规矩是**配置即代码**（`content/mod-catalog.json`），所以这里算一处已知的
- *    重复；正确的修法是**给状态加一格镜像表**（`mirrors: ModMirror[]`），那是
- *    `packages/shared/src/modFolders.ts` + `apps/desktop/src/mod-folders.ts` 的改动
- *    （不在 Task 7 的文件边界里）⇒ 已记进 Task 7 报告，等控制器裁决。
- * ⚠️ 今天的现读读数：目录里**只有一条**镜像（`content/mod-catalog.json` 的
- *    `mirrors[0].id = 'gh-proxy'`，`hosts: ['github.com']`）。
+/*
+ * ⚠️★ 这里原先有**两处硬编码**（`ROW_MIRROR_ID = 'gh-proxy'` 与一个按 `github.com`
+ *    判主机名的 `isGitHubRelease()`，T7 第一版写的），2026-10-03 的评审判修
+ *    （**Ruling 55**）把它们删掉了：目录里的镜像表已经进了状态
+ *    （`ModFoldersState.mirrors`）⇒ 这一页**读状态**，不再自己写一份目录配置
+ *    （改 id / 加第二条镜像 / 把 `github.com` 从 `hosts` 拿掉，这一页都会跟着变，
+ *    而不是静默画出"会被主进程拒的按钮"）。
+ * ⚠️ 判"这条 release 能用哪条镜像"仍然走 `mirrorsForUrl()`（`mirrorsFor` 的同一份实现，
+ *    见 `packages/shared/src/modFolders.ts`）—— 主机匹配的规则**只有一处**。
  */
-export const ROW_MIRROR_ID = 'gh-proxy';
-
-/**
- * 这条 release 的地址是不是 GitHub 的（D5：**只有** GitHub 来源才有镜像按钮）。
- *
- * ⚠️★ 判据与上面那条 id 是同一处代价的两半：目录里记的是 `mirrors[].hosts`，
- *    而渲染进程读不到它 ⇒ 这里只能按**主机名**判（`hosts: ['github.com']` 的对应物）。
- *    ⚠️ 主进程那一侧才是权威（`channelUrl` ⇒ `mirrorsFor` 会真的查 `hosts`）：
- *    这里判错方向是"多给一颗按钮"，那时主进程会拒（"这个通道下拿不到下载地址"）。
- */
-export function isGitHubRelease(url: string): boolean {
-  try {
-    return new URL(url).host === 'github.com';
-  } catch {
-    return false;
-  }
-}
 
 /**
  * 「打开原网页」要打开的地址。
  *
- * ⚠️ 优先 `official.url`（那是**目标**那一条）；`official` 为 `null`（多候选）时退回
- *    第一个候选的地址 —— 那仍然是目录里的一条真实地址，**不是**编出来的。
- *    ⚠️ 多候选那一行会把**每一个**候选各自列一条链接（见下），所以调用方对
- *    `ambiguous` 那一支**不画**这颗通用的链接（否则同一行三个"打开原网页"）。
+ * ⚠️★ 判据必须是"**这一行的目标**"：`official` 非空时就是它；`official` 为空（多候选）
+ *    时**只有一种情形**能给出这个地址 —— `verdict.release` 存在，也就是"本地那份字节
+ *    恰好命中了某一个候选"（`judgeRelease` 的多候选分支只在 sha512 命中时给 `release`）。
+ *    那时**就是它**，用户手上那一份。
+ * ⚠️★ **不许退回 `candidates[0]`**（T7 第一版就是这么写的，2026-10-03 评审的 Minor 指出来）：
+ *    多候选行的 `candidates[0]` 可能**不是**用户手上那一份（候选没有按版本排序 ——
+ *    `releasesFor` 的注释写着），而那会把用户送到另一条 release 的页面上；更坏的是
+ *    候选列表那时**也不画**（旧的判据是 `verdict.kind === 'ambiguous'`，而命中候选的那一行
+ *    判定是 `same`）⇒ "点开一个可能不是你的东西" + "看不到到底有哪几个候选"同时发生。
+ * ⚠️ 头一条候选**永远**不给通用链接：它由下面那张候选清单各自带链接。
  */
 export function originPageOf(row: CatalogRowView): string | null {
-  return row.official?.url ?? row.candidates[0]?.url ?? null;
+  if (row.official !== null) return row.official.url;
+  return 'release' in row.verdict ? row.verdict.release.url : null;
 }
 
 /**
@@ -615,8 +603,25 @@ export interface ModCatalogTableProps {
    *    与其让用户点了吃一句红字，不如把"现在不能点"写在脸上。
    */
   busy?: boolean;
+  /**
+   * 目录里的镜像表（`ModFoldersState.mirrors`）—— 「更新（镜像）」那颗按钮的**唯一**依据
+   * （Ruling 55）：给不给它、以及它送哪个 `mirrorId` 都从这一格算。
+   *
+   * ⚠️ 缺省/空数组 ⇒ **一颗镜像按钮都不画**：那一刻主进程的 `requireChannel` 也查不到
+   *    任何镜像（会拒），两边判断因此一致（"不给会被拒的按钮"）。
+   */
+  mirrors?: readonly ModMirror[];
+  /**
+   * 目录里的标签全集（`ModFoldersState.tags`）—— 行里那些标签 chip 的**文案源**。
+   *
+   * ⚠️ 为什么不能只用 `row.tagLabels`：那一格只有目录的 **`zh`**（`tagLabelsOf` 写明了）
+   *    ⇒ 英文界面上标签名会是中文。这一格两种语言都有，按当前语言取。
+   */
+  tagLabels?: readonly TagOptionView[];
   /** 「绑定本地文件」⇒ `bindCatalogRow(rowId)`（唯一入口，路径由主进程的对话框产生）。 */
   onBindLocal?: (rowId: string) => void;
+  /** 「解除绑定」⇒ `unbindCatalogRow(rowId)`（**Ruling 60**：有绑定就必须能解绑）。 */
+  onUnbindLocal?: (rowId: string) => void;
   /** 「更新（原始）」「更新（镜像）」⇒ `updateCatalogRow(rowId, rowId, channel)`。 */
   onUpdate?: (rowId: string, channel: Channel) => void;
 }
@@ -625,23 +630,36 @@ export interface ModCatalogTableProps {
  * 目录行那张表 —— **纯展示**（给 `rows` 就同步渲染完：不取数、不订阅、不跑 effect）。
  *
  * ⚠️★ 每行给**几颗**按钮是按 §6.8 的"每行操作"表和 Ruling 47/48 算的，
- *    而且判据都写在下面那三行 `showUpdate` / `showBind` / `mirror` 上：
- *      · `manual` ⇒ **一颗都不给**（主进程必拒），只有「打开原网页」；
- *      · 已绑定 + `batchable` ⇒ 「更新（原始）」+（GitHub 来源时）「更新（镜像）」；
+ *    而且判据都写在下面那四行 `showUpdate` / `showBind` / `showUnbind` / `mirror` 上：
+ *      · 已绑定 + `batchable` ⇒ 「更新（原始）」+（有可用镜像时）「更新（镜像）」；
  *      · 未绑定 ⇒ 「绑定本地文件」（`updateCatalogRow` 对没绑定的行会拒）；
- *      · 其余（`newer` / `different-build` / `unknown` / `same` / `ambiguous`）
+ *      · **已绑定** ⇒ 多一颗安静的「解除绑定」（Ruling 60）—— 它与"给不给更新"无关：
+ *        绑错的行、迁移采纳的行都要能解掉；
+ *      · `manual` 的行**没有**更新按钮、也没有「绑定本地文件」（主进程对两者都会拒）；
+ *      · 其余（`newer` / `different-build` / `unknown` / `same` / 多候选）
  *        ⇒ 只解释，不画更新按钮。
  */
 export function ModCatalogTable({
   rows,
   desktop,
   busy = false,
+  mirrors = [],
+  tagLabels = [],
   onBindLocal,
+  onUnbindLocal,
   onUpdate,
 }: ModCatalogTableProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   /** 有没有动作层（与 v1 那张表同一个名字、同一条理由）。 */
   const withActions = desktop !== false;
+  /**
+   * 标签显示名的语言：目录两种都给了（`TagOptionView.labels`）⇒ 按当前界面语言取。
+   * ⚠️ `i18n.language` 形如 `zh-CN` / `en`（`apps/web/src/i18n.ts` 的 `LOCALES`）⇒
+   *    判据是"以 en 开头"，不是"等于 en"。
+   */
+  const labelLang: 'zh' | 'en' = i18n.language?.startsWith('en') ? 'en' : 'zh';
+  const tagLabelOf = (tag: string): string | null =>
+    tagLabels.find((option) => option.key === tag)?.labels[labelLang] ?? null;
 
   return (
     /*
@@ -663,26 +681,62 @@ export function ModCatalogTable({
           {rows.map((row) => {
             /** 未绑定 ⇒ 那一格是「未绑定」；否则按判定给徽章（见 `VERDICT_BADGES`）。 */
             const badge = row.binding === null ? UNBOUND_BADGE : VERDICT_BADGES[row.verdict.kind];
-            /*
-             * ⚠️★ `manual` 的**解释优先**：一个 manual 的行完全可能同时是 `older`
-             *    （本地旧了、但只能手动下）⇒ 那时"为什么没有按钮"的答案是"它只能手动下"，
-             *    而不是"比不出来"。
+            /**
+             * 这一行**有没有唯一目标**（`official` 非空）。
+             *
+             * ⚠️★ 它是三处判据的同一个基数（候选清单、来源标注、解释文案），所以只算一次：
+             *      · `official === null` ⇔ 候选不是"恰好一条"（`resolveTarget` 的规则）
+             *        ⇒ 多候选（`ambiguous`）或"本地命中某个候选"（判成 `same` 而目标仍空）。
              */
-            const hintKey = row.manual ? 'files.hintManual' : VERDICT_HINTS[row.verdict.kind];
-            /*
-             * ⚠️★ 多候选那一行**不画**通用的「打开原网页」：它会把每一个候选各自列一条
-             *    链接（见状态那一格），再多一颗就是同一行三个同样的链接。
+            const hasTarget = row.official !== null;
+            /**
+             * 这一行欠的**解释**（为什么没有更新按钮）。
+             *
+             * ⚠️★ 两条"与本地读数无关"的真话可以**同时**成立，而且必须都在：
+             *      · `official === null`（多候选）⇒ "程序不替你猜、也不替你装"；
+             *      · `manual`（OptiFine 那一类）⇒ "只能到原网页手动下载"。
+             *    真实的 `optifine|1.7.2` 两条都占（两个候选、且都是 manual）。
+             *    2026-10-03 评审的 Minor ③ 指出第一版只印了 manual 那一句 ⇒ 现在
+             *    **先印"没有唯一目标"那句**（解释为什么连一个"装哪个"的入口都没有），
+             *    manual 那句紧跟其后（同一行两条真话）。
+             * ⚠️ 其余三支（`newer` / `different-build` / `unknown`）各有各的说法
+             *    （spec §8）：合成一句"不能更新"就把"为什么"删掉了。
              */
-            const page = row.verdict.kind === 'ambiguous' ? null : originPageOf(row);
+            const hints: string[] = [];
+            if (!hasTarget) hints.push('files.hintAmbiguous');
+            if (row.manual) hints.push('files.hintManual');
+            const verdictHint = VERDICT_HINTS[row.verdict.kind];
+            if (verdictHint !== undefined && !hints.includes(verdictHint)) hints.push(verdictHint);
             /*
-             * ★★ 下面这三行就是"给不给按钮"的**全部**判据（Ruling 47/48 的落点）：
+             * ⚠️★ 「打开原网页」的地址只由 `originPageOf()` 决定（2026-10-03 评审的 Minor ②）：
+             *      · 有目标 ⇒ 目标那一条的地址；
+             *      · 没有目标（多候选）且**本地字节命中了某个候选**（判定是 `same`，
+             *        `verdict.release` 就是它）⇒ **那个候选**的地址（"命中哪个就指哪个"）；
+             *      · 没有目标、也没有命中 ⇒ `null`（那一行由候选清单各自带链接）。
+             *    ⚠️ 第一版在这里退回 `candidates[0]`，而候选**没有按版本排序** ⇒ 那条链接
+             *    可能指向一个不是用户手上那一份的 release。已经删掉那个回退。
+             */
+            const page = originPageOf(row);
+            /*
+             * ★★ 下面这几行就是"给不给按钮"的**全部**判据（Ruling 47/48 / Ruling 60）：
              *   主进程会拒的一律不画。
+             * ⚠️ 镜像那一颗（Ruling 55）：**判据与 id 都来自状态里的镜像表** ——
+             *   `mirrorsForUrl()` 是 `mirrorsFor` 的同一份实现（主机匹配只有一处）。
+             *   多条镜像可用时取**第一条**（目录里的顺序 = 配置即代码的顺序，可复现）；
+             *   主进程仍会按 id 在目录里再查一遍（`requireChannel`）。
              */
-            const mirror = row.official !== null && isGitHubRelease(row.official.url);
+            const applicable = hasTarget ? mirrorsForUrl(mirrors, row.official!.url) : [];
+            const mirror = applicable[0] ?? null;
             const showUpdate =
               withActions && onUpdate !== undefined && row.batchable && !row.manual;
             const showBind =
               withActions && onBindLocal !== undefined && row.binding === null && !row.manual;
+            /*
+             * ★★ Ruling 60：**已绑定**的行多一颗安静的「解除绑定」（与 v1 那张表同一条：
+             *    那里也是"已绑定就有它"）。⚠️ 它**不**看 `manual` —— 一个被迁移采纳的
+             *    OptiFine 绑定同样要能解掉（更新那两颗才是 `manual` 挡的东西）。
+             */
+            const showUnbind = withActions && onUnbindLocal !== undefined && row.binding !== null;
 
             return (
               <tr
@@ -697,15 +751,17 @@ export function ModCatalogTable({
                     <span>{row.name}</span>
                     <span className="badges">
                       {/*
-                        ⚠️ 标签显示名来自目录（`tagLabels`，与 `tags` **逐位对应**）——
-                        原样印出来：目录里没有它的名字时它是 key 本身，那正是"看得见的缺陷"
-                        （`tagLabelOf` 的注释）。**不**在这里另做一份映射表。
+                        ⚠️ 标签 chip 的**文案来自状态里的标签全集**（`tagLabels` 那一格，
+                        两种语言都有）⇒ 英文界面上是英文标签名。查不到时退回 `row.tagLabels`
+                        这一格（目录给的 `zh`，与 `tags` 逐位对应），再退回 key 本身 ——
+                        三层退化都是**看得见的缺陷**，不是编一个名字出来
+                        （`tagLabelOf` 的注释是同一件事）。
                         ⚠️ 用 `.tagchip--static`（纯展示的标签片，`pointer-events: none`）：
                         `.tagchip` 本来是**交互式**的（标签筛选那一行用它），这里只是显示。
                       */}
-                      {row.tagLabels.map((label, index) => (
-                        <span className="tagchip tagchip--static" key={row.tags[index] ?? label}>
-                          {label}
+                      {row.tags.map((tag, index) => (
+                        <span className="tagchip tagchip--static" key={tag}>
+                          {tagLabelOf(tag) ?? row.tagLabels[index] ?? tag}
                         </span>
                       ))}
                     </span>
@@ -722,22 +778,33 @@ export function ModCatalogTable({
                   {/*
                     ★ Ruling 13：来源必须标出来 —— 有上游目标时 `official` **不在**
                     `candidates` 里，所以用户不能靠"它是不是候选之一"去猜。
+                    ⚠️★ 但 `official` 为 `null`（多候选）时**一个字都不许印**：
+                    那一格印的是 `—`，旁边再写"合法指定版本"就是对**一个不存在的目标**
+                    声称来源（2026-10-03 评审的 Minor ①）。
                   */}
-                  <span className="filetable__latestknown">
-                    {t(TARGET_SOURCE_LABELS[row.targetSource])}
-                  </span>
+                  {hasTarget ? (
+                    <span className="filetable__latestknown">
+                      {t(TARGET_SOURCE_LABELS[row.targetSource])}
+                    </span>
+                  ) : null}
                 </td>
                 <td>
                   {badge === null ? null : (
                     <span className={badge.className}>{t(badge.label)}</span>
                   )}
-                  {hintKey === undefined ? null : <span>{t(hintKey)}</span>}
+                  {hints.map((key) => (
+                    <span key={key}>{t(key)}</span>
+                  ))}
                   {/*
                     ★ 多候选：把**每一个**候选都列出来（版本号 + 它自己的原网页）。
                     这里**没有**"选一个"的控件，理由写在 `files.hintAmbiguous` 那一段注释里
                     （契约收不了这个选择 ⇒ 画一个点了没用的控件就是 Ruling 47/48 反对的东西）。
+                    ⚠️★ 判据是 `official === null`（"没有唯一目标"），**不是**
+                    `verdict.kind === 'ambiguous'`：本地 sha512 命中某个候选那一支的判定是
+                    `same` 而目标仍然为空 ⇒ 拿 kind 判会让那一行**一个候选都看不到**
+                    （2026-10-03 评审的 Minor ②）。
                   */}
-                  {row.verdict.kind !== 'ambiguous' ? null : (
+                  {hasTarget ? null : (
                     <ul>
                       {row.candidates.map((candidate) => (
                         <li key={candidate.url}>
@@ -768,17 +835,18 @@ export function ModCatalogTable({
                         {t('files.updateOrigin')}
                       </button>
                     ) : null}
-                    {showUpdate && mirror ? (
+                    {showUpdate && mirror !== null ? (
                       <button
                         type="button"
                         className="ghostbtn"
                         disabled={busy}
                         /*
                          * ★ 镜像通道：**只送 id**（`Channel` 是 id，不是 URL ——
-                         * 地址由主进程按目录里的 `prefix` 拼）。`ROW_MIRROR_ID` 那一份
-                         * 重复的代价写在它的注释里。
+                         * 地址由主进程按目录里那条镜像的 `prefix` 拼）。
+                         * ⚠️ 这个 id 来自**状态里的镜像表**（`mirrors`，Ruling 55），
+                         * 不再是 Web 侧写死的那一份；取的是第一条适用的镜像。
                          */
-                        onClick={() => onUpdate?.(row.rowId, { mirrorId: ROW_MIRROR_ID })}
+                        onClick={() => onUpdate?.(row.rowId, { mirrorId: mirror.id })}
                       >
                         {t('files.updateMirror')}
                       </button>
@@ -792,6 +860,23 @@ export function ModCatalogTable({
                         onClick={() => onBindLocal?.(row.rowId)}
                       >
                         {t('files.bindLocal')}
+                      </button>
+                    ) : null}
+                    {showUnbind ? (
+                      /*
+                       * ★★ Ruling 60：已绑定的行必须能解绑（新 UI 只渲染第一部分 ⇒
+                       * v1 的 `unbind(itemId)` 在这一页上不可达，而这一组契约原先只有
+                       * `bindCatalogRow`）。它是一颗安静的按钮（`.ghostbtn`）：
+                       * 与"更新"那两颗不是一类动作。
+                       * ⚠️ 用**库里已有的** `files.unbind`（"解除绑定"）—— 一个词条都不新造。
+                       */
+                      <button
+                        type="button"
+                        className="ghostbtn"
+                        disabled={busy}
+                        onClick={() => onUnbindLocal?.(row.rowId)}
+                      >
+                        {t('files.unbind')}
                       </button>
                     ) : null}
                     {page === null ? null : (

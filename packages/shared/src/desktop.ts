@@ -210,6 +210,21 @@ export interface DesktopBridge {
      *    `fileUpdates.bind` 只认 v1 的 item id、**收不了 `rowId`**。
      */
     bindCatalogRow(rowId: string): Promise<ModFoldersState>;
+    /**
+     * 解绑第一部分的**一行**（`catalogBindings[rowId]` 那一格删掉，随后重算并推送）。
+     *
+     * ⚠️★ 为什么必须有它（**Ruling 60**，2026-10-03 评审）：新 UI 在 `modFolders` 存在的
+     *    客户端里**不再渲染 v1 那张带写盘按钮的表**（Ruling 49：v1 的 `assertNotBusy()`
+     *    看不见本模块的 `busy`）⇒ v1 的 `unbind(itemId)` 在那一页上**不可达**，而这一组
+     *    契约原先只有 `bindCatalogRow`：**绑定了就永远解不掉**（绑错的行、T4 迁移采纳的行
+     *    都留在那里）。这条通道把 v1 的那一处能力还回来，代价是契约多一条。
+     *
+     * ⚠️ 入参与 `bindCatalogRow` 一样**只有 id**（`rowId` = `modid|游戏版本`）；主进程按它
+     *    在同一份状态里查那一格，查不到就拒（不猜是哪一行）。
+     * ⚠️ 它**不是**写盘动作：删的是状态文件里的一格绑定，用户磁盘上那个 jar 一个字节都不动
+     *    （与 v1 的 `unbind` 同一条语义 —— 解绑 ≠ 删文件）。
+     */
+    unbindCatalogRow(rowId: string): Promise<ModFoldersState>;
     unbindFolder(folderId: string): Promise<ModFoldersState>;
     /** 不带 `folderId` = 全部重扫；只读（不下载、不写盘）。 */
     rescan(folderId?: string): Promise<ModFoldersState>;
@@ -325,7 +340,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十五条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十六条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -355,6 +370,8 @@ export const MOD_FOLDERS_CHANNELS = {
   onStatus: 'mcsr:modfolders-status',
   bindFolder: 'mcsr:modfolders-bind-folder',
   bindCatalogRow: 'mcsr:modfolders-bind-catalog-row',
+  /** ⚠️ 与 `bindCatalogRow` 是一对（Ruling 60）：有绑定就必须要能解绑。 */
+  unbindCatalogRow: 'mcsr:modfolders-unbind-catalog-row',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
   rescan: 'mcsr:modfolders-rescan',
   setFolderGameVersion: 'mcsr:modfolders-set-folder-version',
