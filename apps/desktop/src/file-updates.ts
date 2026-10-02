@@ -641,7 +641,13 @@ export function sha512OfFile(path: string): Promise<string> {
   });
 }
 
-function messageOf(error: unknown): string {
+/*
+ * ⚠️ `export` 是 **Task 6 加的一个关键字**（原来只在本文件里用）：`mod-folders.ts` 拆出
+ *    `mod-folder-catalog.ts` / `mod-folder-scan.ts` 之后，"把 unknown 变成一句人话"要出现在
+ *    四个文件里 ⇒ 与其抄三份，不如让**本来就有**的这一份公开。**行为零改动**（函数体一字未动）。
+ *    这里没有另造一个共用工具文件：Task 6 被授权的切法只有那两个新模块。
+ */
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 

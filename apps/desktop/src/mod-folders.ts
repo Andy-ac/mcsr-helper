@@ -10,10 +10,11 @@
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
  *   · **十五条 IPC 的注册**（其中 `onStatus` 只推、不 handle）；
- *   · ★ **单行写盘**（Task 5）：`updateMod` / `updateCatalogRow` —— 前者是文件夹那一侧的行，
- *     后者是第一部分（目录行）的绑定，**两者共用 `installRelease` 同一段写盘**
- *     （spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**；
- *     批量（整夹更新 / 缺失下载）是 Task 6 的，今天仍然拒绝（`notYetWritePath`）。
+ *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod` / `updateCatalogRow`（第一部分的绑定）、
+ *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 四个入口共用
+ *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
+ *     ⚠️ 两道闸分住两处（不是一处）：`installRelease` 管"这一个目标位置能不能动"（Ruling 47/48），
+ *     而"这一**行**该不该装"由**各个入口自己**过 `assertUpdatable`（见那里为什么不许挪进 `installRelease`）。
  *   · **判断一条都不在这里**：`planCatalogRows` / `planFolderView` / `missingMods` /
  *     `attributeLegacyBindings` / `migrateState` / `channelUrl` / `originFileNameOf`
  *     全部来自 `@mcsr/shared`（T1 / Plan 1）——那里才有能红的断言钉着
@@ -59,28 +60,23 @@
  *     退而求其次喂一份**空目录**是错的：那会把每一份扫描读数都标成"清单外 mod"。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
-import { type ModrinthVersion, pickLatestVersion, primaryFileOf } from '@mcsr/shared/fileUpdates';
 import {
-  buildIndex,
-  type ModCatalog,
-  type ModEntry,
   type ModIndex,
   type ModRelease,
   modFor,
   originFileNameOf,
-  parseModCatalogWire,
   releasesFor,
 } from '@mcsr/shared/modCatalog';
 import {
   attributeLegacyBindings,
   type Channel,
   channelUrl,
-  type FolderScanEntry,
   type LegacyBinding,
+  type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
   missingMods,
@@ -91,8 +87,8 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import {
   assertNotBusy,
   downloadTo,
-  fetchVersions,
   installDownloadedFile,
+  messageOf,
   notify,
   pickDirectory,
   pickOneJar,
@@ -101,31 +97,37 @@ import {
   sharedStateFile,
   stateFileBlocked,
   writeStateFile,
+  yieldToEventLoop,
 } from './file-updates';
+import {
+  catalogErrorOf,
+  catalogIndexOf,
+  catalogOf,
+  catalogStatusOf,
+  initCatalog,
+  queueLoadCatalog,
+  upstreamLatestOf,
+} from './mod-folder-catalog';
+import {
+  ensureScans,
+  forgetScan,
+  initScan,
+  isDirectory,
+  queueScan,
+  readingOf,
+  resolveGameVersion,
+} from './mod-folder-scan';
 
 // ---------------------------------------------------------------------------
 // 常量与模块状态
 // ---------------------------------------------------------------------------
-
-/**
- * 抓目录的超时（15 秒）。
- *
- * ⚠️ v1 那条 `fetchCatalogFromSite` 没有超时（它用 ETag + 条件请求，而断网时
- * `fetch` 自己会失败）。这一条**故意带超时**：`/api/mod-catalog` 是 425 KB 的目录，
- * 一个半死的连接会把"目录不可用"拖到 TCP 自己超时（几十秒），而页面上那段时间
- * 什么都没有。超时之后走的是同一条"保留上次缓存 + 说明原因"的路。
+/*
+ * ⚠️★ 目录那五格（目录 / 索引 / 状态 / 错误 / 上游 map）与扫描读数**都不在这个文件里**
+ *    （Task 6 按复审给的切法拆走了）：`mod-folder-catalog.ts`（抓取 + 上游）与
+ *    `mod-folder-scan.ts`（扫描）。这一份只**读**它们，用的是那两个模块的只读访问口
+ *    （`catalogOf` / `catalogIndexOf` / `catalogStatusOf` / `catalogErrorOf` /
+ *    `upstreamLatestOf` / `readingOf`），而**写**它们的路只有 `queueLoadCatalog()` 与 `queueScan()`。
  */
-const CATALOG_TIMEOUT_MS = 15_000;
-
-/** 上游（Modrinth）那一侧的固定两格：这一期的 mod 全是 Fabric 的 release。 */
-const UPSTREAM_LOADER = 'fabric';
-const UPSTREAM_CHANNEL = 'release';
-
-/** `mmc-pack.json` 向上找的层数上限（spec §6.6/§14.5：最多 4 层）。 */
-const MMC_PACK_MAX_DEPTH = 4;
-
-/** 推断游戏版本时路径里必须出现过的那一段（spec §6.6：不然 Prism 那种任意目录会被误判）。 */
-const MINECRAFT_DIR = '.minecraft';
 
 interface Deps {
   siteOrigin: string;
@@ -146,42 +148,6 @@ let deps: Deps | null = null;
  *    与 `sharedStateFile` 的注释）。
  */
 type SharedState = ReturnType<typeof sharedStateFile>;
-
-/**
- * 目录（**最后一次成功的读数**）与它的状态。
- *
- * ⚠️ 拉失败时**保留**上一次成功的目录（spec §8 的"保留上次缓存"，与 v1 同一条决定），
- *    只把 `catalogStatus` / `catalogError` 换掉 —— 清空的表现是"整个第一部分凭空消失"。
- */
-let catalog: ModCatalog | null = null;
-let catalogIndex: ModIndex | null = null;
-let catalogStatus: ModFoldersState['catalogStatus'] = 'unavailable';
-let catalogError: string | null = null;
-
-/** 上游解析结果（**键 = modid**，T1 的 `upstreamLatest`）。抓不到就不放进来 —— 见 `resolveUpstream`。 */
-let upstreamLatest: ReadonlyMap<string, ModRelease> = new Map();
-
-/**
- * 一次扫描的**读数**（键 = folderId）。
- *
- * ⚠️★ `ok` 这一位是判修 1 的一半：**"没扫过" ≠ "扫到了 0 个文件"**。
- *    · `ok: true` ⇒ 这个文件夹里到底有什么，我们有读数；
- *    · `ok: false` / **没有这一格** ⇒ 我们**不知道**（还没扫 / 读不动 / 路径不在）。
- *    把后者当成空的，就会把整个目录列成"你缺这些"（见 `buildState` 那段注释）。
- * ⚠️ `rebuild()` 是**同步**的（它要在每一次状态改动后立刻推给页面），而扫盘要
- *    `await`（每份 jar 都要算 sha512）⇒ 读数缓存在这里，`rebuild()` 只读它。
- */
-interface FolderReading {
-  ok: boolean;
-  entries: readonly FolderScanEntry[];
-}
-
-const scans = new Map<string, FolderReading>();
-
-/** 没有读数时给"空读数"（`ok: false`）——调用方据此判断"不许把它当成空的"。 */
-function readingOf(folderId: string): FolderReading {
-  return scans.get(folderId) ?? { ok: false, entries: [] };
-}
 
 /** 说出来但状态里没地方放的说明（`ModFoldersState.notices`）：迁移、归属、上游抓不到…… */
 const notices: string[] = [];
@@ -204,9 +170,6 @@ function pushNotice(text: string): void {
 let busy = false;
 let lastRun: ModFoldersState['lastRun'] = null;
 
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -228,10 +191,11 @@ function requireState(): SharedState {
 }
 
 function requireIndex(): ModIndex {
-  if (catalogIndex === null) {
+  const index = catalogIndexOf();
+  if (index === null) {
     throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
   }
-  return catalogIndex;
+  return index;
 }
 
 /** 写盘一次。坏文件连备份都失败时**拒绝写**（v1 的三态读，同一条纪律）。 */
@@ -284,18 +248,11 @@ function isInsideFolder(path: string, dir: string): boolean {
   return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 /** 目录行的名字（"已转为文件夹跟踪：<mod 名>"要用它）。查不到就退回 rowId / 文件名。 */
 function modNameOf(modid: string | null): string | null {
-  if (modid === null || catalogIndex === null) return null;
-  return modFor(catalogIndex, modid)?.name ?? null;
+  const index = catalogIndexOf();
+  if (modid === null || index === null) return null;
+  return modFor(index, modid)?.name ?? null;
 }
 
 function nameOfRowId(rowId: string): string {
@@ -337,26 +294,27 @@ function folderView(folderId: string, entry: SharedState['folders'][string]): Mo
    *    `planFolderView` 的 `catalog` 是必填的，而这时候我们手上没有目录；
    *    喂一份空目录会把每一份扫描读数都标成"清单外 mod"（那是**假话**：
    *    它们很可能就在清单里）。⇒ 宁可什么都不判，让页面上那句"目录不可用"去解释。
-   *    没有这一支的话，`catalog === null` 会在 `buildIndex` 里抛 —— 而那是启动路径，
+   *    没有这一支的话，`catalogOf() === null` 会在 `buildIndex` 里抛 —— 而那是启动路径，
    *    "目录拉不到"绝不该让整个模块炸掉（spec §15）。
    */
-  if (catalog === null) return base;
+  const known = catalogOf();
+  if (known === null) return base;
   return planFolderView({
-    catalog,
+    catalog: known,
     folderId,
     path: entry.path,
     pathExists,
     gameVersion,
     autoUpdate: entry.autoUpdate,
     scan: readingOf(folderId).entries,
-    upstreamLatest,
+    upstreamLatest: upstreamLatestOf(),
   });
 }
 
 /** 模块加载时 / `initModFolders` 之前的占位状态（没有任何东西可读）。 */
 function placeholderState(): ModFoldersState {
   return {
-    catalogStatus,
+    catalogStatus: catalogStatusOf(),
     gameVersion: '1.16.1',
     tagFilter: [],
     bulkChannel: 'origin',
@@ -405,15 +363,16 @@ function buildState(): ModFoldersState {
     });
   }
 
+  const known = catalogOf();
   const catalogRows =
-    catalog === null
+    known === null
       ? []
       : planCatalogRows({
-          catalog,
+          catalog: known,
           gameVersion,
           tagFilter: st.prefs.tagFilter,
           bindings,
-          upstreamLatest,
+          upstreamLatest: upstreamLatestOf(),
         });
 
   const entries = sortedFolders(st);
@@ -443,7 +402,7 @@ function buildState(): ModFoldersState {
    */
   const missingFolders = entries.filter(([, entry]) => !isDirectory(entry.path)).length;
   const missingStatus: ModFoldersState['missingStatus'] =
-    catalog === null
+    known === null
       ? 'catalog-unavailable'
       : missingFolders > 0
         ? 'folder-missing'
@@ -451,7 +410,7 @@ function buildState(): ModFoldersState {
           ? 'folder-unscanned'
           : 'ok';
   const missing =
-    missingStatus === 'ok' ? missingMods({ catalog: catalog!, gameVersion, trackedModids }) : [];
+    missingStatus === 'ok' ? missingMods({ catalog: known!, gameVersion, trackedModids }) : [];
   const missingNote =
     missingStatus === 'folder-unscanned'
       ? `有 ${String(foldersWithoutReading)} 个已绑定文件夹还没有扫描读数 ⇒ 缺失清单暂时空着（"没扫过"不等于"你没有"；点一次「重扫」或让页面重新拉一次状态就会补上）`
@@ -462,7 +421,7 @@ function buildState(): ModFoldersState {
           : null;
 
   return {
-    catalogStatus,
+    catalogStatus: catalogStatusOf(),
     gameVersion,
     tagFilter: [...st.prefs.tagFilter],
     bulkChannel: st.prefs.bulkChannel,
@@ -471,7 +430,7 @@ function buildState(): ModFoldersState {
     missing,
     missingStatus,
     // 目录与缺失清单那两条**不是** push 进 notices 的：它们是"这一次读数的结论"，条件不成立时该消失
-    notices: [catalogError, missingNote, ...notices].filter(
+    notices: [catalogErrorOf(), missingNote, ...notices].filter(
       (note): note is string => note !== null,
     ),
     busy,
@@ -493,374 +452,20 @@ export function modFoldersState(): ModFoldersState {
 }
 
 // ---------------------------------------------------------------------------
-// 抓目录（`/api/mod-catalog`）
+// 抓目录 + 上游解析 / 扫描 —— **搬到各自的小模块里了**（Task 6）
 // ---------------------------------------------------------------------------
-
-function setCatalogFailure(status: 'unavailable' | 'invalid', message: string): void {
-  catalogStatus = status;
-  catalogError = message;
-}
-
-async function loadCatalog(): Promise<void> {
-  const d = requireDeps();
-  const url = new URL('/api/mod-catalog', d.siteOrigin).toString();
-  try {
-    const res = await fetch(url, {
-      headers: { 'user-agent': d.userAgent },
-      // 超时（见 CATALOG_TIMEOUT_MS）。**不要 ETag**：这条端点每次都要重新校验，
-      // 而"上次那份还能不能用"是服务端的事（它每次返回 200 的完整体）。
-      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      /*
-       * 失败**分类**（brief：要能区分 404 / 500 / 坏 JSON）：
-       *   · 404 ⇒ 这条端点在服务器上不存在（部署漏了？）—— 与 500 分开说，因为修法不同；
-       *   · 5xx ⇒ 服务端读不出/解析不了那份目录，响应体里带 `catalog_*` 机器码与 `problems`
-       *     （复用 v1 那三个码，见 `services/api/src/routes/modCatalog.ts`）⇒ 原样带给用户。
-       */
-      let detail = '';
-      try {
-        const body = (await res.json()) as { error?: unknown; problems?: unknown };
-        const code = typeof body.error === 'string' ? body.error : '';
-        const problems = Array.isArray(body.problems)
-          ? body.problems.filter((p): p is string => typeof p === 'string').join('；')
-          : '';
-        detail = [code, problems].filter((s) => s !== '').join(' —— ');
-      } catch {
-        /* 响应体不是 JSON：下面只说状态码 */
-      }
-      const suffix = detail === '' ? '' : `（${detail}）`;
-      setCatalogFailure(
-        'unavailable',
-        res.status === 404
-          ? `目录不可用：服务器上没有这条端点（HTTP 404）${suffix}`
-          : `目录拉取失败：服务器 HTTP ${String(res.status)}${suffix}`,
-      );
-      return;
-    }
-    let body: unknown;
-    try {
-      body = await res.json();
-    } catch (error) {
-      setCatalogFailure('invalid', `目录的响应体不是合法 JSON：${messageOf(error)}`);
-      return;
-    }
-    const parsed = parseModCatalogWire(body);
-    if (!parsed.ok) {
-      // 不合契约 ⇒ `invalid`（与"拉不到"分开：这一条是"服务器给了东西，但东西不对"）
-      setCatalogFailure(
-        'invalid',
-        `目录不合契约：${parsed.problems.slice(0, 3).join('；')}${parsed.problems.length > 3 ? ' …' : ''}`,
-      );
-      return;
-    }
-    catalog = parsed.catalog;
-    catalogIndex = buildIndex(parsed.catalog);
-    catalogStatus = 'ok';
-    catalogError = null;
-    await resolveUpstream(parsed.catalog);
-  } catch (error) {
-    // 断网 / 超时 / DNS：保留上一次成功的目录（见 `catalog` 的注释）
-    setCatalogFailure('unavailable', `目录拉取失败：${messageOf(error)}`);
-  }
-}
-
-/**
- * 把抓目录串起来（**同一时刻只有一次在跑**）。
- *
- * ⚠️ 启动那一路（`startUp`）与手动的 `rescan()` 都会来拉目录，而"两次并发 fetch 同一个
- * 425 KB 端点"除了浪费带宽什么也换不到 —— 更重要的是**后一次的结果会覆盖前一次**，
- * 于是"启动时那次读到的目录"取决于谁先回来。⇒ 用一条串行队列把顺序固定下来。
+/*
+ * ⚠️★ 这两段（`loadCatalog` / `queueLoadCatalog` / `resolveUpstream` 与
+ *    `scanFolder` / `resolveGameVersion` / `queueScan` / `ensureScans` / 扫描读数）
+ *    **一行都没有删**，只是搬进了两个模块（2026-10-03 复审给的切法）：
+ *      · `./mod-folder-catalog` —— 抓 `/api/mod-catalog`、失败分类、上游解析；
+ *      · `./mod-folder-scan`    —— 扫 mods 目录、推断游戏版本、扫描读数的缓存。
+ *    这么切是为了让这一个文件**不再继续长大**（它已经 1800+ 行，本仓 house style 里
+ *    1946 行的 v1 是上限那一侧）。
+ * ⚠️ 两个模块与这一份**单向**依赖（它们不 import 这一份）：注入点分别是
+ *    `initCatalog({ siteOrigin, userAgent, notice })` 与 `initScan(notice)`，
+ *    都在 `initModFolders` 里接上。
  */
-let loadQueue: Promise<void> = Promise.resolve();
-
-function queueLoadCatalog(): Promise<void> {
-  const next = loadQueue.then(
-    () => loadCatalog(),
-    () => loadCatalog(),
-  );
-  loadQueue = next.catch(() => undefined);
-  return next;
-}
-
-// ---------------------------------------------------------------------------
-// 上游解析（spec §7.2 / D1）—— 抓不到就**不放进 map**
-// ---------------------------------------------------------------------------
-
-/** 一条上游 release 与另一条是不是同一条（判据 = 字节 + 版本号 + 地址）。 */
-function sameRelease(a: ModRelease, b: ModRelease): boolean {
-  return a.version === b.version && a.url === b.url && a.sha512 === b.sha512;
-}
-
-/**
- * 把一条 Modrinth 版本**收窄**成目录里那种 `ModRelease`。
- *
- * ⚠️ 任何一格对不上契约（没有主文件 / 哈希形状不对 / size 不是非负整数 / 一个游戏版本都没有）
- *    一律 `null` ⇒ 调用方**把这一条从 map 里去掉**（brief：抓不到 / 契约不符 ⇒ 不放进 map，
- *    不是抛错）。方向是安全的：目标退回目录里那条候选，而"只有 `older` 进批量"
- *    保证这仍然是安全的（界面不会因此报错）。
- * ⚠️ `download: 'auto'` 是**这个地方**的判断：上游那一条是能直接下的字节
- *    （`manual` 在目录里表示"只给打开原网页"，而 Modrinth 的版本没有这个概念）。
- */
-function upstreamRelease(mod: ModEntry, version: ModrinthVersion): ModRelease | null {
-  const file = primaryFileOf(version);
-  if (file === null) return null;
-  const sha512 = file.hashes.sha512;
-  const sha1 = file.hashes.sha1;
-  if (typeof sha512 !== 'string' || !/^[0-9a-f]{128}$/.test(sha512)) return null;
-  if (typeof sha1 !== 'string' || !/^[0-9a-f]{40}$/.test(sha1)) return null;
-  if (!Number.isInteger(file.size) || file.size < 0) return null;
-  if (version.game_versions.length === 0) return null;
-  if (typeof version.version_number !== 'string' || version.version_number === '') return null;
-  return {
-    modid: mod.modid,
-    version: version.version_number,
-    url: file.url,
-    sha1,
-    sha512,
-    size: file.size,
-    targetVersions: [...version.game_versions],
-    dependencies: [],
-    obsolete: false,
-    intermediary: [],
-    download: 'auto',
-  };
-}
-
-/**
- * 这个 mod 的哪些游戏版本**可能**用到上游。
- *
- * ⚠️★ 判据是"判定层会不会去问上游"，而那是 `resolveTarget` 的事（T1）：
- *    上游**只在目录在这一版下恰好一条候选时**才参与（Ruling 17）⇒ 0 条或多候选的游戏版本
- *    根本不会用到 `upstreamLatest`，把它们算进来只会让"多个版本必须一致"这条判据
- *    因为无关的版本而失败。
- */
-function upstreamGameVersions(c: ModCatalog, index: ModIndex, modid: string): string[] {
-  const versions = new Set<string>();
-  for (const release of c.releases) {
-    if (release.modid !== modid) continue;
-    for (const gameVersion of release.targetVersions) {
-      if (releasesFor(index, modid, gameVersion).length === 1) versions.add(gameVersion);
-    }
-  }
-  return [...versions].sort();
-}
-
-/**
- * 抓所有 `upstream != null` 的 mod 的上游最新版。
- *
- * ⚠️★ **map 只按 `modid` 键控**（T1 的 `upstreamLatest`），而"最新版"是**按游戏版本**解析的
- *    ⇒ 一个 mod 在多个游戏版本上各有一条唯一候选时，同一个 modid 会有多个候选目标。
- *    这里的态度是：**所有相关版本必须解析出同一条**，否则**整个 modid 都不用**
- *    （退回目录那条候选）。理由：把 A 版本的上游包当成 B 版本那一行的目标，
- *    等于给用户一个"更新到另一个游戏版本"的按钮 —— 那是会写坏目录的坏法。
- *    今天（现读 `content/mod-catalog.json`）只有 `mcsrranked` 有 `upstream`，
- *    而它只有 `1.16.1` 那一条 release ⇒ 这一支永远只有一个版本，判据是给将来准备的。
- */
-async function resolveUpstream(c: ModCatalog): Promise<void> {
-  const d = requireDeps();
-  const index = requireIndex();
-  const out = new Map<string, ModRelease>();
-
-  for (const mod of c.mods) {
-    const upstream = mod.upstream;
-    if (upstream === null) continue;
-    const gameVersions = upstreamGameVersions(c, index, mod.modid);
-    if (gameVersions.length === 0) continue; // 判定层永远不会问上游 ⇒ 连请求都不发
-
-    let versions: ModrinthVersion[];
-    try {
-      // 复用 v1 的抓取（TTL 缓存 + 退避重试三次）；**不** force：这是启动时的一次检查
-      versions = await fetchVersions(upstream.project, {
-        force: false,
-        userAgent: d.userAgent,
-      });
-    } catch (error) {
-      pushNotice(`上游版本没拿到（${mod.modid}）：${messageOf(error)} —— 目标退回目录里那条候选`);
-      continue;
-    }
-
-    const resolved: ModRelease[] = [];
-    let unusable = false;
-    for (const gameVersion of gameVersions) {
-      const latest = pickLatestVersion(versions, {
-        gameVersion,
-        loader: UPSTREAM_LOADER,
-        channel: UPSTREAM_CHANNEL,
-      });
-      const release = latest === null ? null : upstreamRelease(mod, latest);
-      if (release === null) {
-        unusable = true;
-        break;
-      }
-      resolved.push(release);
-    }
-    const first = resolved[0];
-    if (unusable || first === undefined) {
-      pushNotice(
-        `上游版本没拿到（${mod.modid}）：上游没有匹配的 release —— 目标退回目录里那条候选`,
-      );
-      continue;
-    }
-    if (!resolved.every((release) => sameRelease(release, first))) {
-      pushNotice(
-        `上游解析在多个游戏版本上不一致（${mod.modid}）：这一次不用上游 —— 目标退回目录里那条候选`,
-      );
-      continue;
-    }
-    out.set(mod.modid, first);
-  }
-
-  upstreamLatest = out;
-}
-
-// ---------------------------------------------------------------------------
-// 扫描与游戏版本推断
-// ---------------------------------------------------------------------------
-
-/**
- * 扫一个 mods 目录（spec §6.6/§7.1）。
- *
- * - 只取 `.jar`（**`.jar.disabled` 不扫**：游戏不会加载它 —— spec §8 与 §11 都写死了）；
- * - 每个 jar 读 `fabric.mod.json`（读不出来 ⇒ `modid` / `version` 都是 `null`，
- *   由 T1 归到"无法识别"那一栏）；
- * - 每个 jar 算 **sha512**（`judgeRelease` 的第一层判据就是它：`same` 只有字节能回答）。
- *   ⚠️ 代价（认）：每份 jar 都要读一遍盘，真实 mods 目录是 27 MB × 几十份 ⇒ 一次
- *   `rescan()` 是几百 MB 的 I/O。这是"判定要准"的价钱；不扫 sha512 的话每一行都会
- *   退化成"比不出/不同打包"，那比慢更坏。
- * - ⚠️ 签名里的 `gameVersion` 是 brief 钉住的接口，而**扫描这一步与游戏版本无关**
- *   （按版本判定全部发生在 T1 的 `planFolderView` 里）⇒ 这里不用它，也不许在这里判版本。
- */
-export async function scanFolder(
-  folderPath: string,
-  _gameVersion: string | null,
-): Promise<FolderScanEntry[]> {
-  const names = [...readdirSync(folderPath)].sort();
-  const entries: FolderScanEntry[] = [];
-  for (const name of names) {
-    if (!name.toLowerCase().endsWith('.jar')) continue;
-    const path = join(folderPath, name);
-    let modid: string | null = null;
-    let version: string | null = null;
-    try {
-      const meta = readJarMeta(path);
-      modid = meta.id;
-      version = meta.version;
-    } catch {
-      /* 读不出来：modid/version 都是 null（"无法识别"，不是"这个文件不存在"） */
-    }
-    let sha512: string | null = null;
-    try {
-      sha512 = await sha512OfFile(path);
-    } catch {
-      sha512 = null;
-    }
-    entries.push({ fileName: name, modid, version, sha512 });
-  }
-  return entries;
-}
-
-/**
- * 从 `folderPath` 向上**最多 4 层**找 `mmc-pack.json`，读 `net.minecraft` 的版本。
- *
- * ⚠️ 两条判据缺一不可（spec §6.6）：
- *   ① 路径里**出现过 `.minecraft`** 这一段。没有它的话，任何一个恰好把
- *      `mmc-pack.json` 放在上面两层的目录都会被当成 Minecraft 实例；
- *   ② 最多 4 层 —— 再往上就走到用户主目录了，那里出现一个同名文件纯属巧合。
- * 读不到返回 `null`（调用方按 spec §8 显示"游戏版本未知"，不给更新按钮）——
- * **不许猜**（Prism / MCSR Launcher 的布局没有实测过，spec §14.5）。
- */
-export function resolveGameVersion(folderPath: string): string | null {
-  const segments = resolve(folderPath).split(/[\\/]/);
-  if (!segments.some((segment) => segment.toLowerCase() === MINECRAFT_DIR)) return null;
-
-  let dir = resolve(folderPath);
-  for (let depth = 0; depth < MMC_PACK_MAX_DEPTH; depth += 1) {
-    const version = readMmcPackVersion(join(dir, 'mmc-pack.json'));
-    if (version !== null) return version;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-function readMmcPackVersion(path: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { components?: unknown };
-    if (!Array.isArray(parsed.components)) return null;
-    for (const component of parsed.components) {
-      if (!isRecord(component)) continue;
-      if (component.uid !== 'net.minecraft') continue;
-      const version = component.version;
-      if (typeof version === 'string' && version !== '') return version;
-      return null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 扫一次并写成读数。
- *
- * 三种结果**分得开**（判修 1）：
- *   · 路径不是目录 ⇒ **清掉**读数（"路径不存在"是 spec §8 的另一种状态，不是"空文件夹"）；
- *   · 扫成了 ⇒ `{ok: true, entries}`；
- *   · 扫炸了 ⇒ `{ok: false, entries: []}` + 一条 notice —— **不是** `ok: true` 的空读数：
- *     读不动一个文件夹，不等于它里面什么都没有（见 `buildState` 那段注释）。
- */
-async function scanInto(folderId: string, folderPath: string): Promise<void> {
-  if (!isDirectory(folderPath)) {
-    scans.delete(folderId);
-    return;
-  }
-  try {
-    scans.set(folderId, { ok: true, entries: await scanFolder(folderPath, null) });
-  } catch (error) {
-    scans.set(folderId, { ok: false, entries: [] });
-    pushNotice(`读不了这个文件夹（${basename(folderPath)}）：${messageOf(error)}`);
-  }
-}
-
-/**
- * 扫描的**串行队列**（与 `queueLoadCatalog` 同一条理由）：`startUp`、页面第一次要状态
- * （`ensureScans`）、绑定/重扫会同时来 ⇒ 并发扫同一个目录除了浪费 I/O 什么也换不到，
- * 而且两次 `scans.set` 谁后到谁说了算（两份读数其实一样，但"谁赢"不该由时序决定）。
- */
-let scanQueue: Promise<void> = Promise.resolve();
-
-function queueScan(
-  folderId: string,
-  folderPath: string,
-  opts: { onlyIfMissing: boolean },
-): Promise<void> {
-  const run = async (): Promise<void> => {
-    if (opts.onlyIfMissing && readingOf(folderId).ok) return;
-    await scanInto(folderId, folderPath);
-  };
-  const next = scanQueue.then(run, run);
-  scanQueue = next.catch(() => undefined);
-  return next;
-}
-
-/**
- * 把**还没有读数**的已绑定文件夹扫掉（2026-10-03 复审的 **Ruling 34**）。
- *
- * 为什么需要它：`autoUpdate` 只让"启动那一次扫描"扫开着开关的文件夹（见 `startUp`），
- * 而**页面要的是完整的一份状态** —— 一个关着自动更新的文件夹如果一直不扫，
- * 它既看不到内容，又会让缺失清单说不清（判修 1）。
- * 入口：`getState`（页面第一次拉状态时），也就是"有人真要这份数据了"的那一刻。
- * ⚠️ 顺序：**先扫完再组装**（`getState` 是 `await ensureScans()` 之后才 `rebuild()`），
- *    所以页面拿到的那一份不需要再等一次推送才正确。
- */
-async function ensureScans(): Promise<void> {
-  const st = requireState();
-  for (const [folderId, entry] of sortedFolders(st)) {
-    await queueScan(folderId, entry.path, { onlyIfMissing: true });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 已绑定文件夹的增删改
@@ -1048,7 +653,12 @@ function attributeLegacyItems(): void {
 async function unbindFolder(folderId: unknown): Promise<ModFoldersState> {
   const { folderId: id } = requireFolder(folderId);
   delete requireState().folders[id];
-  scans.delete(id);
+  /*
+   * ⚠️ 读数也要**忘掉**（`forgetScan`）：只删实体的话，那个 folderId 的读数会留在
+   *    `mod-folder-scan` 的缓存里 —— 同一个路径再绑一次会拿到**旧读数**（同名 folderId），
+   *    而"绑完马上看得到东西"靠的正是重新扫一次。
+   */
+  forgetScan(id);
   persist();
   rebuild();
   return modFoldersState();
@@ -1244,7 +854,7 @@ function requireGameVersion(gameVersion: unknown, what: string): string {
 function requireChannel(channel: unknown): Channel {
   if (channel === 'origin') return 'origin';
   if (isRecord(channel) && typeof channel.mirrorId === 'string' && channel.mirrorId !== '') {
-    const mirrors = catalog?.mirrors ?? null;
+    const mirrors = catalogOf()?.mirrors ?? null;
     if (mirrors === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
     if (!mirrors.some((mirror) => mirror.id === channel.mirrorId)) {
       throw new Error(`目录里没有这条镜像：${channel.mirrorId}`);
@@ -1259,7 +869,7 @@ function requireKnownTags(tags: unknown): string[] {
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string' && tag !== '')) {
     throw new Error('非法参数：tags 必须是非空字符串数组');
   }
-  const known = catalog;
+  const known = catalogOf();
   if (known === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
   const usable = new Set<string>(Object.keys(known.tagLabels));
   for (const mod of known.mods) for (const tag of mod.tags) usable.add(tag);
@@ -1360,7 +970,7 @@ async function installRelease(opts: {
 }): Promise<InstallOutcome> {
   const { targetDir, release, channel } = opts;
   if (!isDirectory(targetDir)) throw new Error(`这个位置不是目录（拒绝写盘）：${targetDir}`);
-  const known = catalog;
+  const known = catalogOf();
   if (known === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
 
   const targetName = originFileNameOf(release.url);
@@ -1529,9 +1139,7 @@ async function writeRun(
  *    消费它 ≠ 在写路径里重新 `judgeRelease`。
  */
 function assertUpdatable(row: { manual: boolean; verdict: { kind: string } }, what: string): void {
-  if (row.manual) {
-    throw new Error(`这一条是 manual（只给打开原网页，连更新按钮都不该有）⇒ 不给更新：${what}`);
-  }
+  assertNotManual(row.manual, what, '更新');
   const kind = row.verdict.kind;
   if (kind === 'newer') {
     throw new Error(`本地这一份比清单里的更新（newer）⇒ 不给更新（只升不降）：${what}`);
@@ -1542,6 +1150,146 @@ function assertUpdatable(row: { manual: boolean; verdict: { kind: string } }, wh
   if (kind === 'unknown-version') {
     throw new Error(`这个文件夹的游戏版本还不知道 ⇒ 不给更新：${what}`);
   }
+}
+
+/**
+ * 那道闸里 **"`manual` 的行不许装"** 那一半（Task 6 抽出来的）。
+ *
+ * ⚠️★ 为什么 `downloadMissing` **只**能用这一半、不能拿整道 `assertUpdatable`：
+ *    整道闸的 `newer` / `unknown` 两支都要"**本地那一份**"才判得出来，而"缺失"的定义
+ *    就是"这个文件夹里没有它的副本" ⇒ `judgeRelease(null, null, [release])` 恒为 `unknown`
+ *    （`compareLocalToRelease` 的第二层）⇒ 拿整道闸去判，**每一条缺失下载都会被拒**
+ *    （"本地版本读不出来 ⇒ 不知道会换掉什么"）。那是把闸用在了它不成立的前提上。
+ *    剩下两支在那边也各自有更早、更具体的拒绝：`unknown-version` 由"文件夹的游戏版本还不知道"
+ *    那一条挡在前面，`newer` 在没有本地文件时**不可能**成立（没有"本地那一份"）。
+ * ⇒ 两处共用**这一条文案**（`action` 只换动词），而不是各抄一遍"manual 不许装"。
+ */
+function assertNotManual(manual: boolean, what: string, action: string): void {
+  if (manual) {
+    throw new Error(
+      `这一条是 manual（只给打开原网页，连更新按钮都不该有）⇒ 不给${action}：${what}`,
+    );
+  }
+}
+
+/**
+ * 把**文件夹里的这一行**装成它的目标 release（`updateMod` 与 `updateFolderAll` 共用这一段）。
+ *
+ * ⚠️★ 抽出来的理由与 `installRelease` 同一个：两处各写一遍必然漂，而漂的那一份在动用户的文件。
+ *    差别只在**重扫的时机**（`updateMod` 每装一条就重扫；整夹更新只在最后扫一次 —— 见
+ *    `updateFolderAll` 里那段"为什么不逐条扫"），所以重扫留在**调用方**。
+ *
+ * 返回值与 `writeRun` 的 `work()` 同一个约定：`null` = 真的写了；一句话 = 为什么没动
+ * （幂等那一支 ⇒ 进 `lastRun.skipped`，不许冒充"已更新"）。
+ */
+async function installFolderRow(opts: {
+  entry: SharedState['folders'][string];
+  row: ModFolderRowView;
+  channel: Channel;
+  /** 出错文案里那个"是谁"（`modid|游戏版本`；批量与单行各自带自己那一份）。 */
+  what: string;
+}): Promise<string | null> {
+  const { entry, row, channel, what } = opts;
+  const release = row.official;
+  if (release === null) {
+    throw new Error(
+      `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${what}`,
+    );
+  }
+  // ★ Ruling 47：`newer` / `manual` / 说不清本地是什么的，一律**在动盘之前**拒
+  assertUpdatable(row, what);
+  /*
+   * 旧副本 = **主文件 ∪ 扫描读数给出的其余副本**。
+   * ⚠️ 主文件也要删（它在"旧副本"这个数组之外）：它正是被替换的那一份，而目标文件名
+   *    与它不同名时 `installDownloadedFile` **不会**碰它（它只挪 `targetPath`）⇒
+   *    不删的话目录里会同时留着被替换掉的那个旧版本（v1 `runUpdate` 的同一步做的也是这件事：
+   *    路径不同就 `rmSync(localPath)`）。同名时 `installRelease` 会跳过它（那已由 `.old` 负责）。
+   */
+  const mainPath = join(entry.path, row.fileName);
+  const oldCopies = [mainPath, ...row.oldCopies.map((name) => join(entry.path, name))];
+  const outcome = await installRelease({
+    targetDir: entry.path,
+    release,
+    channel,
+    oldCopies,
+    // ★ Ruling 48：把"扫描时那个文件的读数"带过去（扫描之后被换过 ⇒ 拒）
+    replacing: { path: mainPath, sha512: row.localSha512 },
+  });
+  return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
+}
+
+/**
+ * 一行**没有**被整夹更新碰的原因（`lastRun.skipped[].reason` 那一段）。
+ *
+ * ⚠️★ 判据**只从行视图上读**（`manual` / `verdict` / `official`），**不重新判决**：
+ *    `verdict` 就是 T1 的 `planFolderView` 算好的那一个（brief 的"内核的规则，不是重新推导"）。
+ *    这里做的事是**把它翻译成一句人话**，不是再比一次版本。
+ * ⚠️ 顺序是有意的：`manual` 先判 —— 那种行**连更新按钮都没有**（spec §8），
+ *    说"它不是 auto"虽然也对，但不如"这一条根本没有更新入口"对用户有用。
+ */
+function skipReasonOf(row: ModFolderRowView): string {
+  if (row.manual) return '这一条是 manual（只给打开原网页，连更新按钮都不该有）⇒ 不进批量';
+  const verdict = row.verdict;
+  switch (verdict.kind) {
+    case 'same':
+      return '这个文件已经是这一份（没有下载、没有写盘）';
+    case 'different-build':
+      return '同版本号、字节不同（different-build）⇒ 要人显式点一下这一条';
+    case 'newer':
+      return '本地这一份比清单里的更新（newer）⇒ 只升不降，不进批量';
+    case 'unknown':
+      return '本地版本读不出来（unknown）⇒ 不知道会换掉什么，不进批量';
+    case 'unknown-version':
+      return '这个文件夹的游戏版本还不知道（unknown-version）⇒ 一行都不给更新';
+    case 'ambiguous':
+      return `候选多于一条（ambiguous：${String(row.candidates.length)} 条）⇒ 该装哪一个没有唯一答案，要人明确选一个`;
+    case 'missing-release':
+      return '清单里这个游戏版本下没有它（missing-release）⇒ 没有东西可装';
+    case 'older':
+      /*
+       * 到 `older` 却还不可批量，只剩"目标为空"或"目标那条不是 auto"两种（`needsUpdate` 的后半句）
+       * ⇒ 那两句话正是这里要说的。⚠️ 不是"再判一次版本"：`needsUpdate` 已经给了结论。
+       */
+      return row.official === null
+        ? '这一行没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）'
+        : `这一条的 release 不是 auto（download=${verdict.release.download}）⇒ 不进批量`;
+  }
+}
+
+/**
+ * 一次**批量**写盘流程的外壳（与 `writeRun` 同一条纪律：忙标记 + 收尾写 `lastRun` + 推状态）。
+ *
+ * ⚠️★ 批量的形状照 spec §7.4 是"`bulkRunning` 标记 + `assertNotBusy()` + 每条之间
+ *    `yieldToEventLoop()`"：v1 那个 `bulkRunning` 是**它模块私有**的（拿不到，也不该去动它），
+ *    这里对应的就是本模块自己的 `busy` —— 它**跨整批为真**（不是"某一条正在写"），
+ *    所以整批期间第二次调用（单行也一样）会被立刻拒（`writeRun` 与本函数共用这一格）。
+ *    ⇒ 与 v1 那条的**已知缺口**（认）：v1 的 `update()`/`updateAll` 看不见本模块的 `busy`，
+ *      反向也一样；两个模块今天写的是**不同的绑定**（§13.1：落在文件夹里的 v1 绑定在绑定时已解掉），
+ *      所以这条缺口不是"两个写者写同一个文件"。
+ * ⚠️ 整批起手就抛（文件夹不是目录 / 没有扫描读数 / 目录没拉到）时**不写 `failed`**：
+ *    `failed[].modid` 是**行**的标识，而这时候**一行都没跑到** ⇒ 编一个假 modid 进去
+ *    会让页面显示一条不存在的行。⇒ 记一条 notice（页面看得见）+ 原样抛（IPC 会 reject）。
+ */
+type LastRun = NonNullable<ModFoldersState['lastRun']>;
+
+async function bulkRun(work: () => Promise<LastRun>): Promise<ModFoldersState> {
+  if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
+  busy = true;
+  rebuild();
+  let run: LastRun;
+  try {
+    run = await work();
+  } catch (error) {
+    busy = false;
+    lastRun = { updated: [], skipped: [], failed: [] };
+    pushNotice(`整夹更新没能跑完：${messageOf(error)}`);
+    rebuild();
+    throw error;
+  }
+  busy = false;
+  lastRun = run;
+  rebuild();
+  return modFoldersState();
 }
 
 /**
@@ -1591,35 +1339,21 @@ export async function updateMod(
   if (row === undefined) {
     throw new Error(`这个文件夹里没有 ${key.modid} 的行（还没扫过？先点一次「重扫」）：${id}`);
   }
-  const release = row.official;
-  if (release === null) {
+  if (row.official === null) {
     throw new Error(
       `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${key.key}`,
     );
   }
-  // ★ Ruling 47：`newer` / `manual` / 说不清本地是什么的，一律**在动盘之前**拒
-  assertUpdatable(row, key.key);
   /*
-   * 旧副本 = **主文件 ∪ 扫描读数给出的其余副本**。
-   * ⚠️ 主文件也要删（它在"旧副本"这个数组之外）：它正是被替换的那一份，而目标文件名
-   *    与它不同名时 `installDownloadedFile` **不会**碰它（它只挪 `targetPath`）⇒
-   *    不删的话目录里会同时留着被替换掉的那个旧版本（v1 `runUpdate` 的同一步做的也是这件事：
-   *    路径不同就 `rmSync(localPath)`）。同名时 `installRelease` 会跳过它（那已由 `.old` 负责）。
+   * ⚠️ 这里**不**先过闸（与 Task 5 一样把闸留在 `installFolderRow` 里，两处只此一份）：
+   *    那道闸的拒绝在整夹更新里必须落成**一条 `failed`**（一条失败不许中断整批），
+   *    所以它只能住在"被 try 包住的那一段"里。单行这一侧的效果不变（外面没有别人接它）。
    */
-  const mainPath = join(entry.path, row.fileName);
-  const oldCopies = [mainPath, ...row.oldCopies.map((name) => join(entry.path, name))];
   return writeRun(key.modid, async () => {
-    const outcome = await installRelease({
-      targetDir: entry.path,
-      release,
-      channel: chan,
-      oldCopies,
-      // ★ Ruling 48：把"扫描时那个文件的读数"带过去（扫描之后被换过 ⇒ 拒）
-      replacing: { path: mainPath, sha512: row.localSha512 },
-    });
+    const why = await installFolderRow({ entry, row, channel: chan, what: key.key });
     // spec §7.3 第 9 步：重扫该文件夹（**强制**，不吃缓存：目录刚刚被我们改过）
     await queueScan(id, entry.path, { onlyIfMissing: false });
-    return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
+    return why;
   });
 }
 
@@ -1709,18 +1443,200 @@ export async function updateCatalogRow(
 }
 
 /**
- * 还没实现的写盘通道（**Task 6**）：整夹更新与缺失下载。
+ * ★ 写盘：**整夹更新**（spec §7.4）—— 走完这个文件夹的行，把**可批量的**那些装掉。
  *
- * ⚠️★ **为什么它们也注册着**：这一组的全部十五条都是"契约的一部分"
- *    （`preload.ts` 已经逐条转发），而"没注册"与"注册了但拒绝"在页面上的表现
- *    完全一样（都是 `invoke` reject）⇒ 少注册两条的话，Task 6 的复审分不清
- *    "还没实现"与"通道名写错了"。这里抛的是一句**说得清**的话。
- *    代价（认）：今天调用它们一定失败 —— 报告里写明了，T6 落地时替换这两行。
+ * 形状照 v1 `updateAll`（:1512 那一段）：`busy` 标记 + `assertNotBusy()` + 每条之间
+ * `yieldToEventLoop()`；入参只有 id 与通道（**没有路径、没有地址**），目标与通道都由主进程查。
+ *
+ * 三条判据的**来源**是有意分开的（少任何一条都会漂）：
+ *   · **哪些行要更新** —— `row.batchable`，T1 的 `planFolderView` 算好的
+ *     （= `needsUpdate(verdict)`：`older` **且** `download === 'auto'` **且**两边主体可排序，
+ *     再加"必须有目标"）。这里**不重新判决**：brief 那句"内核的规则"说的就是这一句。
+ *     ⚠️ 后果（认）：`different-build`（同版本号、字节不同）**不进批量** —— 那是要人显式点一下的
+ *     那一类（spec §8），所以"点一次全部更新"不会替用户选打包。
+ *   · **跳过的每一行都要有原因** —— `lastRun.skipped`（spec §7.4 的字面："如实报告跳过了几条及原因"）。
+ *     ⚠️ 包括"幂等那一支"（目标已经是这一份）：那一趟一个字节都没写 ⇒ 进 `skipped` 而不是
+ *     `updated`（写进 `updated` 会让界面说"已更新 1 项"而盘上什么都没变 —— (e) 的同一条纪律）。
+ *   · **一条失败不许中断整批** —— 每一行自己的 `try`：失败进 `lastRun.failed`，**继续下一条**
+ *     （spec §7.4：27 MB × N 串行，中途停下的话用户得自己想是哪一条断的）。
+ *
+ * ⚠️★ **先在起手处拒掉整批**（不是"逐行失败"）：路径不是目录、或**根本没有扫描读数**。
+ *    理由是本模块一直守着的那一条**"没扫过 ≠ 扫到了 0 个"**（判修 1）：没有读数时行视图是空的
+ *    ⇒"更新 0 行、跳过 0 行"看起来像"你已经是最新的"，而事实是**我们不知道那个文件夹里有什么**。
+ *    ⚠️ 游戏版本未知**不**在这里拒：那种情况下每一行都是 `unknown-version` 且不可批量，
+ *    逐行带着原因进 `skipped` 比一句"整批不给跑"更能说清发生了什么（也是 §7.4 的形状）。
+ * ⚠️ **只在最后重扫一次**（而不是每装一条扫一次）：同一批里各行的 `replacing` 来自同一份读数，
+ *    而它们**互不影响**（不同 modid ⇒ 不同主文件、不同目标名）；逐条重扫会让一次整夹更新变成
+ *    N 遍全目录 sha512（真目录几十 MB × N）。
  */
-function notYetWritePath(what: string): never {
-  throw new Error(
-    `写盘路径还没实现（${what} 是 Task 6 的）—— 这两条通道已经注册，但今天调用一定失败`,
-  );
+export async function updateFolderAll(
+  folderId: unknown,
+  channel: unknown,
+): Promise<ModFoldersState> {
+  assertNotBusy();
+  const { folderId: id, entry } = requireFolder(folderId);
+  const chan = requireChannel(channel);
+  /*
+   * ⚠️ 这一句不是装饰：`requireChannel('origin')` **不碰目录**（只有镜像那一支才查 `mirrors[]`）
+   *    ⇒ 少了它，"目录还没拉到 + 通道是 origin"会静默地"更新 0 行"。
+   */
+  requireIndex();
+  if (!isDirectory(entry.path)) {
+    throw new Error(`这个文件夹的路径现在不是目录（不给整夹更新）：${entry.path}`);
+  }
+  if (!readingOf(id).ok) {
+    throw new Error(
+      `这个文件夹还没有扫描读数（"没扫过"不等于"它是空的"）⇒ 先点一次「重扫」：${basename(entry.path)}`,
+    );
+  }
+  const view = folderView(id, entry);
+  const what = (modid: string): string => `${modid}|${view.gameVersion ?? '?'}`;
+
+  return bulkRun(async () => {
+    const updated: string[] = [];
+    const skipped: { modid: string; reason: string }[] = [];
+    const failed: { modid: string; reason: string }[] = [];
+    // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
+    await yieldToEventLoop();
+    for (const row of view.rows) {
+      if (row.batchable) {
+        try {
+          const why = await installFolderRow({ entry, row, channel: chan, what: what(row.modid) });
+          if (why === null) updated.push(row.modid);
+          else skipped.push({ modid: row.modid, reason: why });
+        } catch (error) {
+          // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
+          failed.push({ modid: row.modid, reason: messageOf(error) });
+        }
+      } else {
+        skipped.push({ modid: row.modid, reason: skipReasonOf(row) });
+      }
+      /*
+       * ★ 每条之间让出一次事件循环（spec §7.4 的字面）。放在**每一条之后**（跳过的那条也算）：
+       *    跳过的行不 await 任何东西，而一个真实的文件夹里跳过的往往占多数 ⇒ 让出点更多，
+       *    页面在整批期间更不会看起来卡住。
+       */
+      await yieldToEventLoop();
+    }
+    if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
+    return { updated, skipped, failed };
+  });
+}
+
+/**
+ * ★ 写盘：**缺失下载**（spec §7.5 的"下载到 ▾"）—— 把一个缺失的 mod 装进某个已绑定文件夹。
+ *
+ * 与另外三个入口的差别只有"这一行是从哪来的"：它**不在任何一个文件夹里**（那正是"缺失"的定义）
+ * ⇒ 目标由 `(modid, 游戏版本)` 在目录里决定，而**"该装哪一个"的判定仍然是内核的**：
+ * 这里拿 `planCatalogRows` 现算那一行（与页面渲染第一部分用的是**同一个函数、同一份入参**），
+ * 于是"缺失清单里点了确定"装的就是"目录行上写着的那一条"。
+ *
+ * ⚠️★ 两道闸各自开火在它**成立**的前提上（写在这里，免得下一个人以为漏了一道）：
+ *   · `installRelease` 那一道（Ruling 47/48）照常 —— 目标位置上要是已经有一个我们没见过的文件，
+ *     它**拒**（见下面 `oldCopies` 那段）；
+ *   · "这一**行**该不该装"那一道在这里只剩 `manual` 那一半能成立，理由写在 `assertNotManual` 上。
+ *     ⚠️ 拿整道 `assertUpdatable` 会**把每一条缺失下载都拒掉**（缺失 ⇒ 判出来恒是 `unknown`）。
+ *
+ * ⚠️ 三个"整批/整条拒"的条件（都**不动盘、不发请求**）：
+ *   ① 路径不是目录（spec §8：路径不存在不给更新按钮）；
+ *   ② 这个文件夹的**有效游戏版本**未知 —— 与 `updateMod` 同一条（spec §8：未选之前所有行
+ *      都是 `unknown-version`）；
+ *   ③ 它**不是**缺失的（那个 modid 在这个文件夹里已经有行了）⇒ 缺失清单是旧读数。
+ *      ⚠️ 这一条看着像"永远不会发生"，但它**是**承重的：渲染进程加载的是**远程网页**
+ *      ⇒ 主进程不许把"页面只在缺失时才调我"当成前提（§9 的入参纪律）。
+ */
+export async function downloadMissing(
+  modid: unknown,
+  gameVersion: unknown,
+  folderId: unknown,
+  channel: unknown,
+): Promise<ModFoldersState> {
+  assertNotBusy();
+  const { folderId: id, entry } = requireFolder(folderId);
+  const chan = requireChannel(channel);
+  if (typeof modid !== 'string' || modid === '') {
+    throw new Error('非法参数：modid 必须是非空字符串');
+  }
+  const version = requireGameVersion(gameVersion, 'gameVersion');
+  const known = catalogOf();
+  if (known === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
+  const what = `${modid}|${version}`;
+  if (!isDirectory(entry.path)) {
+    throw new Error(`这个文件夹的路径现在不是目录（不给下载）：${entry.path}`);
+  }
+  /*
+   * ⚠️★ **这个文件夹的游戏版本**要单独判一条（不能只看入参里那个版本）：
+   *    "缺失清单"是按**界面上选中的那个游戏版本**算的，而"下载到 ▾"选的是**别的**一个文件夹 ——
+   *    两者不一致时，装进去的是一个**别的游戏版本**的 jar，而它在目录里看起来完全正常
+   *    （`updateMod` 对同一条有同样的判据，那一条是 Task 5 加的）。
+   */
+  const folderVersion = folderGameVersion(entry);
+  if (folderVersion === null) {
+    throw new Error(
+      `这个文件夹的游戏版本还不知道（${basename(entry.path)}）⇒ 不给下载（spec §8：先给它选一个游戏版本）`,
+    );
+  }
+  if (folderVersion !== version) {
+    throw new Error(
+      `要下的这一条是 ${version}，而这个文件夹是 ${folderVersion} ⇒ 不给下载（那会装进一个别的游戏版本的目录）：${what}`,
+    );
+  }
+  if (!readingOf(id).ok) {
+    throw new Error(
+      `这个文件夹还没有扫描读数（"没扫过"不等于"它里面没有"）⇒ 先点一次「重扫」：${basename(entry.path)}`,
+    );
+  }
+  const present = folderView(id, entry).rows.find((row) => row.modid === modid);
+  if (present !== undefined) {
+    throw new Error(
+      `这个文件夹里已经有 ${modid} 了（${present.fileName}）⇒ 它不是缺失的（那份缺失清单是上一份读数）：${what}`,
+    );
+  }
+  /*
+   * ★ 目标那一行**由内核现算**（不是在这儿 `releasesFor(...)` 再推一遍）：`planCatalogRows`
+   *   就是页面第一部分用的那个函数 ⇒ "缺失清单里点了确定"与"目录行上写着的那一条"是同一个东西
+   *   （含上游解析、`manual`、`official` 的取舍）。
+   */
+  const row = planCatalogRows({
+    catalog: known,
+    gameVersion: version,
+    tagFilter: [],
+    bindings: new Map(),
+    upstreamLatest: upstreamLatestOf(),
+  }).find((candidate) => candidate.modid === modid);
+  if (row === undefined) {
+    throw new Error(`清单里没有这一条（${modid} 在 ${version} 下没有 release）：${what}`);
+  }
+  if (row.candidates.length !== 1) {
+    throw new Error(
+      `这一对不是唯一候选（${String(row.candidates.length)} 条）⇒ 没有"该装哪一个"的答案，缺失清单里本来不该有它：${what}`,
+    );
+  }
+  const release = row.official;
+  if (release === null) {
+    throw new Error(
+      `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${what}`,
+    );
+  }
+  assertNotManual(row.manual, what, '下载');
+
+  return writeRun(modid, async () => {
+    const outcome = await installRelease({
+      targetDir: entry.path,
+      release,
+      channel: chan,
+      /*
+       * 旧副本 = **空**：缺失的定义就是"这个文件夹里没有它的任何副本"，而那一条上面刚查过
+       * （`present === undefined`）。⚠️ 于是"目标位置上已经有一个文件"这一支就落给
+       * `installRelease` 的闸去拒 —— 那份文件我们没见过（扫描读数里没有它），
+       * 覆盖一个不知道是什么的文件正是那道闸要防的事（Ruling 48 的同一族）。
+       */
+      oldCopies: [],
+    });
+    // 与 `updateMod` 同一步：目录刚被我们改过 ⇒ 强制重扫（缺失清单与文件夹行都靠它更新）
+    await queueScan(id, entry.path, { onlyIfMissing: false });
+    return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1742,7 +1658,8 @@ function registerIpc(): void {
    *    第二次起都是现成的读数，不再扫（`onlyIfMissing`）。
    */
   ipcMain.handle(MOD_FOLDERS_CHANNELS.getState, async () => {
-    await ensureScans();
+    // 文件夹清单由这一侧给（`sortedFolders` 属于状态组装，见 `ensureScans` 的注释）
+    await ensureScans(sortedFolders(requireState()));
     rebuild();
     return modFoldersState();
   });
@@ -1785,9 +1702,22 @@ function registerIpc(): void {
     (_event, rowId: unknown, releaseKey: unknown, channel: unknown) =>
       updateCatalogRow(rowId, releaseKey, channel),
   );
-  // Task 6 替换这两行（见 `notYetWritePath`）
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.updateFolderAll, () => notYetWritePath('updateFolderAll'));
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.downloadMissing, () => notYetWritePath('downloadMissing'));
+  /*
+   * ★ Task 6：批量那两条。入参一律 `unknown`（与上面同一条纪律）。
+   *    ⚠️ 这两条**不收 `releaseKey`**（那是页面唯一能指定"下哪一个"的入口，只有上面两条有）：
+   *       `updateFolderAll` 的目标来自主进程自己那份行视图、`downloadMissing` 按
+   *       `(modid, 游戏版本)` 在目录里现算 ⇒ 页面能按 id 触发写盘，但**写哪里、从哪儿取**
+   *       仍然不是它说了算（`preload.ts` 文件头那一段）。
+   */
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.updateFolderAll,
+    (_event, folderId: unknown, channel: unknown) => updateFolderAll(folderId, channel),
+  );
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.downloadMissing,
+    (_event, modid: unknown, gameVersion: unknown, folderId: unknown, channel: unknown) =>
+      downloadMissing(modid, gameVersion, folderId, channel),
+  );
 }
 
 /**
@@ -1822,6 +1752,15 @@ export async function initModFolders(ctx: { isPackaged: boolean }): Promise<void
     userAgent: `mcsr-helper-desktop/${app.getVersion()} (+${siteOrigin})`,
     isPackaged: ctx.isPackaged,
   };
+  /*
+   * ★ 两个拆出去的模块的注入点（Task 6）：它们与这一份**单向**依赖（见各自文件头），
+   *   所以"基址 / user-agent / 说明往哪走"只能这样接上。
+   * ⚠️ 顺序：**必须在下面 `startUp()` 之前** —— 那一趟要抓目录、要扫盘，
+   *    而没接上的话 `queueLoadCatalog` 会抛"模块还没初始化"（不会静默地抓一个错地址）。
+   * ⚠️ `pushNotice` 是**引用**传过去的，不是值：它在被调用时才读 `notices`。
+   */
+  initCatalog({ siteOrigin, userAgent: deps.userAgent, notice: pushNotice });
+  initScan(pushNotice);
 
   /*
    * 停住态：`stateFileBlocked()` 非空 ⇒ v1 那边"读不出来且备份也失败"，它已经弹过框、
