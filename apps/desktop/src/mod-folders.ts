@@ -76,7 +76,6 @@ import {
   type LegacyBinding,
   type ModFoldersState,
   type ModFolderView,
-  migrateState,
   missingMods,
   planCatalogRows,
   planFolderView,
@@ -88,8 +87,9 @@ import {
   pickDirectory,
   pickOneJar,
   readJarMeta,
-  readStateFile,
   sha512OfFile,
+  sharedStateFile,
+  stateFileBlocked,
   writeStateFile,
 } from './file-updates';
 
@@ -126,15 +126,16 @@ interface Deps {
 let deps: Deps | null = null;
 
 /**
- * 状态文件的内存副本。类型取自 `readStateFile()` 的返回值（v1 把那个类型收窄成
+ * 状态文件的内存副本。类型取自 `sharedStateFile()` 的返回值（v1 把那个类型收窄成
  * "`items` 逐条补过默认值"，而 `StateFile` 那个名字没有导出）——
  * ⚠️ 这样写等于**复用** v1 的收窄，而不是在这里再 cast 一次。
+ *
+ * ⚠️★ 它**不是**本模块自己的副本（Ruling 38）：`sharedStateFile()` 交出来的就是
+ *    v1 那个 `stateFile` **同一个对象**。两个写者共用一份内存 ⇒ 谁都不会把对方的
+ *    字段写回旧值（"各持一份 + 写前合并磁盘"救不了这一半，理由见 `writeStateFile`
+ *    与 `sharedStateFile` 的注释）。
  */
-type SharedState = NonNullable<ReturnType<typeof readStateFile>['state']>;
-
-let state: SharedState | null = null;
-let stateWritable = true;
-let stateBlockedReason: string | null = null;
+type SharedState = ReturnType<typeof sharedStateFile>;
 
 /**
  * 目录（**最后一次成功的读数**）与它的状态。
@@ -151,14 +152,26 @@ let catalogError: string | null = null;
 let upstreamLatest: ReadonlyMap<string, ModRelease> = new Map();
 
 /**
- * 扫描读数（键 = folderId）。
+ * 一次扫描的**读数**（键 = folderId）。
  *
+ * ⚠️★ `ok` 这一位是判修 1 的一半：**"没扫过" ≠ "扫到了 0 个文件"**。
+ *    · `ok: true` ⇒ 这个文件夹里到底有什么，我们有读数；
+ *    · `ok: false` / **没有这一格** ⇒ 我们**不知道**（还没扫 / 读不动 / 路径不在）。
+ *    把后者当成空的，就会把整个目录列成"你缺这些"（见 `buildState` 那段注释）。
  * ⚠️ `rebuild()` 是**同步**的（它要在每一次状态改动后立刻推给页面），而扫盘要
- * `await`（每份 jar 都要算 sha512）⇒ 扫描结果缓存在这里，`rebuild()` 只读它。
- * 没有任何缓存的文件夹 ⇒ 空扫描读数（表现是"这个文件夹里什么都没有"）——
- * 所以"没扫过的文件夹"必须由调用方补一条 notice 说清楚（见 `startUp`）。
+ *    `await`（每份 jar 都要算 sha512）⇒ 读数缓存在这里，`rebuild()` 只读它。
  */
-const scans = new Map<string, readonly FolderScanEntry[]>();
+interface FolderReading {
+  ok: boolean;
+  entries: readonly FolderScanEntry[];
+}
+
+const scans = new Map<string, FolderReading>();
+
+/** 没有读数时给"空读数"（`ok: false`）——调用方据此判断"不许把它当成空的"。 */
+function readingOf(folderId: string): FolderReading {
+  return scans.get(folderId) ?? { ok: false, entries: [] };
+}
 
 /** 说出来但状态里没地方放的说明（`ModFoldersState.notices`）：迁移、归属、上游抓不到…… */
 const notices: string[] = [];
@@ -170,19 +183,11 @@ function pushNotice(text: string): void {
 
 /*
  * 这两格今天**永远是 false / null**：写盘路径（Task 5/6）才会动它们。
- * 用 `let` 而不是把字面量写进 `buildState()`，是为了让"谁在改它"只有一个答案
- * （T5/T6 只需在这两行上分别加赋值，不必在组装状态那一处再改一遍）。
+ * ⚠️ 它们现在是 `const`（biome 的 `useConst`：本轮没有任何赋值）⇒ T5/T6 落地时
+ *    会分别改成 `let` 并在这里赋值，而不是在组装状态那一处再改一遍。
  */
 const busy = false;
 const lastRun: ModFoldersState['lastRun'] = null;
-
-/** 本进程内用户**显式**选过第一部分的游戏版本（决定还要不要跟着已绑定文件夹走）。 */
-let gameVersionChosen = false;
-
-/** 空状态（与 v1 的 `emptyState()` 同一条：默认值只住在 `migrateState()` 里）。 */
-function emptyState(): SharedState {
-  return migrateState({}) as SharedState;
-}
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -196,9 +201,15 @@ function requireDeps(): Deps {
   return deps;
 }
 
+/**
+ * 进程内那份状态（**与 v1 共用的同一个对象**，Ruling 38）。
+ *
+ * ⚠️ 不在这里缓存引用：`sharedStateFile()` 每次现取 —— v1 只在 `initFileUpdates` 里
+ *    换过这个对象一次（那时本模块还没跑），而"每次现取"让"将来谁再换一次"也不会让
+ *    本模块手里握着一个孤儿对象。
+ */
 function requireState(): SharedState {
-  if (state === null) throw new Error('模块还没初始化');
-  return state;
+  return sharedStateFile();
 }
 
 function requireIndex(): ModIndex {
@@ -210,9 +221,8 @@ function requireIndex(): ModIndex {
 
 /** 写盘一次。坏文件连备份都失败时**拒绝写**（v1 的三态读，同一条纪律）。 */
 function persist(): void {
-  if (!stateWritable) {
-    throw new Error(stateBlockedReason ?? '状态文件当前不可写（读不出来且备份失败）');
-  }
+  const blocked = stateFileBlocked();
+  if (blocked !== null) throw new Error(blocked);
   writeStateFile(requireState());
 }
 
@@ -312,9 +322,25 @@ function folderView(folderId: string, entry: SharedState['folders'][string]): Mo
     pathExists,
     gameVersion,
     autoUpdate: entry.autoUpdate,
-    scan: scans.get(folderId) ?? [],
+    scan: readingOf(folderId).entries,
     upstreamLatest,
   });
+}
+
+/** 模块加载时 / `initModFolders` 之前的占位状态（没有任何东西可读）。 */
+function placeholderState(): ModFoldersState {
+  return {
+    catalogStatus,
+    gameVersion: '1.16.1',
+    tagFilter: [],
+    bulkChannel: 'origin',
+    catalogRows: [],
+    folders: [],
+    missing: [],
+    notices: [],
+    busy: false,
+    lastRun: null,
+  };
 }
 
 /**
@@ -325,23 +351,19 @@ function folderView(folderId: string, entry: SharedState['folders'][string]): Mo
  *    "两处是同一个类型"（读 `prefs` 那一格）。T1 里那条编译期断言
  *    （`BULK_CHANNEL_IS_PERSISTED`）就是为这一天准备的，本任务落地之后它成了多余的
  *    公开符号 ⇒ 已删（见 `packages/shared/src/modFolders.ts` 里那段指针注释）。
+ *
+ * ⚠️★ **缺失清单的判据只有一半靠"扫到了什么"**（2026-10-03 复审的**判修 1**）：
+ *    `missing = 该游戏版本清单里的 mod − 已绑定文件夹里命中过的 modid`（spec §7.5），
+ *    而"命中过"只能来自**有读数的**文件夹。一个**没扫过**（或没扫成）的文件夹里
+ *    到底有什么，我们**不知道** —— 把它当成"空的"就会把整个 48 行目录列成"你缺这些"，
+ *    而底部那一栏是用户**行动的依据**（"我缺什么、去下什么"）：**列错 48 条比空着更坏**。
+ *    ⇒ 只要还有一个已绑定文件夹没有**成功**的扫描读数，`missing` 就**空着**
+ *      并带一条说明（`missingSuppressedNote`）；`getState` 会把该扫的扫掉（Ruling 34），
+ *      所以正常情况下页面拿到的那一份是完整的。
  */
 function buildState(): ModFoldersState {
-  const st = state;
-  if (st === null) {
-    return {
-      catalogStatus,
-      gameVersion: '1.16.1',
-      tagFilter: [],
-      bulkChannel: 'origin',
-      catalogRows: [],
-      folders: [],
-      missing: [],
-      notices: [],
-      busy: false,
-      lastRun: null,
-    };
-  }
+  if (deps === null) return placeholderState();
+  const st = requireState();
   const gameVersion = st.prefs.catalogGameVersion;
 
   const bindings = new Map<
@@ -367,12 +389,28 @@ function buildState(): ModFoldersState {
           upstreamLatest,
         });
 
-  const folders = sortedFolders(st).map(([folderId, entry]) => folderView(folderId, entry));
+  const entries = sortedFolders(st);
+  const folders = entries.map(([folderId, entry]) => folderView(folderId, entry));
 
-  // 缺失清单的判据是"已绑定文件夹里**命中过**的 modid"（spec §7.5）
+  // 缺失清单的判据是"已绑定文件夹里**命中过**的 modid"（spec §7.5）—— 只算**有读数**的那些
   const trackedModids = new Set<string>();
-  for (const view of folders) for (const row of view.rows) trackedModids.add(row.modid);
-  const missing = catalog === null ? [] : missingMods({ catalog, gameVersion, trackedModids });
+  let foldersWithoutReading = 0;
+  entries.forEach(([folderId], index) => {
+    if (!readingOf(folderId).ok) {
+      foldersWithoutReading += 1;
+      return;
+    }
+    for (const row of folders[index]?.rows ?? []) trackedModids.add(row.modid);
+  });
+
+  const missing =
+    catalog === null || foldersWithoutReading > 0
+      ? []
+      : missingMods({ catalog, gameVersion, trackedModids });
+  const missingSuppressed =
+    foldersWithoutReading === 0
+      ? null
+      : `有 ${String(foldersWithoutReading)} 个已绑定文件夹还没有扫描读数 ⇒ 缺失清单暂时空着（"没扫过"不等于"你没有"；点一次「重扫」或让页面重新拉一次状态）`;
 
   return {
     catalogStatus,
@@ -382,8 +420,10 @@ function buildState(): ModFoldersState {
     catalogRows,
     folders,
     missing,
-    // 目录那一条**不是** push 进 notices 的：它是"这一次读数的结论"，成功之后要能消失
-    notices: catalogError === null ? [...notices] : [catalogError, ...notices],
+    // 目录与缺失清单那两条**不是** push 进 notices 的：它们是"这一次读数的结论"，条件不成立时该消失
+    notices: [catalogError, missingSuppressed, ...notices].filter(
+      (note): note is string => note !== null,
+    ),
     busy,
     lastRun,
   };
@@ -712,17 +752,63 @@ function readMmcPackVersion(path: string): string | null {
   }
 }
 
-/** 扫一次并塞进缓存（路径不存在 ⇒ 清掉缓存：下一次它是"路径不存在"的表头）。 */
+/**
+ * 扫一次并写成读数。
+ *
+ * 三种结果**分得开**（判修 1）：
+ *   · 路径不是目录 ⇒ **清掉**读数（"路径不存在"是 spec §8 的另一种状态，不是"空文件夹"）；
+ *   · 扫成了 ⇒ `{ok: true, entries}`；
+ *   · 扫炸了 ⇒ `{ok: false, entries: []}` + 一条 notice —— **不是** `ok: true` 的空读数：
+ *     读不动一个文件夹，不等于它里面什么都没有（见 `buildState` 那段注释）。
+ */
 async function scanInto(folderId: string, folderPath: string): Promise<void> {
   if (!isDirectory(folderPath)) {
     scans.delete(folderId);
     return;
   }
   try {
-    scans.set(folderId, await scanFolder(folderPath, null));
+    scans.set(folderId, { ok: true, entries: await scanFolder(folderPath, null) });
   } catch (error) {
-    scans.set(folderId, []);
+    scans.set(folderId, { ok: false, entries: [] });
     pushNotice(`读不了这个文件夹（${basename(folderPath)}）：${messageOf(error)}`);
+  }
+}
+
+/**
+ * 扫描的**串行队列**（与 `queueLoadCatalog` 同一条理由）：`startUp`、页面第一次要状态
+ * （`ensureScans`）、绑定/重扫会同时来 ⇒ 并发扫同一个目录除了浪费 I/O 什么也换不到，
+ * 而且两次 `scans.set` 谁后到谁说了算（两份读数其实一样，但"谁赢"不该由时序决定）。
+ */
+let scanQueue: Promise<void> = Promise.resolve();
+
+function queueScan(
+  folderId: string,
+  folderPath: string,
+  opts: { onlyIfMissing: boolean },
+): Promise<void> {
+  const run = async (): Promise<void> => {
+    if (opts.onlyIfMissing && readingOf(folderId).ok) return;
+    await scanInto(folderId, folderPath);
+  };
+  const next = scanQueue.then(run, run);
+  scanQueue = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * 把**还没有读数**的已绑定文件夹扫掉（2026-10-03 复审的 **Ruling 34**）。
+ *
+ * 为什么需要它：`autoUpdate` 只让"启动那一次扫描"扫开着开关的文件夹（见 `startUp`），
+ * 而**页面要的是完整的一份状态** —— 一个关着自动更新的文件夹如果一直不扫，
+ * 它既看不到内容，又会让缺失清单说不清（判修 1）。
+ * 入口：`getState`（页面第一次拉状态时），也就是"有人真要这份数据了"的那一刻。
+ * ⚠️ 顺序：**先扫完再组装**（`getState` 是 `await ensureScans()` 之后才 `rebuild()`），
+ *    所以页面拿到的那一份不需要再等一次推送才正确。
+ */
+async function ensureScans(): Promise<void> {
+  const st = requireState();
+  for (const [folderId, entry] of sortedFolders(st)) {
+    await queueScan(folderId, entry.path, { onlyIfMissing: true });
   }
 }
 
@@ -749,12 +835,21 @@ function folderContaining(path: string): string | null {
  * 已绑定文件夹的**有效**游戏版本（表头那一格）。
  *
  * ⚠️ "默认取已绑定文件夹的版本"（spec §6.8 / T7 的默认值）：**只在用户还没显式选过**
- *    第一部分的游戏版本时采用，而且**落盘**（`prefs.catalogGameVersion`）——
- *    不落盘的话界面上写着 1.16.1、下次启动又变回去，那是"两处记忆"的另一种形态。
+ *    第一部分的游戏版本时采用（`prefs.catalogGameVersionChosen === false`），
+ *    而且**落盘**（`prefs.catalogGameVersion`）—— 不落盘的话界面上写着 1.16.1、
+ *    下次启动又变回去，那是"两处记忆"的另一种形态。
+ * ⚠️★ **Ruling 37（2026-10-03 判修）**：这一支以前只看一个**内存里**的标志，而
+ *    `startUp` **无条件**调它 ⇒ 实测：预置 `prefs.catalogGameVersion='1.8.9'` +
+ *    一个推断出 1.16.1 的文件夹 ⇒ 启动后**状态与磁盘上的 prefs 都变成 1.16.1**，
+ *    也就是**静默覆盖用户的显式选择**（spec §6.8 的原话是"按机器记住"）。
+ *    现在判据是**磁盘上那一格**（`catalogGameVersionChosen`）：只有
+ *    `setCatalogGameVersion` 会把它置 `true`，一次显式选择之后就再也不自动采纳了。
+ * ⚠️ 自动采纳时**不**置 `catalogGameVersionChosen`：那不是用户的选择
+ *    （Ruling 37 的字面：只有 `setCatalogGameVersion` 置位）。
  */
 function adoptFolderGameVersion(): void {
   const st = requireState();
-  if (gameVersionChosen) return;
+  if (st.prefs.catalogGameVersionChosen) return;
   for (const [, entry] of sortedFolders(st)) {
     const inferred = folderGameVersion(entry);
     if (inferred === null || inferred === st.prefs.catalogGameVersion) continue;
@@ -794,7 +889,7 @@ async function bindFolder(): Promise<ModFoldersState> {
     };
   }
   persist();
-  await scanInto(folderId, picked);
+  await queueScan(folderId, picked, { onlyIfMissing: false });
   migrateBindingsInsideFolder(picked);
   attributeLegacyItems();
   adoptFolderGameVersion();
@@ -925,7 +1020,8 @@ async function rescan(folderId?: unknown): Promise<ModFoldersState> {
       : [requireFolder(folderId).folderId];
   for (const id of ids) {
     const entry = st.folders[id];
-    if (entry !== undefined) await scanInto(id, entry.path);
+    // 显式的"重扫"是**强制**的：用户点它就是要一份新的读数（不吃缓存）
+    if (entry !== undefined) await queueScan(id, entry.path, { onlyIfMissing: false });
   }
   adoptFolderGameVersion();
   rebuild();
@@ -937,8 +1033,11 @@ function setFolderAutoUpdate(folderId: unknown, on: unknown): Promise<ModFolders
   if (typeof on !== 'boolean') throw new Error('非法参数：这一项只接受布尔');
   entry.autoUpdate = on;
   persist();
-  // 打开开关的人期待的是"它被看着" ⇒ 顺手扫一次（与启动那一次是同一种动作）
-  const scan = on && !scans.has(id) ? scanInto(id, entry.path) : Promise.resolve();
+  // 打开开关的人期待的是"它被看着" ⇒ 顺手扫一次（与启动那一次是同一种动作；已有读数就不重扫）
+  const scan =
+    on && !readingOf(id).ok
+      ? queueScan(id, entry.path, { onlyIfMissing: true })
+      : Promise.resolve();
   return scan.then(() => {
     rebuild();
     return modFoldersState();
@@ -964,10 +1063,20 @@ function setBulkChannel(channel: unknown): ModFoldersState {
   return modFoldersState();
 }
 
+/**
+ * 用户**显式**选第一部分的游戏版本（**Ruling 37**）。
+ *
+ * ⚠️★ 这里除了写那一格，还要把 `catalogGameVersionChosen` 置 `true` 并**持久化**：
+ *    spec §6.8 说这个选择"**按机器记住**"，而 `catalogGameVersion` 那一格自己分不出
+ *    "用户选的"与"我们自动采纳文件夹推断出来的"（两者可能恰好同值）。
+ *    不记这一位，下一次启动就会把用户的选择当成"还没选过"再自动采纳一次 ——
+ *    实测过的表现就是"重启之后我选的 1.8.9 变成了 1.16.1"，而且**不报错**。
+ */
 function setCatalogGameVersion(gameVersion: unknown): ModFoldersState {
   const version = requireGameVersion(gameVersion, 'gameVersion');
-  requireState().prefs.catalogGameVersion = version;
-  gameVersionChosen = true;
+  const prefs = requireState().prefs;
+  prefs.catalogGameVersion = version;
+  prefs.catalogGameVersionChosen = true;
   persist();
   rebuild();
   return modFoldersState();
@@ -1119,7 +1228,18 @@ function notYetWritePath(what: string): never {
  *    写错一个字母**类型检查看不见**，而失败形态是静默的（`invoke` reject / `on` 永不触发）。
  */
 function registerIpc(): void {
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.getState, () => modFoldersState());
+  /*
+   * ⚠️★ `getState` 是**异步**的，而且它先 `ensureScans()`（Ruling 34 / 判修 1）：
+   *    "页面第一次要状态"就是"有人真要这份数据了"的那一刻 —— 这时把还没有读数的
+   *    已绑定文件夹扫掉，页面拿到的第一份状态就是完整的（不必再等一次推送才正确）。
+   *    代价（认）：第一次 `getState` 会等这几个文件夹的扫描（每份 jar 都要算 sha512）。
+   *    第二次起都是现成的读数，不再扫（`onlyIfMissing`）。
+   */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.getState, async () => {
+    await ensureScans();
+    rebuild();
+    return modFoldersState();
+  });
   ipcMain.handle(MOD_FOLDERS_CHANNELS.bindFolder, () => bindFolder());
   ipcMain.handle(MOD_FOLDERS_CHANNELS.bindCatalogRow, (_event, rowId: unknown) =>
     bindCatalogRow(rowId),
@@ -1152,17 +1272,17 @@ function registerIpc(): void {
 }
 
 /**
- * 初始化：读状态文件 → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个
  *    "窗口已经能发消息、主进程还没在监听"的窗口期，那几条消息会被静默丢弃。
- * ⚠️ 状态文件的坏形状由 `readStateFile()`（本任务加固过，Ruling 31）处理：
- *    它已经**备份 + 重建**过了，这里只负责**说出来**（`notify` + `notices`）。
- *    ⚠️ 正常启动时这件事由 `initFileUpdates` 先说了一遍（它在 `main.ts` 里排在前面，
- *    而且读的是同一个文件）⇒ 这里那句 `read.recovered` 通常是 null；
- *    留着它是**兜底**（顺序变了、或那条路第一次没读到）。代价：极少数情况下
- *    （坏文件连备份都失败）用户会看到两个提示框说同一件事。
+ * ⚠️★ **本模块不自己读状态文件**（Ruling 38）：`sharedStateFile()` 交出来的就是
+ *    `initFileUpdates` 从磁盘读过、并归一化过（Ruling 31）的**同一个对象**。
+ *    坏形状的"备份 + 重建 + 告诉用户"因此由 v1 那条路负责（它在 `main.ts` 里先跑）。
+ *    ⇒ 这里只剩一件事要说：**停住态**（坏文件连备份都失败）—— 那时谁都不许写盘。
+ *    ⚠️ 代价（认）：`recovered`（已备份并重建）这件事这一层看不到 —— 它由
+ *    `initFileUpdates` 弹框说过一次了（探针的 case a 量到的就是那一次）。
  */
 export async function initModFolders(ctx: { isPackaged: boolean }): Promise<void> {
   /*
@@ -1184,23 +1304,16 @@ export async function initModFolders(ctx: { isPackaged: boolean }): Promise<void
     isPackaged: ctx.isPackaged,
   };
 
-  const read = readStateFile();
-  if (read.fatal) {
-    stateWritable = false;
-    stateBlockedReason = read.fatal;
-    state = emptyState();
-    console.error('[mod-folders] 状态文件停用：', read.fatal);
-    pushNotice(`状态文件读不出来，而且备份也失败了 ⇒ 这一栏不再写盘：${read.fatal}`);
-    notify('mod 文件夹的状态文件读不出来，而且备份失败', read.fatal);
-  } else {
-    stateWritable = true;
-    stateBlockedReason = null;
-    state = read.state ?? emptyState();
-    if (read.recovered !== null) {
-      console.error('[mod-folders] 状态文件读不出来（已备份并重建）：', read.recovered);
-      pushNotice(read.recovered);
-      notify('mod 文件夹的状态文件读不出来', read.recovered);
-    }
+  /*
+   * 停住态：`stateFileBlocked()` 非空 ⇒ v1 那边"读不出来且备份也失败"，它已经弹过框、
+   * 并且会拒绝所有写入。这里再记一条（页面看得见）并弹一次框：
+   * 这一栏在用户手动处理那个文件之前是不可用的，不说出来他就只会看到"点了没反应"。
+   */
+  const blocked = stateFileBlocked();
+  if (blocked !== null) {
+    console.error('[mod-folders] 状态文件停用：', blocked);
+    pushNotice(`状态文件读不出来，而且备份也失败了 ⇒ 这一栏不再写盘：${blocked}`);
+    notify('mod 文件夹的状态文件读不出来，而且备份失败', blocked);
   }
 
   registerIpc();
@@ -1217,9 +1330,10 @@ export async function initModFolders(ctx: { isPackaged: boolean }): Promise<void
  *
  * ⚠️★ `autoUpdate` 只表示"**启动时检查并高亮**"（spec §6.8/§13.1），
  *    而它**真的在筛选**（照 v1 的 `startUp` 只查 `autoUpdate === true` 的条目）：
- *    关着开关的文件夹在启动时**不扫**，因此它的行是空的 ⇒ 必须补一条 notice
- *    说明"没开自动更新、所以没扫它"，否则用户看到的是一个**空的**文件夹
- *    （比 v1 那句"显示上次读数"更坏：v1 至少在内存里有上一次的读数）。
+ *    关着开关的文件夹在启动时**不扫** ⇒ 它的行是空的，必须补一条 notice 说明为什么；
+ *    而页面真正要这份数据时（第一次 `getState`）会由 `ensureScans()` 补扫（Ruling 34）。
+ *    ⚠️ 那条 notice 的措辞必须与这个分工一致：**不是**"你再也看不到它"，
+ *    而是"启动这一趟没扫它，页面拉状态时会补扫"。
  *    **写盘/下载永远要一次点击** —— 扫描是只读的，不改这一条。
  */
 async function startUp(): Promise<void> {
@@ -1233,10 +1347,10 @@ async function startUp(): Promise<void> {
   const st = requireState();
   for (const [folderId, entry] of sortedFolders(st)) {
     if (entry.autoUpdate) {
-      await scanInto(folderId, entry.path);
+      await queueScan(folderId, entry.path, { onlyIfMissing: true });
     } else {
       pushNotice(
-        `这个文件夹没开自动更新（${basename(entry.path)}）：启动时没有扫描它 —— 点一次「重扫」看它的内容`,
+        `这个文件夹没开自动更新（${basename(entry.path)}）：启动这一趟不扫它（页面第一次要状态时会补扫一次）`,
       );
     }
   }
