@@ -378,6 +378,16 @@ export function writeStateFile(state: StateFile): void {
  * 磁盘上那份里"我们这份没有的键" —— 读不回来 / 不是 JSON / 不是对象时按"没有可合并的"
  * 处理（`null`）：这一趟写下去的就是我们手里这份（**不抛** —— 写盘这一步不该因为
  * 读回失败而停住，那会让一次绑定整个失败）。
+ *
+ * ⚠️★ **必须保持"浅"合并**（`{...parsed, ...state}`）—— 2026-10-03 复审点名的**载荷性约束**，
+ *    改这一行之前先读完这一段：**只有我们这份里没有的顶层键**才从磁盘捡回来。
+ *    **不要**改成深合并（把 `items` 逐键并起来、或把 `folders` 递归并起来）——
+ *    那会让 **§13.1 删掉的那条 `items` 绑定复活**：那条删除是**整份替换 `items`**
+ *    表达的（我们这份的 `items` 里已经没有它了），深合并会从磁盘那份把它再捡回来
+ *    ⇒ "已转为文件夹跟踪"的绑定**永远删不掉**，而探针主相位锚的正是这件事
+ *    （`v1 的 items 里那条（…）已经没了` 那两条会红）。
+ *    ⇒ 想加深这一层之前先想清楚"删除"怎么表达；现在的答案是**不表达**：
+ *      浅合并 = 我们这份说了算，磁盘只贡献我们不认识的顶层键。
  */
 function mergeWithDisk(file: string, state: StateFile): StateFile {
   if (!existsSync(file)) return state;
@@ -388,7 +398,7 @@ function mergeWithDisk(file: string, state: StateFile): StateFile {
     return state;
   }
   if (!plainObject(parsed)) return state;
-  // 我们这份赢（它更新），磁盘独有的键活着
+  // 我们这份赢（它更新），磁盘独有的**顶层**键活着 —— 浅合并，见上面那一段
   return { ...parsed, ...state } as StateFile;
 }
 
