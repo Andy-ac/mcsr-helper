@@ -138,8 +138,9 @@ sqlite3 /srv/mcsr-helper/api/data/mcsr.db "VACUUM INTO '/tmp/mcsr-$(date +%F).db
 | `deploy/*.env.example` | 上面两类的**模板**（不含任何真实值，可以提交） | 人 |
 
 > `content/` 下的**内容文件**既不是密钥、也不在 `/etc/mcsr-helper/` 下，所以**故意不在上面这张表里**：
-> 它们是仓库里的文件，每次部署被同步到 `/srv/mcsr-helper/content/`（与下面「文件说明」里的
-> `deploy/` 那些也不同 —— 它们不在 `deploy/` 目录下）。见下面「内容文件（`content/`）」那一节。
+> 其中**要上线的那几份**每次部署被同步到 `/srv/mcsr-helper/content/`（**哪几份**见下一节的表 ——
+> `content/upstream/` 的上游快照与 `content/mod-overrides.json` 是**构建期输入、故意不上传**）。
+> 另外它们与「文件说明」里的 `deploy/` 那些也不同 —— 它们不在 `deploy/` 目录下。
 
 ⚠️⚠️ **不要把服务器侧的值写进 systemd 单元文件**（`deploy/mcsr-helper-api.service` 之类）：
 那些文件在版本库里，而 `deploy.sh` **每次部署**都会 `cmp` + `install` 覆盖服务器上的同名文件
@@ -184,18 +185,22 @@ sudo systemctl daemon-reload && sudo systemctl restart mcsr-helper-api
 部署时如果 `deploy.env` 里没有这一行，deploy.sh 会**移除**已有的跳转并打印一条
 ⚠️ 提示（旧链接会变成死链）—— 那就是提醒你去把域名补上。
 
-### 内容文件（`content/`）：每次部署同步，但**不是**每份都要 import
+### 内容文件（`content/`）：**表里这几份**每次部署同步，但**不是**每份都要 import
 
-仓库 `content/` 下的文件都会被 `deploy.sh` 上传（scp 清单里各一项）并装到
+仓库 `content/` 下**表里这几份**会被 `deploy.sh` 上传（scp 清单里各一项）并装到
 `/srv/mcsr-helper/content/`（`install -m 0644`，root 属主；服务以 `mcsr` 跑，只需要读）。
 它们**不是密钥**，所以不住 `/etc/mcsr-helper/` 下；但它们同样是"配置即代码"——
 **在服务器上手改会在下一次部署里被静默抹掉**，与 `Caddyfile` / systemd 单元同一条纪律。
+
+⚠️ **不是** `content/` 整个目录：`content/upstream/{mods,extra}.json`（上游快照）与
+`content/mod-overrides.json`（生成 mod 目录的输入）是**构建期输入、故意不上传** ——
+服务器上既没有生成器、也没有它们的落点，改它们**不会**影响线上。
 
 | 文件 | 装到哪 | 需要 import 吗 | 谁读它 |
 |---|---|---|---|
 | `content/resources.json` | `/srv/mcsr-helper/content/resources.json` | **要**：部署时以 `mcsr` 身份跑 `import.js --apply --file …` 把条目写进库（`source='import'`） | 导入脚本（部署时读一次文件），之后是库 |
 | `content/file-catalog.json` | `/srv/mcsr-helper/content/file-catalog.json` | **不要**：它没有查询/编辑需求 ⇒ 不建表、不导入；`GET /api/file-catalog` 在**每次请求**时现读这个文件（配置即代码，理由写在 `services/api/src/routes/fileCatalog.ts` 的文件头） | API 进程（每次请求） |
-| `content/mod-catalog.json` | `/srv/mcsr-helper/content/mod-catalog.json` | **不要**：同 `content/file-catalog.json`（没有查询/编辑需求 ⇒ 不建表、不导入）；`GET /api/mod-catalog` 在**每次请求**时现读这个文件（理由写在 `services/api/src/routes/modCatalog.ts` 的文件头） | API 进程（每次请求） |
+| `content/mod-catalog.json` | `/srv/mcsr-helper/content/mod-catalog.json` | **不要**：同 `content/file-catalog.json`（没有查询/编辑需求 ⇒ 不建表、不导入）；`GET /api/mod-catalog` 在**每次请求**时现读这个文件（**故意不缓存校验结论**，代价与理由写在 `services/api/src/routes/modCatalog.ts` 里那段 304 注释中） | API 进程（每次请求） |
 
 ⚠️ 「不需要 import」有一个**直接代价**，写在这里而不是留着让人自己发现：
 这两份目录不进数据库，所以**没有任何一次 SQL 层面的校验** —— 它们到没到位、能不能用，
@@ -226,7 +231,7 @@ curl -sS -w '\n<<<%{http_code}\n' https://<域名>/api/mod-catalog
 ⇒ 排障因此**多一步**：
 
 ```bash
-sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog] 那一行
+sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog] / [mod-catalog] 那一行
 ```
 
 ## 文件说明
@@ -236,6 +241,8 @@ sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog
 | `deploy.env.example` | 部署配置模板，复制成 `deploy.env` 后填写（`deploy.env` 已被 gitignore） |
 | `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物 |
 | `verify-csp.sh` | **部署后回读的判据**：吃一份抓好的响应头文本（stdin 或 `--headers`），核对 CSP 四项与 `/api/ranked/status`；预期值**现读** `Caddyfile`。能单独调用 ⇒ 不碰生产配置就能证明"它会红"（见上面那一节） |
+| `verify-file-catalog.sh` | **部署后回读的判据（`/api/file-catalog`）**：吃一份抓好的响应（`--body <文件>`，也接受 stdin），核对 ① 状态码 200 ② `version === 1` ③ `items` 非空。退出码 0 = 三项全过 / 1 = 有项没过 / 2 = 判据没跑起来。`deploy.sh` 的线上自检会调它 |
+| `verify-mod-catalog.sh` | **部署后回读的判据（`/api/mod-catalog`）**：同一个形状与同一套退出码，字段换成 v2 的 —— ① 状态码 200 ② `schema === 2` ③ `releases` 非空。⚠️ 只认 `--body <文件>`（**不吃 stdin**）。`deploy.sh` 的线上自检会调它 |
 | `bootstrap-server.sh` | 服务器首次初始化，由 `deploy.sh --bootstrap` 自动上传执行 |
 | `Caddyfile` | 反向代理 + HTTPS + **响应头（Referrer-Policy / CSP）**；旧域名跳转是它 `import` 出来的可选片段 |
 | `mcsr-helper-api.service` | API 的 systemd 单元，含沙箱加固与三个 seeds 变量的说明 |
