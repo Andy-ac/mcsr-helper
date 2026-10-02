@@ -21,6 +21,7 @@ import { desktopRoute } from './routes/desktop';
 import { fileCatalogRoute } from './routes/fileCatalog';
 import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
+import { modCatalogRoute } from './routes/modCatalog';
 import { moderationRoute } from './routes/moderation';
 import { rankedRoute } from './routes/ranked';
 import { resourcesRoute } from './routes/resources';
@@ -156,6 +157,11 @@ app.route('/api', desktopRoute);
  * ⚠️ 它**每次请求都读盘**（配置即代码，理由写在那个文件里），自己带 ETag + no-cache。
  */
 app.route('/api/file-catalog', fileCatalogRoute);
+/*
+ * mc.sr 那套 mod 目录（schema 2，公开读）。见 routes/modCatalog.ts 的文件头 ——
+ * 挂载点写全、route 文件里用相对路径（'/'），与上面那条逐字同形；两条端点响应体各自独立。
+ */
+app.route('/api/mod-catalog', modCatalogRoute);
 /*
  * ② 直编（`content.author`；硬删走 shared 的谓词 `canHardDelete`）。
  *
