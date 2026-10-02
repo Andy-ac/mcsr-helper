@@ -26,7 +26,7 @@
  *    顺手 6 里被搬进了 shared）；剩下的都是"读盘 / 打网络 / 弹框"这类需要环境才能跑的编排，
  *    由 `.cache/task4-probe/` 那套桩 electron 探针覆盖（不可长期复跑）。
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   createReadStream,
   existsSync,
@@ -1159,29 +1159,43 @@ async function confirmEnable(targetPath: string): Promise<boolean> {
 }
 
 /**
- * ③下载到 `<同目录>/<上游文件名>.part`，边下边算 sha512，并把进度推给页面。
+ * ③下载到 `<同目录>/<上游文件名>.part`，边下边算 sha512，并把进度推给调用方；
+ *    下完之后**顺手做 v1 `runUpdate` 第 ④ 步的那两条校验**（sha512 与字节数）。
  *
  * ⚠️ 不重试：这是 27 MB 的字节，重试要重新下完（spec 只在元数据那一步要了退避重试）。
  *    失败时调用方会把 `.part` 删掉 —— 原文件一个字节都没动。
+ *
+ * ⚠️★ 形状是"选项对象 + 进度回调"（2026-10-02 Task 3 第 2 步）：两个调用方对
+ *    "进度推给谁"与"期望值从哪来"的答案不同（v1 的 `runUpdate` 推 `current.progress`、
+ *    期望值来自那一次检查；新模块的行更新推它自己那一行）⇒ 这两件事都由**调用方**给进来，
+ *    这里不再认识 `itemId`、也不读模块状态。收尾那两条校验是**从 v1 `runUpdate` 的 ④
+ *    原样搬进来的**（文案与顺序逐字相同）⇒ 两个调用方走的是同一条判据。
+ *    代价（认）：`sha512` 不再返回 —— 调用方要的是"要么通过、要么抛"，返回它只会诱使
+ *    第二个人再判一次（那就成了两份判据）。
  */
-export async function downloadTo(
-  partPath: string,
-  url: string,
-  expectedSize: number,
-  itemId: string,
-): Promise<{ sha512: string; bytes: number }> {
+export async function downloadTo(opts: {
+  url: string;
+  partPath: string;
+  /** 上游写下的 sha512 —— 对不上 ⇒ 抛（调用方负责删掉 `.part`）。 */
+  expectedSha512: string;
+  /** 上游写下的字节数 —— 对不上 ⇒ 抛。 */
+  expectedSize: number;
+  /** 进度（0–100；算不出总长时是 `null`）。v1 用它推 `current.progress`。 */
+  onProgress?: (percent: number | null) => void;
+}): Promise<void> {
   const d = deps;
   if (!d) throw new Error('模块还没初始化');
-  const res = await fetch(url, { headers: { 'user-agent': d.userAgent } });
+  const res = await fetch(opts.url, { headers: { 'user-agent': d.userAgent } });
   if (!res.ok) throw new Error(`下载失败：上游 HTTP ${String(res.status)}`);
   if (!res.body) throw new Error('下载失败：上游没有给响应体');
 
   const headerLength = Number(res.headers.get('content-length'));
-  const total = Number.isFinite(headerLength) && headerLength > 0 ? headerLength : expectedSize;
+  const total =
+    Number.isFinite(headerLength) && headerLength > 0 ? headerLength : opts.expectedSize;
   const hash = createHash('sha512');
   let bytes = 0;
   let lastReportAt = 0;
-  const handle = await open(partPath, 'w');
+  const handle = await open(opts.partPath, 'w');
   try {
     const reader = res.body.getReader();
     for (;;) {
@@ -1196,8 +1210,7 @@ export async function downloadTo(
       // 150ms 一次：27 MB 会切成几千个 chunk，每个都推一次等于把 IPC 灌满
       if (now - lastReportAt >= 150) {
         lastReportAt = now;
-        reportProgress(
-          itemId,
+        opts.onProgress?.(
           total > 0 ? Math.min(100, Math.round((bytes / total) * 1000) / 10) : null,
         );
       }
@@ -1205,19 +1218,89 @@ export async function downloadTo(
   } finally {
     await handle.close();
   }
-  reportProgress(itemId, 100);
+  opts.onProgress?.(100);
   /*
    * ⚠️ 再读一次**磁盘上**的字节数：上面那个 `bytes` 是"从网络流进来多少"，
    *    与"真的写下去了多少"是两件事（磁盘满、盘被拔、写入被中断都会有差别）。
    *    两条互相印证的读数不一致 ⇒ 直接失败（spec §7.3 第 3 步要校验字节数）。
    */
-  const onDisk = statSync(partPath).size;
+  const onDisk = statSync(opts.partPath).size;
   if (onDisk !== bytes) {
     throw new Error(
       `写到磁盘的字节数（${String(onDisk)}）与从网络读到的（${String(bytes)}）不一致`,
     );
   }
-  return { sha512: hash.digest('hex'), bytes };
+  // ④ 校验：sha512 与字节数都要对得上（不一致 ⇒ 抛，调用方的 catch 会删掉 .part）
+  const sha512 = hash.digest('hex');
+  if (sha512 !== opts.expectedSha512) {
+    throw new Error('sha512 与上游不一致 ⇒ 拒绝写入（原文件一个字节都没动）');
+  }
+  if (bytes !== opts.expectedSize) {
+    throw new Error(
+      `字节数与上游不一致：下到 ${String(bytes)}，上游写的是 ${String(opts.expectedSize)}`,
+    );
+  }
+}
+
+/**
+ * 把下载好的 `.part` 就位（spec §7.3 第 7 步）：**先**把同名旧文件挪成一个 `.old`，
+ * 再 `rename(.part → targetPath)`，并把"挪走的旧文件在哪"交给调用方（第 8 步要删的是
+ * 「旧副本 ∪ 这一份」）。
+ *
+ * ⚠️★ **它和 v1 `runUpdate` 里那一段是两套算法，别把 v1 改过来调用它**（2026-10-02 Task 3）：
+ *    v1 的顺序是"先 rename 就位、再删旧名字那份"，理由写在 `runUpdate` 的 ⑤ 注释里 ——
+ *    "先删/先挪的话，删成功而 rename 失败就是『用户的 jar 没了、目录里只剩一个 .part』"。
+ *    这一支是 spec §7.3 第 7 步的字面（新模块的行更新用它），两者**失败窗口不同**：
+ *    走这一支时，两次 rename 之间进程被杀 ⇒ 目标位置上一时什么都没有（只剩那个 .old）。
+ *    ⇒ "抽成同一个函数"在这里等于**替 v1 换掉它的顺序**，那是行为变化、不是抽取。
+ *    所以：v1 保持原样（`runUpdate` 里那段一个字节没动），新路径用这一个。
+ *
+ * ⚠️ 被占用时**说清楚并什么都不改**（Windows 上游戏正在读那个 jar 时 `rename` 会给
+ *    `EBUSY`/`EPERM`）：挪走的旧文件会被**放回去**，抛出来的消息里带着"文件被占用"与
+ *    到底改没改 —— 半途失败留下"目标位置什么都没有"是这一支最坏的形态。
+ */
+export async function installDownloadedFile(opts: {
+  partPath: string;
+  targetPath: string;
+}): Promise<{ movedOld: string | null }> {
+  const { partPath, targetPath } = opts;
+  let movedOld: string | null = null;
+  if (existsSync(targetPath)) {
+    // `.<rand>.old`（spec §7.3 第 7 步）：带随机段是为了不撞上上一次留下的同名 .old
+    movedOld = `${targetPath}.${randomUUID()}.old`;
+    try {
+      renameSync(targetPath, movedOld);
+    } catch (error) {
+      throw new Error(
+        `文件被占用，可能游戏正在运行（${messageOf(error)}）；什么都没改：${targetPath}`,
+      );
+    }
+  }
+  try {
+    renameSync(partPath, targetPath);
+  } catch (error) {
+    /*
+     * 半途失败 ⇒ 把挪走的那份**放回去**。放不回去时照实说：那一刻目标位置上什么都没有，
+     * 只剩 `movedOld`（它不会出现在状态里，所以这条路径要把名字报出来）。
+     */
+    let note = '什么都没改';
+    if (movedOld !== null) {
+      try {
+        renameSync(movedOld, targetPath);
+      } catch (rollbackError) {
+        note = `挪走的旧文件没能放回去：${movedOld}（${messageOf(rollbackError)}）`;
+      }
+    }
+    const detail = messageOf(error);
+    // `EBUSY`/`EPERM`/`EACCES` 都是"那个文件现在动不了"（spec §7.3 第 7 步点名了前两个）
+    const occupied = /EBUSY|EPERM|EACCES/.test(detail);
+    throw new Error(
+      occupied
+        ? `文件被占用，可能游戏正在运行（${detail}）；${note}：${targetPath}`
+        : `换上新文件失败（${detail}）；${note}：${targetPath}`,
+    );
+  }
+  return { movedOld };
 }
 
 /**
@@ -1306,18 +1389,14 @@ async function runUpdate(itemId: string): Promise<UpdateOutcome> {
       console.warn('[file-updates] 清掉了上一次留下的半成品：', partPath);
     }
 
-    // ③ 下载到同目录的 .part（边下边算 sha512）
-    const downloaded = await downloadTo(partPath, state.latestUrl, state.latestSize, item.id);
-
-    // ④ 校验：sha512 与字节数都要对得上（不一致 ⇒ 抛，下面的 catch 会删掉 .part）
-    if (downloaded.sha512 !== state.latestSha512) {
-      throw new Error('sha512 与上游不一致 ⇒ 拒绝写入（原文件一个字节都没动）');
-    }
-    if (downloaded.bytes !== state.latestSize) {
-      throw new Error(
-        `字节数与上游不一致：下到 ${String(downloaded.bytes)}，上游写的是 ${String(state.latestSize)}`,
-      );
-    }
+    // ③ 下载到同目录的 .part（边下边算 sha512）；④ 的两条校验（sha512 / 字节数）在它里面做
+    await downloadTo({
+      url: state.latestUrl,
+      partPath,
+      expectedSha512: state.latestSha512,
+      expectedSize: state.latestSize,
+      onProgress: (percent) => reportProgress(item.id, percent),
+    });
 
     /*
      * ⑤ 换上去。
