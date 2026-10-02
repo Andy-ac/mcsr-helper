@@ -537,9 +537,14 @@ export function compareLocalToRelease(
    * ⇒ 得出"本地更旧" ⇒ **把更新的本地 jar 换成更旧的上游包**（正是 mcsrranked 那条断言禁止的降级）。
    * ⇒ 一律归 `different-build`（要人显式点，不进批量）。
    *
-   * ⚠️ 代价（写下来）：带字母后缀的版本从此**不排序、不进批量**。可接受：1.16.1 合法集里那些需要
-   *    更新的版本主体**全是纯数字**（`5.1.0`/`2.7.1`/`2.3`/…）⇒ 18 个真实 jar 的判定一字不变；
-   *    而 OptiFine 那种字母版本本来就是 `manual`（见 `needsUpdate`）。
+   * ⚠️ 代价（写下来，**已用真目录量化、不是零代价**）：带字母后缀的版本从此**不排序、不进批量**。
+   *    18 个真实 jar 的判定一字不变（1.16.1 那 9 个 `older` 的主体全是纯数字）。但不止 OptiFine：
+   *    实测 555 条 release / 1761 个键里，官方主体非数字的键 **235** 个（auto 180 / manual 55），
+   *    其中落在 1.16.1 且 `download=auto` 的有 5 个 mod —— `custom-map-resetter`（`1.4.1-1.16.x`）、
+   *    `krypton`（`0.1.3-SNAPSHOT`）、`noverworld`（`2.3.2-BASTION`）、`pogworld`（`1.4.0-BIOMES`）、
+   *    `replaymod`（`1.16.1-2.6.13`）：这些行上"本地是另一种打包"从 `older`（自动）变成
+   *    `different-build`（要人点一下）。方向是保守的那一侧（少自动、不降级）。
+   *    而 OptiFine 那种字母版本本来就是 `manual`（见 `needsUpdate`），不受影响。
    */
   if (!(NUMERIC_BODY.test(local) && NUMERIC_BODY.test(target))) return 'different-build';
   // 复用 v1 的比较器（返回符号数）。它按数字段逐段比，解析不出数字段时退化成字符串序。
