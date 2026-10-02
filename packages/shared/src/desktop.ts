@@ -141,10 +141,19 @@ export interface DesktopBridge {
    *    （`channelUrl` ⇒ `mirrorUrl`）—— 渲染进程**永远不能让主进程去下载一个它给出的地址**。
    *    这是 v1 立的规矩，这一组**不许破**：被注入的页面能按 id 触发写盘，
    *    但**指定不了写到哪（路径是主进程记下的）、也指定不了从哪儿取**。
-   * ⚠️ 四条写盘通道（`updateMod` / `updateCatalogRow` / `updateFolderAll` /
-   *    `downloadMissing`）还多要一个 `releaseKey`：那是渲染进程**从它自己渲染的那一行**
-   *    带回来的字符串，主进程**按它在目录里查 release**（查不到就抛）。让页面递一个
-   *    release 对象或一个地址，都等于把"下载什么"交给页面 ⇒ **只收 key**。
+   * ⚠️ **"下载哪一个"这四条的入口各不相同，按各自的参数读**（别混成一句 —— 这是
+   *    2026-10-03 评审的 Important 1：上一版把四条都写成"多要一个 `releaseKey`"，而**只有两条**要）：
+   *    · `updateMod(folderId, modid, releaseKey, channel)` 与
+   *      `updateCatalogRow(rowId, releaseKey, channel)` —— **只有这两条收 `releaseKey`**，
+   *      而它是页面**从它自己渲染的那一行**带回来的 key ⇒ 主进程**必须按它在目录里查**
+   *      （查不到就抛）。这是"页面能指定下载哪一个"的**唯一**入口，所以它只能是 key：
+   *      让页面递一个 release 对象或一个地址，等于把"下载什么"整个交给页面。
+   *    · `updateFolderAll(folderId, channel)` **不收 key**：目标来自**主进程自己的那份状态**
+   *      （哪些行 `batchable` 是主进程判的）⇒ 页面只说"哪个文件夹、走哪条通道"。
+   *    · `downloadMissing(modid, gameVersion, folderId, channel)` 收的是
+   *      `(modid, 游戏版本)`，主进程**照这两个值在目录里查** release（spec §7.5：这一栏只列
+   *      **唯一候选**的行）⇒ 页面能选的只有目录里已有的那一条，同样给不出地址。
+   *    ⇒ 四条唯一的共同点是：**没有任何一条收地址**（`channel` 是 id、`releaseKey` 是 key）。
    *
    * ⚠️⚠️ 出参方向是反的，而且必须反（`fileUpdates` 那段写着同一件事）：`getState()` 的
    *    返回值与 `onStatus` 推给页面的那份 `ModFoldersState` 里**确实带着已绑定文件夹的
@@ -155,10 +164,11 @@ export interface DesktopBridge {
    *
    * ── 状态对象：这一组只搬 T1 那一份，不另造平行类型 ──
    *    除 `onStatus`（它返回取消订阅的函数）外，每个方法都返回**整份** `ModFoldersState`：
-   *    `catalogStatus` / `gameVersion` / `tagFilter` / `catalogRows`（`CatalogRowView[]`）/
-   *    `folders`（`ModFolderView[]`）/ `missing`（`MissingModView[]`）/ `notices` / `busy` /
-   *    `lastRun`。出参只声明**这一个**类型（`@mcsr/shared/modFolders`）：再写一份"给 IPC 用的"
-   *    平行类型，两份必然有一天不一致，而表现是页面显示的与主进程判定的不是同一件事。
+   *    `catalogStatus` / `gameVersion` / `tagFilter` / `bulkChannel` / `catalogRows`
+   *    （`CatalogRowView[]`）/ `folders`（`ModFolderView[]`）/ `missing`（`MissingModView[]`）/
+   *    `notices` / `busy` / `lastRun`。出参只声明**这一个**类型（`@mcsr/shared/modFolders`）：
+   *    再写一份"给 IPC 用的"平行类型，两份必然有一天不一致，
+   *    而表现是页面显示的与主进程判定的不是同一件事。
    *
    * ── 为什么第一部分的两个筛选器也是通道、而不是页面自己的 localStorage ──
    *    `gameVersion`（`setCatalogGameVersion`）与 `tagFilter`（`setTagFilter`）是
@@ -167,6 +177,10 @@ export interface DesktopBridge {
    *    读回来的那一份就是状态里的 `gameVersion` / `tagFilter`。
    *    渲染进程再用 localStorage 记一份，等于同一个选择有**两处**记忆 —— 两处必然有一天
    *    不一致（一处说旧版本、一处说新版本），所以它**只能是通道**。
+   * ⚠️ **`bulkChannel` 是同一个道理的第三样**（Ruling 23）：它也住 `prefs`，也必须**读得回来**
+   *    —— `setBulkChannel` 的返回值里带着当前值（`ModFoldersState.bulkChannel`）。
+   *    界面读那一格、**不要自己再存一份**：否则界面显示 `'origin'`、主进程按存下来的
+   *    镜像 id 下载，而且完全不报错。⇒ 这也是给 `ModFoldersState` 补那一格的理由。
    *
    * ── `bindFolder` 重名：有意为之，不是忘了改名（spec §6.7）──
    *    `FILE_UPDATES_CHANNELS.bindFolder`（v1）**保留原样**：老客户端 0.0.4 仍按它调，
@@ -184,6 +198,18 @@ export interface DesktopBridge {
     onStatus(callback: (state: ModFoldersState) => void): () => void;
     /** 弹**原生**目录对话框，建一个"文件夹实体"（无入参 ⇒ 选哪里由主进程决定）。 */
     bindFolder(): Promise<ModFoldersState>;
+    /**
+     * 弹**原生** `.jar` 对话框，把选中的文件绑到**第一部分**的那一行（**Ruling 24** 加的）。
+     *
+     * 语义（**实现是 Task 4 的**，这里只声明）：`readJarMeta` 读出那个 jar 的 modid，
+     * **必须与 `rowId` 里的 modid 一致**（不一致就拒 —— 不许把别的 mod 绑到这一行），
+     * 然后把 `{ localPath, localVersion, localSha512, releaseKey: null, autoUpdate: false }`
+     * 写进 `catalogBindings[rowId]`。
+     * ⚠️ 入参仍然**只有 id**（`.jar` 的路径由主进程自己的对话框产生）—— 这正是这条通道
+     *    存在的理由：spec §6.8 要求第一部分**每一行**都能"绑定本地文件"，而 v1 的
+     *    `fileUpdates.bind` 只认 v1 的 item id、**收不了 `rowId`**。
+     */
+    bindCatalogRow(rowId: string): Promise<ModFoldersState>;
     unbindFolder(folderId: string): Promise<ModFoldersState>;
     /** 不带 `folderId` = 全部重扫；只读（不下载、不写盘）。 */
     rescan(folderId?: string): Promise<ModFoldersState>;
@@ -195,7 +221,11 @@ export interface DesktopBridge {
     setFolderGameVersion(folderId: string, gameVersion: string | null): Promise<ModFoldersState>;
     /** 只表示"启动时检查并高亮"；**写盘永远要一次点击**（与 v1 同一条语义）。 */
     setFolderAutoUpdate(folderId: string, on: boolean): Promise<ModFoldersState>;
-    /** "全部更新"用哪条通道（一次点击驱动 N 个下载 ⇒ 必须有个默认，spec §6.8）。 */
+    /**
+     * "全部更新"用哪条通道（一次点击驱动 N 个下载 ⇒ 必须有个默认，spec §6.8）。
+     * ⚠️ 返回值里带着**当前值**（`ModFoldersState.bulkChannel`）⇒ 界面**读那一格**显示，
+     *    不要自己再存一份（两处记忆必然有一天不一致，见上面那一段）。
+     */
     setBulkChannel(channel: Channel): Promise<ModFoldersState>;
     /** ★ 写盘：把该文件夹里这一行换成 `releaseKey` 那条 release（**Task 5** 实现）。 */
     updateMod(
@@ -295,7 +325,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那十四条 IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十五条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -306,8 +336,13 @@ export function desktopBridge(): DesktopBridge | null {
  *    读的是那些串，改一个字母就是"点了没反应"。这一组**只加**。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
- * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`，需要缩写的地方
- *    （`setFolderAutoUpdate` ⇒ `-set-folder-auto`）与 v1 的 `-set-auto` 同型。
+ * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**四处不是纯 kebab**
+ *    （照 v1 的缩写习惯，四个都列在这里，免得下一个人按规则推出来对不上）：
+ *      · `onStatus` ⇒ `-status`（去掉 `on`，与 v1 的 `mcsr:fileupdates-status` 同型）
+ *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
+ *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
+ *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
+ *    其余十一个都是方法名的逐字 kebab。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -319,6 +354,7 @@ export const MOD_FOLDERS_CHANNELS = {
   /** 状态推送。**同一个串同时用于订阅与取消订阅**（与 v1 同一条纪律）。 */
   onStatus: 'mcsr:modfolders-status',
   bindFolder: 'mcsr:modfolders-bind-folder',
+  bindCatalogRow: 'mcsr:modfolders-bind-catalog-row',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
   rescan: 'mcsr:modfolders-rescan',
   setFolderGameVersion: 'mcsr:modfolders-set-folder-version',

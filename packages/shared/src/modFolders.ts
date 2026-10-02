@@ -584,6 +584,19 @@ export interface ModFoldersState {
   /** 界面当前选中的游戏版本（默认 = 某个已绑定文件夹推断出的版本，否则 `1.16.1`）。 */
   gameVersion: string;
   tagFilter: readonly string[];
+  /**
+   * "全部更新"当前用的通道（**Ruling 23** 加的这一格）。
+   *
+   * ⚠️ 它**必须**是 `StateFileV2.prefs.bulkChannel` 那个值（**同一个值**，不是两份记忆）：
+   *    界面读这一格来显示"当前选中的通道"，**不要**在渲染进程里再存一份 ——
+   *    两份记忆的表现是"界面显示 `'origin'`、主进程按存下来的镜像 id 下载"，
+   *    而且**完全不报错**（下一条注释里反对的正是这件事）。
+   * ⚠️ 没有它的时候 `setBulkChannel` 只能返回一份**读不出**这个选择的状态：
+   *    页面无处可读 ⇒ 要么自己存（上面那条），要么显示一个猜的值。
+   *    为什么它住在主进程的 `prefs` 里（而不是页面本地存储）：与 `tagFilter` 逐字同一条理由
+   *    —— 按机器记住；见 `desktop.ts` 里 `setBulkChannel` / `setTagFilter` 那一段。
+   */
+  bulkChannel: Channel;
   catalogRows: readonly CatalogRowView[];
   folders: readonly ModFolderView[];
   missing: readonly MissingModView[];
@@ -596,6 +609,25 @@ export interface ModFoldersState {
     failed: readonly { modid: string; reason: string }[];
   } | null;
 }
+
+/**
+ * **编译期**断言（Ruling 23）：状态里那一格与状态文件里那一格必须是同一个类型。
+ *
+ * 为什么需要它：`ModFoldersState` 今天**还没有任何消费者** —— 它由主进程（Task 4）组装、
+ * 由页面读，本仓此刻没有任何一处**建立**或**读**它的字段 ⇒ 只把字段写得准是验不了的：
+ * 从上面删掉 `bulkChannel`，**一个字都不会红**。这一条把"删了没人发现"变成"删了立刻红"。
+ *
+ * ⚠️ 方向：类型对不上时它解析成 `never`，于是下面那个 `true` 赋不过去 ⇒ 红；
+ *    字段被删掉时上面那个索引访问先红（`TS2339`）⇒ 也是红。
+ * ⚠️ 代价（认）：这是一个**没有任何运行时用途**的导出值（一个 `true`）。
+ *    留着它是刻意的 —— 换成 `expect<T extends true>` 那种写法**抓不住 `never`**
+ *    （`never` 对任何约束都成立），那又变成装饰了。
+ */
+export type BulkChannelIsPersisted =
+  ModFoldersState['bulkChannel'] extends StateFileV2['prefs']['bulkChannel'] ? true : never;
+
+/** 上面那条断言的落地点：它唯一的用途就是被 `tsc` 检查，不是给谁调用的值。 */
+export const BULK_CHANNEL_IS_PERSISTED: BulkChannelIsPersisted = true;
 
 /** v1 状态文件里的一条绑定，喂给 `attributeLegacyBindings`（由主进程读盘后组装）。 */
 export interface LegacyBinding {

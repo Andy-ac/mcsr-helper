@@ -169,8 +169,13 @@ const bridge: DesktopBridge = {
    *
    *   · `channel` 是 `'origin'` 或 `{ mirrorId }` 这样的 **id**，**不是 URL** ——
    *     页面指定不了主进程去哪儿取字节（地址由主进程拿目录里的 `mirrors[]` 拼）。
-   *   · `releaseKey` 是页面**从它自己渲染的那一行**带回来的 key，主进程按它在目录里
-   *     查 release。⇒ 这条通道能按 id 触发写盘，但**写哪里、下什么都不是页面说了算**。
+   *   · **"下载哪一个"的入口按通道各不相同**（2026-10-03 评审 Important 1：上一版这里
+   *     写成了"`releaseKey` 由页面带回来"那一句，而**只有两条**收它）：
+   *     `releaseKey` 只有 `updateMod` / `updateCatalogRow` 收（页面**从它自己渲染的那一行**
+   *     带回来的 key，主进程按它在目录里查 release）；`updateFolderAll` 的目标来自主进程
+   *     自己的状态、`downloadMissing` 按 `(modid, 游戏版本)` 在目录里查
+   *     ⇒ 这一组**没有任何一条收地址**：能按 id 触发写盘，但**写哪里、从哪儿取都不是
+   *     页面说了算**（完整那段见 `@mcsr/shared/desktop` 里 `modFolders` 的注释）。
    *
    * ⚠️ **读**方向与上面一组同样反过来：`getState` / `onStatus` 交出去的
    *    `ModFoldersState` 里带着已绑定文件夹的**绝对路径**（含用户名）—— 那是
@@ -194,6 +199,12 @@ const bridge: DesktopBridge = {
     },
     bindFolder(): Promise<ModFoldersState> {
       return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.bindFolder) as Promise<ModFoldersState>;
+    },
+    bindCatalogRow(rowId: string): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.bindCatalogRow,
+        rowId,
+      ) as Promise<ModFoldersState>;
     },
     unbindFolder(folderId: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(
