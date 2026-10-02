@@ -1278,6 +1278,24 @@ export async function downloadTo(opts: {
 }
 
 /**
+ * 就位失败时抛什么 —— **两处 rename 共用这一处判断**（2026-10-02 Task 3 复审的 Minor (a)）。
+ *
+ * ⚠️★ 为什么要分类：`EBUSY`/`EPERM`/`EACCES` 是"那个文件现在动不了"（spec §7.3 第 7 步
+ *    点名了前两个，给的说法是"明确报『文件被占用，可能游戏正在运行』"）；而 `ENOENT`
+ *    （目标在 `existsSync` 与 `rename` 之间没了）这类**不是占用**。把后者也说成
+ *    "可能游戏正在运行"就是**给用户看错病因**，他会去关游戏而不是去看那个目录。
+ * ⚠️ 一处写、两处用：原先只有第二次 rename 分类、第一次一律说"被占用" —— 那种漂移
+ *    正是"两处各判一次"的必然结果。
+ * ⚠️ `note` 由调用方给（"什么都没改" / "挪走的旧文件没能放回去：……"）：这一层不猜做过什么。
+ */
+function installFailure(error: unknown, note: string, targetPath: string): Error {
+  const detail = messageOf(error);
+  return /EBUSY|EPERM|EACCES/.test(detail)
+    ? new Error(`文件被占用，可能游戏正在运行（${detail}）；${note}：${targetPath}`)
+    : new Error(`换上新文件失败（${detail}）；${note}：${targetPath}`);
+}
+
+/**
  * 把下载好的 `.part` 就位（spec §7.3 第 7 步）：**先**把同名旧文件挪成一个 `.old`，
  * 再 `rename(.part → targetPath)`，并把"挪走的旧文件在哪"交给调用方（第 8 步要删的是
  * 「旧副本 ∪ 这一份」）。
@@ -1293,6 +1311,9 @@ export async function downloadTo(opts: {
  * ⚠️ 被占用时**说清楚并什么都不改**（Windows 上游戏正在读那个 jar 时 `rename` 会给
  *    `EBUSY`/`EPERM`）：挪走的旧文件会被**放回去**，抛出来的消息里带着"文件被占用"与
  *    到底改没改 —— 半途失败留下"目标位置什么都没有"是这一支最坏的形态。
+ * ⚠️ **`.part` 不归它管**（Ruling 30）：它只负责把"下载好的那一份"就位；`.part` 是**下载
+ *    那一步**的临时文件，删它是调用方的事（v1 `runUpdate` 的先例：自己的 catch 里清，
+ *    下一轮开始前再清一次残留）。所以这里**一个字节都不碰** `.part`。
  */
 export async function installDownloadedFile(opts: {
   partPath: string;
@@ -1306,9 +1327,8 @@ export async function installDownloadedFile(opts: {
     try {
       renameSync(targetPath, movedOld);
     } catch (error) {
-      throw new Error(
-        `文件被占用，可能游戏正在运行（${messageOf(error)}）；什么都没改：${targetPath}`,
-      );
+      // 这一次失败 ⇒ 一个字节都没挪动过，所以"什么都没改"是实情
+      throw installFailure(error, '什么都没改', targetPath);
     }
   }
   try {
@@ -1326,14 +1346,7 @@ export async function installDownloadedFile(opts: {
         note = `挪走的旧文件没能放回去：${movedOld}（${messageOf(rollbackError)}）`;
       }
     }
-    const detail = messageOf(error);
-    // `EBUSY`/`EPERM`/`EACCES` 都是"那个文件现在动不了"（spec §7.3 第 7 步点名了前两个）
-    const occupied = /EBUSY|EPERM|EACCES/.test(detail);
-    throw new Error(
-      occupied
-        ? `文件被占用，可能游戏正在运行（${detail}）；${note}：${targetPath}`
-        : `换上新文件失败（${detail}）；${note}：${targetPath}`,
-    );
+    throw installFailure(error, note, targetPath);
   }
   return { movedOld };
 }
