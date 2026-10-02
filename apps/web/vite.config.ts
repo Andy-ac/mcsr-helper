@@ -133,6 +133,7 @@ export default defineConfig({
        */
       '@mcsr/shared/fileUpdates': resolvePath('../../packages/shared/src/fileUpdates.ts'),
       '@mcsr/shared/review': resolvePath('../../packages/shared/src/review.ts'),
+      '@mcsr/shared/modCatalog': resolvePath('../../packages/shared/src/modCatalog.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

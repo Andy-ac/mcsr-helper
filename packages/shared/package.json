@@ -39,7 +39,8 @@
     "./videos": "./src/videos.ts",
     "./live": "./src/live.ts",
     "./ranked": "./src/ranked/index.ts",
-    "./tracking": "./src/tracking.ts"
+    "./tracking": "./src/tracking.ts",
+    "./modCatalog": "./src/modCatalog.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
