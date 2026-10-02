@@ -57,7 +57,7 @@ import {
   pickLatestVersion,
   primaryFileOf,
 } from '@mcsr/shared/fileUpdates';
-import { migrateState, type StateFileV2 } from '@mcsr/shared/modFolders';
+import { type Channel, migrateState, type StateFileV2 } from '@mcsr/shared/modFolders';
 import type { MessageBoxOptions, OpenDialogOptions } from 'electron';
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { unzipSync } from 'fflate';
@@ -129,6 +129,118 @@ interface StateFileRead {
 }
 
 /**
+ * v2 三格的归一化（Ruling 31；判据与理由写在 `readStateFile` 的注释里）。
+ *
+ * ⚠️ 三格一律**只看类型、不看业务含义**：这一层没有目录、没有网络，也不该有
+ *    （"这条镜像 id 在不在目录里"是 `setBulkChannel` 的判据，不是读盘这一步的）。
+ *    代价（认）：一个 `prefs.bulkChannel` 指向一条**已经不在目录里**的镜像照样读得进来；
+ *    它的后果是 `channelUrl()` 给 `null`、那次更新被拒绝 —— 方向是保守的那一侧。
+ * ⚠️ 坏形状**抛**（由 `readStateFile` 的 catch 接住 ⇒ 备份 + 重建 + 告诉用户），
+ *    不在这里返回一个"干净的空 v2"：那正好是 Ruling 31 要消灭的那种静默。
+ */
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 形状不对时抛什么（`readStateFile` 的 catch 会把这句话原样带进给用户的文案）。 */
+function badStateShape(what: string): Error {
+  return new Error(`stateVersion: 2 但 ${what} 的形状不对`);
+}
+
+/** 一个"字符串或 null"的字段（缺 ⇒ null；类型不对 ⇒ 坏文件）。 */
+function stringOrNull(value: unknown, what: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') return value;
+  throw badStateShape(what);
+}
+
+function normalizeFolders(raw: unknown): StateFileV2['folders'] {
+  // ⚠️ 只有"**这个键不存在**"才算缺（补默认）；`null` 是**类型不对** ⇒ 坏文件。
+  //    判据写在 `readStateFile` 上面那一段里：Ruling 31 点名的形态正是 `folders: null`。
+  if (raw === undefined) return {};
+  if (!plainObject(raw)) throw badStateShape('folders');
+  const out: StateFileV2['folders'] = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!plainObject(value)) throw badStateShape(`folders["${id}"]`);
+    const path = value.path;
+    if (typeof path !== 'string' || path === '') throw badStateShape(`folders["${id}"].path`);
+    const gameVersion = stringOrNull(value.gameVersion, `folders["${id}"].gameVersion`);
+    const boundAt = value.boundAt;
+    if (boundAt !== undefined && typeof boundAt !== 'number') {
+      throw badStateShape(`folders["${id}"].boundAt`);
+    }
+    out[id] = {
+      path,
+      gameVersion,
+      // 与 v1 的 `items` 同一条口径：缺字段 ⇒ false（不是"看起来开着"）
+      autoUpdate: value.autoUpdate === true,
+      boundAt: typeof boundAt === 'number' && Number.isFinite(boundAt) ? boundAt : 0,
+    };
+  }
+  return out;
+}
+
+function normalizeCatalogBindings(raw: unknown): StateFileV2['catalogBindings'] {
+  if (raw === undefined) return {};
+  if (!plainObject(raw)) throw badStateShape('catalogBindings');
+  const out: StateFileV2['catalogBindings'] = {};
+  for (const [rowId, value] of Object.entries(raw)) {
+    if (!plainObject(value)) throw badStateShape(`catalogBindings["${rowId}"]`);
+    const localPath = value.localPath;
+    if (typeof localPath !== 'string' || localPath === '') {
+      throw badStateShape(`catalogBindings["${rowId}"].localPath`);
+    }
+    out[rowId] = {
+      localPath,
+      localVersion: stringOrNull(value.localVersion, `catalogBindings["${rowId}"].localVersion`),
+      localSha512: stringOrNull(value.localSha512, `catalogBindings["${rowId}"].localSha512`),
+      releaseKey: stringOrNull(value.releaseKey, `catalogBindings["${rowId}"].releaseKey`),
+      autoUpdate: value.autoUpdate === true,
+    };
+  }
+  return out;
+}
+
+function normalizePrefs(raw: unknown): StateFileV2['prefs'] {
+  const fallback: StateFileV2['prefs'] = {
+    bulkChannel: 'origin',
+    catalogGameVersion: '1.16.1',
+    tagFilter: [],
+  };
+  if (raw === undefined) return fallback;
+  if (!plainObject(raw)) throw badStateShape('prefs');
+
+  const channel = raw.bulkChannel;
+  let bulkChannel: Channel;
+  if (channel === undefined || channel === 'origin') {
+    bulkChannel = 'origin';
+  } else if (
+    plainObject(channel) &&
+    typeof channel.mirrorId === 'string' &&
+    channel.mirrorId !== ''
+  ) {
+    bulkChannel = { mirrorId: channel.mirrorId };
+  } else {
+    // ⚠️ `null` 也落在这里（`Channel` 不是可空类型）—— 与上面两格同一条口径
+    throw badStateShape('prefs.bulkChannel');
+  }
+
+  const gameVersion = raw.catalogGameVersion;
+  if (gameVersion !== undefined && (typeof gameVersion !== 'string' || gameVersion === '')) {
+    throw badStateShape('prefs.catalogGameVersion');
+  }
+  const tags = raw.tagFilter;
+  if (tags !== undefined && (!Array.isArray(tags) || !tags.every((t) => typeof t === 'string'))) {
+    throw badStateShape('prefs.tagFilter');
+  }
+  return {
+    bulkChannel,
+    catalogGameVersion: typeof gameVersion === 'string' ? gameVersion : fallback.catalogGameVersion,
+    tagFilter: tags === undefined ? [] : [...(tags as string[])],
+  };
+}
+
+/**
  * 读状态文件。
  *
  * ⚠️ 坏文件**不许静默丢**：用户亲手选的文件路径在这里，丢了却什么都不说的话，
@@ -142,6 +254,19 @@ interface StateFileRead {
  *    的文件（`{}`、`[]`、`{"version":2}`…）会静默变成"干净的空 v2"，于是下面那条
  *    "备份成 .corrupt-<ts> 再重建 + 告诉用户"的路**永远不会走到**：用户什么都看不到，
  *    而他原来那个文件还在原地。所以老判据（`version` / `items`）仍然先判，再迁移。
+ * ⚠️★ **v2 的三格在迁移之后还要过一道**（2026-10-03 Task 4，Ruling 31）：
+ *    `migrateState()` 对 `stateVersion: 2` 的输入**原样返回**（幂等是它的判据之一）⇒
+ *    一个 `stateVersion: 2` 但 `folders` / `catalogBindings` / `prefs` 是 `null`（或类型不对）
+ *    的文件会**原样流进来**，而下游（`mod-folders.ts` 的 `state.folders[…]`、
+ *    `state.prefs.bulkChannel`）会在第一次读它时抛在一个**跟文件损坏毫无关系的地方**
+ *    （表现是"点了没反应"或某个文件夹神秘消失）。⇒ 在这里**归一化**：
+ *    缺的补默认（那不是损坏，是"这一版的字段还没有"）、**类型不对就当坏文件** ——
+ *    走下面那条"备份 + 重建 + 告诉用户"的路，**绝不静默**。
+ *    判据的选择（写下来，免得下一个人以为"补默认"和"当坏文件"是一条线的两端）：
+ *      · **键不存在**（`undefined`）⇒ 补默认。老客户端写回、或上一版还没这三格时就是这个形态；
+ *      · **键存在但类型不对**（`null` / 数组 / 标量 / 字段类型错）⇒ 坏文件。它只可能来自
+ *        手改、截断写入或被别的程序覆盖 —— 那种文件里 `items` 也可能已经不对了，
+ *        "猜着修"会把一个真正的损坏伪装成一次成功的启动。
  */
 export function readStateFile(): StateFileRead {
   const file = stateFilePath();
@@ -171,7 +296,15 @@ export function readStateFile(): StateFileRead {
         lastUpdateTo: raw.lastUpdateTo ?? null,
       };
     }
-    return { state: { ...migrated, items }, recovered: null, fatal: null };
+    // 迁移之后归一化 v2 那三格（理由见上面那一段；形状不对 ⇒ 抛 ⇒ 走下面的坏文件那条路）
+    const folders = normalizeFolders(migrated.folders);
+    const catalogBindings = normalizeCatalogBindings(migrated.catalogBindings);
+    const prefs = normalizePrefs(migrated.prefs);
+    return {
+      state: { ...migrated, items, folders, catalogBindings, prefs },
+      recovered: null,
+      fatal: null,
+    };
   } catch (error) {
     const backup = `${file}.corrupt-${Date.now()}`;
     try {
@@ -276,7 +409,15 @@ interface VersionsCache {
 }
 const versionsCache = new Map<string, VersionsCache>();
 
-async function fetchVersions(
+/**
+ * 拉一个 Modrinth 项目的版本列表（TTL 缓存 30 分钟 + 退避重试三次）。
+ *
+ * ⚠️ 2026-10-03（Task 4）**只加 `export`**：新模块（`src/mod-folders.ts`）的**上游解析**
+ *    （spec §7.2 / D1：`upstream != null` 的 mod 目标换成上游最新版）要**复用**这一段。
+ *    复制一份的下场与 v1 那几处抽出来的先例同型：两份迟早会漂，而漂的那一份在做网络请求。
+ *    函数体一个字符没动（`verify-file-updates.mjs` 的读数对这两版逐字节相同）。
+ */
+export async function fetchVersions(
   project: string,
   opts: { force: boolean; userAgent: string },
 ): Promise<ModrinthVersion[]> {
@@ -844,8 +985,11 @@ async function showOpen(options: OpenDialogOptions) {
  *    需要把"坏状态文件"或"bindFolder 的汇总"**留在页面上**（而不是靠一次原生提示框），
  *    那就由 T5/T6 提出来扩 `FileUpdatesState` —— 它们是页面那一侧，那时才知道自己真正需要什么形状。
  *    在那之前这里不改契约：为一个还没有消费者的字段去改 T1 已评审的契约，成本大于收益。
+ * ⚠️ 2026-10-03（Task 4）**只加 `export`**：`mod-folders.ts` 里那次"状态文件读不出来"
+ *    要弹的是**同一种**提示框（同一套父窗口与"知道了"按钮）。自己再写一份等于让
+ *    "原生化提示"这条路径有两个会漂的版本，而它正是"不许静默"那一族唯一的落地方式。
  */
-function notify(title: string, message: string): void {
+export function notify(title: string, message: string): void {
   console.warn(`[file-updates] ${title}：${message}`);
   const win = dialogParent();
   const box: MessageBoxOptions = {
@@ -859,7 +1003,17 @@ function notify(title: string, message: string): void {
   void shown.catch(() => undefined);
 }
 
-async function pickOneJar(): Promise<string | null> {
+/**
+ * 主进程自己弹的**原生**对话框：单个 `.jar` / 一个目录。
+ *
+ * ⚠️ 2026-10-03（Task 4）这两个**只加 `export`**：新模块（`src/mod-folders.ts`）的
+ *    `bindFolder()` / `bindCatalogRow()` 要弹的是**同一种**对话框（同一个 parent 选择、
+ *    同一套 `openFile`/`openDirectory` 与过滤器）。自己再写一份的代价是"两处的父窗口、
+ *    取消语义、扩展名过滤器各漂一份"，而这几条通道的全部意义就是
+ *    "**路径只能由主进程产生**"（渲染进程连一个路径都递不进来）。
+ *    函数体一个字符没动 —— 与 Task 3 那五个只加 `export` 的先例同型。
+ */
+export async function pickOneJar(): Promise<string | null> {
   const res = await showOpen({
     title: '选择要跟踪的模组文件',
     properties: ['openFile'],
@@ -869,7 +1023,8 @@ async function pickOneJar(): Promise<string | null> {
   return res.canceled || !picked ? null : picked;
 }
 
-async function pickDirectory(): Promise<string | null> {
+/** 目录对话框（见上面那一段）。 */
+export async function pickDirectory(): Promise<string | null> {
   const res = await showOpen({ title: '选择 mods 目录', properties: ['openDirectory'] });
   const picked = res.filePaths[0];
   return res.canceled || !picked ? null : picked;
