@@ -127,10 +127,10 @@ export type TargetSource = 'catalog' | 'upstream';
 /**
  * 候选 → **目标**（判定用的那一条，也是界面"官方版本"那一格）。
  *
- * ① 上游解析命中 ⇒ 用上游那条（`'upstream'`）—— spec §7.2 / D1；
- * ② 否则目录在**这一版下唯一**一条候选 ⇒ 用它（`'catalog'`）；
- * ③ 0 条（`missing-release`）或 >1 条（`ambiguous`）⇒ 没有唯一目标 ⇒ `null`
- *    （`targetSource` 仍是 `'catalog'`：没有任何东西来自上游）。
+ * ① 唯一候选 + 上游命中 ⇒ 用上游那条（`'upstream'`）—— spec §7.2 / D1；
+ * ② 唯一候选、没有上游 ⇒ 用它（`'catalog'`）；
+ * ③ 0 条（`missing-release`）或 >1 条（`ambiguous`）⇒ **没有目标**（`targetSource` 仍是
+ *    `'catalog'`：没有任何东西来自上游）。上游在这两种情形下一律不用，理由写在下面函数体里。
  *
  * ⚠️ 目录行与文件夹行**必须共用这一份**：第二部分的候选与第一部分来自同一个
  *    `(modid, 游戏版本)`，各写一遍的话"同一个 mod、同一个版本、两处说法不一致"
@@ -140,9 +140,38 @@ function resolveTarget(
   candidates: readonly ModRelease[],
   upstream: ModRelease | null,
 ): { target: ModRelease | null; targetSource: TargetSource } {
+  /*
+   * ★ 上游**只在目录在这一版下唯一一条候选时**才参与（Ruling 17；spec §7.2 的伪码把
+   *   `mod.upstream != null` **缩进在** `候选.length == 1` 之下）。
+   *   不门控的后果是实的：
+   *     · 0 条（`missing-release`）+ 上游 ⇒ 会变成 `older` + `batchable true`，与
+   *       spec §8"这个游戏版本下清单里没有它"冲突 —— 那就是"清单里没有、却给你更新按钮"；
+   *     · 多候选（`ambiguous`）+ 上游 ⇒ `ambiguous` 变得**不可达**，而 §8 要求多候选必须
+   *       "列出全部候选、要求用户明确选"：自动替用户选一个正是这一期一直在拒绝的事。
+   *   代价（认）：将来若某个 mod 在 mc.sr 这一版 0 条而上游有，这一次**不更新它** ——
+   *   方向是保守的那一侧。
+   */
+  if (candidates.length !== 1) return { target: null, targetSource: 'catalog' };
   if (upstream !== null) return { target: upstream, targetSource: 'upstream' };
-  if (candidates.length === 1) return { target: candidates[0]!, targetSource: 'catalog' };
-  return { target: null, targetSource: 'catalog' };
+  return { target: candidates[0]!, targetSource: 'catalog' };
+}
+
+/**
+ * 这一行"只给打开原网页、连更新按钮都不给"吗（`manual`）。
+ *
+ * 判据与**目标**一致：有目标 ⇒ 看目标那一条的 `download`；没有目标（`missing-release` /
+ * `ambiguous`）⇒ 候选**全都**是 `manual` 才算（`optifine|1.7.2` 那一对：两个候选都 manual，
+ * 界面只能给"打开原网页"）。
+ *
+ * ⚠️ 两个 planner **共用这一份**（Ruling 16）：第一部分跟目标、第二部分跟候选的话，
+ *    上游那条是 `manual` 时两处会给出互相矛盾的话（一处"不给按钮"、一处"给按钮"）——
+ *    那正是 Ruling 14 要消灭的"同一个 mod 两处不一致"，只是换了个字段。
+ * ⚠️ `length > 0` 不是多余的：空集合的 `every` 恒真，少了它一条 `missing-release` 的行
+ *    会被标成 `manual`（等于给出一个"打开原网页"、但那个网页不存在）。
+ */
+function isManualTarget(candidates: readonly ModRelease[], target: ModRelease | null): boolean {
+  if (target !== null) return target.download === 'manual';
+  return candidates.length > 0 && candidates.every((release) => release.download === 'manual');
 }
 
 // ---------------------------------------------------------------------------
@@ -269,18 +298,10 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
       targetSource,
       verdict,
       /*
-       * `manual` 说的是**目标**（"这一行给不给更新按钮"），所以两种情形：
-       *   · 有目标 ⇒ 就看目标那一条的 `download`；
-       *   · 没有目标（`missing-release` / `ambiguous`）⇒ 候选**全都**是 `manual` 才算
-       *     （`optifine|1.7.2` 那一对就是：两个候选都 manual，界面只能给"打开原网页"）。
-       * ⚠️ `length > 0` 不是多余的：空集合的 `every` 恒真，少了它一条 `missing-release`
-       *    的行会被标成 `manual`（等于给出一个"打开原网页"、但那个网页不存在）。
-       *    那一支今天到不了（`rowsForGameVersion` 只交出非空候选）—— 把契约定在这里看得见。
+       * `manual`：有目标 ⇒ 看目标；没有目标 ⇒ 候选全都 manual 才算。
+       * 与文件夹行**共用 `isManualTarget`**（Ruling 16）。
        */
-      manual:
-        target !== null
-          ? target.download === 'manual'
-          : releases.length > 0 && releases.every((release) => release.download === 'manual'),
+      manual: isManualTarget(releases, target),
       /*
        * ★ 进批量的唯一组合收在 `needsUpdate` 里（`older` 且 `download === 'auto'`，
        *   且**两边版本主体都能安全排序**）。这里只补一个前提：**必须有目标** ——
@@ -453,10 +474,14 @@ export function planFolderView(input: PlanFolderViewInput): ModFolderView {
      *    "上游的最新版"，与这个文件夹是哪一个游戏版本无关 ⇒ 拿一个不知道版本的目标
      *    去驱动更新，等于替用户猜版本。⇒ 这一支直接短路成"没有目标"。
      *    另一条路（知道版本）与目录行**共用 `resolveTarget`**，规则只留一份。
+     * ⚠️ 这一支取的正是 `resolveTarget` **"没有目标"那个默认值**（`resolveTarget([], null)`）——
+     *    不再内联一份 `{ target: null, targetSource: 'catalog' }` 字面量：将来那个默认值要改时
+     *    只改一处（Ruling 18.3）。Ruling 17 的"唯一候选"门控对空候选**也会**给出同一个结果，
+     *    两处是**同一个结论的两道表达**，不是两个判据。
      */
-    const resolved: { target: ModRelease | null; targetSource: TargetSource } =
+    const resolved =
       gameVersion === null
-        ? { target: null, targetSource: 'catalog' }
+        ? resolveTarget([], null)
         : resolveTarget(candidates, upstreamLatest?.get(modid) ?? null);
     const verdict: FolderVerdict =
       gameVersion === null
@@ -478,8 +503,8 @@ export function planFolderView(input: PlanFolderViewInput): ModFolderView {
       official: resolved.target,
       targetSource: resolved.targetSource,
       verdict,
-      // 与目录行同一条判据（空集合的 `every` 恒真 ⇒ `length > 0` 是判据的一部分）。
-      manual: candidates.length > 0 && candidates.every((release) => release.download === 'manual'),
+      // 与目录行同一条判据、同一个函数（Ruling 16）。
+      manual: isManualTarget(candidates, resolved.target),
       /*
        * ★ 未知版本**不给更新按钮**，所以这里显式短路，而不是等着 `needsUpdate`
        *   对一个它不认识的 kind 返回 false —— 那个"恰好也是 false"的依赖

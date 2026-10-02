@@ -237,6 +237,15 @@ test('★ ambiguous 的行不出现在缺失清单里（没有"该装哪个"的�
 });
 
 test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且不给更新按钮', () => {
+  /*
+   * ★★ `upstreamLatest` **必须在这里传上**，否则这条测试证明不了它标题说的那件事：
+   *    不传 map 时"删掉那道短路"与"留着"都会退化成 `resolveTarget([], null)`，
+   *    结果一模一样（实测：删掉短路 ⇒ 全绿）—— 也就是说那两条断言**打不红**。
+   *    只有让上游真的**可取**时，"未知版本不拿它当目标"才是一个可观测的差别。
+   *    上游那条故意取一个**比本地新**的版本号（`9.9.9`，`auto`）：短路/门控一旦失效，
+   *    这一行会立刻变成 `older` + 可更新 —— 下面四条断言会同时红。
+   */
+  const antigone = catalog.releases.find((r) => r.modid === 'antigone')!;
   const view = planFolderView({
     catalog,
     folderId: 'f1',
@@ -245,6 +254,7 @@ test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且
     autoUpdate: false,
     pathExists: true,
     scan: [{ fileName: 'a-2.0.jar', modid: 'antigone', version: '2.0', sha512: null }],
+    upstreamLatest: new Map([['antigone', { ...antigone, version: '9.9.9' }]]),
   });
   assert.equal(view.rows.length, 1);
   assert.equal(view.rows[0]!.verdict.kind, 'unknown-version');
@@ -253,9 +263,12 @@ test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且
    * ⚠️ 未知版本**不查上游** ⇒ 没有目标 ⇒ 来源只能是 `'catalog'`（spec §8：
    *    "未选之前所有行都是 unknown-version、不给更新按钮"）。上游那条是"上游最新版"，
    *    与这个文件夹是哪个游戏版本无关 ⇒ 拿它驱动更新就是替用户猜版本。
+   *    实现上这一支走的是 `resolveTarget([], null)`（Ruling 18.3），而 Ruling 17 的
+   *    "唯一候选"门控对空候选给出同一个结果 —— 两道表达、同一个结论。
    */
   assert.equal(view.rows[0]!.targetSource, 'catalog');
   assert.equal(view.rows[0]!.official, null);
+  assert.deepEqual(view.rows[0]!.candidates, []);
 });
 
 test('★ 路径不存在 ⇒ 行不出现（绑定保留、界面显示"路径不存在"）', () => {
@@ -513,6 +526,183 @@ test('★ 只升不降在第二部分同样成立：上游那条比**本地**旧
   assert.equal(row.official?.version, '5.8.25');
   assert.equal(row.verdict.kind, 'newer', '本地 5.8.26 > 目标 5.8.25');
   assert.equal(row.batchable, false, '本地更新绝不进批量（只升不降）');
+});
+
+test('★ Ruling 16：上游目标是 `manual` ⇒ 两个 planner 都说 manual（都不给更新按钮）', () => {
+  /*
+   * ⚠️ 这一条钉的是"**同一个 mod 两处不一致**的下一次现身"：第一部分跟目标、第二部分
+   *    跟候选的话，上游那条是 `manual` 时一处不给按钮、另一处给。这条规则现在两个
+   *    planner **共用 `isManualTarget`**（Ruling 16）。今天的数据到不了（上游夹具是
+   *    `auto`）⇒ 夹具里把上游那条改成 `manual`。
+   */
+  const ranked = catalog.releases.find((r) => r.modid === 'mcsrranked')!;
+  const upstreamLatest = new Map([
+    ['mcsrranked', { ...ranked, version: '5.8.26', download: 'manual' as const }],
+  ]);
+  const scan = [
+    { fileName: 'mcsrranked-5.8.24.jar', modid: 'mcsrranked', version: '5.8.24', sha512: null },
+  ];
+
+  const catalogRow = planCatalogRows({
+    catalog,
+    gameVersion: '1.16.1',
+    tagFilter: [],
+    bindings: new Map(),
+    upstreamLatest,
+  }).find((r) => r.modid === 'mcsrranked')!;
+  const folderRow = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan,
+    upstreamLatest,
+  }).rows.find((r) => r.modid === 'mcsrranked')!;
+
+  for (const row of [catalogRow, folderRow]) {
+    assert.equal(row.targetSource, 'upstream');
+    assert.equal(row.official?.download, 'manual');
+    assert.equal(row.manual, true, '目标自己就是 manual ⇒ 只给"打开原网页"');
+    assert.equal(row.batchable, false);
+  }
+});
+
+test('★ Ruling 17①：0 条候选 + 有上游 ⇒ 仍然是"没有目标、不可更新"（spec §8）', () => {
+  /*
+   * 实测：`optifine|1.16.1` 有 **0** 条候选。不把上游门控在"唯一候选"之下的话，
+   * 这一行会拿到上游目标 ⇒ `older` + `batchable true` ⇒ 界面上出现一个
+   * "清单里根本没有它、却给更新按钮"的行（与 spec §8 的 `missing-release` 冲突）。
+   * 上游那条故意给一个**比本地新**的版本号（`2.0` vs 本地 `1.0`）：不门控时下面几条会红。
+   */
+  const optifine = catalog.releases.find((r) => r.modid === 'optifine')!;
+  const view = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [{ fileName: 'optifine-1.0.jar', modid: 'optifine', version: '1.0', sha512: null }],
+    upstreamLatest: new Map([
+      ['optifine', { ...optifine, version: '2.0', download: 'auto' as const }],
+    ]),
+  });
+  const row = view.rows.find((r) => r.modid === 'optifine')!;
+  assert.deepEqual(row.candidates, [], '这一版下目录里没有它的候选');
+  assert.equal(row.targetSource, 'catalog');
+  assert.equal(row.official, null);
+  assert.equal(row.verdict.kind, 'missing-release');
+  assert.equal(row.batchable, false);
+});
+
+test('★ Ruling 17②：多候选 + 有上游 ⇒ 仍然 `ambiguous`（不许自动替用户选一个）', () => {
+  /*
+   * 实测 `optifine|1.7.2` 有 2 条候选（两个都 `manual`）。不门控上游的话，这一行会被
+   * 单候选分支判掉 ⇒ `ambiguous` **不可达** —— 而 spec §8 要求多候选"列出全部候选、
+   * 要求用户明确选"：自动替用户选一个正是这一期一直在拒绝的事。两个 planner 都钉。
+   */
+  const optifine = catalog.releases.find((r) => r.modid === 'optifine')!;
+  const upstreamLatest = new Map([
+    ['optifine', { ...optifine, version: '2.0', download: 'auto' as const }],
+  ]);
+  const scan = [{ fileName: 'optifine-1.0.jar', modid: 'optifine', version: '1.0', sha512: null }];
+
+  const catalogRow = planCatalogRows({
+    catalog,
+    gameVersion: '1.7.2',
+    tagFilter: [],
+    bindings: new Map(),
+    upstreamLatest,
+  }).find((r) => r.modid === 'optifine')!;
+  const folderRow = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.7.2',
+    autoUpdate: false,
+    scan,
+    upstreamLatest,
+  }).rows.find((r) => r.modid === 'optifine')!;
+
+  for (const row of [catalogRow, folderRow]) {
+    assert.equal(row.candidates.length, 2, '两个候选都要列出来');
+    assert.equal(row.targetSource, 'catalog');
+    assert.equal(row.official, null);
+    assert.equal(row.verdict.kind, 'ambiguous');
+    assert.equal(row.batchable, false);
+  }
+  assert.equal(catalogRow.manual, true, '两个候选都 manual ⇒ 只给"打开原网页"');
+});
+
+test('★ Ruling 18.1：上游那条与目录那条**版本号相同** ⇒ 来源仍是 `upstream`（来源是数据）', () => {
+  /*
+   * ⚠️ 这一条把"来源是**数据**、不是推断"钉住：如果实现用"版本号不同 ⇒ 上游"这种推断，
+   *    版本号**相同**时它必然报 `'catalog'`。而实际上 `official` 是上游那个对象
+   *    （字节不同：这里把上游那条的 sha512 换掉）⇒ 只有真把来源当字段记下来才对。
+   */
+  const antigone = catalog.releases.find((r) => r.modid === 'antigone')!;
+  const upstream = { ...antigone, sha512: 'f'.repeat(128) };
+  const row = planCatalogRows({
+    catalog,
+    gameVersion: '1.16.1',
+    tagFilter: [],
+    bindings: new Map(),
+    upstreamLatest: new Map([['antigone', upstream]]),
+  }).find((r) => r.modid === 'antigone')!;
+
+  assert.equal(row.candidates.length, 1);
+  assert.equal(row.candidates[0]!.version, upstream.version, '两个来源的版本号一样');
+  assert.notEqual(row.candidates[0]!.sha512, upstream.sha512, '但字节不同 ⇒ 能分辨用的是哪一条');
+  assert.equal(row.targetSource, 'upstream');
+  assert.equal(row.official?.sha512, upstream.sha512, 'official 就是上游那条');
+});
+
+test('★ Ruling 18.2：同一份入参下，两个 planner 必须解析出**同一个**目标与来源', () => {
+  /*
+   * 直接钉住 Ruling 14 那条不变量：同一个 `(modid, 游戏版本)` + 同一份 `upstreamLatest`。
+   * ⚠️ 两边给**同一个本地读数**（目录行绑同一份 `1.0` 的 jar、文件夹扫到同一份），否则
+   *    `verdict` 会因为"本地读数不同"而合理地不同 —— 那测的就不是这条不变量了
+   *    （第一版就是漏了绑定，`'older' !== 'unknown'`）。
+   */
+  const antigone = catalog.releases.find((r) => r.modid === 'antigone')!;
+  const upstreamLatest = new Map([['antigone', { ...antigone, version: '3.0.0' }]]);
+  const catalogRow = planCatalogRows({
+    catalog,
+    gameVersion: '1.16.1',
+    tagFilter: [],
+    bindings: new Map([
+      [
+        'antigone|1.16.1',
+        { localPath: 'D:/x/mods/a-1.0.jar', localVersion: '1.0', localSha512: null },
+      ],
+    ]),
+    upstreamLatest,
+  }).find((r) => r.modid === 'antigone')!;
+  const folderRow = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [{ fileName: 'a-1.0.jar', modid: 'antigone', version: '1.0', sha512: null }],
+    upstreamLatest,
+  }).rows.find((r) => r.modid === 'antigone')!;
+
+  assert.equal(catalogRow.targetSource, 'upstream');
+  assert.equal(folderRow.targetSource, catalogRow.targetSource);
+  assert.deepEqual(folderRow.official, catalogRow.official);
+  assert.equal(folderRow.official?.version, '3.0.0');
+  assert.equal(catalogRow.official?.version, '3.0.0');
+  assert.equal(
+    folderRow.verdict.kind,
+    catalogRow.verdict.kind,
+    '同一个目标 + 同一个本地读数 ⇒ 同一个判定',
+  );
+  assert.equal(folderRow.batchable, catalogRow.batchable);
 });
 
 test('★ 标签显示名：目录里没有这个名字时**退化成 key 本身**，且与 `tags` 逐位对应', () => {
