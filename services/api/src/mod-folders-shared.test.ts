@@ -249,6 +249,13 @@ test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且
   assert.equal(view.rows.length, 1);
   assert.equal(view.rows[0]!.verdict.kind, 'unknown-version');
   assert.equal(view.rows[0]!.batchable, false);
+  /*
+   * ⚠️ 未知版本**不查上游** ⇒ 没有目标 ⇒ 来源只能是 `'catalog'`（spec §8：
+   *    "未选之前所有行都是 unknown-version、不给更新按钮"）。上游那条是"上游最新版"，
+   *    与这个文件夹是哪个游戏版本无关 ⇒ 拿它驱动更新就是替用户猜版本。
+   */
+  assert.equal(view.rows[0]!.targetSource, 'catalog');
+  assert.equal(view.rows[0]!.official, null);
 });
 
 test('★ 路径不存在 ⇒ 行不出现（绑定保留、界面显示"路径不存在"）', () => {
@@ -395,6 +402,7 @@ test('★ 上游解析：传了 `upstreamLatest` ⇒ 目标换成上游那条（
   });
   const row = rows.find((r) => r.modid === 'mcsrranked')!;
   assert.equal(row.official?.version, '5.8.26', '目标 = 上游那条');
+  assert.equal(row.targetSource, 'upstream', '界面必须能"读"出来源，不许靠推断');
   assert.equal(row.verdict.kind, 'older', '对**上游**判：5.8.24 < 5.8.26');
   assert.equal(row.batchable, true);
   assert.equal(row.manual, false);
@@ -421,8 +429,90 @@ test('★ 上游解析：没传 ⇒ 目标仍是目录那条（D1：本地比目
   });
   const row = rows.find((r) => r.modid === 'mcsrranked')!;
   assert.equal(row.official?.version, '5.8.22', '没传上游 ⇒ 目标 = 目录里唯一那条候选');
+  assert.equal(row.targetSource, 'catalog');
   assert.equal(row.verdict.kind, 'newer', '本地 5.8.24 > 目录 5.8.22');
   assert.equal(row.batchable, false, 'newer 绝不进批量（D1）');
+});
+
+test('★ 文件夹行也吃上游解析（Ruling 14）：传了 ⇒ 目标换成上游那条、targetSource=upstream', () => {
+  /*
+   * ⚠️ 这一条的存在理由就是 Ruling 14 的现场：两个 planner 面对的是**同一个**
+   *    `(modid, 游戏版本)`。只有第一部分收上游时，`mcsrranked`（本地 5.8.24、
+   *    目录 5.8.22）会出现"第一部分说能更新到上游的 5.8.26、第二部分说你比 5.8.22 新
+   *    ⇒ 不给更新按钮" —— 同一个 mod、同一版，两个栏目说法不一致。
+   */
+  const ranked = catalog.releases.find((r) => r.modid === 'mcsrranked')!;
+  const upstream = { ...ranked, version: '5.8.26' };
+  const view = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [
+      { fileName: 'mcsrranked-5.8.24.jar', modid: 'mcsrranked', version: '5.8.24', sha512: null },
+    ],
+    upstreamLatest: new Map([['mcsrranked', upstream]]),
+  });
+  const row = view.rows.find((r) => r.modid === 'mcsrranked')!;
+  assert.equal(row.targetSource, 'upstream');
+  assert.equal(row.official?.version, '5.8.26', '目标 = 上游那条');
+  assert.equal(row.verdict.kind, 'older', '按**目标**判：5.8.24 < 5.8.26');
+  assert.equal(row.batchable, true);
+  assert.deepEqual(
+    row.candidates.map((r) => r.version),
+    ['5.8.22'],
+    '候选仍然只来自目录',
+  );
+});
+
+test('★ 文件夹行：没传上游 ⇒ 目标仍是目录那条、targetSource=catalog', () => {
+  // 与上一条**同一个本地版本** `5.8.24`（受控对照）：只差"传没传上游"。
+  const view = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [
+      { fileName: 'mcsrranked-5.8.24.jar', modid: 'mcsrranked', version: '5.8.24', sha512: null },
+    ],
+  });
+  const row = view.rows.find((r) => r.modid === 'mcsrranked')!;
+  assert.equal(row.targetSource, 'catalog');
+  assert.equal(row.official?.version, '5.8.22');
+  assert.equal(row.verdict.kind, 'newer');
+  assert.equal(row.batchable, false);
+});
+
+test('★ 只升不降在第二部分同样成立：上游那条比**本地**旧 ⇒ newer、不进批量', () => {
+  /*
+   * ⚠️ 方向断言：第二部分的判据是"**本地** sha512/版本 vs 目标"，所以上游解析
+   *    **不会**把"本地更新"变成"该替换" —— 本地 5.8.26 / 上游 5.8.25 ⇒ `newer`、
+   *    `batchable === false`（D1：本地更新只提示、绝不替换）。
+   *    少了这一条，"加了上游之后第二部分会不会顺手降级"就没有任何断言在管。
+   */
+  const ranked = catalog.releases.find((r) => r.modid === 'mcsrranked')!;
+  const upstream = { ...ranked, version: '5.8.25' };
+  const view = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [
+      { fileName: 'mcsrranked-5.8.26.jar', modid: 'mcsrranked', version: '5.8.26', sha512: null },
+    ],
+    upstreamLatest: new Map([['mcsrranked', upstream]]),
+  });
+  const row = view.rows.find((r) => r.modid === 'mcsrranked')!;
+  assert.equal(row.targetSource, 'upstream');
+  assert.equal(row.official?.version, '5.8.25');
+  assert.equal(row.verdict.kind, 'newer', '本地 5.8.26 > 目标 5.8.25');
+  assert.equal(row.batchable, false, '本地更新绝不进批量（只升不降）');
 });
 
 test('★ 标签显示名：目录里没有这个名字时**退化成 key 本身**，且与 `tags` 逐位对应', () => {

@@ -110,6 +110,42 @@ function tagLabelsOf(catalog: ModCatalog, tags: readonly string[]): readonly str
 }
 
 // ---------------------------------------------------------------------------
+// 候选 → 目标（spec §7.2 的那一步）：**两个 planner 共用这一份**
+// ---------------------------------------------------------------------------
+
+/**
+ * 目标是从哪来的（spec §4 D1）：legal mod 走 mc.sr **指定**的版本 ⇒ `'catalog'`；
+ * 上游活跃的（`mcsrranked`）走**上游最新** ⇒ `'upstream'`。
+ *
+ * ⚠️ 这个字段存在的唯一理由是"**让界面不必猜**"：有上游目标时 `official` **不在
+ *    `candidates` 里**，消费方若靠"`official` 是不是 `candidates` 的某一个 / 版本号谁大"
+ *    去推断来源，那就是一份**靠推断维系的契约** —— 目录与上游恰好给出同一个版本号时
+ *    （实测完全可能：上游那条也发在同一个版本号上）就分不出来了。
+ */
+export type TargetSource = 'catalog' | 'upstream';
+
+/**
+ * 候选 → **目标**（判定用的那一条，也是界面"官方版本"那一格）。
+ *
+ * ① 上游解析命中 ⇒ 用上游那条（`'upstream'`）—— spec §7.2 / D1；
+ * ② 否则目录在**这一版下唯一**一条候选 ⇒ 用它（`'catalog'`）；
+ * ③ 0 条（`missing-release`）或 >1 条（`ambiguous`）⇒ 没有唯一目标 ⇒ `null`
+ *    （`targetSource` 仍是 `'catalog'`：没有任何东西来自上游）。
+ *
+ * ⚠️ 目录行与文件夹行**必须共用这一份**：第二部分的候选与第一部分来自同一个
+ *    `(modid, 游戏版本)`，各写一遍的话"同一个 mod、同一个版本、两处说法不一致"
+ *    只是时间问题（Ruling 14 的现场就是这么来的）。
+ */
+function resolveTarget(
+  candidates: readonly ModRelease[],
+  upstream: ModRelease | null,
+): { target: ModRelease | null; targetSource: TargetSource } {
+  if (upstream !== null) return { target: upstream, targetSource: 'upstream' };
+  if (candidates.length === 1) return { target: candidates[0]!, targetSource: 'catalog' };
+  return { target: null, targetSource: 'catalog' };
+}
+
+// ---------------------------------------------------------------------------
 // 第一部分：目录行
 // ---------------------------------------------------------------------------
 
@@ -134,11 +170,16 @@ export interface CatalogRowView {
   /** 该 `(modid, gameVersion)` 下的全部候选（0 / 1 / 2+ 条，顺序继承目录）。 */
   candidates: readonly ModRelease[];
   /**
-   * 这一行的**目标**（界面上"官方版本"那一格、也是判定用的那一条）：
-   * 传了上游解析结果 ⇒ 上游那条；否则 ⇒ 目录在这一版下**唯一**那条候选。
+   * 这一行的**目标**（界面上"官方版本"那一格、也是判定用的那一条）。
+   *
+   * ⚠️★ 有上游目标时它**不在 `candidates` 里**（`candidates` 始终只来自目录），
+   *    而且 `verdict.release` 这时**也不等于**任何一个 `candidates` 元素 —— 判定跟着
+   *    目标走（Ruling 11）。来源由 `targetSource` 说出来，**消费方不要自己推断**。
    * 0 个（`missing-release`）或 >1 个（`ambiguous`）、而该 modid 又没有上游时是 `null`。
    */
   official: ModRelease | null;
+  /** `official` 是从哪来的（指定版本 / 上游最新）—— 见 `resolveTarget`。 */
+  targetSource: TargetSource;
   /** 拿**目标**（不是候选集合）判出来的状态。 */
   verdict: ReleaseVerdict;
   /** 目标是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
@@ -199,16 +240,17 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
     const rowId = releaseKey(mod.modid, gameVersion);
     const binding = bindings.get(rowId) ?? null;
     /*
-     * ★ 目标：① 传了上游解析结果 ⇒ 上游那条（spec §7.2 / D1）；
-     *        ② 否则目录在这一版下**唯一**一条候选 ⇒ 用它；
-     *        ③ 0 条（`missing-release`）或 >1 条（`ambiguous`）⇒ 没有唯一目标 ⇒ `null`。
+     * ★ 目标 + 它的来源，**都交给共用的 `resolveTarget`**（规则只留一份）：
+     *   ① 传了上游解析结果 ⇒ 上游那条；② 否则目录唯一那条候选；③ 否则 `null`。
      * ⚠️ 判定必须拿**目标**做，不能拿候选集合做：`ReleaseVerdict` 的单候选分支把
      *    被判的那条 release **装在自己身上**（`{ kind: 'older', release }`）⇒ 拿候选判、
      *    拿上游当"官方版本"，`verdict.release` 与 `official` 就会指向两条不同的 release，
      *    而界面两格都会显示 ⇒ 用户看到"官方 5.8.26、状态：比 5.8.22 旧"。
      */
-    const upstreamTarget = upstreamLatest?.get(mod.modid) ?? null;
-    const target = upstreamTarget ?? (releases.length === 1 ? releases[0]! : null);
+    const { target, targetSource } = resolveTarget(
+      releases,
+      upstreamLatest?.get(mod.modid) ?? null,
+    );
     const verdict = judgeRelease(
       binding?.localSha512 ?? null,
       binding?.localVersion ?? null,
@@ -224,6 +266,7 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
       tagLabels: tagLabelsOf(catalog, tags),
       candidates: releases,
       official: target,
+      targetSource,
       verdict,
       /*
        * `manual` 说的是**目标**（"这一行给不给更新按钮"），所以两种情形：
@@ -279,7 +322,14 @@ export interface ModFolderRowView {
   /** 该 modid 的其余副本（D9.1 会清掉）。 */
   oldCopies: readonly string[];
   candidates: readonly ModRelease[];
+  /** 目标（同目录行那一格）：`resolveTarget` 算出来的那一条。 */
   official: ModRelease | null;
+  /**
+   * `official` 是从哪来的。
+   * ⚠️ 与目录行**同一套规则、同一个函数**（`resolveTarget`）—— 两处说法不一致的现场
+   *    就是 Ruling 14：第一部分说"能更新到 5.8.26"、第二部分说"你比 5.8.22 新"。
+   */
+  targetSource: TargetSource;
   verdict: FolderVerdict;
   manual: boolean;
   batchable: boolean;
@@ -311,6 +361,18 @@ export interface PlanFolderViewInput {
   gameVersion: string | null;
   autoUpdate: boolean;
   scan: readonly FolderScanEntry[];
+  /**
+   * 上游（Modrinth）解析出来的"最新"那一条，**键 = `modid`**。语义与
+   * `PlanCatalogRowsInput.upstreamLatest` **逐字相同**（同一份 `resolveTarget`）。
+   *
+   * ⚠️★ 为什么第二部分也必须有它（Ruling 14）：两个 planner 面对的是同一个
+   *    `(modid, 游戏版本)`。只有第一部分收上游时，`mcsrranked`（本地 5.8.26、
+   *    目录 5.8.22、上游 5.8.26）会出现：第一部分说"要更新到 5.8.26"、
+   *    第二部分说"你比 5.8.22 新 ⇒ 不给更新按钮" —— **同一个 mod、同一版，两处不一致**。
+   * ⚠️ 方向不变（只升不降）：第二部分拿**本地**的 sha512/版本与目标比，
+   *    所以"上游那条比本地旧"时仍然是 `newer`、`batchable === false`。
+   */
+  upstreamLatest?: ReadonlyMap<string, ModRelease>;
 }
 
 /**
@@ -341,7 +403,8 @@ function isNewerLocal(next: FolderScanEntry, best: FolderScanEntry): boolean {
  *     `not-in-catalog`（两者都只显示、不参与更新）。
  */
 export function planFolderView(input: PlanFolderViewInput): ModFolderView {
-  const { catalog, folderId, path, pathExists, gameVersion, autoUpdate, scan } = input;
+  const { catalog, folderId, path, pathExists, gameVersion, autoUpdate, scan, upstreamLatest } =
+    input;
   const base = { folderId, path, pathExists, gameVersion, autoUpdate };
 
   // 路径不存在 ⇒ 一条扫描读数都不作数（理由见上面第一条边界）。
@@ -384,11 +447,25 @@ export function planFolderView(input: PlanFolderViewInput): ModFolderView {
     const oldCopies = files.filter((entry) => entry !== main).map((entry) => entry.fileName);
 
     const candidates = gameVersion === null ? [] : releasesFor(index, modid, gameVersion);
+    /*
+     * ⚠️ `gameVersion === null` 时**不查上游**：spec §8 那一行说得很死 ——
+     *    "未选之前**所有行都是 `unknown-version`**，不给更新按钮"。上游那条是
+     *    "上游的最新版"，与这个文件夹是哪一个游戏版本无关 ⇒ 拿一个不知道版本的目标
+     *    去驱动更新，等于替用户猜版本。⇒ 这一支直接短路成"没有目标"。
+     *    另一条路（知道版本）与目录行**共用 `resolveTarget`**，规则只留一份。
+     */
+    const resolved: { target: ModRelease | null; targetSource: TargetSource } =
+      gameVersion === null
+        ? { target: null, targetSource: 'catalog' }
+        : resolveTarget(candidates, upstreamLatest?.get(modid) ?? null);
     const verdict: FolderVerdict =
       gameVersion === null
         ? { kind: 'unknown-version' }
-        : judgeRelease(main.sha512, main.version, candidates);
-    const only = candidates.length === 1 ? candidates[0]! : null;
+        : judgeRelease(
+            main.sha512,
+            main.version,
+            resolved.target !== null ? [resolved.target] : candidates,
+          );
 
     rows.push({
       modid,
@@ -398,7 +475,8 @@ export function planFolderView(input: PlanFolderViewInput): ModFolderView {
       localSha512: main.sha512,
       oldCopies,
       candidates,
-      official: only,
+      official: resolved.target,
+      targetSource: resolved.targetSource,
       verdict,
       // 与目录行同一条判据（空集合的 `every` 恒真 ⇒ `length > 0` 是判据的一部分）。
       manual: candidates.length > 0 && candidates.every((release) => release.download === 'manual'),
@@ -407,7 +485,8 @@ export function planFolderView(input: PlanFolderViewInput): ModFolderView {
        *   对一个它不认识的 kind 返回 false —— 那个"恰好也是 false"的依赖
        *   下一个人改动 `needsUpdate` 时就会静默失效。
        */
-      batchable: verdict.kind !== 'unknown-version' && only !== null && needsUpdate(verdict),
+      batchable:
+        verdict.kind !== 'unknown-version' && resolved.target !== null && needsUpdate(verdict),
     });
   }
 
