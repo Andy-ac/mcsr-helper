@@ -123,4 +123,122 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
     const twice = catalogBytes(buildCatalog(input));
     assert.equal(once, twice);
   });
+
+  /*
+   * ⚠️★ 上面那条只钉住"同一份输入 ⇒ 同一份字节"，而 `catalogBytes` **忽略参数、返回一个常量**
+   *    同样能让它通过 —— 那样 `--check` 就变成恒真了。所以这里补上反方向：
+   *    **两份不同的目录必须给出不同的字节**。
+   *    差别故意取在**人工配置**上（只改一条标签文案）⇒ 这条断言与"上游数据"无关，
+   *    它只测序列化函数真的读了它的参数。
+   */
+  it('★ catalogBytes 真的看输入：两份不同的目录 ⇒ 不同的字节（返回常量也能骗过上面那条）', async () => {
+    const { buildCatalog, catalogBytes } = (await import('./modCatalogBuild')) as {
+      buildCatalog: (input: unknown) => unknown;
+      catalogBytes: (catalog: unknown) => string;
+    };
+    const overrides = JSON.parse(read('content/mod-overrides.json')) as {
+      tagLabels: Record<string, { zh: string; en: string }>;
+    };
+    const base = {
+      modsRaw: JSON.parse(read('content/upstream/mods.json')),
+      extraRaw: JSON.parse(read('content/upstream/extra.json')),
+      overrides,
+      sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+    };
+    const changed = {
+      ...base,
+      overrides: {
+        ...overrides,
+        tagLabels: { ...overrides.tagLabels, ranked: { zh: '排位', en: 'Ranked（改过）' } },
+      },
+    };
+    assert.notStrictEqual(catalogBytes(buildCatalog(base)), catalogBytes(buildCatalog(changed)));
+  });
+});
+
+/*
+ * ★ 模块头部那句"上游字段**不许**顺手兼容"的**自动化证据**（评审 Important 1）。
+ *
+ * 手法统一：拿**真快照**当基线，只把第一条 release 的某一个字段改坏（删掉 / 换成错类型），
+ * 然后断言 `buildCatalog` 抛 `ModCatalogBuildError` **而且消息里有那个路径** ——
+ * "抛了"与"抛对了地方"必须分开判（否则一句笼统的 `throw new Error()` 也能让断言变绿）。
+ *
+ * 为什么钉的是这几个字段：实测它们**555/555 条 release 都有**（见 `modCatalogBuild.ts` 的
+ * `requiredStrArray` 上面那张表）⇒ 缺了就是上游改名/删字段，**不是**"可以省略"。
+ * ⚠️ 反面对照组在最后一条：`dependencies`（136/555）与 release 的 `obsolete`（1/555）的
+ * "没有"是数据的**常态**，删掉它们**必须不抛** —— 否则这个文件里的守卫就变成"什么都拒绝"。
+ */
+function brokenSnapshot(mutate: (release: Record<string, unknown>) => void): {
+  input: {
+    modsRaw: unknown;
+    extraRaw: unknown;
+    overrides: unknown;
+    sha256: { mods: string; extra: string };
+  };
+  path: string;
+} {
+  const modsRaw = JSON.parse(read('content/upstream/mods.json')) as {
+    mods: { modid: string; versions: Record<string, unknown>[] }[];
+  };
+  const first = modsRaw.mods[0]!;
+  mutate(first.versions[0]!);
+  return {
+    input: {
+      modsRaw,
+      extraRaw: JSON.parse(read('content/upstream/extra.json')),
+      overrides: JSON.parse(read('content/mod-overrides.json')),
+      sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+    },
+    // 与 `modCatalogBuild.ts` 里 `at` 的拼法逐字一致（这条断言同时钉住"路径指名道姓"的格式）。
+    path: `mods.json.mods[${first.modid}].versions[0]`,
+  };
+}
+
+describe('构建器的错误路径（上游改形状时必须看得见，不许静默兼容）', () => {
+  for (const field of ['target_version', 'intermediary']) {
+    it(`★ release 的 ${field} 被删掉 ⇒ 抛，且消息里有它的路径（实测 555/555 都有它）`, async () => {
+      const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+      const { input, path } = brokenSnapshot((release) => {
+        delete release[field];
+      });
+      assert.throws(
+        () => buildCatalog(input),
+        (error: unknown) =>
+          error instanceof ModCatalogBuildError && error.message.includes(`${path}.${field}`),
+      );
+    });
+  }
+
+  it('★ size 是字符串 ⇒ 抛（**不许**回落成 Number.NaN：它会经 JSON.stringify 变成 null）', async () => {
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const { input, path } = brokenSnapshot((release) => {
+      release.size = '22025';
+    });
+    assert.throws(
+      () => buildCatalog(input),
+      (error: unknown) =>
+        error instanceof ModCatalogBuildError && error.message.includes(`${path}.size`),
+    );
+  });
+
+  it('★ url 不是能解析的 URL ⇒ 抛**带路径的** ModCatalogBuildError（不是裸 TypeError）', async () => {
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const { input, path } = brokenSnapshot((release) => {
+      release.url = '这不是一个 URL';
+    });
+    assert.throws(
+      () => buildCatalog(input),
+      (error: unknown) =>
+        error instanceof ModCatalogBuildError && error.message.includes(`${path}.url`),
+    );
+  });
+
+  it('★ 对照组：合法省略的字段仍然不抛（`dependencies` / `obsolete` 的"没有"是常态）', async () => {
+    const { buildCatalog } = await import('./modCatalogBuild');
+    const { input } = brokenSnapshot((release) => {
+      delete release.dependencies;
+      delete release.obsolete;
+    });
+    assert.doesNotThrow(() => buildCatalog(input));
+  });
 });

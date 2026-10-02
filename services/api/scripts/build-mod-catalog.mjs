@@ -7,9 +7,20 @@
  *   node --import tsx scripts/build-mod-catalog.mjs --check     # 重新生成并与仓库里的字节比
  *   node --import tsx scripts/build-mod-catalog.mjs --write     # 重新生成并写入仓库
  *   node --import tsx scripts/build-mod-catalog.mjs --stats     # 打印 spec §3.1 那张表的读数
+ *   （`--refresh` / `--stats` 可与其他模式组合；`--write` 与 `--check` **互斥**。）
  *
- * 退出码：0 = 通过；1 = 不一致（真的漂了）；2 = 这条检查**自己没跑成**（读不懂输入）——
+ * 退出码：0 = 通过；1 = 不一致（真的漂了）；2 = 这条检查**自己没跑成**（读不懂输入、参数不对）——
  *         与 `deploy/verify-file-catalog.sh` 同一套话术：**别把"没跑"读成"通过"**。
+ *
+ * ★ 参数契约（评审 Important 2）：这个文件**不在任何门禁的覆盖里**（biome 的 include 不含
+ *   biome 的 include 只列了 ts / tsx / json（`.mjs` 一个都不查）、
+ *   `services/api/tsconfig.json` 的 include 也不含 `scripts/`），所以它自己的契约
+ *   只能由它自己执行 —— 否则"拼错一个旗标"就会静默地"什么都没做，退出 0"：
+ *   · 不认识的旗标 ⇒ 2；
+ *   · 一个模式旗标都没给 ⇒ 2（至少要 `--refresh` / `--write` / `--check` / `--stats` 之一）；
+ *   · `--write` 与 `--check` 同时给 ⇒ 2（一个要写产物、一个要拿产物比字节；同时给只会得到一个
+ *     **恒真**的"检查"）；
+ *   · 给了 `--check` ⇒ **它的裁决就是进程退出码**（0/1），`--stats` 只打读数、不改退出码。
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -29,6 +40,8 @@ const SOURCES = {
   extra: 'https://meta.mc.sr/schema-7/extra.json',
 };
 
+const MODES = ['--refresh', '--write', '--check', '--stats'];
+
 function fail(message, code = 2) {
   console.error('');
   console.error(`✗ ${message}`);
@@ -40,16 +53,32 @@ function sha256(text) {
   return createHash('sha256').update(text).digest('hex');
 }
 
-async function refresh() {
-  mkdirSync(SNAPSHOT, { recursive: true });
+/*
+ * ⚠️★ 抓上游**只读进内存**，先一个字节都不落盘（评审 M1）：两份都抓成了、而且 `build()`
+ *    也成功了，才去写快照（见下面的 `writeSnapshots`）。否则"第二份抓失败"或"build 失败"
+ *    这两种情况下，第一份快照已经被改掉了 —— 工作树脏了，只能靠 git 找回。
+ */
+async function fetchSources() {
+  const texts = {};
   for (const [name, url] of Object.entries(SOURCES)) {
     const res = await fetch(url);
     if (!res.ok) fail(`抓 ${url} 失败：HTTP ${res.status}`, 1);
-    // ⚠️ **逐字节**保存响应体：这样"上游改了什么"能直接 git diff 看出来，
-    //    而不是被我们重新格式化之后混在一起。
     const body = await res.text();
+    texts[name] = body;
+    console.log(`  抓到 ${name}.json  ${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…`);
+  }
+  return texts;
+}
+
+function writeSnapshots(texts) {
+  mkdirSync(SNAPSHOT, { recursive: true });
+  // ⚠️ **逐字节**保存响应体：这样"上游改了什么"能直接 git diff 看出来，
+  //    而不是被我们重新格式化之后混在一起。
+  for (const [name, body] of Object.entries(texts)) {
     writeFileSync(join(SNAPSHOT, `${name}.json`), body);
-    console.log(`  快照 ${name}.json  ${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…`);
+    console.log(
+      `  快照 ${name}.json 已更新（${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…）`,
+    );
   }
 }
 
@@ -59,15 +88,13 @@ function readSnapshot(name) {
   return readFileSync(file, 'utf8');
 }
 
-function build() {
+function build(texts) {
   if (!existsSync(OVERRIDES)) fail(`人工配置不在：${OVERRIDES}`);
-  const rawMods = readSnapshot('mods');
-  const rawExtra = readSnapshot('extra');
   const catalog = buildCatalog({
-    modsRaw: JSON.parse(rawMods),
-    extraRaw: JSON.parse(rawExtra),
+    modsRaw: JSON.parse(texts.mods),
+    extraRaw: JSON.parse(texts.extra),
     overrides: JSON.parse(readFileSync(OVERRIDES, 'utf8')),
-    sha256: { mods: sha256(rawMods), extra: sha256(rawExtra) },
+    sha256: { mods: sha256(texts.mods), extra: sha256(texts.extra) },
   });
   return catalogBytes(catalog);
 }
@@ -97,9 +124,23 @@ function stats(bytes) {
 const argv = process.argv.slice(2);
 const want = (flag) => argv.includes(flag);
 
+const unknown = argv.filter((flag) => !MODES.includes(flag));
+if (unknown.length > 0) {
+  fail(`不认识的参数：${unknown.join(' ')}（只认 ${MODES.join(' / ')}）`);
+}
+if (!MODES.some(want)) {
+  fail(`一个模式都没给：至少要 ${MODES.join(' / ')} 之一（这条防的是"什么都没跑，却退出 0"）`);
+}
+if (want('--write') && want('--check')) {
+  fail('--write 与 --check 互斥：一个要把产物写掉、一个要拿产物比字节，同时给只会得到一个恒真的检查');
+}
+
 try {
-  if (want('--refresh')) await refresh();
-  const bytes = build();
+  const fetched = want('--refresh') ? await fetchSources() : null;
+  const texts = fetched ?? { mods: readSnapshot('mods'), extra: readSnapshot('extra') };
+  // ★ 先把字节算出来（build 会抛就什么都不写），**成功了才落盘快照** —— 见 fetchSources 上面那段。
+  const bytes = build(texts);
+  if (fetched !== null) writeSnapshots(fetched);
   if (want('--stats')) stats(bytes);
 
   if (want('--write')) {

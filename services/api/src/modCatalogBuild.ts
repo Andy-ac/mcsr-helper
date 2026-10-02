@@ -71,6 +71,60 @@ function strArray(value: unknown, path: string, fallback: string[] = []): string
   return value.map((item, index) => str(item, `${path}[${index}]`));
 }
 
+/*
+ * ★ 哪些上游字段是"**必须有**"的 —— 依据是实测出现率，不是感觉（评审 Important 1）。
+ *
+ * 量法：对 `content/upstream/` 两份快照逐字段数"有它的记录数 / 总数"（release 级分母 **555**、
+ * mod 级分母 **70**；`Object.hasOwnProperty` 判在不在，不是判值真不真）：
+ *
+ *   release 级（555）：`version` / `url` / `sha1` / `sha512` / `size` / `target_version` /
+ *     `intermediary` 都是 **555/555 = 100%**；而 `dependencies` **136/555（24.5%）**、
+ *     `obsolete` **1/555（0.2%）**、`recommended` 35/555（6.3%）。
+ *   mod 级（70）：`modid` / `name` / `description` / `homepage` 是 70/70；而 `traits` **9/70（12.9%）**、
+ *     `incompatibilities` **14/70（20%）**、`obsolete` 1/70（1.4%）、`recommended` 4/70（5.7%）。
+ *
+ * ⇒ **只有 100% 的那几个**才升级成"必须有"（`str()` 管的四个本来就是硬要求，这里管数组与 `size`）。
+ *   ⚠️ `dependencies` 与 release 级的 `obsolete` **不在其中**：它们的"没有"是数据的**常态**
+ *   （419/554 条确实没有依赖、554/555 条确实没有 obsolete 标记），继续走 fallback 是**对的** ——
+ *   把它们改成"必须有"会让生成器在下一次刷新时对**合法**数据抛错。
+ *
+ * ⚠️★ 为什么这件事值得两个新函数：缺一个 100% 字段时，旧的 `strArray` fallback 会把
+ *   `intermediary` **静默**变成 `[]`，而 catalog 契约（`modCatalog.ts`）**接受空数组**、
+ *   没有任何断言钉它 ⇒ `catalog:check` 退出 0、`--write` 照写产物、
+ *   **每一道门禁都是绿的，而一个逐 release 的字段已经没了**。
+ *   `size` 那边更糟：字符串会被写成 `Number.NaN`，`JSON.stringify` 出 `null`
+ *   （违反 catalog 的 `z.number().int().nonnegative()`），而生成器自己从不抛。
+ */
+function requiredStrArray(value: unknown, path: string): string[] {
+  if (value === undefined || value === null) {
+    throw new ModCatalogBuildError(
+      `${path}: 上游缺了这个字段（实测 555/555 条 release 都有它 ⇒ 这是改名或删字段，不是"可以省略"）`,
+    );
+  }
+  return strArray(value, path);
+}
+
+function requiredSize(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new ModCatalogBuildError(
+      `${path}: 期望非负整数，实际是 ${JSON.stringify(value)?.slice(0, 40)} —— ` +
+        `这里**不许**回落成 Number.NaN（NaN 经 JSON.stringify 变成 null，违反 catalog 的 size 契约，` +
+        `而生成器自己从不抛 ⇒ 产物坏了却没有人被叫醒）`,
+    );
+  }
+  return value;
+}
+
+function hostOf(url: string, path: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    // ⚠️ 裸 TypeError 会把**路径**丢掉（CLI 的 catch 只会打一句"生成器自己出错了"），
+    //    而 host 正是 download 规则的匹配键 ⇒ 这里必须指名道姓。
+    throw new ModCatalogBuildError(`${path}: 不是能解析的 URL（download 规则按它的 host 匹配）`);
+  }
+}
+
 function modsOf(raw: unknown, path: string): Record<string, unknown>[] {
   const root = objectAt(raw, path);
   const schemaVersion = root.schemaVersion;
@@ -240,7 +294,7 @@ export function buildCatalog(input: BuildInput): ModCatalog {
         const at = `${source.path}.mods[${modid}].versions[${index}]`;
         const v = objectAt(rawVersion, at);
         const url = str(v.url, `${at}.url`);
-        const host = new URL(url).host;
+        const host = hostOf(url, `${at}.url`);
         const rule = overrides.downloadRules.find((r) => r.host === host);
         releases.push({
           modid,
@@ -248,13 +302,13 @@ export function buildCatalog(input: BuildInput): ModCatalog {
           url,
           sha1: str(v.sha1, `${at}.sha1`),
           sha512: str(v.sha512, `${at}.sha512`),
-          size: typeof v.size === 'number' ? v.size : Number.NaN,
-          targetVersions: strArray(v.target_version, `${at}.target_version`)
+          size: requiredSize(v.size, `${at}.size`),
+          targetVersions: requiredStrArray(v.target_version, `${at}.target_version`)
             .slice()
             .sort(byCodeUnit),
           dependencies: strArray(v.dependencies, `${at}.dependencies`),
           obsolete: bool(v.obsolete, `${at}.obsolete`, false),
-          intermediary: strArray(v.intermediary, `${at}.intermediary`),
+          intermediary: requiredStrArray(v.intermediary, `${at}.intermediary`),
           download: rule ? rule.mode : overrides.default,
         });
       }
