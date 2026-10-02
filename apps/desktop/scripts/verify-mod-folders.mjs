@@ -112,6 +112,8 @@ const argOf = (name) => {
 const KEEP = process.argv.includes('--keep');
 const PHASE = argOf('--phase') || 'main';
 const CASE = argOf('--case');
+/** `--reuse-user-data <目录>`：case g 用它做一次**真重启**（读 case f 留下的那份状态）。 */
+const REUSE_USER_DATA = argOf('--reuse-user-data');
 if (PHASE !== 'main' && PHASE !== 'state-file' && PHASE !== 'prefs') {
   console.error(`✗ --phase 只接受 main / state-file / prefs，收到「${PHASE}」`);
   process.exit(2);
@@ -161,10 +163,10 @@ const listing = (dir) =>
 if (PHASE === 'state-file' && !['a', 'b', 'c'].includes(CASE)) {
   bail(`--phase state-file 的 --case 只接受 a / b / c，收到「${CASE}」`);
 }
-if (PHASE === 'prefs' && !['d', 'e'].includes(CASE)) {
-  bail(`--phase prefs 的 --case 只接受 d / e，收到「${CASE}」`);
+if (PHASE === 'prefs' && !['d', 'e', 'f', 'g'].includes(CASE)) {
+  bail(`--phase prefs 的 --case 只接受 d / e / f / g，收到「${CASE}」`);
 }
-if (PHASE === 'prefs' && CASE === '') bail('--phase prefs 必须带 --case d|e');
+if (PHASE === 'prefs' && CASE === '') bail('--phase prefs 必须带 --case d|e|f|g');
 
 // ---------------------------------------------------------------------------
 // 前置：产物在不在、是不是这一版（照 `verify-file-updates.mjs` 的输入集守卫）
@@ -779,6 +781,15 @@ async function mainPhase() {
       state.missing.length === 0,
       `missing = ${String(state.missing.length)} 条`,
     );
+    /*
+     * ★ **判修 2**：`missing: []` 有两种原因（"真的不缺" / "还不知道"）⇒ 结构化标出来，
+     *   界面只在 `'ok'` 时显示清单。这里锚的是"未扫"那一支。
+     */
+    check(
+      `★ 而且状态里**结构化地**说出了原因：missingStatus === 'folder-unscanned'（不是 'ok'）`,
+      state.missingStatus === 'folder-unscanned',
+      `missingStatus=${String(state.missingStatus)}`,
+    );
     check(
       `而且**说出来**（notices 里有一条讲清缺失清单为什么空着）`,
       state.notices.some((note) => note.includes('没有扫描读数')),
@@ -797,6 +808,11 @@ async function mainPhase() {
       `扫完之后缺失清单是**真的**那一份：条数 = 1.16.1 下唯一候选的 mod 数（${String(oneRelease1161.length)}）− 已跟踪的 2 个`,
       state.missing.length === oneRelease1161.length - 2,
       `missing = ${String(state.missing.length)} 条（期望 ${String(oneRelease1161.length - 2)}）`,
+    );
+    check(
+      `★ 全部扫到之后 missingStatus 才是 'ok'（界面据此才显示清单）`,
+      state.missingStatus === 'ok',
+      `missingStatus=${String(state.missingStatus)}`,
     );
     check(
       `（前置）它确实 > 0 ⇒ 下面那条"不在里面"不是空集上的恒真`,
@@ -1162,11 +1178,37 @@ async function mainPhase() {
         folder.unrecognized.length === 0,
       folder === undefined ? '（被删掉了）' : `pathExists=${String(folder.pathExists)}`,
     );
+    /*
+     * ★ **判修 2 的第二支**：路径不存在与"还没扫"是**两种不同的原因**，修法也不同 ——
+     *   前者换个说法（**不许**叫人去"重扫"：`rescan` 对一个不存在的目录只会把读数再删一次），
+     *   而且 `missingStatus` 要能把它与 `'folder-unscanned'` 分开。
+     */
+    const missingNote = state.notices.find((note) => note.includes('缺失清单暂时空着'));
+    check(
+      `★ 路径不存在 ⇒ missingStatus === 'folder-missing'（不是 'folder-unscanned'、也不是 'ok'）`,
+      state.missingStatus === 'folder-missing',
+      `missingStatus=${String(state.missingStatus)}`,
+    );
+    check(
+      `★ 这一支的说明**不许**叫人去「重扫」（重扫修不了一个被移走的目录）`,
+      missingNote !== undefined && !missingNote.includes('重扫'),
+      String(missingNote),
+    );
+    check(
+      `而这一支的缺失清单同样空着（不是"你不缺任何 mod"）`,
+      state.missing.length === 0,
+      `missing = ${String(state.missing.length)} 条`,
+    );
     state = await invoke(MOD_CH.unbindFolder, id);
     check(
       'unbindFolder 之后它没了',
       state.folders.find((f) => f.folderId === id) === undefined,
       String(state.folders.length),
+    );
+    check(
+      `★ 解绑之后没有"不存在的文件夹"了 ⇒ missingStatus 回到 'ok'（这一格真的跟着条件走）`,
+      state.missingStatus === 'ok',
+      `missingStatus=${String(state.missingStatus)}`,
     );
     let badUnbind = null;
     try {
@@ -1339,11 +1381,17 @@ async function stateFilePhase() {
 }
 
 // ===========================================================================
-// 相位三：Ruling 37 —— 用户显式选过的游戏版本必须按机器记住（case d/e）
+// 相位三：Ruling 37 —— 用户显式选过的游戏版本必须按机器记住（case d/e/f/g）
+//   d = 播种 chosen:true（读那一半）；e = 老文件缺那一格（自动采纳那一半）；
+//   f = 由探针**自己调** setCatalogGameVersion（写那一半）+ 真重启；g = 那次真重启
 // ===========================================================================
 async function prefsPhase() {
   const workRoot = mkdtempSync(join(tmpdir(), `verify-mod-folders-prefs-${CASE}-`));
-  currentUserDataDir = join(workRoot, 'userData');
+  /*
+   * case g 是**另一个进程里的真重启**：它用 case f 留下的那份 `userData`
+   * （`--reuse-user-data <目录>`），自己那个新的 workRoot 只用来放没用的夹具。
+   */
+  currentUserDataDir = REUSE_USER_DATA === '' ? join(workRoot, 'userData') : REUSE_USER_DATA;
   mkdirSync(currentUserDataDir, { recursive: true });
 
   /*
@@ -1377,17 +1425,33 @@ async function prefsPhase() {
     /*
      * case d：**用户选过**（`catalogGameVersionChosen: true`）⇒ 1.8.9 必须活下来；
      * case e：老文件**没有这一格** ⇒ 归一化补 `false`，下次启动仍会采纳一次（1.16.1）。
+     * case f：`chosen: false` 起步，**由探针自己去调** `setCatalogGameVersion`（判修 1
+     *   要锚的正是那一半），随后的 case g 是一次**真重启**。
      */
     prefs:
       CASE === 'd'
         ? { ...prefsBase, catalogGameVersionChosen: true }
-        : prefsBase,
+        : CASE === 'f'
+          ? { ...prefsBase, catalogGameVersionChosen: false }
+          : prefsBase,
   };
-  writeFileSync(stateFile(), JSON.stringify(seed, null, 2), 'utf8');
-  console.log(
-    `  预置状态文件（case ${CASE}）：catalogGameVersion=1.8.9，chosen=${CASE === 'd' ? 'true' : '（缺这一格 ⇒ 补 false）'}；` +
-      `已绑定文件夹推断出 1.16.1`,
-  );
+  if (CASE === 'g') {
+    /*
+     * case g 是**真重启**：不预置任何东西，用 case f 留下的那份 `userData`（`--reuse-user-data`）。
+     * ⚠️ 它是判修 1 的第二半：`setCatalogGameVersion` 写下去的那个值，必须在**下一次启动**
+     *    之后还在（那时 `startUp` 会再跑一次 `adoptFolderGameVersion()`，而那个文件夹推断出
+     *    1.16.1）。少了它，"置位只写在内存里"这种坏法照样绿。
+     */
+    if (REUSE_USER_DATA === '') bail('--phase prefs --case g 必须带 --reuse-user-data <目录>');
+    console.log(`  复用 case f 留下的 userData（真重启）：${currentUserDataDir}`);
+    console.log(`  它盘上的 prefs：${JSON.stringify(readStateFileJson()?.prefs ?? null)}`);
+  } else {
+    writeFileSync(stateFile(), JSON.stringify(seed, null, 2), 'utf8');
+    console.log(
+      `  预置状态文件（case ${CASE}）：catalogGameVersion=1.8.9，chosen=${CASE === 'd' ? 'true' : CASE === 'f' ? 'false' : '（缺这一格 ⇒ 补 false）'}；` +
+        `已绑定文件夹推断出 1.16.1`,
+    );
+  }
 
   /*
    * ⚠️★ 上游夹具先切成"可达"：这一相位要等的是**启动那一路的最后一次 rebuild**
@@ -1440,6 +1504,61 @@ async function prefsPhase() {
       after?.prefs?.catalogGameVersionChosen === true,
       String(after?.prefs?.catalogGameVersionChosen),
     );
+  } else if (CASE === 'f') {
+    /*
+     * ★ **判修 1**（2026-10-03 复审）：Ruling 37 的**写那一半**。
+     *   case d 是**手工播种** `chosen: true` 的 ⇒ 把 `setCatalogGameVersion` 里那句置位
+     *   删掉，静默覆盖用户的 bug 会原样回来而全部断言照样绿。这一相位补上那一刻：
+     *   调一次**合法**值（`1.8.9`，与文件夹推断出的 `1.16.1` **不同** —— 否则
+     *   "重启不会被覆盖"那一条恒真），然后让 case g 做一次**真重启**。
+     */
+    check(
+      '（前置）这一趟的起点是 chosen: false（启动那一趟已按 spec §6.8 采纳成文件夹推断的 1.16.1）',
+      state.gameVersion === '1.16.1' && after?.prefs?.catalogGameVersionChosen === false,
+      `state=${String(state.gameVersion)} prefs=${JSON.stringify(after?.prefs ?? null)}`,
+    );
+    const written = await invoke(MOD_CH.setCatalogGameVersion, '1.8.9');
+    const diskAfterWrite = readStateFileJson();
+    check(
+      '`setCatalogGameVersion("1.8.9")` ⇒ 状态里是 1.8.9',
+      written.gameVersion === '1.8.9',
+      String(written.gameVersion),
+    );
+    check(
+      '★ 而且**磁盘上** `catalogGameVersion === "1.8.9"` **且 `catalogGameVersionChosen === true`**（写这一半真的落了盘）',
+      diskAfterWrite?.prefs?.catalogGameVersion === '1.8.9' &&
+        diskAfterWrite?.prefs?.catalogGameVersionChosen === true,
+      JSON.stringify(diskAfterWrite?.prefs ?? null),
+    );
+    // 真重启：另起一个进程，用它留下的这份 userData（下面那一段判据在 case g 里）
+    const restart = spawnSync(
+      process.execPath,
+      [self, '--phase', 'prefs', '--case', 'g', '--reuse-user-data', currentUserDataDir],
+      { stdio: 'inherit', cwd: repoRoot, env: { ...process.env, MCSR_VERIFY_REEXEC: '1' } },
+    );
+    check(
+      '★ 上一次写入之后**真重启一次**（另一个进程跑同一个 userData）：它的判据全成立、退出码 0',
+      restart.status === 0,
+      `子进程退出码 ${String(restart.status)}`,
+    );
+    const diskAfterRestart = readStateFileJson();
+    check(
+      '★ 重启之后盘上仍是 1.8.9 + chosen true（`startUp` 的自动采纳没有把它改回去）',
+      diskAfterRestart?.prefs?.catalogGameVersion === '1.8.9' &&
+        diskAfterRestart?.prefs?.catalogGameVersionChosen === true,
+      JSON.stringify(diskAfterRestart?.prefs ?? null),
+    );
+  } else if (CASE === 'g') {
+    check(
+      '★ 真重启之后状态里仍是用户上一次选的 1.8.9（文件夹推断出的 1.16.1 不许覆盖它）',
+      state.gameVersion === '1.8.9',
+      `state.gameVersion=${String(state.gameVersion)}`,
+    );
+    check(
+      '`catalogGameVersionChosen` 仍是 true（重启没有把它归一化回 false）',
+      after?.prefs?.catalogGameVersionChosen === true,
+      String(after?.prefs?.catalogGameVersionChosen),
+    );
   } else {
     check(
       '老文件（缺这一格 ⇒ 补 false）⇒ 采纳已绑定文件夹推断出的 1.16.1（Ruling 37 明确接受这一次）',
@@ -1488,8 +1607,10 @@ if (PHASE === 'state-file') {
     );
   }
   // Ruling 37 那两条也各要一份全新的模块状态（"启动时会不会覆盖"是启动那一刻的事）
-  console.log('\n## ★ Ruling 37：用户选的游戏版本按机器记住（两条，各起一个子进程）');
-  for (const c of ['d', 'e']) {
+  //   d = 播种 chosen:true 那一半；e = 自动采纳那一半；f = 探针自己调 setCatalogGameVersion
+  //   （写那一半）+ 真重启，g 由 f 自己 spawn。
+  console.log('\n## ★ Ruling 37：用户选的游戏版本按机器记住（三条，各起一个子进程）');
+  for (const c of ['d', 'e', 'f']) {
     const child = spawnSync(process.execPath, [self, '--phase', 'prefs', '--case', c], {
       stdio: 'inherit',
       cwd: repoRoot,
