@@ -89,7 +89,10 @@ ASAR=apps/desktop/release/win-unpacked/resources/app.asar
 # ① electron-updater 比的是**打进 asar 的那一份 package.json**，不是仓库里那份：
 grep -ao '"version": "0.0.5"' "$ASAR" | wc -l    # ⇒ 1
 grep -ao '"version": "0.0.4"' "$ASAR" | wc -l    # ⇒ 0（阴性对照：旧值一个都不该剩）
-#    ⚠️ 第二条找不到时会以 **1** 退出（管道里 `wc -l` 照样打印 0）⇒ 读那个 0，不要读退出码。
+#    ⚠️ 第二条找不到时会以 **1** 退出 —— 但这**只在你的 shell 开了 `set -o pipefail` 时成立**；
+#       默认的交互式 Git Bash（以及本文件里这些块）是 **0**（管道的退出码取最后一个命令）。
+#       两种情况下**要读的都是 `wc -l` 打出来的那个数字**，不是退出码。不放心就写成
+#       `n=$(grep -ao '"version": "0.0.4"' "$ASAR" | wc -l); echo "$n"` 再判那个 $n。
 # ② 主进程真的注册了那些 handler（= main.ts 1 + file-updates 8 + mod-folders 15）
 grep -ao 'ipcMain.handle(' "$ASAR" | wc -l       # ⇒ 24
 # ③ 渲染进程发起的 invoke 与它**一对一**（只数 handle 不数 invoke 的话，少接一条也看不出来）
@@ -103,7 +106,10 @@ grep -ao 'modFolders' apps/desktop/dist/preload.cjs | wc -l   # ⇒ 2（> 0 即�
 
 > ⚠️ **不要**拿"通道名字符串在不在产物里"当接线证据 —— 那是"看着有、其实什么都没测"：
 > 那 16 个串全都住在**一个**共享常量对象里，把 `initModFolders` 整段删掉、只留常量，
-> 它们照样在（实测：asar 里 `mcsr:modfolders-` 有 16 处）。能承载结论的只有 ②③ 两条。
+> 它们照样在。⚠️ **而且这些串在产物里有三份**（逐文件实测，合计 **50** 处）：
+> `dist/main.cjs` **16**、`dist/preload.cjs` **17**、以及**被打包进去的**
+> `node_modules/@mcsr/shared/src/desktop.ts` **17** —— 连共享源码都在里面，
+> 所以"串在不在产物里"离"接线在不在"更远了一层。能承载结论的只有 ②③ 两条。
 
 **2. 发布前：先把线上那个库备份出来**（这一步**不在** `deploy.sh` 里）
 
@@ -144,28 +150,71 @@ for (const t of tables) {
   const b = one(bak, `SELECT COUNT(*) AS n FROM "${t}"`);
   if (String(a) !== String(b)) { console.log(`  MISMATCH ${t} live=${a} backup=${b}`); bad += 1; }
 }
+// ★ 不匹配就先退：后面那些读数**一句都不许挡在它前面**
+//   （2026-10-03 判修：原来 `process.exit(1)` 写在最后，而它前面有一句会抛的 SQL ⇒
+//    一次**好备份**反而打不出 `BACKUP_TABLES_MATCH=true`，于是被读成"没有备份"。）
+if (bad > 0) process.exit(1);
 console.log('tables compared =', tables.length, 'mismatch =', bad);
 console.log('fk violations =', bak.prepare('PRAGMA foreign_key_check').all().length);
-console.log('migrations =', one(bak, 'SELECT MAX(id) AS n FROM _migrations'));
-if (bad > 0) process.exit(1);
+// ⚠️ `_migrations` 的列是 **(name, applied_at)** —— 它**没有 `id` 列**
+//    （建表在 `services/api/src/db/migrate.ts` 的 `runMigrations` 里；
+//      写 `SELECT MAX(id)` 会在 `prepare` 那一刻就抛 `no such column: id`）。
+const migCount = one(bak, 'SELECT COUNT(*) AS n FROM _migrations');
+const lastMig =
+  bak.prepare('SELECT name FROM _migrations ORDER BY applied_at DESC LIMIT 1').get()?.name ?? '（空）';
+console.log(`migrations = ${migCount}（最后一条 = ${lastMig}）`);
 console.log('BACKUP_TABLES_MATCH=true');
 JS
 ```
 
 **备份成立的判据**（只认这三样，别只看"文件有了"）：`BACKUP_TABLES_MATCH=true`、
 `fk violations = 0`、以及 `tables compared = N mismatch = 0` 那一行里 `mismatch` 是 **0**。
-（那行 `migrations = N` 是"备份那一刻库里跑到第几号迁移"的读数 —— 判断迁移状态**用它**，
-不要看主文件的 mtime，理由见下。）
+（那行 `migrations = N（最后一条 = …）` 是"备份那一刻库里跑到第几号迁移"的读数 ——
+判断迁移状态**用它**，不要看主文件的 mtime，理由见下。）
 ⚠️ **不要用 `ls` 的 mtime 判断"迁移跑没跑"**：库在 WAL 模式下主文件只在检查点之后才更新，
 迁移可能早就跑完了而 mtime 还是十几个小时前（2026-09-15 实测过一次：`_migrations` 已是 18，
 主文件 mtime 比部署时间早 12 小时）。
-⚠️ **本机没法替你在服务器上验证这一段**（它只在服务器上跑）：第一次跑请把输出留下；
-`BACKUP_TABLES_MATCH=true` 与 `mismatch = 0` 没出现，就等于**没有备份**，那就不要往下走。
+⚠️ **上面这一段里"依赖库结构"的部分，本机就能验、也必须验**（2026-10-03 判修）：
+`_migrations` 的列、以及"逐表比行数"这件事，都躺在**仓库里**（建表那处是
+`services/api/src/db/migrate.ts`）⇒ 不要拿"它只在服务器上跑"当挡箭牌。
+**已经在本机跑过的一遍**（拿 `services/api/data/` 那份库的**副本**跑，不碰原文件）：
+
+```
+① `_migrations` 的真实列：name TEXT PRIMARY KEY / applied_at INTEGER NOT NULL ⇒ **没有 id 列**
+② 旧写法 `SELECT MAX(id) AS n FROM _migrations` ⇒ ✗ Error: no such column: id
+③ 修好之后：backup -> 434176 bytes；tables compared = 19 mismatch = 0；
+   fk violations = 0；migrations = 23（最后一条 = 023_live_status）；BACKUP_TABLES_MATCH=true
+```
+
+⇒ **"没验过"只剩下一件事**：没有对**生产那份库**真的跑过一次（那要连上服务器）；
+上面那些判据与 SQL 本身已经被本机这一遍钉住了。
+第一次在生产跑请把输出留下：`BACKUP_TABLES_MATCH=true` 与 `mismatch = 0` 没出现，
+就等于**没有备份**，那就不要往下走。
 （把这一步做进 `deploy.sh` —— 做成"迁移之前 + 回读之后才算成功"—— 是一条已知的待办：
 上面那句"链上没有备份"就是它的现状，别以为它已经被解决了。）
 
 **3. 发布**（在仓库根目录；Windows 上要走 Git Bash —— 本机 PATH 上的 `bash` 是没装发行版的
 WSL 存根，`pnpm deploy` 会在第一行之前就失败）
+
+**发布前预检**（2026-10-03 判修加的一步：这三条**必须**在按下回车之前看一眼，
+它们各自都有"部署报成功而实际上没做/做错了"的形态。只看"有没有值"，**不打印值**）：
+
+```bash
+# 在仓库根目录跑
+for k in MCSR_SSH_HOST MCSR_DOMAIN MCSR_HEALTHCHECK_URL MCSR_LEGACY_DOMAIN; do
+  v=$(sed -n "s/^${k}=//p" deploy/deploy.env | head -1)
+  if [ -n "$v" ]; then echo "  ok   $k 已设置（长度 ${#v}）"; else echo "  ✗    $k 为空"; fi
+done
+b=$(sed -n 's/^MCSR_BOOTSTRAP=//p' deploy/deploy.env | head -1)
+[ "$b" = 0 ] && echo '  ok   MCSR_BOOTSTRAP=0（这次不会 bootstrap）' || echo "  ⚠️  MCSR_BOOTSTRAP=$b"
+```
+
+- ★ **`MCSR_HEALTHCHECK_URL` 为空 ⇒ 整块线上自检被跳过，而部署照样 `exit 0`**
+  （`deploy.sh:599` 那个 `if` 包住了 CSP + `/api/file-catalog` + `/api/mod-catalog` 三条回读）
+  ⇒ 那意味着一次"成功"的部署**一个回读都没做**。这一条是本节所有回读的前提。
+- **`MCSR_LEGACY_DOMAIN` 为空** ⇒ 部署会把**上一次留下的旧域名 301 删掉**（旧链接变死链），
+  而这件事只在日志开头有一行 ⚠️（`deploy.sh:55-62`）。故意要删就让它空；否则先补上。
+- **`MCSR_BOOTSTRAP` 不是 0** ⇒ 这一次会顺带 `bootstrap-server.sh`（装 Node/Caddy、建用户）。
 
 ```bash
 & "C:\Program Files\Git\bin\bash.exe" deploy/deploy.sh --with-installer
@@ -184,8 +233,8 @@ WSL 存根，`pnpm deploy` 会在第一行之前就失败）
 解到 `/srv/mcsr-helper/releases/`。
 
 ⚠️★ **这两步之间的那个窗口要按"失败分支"读，不是按"几秒钟"读**（2026-10-03 判修）：
-脚本是 `set -euo pipefail`（`:250`），所以从**前端换完**（`:357`）到**安装包解完**（`:513`）
-之间，任何一处失败都会让脚本**带着非零退出码停下**，而这时线上是"**新页面 + 上一版的
+脚本是 `set -euo pipefail`（`:250`），所以从**前端换完**（`:357`）到**安装包解完**
+（`:513-519`，那句 `tar -xzf` 在 `:515`）之间，任何一处失败都会让脚本**带着非零退出码停下**，而这时线上是"**新页面 + 上一版的
 `latest.yml`**"这个组合，并且它会**一直保持**到有人再跑一次 —— `:433`/`:502` 那两句
 `systemctl enable --now` 是**故意不吞错误**的，`install -m 0644`、`:583` 那句 `exit 1` 同理。
 ⇒ **清单里必须有一条**：**若这一次部署在"换前端"之后以非零退出码结束，立刻重跑一次
@@ -211,25 +260,67 @@ immutable 时要重新想一遍。）
 IP=<服务器公网 IP>                    # deploy/deploy.env 里 MCSR_SSH_HOST 去掉 user@
 R=(--resolve <域名>:443:$IP)
 
-# ① 清单：正文里的版本 + **响应头里的缓存策略**（两件都要看）
+# ① 抓：清单（头 + 正文）、exe、首页那份 JSON。三条都是只读 GET。
 curl -sS "${R[@]}" -D /tmp/latest.yml.head -o /tmp/latest.yml https://<域名>/installer/latest.yml
-grep -q '^version: 0\.0\.5$' /tmp/latest.yml              # ⇒ 命中
-grep -qi '^cache-control: *no-cache' /tmp/latest.yml.head  # ⇒ 命中（Caddyfile:130-131 那条规则）
+#    ⚠️ 文件名里有空格 ⇒ URL 里必须编码成 %20
+curl -sS "${R[@]}" -o /tmp/setup.exe -w '%{http_code} %{size_download}\n' \
+     "https://<域名>/installer/MCSR%20Helper-Setup-0.0.5.exe" > /tmp/exe.code
+curl -sS "${R[@]}" -o /tmp/release.json https://<域名>/api/desktop/release
+
+# ② 判：**任一条不符就以非零退出**（下面这六条就是全部判据；跑完只需看退出码 + 有没有 ✗）
+fail=0
+grep -q '^version: 0\.0\.5$' /tmp/latest.yml \
+  || { echo '✗ latest.yml 的 version 不是 0.0.5'; fail=1; }
+grep -qi '^cache-control: *no-cache' /tmp/latest.yml.head \
+  || { echo '✗ latest.yml 少了 Cache-Control: no-cache（Caddyfile:130-131 那条规则没生效）'; fail=1; }
 #    ⚠️ 这一条不是装饰：那条 `@manifest path *latest.yml` 规则**曾经静默失效过**
-#    （安装包拿到了 immutable、而 latest.yml 一个 Cache-Control 都没有，见 Caddyfile:121-129）。
+#    （安装包拿到了 immutable、而 latest.yml 一个 Cache-Control 都没有，见 `Caddyfile:121-129`）。
 #    清单被缓存住的表现是"用户永远看到已是最新版本"，而我们这边一点痕迹都没有。
+MANIFEST_SIZE=$(sed -n 's/^  *size: *\([0-9]\{1,\}\)$/\1/p' /tmp/latest.yml | head -1)
+MANIFEST_SHA=$(sed -n 's/^sha512: *//p' /tmp/latest.yml | head -1)
+[ "$(cut -d' ' -f1 /tmp/exe.code)" = 200 ] \
+  || { echo '✗ exe 不是 200'; fail=1; }
+[ "$(cut -d' ' -f2 /tmp/exe.code)" = "$MANIFEST_SIZE" ] \
+  || { echo "✗ exe 的字节数与清单的 size 不一致（$(cut -d' ' -f2 /tmp/exe.code) vs $MANIFEST_SIZE）"; fail=1; }
+#    ★ 最强、也最便宜的一条：把**下载下来的那份 exe** 的 sha512 与清单里的对一遍
+[ "$(openssl dgst -sha512 -binary /tmp/setup.exe | base64 -w0)" = "$MANIFEST_SHA" ] \
+  || { echo '✗ exe 的 sha512 与清单里的不一致（文件被换了 / 传坏了 / 清单不是这一份）'; fail=1; }
+grep -q '"version":"0.0.5"' /tmp/release.json \
+  || { echo '✗ /api/desktop/release 的 version 不是 0.0.5（首页那一格：用户看得见的就是它）'; fail=1; }
+[ "$fail" = 0 ] && echo '✓ 安装包回读全过' || echo '✗ 安装包回读有项没过'
+exit $fail          # ← 这一节只要看这一个退出码：0 = 全过
+```
 
-# ② exe：状态码 + 字节数（文件名里有空格 ⇒ 手工 curl 要编码成 %20）
-curl -sS "${R[@]}" -o /dev/null -w '%{http_code} %{size_download}\n' \
-  "https://<域名>/installer/MCSR%20Helper-Setup-0.0.5.exe"   # ⇒ 200 112480275（= latest.yml 的 size）
-#    安装包那一侧相反：文件名带版本号 ⇒ `Cache-Control: public, max-age=31536000, immutable`
-#    是对的（`Caddyfile:132-133`），**不要**把它改成 no-cache。
+★ 这一段判据**在本机用真产物跑过**（2026-10-03 判修）：正例退出码 **0**（并且它顺手独立复核了
+`sha512` —— 拿盘上那个 112,480,275 字节的 exe 现算，与清单逐字符相同）；三种**红证**都非零：
+把清单 version 改成 0.0.4、给 exe 追加一个字节（sha512 与 size 同时变）、拿掉响应头里的
+`no-cache`。⇒ **只有"对生产那一次 GET"没有跑过**，判据本身不是"看起来对"。
+（安装包那一侧相反：文件名带版本号 ⇒ `Cache-Control: public, max-age=31536000, immutable`
+是对的，见 `Caddyfile:132-133`，**不要**把它改成 no-cache。）
 
-# ③ 首页那一格（用户看得见的那份 JSON；deploy.sh 的自检也不看它）
-curl -sS "${R[@]}" https://<域名>/api/desktop/release        # ⇒ version 0.0.5 / file 同名 / size 同上
+```bash
+# ③ 部署之后库还在不在（这次部署会重启 API ⇒ 会跑迁移；备份就是为这一步存在的）
+#    连上服务器跑；读数与**第 2 步那份备份打印的**比对：
+#    migrations 条数应当相同（这次没有新迁移 ⇒ 今天两边都应是 23、最后一条 023_live_status）
+ssh <服务器>
+```
+```bash
+sudo -u mcsr node --input-type=module <<'JS'
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync('/srv/mcsr-helper/api/data/mcsr.db', { readOnly: true });
+console.log('migrations =', db.prepare('SELECT COUNT(*) AS n FROM _migrations').get().n,
+  '（最后一条 =', (db.prepare('SELECT name FROM _migrations ORDER BY applied_at DESC LIMIT 1').get()?.name ?? '（空）') + '）');
+console.log('fk violations =', db.prepare('PRAGMA foreign_key_check').all().length);
+JS
+```
+⚠️ 这一段的读数**不是**"随便看一眼"：`migrations` 比第 2 步那份**少了**，说明迁移没跑完
+（而 API 是起来过的）；`fk violations` 不是 0 就更要停下。**它俩的期望值来自第 2 步自己打印的行**
+—— 不要凭记忆填一个数字。
 
-# ④ 那三条由 deploy.sh 自检覆盖的（CSP / file-catalog / mod-catalog）：
+```bash
+# ④ 剩下三条由 deploy.sh 自检覆盖（CSP / /api/file-catalog / /api/mod-catalog）：
 #    整次部署的退出码就是它们的结论 —— 非零就是没过，看它逐项打印的那一行。
+#    ⚠️ 前提是预检里 `MCSR_HEALTHCHECK_URL` 非空（为空 ⇒ 这一段整块不跑而退出码仍是 0）。
 ```
 
 **5. 回滚：安装器**回不去**，坏的 0.0.5 只能靠 0.0.6 顶掉**
@@ -329,8 +420,9 @@ sqlite3 /srv/mcsr-helper/api/data/mcsr.db "VACUUM INTO '/tmp/mcsr-$(date +%F).db
 ```
 
 ⚠️ **今天备份仍然是手工动作**：`deploy.sh` 全文搜不到 `backup` / `备份` / `VACUUM`，
-所以部署链上**没有**任何一次自动备份（`docs/pending.md` §3.8 记着这件事与它的修法：
-做成 `deploy.sh` 里"迁移之前 + 回读之后才算成功"的一步）。
+所以部署链上**没有**任何一次自动备份。（正确做法是把它做成 `deploy.sh` 里
+"迁移之前 + 回读之后才算成功"的一步 —— 在那之前，第 2 步就是唯一的备份动作，
+别指望部署会替你备份。）
 
 **并且要实际演练一次恢复** —— 没演练过的备份不算备份。这是 M6 的验收项之一。
 
