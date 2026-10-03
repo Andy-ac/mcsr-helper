@@ -218,8 +218,11 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
    空 glob 不是错误）、并把上次留下的陈旧片段删掉；显式给了值才生成。
 2. **在本地构建**（`@mcsr/web` + `@mcsr/api` 两个包，**不在服务器上构建**）：产物加起来不到 5 MB，
    而服务器通常很小，在上面跑 Vite 又慢又吃内存。
-3. 打两个 tar 包，`--with-installer` 时再带上 Electron 安装包（`latest.yml` 必须**先于**
-   那个 `.exe` 上传，否则会有一个"更新源指向还不存在的文件"的窗口）。
+3. 打两个 tar 包，`--with-installer` 时再带上 Electron 安装包（`latest.yml` + `.exe` + `.blockmap`
+   打进**同一个** tgz，一次 `scp`）。上传时安装包那次单独的 `scp` 走**最前**；远端那一段则是
+   先换前端产物、最后才解安装包 ⇒ 两者之间有一个几秒级的窗口（页面已经要新版客户端，而
+   `releases/` 里还是上一版）。发布顺序为什么重要、怎么回读，见 `deploy/README.md` 的
+   「发布桌面安装包」那一节。
 
 **上传 + 远端阶段**（一段以 root 执行的 heredoc）
 
@@ -358,3 +361,57 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
   只有从 infobox 抽出的**事实性字段**；那段抽取的过程记录与逐条数据留在 `docs/progress.md` 的
   第十节（C），并在那里附了同一段署名。
 - 仓库自身**不含第三方 API 密钥**：`deploy/*.env.example` 里全是占位符。
+
+---
+
+## 10. 桌面端的本地能力：单文件与 mod 文件夹（桌面版 0.0.5）
+
+浏览器与桌面端**共用同一份前端产物**（§3.1）：Electron 壳加载的是**线上那个页面**，不是打包
+在应用里的本地页。⇒ `apps/web` 里每写一处本地能力，都要先回答"这一份壳有没有那条通道"。
+
+**三层**
+
+| 层 | 在哪里 | 是什么 |
+|---|---|---|
+| 契约 | `packages/shared/src/desktop.ts` | `DesktopBridge` 的形状 + 两组通道名常量：v1 的 `FILE_UPDATES_CHANNELS` **9 条**、v2 的 `MOD_FOLDERS_CHANNELS` **16 条**（键名与方法名逐一对应，由 `satisfies` 兜住）；`desktopBridge()` 是"我在不在桌面壳里"的唯一入口 —— 浏览器里 `window.mcsr` **不存在** |
+| 纯逻辑（**不做 I/O**） | `packages/shared/src/fileUpdates.ts`（v1）、`packages/shared/src/modFolders.ts`（v2） | 状态文件的形状与迁移（`StateFileV2` / `migrateState`）、两个 planner 组装出的视图、目录的解析/展开/版本比较/文件名与镜像规则、批量与缺失清单的谓词 |
+| 主进程（唯一的 I/O 层） | `apps/desktop/src/preload.ts` 暴露 `window.mcsr`，实现在 `apps/desktop/src/file-updates.ts`（v1）与 `apps/desktop/src/mod-folders.ts`（v2），另有只读件 `mod-folder-scan.ts` / `mod-folder-catalog.ts` | 原生文件对话框、读 jar 头、下载与写盘、把状态推给页面 |
+
+沙箱是 `contextIsolation: true` + `sandbox: true` + `nodeIntegration: false`，preload **不**
+暴露 `ipcRenderer`：每项能力都是一个具名方法，入参一律当作不可信、由主进程自己校验。
+
+**入参纪律**：这一族的通道**只收 id**（`itemId` / `rowId` / `folderId` / `modid` + 游戏版本）与
+`channel`，**没有任何一条收地址** —— 下载什么、写到哪，全由主进程按自己那份状态决定。
+⚠️ 但**出参方向是反的**：`getState()` / `onStatus` 交给页面的那份状态里带着已绑定条目的
+**绝对路径**（`FileItemView.binding.localPath`、`ModFolderView.path`），因为页面要靠它指出
+"正在更新的到底是哪个文件"。这个代价（一个被注入的远程源能读到这台机器上的 mods 路径）
+是**有意接受**的，论证写在 `apps/desktop/src/preload.ts` 的文件头。
+
+**状态文件：只加字段，不改老字段。** `%APPDATA%\MCSR Helper\file-tracking.json` 里
+`version: 1` 与 `stateVersion: 2` **同时存在**，而且必须一直同时存在：
+
+- `version` 是老客户端（0.0.4）读的那一格，**不能动** —— 改成 2 会让它把整份状态判成
+  "版本不认识"，用户看到的是"状态文件坏了"。`stateVersion: 2`、`catalogBindings`、
+  `folders`（按 `folderId` 键控）、`prefs`（`bulkChannel` / `catalogGameVersion` /
+  `catalogGameVersionChosen` / `tagFilter`）都是**新增**的。
+- 0.0.4 读这份文件用的是 `JSON.parse(...) as StateFile` —— **类型断言、不是校验** ⇒
+  多出来的键被原样忽略，它照常工作（这是"老客户端不受影响"的**依据，不是假设**）。
+- 反过来：老文件（没有 `stateVersion`）由 `migrateState()` 补成 v2 形状，**不做删除式迁移**；
+  `items`（v1 的条目）**原样保留**，v2 的 `catalogBindings` 是另一个命名空间（按**目录行 id**
+  键控，理由见 `modFolders.ts` 的文件头第三节）。
+
+**两组通道，以及"老客户端为什么不受影响"**：v1 那 9 条通道名**一个字节都没改**（0.0.4 的壳读的
+就是这些字符串，改一个字母的表现是"点了没反应"），v2 只在旁边**新增** 16 条。⚠️ `bindFolder`
+在两组里**各有一条**，这不是漏改：v1 那条是"按 jar 名匹配条目"、v2 那条是"建一个文件夹实体"；
+旧那条留着只为让 0.0.4 的行为一字不变 —— 代价是新版本里它成了**没有入口**的代码。
+
+**页面按能力降级，不按版本号猜**：判据是 `desktopBridge()?.modFolders` 在不在
+（`apps/web/src/routes/Files.tsx`）。0.0.4 的壳有 `mcsr`、**没有** `modFolders` ⇒ 第二部分显示
+"需要桌面版 0.0.5"，而第一部分与 v1 那条路照常 —— 这条降级有渲染自检直接钉着
+（`apps/web/scripts/foldersrender.tsx` 的 ㉕：同一个桩去掉 `modFolders` 再渲染 `Files`）。
+⇒ 前端产物先于安装包上线**不会白屏**，但"页面要 0.0.5 而 0.0.5 还不存在"仍然是一个坏状态
+⇒ 发布顺序与部署后回读见 `deploy/README.md` 的「发布桌面安装包」那一节。
+
+**服务端那一半**：新的 mod 目录走 `GET /api/mod-catalog`（`content/mod-catalog.json`，schema 2，
+**每次请求现读**）；**老端点 `/api/file-catalog` 的形状一个字节都不动** —— 它只含
+`provider: "modrinth"` 的项，0.0.4 读的就是它。

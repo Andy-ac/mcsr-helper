@@ -9,7 +9,7 @@
 Caddy (443, 自动 HTTPS)  ── /api/*  ──▶  Node API (127.0.0.1:3001)
  │                                        systemd: mcsr-helper-api
  ├── 静态前端 /srv/mcsr-helper/web
- └── /installer/* ──▶ Cloudflare R2（安装包与自动更新源，M3 才需要）
+ └── /installer/* ──▶ /srv/mcsr-helper/releases（安装包 + latest.yml，桌面端自动更新的源）
 ```
 
 **没有容器、没有编排。** 两个进程 + 一个静态目录，这是单人维护成本最低的形态。
@@ -54,6 +54,73 @@ bash deploy/deploy.sh
 
 用「本地构建 + 传产物」而不是「服务器上构建」，是因为香港轻量服务器通常只有 2 核 2G，
 在上面跑 Vite 构建既慢又占内存，而本机只要几十秒。
+
+## 发布桌面安装包（`--with-installer`）
+
+桌面端的更新源**就是本站自己**：Caddy 把 `/installer/*` 映射到服务器上的
+`/srv/mcsr-helper/releases/`（见 `Caddyfile` 里那个 `handle` 块），electron-updater 读的是
+那份 `latest.yml`；首页那个"下载客户端"入口读的也是它（`GET /api/desktop/release`
+每次都现读 `<releasesDir>/latest.yml`，见 `services/api/src/routes/desktop.ts`）。
+
+**1. 本地出安装包**
+
+```bash
+pnpm -F @mcsr/desktop build     # esbuild 打主进程 + preload
+pnpm build:installer            # = pnpm -F @mcsr/desktop dist（electron-builder）
+```
+
+产物三件套落在 `apps/desktop/release/`：`latest.yml`、`MCSR Helper-Setup-<版本>.exe`、
+同名 `.blockmap`。
+
+- ⚠️ **版本号的唯一来源是 `apps/desktop/package.json` 的 `version`**（electron-builder 从那里取，
+  没有人手写版本号）。写这份文档时发布的是 **0.0.5**；发新版时改那个字段，再回来核这一节里的示例数字。
+- ⚠️ `apps/desktop/release/` **是 gitignore 的**（`.gitignore` 的 `release/`）—— 安装包是产物，
+  一个字节都不进版本库。
+- ⚠️ 旧版本的 exe 会一直留在 `release/` 里（服务端也**刻意不删**：删掉一个正被下载中的文件
+  会让那次更新静默失败），所以打包时**按 `latest.yml` 里那个版本挑文件**，不能 `./*.exe`
+  （`deploy.sh` 就是这么做的，见它那一段注释）。
+
+**2. 发布**（在仓库根目录；Windows 上要走 Git Bash —— 本机 PATH 上的 `bash` 是没装发行版的
+WSL 存根，`pnpm deploy` 会在第一行之前就失败）
+
+```bash
+& "C:\Program Files\Git\bin\bash.exe" deploy/deploy.sh --with-installer
+```
+
+⚠️ **安装包必须与前端产物同批上线，而且安装包要先到位。** 两个理由，方向相同：
+
+- 新版本的页面会要求 **0.0.5 才有的桌面能力**（`window.mcsr.modFolders` 在不在；没有它
+  那一栏显示"需要桌面版 0.0.5"）—— 前端先上线、安装包后到，用户就会停在一个
+  "它要 0.0.5，而 0.0.5 还不存在"的状态里；
+- 首页那句"下载客户端 vX"读的是**服务器上的** `latest.yml` ⇒ 清单先上线而 exe 没到，
+  客户端只会拿到 404，而 electron-updater 只报"更新失败"、不会说"是清单位置不对"。
+
+`deploy.sh` 的做法：安装包**单独一次 `scp`**、在所有其他产物**之前**传上去（远端这时还没开始
+换任何东西）；远端那一段里**先换前端产物**（`${WEB_DIR}`），最后才把 `/tmp/installer.tgz`
+解到 `/srv/mcsr-helper/releases/`。⚠️ 这两个动作之间因此有一个**几秒级**的窗口：新页面已经在
+线上要 0.0.5，而 `releases/` 里还是上一版的 `latest.yml`（此时客户端检查更新会说"已是最新"，
+下一次检查就正常了 —— 不是崩溃，老壳走的是 v1 的降级支路）。要消掉它就得把远端那一段里
+解安装包的动作提到换前端之前；本仓今天**没有**这么做，这里如实记着。
+
+⇒ **这一版的页面不要用一次「不带 `--with-installer`」的部署先发出去** —— 那正是"web 先于 app"，
+用户会停在一个"要 0.0.5 而拿不到 0.0.5"的状态里（`latest.yml` 还是上一版，客户端检查更新会说
+"已是最新"）。也不要手工往 `/srv/mcsr-helper/releases/` 里丢文件：那个目录和 `deploy/` 下的
+配置是同一个心智模型（正常路径只有 `deploy.sh` 这一条）。
+
+**3. 部署后回读**（⚠️ `deploy.sh` 的自检**不读安装包** —— 它只回读 CSP、`/api/file-catalog`、
+`/api/mod-catalog` 三样，「安装包到没到位」只能自己看，所以这一节不是可选的）：
+
+```bash
+curl -sS https://<域名>/installer/latest.yml     # ⇒ version: 0.0.5（与 package.json 一致）
+# ⚠️ exe 的文件名里有空格 ⇒ 手工 curl 要把它编码成 %20
+curl -sS -o /dev/null -w '%{http_code} %{size_download}\n' \
+  "https://<域名>/installer/MCSR%20Helper-Setup-0.0.5.exe"   # ⇒ 200，且字节数与 latest.yml 的 size 相同
+curl -sS https://<域名>/api/desktop/release      # ⇒ 首页下载入口那份 JSON，version 同样是 0.0.5
+```
+
+`latest.yml` **不许被缓存**：`Caddyfile` 里那条 `@manifest` 规则专门给它 `no-cache`
+（理由写在那一段注释里 —— 它一旦被缓存住，用户会一直看到"已是最新版本"）。
+安装包本身相反，文件名带版本号，`Cache-Control: immutable` 是对的。
 
 ## ⚠️⚠️ 改 `deploy/**` 之后必须做的一件事：部署后回读
 
@@ -247,7 +314,7 @@ sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog
 | 文件 | 作用 |
 |---|---|
 | `deploy.env.example` | 部署配置模板，复制成 `deploy.env` 后填写（`deploy.env` 已被 gitignore） |
-| `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物 |
+| `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物，`--with-installer` 顺带发布桌面安装包与 `latest.yml`（见上一节） |
 | `verify-csp.sh` | **部署后回读的判据**：吃一份抓好的响应头文本（stdin 或 `--headers`），核对 CSP 四项与 `/api/ranked/status`；预期值**现读** `Caddyfile`。能单独调用 ⇒ 不碰生产配置就能证明"它会红"（见上面那一节） |
 | `verify-file-catalog.sh` | **部署后回读的判据（`/api/file-catalog`）**：吃一份抓好的响应（`--body <文件>`，也接受 stdin），核对 ① 状态码 200 ② `version === 1` ③ `items` 非空。退出码 0 = 三项全过 / 1 = 有项没过 / 2 = 判据没跑起来。`deploy.sh` 的线上自检会调它 |
 | `verify-mod-catalog.sh` | **部署后回读的判据（`/api/mod-catalog`）**：同一个形状与同一套退出码，字段换成 v2 的 —— ① 状态码 200 ② `schema === 2` ③ `releases` 非空。⚠️ 只认 `--body <文件>`（**不吃 stdin**）。`deploy.sh` 的线上自检会调它 |
