@@ -9325,6 +9325,16 @@ html[data-theme='light'] {
   margin: 0 0 24px;
 }
 
+/* ★ 「需要桌面版 0.0.5」那一块（`ModFoldersUnavailable`，Task 8 的特性检测）。
+   ⚠️★ 它**必须是自己的类名**，不能复用 `.filespanel`：v1 的渲染自检
+   （`apps/web/scripts/filesrender.tsx` ⑰）有一条判据是"产物里没有 `filespanel` 这个
+   子串"（代理"还没拿到状态就不画面板"）。这一块出现在**同一个分支**里
+   ⇒ 复用那个类名会让一条**正确**的 v1 断言红（代价与取舍写在 `routes/Files.tsx`
+   那个组件的注释里）。间距与 `.filespanel` 一致：它们是同一层的东西。 */
+.filesunavailable {
+  margin: 0 0 24px;
+}
+
 /* 说明那一行（`files.autoHint`；以及"可更新的条目全是已禁用"那一档才会出现的
    `files.updateAllDisabledOnly`）。⚠️ 它是**成段的散文**，所以不指定像素字体
    （像素字体读长句很累，见文件头的分工），字号与 `.notice__sub` 同级。
@@ -9553,6 +9563,97 @@ html[data-theme='light'] {
   border-color: var(--line-strong);
   border-style: dashed;
 }
+
+/* ------------------------------------------------------------------
+   文件更新 · 第二部分：mod 文件夹（Task 8）
+
+   ★ 一个文件夹一个 `<details>`（原生折叠，键盘与读屏自带）：头行是 `<summary>`，
+     里面除了路径与状态徽章，还挂着**那个文件夹的全部控件**（游戏版本下拉、整夹
+     自动更新开关、批量通道下拉、全部更新 / 重扫 / 解绑）—— spec §6.8 的字面如此
+     ⇒ 折起来也点得到。
+   ⚠️ 下拉复用 `.filters__select`（第一部分的筛选器与它同一种控件）：全站的下拉只有
+     这一套长相，"再画一个一模一样的"正是本仓反复删掉的那种重复（`.moderatebar .tagchip`
+     那一节记着同一条）。
+   ⚠️ 行表复用 `.filetable*` 那一族（文件 / mod / 本地 / 官方 / 状态 / 操作六列）：
+     两张表的行长相应当一致 —— 用户在同一页上来回看，两边不一样只会让人以为哪一张坏了。
+   ------------------------------------------------------------------ */
+
+/* 一个文件夹。⚠️ 视觉上分开：这一页上面是第一部分的表、下面是这一列折叠块。 */
+.folderbox {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin: 0 0 12px;
+  padding: 0 12px 4px;
+}
+
+/* 头行（`<summary>`）：路径 + 徽章 + 一排控件。
+   ⚠️ `flex-wrap` 不是保险：控件在两种语言里长度差很多（「全部更新用的通道」vs
+   "Channel for "Update all""），窄屏下必须能换行，否则整块会被顶出容器。
+   ⚠️ `gap` 给 `row-gap` 更大一点：换行之后两行控件不要贴在一起。 */
+.folderbox__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+/* 路径：磁盘上的内容，原样印。⚠️ 等宽字体（路径是机器串，不是散文）；
+   `word-break` 是必要的 —— 一个长路径不许把这一行顶宽（与 `.filetable__err` 同一条）。 */
+.folderbox__path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg);
+  word-break: break-all;
+  min-width: 180px;
+}
+
+/* 那一排控件：各自是一组「名字 + 控件」。 */
+.folderbox__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+/* 一组控件（`<label>`）：名字与控件横排。⚠️ 走像素字体的是那两个字的名字
+   （与 `.filetable__head th` 同族），控件本身的长相由 `.filters__select` 决定。 */
+.folderbox__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+/* 头行里那两档"这一块现在什么都不做"的解释（路径不存在 / 版本未知）。
+   ⚠️ 走**正文字体**（成句的散文，像素字体读长句很累 —— 与 `.filespanel__hint` 同一条），
+   而且宽度撑满一行（`flex-basis: 100%`）：它跟在那一排控件后面，不该与它们抢位置。 */
+.folderbox__note {
+  flex-basis: 100%;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* 折叠块的身体：行表 + 「无法识别」那一列。 */
+.folderbox__body {
+  padding: 0 0 8px;
+}
+
+/* 「无法识别 / 清单外」那些文件名。⚠️ 它是**只显示**的那一类（spec §8），
+   所以刻意长得比行表弱：等宽字体、没有边框。 */
+.folderbox__unrecognized {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 
 
 

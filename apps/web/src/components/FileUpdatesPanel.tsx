@@ -805,7 +805,7 @@ type ModFoldersAction<K extends keyof DesktopBridge['modFolders']> = (
 ) => Promise<void>;
 
 /**
- * 第一部分要用的五个动作。
+ * 这一页要用的动作（第一部分 + 第二部分 + 底部那一条）。
  *
  * ⚠️ 返回值是 `Promise<void>`：`makeModFoldersHandlers()` 已经把主进程返回的**整份状态**
  *    落到界面上了，按钮那一层不需要（也拿不到）自己去 setState —— 那条规矩只有一处实现。
@@ -814,6 +814,9 @@ type ModFoldersAction<K extends keyof DesktopBridge['modFolders']> = (
  *    （`modid|游戏版本`，主进程的 `requirePairKey` 会拿它跟 `rowId` 对一遍），
  *    **指定不了"哪一个候选"**（主进程自己取 `view.official`）⇒ 这一层把那个参数
  *    收进实现里（页面只说得清"哪一行、走哪条通道"）。
+ * ⚠️★ Task 8 加的八条（第二部分与底部）**一律与契约同签名**（`ModFoldersAction<K>`
+ *    取的就是 `Parameters<…>`）：它们的入参本来就只是 id / 版本 / 通道，没有一处需要
+ *    像 `updateCatalogRow` 那样"页面说不清"的东西。
  */
 export interface ModFoldersHandlers {
   setCatalogGameVersion: ModFoldersAction<'setCatalogGameVersion'>;
@@ -823,6 +826,18 @@ export interface ModFoldersHandlers {
   unbindCatalogRow: ModFoldersAction<'unbindCatalogRow'>;
   updateCatalogRow: (rowId: string, channel: Channel) => Promise<void>;
   rescan: ModFoldersAction<'rescan'>;
+  /* ---- Task 8：第二部分（文件夹那一层）---- */
+  /** 弹原生目录对话框建一个"文件夹实体"（**新语义**，与 v1 那条同名通道不是一回事）。 */
+  bindFolder: ModFoldersAction<'bindFolder'>;
+  unbindFolder: ModFoldersAction<'unbindFolder'>;
+  setFolderGameVersion: ModFoldersAction<'setFolderGameVersion'>;
+  setFolderAutoUpdate: ModFoldersAction<'setFolderAutoUpdate'>;
+  /** 「全部更新」用哪条通道（按机器记住 ⇒ 住在主进程 `prefs`）。 */
+  setBulkChannel: ModFoldersAction<'setBulkChannel'>;
+  updateMod: ModFoldersAction<'updateMod'>;
+  updateFolderAll: ModFoldersAction<'updateFolderAll'>;
+  /** 底部缺失清单的「下载」（`gameVersion` 决定装哪一版）。 */
+  downloadMissing: ModFoldersAction<'downloadMissing'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -866,10 +881,13 @@ export function reduceModFoldersLoad(
 }
 
 /**
- * 五个动作的包装（与 v1 的 `makeHandlers()` 同型）。
+ * `ModFoldersHandlers` 那十四个动作的包装（与 v1 的 `makeHandlers()` 同型）。
  *
  * ⚠️ 两件事**只有这一处实现**：把主进程返回的状态落到界面上；以及接住 `reject`。
  * ⚠️ 开跑之前先撤掉**上一次**的失败结论（它说的是上一次那个动作）。
+ * ⚠️★ 条数是**现数的**（`ModFoldersHandlers` 的成员：第一部分 6 条 + Task 8 的 8 条）；
+ *    加一条动作时这句话要一起改（与 `package.json` 里那句"十三个渲染门禁"同一条纪律：
+ *    手抄的数字一定会过期，所以它旁边写着怎么现数）。
  */
 function makeModFoldersHandlers(
   api: DesktopBridge['modFolders'],
@@ -899,6 +917,20 @@ function makeModFoldersHandlers(
     updateCatalogRow: (rowId: string, channel: Channel) =>
       run(() => api.updateCatalogRow(rowId, rowId, channel)),
     rescan: () => run(() => api.rescan()),
+    /* ---- Task 8：第二部分与底部（逐条与契约同签名，见 `ModFoldersHandlers`）---- */
+    bindFolder: () => run(() => api.bindFolder()),
+    unbindFolder: (folderId: string) => run(() => api.unbindFolder(folderId)),
+    setFolderGameVersion: (folderId: string, gameVersion: string | null) =>
+      run(() => api.setFolderGameVersion(folderId, gameVersion)),
+    setFolderAutoUpdate: (folderId: string, on: boolean) =>
+      run(() => api.setFolderAutoUpdate(folderId, on)),
+    setBulkChannel: (channel: Channel) => run(() => api.setBulkChannel(channel)),
+    updateMod: (folderId: string, modid: string, releaseKey: string, channel: Channel) =>
+      run(() => api.updateMod(folderId, modid, releaseKey, channel)),
+    updateFolderAll: (folderId: string, channel: Channel) =>
+      run(() => api.updateFolderAll(folderId, channel)),
+    downloadMissing: (modid: string, gameVersion: string, folderId: string, channel: Channel) =>
+      run(() => api.downloadMissing(modid, gameVersion, folderId, channel)),
   };
 }
 

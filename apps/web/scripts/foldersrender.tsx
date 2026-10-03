@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * 「文件更新」`/files` 那一页 · **第一部分（目录行）** 的渲染自检
- * （2026-10-03，Task 7 —— 第 14 个渲染自检；**本任务先不接进 `check:all`**，由 T8 接）。
+ * 「文件更新」`/files` 那一页 · **第一部分（目录行）+ 第二部分（文件夹）+ 底部（缺失清单）**
+ * 的渲染自检（2026-10-03，Task 7 写了 ①–⑰；同一天 **Task 8** 加了 ⑱–㉗ 并把脚本接进
+ * `check:all` —— 第 14 个渲染自检）。
  *
  * 跑法（从仓库根）：
  *   & "$env:APPDATA\npm\pnpm.cmd" -F @mcsr/web check:folders
@@ -11,9 +12,9 @@
  * 为什么这一页必须有它
  * ===========================================================================
  * 与 `filesrender.tsx`（v1 那一半）逐字同一条理由：`apps/web` 没有测试运行器
- * （`CONTRIBUTING.md`），而第一部分这一批"每行给不给按钮 / 给几颗 / 标哪个来源 /
- * 三处空态"全是**只能用产物证明**的东西 —— 类型检查看不见"块整个没渲染"、
- * "词条打错一个字母"、"给 manual 的行画了一颗会被主进程拒的按钮"。
+ * （`CONTRIBUTING.md`），而这一页"每行给不给按钮 / 给几颗 / 标哪个来源 /
+ * 三处空态 / 底部那一栏什么时候不画"全是**只能用产物证明**的东西 —— 类型检查看不见
+ * "块整个没渲染"、"词条打错一个字母"、"给 manual 的行画了一颗会被主进程拒的按钮"。
  * i18next 对未知 key **不报错**，它把 key 原样印在界面上。
  *
  * ===========================================================================
@@ -21,14 +22,18 @@
  * ===========================================================================
  * `renderToStaticMarkup` **不点击、不跑事件处理器、不跑 effect**（`docs/pending.md §5.73`）：
  *   · 「点一下真的走了哪条通道」/「点了真的会弹原生对话框」——**一件都不碰**。
- *     通道的接线只由 ⑯ 那几条**源码形状守卫**兜着（它证的是"那条路在、而且只有一条"）；
+ *     通道的接线只由 ⑯ / ㉖ / ㉗ 那几条**源码形状守卫**兜着（它们证的是"那条路在、
+ *     而且只有一条"）；
  *   · `useModFolders()` 的三条支路（订阅 / 首拉 / 失败）在自检里**跑不到**：
  *     `window.mcsr` 是 `undefined` ⇒ 它只会停在 `unavailable`（浏览器那一支）。
  *     ⇒ ⑰ 只钉住「正在扫描…」那一屏的**组件**，不钉"钩子真的会进那一屏"；
+ *     ⇒ ㉕ 钉的是"0.0.4 的壳渲染成什么样"（那是真的渲染 `Files`，喂的是桩）；
+ *   · `<details>` **点一下会不会展开、点里面那颗按钮会不会顺带折叠** —— 那是浏览器的
+ *     默认动作，静态产物里只有结构（㉑ 钉的是"控件住在 `<summary>` 里"）；
  *   · 主进程写死的中文（`notices` / `lastRun.skipped[].reason` / 标签显示名）——
  *     夹具里一律换成 ASCII（见下面 `NOTE` / `SKIP_REASON` / `TAG_LABEL` 三段）：
  *     它们的语言不归这一层管（`CatalogRowView.tagLabels` 只带目录里的 `zh`，
- *     这是 T1 那一层定下的代价），而 ⑱ 的零汉字扫描**不许开豁免口子**。
+ *     这是 T1 那一层定下的代价），而 ㉘ 的零汉字扫描**不许开豁免口子**。
  *
  * ===========================================================================
  * ⚠️★★ 锚点纪律：锚在**按钮与文案**上，不锚函数名（v1 的现场）
@@ -36,19 +41,29 @@
  * v1（`filesrender.tsx`）的现场：锚在 `requestUpdateAll` 的**声明**上时，那一刀
  * "把 `.cta` 的 `onClick` 改成直接开写"**五条守卫全绿**。⇒ 这个脚本里：
  *   · 「给不给按钮」一律断言**产物里那颗按钮的文字**（`labelsIn`）；
- *   · 「按哪条通道」没有产物可锚（静态渲染不跑处理器）⇒ 只由 ⑯ 的**接线守卫**兜着，
- *     而那几条守卫的刀**真的跑过**（改坏 → 跑 → 还原 → `sha256` 核对，读数在报告里）。
+ *   · 「按哪条通道」没有产物可锚（静态渲染不跑处理器）⇒ 只由 ⑯ / ㉖ / ㉗ 的**接线守卫**
+ *     兜着，而那几条守卫的刀**真的跑过**（改坏 → 跑 → 还原 → `sha256` 核对，
+ *     读数在报告里）。
  *
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh 18 组、en 19 组（⑱ 零汉字扫描只在 `--en` 那一遍跑）。
+ * zh 28 组、en 29 组（㉘ 零汉字扫描只在 `--en` 那一遍跑）。
+ * ⚠️ Task 8 在这里**没有**给组号留空：⑱–㉗ 是这一批新加的十组（原来 ⑱ 那个零汉字
+ * 扫描往后挪到了 ㉘）—— 组号是**顺序**，不是历史编号。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import type { ModRelease } from '@mcsr/shared/modCatalog';
-import { type CatalogRowView, type ModFoldersState, mirrorsForUrl } from '@mcsr/shared/modFolders';
+import {
+  type CatalogRowView,
+  type MissingModView,
+  type ModFolderRowView,
+  type ModFoldersState,
+  type ModFolderView,
+  mirrorsForUrl,
+} from '@mcsr/shared/modFolders';
 import i18n from 'i18next';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -63,7 +78,9 @@ import {
   toggleTag,
 } from '@/components/FileUpdatesPanel';
 import { ModCatalogTable, RAW_KEY_RE, rawKeysIn } from '@/components/FileUpdateTable';
-import { Files } from '@/routes/Files';
+import { MissingModsList } from '@/components/MissingModsList';
+import { ModFoldersPanel } from '@/components/ModFoldersPanel';
+import { Files, ModFoldersParts, ModFoldersUnavailable } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -404,6 +421,198 @@ const tableHtml = (
   );
 
 // ---------------------------------------------------------------------------
+// 第二部分 / 底部清单的夹具与渲染器（Task 8）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这些夹具与第一部分那几张**有意分开**，两处都不是随手写的：
+ *   · 文件夹行的 `verdict` 是 `FolderVerdict`（比 `ReleaseVerdict` 多一支
+ *     `unknown-version`）⇒ 拿第一批那几张行去当文件夹行过不了类型检查；
+ *   · **文件名里不带版本号**（`sodium-build-A.jar`）：真实 jar 名里通常有版本号，
+ *     而"本地版本那一格印了 0.1.2"这条断言会因为**文件名里也有 `0.1.2`** 而恒真
+ *     —— 一条测不出东西的断言（§5.32 的第一类）。夹具把两个数字分开，断言才咬得住。
+ */
+const FOLDER_ID = 'folder-1161';
+const FOLDER_PATH = 'D:\\instances\\mcsr\\.minecraft\\mods';
+const FOLDER_OLD_ID = 'folder-1710';
+const FOLDER_OLD_PATH = 'D:\\instances\\classic\\.minecraft\\mods';
+/** 一个"路径被移走"的文件夹（spec §8：绑定保留、不给更新动作、可解绑）。 */
+const GONE_FOLDER_ID = 'folder-gone';
+const GONE_FOLDER_PATH = 'D:\\moved\\away\\mods';
+
+function folderRow(over: Partial<ModFolderRowView> & { modid: string }): ModFolderRowView {
+  return {
+    name: over.modid,
+    fileName: `${over.modid}-build-A.jar`,
+    localVersion: '0.1.2',
+    localSha512: 'c'.repeat(128),
+    oldCopies: [],
+    candidates: [SODIUM_NEW],
+    official: SODIUM_NEW,
+    targetSource: 'catalog',
+    verdict: { kind: 'older', release: SODIUM_NEW },
+    manual: false,
+    batchable: true,
+    ...over,
+  };
+}
+
+/** 可更新 + GitHub 来源（⇒ 两颗更新按钮）+ 一份旧副本。 */
+const FROW_UPDATE = folderRow({
+  modid: 'sodium',
+  name: 'Sodium Plus',
+  oldCopies: ['sodium-build-old.jar'],
+});
+/** 同一支判定、但目标在 `cdn.modrinth.com` ⇒ 只有原始那一颗（D5）。 */
+const FROW_CDN = folderRow({
+  modid: 'lithium',
+  name: 'Lithium',
+  candidates: [SODIUM_OLD],
+  official: SODIUM_OLD,
+  verdict: { kind: 'older', release: SODIUM_OLD },
+});
+/** `manual`（OptiFine 那一类）：**连更新按钮都不给**。 */
+const FROW_MANUAL = folderRow({
+  modid: 'optifine',
+  name: 'OptiFine Plus',
+  candidates: [OPTIFINE],
+  official: OPTIFINE,
+  verdict: { kind: 'older', release: OPTIFINE },
+  manual: true,
+  batchable: false,
+});
+/** 本地比目标新（只升不降）：只解释。 */
+const FROW_NEWER = folderRow({
+  modid: 'ranked',
+  name: 'Ranked Plus',
+  candidates: [UPSTREAM_NEW],
+  official: UPSTREAM_NEW,
+  verdict: { kind: 'newer', release: UPSTREAM_NEW },
+  batchable: false,
+});
+/** ★ **第二部分才可达**的那一支：这个游戏版本下清单里没有它。 */
+const FROW_NO_RELEASE = folderRow({
+  modid: 'absent',
+  name: 'Absent Plus',
+  candidates: [],
+  official: null,
+  verdict: { kind: 'missing-release' },
+  batchable: false,
+});
+/** 两个候选（`official === null`）：列出来、不给按钮。 */
+const FROW_AMBIGUOUS = folderRow({
+  modid: 'speedrunigt',
+  name: 'SpeedRunIGT Plus',
+  candidates: [SODIUM_OLD, SODIUM_NEW],
+  official: null,
+  verdict: { kind: 'ambiguous', releases: [SODIUM_OLD, SODIUM_NEW] },
+  batchable: false,
+});
+/** ★ 整夹那一档：游戏版本未知（`mmc-pack.json` 读不出来）⇒ 每一行 `unknown-version`。 */
+const FROW_UNKNOWN_VERSION = folderRow({
+  modid: 'krypton',
+  name: 'Krypton Plus',
+  localVersion: null,
+  candidates: [],
+  official: null,
+  verdict: { kind: 'unknown-version' },
+  batchable: false,
+});
+
+function folder(over: Partial<ModFolderView> & { folderId: string }): ModFolderView {
+  return {
+    path: `D:\\instances\\${over.folderId}\\mods`,
+    pathExists: true,
+    gameVersion: '1.16.1',
+    autoUpdate: true,
+    /* 两行是有意的：一行 GitHub 来源（两颗按钮）、一行 CDN 来源（一颗）—— ㉓ 的两刀。 */
+    rows: [FROW_UPDATE, FROW_CDN],
+    unrecognized: [],
+    ...over,
+  };
+}
+
+/** 主夹具：1.16.1、路径在、整夹自动更新开着、两行（GitHub 两颗按钮 / CDN 一颗）。 */
+const FOLDER = folder({ folderId: FOLDER_ID, path: FOLDER_PATH });
+/** 另一个版本的文件夹（缺失清单那两刀要用的对照）。 */
+const FOLDER_OLD = folder({
+  folderId: FOLDER_OLD_ID,
+  path: FOLDER_OLD_PATH,
+  gameVersion: '1.7.10',
+});
+/** 路径不存在的那一个（同一个 1.16.1 ⇒ 它必须被"下载到"的选项滤掉）。 */
+const FOLDER_GONE = folder({
+  folderId: GONE_FOLDER_ID,
+  path: GONE_FOLDER_PATH,
+  pathExists: false,
+  rows: [],
+});
+/** 版本未知的那一个（同一个 1.16.1 的版本号说不出来 ⇒ 也必须被滤掉）。 */
+const FOLDER_NO_VERSION = folder({ folderId: 'folder-no-version', gameVersion: null });
+
+/** 底部清单的两行（两个不同的游戏版本 ⇒ 选项表必须各按各的过滤）。 */
+const MISSING_1161: MissingModView = {
+  modid: 'missing-mod',
+  name: 'Missing Mod',
+  gameVersion: '1.16.1',
+  tags: ['legal'],
+  tagLabels: [TAG_LABEL],
+};
+const MISSING_1710: MissingModView = {
+  modid: 'missing-legacy',
+  name: 'Missing Legacy',
+  gameVersion: '1.7.10',
+  tags: [],
+  tagLabels: [],
+};
+
+/** 渲染第二部分（默认**桌面态**：有动作层）。 */
+const foldersHtmlOf = (
+  state: ModFoldersState,
+  props: { handlers?: ModFoldersHandlers | null } = {},
+): string =>
+  keep(
+    html(
+      React.createElement(ModFoldersPanel, {
+        state,
+        handlers: props.handlers === undefined ? HANDLERS : props.handlers,
+      }),
+    ),
+  );
+
+/** 渲染底部缺失清单。 */
+const missingHtmlOf = (
+  state: ModFoldersState,
+  props: { handlers?: ModFoldersHandlers | null } = {},
+): string =>
+  keep(
+    html(
+      React.createElement(MissingModsList, {
+        state,
+        handlers: props.handlers === undefined ? HANDLERS : props.handlers,
+      }),
+    ),
+  );
+
+/**
+ * 渲染页面 ready 那一支的**三块**（`ModFoldersParts` 那个纯组件）。
+ *
+ * ⚠️★ 为什么必须是它而不是 `Files`：`Files` 的 ready 支路要等 `useModFolders()` 的
+ *    IPC 回包，而静态渲染一行 effect 都不跑 ⇒ 直接渲染 `Files` 永远停在「正在扫描…」。
+ *    这一层只吃 props，所以"三块真的拼在一起、而且第一块那句迁移提示就在同一份产物里"
+ *    才断言得到（㉕）。
+ */
+const partsHtmlOf = (state: ModFoldersState): string =>
+  keep(
+    html(
+      React.createElement(ModFoldersParts, {
+        state,
+        handlers: HANDLERS,
+        actionError: null,
+      }),
+    ),
+  );
+
+// ---------------------------------------------------------------------------
 // 从产物里取元素的小工具（照 filesrender 的形状；**别**在这里另写一份裸 key 正则）
 // ---------------------------------------------------------------------------
 
@@ -417,6 +626,63 @@ function rowOf(markup: string, modid: string): string {
     `产物里找不到 data-row-id 以 "${modid}|" 开头的那一行 —— 那一行没渲染出来，或者 data-row-id 不再写在那里`,
   );
   return found[0];
+}
+
+/** 一个文件夹那一块（`<details data-folder-id=…>`）。找不到就当场红。 */
+function folderBlockOf(markup: string, folderId: string): string {
+  const found = markup.match(
+    new RegExp(`<details class="folderbox"[^>]*data-folder-id="${folderId}"[\\s\\S]*?</details>`),
+  );
+  assert.ok(
+    found,
+    `产物里找不到 data-folder-id="${folderId}" 的那个 <details> —— 那个文件夹没渲染出来（或者它不再是 <details>）`,
+  );
+  return found[0];
+}
+
+/** 那一块的头行（`<summary>`）—— 控件住在这里。 */
+function summaryOf(block: string): string {
+  const found = block.match(/<summary[\s\S]*?<\/summary>/);
+  assert.ok(found, '这个折叠块里没有 <summary> —— 头行没渲染出来（spec §6.8 要求头行是它）');
+  return found[0];
+}
+
+/** 文件夹里的一行（`data-folder-row` 那一格）。 */
+function folderRowEl(block: string, modid: string): string {
+  const found = block.match(
+    new RegExp(`<tr class="filetable__row"[^>]*data-folder-row="${modid}"[\\s\\S]*?</tr>`),
+  );
+  assert.ok(found, `产物里找不到 data-folder-row="${modid}" 的那一行 —— 那一行没渲染出来`);
+  return found[0];
+}
+
+/** 底部清单里的一行（`data-missing-mod` 那一格）。 */
+function missingRowEl(markup: string, modid: string): string {
+  const found = markup.match(
+    new RegExp(`<tr class="filetable__row"[^>]*data-missing-mod="${modid}"[\\s\\S]*?</tr>`),
+  );
+  assert.ok(found, `产物里找不到 data-missing-mod="${modid}" 的那一行 —— 那一行没渲染出来`);
+  return found[0];
+}
+
+/**
+ * 一段产物里**每一个** `<select>` 的选项值与被选中的那个（按渲染顺序）。
+ *
+ * ⚠️★ 为什么必须按 `<select>` 切开：文件夹头行里**有两个**下拉（游戏版本 + 批量通道），
+ *    而 `optionValues()` / `selectedOption()` 那两个老工具看的是"整段里所有的 option"
+ *    —— 拿它们量头行会把两个下拉的选项混成一个集合（一条测错对象的判据）。
+ * ⚠️ 选中的那一项两种写法都认（与 `selectedOption()` 同一条，属性顺序不能假设）。
+ */
+function selectsIn(markup: string): { values: string[]; selected: string }[] {
+  return [...markup.matchAll(/<select\b([^>]*)>([\s\S]*?)<\/select>/g)].map((m) => {
+    const body = m[2];
+    const values = [...body.matchAll(/<option\b[^>]*\bvalue="([^"]*)"/g)].map((o) => o[1]);
+    const chosen = (body.match(/<option\b[^>]*\bselected\b[^>]*>/) ?? [])[0];
+    if (chosen !== undefined) {
+      return { values, selected: chosen.match(/\bvalue="([^"]*)"/)?.[1] ?? '' };
+    }
+    return { values, selected: m[1].match(/\bvalue="([^"]*)"/)?.[1] ?? '' };
+  });
 }
 
 interface ButtonShape {
@@ -479,7 +745,7 @@ function selectedOption(markup: string): string {
 const withoutComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
 
-console.log(`【${LANG}】文件更新页 · 第一部分（目录行）`);
+console.log(`【${LANG}】文件更新页 · 第一部分（目录行）+ 第二部分（文件夹）+ 底部（缺失清单）`);
 
 // ---------------------------------------------------------------------------
 // ① 两个筛选维度：游戏版本下拉（选项 = 状态里的**全集**）+ 标签多选
@@ -1333,53 +1599,77 @@ ok(
  *    `desktopBridge()?.modFolders` 判成"在"。
  * ⚠️ 能红它的刀：把 `Files.tsx` 的 `loading` 那一支换成 `null`（或换成 v1 的
  *    `common.loading`）⇒ 这一条红。
+ * ⚠️★ Task 8 把这个桩抽成了 `shellStub(withModFolders)`：㉕ 要用**同一个桩的 0.0.4
+ *    形态**（有 `mcsr`、没有 `modFolders`）去证特性检测那一支 —— 两处各写一份桩的话，
+ *    "0.0.4 与 0.0.5 的差别只有 `modFolders` 在不在"这件事就没有一处说得清。
  */
 assert.equal(
   NO_MOD_FOLDERS_LOAD.status,
   'loading',
   '★ `useModFolders()` 的起点必须是 `loading`（Ruling 42 的那一屏靠它，不靠任何回包）',
 );
-const stubBridge = {
-  isDesktop: true,
-  platform: 'test',
-  versions: { electron: '0', chrome: '0', node: '0' },
-  update: {
-    onStatus: () => () => undefined,
-    getStatus: async () => ({ state: 'idle' }),
-    check: () => undefined,
-    download: () => undefined,
-    install: () => undefined,
-  },
-  fileUpdates: {
-    getState: async () => ({}),
-    onStatus: () => () => undefined,
-    bind: async () => ({}),
-    bindFolder: async () => ({}),
-    unbind: async () => ({}),
-    setAutoUpdate: async () => ({}),
-    check: async () => ({}),
-    update: async () => ({}),
-    updateAll: async () => ({}),
-  },
-  modFolders: {
-    getState: async () => ({}),
-    onStatus: () => () => undefined,
-    bindFolder: async () => ({}),
-    bindCatalogRow: async () => ({}),
-    unbindCatalogRow: async () => ({}),
-    unbindFolder: async () => ({}),
-    rescan: async () => ({}),
-    setFolderGameVersion: async () => ({}),
-    setFolderAutoUpdate: async () => ({}),
-    setBulkChannel: async () => ({}),
-    updateMod: async () => ({}),
-    updateCatalogRow: async () => ({}),
-    updateFolderAll: async () => ({}),
-    downloadMissing: async () => ({}),
-    setCatalogGameVersion: async () => ({}),
-    setTagFilter: async () => ({}),
-  },
-};
+
+/**
+ * 一个桌面壳桩。
+ *
+ * ⚠️ 桩里的方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
+ *    `desktopBridge()` / `desktopBridge()?.modFolders` 判成"在不在"。
+ * ⚠️ `withModFolders: false` 就是 **0.0.4**：`mcsr` 在、`modFolders` 不在 —— 这一支
+ *    正是 `Files.tsx` 走 v1 那条路的判据（`useModFolders()` 见不到 `modFolders`
+ *    ⇒ `unavailable`）。
+ * ⚠️ `modFolders` 用**展开**而不是 `modFolders: undefined`：`{ modFolders: undefined }`
+ *    与"没有这一格"在 `?.` 下结果一样，但前者会让"这个对象里有这个键"看起来成立
+ *    （读桩的人会以为 0.0.4 也有那条通道）。
+ */
+function shellStub(withModFolders: boolean) {
+  return {
+    isDesktop: true,
+    platform: 'test',
+    versions: { electron: '0', chrome: '0', node: '0' },
+    update: {
+      onStatus: () => () => undefined,
+      getStatus: async () => ({ state: 'idle' }),
+      check: () => undefined,
+      download: () => undefined,
+      install: () => undefined,
+    },
+    fileUpdates: {
+      getState: async () => ({}),
+      onStatus: () => () => undefined,
+      bind: async () => ({}),
+      bindFolder: async () => ({}),
+      unbind: async () => ({}),
+      setAutoUpdate: async () => ({}),
+      check: async () => ({}),
+      update: async () => ({}),
+      updateAll: async () => ({}),
+    },
+    ...(withModFolders
+      ? {
+          modFolders: {
+            getState: async () => ({}),
+            onStatus: () => () => undefined,
+            bindFolder: async () => ({}),
+            bindCatalogRow: async () => ({}),
+            unbindCatalogRow: async () => ({}),
+            unbindFolder: async () => ({}),
+            rescan: async () => ({}),
+            setFolderGameVersion: async () => ({}),
+            setFolderAutoUpdate: async () => ({}),
+            setBulkChannel: async () => ({}),
+            updateMod: async () => ({}),
+            updateCatalogRow: async () => ({}),
+            updateFolderAll: async () => ({}),
+            downloadMissing: async () => ({}),
+            setCatalogGameVersion: async () => ({}),
+            setTagFilter: async () => ({}),
+          },
+        }
+      : {}),
+  };
+}
+
+const stubBridge = shellStub(true);
 Object.assign(globalThis, { mcsr: stubBridge });
 const firstFrameHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
@@ -1403,8 +1693,813 @@ assert.equal(
 );
 ok('⑰ 第一帧（真桌面壳桩）：`Files` 直接画「正在扫描…」，不是 v1 的「加载中…」（Ruling 42）');
 
+// ===========================================================================
+// Task 8：第二部分（文件夹）+ 底部（缺失清单）+ 特性检测（⑱–㉗）
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
-// ⑱ 英文那一遍：全部渲染产物零汉字
+// ⑱ 文件夹是一个 `<details>`，头行（`<summary>`）里六样控件
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 判据来自 spec §6.8 的**字面**："文件夹子栏目（`<details>`）：头行显示路径、
+ *    游戏版本（可改）、整夹自动更新开关、**批量通道选择器**、全部更新、解绑。"
+ *    ⇒ 这一组逐样点名，而且**头行是 `<summary>`**（折叠起来也点得到）。
+ * ⚠️★ 两个下拉的**选项表都来自状态**（版本全集 = Ruling 58；镜像表 = Ruling 55）——
+ *    这一组量的是"状态给什么就画什么"，而且**当前选中值**也来自状态
+ *    （`prefs.catalogGameVersion` / `prefs.bulkChannel`，Ruling 23 的"一处记忆"）。
+ * ⚠️ 能红它的刀（跑过的读数在报告里）：把 `<details>` 换成 `<div>`；把通道下拉的
+ *    `value` 写死成 `'origin'`。
+ */
+const foldersHtml = foldersHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER] }));
+const folderBlock = folderBlockOf(foldersHtml, FOLDER_ID);
+const folderHead = summaryOf(folderBlock);
+assert.ok(
+  foldersHtml.includes('<details'),
+  '★ 文件夹子栏目必须是原生 <details> 折叠块（spec §6.8；闭着也在 DOM 里 ⇒ 自检看得见）',
+);
+assert.ok(
+  textOf(folderHead).includes(textOf(FOLDER_PATH)),
+  '★ 头行要显示路径（用户靠它认这是哪个目录 —— 一个页面上可能绑了好几个）',
+);
+assert.equal(
+  selectsIn(folderHead).length,
+  2,
+  '★ 头行恰好两个下拉：游戏版本（可改）+ 批量通道选择器（spec §6.8）',
+);
+assert.deepEqual(
+  selectsIn(folderHead)[0]?.values,
+  ['', '1.16.1'],
+  '★ 版本下拉 = 空取值（交回自动推断，`setFolderGameVersion(…, null)`）+ 状态里的版本全集（Ruling 58）',
+);
+assert.equal(
+  selectsIn(folderHead)[0]?.selected,
+  '1.16.1',
+  '★ 选中的是**这个文件夹**的有效版本（`folder.gameVersion`，不是第一部分那个全局筛选）',
+);
+assert.deepEqual(
+  selectsIn(folderHead)[1]?.values,
+  ['origin', MIRROR.id],
+  '★ 通道下拉 = `origin` + 状态里的镜像表（Ruling 55：目录配置只有一份）',
+);
+assert.equal(
+  selectsIn(folderHead)[1]?.selected,
+  'origin',
+  '★ 选中的是状态里的 `bulkChannel`（一处记忆，Ruling 23）',
+);
+const autoBoxes = [...folderHead.matchAll(/<input type="checkbox"[^>]*>/g)];
+assert.equal(autoBoxes.length, 1, '★ 头行恰好一个勾选框：整夹自动更新开关');
+assert.ok(
+  /\bchecked\b/.test(autoBoxes[0]?.[0] ?? ''),
+  '★ 它跟着 `folder.autoUpdate` 走（夹具是 true ⇒ 勾上）',
+);
+assert.ok(
+  /*
+   * ⚠️ 比的是 `decode(…)` 之后的产物：英文那条词条里带**引号**（`Check "…" on launch`），
+   *    而 React 在属性值里会把它转义成 `&quot;` —— 直接比原文会在**英文那一遍**红，
+   *    而红点看起来像"可访问名里没有路径"（错的方向，§5.74 那一类）。
+   */
+  decode(folderHead).includes(t('files.autoLabel', { name: FOLDER_PATH })),
+  '★ 勾选框的可访问名里带**路径**（那一排勾选框里哪一个是谁，读屏要分得开 —— 与 v1 的 autoLabel 同一条）',
+);
+assert.deepEqual(
+  labelsIn(folderHead),
+  [
+    labelOf('files.folderUpdateAll', { count: 2 }),
+    labelOf('files.folderRescan'),
+    labelOf('files.unbind'),
+  ],
+  '★ 头行三颗按钮：全部更新（带条数 = `batchTargets(rows)`，夹具两行都可批量）/ 重扫这个文件夹 / 解除绑定 ' +
+    '—— 一条不许少、也不许多',
+);
+/*
+ * ★★ 通道下拉读的必须是**状态里那一格**：把 `bulkChannel` 换成镜像 id ⇒ 选中的跟着变。
+ *    （写死 `'origin'` 的实现能过上面那条，过不了这一条。）
+ * ⚠️ 顺带断言镜像那一格的文案**带着它认的主机**：一个通道在批量里打底 N 条，
+ *    用户点之前就该看得出覆盖谁（`channelUrl` 只在主机匹配时给地址）。
+ */
+const mirrorChannelHtml = foldersHtmlOf(
+  stateOf([ROW_GITHUB], { folders: [FOLDER], bulkChannel: { mirrorId: MIRROR.id } }),
+);
+const mirrorHead = summaryOf(folderBlockOf(mirrorChannelHtml, FOLDER_ID));
+assert.equal(
+  selectsIn(mirrorHead)[1]?.selected,
+  MIRROR.id,
+  '★★ 通道下拉读的是状态里的 `bulkChannel`（换成镜像 id ⇒ 它被选中）—— 写死 `origin` 会红在这里',
+);
+assert.ok(
+  textOf(mirrorHead).includes(textOf(MIRROR.hosts[0] ?? '')),
+  '★ 镜像那一格的文案要带上它认的主机（`hosts` 是目录内容，原样印）',
+);
+ok(
+  '⑱ 文件夹 = `<details>`，头行（`<summary>`）含路径 / 版本可改 / 自动更新开关 / 批量通道 / 全部更新 / 重扫 / 解绑，且两个下拉的选项与选中值都来自状态',
+);
+
+// ---------------------------------------------------------------------------
+// ⑲ 行内六样：文件名、mod 名、本地版本、官方版本、状态徽章、旧副本提示
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ spec §6.8 的"行内显示"那一条就是这六样。判据全部锚在**产物里的字**上
+ *    （不锚字段名）：少哪一样用户就少一份读数。
+ * ⚠️ 夹具的文件名里**没有版本号**（见上面 `folderRow` 的注释）：否则"本地版本那一格
+ *    印了 0.1.2"会因为文件名里也有它而恒真 —— 那样这一条测不出"两格印对了没有"。
+ */
+const folderRow1161 = folderRowEl(folderBlock, 'sodium');
+for (const [what, value] of [
+  ['文件名', FROW_UPDATE.fileName],
+  ['mod 名', FROW_UPDATE.name],
+  ['本地版本', FROW_UPDATE.localVersion ?? ''],
+  ['官方版本', SODIUM_NEW.version],
+] as const) {
+  assert.ok(
+    textOf(folderRow1161).includes(textOf(value)),
+    `★ 行内要印${what}（${value}）—— spec §6.8 那六样之一`,
+  );
+}
+assert.ok(
+  textOf(folderRow1161).includes(textOf(resolved('files.outdated'))),
+  '★ 状态徽章：`older` 那一支要印「可更新」（文字承载语义，颜色只是加强）',
+);
+assert.ok(
+  textOf(folderRow1161).includes(textOf(resolved('files.targetSource.catalog'))),
+  '★ 官方版本那一格要标来源（Ruling 13：有上游目标时它不在 candidates 里，不许靠推断）',
+);
+assert.ok(
+  textOf(folderRow1161).includes(textOf(FROW_UPDATE.oldCopies[0] ?? '')),
+  '★ 旧副本提示要**点名**是哪几个文件（只说"另有 1 份"的话，用户不知道要没的是谁）',
+);
+assert.ok(
+  textOf(folderRow1161).includes(
+    textOf(
+      resolved('files.folderOldCopies', {
+        count: FROW_UPDATE.oldCopies.length,
+        names: FROW_UPDATE.oldCopies.join(', '),
+      }),
+    ),
+  ),
+  '★ 旧副本那一句的**整句**（含条数）—— 这一句是 D9.1"更新时会清掉它们"在界面上的唯一提示',
+);
+ok('⑲ 行内六样都在（文件名 / mod 名 / 本地版本 / 官方版本 / 状态徽章 / 旧副本提示）+ 来源标注');
+
+// ---------------------------------------------------------------------------
+// ⑳ 行内那两颗更新按钮：各送自己那条通道；批量进行中**禁用**（不是消失）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 通道的判据与第一部分**逐字相同**（同一份 `mirrorsForUrl`）：目标在 GitHub ⇒
+ *    两颗（原始 / 镜像）；目标在 `cdn.modrinth.com` ⇒ 只有原始那一颗（D5）。
+ * ⚠️★★ 第二半是 brief 点的那条**v1 的 busy 语义**：批量跑起来时主进程只接受一条写
+ *    （`assertNotBusy`）⇒ 行内按钮必须**禁用**。这一组**两个方向都断言**：
+ *      · `busy: true` ⇒ 每一颗都 `disabled`（而且按钮**没消失**，数量不变）；
+ *      · `busy: false` ⇒ 一颗都不 `disabled`。
+ *    ⚠️ 反面那一半是**承重的**：只断言"busy 时禁用"的话，`disabled` 恒真的实现照样绿
+ *    —— 而那样这个功能在界面上就没有出路了（Step 4 那把刀砍的正是这一半）。
+ */
+assert.deepEqual(
+  labelsIn(folderRow1161),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★ GitHub 来源的可更新行有两颗更新按钮（原始 + 镜像，D5/D6）',
+);
+assert.deepEqual(
+  labelsIn(folderRowEl(folderBlock, 'lithium')),
+  [labelOf('files.updateOrigin')],
+  '★ 目标在 `cdn.modrinth.com` ⇒ 只有原始那一颗（镜像的主机判据住在 `mirrorsFor`）',
+);
+const busyFoldersHtml = foldersHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER], busy: true }));
+const busyFolderRow = folderRowEl(folderBlockOf(busyFoldersHtml, FOLDER_ID), 'sodium');
+assert.equal(
+  buttonsIn(busyFolderRow).length,
+  2,
+  '★ 正在写盘时按钮是**禁用**、不是消失（两颗都还在）',
+);
+assert.equal(
+  buttonsIn(busyFolderRow).every((button) => button.disabled),
+  true,
+  '★★ 批量进行中：行内更新按钮全禁用（主进程一次只写一个文件，点了必吃一句红字）',
+);
+assert.equal(
+  buttonsIn(folderRow1161).every((button) => button.disabled),
+  false,
+  '★★ 反面：不在写盘时一颗都不许禁用（禁用过头 = 这个功能没有出路）—— 上面那条的对照组',
+);
+ok(
+  '⑳ 行内两颗更新按钮（通道由状态里的镜像表决定：GitHub 两颗 / CDN 一颗）+ `busy` 时全禁用、不忙时全可用',
+);
+
+// ---------------------------------------------------------------------------
+// ㉑ 五档"不给更新按钮" + 「全部更新」自己那三档（一条必被拒的按钮都不许画）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ Ruling 47/48 的同一族：主进程会拒的一律不画。逐档点名（每档都对着
+ *    `assertUpdatable` / `assertNotManual` / `updateMod` 里那句"没有目标"）：
+ *      · `manual`（OptiFine）：连更新按钮都不给；
+ *      · `newer`（只升不降）：只解释；
+ *      · `missing-release`（**第二部分才可达**）：只解释；
+ *      · `ambiguous`（两个候选）：列出全部候选 + 解释，不给按钮；
+ *      · `unknown-version`（整个文件夹）：头行说一次 + 一行按钮都没有。
+ *    ⚠️ 每一档都断言**两件事**：没有更新按钮、而且**有自己的解释**（只断言"没有按钮"
+ *    的话，"这一列永远不画东西"照样能过 —— 那是 §5.32 的第一类空跑）。
+ */
+for (const [what, row, hintKey] of [
+  ['manual（OptiFine）', FROW_MANUAL, 'files.hintManual'],
+  ['newer（只升不降）', FROW_NEWER, 'files.hintNewer'],
+  ['missing-release（这一版清单里没有它）', FROW_NO_RELEASE, 'files.hintMissingRelease'],
+  ['ambiguous（两个候选）', FROW_AMBIGUOUS, 'files.hintAmbiguous'],
+] as const) {
+  const html = foldersHtmlOf(
+    stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f-one', rows: [row] })] }),
+  );
+  const rowHtml = folderRowEl(folderBlockOf(html, 'f-one'), row.modid);
+  assert.deepEqual(
+    buttonsIn(rowHtml).filter(
+      (button) =>
+        button.label === labelOf('files.updateOrigin') ||
+        button.label === labelOf('files.updateMirror'),
+    ),
+    [],
+    `★ ${what} 那一行**不许**有更新按钮（主进程会拒 —— Ruling 47/48）`,
+  );
+  assert.ok(
+    textOf(rowHtml).includes(textOf(resolved(hintKey))),
+    `★ ${what} 那一行要有**自己的**解释（${hintKey}）—— 只解释不画按钮，用户才知道为什么`,
+  );
+}
+/*
+ * ★★ 多候选那一行：把**每一个**候选都列出来（与第一部分逐字相同）。
+ *    ⚠️ 判据是"两个候选的版本号都在"，而不是"有一个列表"——空列表也能过后者。
+ */
+const ambiguousFolderRow = folderRowEl(
+  folderBlockOf(
+    foldersHtmlOf(
+      stateOf([ROW_GITHUB], {
+        folders: [folder({ folderId: 'f-amb', rows: [FROW_AMBIGUOUS] })],
+      }),
+    ),
+    'f-amb',
+  ),
+  FROW_AMBIGUOUS.modid,
+);
+for (const candidate of FROW_AMBIGUOUS.candidates) {
+  assert.ok(
+    textOf(ambiguousFolderRow).includes(textOf(candidate.version)),
+    `★ 多候选那一行要列出**每一个**候选的版本号（少了 ${candidate.version} 就是让用户以为只有一条）`,
+  );
+}
+/*
+ * ★★ 版本未知那一个文件夹：头行说一次「先给它选一个版本」，而行内**一个按钮都没有**。
+ *    ⚠️ 头行那两颗（重扫 + 解绑）**照常在**：那一档的出路正是"选版本 / 重扫 / 解绑"。
+ */
+const unknownFolderHtml = foldersHtmlOf(
+  stateOf([ROW_GITHUB], {
+    folders: [folder({ folderId: 'f-unknown', gameVersion: null, rows: [FROW_UNKNOWN_VERSION] })],
+  }),
+);
+const unknownFolderBlock = folderBlockOf(unknownFolderHtml, 'f-unknown');
+assert.ok(
+  textOf(summaryOf(unknownFolderBlock)).includes(textOf(resolved('files.folderGameVersionHint'))),
+  '★ 版本未知要在**头行**说清"先给它选一个游戏版本"（否则用户看到一整列都不给按钮，不知道为什么）',
+);
+assert.equal(
+  buttonsIn(folderRowEl(unknownFolderBlock, FROW_UNKNOWN_VERSION.modid)).length,
+  0,
+  '★★ 版本未知 ⇒ 行内一个按钮都没有（`unknown-version` 不给更新，spec §8）',
+);
+assert.deepEqual(
+  labelsIn(summaryOf(unknownFolderBlock)),
+  [labelOf('files.folderRescan'), labelOf('files.unbind')],
+  '★★ 版本未知 ⇒ 头行**不画**「全部更新」（`updateFolderAll` 在那句"游戏版本还不知道 ⇒ 不给更新"上会拒），' +
+    '而重扫与解绑照常在（那一档的出路）',
+);
+/*
+ * ★★ 路径不存在那一个：头行一个徽章 + 一句解释 + 只有「解除绑定」。
+ *    ⚠️★ 重扫**不画**：`rescan` 对一个被移走的目录只会把读数再删一次 ——
+ *    `missingStatus === 'folder-missing'` 那句注释写着同一件事（不许给人错的动作）。
+ */
+const goneFolderHtml = foldersHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER_GONE] }));
+const goneFolderBlock = folderBlockOf(goneFolderHtml, GONE_FOLDER_ID);
+assert.ok(
+  textOf(summaryOf(goneFolderBlock)).includes(textOf(resolved('files.folderPathMissing'))),
+  '★ 路径不存在要在头行看得见（一个徽章，spec §8）',
+);
+assert.deepEqual(
+  labelsIn(summaryOf(goneFolderBlock)),
+  [labelOf('files.unbind')],
+  '★★ 路径不存在 ⇒ 头行只有「解除绑定」：不给任何更新动作，**也不给重扫**（它修不好一个被移走的目录）',
+);
+assert.ok(
+  textOf(summaryOf(goneFolderBlock)).includes(textOf(resolved('files.folderPathMissingHint'))),
+  '★ 而且那两句解释（路径不存在 / 版本未知）挂在**头行**里：头行是永远看得见的那一行，' +
+    '折叠着的用户也得看得到"为什么这一列都没有按钮"与出路',
+);
+ok(
+  '㉑ 五档不给更新按钮（manual / newer / missing-release / ambiguous / 版本未知）+ 路径不存在只留解绑；多候选列出全部候选；每档都有解释',
+);
+
+// ---------------------------------------------------------------------------
+// ㉒ 三处空态：一个文件夹都没绑 / 路径不存在 / 这个文件夹里一个能识别的 mod 都没有
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 三处必须**分得开**（brief 点名的那三条）：
+ *   · 没绑 ⇒ 一句"还没有绑定" + **这一期唯一的绑定入口**；
+ *   · 路径不存在 ⇒ 那一档的话（且**不许**说"里面没有 mod"—— 我们根本没读到它）；
+ *   · 目录读到了、但 rows 为空 ⇒ "没有能识别的 mod" + 单列"无法识别 / 清单外"那些文件。
+ */
+const noFolderHtml = foldersHtmlOf(stateOf([ROW_GITHUB], { folders: [] }));
+assert.ok(
+  textOf(noFolderHtml).includes(textOf(resolved('files.folderNone'))),
+  '★ 空态①：一个文件夹都没绑要有一句话（空 div = 用户分不出"没有"与"没渲染"）',
+);
+assert.deepEqual(
+  labelsIn(noFolderHtml),
+  [labelOf('files.bindFolder')],
+  '★ 而且它同时是这一期**唯一**的绑定入口（v1 那条同名通道是老语义，spec §6.7）',
+);
+const noModsFolder = folder({
+  folderId: 'f-empty',
+  rows: [],
+  unrecognized: [
+    { fileName: 'not-a-mod.txt', reason: 'no-fabric-meta' },
+    { fileName: 'stranger.jar', reason: 'not-in-catalog' },
+  ],
+});
+const noModsHtml = foldersHtmlOf(stateOf([ROW_GITHUB], { folders: [noModsFolder] }));
+assert.ok(
+  textOf(noModsHtml).includes(textOf(resolved('files.folderNoRows'))),
+  '★ 空态③：一个能识别的 mod 都没有（要说出来，不能是空白块）',
+);
+assert.ok(
+  textOf(noModsHtml).includes(
+    textOf(resolved('files.folderUnrecognizedNoMeta', { name: 'not-a-mod.txt' })),
+  ),
+  '★ 读不出 `fabric.mod.json` 的要单列（spec §8：不参与更新，但要看得出扫到了它）',
+);
+assert.ok(
+  textOf(noModsHtml).includes(
+    textOf(resolved('files.folderUnrecognizedNotInCatalog', { name: 'stranger.jar' })),
+  ),
+  '★ "清单外"要单列，而且与上一条是**两句不同的话**（合成一句就把线索删掉了）',
+);
+assert.equal(
+  textOf(goneFolderBlock).includes(textOf(resolved('files.folderNoRows'))),
+  false,
+  '★ 反面：路径不存在时**不许**印"这个文件夹里没有能识别的 mod" —— ' +
+    '我们根本没读到它，那句话是编出来的结论（头行那句 folderPathMissingHint 才是真的）',
+);
+ok(
+  '㉒ 三处空态分得开：没绑（+ 绑定入口）/ 路径不存在（且不冒充"里面没有"）/ 目录里没有可识别的 mod（含"无法识别"两类）',
+);
+
+// ---------------------------------------------------------------------------
+// ㉓ 底部缺失清单：每行一个「下载到」，选项**只**列版本对得上、路径还在的文件夹
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组是 hand-off 第 2 条的落点：`downloadMissing` 在"目标文件夹的有效版本 ≠
+ *    入参版本"时**拒**（还有"路径不是目录"也拒）⇒ 选项表少一层过滤，用户点下去
+ *    就是一串必吃的红字。夹具里刻意放了**四种**文件夹：版本对得上且路径在（该出现）、
+ *    另一个版本（不该出现）、版本对得上但路径不在（不该出现）、路径在但版本未知
+ *    （不该出现）—— 一条判据砍四个方向。
+ * ⚠️★ 第三条闸（"这个文件夹还没有扫描读数"）**不在这一层**：状态里没有那一格，
+ *    而 `missingStatus === 'ok'` 的定义就是"每个已绑定文件夹都有成功读数"（见
+ *    `MissingModsList.tsx` 的文件头）—— ㉔ 断言"另外三档不画清单"就是它的守门人。
+ * ⚠️ 一个能装它的文件夹都没有时：**一个控件都不画**（那颗下载必被拒），只留一句解释。
+ */
+const missingState = stateOf([ROW_GITHUB], {
+  folders: [FOLDER, FOLDER_OLD, FOLDER_GONE, FOLDER_NO_VERSION],
+  missing: [MISSING_1161, MISSING_1710],
+  missingStatus: 'ok',
+});
+const missingListHtml = missingHtmlOf(missingState);
+assert.ok(
+  missingListHtml.includes('data-missing-rows="2"'),
+  '★ `missingStatus === "ok"` ⇒ 两行缺失都画出来（读数在 data-missing-rows 上）',
+);
+const missingRow1161 = missingRowEl(missingListHtml, MISSING_1161.modid);
+assert.equal(selectsIn(missingRow1161).length, 1, '★ 每一行恰好一个「下载到」下拉（spec §7.5）');
+assert.deepEqual(
+  selectsIn(missingRow1161)[0]?.values,
+  [FOLDER_ID],
+  '★★ 选项 = **游戏版本对得上、而且路径还在**的文件夹 —— ' +
+    '那个 1.7.10 的、路径不在的、版本未知的都不许出现（主进程那两条闸）',
+);
+assert.equal(
+  selectsIn(missingRow1161)[0]?.selected,
+  FOLDER_ID,
+  '★ 默认选第一个可用的（用户不选也能直接点「下载」）',
+);
+assert.ok(
+  /* ⚠️ 同上：英文那条带引号、属性里被转义 ⇒ 比 `decode(…)` 之后的产物。 */
+  decode(missingRow1161).includes(t('files.missingDownloadToLabel', { name: MISSING_1161.name })),
+  '★ 下拉的可访问名带 mod 名（那一列每一行都长得一样，读屏要分得开）',
+);
+assert.deepEqual(
+  labelsIn(missingRow1161),
+  [labelOf('files.missingDownload')],
+  '★ 触发下载的是**一颗按钮**（写盘要一次点击 —— 一个只靠 onChange 触发的下拉既不能重选同一个、也没有确认）',
+);
+assert.deepEqual(
+  selectsIn(missingRowEl(missingListHtml, MISSING_1710.modid))[0]?.values,
+  [FOLDER_OLD_ID],
+  '★★ 另一个版本的行只列出**那个版本**的文件夹（同一份判据、两个方向都断言）',
+);
+/*
+ * ★★ 一个可用的文件夹都没有：不画下拉、不画按钮、只留一句解释。
+ *    ⚠️ 这是"不给一颗必被拒的按钮"的直接落点：`downloadMissing` 对着一个不是目录的
+ *    路径会拒，对着版本对不上的文件夹也会拒。
+ */
+const noEligibleHtml = missingHtmlOf(
+  stateOf([ROW_GITHUB], {
+    folders: [FOLDER_GONE],
+    missing: [MISSING_1161],
+    missingStatus: 'ok',
+  }),
+);
+const noEligibleRow = missingRowEl(noEligibleHtml, MISSING_1161.modid);
+assert.equal(
+  selectsIn(noEligibleRow).length,
+  0,
+  '★★ 没有能装它的文件夹 ⇒ **不画**那个下拉（一个空下拉 = 点了没反应）',
+);
+assert.equal(
+  buttonsIn(noEligibleRow).length,
+  0,
+  '★★ 也不画那颗「下载」（主进程会以"路径不是目录 / 版本对不上"拒 —— Ruling 47/48）',
+);
+assert.ok(
+  textOf(noEligibleRow).includes(
+    textOf(resolved('files.missingNoFolder', { version: MISSING_1161.gameVersion })),
+  ),
+  '★ 而要说明为什么（需要一个这一版、路径还在的已绑定文件夹）',
+);
+/*
+ * ★ 只读（没有动作层）⇒ 那一格一个控件都不画（与两张表里那两颗按钮同一条闸）。
+ * ★ 正在写盘 ⇒ 那颗「下载」必须禁用：`downloadMissing` 第一句就是 `assertNotBusy()`。
+ */
+const readOnlyMissingRow = missingRowEl(
+  missingHtmlOf(missingState, { handlers: null }),
+  MISSING_1161.modid,
+);
+assert.equal(
+  selectsIn(readOnlyMissingRow).length + buttonsIn(readOnlyMissingRow).length,
+  0,
+  '★ 没有动作层（只读）⇒ 那一格一个控件都不画（点不动的控件比没有控件更糟）',
+);
+const busyMissingHtml = missingHtmlOf(
+  stateOf([ROW_GITHUB], {
+    folders: [FOLDER],
+    missing: [MISSING_1161],
+    missingStatus: 'ok',
+    busy: true,
+  }),
+);
+assert.equal(
+  buttonsIn(missingRowEl(busyMissingHtml, MISSING_1161.modid)).every((button) => button.disabled),
+  true,
+  '★★ 正在写盘时那颗「下载」必须禁用（`downloadMissing` 第一句是 `assertNotBusy()`）',
+);
+ok(
+  '㉓ 缺失清单每行一个「下载到」：选项只含版本匹配且路径还在的文件夹、没有可用文件夹时一个控件都不画（+ 只读 / busy 两道闸）',
+);
+
+// ---------------------------------------------------------------------------
+// ㉔ `missingStatus` 四档：只有 `'ok'` 画清单，另外三档各说各的
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 判修 2：`missing: []` 的**两种**原因（真的没有 / 我们还不知道）在数据上分不开
+ *    ⇒ 界面靠 `missingStatus` 分。这一组逐档断言：
+ *      · 那一档**自己那句**在（三句互不串：每一条都断言另外两句不在）；
+ *      · 清单**不画**（`data-missing-rows` 不出现、一个下拉都没有）；
+ *      · `'ok'` + 一条都不缺 ⇒ "没有缺的"（那是结论，不是"被压住"）。
+ * ⚠️★★ `folder-missing` 那一句**不许出现"重扫"**：`rescan` 修不好一个被移走的目录，
+ *    叫人去点它就是给错动作（文件头那段注释与主进程那句同源）。判据用的是
+ *    **那两个字本身**（两种语言各一份）—— 比"与另一句不同"更强：把 "点一次重扫"
+ *    塞进那一句里，只有这一条会出声。
+ */
+for (const [status, key] of [
+  ['folder-unscanned', 'files.missingStatusFolderUnscanned'],
+  ['folder-missing', 'files.missingStatusFolderMissing'],
+  ['catalog-unavailable', 'files.missingStatusCatalogUnavailable'],
+] as const) {
+  const html = missingHtmlOf(
+    stateOf([ROW_GITHUB], { folders: [FOLDER], missing: [], missingStatus: status }),
+  );
+  assert.ok(
+    textOf(html).includes(textOf(resolved(key))),
+    `★ \`${status}\` 要有**自己**那一句（${key}）—— 清单空着的原因不许共用一句话`,
+  );
+  assert.ok(
+    html.includes(`data-missing-status="${status}"`),
+    `★ 那一档要说得出自己是哪一档（data-missing-status）`,
+  );
+  assert.equal(
+    html.includes('data-missing-rows'),
+    false,
+    `★★ \`${status}\` ⇒ **不画**清单（缺什么我们还不知道 —— 列错一串比空着更坏）`,
+  );
+  assert.equal(selectsIn(html).length, 0, `★ 也不画任何「下载到」下拉（没有清单就没有下载入口）`);
+}
+const unscannedNote = textOf(
+  missingHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER], missingStatus: 'folder-unscanned' })),
+);
+const missingPathNote = textOf(
+  missingHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER], missingStatus: 'folder-missing' })),
+);
+const catalogGoneNote = textOf(
+  missingHtmlOf(stateOf([ROW_GITHUB], { folders: [FOLDER], missingStatus: 'catalog-unavailable' })),
+);
+assert.equal(
+  missingPathNote.includes(textOf(resolved('files.missingStatusFolderUnscanned'))),
+  false,
+  '★ 三档的说法互不串（`folder-missing` 里不许出现 `folder-unscanned` 那一句）',
+);
+assert.equal(
+  unscannedNote.includes(textOf(resolved('files.missingStatusFolderMissing'))),
+  false,
+  '★ 反方向也不许串（两句话说的是两件不同的事、两条不同的出路）',
+);
+assert.equal(
+  catalogGoneNote.includes(textOf(resolved('files.missingStatusFolderUnscanned'))),
+  false,
+  '★ 目录不可用与"文件夹还没扫过"也是两句不同的话（修法不同）',
+);
+/*
+ * ⚠️★ 判据是**那两个字本身**（两种语言各一个正则），不是"与另一句不同"：
+ *    把 "点一次重扫" 塞进那一句里，只有这一条会出声。
+ * ⚠️ 英文那一遍用**词**而不是裸串：第一版写的是 `'escan'`，而它恰好是
+ *    `…its files cannot be read…` 里 `fil`**escan**`not` 的子串 —— 于是这一条在
+ *    **正确**的文案上报红（`docs/pending.md §5.79` 那一族：探针自己错，长得像产品缺陷）。
+ */
+const rescanNeedle = LANG === 'en' ? /rescan/i : /重扫/;
+assert.equal(
+  rescanNeedle.test(missingPathNote),
+  false,
+  '★★ `folder-missing` 那一句里**连"重扫"两个字都不许有**：rescan 修不好一个被移走的目录，' +
+    '叫用户去点它就是给错动作（这是这一档唯一的不同之处）',
+);
+const okEmptyHtml = missingHtmlOf(
+  stateOf([ROW_GITHUB], { folders: [FOLDER], missing: [], missingStatus: 'ok' }),
+);
+assert.ok(
+  textOf(okEmptyHtml).includes(textOf(resolved('files.missingNone'))),
+  '★ `ok` + 一条都不缺 ⇒ 说"没有缺的"（那是**结论**，不是"被压住"）',
+);
+assert.equal(
+  okEmptyHtml.includes('data-missing-rows'),
+  false,
+  '★ 而那时也没有清单可画（0 行的表是空壳）',
+);
+ok(
+  '㉔ `missingStatus` 四档分得开：只有 `ok` 画清单，另外三档各有各的说明（`folder-missing` 那句里没有"重扫"）',
+);
+
+// ---------------------------------------------------------------------------
+// ㉕ 特性检测 + 三块拼装 + 迁移提示（§6.8 / §13.1）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组是**唯一**能一次看到"三块同时在页面上"的地方（`Files` 的 ready 支路要等
+ *    IPC 回包，静态渲染跑不到）⇒ 两件事都落在这一份产物上：
+ *      ① 三块真的拼在一起（三个标题 + 第二块的文件夹 + 第三块那一行）；
+ *      ② §13.1 那句迁移提示（`notices`，渲染点在第一块）与它们**同屏可见**
+ *         —— 迁移"不许静默"，而"看得见"的判据只能是"它在这一页的产物里"。
+ * ⚠️★ 特性检测那两刀（0.0.4 的壳与纯浏览器）真的渲染 `Files`：两种壳都该看到
+ *    "需要桌面版 0.0.5"，而 **v1 那条路照常**（第一帧还是它自己的加载态）。
+ */
+const partsState = stateOf([ROW_GITHUB], {
+  folders: [FOLDER],
+  missing: [MISSING_1161],
+  missingStatus: 'ok',
+  notices: [NOTE],
+});
+const partsHtml = partsHtmlOf(partsState);
+for (const key of ['files.partOneTitle', 'files.partTwoTitle', 'files.partThreeTitle'] as const) {
+  assert.ok(
+    textOf(partsHtml).includes(textOf(resolved(key))),
+    `★ 三块要同时在页面上（这一块缺了：${key}）—— 顺序即 spec §6.8 的三块`,
+  );
+}
+assert.ok(
+  textOf(partsHtml).includes(textOf(NOTE)),
+  '★★ `notices`（迁移提示"已转为文件夹跟踪：…"）必须与第二、三块**在同一份产物里**：' +
+    '§13.1 要求它看得见，而它的渲染点在第一块 —— 三块分开渲染就证不出"同屏"',
+);
+assert.ok(
+  textOf(partsHtml).includes(textOf(FOLDER_PATH)) &&
+    textOf(partsHtml).includes(textOf(MISSING_1161.name)),
+  '★ 而且第二块那个文件夹与第三块那一行都真的在里面（不是只渲染了三个标题）',
+);
+/* —— 0.0.4 的壳：有 `mcsr`、没有 `modFolders` —— */
+Object.assign(globalThis, { mcsr: shellStub(false) });
+const oldShellHtml = keep(
+  html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
+);
+delete (globalThis as { mcsr?: unknown }).mcsr;
+assert.ok(
+  textOf(oldShellHtml).includes(textOf(resolved('files.partTwoUnavailable'))),
+  '★★ 特性检测：`window.mcsr?.modFolders` 不存在 ⇒ 第二部分显示"需要桌面版 0.0.5"（spec §6.8/§8）',
+);
+assert.ok(
+  textOf(oldShellHtml).includes(textOf(resolved('common.loading'))),
+  '★★ 而**第一部分与 v1 照常**：0.0.4 的壳走的是 v1 那条路（第一帧是它自己的加载态，不是新通道那一屏）',
+);
+assert.equal(
+  textOf(oldShellHtml).includes(textOf(resolved('files.catalogScanning'))),
+  false,
+  '★ 反面：0.0.4 的壳**不许**走上新通道那一屏（那会让"没有 modFolders"看起来像"正在扫描"）',
+);
+assert.equal(
+  textOf(oldShellHtml).includes(textOf(resolved('files.browserOnly'))),
+  false,
+  '★ 0.0.4 是**桌面壳**：那句"本地文件只在桌面版里"不该出现（它是浏览器态的话）',
+);
+/* —— 纯浏览器：连 `mcsr` 都没有 —— */
+const browserHtml = keep(
+  html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
+);
+assert.ok(
+  textOf(browserHtml).includes(textOf(resolved('files.partTwoUnavailable'))) &&
+    textOf(browserHtml).includes(textOf(resolved('files.browserOnly'))),
+  '★ 纯浏览器同理：那一栏说清"需要桌面版 0.0.5"，而"本地文件只在桌面版里"那句照常（两句说的是两件事）',
+);
+assert.equal(
+  (globalThis as { mcsr?: unknown }).mcsr,
+  undefined,
+  '★ 两个桩都必须已经删掉（否则后面任何一组都会在"桌面壳"那一支上渲染）',
+);
+assert.ok(
+  ModFoldersUnavailable !== undefined && ModFoldersPanel !== undefined,
+  '★ 这两块都是具名导出的组件（㉕ 直接渲染的就是它们 —— 名字被改掉时这里会红）',
+);
+ok(
+  '㉕ 三块同屏（含第一块里那句迁移提示）+ 特性检测：0.0.4 与纯浏览器都看到"需要桌面版 0.0.5"而 v1 那条路照常',
+);
+
+// ---------------------------------------------------------------------------
+// ㉖ ★★ 源码形状守卫：写动作的接线（静态渲染看不见事件处理器）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 与 ⑯ 同一族：`renderToStaticMarkup` 一行事件处理器都不跑 ⇒「点那颗按钮真的走了
+ *    哪条通道」**没有产物能证明**。这里退一步钉它成立的**前提**：那条接线**在**、
+ *    而且**只有一条**（每一条守卫都点名能让它红的那一刀，读数在报告里）。
+ */
+const foldersPanelCode = withoutComments(
+  readFileSync(new URL('../src/components/ModFoldersPanel.tsx', import.meta.url), 'utf8'),
+);
+const missingCode = withoutComments(
+  readFileSync(new URL('../src/components/MissingModsList.tsx', import.meta.url), 'utf8'),
+);
+const filesCode = withoutComments(
+  readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8'),
+);
+
+// —— 守卫 1：两颗更新按钮各送**自己**那条通道（能红的刀：镜像那颗改成 `'origin'`）——
+assert.match(
+  foldersPanelCode,
+  /handlers\.updateMod\(folder\.folderId,\s*row\.modid,\s*releaseKey,\s*'origin'\)/,
+  "★★ 行内第一颗更新按钮送的是 `'origin'`（release 自己的地址）",
+);
+assert.match(
+  foldersPanelCode,
+  /handlers\.updateMod\(folder\.folderId,\s*row\.modid,\s*releaseKey,\s*\{\s*mirrorId:\s*mirror\.id,?\s*\}\)/,
+  '★★ 第二颗送的是 `{ mirrorId: mirror.id }`（**只送 id**，地址由主进程按目录那条镜像拼）' +
+    "—— 两颗都送 `'origin'` 时镜像那颗是个假按钮，而产物里看不出来",
+);
+assert.equal(
+  foldersPanelCode.match(/handlers\.updateMod\(/g)?.length,
+  2,
+  '★★ `handlers.updateMod(` 只许出现两次（就是那两颗按钮；多一处就是第二条写盘路径）',
+);
+
+// —— 守卫 2：「全部更新」接的是 `updateFolderAll` + 状态里那条通道（能红的刀：写死 `'origin'`）——
+assert.match(
+  foldersPanelCode,
+  /handlers\.updateFolderAll\(folder\.folderId,\s*state\.bulkChannel\)/,
+  '★★ 「全部更新」必须把**状态里那条通道**发出去（`state.bulkChannel`）—— ' +
+    "写死 `'origin'` 会让上面那个选择器变成一个不起作用的控件",
+);
+assert.equal(
+  foldersPanelCode.match(/handlers\.updateFolderAll\(/g)?.length,
+  1,
+  '★ 只许一处（那一颗按钮）',
+);
+
+// —— 守卫 3：解绑与重扫各接自己那条通道，而且带 `folderId`（能红的刀：把重扫接成 `rescan()`）——
+assert.match(
+  foldersPanelCode,
+  /handlers\.unbindFolder\(folder\.folderId\)/,
+  '★ 「解除绑定」接的是 `unbindFolder(folderId)`（解绑 ≠ 删文件，删的是状态里那一格）',
+);
+assert.match(
+  foldersPanelCode,
+  /handlers\.rescan\(folder\.folderId\)/,
+  '★★ 「重扫这个文件夹」必须带 `folderId`：`rescan()` 不带参数是**全部重扫**（一次请求 N 个目录，与按钮上那句话不符）',
+);
+assert.equal(foldersPanelCode.match(/handlers\.rescan\(/g)?.length, 1, '★ 只许一处');
+
+// —— 守卫 4：镜像的可用性来自状态（能红的刀：写死一个镜像 id / 按 github.com 判主机）——
+assert.match(
+  foldersPanelCode,
+  /mirrorsForUrl\(state\.mirrors,\s*row\.official\.url\)/,
+  '★★ 镜像按钮的可用性来自**状态里的镜像表**（`mirrorsForUrl`，Ruling 55）—— ' +
+    '主机匹配只有 `mirrorsFor` 一份实现',
+);
+assert.equal(
+  foldersPanelCode.includes('gh-proxy') || foldersPanelCode.includes('isGitHubRelease'),
+  false,
+  '★★ 第二部分里**不许**出现写死的目录配置（`gh-proxy` / `isGitHubRelease`）：' +
+    '那是一份会漂的第二真相，而失败形态是"点了被主进程拒"（判修 4 / Ruling 55）',
+);
+ok(
+  '㉖ 接线守卫（写动作）：两颗更新按钮各送自己的通道（各一处）、全部更新送状态里那条通道、解绑/重扫各一处且带 folderId、镜像判据来自状态且无硬编码',
+);
+
+// ---------------------------------------------------------------------------
+// ㉗ ★★ 源码形状守卫：设置类动作 + 底部那颗下载只走 `'origin'` + 三块拼装
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组盯的是"**页面只发它证得了的东西**"：
+ *   · 三个设置类动作（版本 / 自动更新 / 批量通道）各接自己那条 onChange，各一处；
+ *   · 底部那颗「下载」只送 `'origin'` —— `MissingModView` 里没有 release，
+ *     页面证不了任何镜像适用（发 `{ mirrorId }` 是赌，赌输的形态是"点了被拒"）；
+ *   · 三块的拼装顺序（第一部分 → 第二部分 → 底部）与特性检测那一支。
+ */
+assert.match(
+  foldersPanelCode,
+  /<select\b[\s\S]{0,600}?handlers\.setFolderGameVersion\(folder\.folderId,\s*next === '' \? null : next\)/,
+  '★★ 版本下拉的 `onChange` 必须把**空串变成 `null`**（契约里 `null` 是"交回自动推断"，' +
+    '不是"不改"）—— 直接把空串发出去会被 `requireGameVersion` 拒',
+);
+assert.match(
+  foldersPanelCode,
+  /onChange=\{[\s\S]{0,400}?handlers\.setFolderAutoUpdate\(folder\.folderId,\s*event\.target\.checked\)/,
+  '★ 勾选框接的是 `setFolderAutoUpdate(folderId, checked)`（接错 ⇒ 那个开关不动）',
+);
+assert.match(
+  foldersPanelCode,
+  /onChange=\{[\s\S]{0,400}?handlers\.setBulkChannel\(next === 'origin' \? 'origin' : \{ mirrorId: next \}\)/,
+  '★ 通道下拉接的是 `setBulkChannel(…)`（值从状态来、写回主进程的 `prefs`）',
+);
+assert.equal(
+  foldersPanelCode.match(/handlers\.setBulkChannel\(/g)?.length,
+  1,
+  '★★ 只许一处：界面**不许**自己存一份通道（Ruling 23 —— 两处记忆的表现是' +
+    '"界面显示 origin、主进程按镜像下载"，而且完全不报错）',
+);
+for (const action of [
+  'setFolderGameVersion',
+  'setFolderAutoUpdate',
+  'updateFolderAll',
+  'unbindFolder',
+  'bindFolder',
+] as const) {
+  assert.equal(
+    foldersPanelCode.match(new RegExp(`handlers\\.${action}\\(`, 'g'))?.length,
+    1,
+    `★★ \`handlers.${action}(\` 只许出现一次（一处接线 = 一处真相）`,
+  );
+}
+assert.equal(
+  foldersPanelCode.includes('localStorage'),
+  false,
+  '★★ 第二部分**不许**在渲染进程里再存一份（`localStorage`）：一处记忆（主进程的 `prefs`）',
+);
+// —— 守卫 5：底部那颗下载**只走 origin**（能红的刀：改成 `state.bulkChannel`）——
+assert.match(
+  missingCode,
+  /handlers\.downloadMissing\(row\.modid,\s*row\.gameVersion,\s*folderId,\s*'origin'\)/,
+  "★★ 底部那颗「下载」送的是 `'origin'`：`MissingModView` 里**没有 release** ⇒ " +
+    '页面证明不了任何镜像适用，发 `{ mirrorId }` 就是在赌"这条 release 恰好托管在那条镜像上"',
+);
+assert.equal(
+  missingCode.includes('bulkChannel'),
+  false,
+  '★★ 底部**不许**碰 `bulkChannel`：那个选择器的作用域是「全部更新」' +
+    '（发到下载上就可能被主进程以"这个通道下拿不到下载地址"拒）',
+);
+assert.match(
+  missingCode,
+  /folder\.pathExists && folder\.gameVersion === row\.gameVersion/,
+  '★★ 「下载到」的选项必须**同时**过滤"路径还在"与"版本对得上"（主进程那两条闸）' +
+    '—— 去掉任一半，用户点下去就是一句必吃的红字',
+);
+// —— 守卫 6：页面那一支的三块顺序 + 特性检测那一支 ——
+assert.match(
+  filesCode,
+  /<ModCatalogSection[\s\S]{0,300}?<ModFoldersPanel[\s\S]{0,300}?<MissingModsList/,
+  '★★ 页面那一支必须是三块：第一部分 → 第二部分 → 底部（顺序即 spec §6.8 的三块）',
+);
+assert.match(
+  filesCode,
+  /<ModFoldersUnavailable \/>/,
+  '★★ 特性检测那一支要渲染"需要桌面版 0.0.5"那一块（`modFolders` 不存在时的第二部分）',
+);
+assert.equal(
+  filesCode.match(/<ModFoldersUnavailable \/>/g)?.length,
+  1,
+  '★ 只许一处（那句提示挂在不存在的壳那一支上，不是常驻说明）',
+);
+ok(
+  '㉗ 接线守卫（设置与底部）：版本/自动更新/通道各一处、空串变 null、底部只走 origin 且不碰 bulkChannel、选项两条过滤、三块顺序与特性检测那一支',
+);
+
+// ---------------------------------------------------------------------------
+// ㉘ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
 if (LANG === 'en') {
   /*
@@ -1414,10 +2509,13 @@ if (LANG === 'en') {
    *    那一份（2026-10-03 的判修顺带修掉了"英文界面上标签名是中文"）。
    *    主进程写死的 `notices` / `skipped[].reason` 仍然是中文，而那是**已接受的代价**
    *    —— 这里**不开豁免口子**：开口子的扫描在**最该抓人的那一处**是瞎的。
+   * ⚠️ Task 8 的三块产物也在 `samples` 里（`foldersHtmlOf` / `missingHtmlOf` / `partsHtmlOf`
+   *    都走 `keep()`）⇒ 新加的那 30 多条词条一旦哪一条漏了 `en`，这一条会当场红
+   *    （而不是让英文界面上冒出一串中文）。
    */
   const han = textOf(samples.join('')).match(/[\u4e00-\u9fff]+/g) ?? [];
   assert.deepEqual(han, [], `英文界面里出现了中文：${han.slice(0, 8).join(' / ')}`);
-  ok('⑱ 英文那一遍：全部渲染产物零汉字');
+  ok('㉘ 英文那一遍：全部渲染产物零汉字');
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,9 +2525,10 @@ if (LANG === 'en') {
  * ⚠️ 组数是**手抄的**（本仓惯例，`filesrender.tsx` 末段写着同一条）：它防的是
  *    "把某一段整块摘掉" —— 删掉一整组断言之后脚本照样绿、照样打印"通过 N 项"，
  *    只有这个数字会变。⇒ 改脚本就要一起改这里（改的时候**现数**，别估）。
- * ⚠️ en 比 zh 多 1：⑱ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
+ * ⚠️ en 比 zh 多 1：㉘ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
+ * ⚠️ Task 8：18 → 28（en 19 → 29），加的正是 ⑱–㉗ 那十组。
  */
-const expectedGroups = LANG === 'en' ? 19 : 18;
+const expectedGroups = LANG === 'en' ? 29 : 28;
 assert.equal(
   pass,
   expectedGroups,
@@ -1439,12 +2538,16 @@ assert.equal(
 console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
-console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯ 的源码形状）：');
+console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯㉖㉗ 的源码形状）：');
 console.log('   没有点击、没有请求、没有真实浏览器、也没有主进程。');
 console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点一下真的走了哪条通道 / 真的弹了原生对话框 —— 静态渲染不跑事件处理器，');
-console.log('       ⑯ 只钉住"那条接线在、而且只有一条"；');
+console.log('       ⑯㉖㉗ 只钉住"那条接线在、而且只有一条"；');
+console.log('     · `<details>` 展开收起本身，以及点 `<summary>` 里那颗按钮会不会顺带折叠');
+console.log('       —— 那是浏览器的默认动作，产物里只有结构（控件真的住在 <summary> 里）；');
 console.log('     · `useModFolders()` 的另外两条支路（订阅回包 / 失败）：⑰ 只证了**第一帧**；');
+console.log('     · 缺失清单的"那个文件夹还没有扫描读数"那条拒绝：它由 `missingStatus ===');
+console.log('       "ok"` 的**定义**挡在不可达那一侧（㉔ 断言另外三档不画清单）；');
 console.log('     · 主进程写死的中文（`notices` / `skipped[].reason`）—— 夹具是 ASCII；');
 console.log(
   '     · 真实目录的 48 行 / 两个重复键 / 54 条 manual（那是 T1/T3 的单测与目录本身的事）。',

@@ -4357,5 +4357,188 @@ export const en: TranslationSchema = {
      *   are not merged.
      */
     partOneStateError: 'Cannot get the mod catalog state: {{reason}}',
+    /*
+     * ===================================================================
+     * Part two: mod folders (2026-10-03, Task 8)
+     * ===================================================================
+     * ⚠️★ Same prefix discipline as part one: always `files.` (the raw-key scanner only
+     *    knows `files.` and `common.`, see the `partOneTitle` note above).
+     * ⚠️★ No `⇒` (U+21D2) in any of these values: it is **not** in the pixel font subset
+     *    and `check-font-coverage.mjs` scans `packages/shared/src/i18n` (measured on this
+     *    machine: `⇒` and `▾` are MISSING from both subsets - the first one only appears
+     *    in comments, the second is the little arrow in the brief's "download into ▾", so
+     *    that control does not print it).
+     */
+    partTwoTitle: 'Part two: mod folders',
+    /*
+     * ⚠️ The second render point of the same statement as v1's `autoHint` (that switch
+     *    never writes a file). Kept separate because the subject differs (v1's table vs.
+     *    this folder layer) and this one has to mention that rows are judged from a scan.
+     */
+    partTwoHint:
+      'Every row is judged from the scan reading; "Auto" only means it is checked and highlighted on launch - files are written only when you click.',
+    /*
+     * ★ First empty state: no folder bound yet. ⚠️ It is also the **only** binding entry:
+     *    v1's "Choose mods folder" uses the old channel (`fileUpdates.bindFolder`, which
+     *    matches items by jar name), and the new folder entity only exists behind
+     *    `modFolders.bindFolder` (spec §6.7) - without this button the feature has no way
+     *    in from the UI.
+     */
+    folderNone:
+      'No mods folder is bound yet - bind one and its mods are judged against the catalog, with whatever is missing listed below.',
+    /*
+     * ★ Second empty state (the directory was moved or renamed): the binding stays, no
+     *    update action is offered at all (spec §8). ⚠️ This one is the **badge** (short)
+     *    and the hint below is the explanation - two keys because the badge has to fit
+     *    into the head row's control line.
+     */
+    folderPathMissing: 'Path missing',
+    folderPathMissingHint:
+      'This directory cannot be read right now - the binding stays and its files take part in no update. Put the directory back, or unbind it.',
+    /*
+     * ★★ The **actionable** way out of the unknown-version case (spec §8: the folder
+     *    head shows "unknown game version" and asks for a manual choice). This is the
+     *    empty value of that select: picking it hands the version back to auto-detection
+     *    (`setFolderGameVersion(folderId, null)` - the contract says null is not "leave
+     *    it alone"), picking a concrete version writes it.
+     *    ⚠️ Two statements, so two keys: this one says what the cell is, the hint below
+     *    says what picking it does and what happens until then.
+     */
+    folderGameVersionAuto: 'Detect automatically',
+    folderGameVersionHint:
+      'This folder has no known game version yet - pick one for it first; until then no row offers an update button.',
+    /*
+     * ★★ The bulk channel selector (spec §6.8: "bulk must have a default, because one
+     *    click drives N downloads"). ⚠️★ Its **scope is "Update all"** and the wording
+     *    has to say so: a single row goes through its own "Update (origin) / (mirror)"
+     *    buttons, and the bottom "Download" always uses the origin address (the reason is
+     *    in the component note - the page must never send a mirror channel it cannot
+     *    prove applies to that release).
+     */
+    folderBulkChannel: 'Channel for "Update all"',
+    /*
+     * ⚠️ `{{count}}` = `batchTargets(rows)` (how many rows really enter the batch - T1's
+     *    predicate), the same idea as v1's `confirmUpdateAll`: you know how many files
+     *    move before you click.
+     */
+    folderUpdateAll: 'Update all ({{count}})',
+    /*
+     * ★ Not in the brief's head-row list (a deviation, recorded in the report):
+     *   `rescan(folderId)` already exists in the contract, and without this button the
+     *   "no scan reading yet" and "game version cannot be inferred" states have **no**
+     *   way out from the page (part one's "Rescan (re-fetch catalog)" only appears when
+     *   the catalog itself is unavailable).
+     */
+    folderRescan: 'Rescan this folder',
+    /*
+     * ★★ The two channel options. ⚠️ Printing `hosts` on the mirror option is not
+     *    decoration: `channelUrl` only yields an address when the release's host is in
+     *    that mirror's hosts, and this choice drives N rows in one batch (see
+     *    `folderBulkChannel`) ⇒ the option itself states the scope.
+     */
+    channelOrigin: 'Original address',
+    channelMirror: '{{label}} ({{hosts}} only)',
+    /*
+     * ★★ After a catalog change, `prefs.bulkChannel` may hold an id that is no longer in
+     *    the mirror table. ⚠️ Without an option for it, a `<select value=X>` with no X
+     *    silently shows the first option (the screen lies while `setBulkChannel` was
+     *    never called) - same rule as part one's `gameVersionOptions`: the stale value
+     *    has to stay visible.
+     */
+    channelStale: 'Mirror {{id}} (no longer in the catalog)',
+    /*
+     * ★ Third empty state: not one recognizable mod in this folder (rows is empty).
+     *    ⚠️ It is **one sentence only**: the unrecognized file names are still listed
+     *    below (those are real readings), and the missing-path case does not print this
+     *    (we never read that directory, so "nothing inside" would be invented).
+     */
+    folderNoRows: 'No recognizable mod in this folder (not a Fabric mod, or not in the catalog).',
+    /*
+     * ★ The two scanned-but-not-updatable kinds (spec §8): no `fabric.mod.json`, or a
+     *    modid the catalog does not have. ⚠️ They must stay apart: the first one's way
+     *    out is "this is not a Fabric mod", the second one's is "the catalog lacks it" -
+     *    folding them into one "unrecognized" deletes the only lead the user has.
+     */
+    folderUnrecognizedNoMeta: 'No fabric.mod.json: {{name}}',
+    folderUnrecognizedNotInCatalog: 'Not in the catalog: {{name}}',
+    /*
+     * ★ The older-copies hint (D9.1: an update cleans them up). ⚠️ The names are printed
+     *    one by one: "2 older copies" alone leaves the user unable to tell which files
+     *    are about to go.
+     */
+    folderOldCopies: '{{count}} older copies: {{names}}',
+    /*
+     * ★★ The branch `FolderVerdict` has and `ReleaseVerdict` does not (spec §8: the
+     *    `mmc-pack.json` cannot be read). ⚠️ It exists on the folder side only: the badge
+     *    table in `ModCatalogTable` is typed by `ReleaseVerdict`, so folder rows use that
+     *    same table plus this branch (see `VERDICT_BADGES` in `FileUpdateTable.tsx`).
+     */
+    verdictUnknownVersion: 'Game version unknown',
+    /*
+     * ★★ `missing-release` **is reachable in part two** (it is not in part one:
+     *    `rowsForGameVersion` only returns mods that have a release for that game
+     *    version). So it needs a badge and an explanation - without them that row shows
+     *    no badge and no button, and the user cannot see why.
+     */
+    verdictMissingRelease: 'Not in the catalog for this version',
+    hintMissingRelease:
+      'The catalog has no release for it on this game version - shown only, never updated.',
+    /*
+     * ===================================================================
+     * Bottom: the missing list (Task 8)
+     * ===================================================================
+     */
+    partThreeTitle: 'Missing mods',
+    /*
+     * ⚠️ `{{version}}` = the state's `gameVersion` (this list is computed for it). Without
+     *    it the user reads "missing" as relative to something else.
+     */
+    missingHint:
+      'For game version {{version}}: mods the catalog has that no bound folder contains.',
+    missingCount: '{{count}} missing',
+    missingNone: 'Nothing missing - every catalog mod for this version is in a bound folder.',
+    /*
+     * ★★ The "download into" cell (spec §7.5). ⚠️ No little arrow here: the brief writes
+     *    "download into ▾" and U+25BE is not in the pixel font subset (`check:font` would
+     *    fail) - a native `<select>` draws its own arrow, we do not print a character.
+     * ⚠️ The select's accessible name carries the mod name (that column is one identical
+     *    select per row, the same reason as v1's `autoLabel`).
+     */
+    missingDownloadTo: 'Download into',
+    missingDownloadToLabel: 'Download "{{name}}" into',
+    missingDownload: 'Download',
+    /*
+     * ★★ No folder can take it (after the version filter). ⚠️★ This case must **not**
+     *    draw the Download button: the main process refuses when the folder's effective
+     *    game version differs from the argument (`downloadMissing`), and drawing a button
+     *    that is guaranteed to be refused is exactly what Ruling 47/48 forbids. The way
+     *    out is in the sentence: bind a folder for this version, or set the existing one
+     *    to it.
+     */
+    missingNoFolder:
+      'No folder can take it - you need a bound folder whose game version is {{version}} and whose path still exists.',
+    /*
+     * ★★ The other three `missingStatus` cases (everything but `'ok'` has its own
+     *    sentence - fix round 2). ⚠️★ The `folder-missing` one must **not** tell the user
+     *    to rescan: `rescan` on a directory that does not exist only forgets the reading
+     *    again - sending someone to press a button that cannot fix it is the wrong
+     *    action (the main process note says the same). So that sentence does not contain
+     *    the word "rescan" at all.
+     */
+    missingStatusFolderUnscanned:
+      'A bound folder has no scan reading yet, so the missing list stays empty (pressing "Rescan this folder" on it fills it in).',
+    missingStatusFolderMissing:
+      'A bound folder path no longer exists, so the missing list stays empty (its files cannot be read). Put those directories back, or unbind them.',
+    missingStatusCatalogUnavailable:
+      'The catalog has not been fetched, so the missing list stays empty (fix the catalog first: part one\'s "Rescan (re-fetch catalog)" fetches it again).',
+    /*
+     * ★★ Feature detection (spec §6.8 / §8's last row): without `window.mcsr?.modFolders`
+     *    part two says "needs desktop 0.0.5" while **part one and the v1 features keep
+     *    working**.
+     * ⚠️ It covers both shells: 0.0.4 (has `mcsr`, no `modFolders`) and a plain browser
+     *    (no `mcsr` at all - there `browserOnly` above already explains why).
+     */
+    partTwoUnavailable:
+      'This section needs desktop 0.0.5 (this client has no mod-folder support yet) - everything above keeps working.',
   },
 };

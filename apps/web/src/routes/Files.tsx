@@ -1,5 +1,10 @@
 /**
- * 「文件更新」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-03 加了第一部分）。
+ * 「文件更新」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-03 加了第一部分，
+ * 同一天 Task 8 加了第二部分与底部缺失清单）。
+ *
+ * ⚠️★ **一页三块**（spec §6.8）：第一部分 = 目录行（T7）、第二部分 = 已绑定的文件夹
+ * （T8）、底部 = 缺失清单（T8）。三块共用**同一份** `ModFoldersState` 与同一个动作层
+ * ⇒ 拼装只有一处（下面那个 `ModFoldersParts` 纯组件，自检渲染的也是它）。
  *
  * ===========================================================================
  * ⚠️★ 这一页在**两种模式下是两个产品**，而它们共用同一份组件
@@ -34,16 +39,82 @@
  *    "我是不是 0.0.5" 的判断，它们迟早在某一支上分叉 —— `shared/desktop.ts` 的
  *    `desktopBridge()` 是那条唯一入口的注释里写着这件事）。
  */
+import type { ModFoldersState } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
 import { DesktopDownload } from '@/components/DesktopDownload';
 import {
   FileUpdatesPanel,
   ModCatalogScanning,
   ModCatalogSection,
+  type ModFoldersHandlers,
   useFileUpdates,
   useModFolders,
 } from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
+import { MissingModsList } from '@/components/MissingModsList';
+import { ModFoldersPanel } from '@/components/ModFoldersPanel';
+
+/**
+ * 这一页的**第二部分 + 底部**在 `modFolders` 不存在时的样子（**特性检测**，
+ * spec §6.8 / §8 的最后一行）：说清"需要桌面版 0.0.5"，而且**第一部分与 v1 照常**。
+ *
+ * ⚠️★ 单独导出一个**纯组件**的理由与 `ModCatalogScanning` 同一个：自检里没有 preload
+ *    （`window.mcsr` 是 `undefined`）⇒ `useModFolders()` 恒为 `unavailable`，
+ *    而那一支渲染的是 v1 那条路 —— 「需要桌面版 0.0.5」这句话只有单独拿组件渲染
+ *    才断言得到（`foldersrender.tsx` 的 ㉕）。
+ * ⚠️ 它同时覆盖两种壳：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
+ *    （连 `mcsr` 都没有 —— 那时页面上面还有一句 `browserOnly` 说清了原因）。
+ *    两种壳都该看到它：这一栏要的确实是桌面版 0.0.5 才有的能力。
+ * ⚠️★ 它的类名**刻意不是** `.filespanel`（第一版是它，2026-10-03 跑 `check:all` 时红了）：
+ *    v1 的渲染自检（`apps/web/scripts/filesrender.tsx` ⑰）有一条**粗糙的**判据 ——
+ *    `assert.equal(pageHtml.includes('filespanel'), false, '还没拿到状态就不画面板')`
+ *    —— 它拿"产物里有没有这个类名"代理"有没有画出**那张表**"。这一块复用了那个类名
+ *    ⇒ 它在**正确**的产物上报红（那一屏画的是"需要桌面版 0.0.5"这句话，不是一张空表）。
+ *    ⇒ 两条路：改 v1 那条判据（放宽它），或者给这一块一个自己的类名。选**后者**：
+ *      v1 一个字节都不动（Global Constraints：v1 的行为与判据都不许变），代价是多一条 CSS 规则。
+ *    ⚠️ 记一笔给 T10：`filesrender.tsx` 那条判据**本身是粗的**（把 v1 面板换成用另一个
+ *      类名渲染，它照样绿）—— 那是 v1 的既有缺口，本任务不碰。
+ */
+export function ModFoldersUnavailable() {
+  const { t } = useTranslation();
+  return (
+    <section className="filesunavailable" data-mod-folders="unavailable">
+      <h2>{t('files.partTwoTitle')}</h2>
+      <Notice kind="info">{t('files.partTwoUnavailable')}</Notice>
+    </section>
+  );
+}
+
+export interface ModFoldersPartsProps {
+  state: ModFoldersState;
+  handlers: ModFoldersHandlers;
+  /** 一次动作失败的原话（只有第一部分印它 —— 它是整页动作层的东西）。 */
+  actionError?: string | null;
+}
+
+/**
+ * `modFolders` 在的客户端上，这一页的**三块**（spec §6.8）。
+ *
+ * ⚠️★ 抽成一个**纯 props 组件**是为了让"三块真的拼在一起"这件事**能被断言**：
+ *    `Files` 的 ready 那一支要靠 `useModFolders()` 的 IPC 回包（自检里一行 effect
+ *    都不跑）⇒ 直接渲染 `Files` 永远停在「正在扫描…」，三块里一块都断言不到。
+ *    这一层只吃 `state` / `handlers`，所以 `foldersrender.tsx` 的 ㉕ 能一次渲染出
+ *    第一块的标题、第二块的文件夹、第三块的缺失行**与第一块里那句迁移提示**
+ *    （`notices` 的渲染点在第一部分，而 §13.1 要求它**看得见** —— 这一条断言因此
+ *    必须落在"三块同时在场"的那一份产物上，而不是只渲染第一块的那一份）。
+ * ⚠️ 顺序就是 spec 说的顺序：第一部分（目录行）→ 第二部分（文件夹）→ 底部（缺失清单）。
+ *    ⚠️ 三块**共用同一份 state**：它们说的是同一份读数，各拉一次就等于让"同一份状态"
+ *    有三个会漂的版本。
+ */
+export function ModFoldersParts({ state, handlers, actionError = null }: ModFoldersPartsProps) {
+  return (
+    <>
+      <ModCatalogSection state={state} handlers={handlers} actionError={actionError} />
+      <ModFoldersPanel state={state} handlers={handlers} />
+      <MissingModsList state={state} handlers={handlers} />
+    </>
+  );
+}
 
 export function Files() {
   const { t } = useTranslation();
@@ -130,6 +201,15 @@ export function Files() {
               actionError={data.actionError}
             />
           ) : null}
+
+          {/*
+            ★★ 特性检测的落点（Task 8，spec §6.8 / §8 的最后一行）。
+            ⚠️★ 它**只**说第二部分要什么，第三块（缺失清单）也一并不画：
+              缺失清单是第二部分那份读数的下游（"哪些 mod 没在任何已绑定文件夹里"），
+              壳里没有 `modFolders` 时连"已绑定文件夹"这个概念都不存在。
+            ⚠️ 位置在 v1 那三块**之后**：那是"第二部分"在页面上的位置（第一块 = 第一部分）。
+          */}
+          <ModFoldersUnavailable />
         </>
       ) : mods.status === 'loading' ? (
         /*
@@ -145,11 +225,13 @@ export function Files() {
         <Notice kind="bad">{t('files.partOneStateError', { reason: mods.reason })}</Notice>
       ) : (
         /*
-         * ★ 第一部分（spec §6.8）。⚠️ 第二部分与底部缺失清单是 **Task 8** 的事：
-         *   它们挂在 `T8` 的 `ModFoldersPanel` / `MissingModsList` 上（`mods.state.folders` /
-         *   `mods.state.missing` 已经在这一份状态里，T8 直接用）。
+         * ★★ 一页三块（spec §6.8）：第一部分（目录行）+ 第二部分（文件夹）+
+         *    底部（缺失清单）。⚠️ 三块**共用同一份 state**（`mods.state`）与同一个
+         *    动作层（`mods.handlers`）—— 各拉一次就等于让同一份读数有三个会漂的版本。
+         * ⚠️ 拼装住在 `ModFoldersParts` 那个纯组件里（不在这里就地散开）：自检要
+         *    一次渲染出三块才断言得到"它们真的在一起"（见那个组件的注释）。
          */
-        <ModCatalogSection
+        <ModFoldersParts
           state={mods.state}
           handlers={mods.handlers}
           actionError={mods.actionError}

@@ -47,6 +47,7 @@ import type { ModMirror } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
   type Channel,
+  type FolderVerdict,
   mirrorsForUrl,
   type TagOptionView,
   type TargetSource,
@@ -539,12 +540,21 @@ export function originPageOf(row: CatalogRowView): string | null {
  *
  * ⚠️ 做成 `Record<…, …>` 而不是 `switch` + `default`：`ReleaseVerdict` 加一支时这里
  *    会当场编译失败（与上面 v1 那张 `STATE_BADGES` 同一条纪律）。
- * ⚠️★ `'missing-release'` **到不了**（`rowsForGameVersion` 只返回"这个游戏版本下有
- *    release"的 mod ⇒ 候选至少一条，spec §7.2 的那一支在第一部分不可达）
- *    ⇒ 它是 `null`：**不画**徽章，也不给它词条（那会是"为一条到不了的路径写文案"）。
+ * ⚠️★ **Task 8 起它按 `FolderVerdict` 定型**（= `ReleaseVerdict | { kind:
+ *    'unknown-version' }`），并且**第二部分也用它**（`ModFoldersPanel`）：
+ *    · 按 `FolderVerdict` 定型是**承重的**：文件夹行的 `verdict.kind` 是那个更宽的联合，
+ *      用 `ReleaseVerdict` 收窄的话 `VERDICT_BADGES[row.verdict.kind]` 那一行会**当场
+ *      编译失败**（brief 第 ① 条要钉的正是这件事）；
+ *    · 一张表服务两张表，是为了让"同一支状态两个说法"不可能发生（与
+ *      `VERDICT_HINTS` 共用一份同一条理由）。
+ *    ⚠️ 代价（认）：第一部分**永远渲染不到**后两支（`rowsForGameVersion` 只返回"这个
+ *      游戏版本下有 release"的 mod ⇒ `missing-release` 到不了；`unknown-version` 是
+ *      文件夹这一侧独有的），它们的存在只是为了让这张表对两个联合都穷尽。
+ *      ⇒ 从 `missing-release: null` 改成有徽章**不改变第一部分的产物**（那一支不可达，
+ *      现读 `mod-folders.ts` 的 `planCatalogRows` 与上面那段注释）。
  */
-const VERDICT_BADGES: Record<
-  CatalogRowView['verdict']['kind'],
+export const VERDICT_BADGES: Record<
+  FolderVerdict['kind'],
   { label: string; className: string } | null
 > = {
   same: { label: 'files.upToDate', className: 'badge' },
@@ -553,7 +563,17 @@ const VERDICT_BADGES: Record<
   'different-build': { label: 'files.verdictDifferentBuild', className: 'badge' },
   unknown: { label: 'files.verdictUnknown', className: 'badge' },
   ambiguous: { label: 'files.verdictAmbiguous', className: 'badge' },
-  'missing-release': null,
+  /*
+   * ★★ 第二部分的**可达**状态（第一部分不可达，见上面那一段）：`releasesFor` 在这个
+   *    游戏版本下一条都没有。⚠️ 它的解释在 `VERDICT_HINTS` 里（spec §8：只显示、不更新）。
+   */
+  'missing-release': { label: 'files.verdictMissingRelease', className: 'badge' },
+  /*
+   * ★★ 只有文件夹这一侧才有的状态（spec §8：`mmc-pack.json` 读不出来）。
+   *    ⚠️ 它的**解释**不在这里逐行印：那一句话挂在文件夹头行（说一次，见
+   *    `ModFoldersPanel` 的 `folderGameVersionHint`）—— 每一行重复一遍是噪声。
+   */
+  'unknown-version': { label: 'files.verdictUnknownVersion', className: 'badge' },
 };
 
 /**
@@ -561,13 +581,18 @@ const VERDICT_BADGES: Record<
  *
  * ⚠️★ 三支必须各有各的说法（spec §8）：`newer` / `different-build` / `unknown` 的
  *    **后果**都是"不更新"，但**原因**不同，而原因是用户唯一能行动的线索。
- * ⚠️ `ambiguous` 与 `manual` 的解释在下面按各自的判据取（它们与本地读数无关）。
+ * ⚠️ `ambiguous` 与 `manual` 的解释按各自的判据取（它们与本地读数无关）。
+ * ⚠️★ Task 8：这张表按 `FolderVerdict` 定型并与第二部分共用（同一条理由见上面
+ *    那段）；`missing-release` 那一句**只在第二部分出现**（第一部分到不了那一支）。
+ *    `unknown-version` **不在**这里：它的解释是文件夹级的一句话（见徽章表那段），
+ *    逐行印没有新信息。
  */
-const VERDICT_HINTS: Partial<Record<CatalogRowView['verdict']['kind'], string>> = {
+export const VERDICT_HINTS: Partial<Record<FolderVerdict['kind'], string>> = {
   newer: 'files.hintNewer',
   'different-build': 'files.hintDifferentBuild',
   unknown: 'files.hintUnknown',
   ambiguous: 'files.hintAmbiguous',
+  'missing-release': 'files.hintMissingRelease',
 };
 
 /** 未绑定那一行借 `files.unbound`（v1 那张表的第一颗徽章就是它，同一个意思）。 */
