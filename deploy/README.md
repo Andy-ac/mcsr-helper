@@ -171,7 +171,7 @@ ssh <服务器>
 # ⚠️ 表清单**动态取**（不写死）：硬编码一份会随迁移过期，而"清单过期"的表现是漏备份一张表。
 sudo -u mcsr node --input-type=module <<'JS'
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 // ⚠️ DB / DIR 可以用环境变量覆盖 —— 这不是给生产的旋钮，是为了**能在本机副本上真跑一遍**
 //    （本文件下面那几条读数就是这么来的）。默认值就是生产路径。
 const DB = process.env.MCSR_BACKUP_DB ?? '/srv/mcsr-helper/api/data/mcsr.db';
@@ -185,63 +185,86 @@ const tableNames = (db) =>
     .all()
     .map((r) => r.name);
 
+let currentOut = '';
+// ★ 失败就把这一轮那份副本删掉：它的名字长得像一份可用备份，留着就是个陷阱。
+//   ⚠️ **所有**失败路径都走这个函数（不只下面循环里那个 MISMATCH）—— 2026-10-03 判修。
+const bail = (msg) => {
+  if (currentOut) rmSync(currentOut, { force: true });
+  console.log(`✗ ${msg}`);
+  process.exit(1);
+};
+
+// ★ 先确认源库在：`new DatabaseSync(路径不对)` 会**静默新建一个空库** ⇒ 于是"备份"出来一个
+//   4096 字节的空文件、`tables compared = 0 mismatch = 0`（**满足了判据却什么都没测**），
+//   然后在 `_migrations` 那一句抛 `no such table` —— 看起来像脚本坏了，而目录里还留着一个
+//   **名字看着能用**的空备份。⇒ 路径不对就什么都不做。
+if (!existsSync(DB)) {
+  bail(`源库不存在：${DB} —— 什么都不做（不新建、不留文件；路径写错了不该留下一份"空备份"）`);
+}
+
 // ★ 为什么是一个"最多跑两次"的循环（2026-10-03 判修）：`VACUUM INTO` 本身是**一致快照**，
 //   但"活库 vs 副本"的逐表比较有一个窗口 —— 期间只要有一次并发写（或一次 DDL），
 //   计数 / 表清单就会不同。那不是"备份坏了"，是"**活库动过**"。
 //   ⇒ 重跑一次；两次都对不上才判失败。原来那版会把它报成"没有备份"（fail-closed 但会误判）。
 let attempt = 0;
 let bad = 0;
-let out = '';
 let compared = 0;
-for (attempt = 1; attempt <= 2; attempt += 1) {
-  out = `${DIR}/mcsr-${stamp()}-pre0.0.5.db`;
-  const live = new DatabaseSync(DB);
-  live.exec(`VACUUM INTO '${out}'`); // 目标文件已存在会报错 ⇒ 时间戳保证唯一
-  const bak = new DatabaseSync(out, { readOnly: true });
+try {
+  for (attempt = 1; attempt <= 2; attempt += 1) {
+    currentOut = `${DIR}/mcsr-${stamp()}-pre0.0.5.db`;
+    const live = new DatabaseSync(DB, { readOnly: true });
+    live.exec(`VACUUM INTO '${currentOut}'`); // 目标文件已存在会报错 ⇒ 时间戳保证唯一
+    const bak = new DatabaseSync(currentOut, { readOnly: true });
 
-  // ⚠️ 表清单**两边各取一次**再并成全集：只从活库取的话，期间一条迁移建了新表，
-  //    就会对着副本 `SELECT COUNT(*)` 一张不存在的表 —— 那是**抛异常**，不是报错。
-  const liveTables = tableNames(live);
-  const bakTables = tableNames(bak);
-  const all = [...new Set([...liveTables, ...bakTables])].sort();
-  compared = all.length;
-  bad = 0;
-  for (const t of all) {
-    const inLive = liveTables.includes(t);
-    const inBak = bakTables.includes(t);
-    if (!inLive || !inBak) {
-      console.log(`  MISSING TABLE ${t}（live=${inLive} backup=${inBak}）`);
-      bad += 1;
-      continue;
+    // ⚠️ 表清单**两边各取一次**再并成全集：只从活库取的话，期间一条迁移建了新表，
+    //    就会对着副本 `SELECT COUNT(*)` 一张不存在的表 —— 那是**抛异常**，不是报错。
+    const liveTables = tableNames(live);
+    const bakTables = tableNames(bak);
+    const all = [...new Set([...liveTables, ...bakTables])].sort();
+    compared = all.length;
+    bad = 0;
+    for (const t of all) {
+      const inLive = liveTables.includes(t);
+      const inBak = bakTables.includes(t);
+      if (!inLive || !inBak) {
+        console.log(`  MISSING TABLE ${t}（live=${inLive} backup=${inBak}）`);
+        bad += 1;
+        continue;
+      }
+      const a = one(live, `SELECT COUNT(*) AS n FROM "${t}"`);
+      const b = one(bak, `SELECT COUNT(*) AS n FROM "${t}"`);
+      if (String(a) !== String(b)) {
+        console.log(`  MISMATCH ${t} live=${a} backup=${b}`);
+        bad += 1;
+      }
     }
-    const a = one(live, `SELECT COUNT(*) AS n FROM "${t}"`);
-    const b = one(bak, `SELECT COUNT(*) AS n FROM "${t}"`);
-    if (String(a) !== String(b)) {
-      console.log(`  MISMATCH ${t} live=${a} backup=${b}`);
-      bad += 1;
-    }
+    bak.close();
+    live.close();
+
+    if (bad === 0) break;
+    rmSync(currentOut, { force: true });
+    console.log(`  ⚠️ 第 ${attempt} 次对不上（${bad} 处）—— 活库在备份期间动过（并发写 / DDL）。` +
+      `重跑一次（已删掉这份没通过校验的副本）。`);
   }
-  bak.close();
-  live.close();
-
-  if (bad === 0) break;
-  // 没通过校验的那一份**删掉**：它的名字长得像一份可用备份，留着就是个陷阱。
-  rmSync(out, { force: true });
-  console.log(`  ⚠️ 第 ${attempt} 次对不上（${bad} 处）—— 活库在备份期间动过（并发写 / DDL）。` +
-    `重跑一次（已删掉这份没通过校验的副本）。`);
+} catch (error) {
+  // 把"未捕获的异常"变成一句能读懂的话（它多半意味着路径 / 库不对，而不是脚本坏了）
+  bail(`快照或读取时出错：${error.message}（先确认 ${DB} 是一份能读的库）`);
 }
 
 // ★ 不匹配就先退：后面那些读数**一句都不许挡在它前面**
 //   （2026-10-03 判修：原来 `process.exit(1)` 写在最后，而它前面有一句会抛的 SQL ⇒
 //    一次**好备份**反而打不出 `BACKUP_TABLES_MATCH=true`，于是被读成"没有备份"。）
 if (bad > 0) {
-  console.log('✗ 两次都对不上 ⇒ 这次**不算有备份**，把脚本重跑一遍（活库可能一直在写）。');
-  process.exit(1);
+  bail('两次都对不上 ⇒ 这次**不算有备份**，把脚本重跑一遍（活库可能一直在写）。');
+}
+// ★ 空库不是备份：`compared === 0` 会让下面那句 `mismatch = 0` 变成"什么都没测"
+if (compared === 0) {
+  bail(`这个库里一张表都没有（${DB}）⇒ 这份快照没有意义（路径 / 库不对？）`);
 }
 
-console.log(`backup -> ${out} ${statSync(out).size} bytes（第 ${attempt} 次取到的快照）`);
+console.log(`backup -> ${currentOut} ${statSync(currentOut).size} bytes（第 ${attempt} 次取到的快照）`);
 console.log(`tables compared = ${compared} mismatch = 0`);
-const bak = new DatabaseSync(out, { readOnly: true });
+const bak = new DatabaseSync(currentOut, { readOnly: true });
 console.log('fk violations =', bak.prepare('PRAGMA foreign_key_check').all().length);
 // ⚠️ `_migrations` 的列是 **(name, applied_at)** —— 它**没有 `id` 列**
 //    （建表在 `services/api/src/db/migrate.ts` 的 `runMigrations` 里；
@@ -269,7 +292,16 @@ JS
 `_migrations` 的列、以及"逐表比行数"这件事，都躺在**仓库里**（建表那处是
 `services/api/src/db/migrate.ts`）⇒ 不要拿"它只在服务器上跑"当挡箭牌。
 
-**已经在本机跑过的三遍**（拿 `services/api/data/` 那份库的**副本**跑，不碰原文件）：
+**已经在本机跑过的几遍**（拿 `services/api/data/` 那份库的**副本**跑，不碰原文件）——
+⚠️ **复跑时必须把 `-wal` / `-shm` 一起拷过去**，理由见下面第 ④ 条：
+
+```bash
+# 复跑用的副本：★ 三件套都要（只拷 mcsr.db 会得到一份**旧的**、却"看起来完全正常"的备份）
+W=$(mktemp -d)
+for s in '' '-wal' '-shm'; do cp "services/api/data/mcsr.db$s" "$W/mcsr.db$s"; done
+# 然后把上面那段脚本存成 backup.mjs（去掉第一行的 `sudo -u mcsr `）再跑：
+MCSR_BACKUP_DB="$W/mcsr.db" MCSR_BACKUP_DIR="$W/bak" node backup.mjs
+```
 
 ```
 ① 库结构 / 那一句会抛的 SQL
@@ -281,21 +313,36 @@ JS
    tables compared = 19 mismatch = 0 / fk violations = 0
    migrations = 23（最后一条 = 023_live_status）/ BACKUP_TABLES_MATCH=true        ⇒ 退出码 0
 
-③ 备份期间**活库一直在写** —— 第 1 次对不上、第 2 次过（这就是本轮修的那件事）
+③ 备份期间**活库一直在写** —— 第 1 次对不上、第 2 次过
    MISMATCH t9_demo live=8 backup=2
    ⚠️ 第 1 次对不上（1 处）—— 活库在备份期间动过（并发写 / DDL）。重跑一次（已删掉这份没通过校验的副本）。
    backup -> 438272 bytes（第 2 次取到的快照）
    tables compared = 20 mismatch = 0 / fk violations = 0 / BACKUP_TABLES_MATCH=true ⇒ 退出码 0
    目录里只剩那一份通过校验的副本（没通过的那份已被删掉）
+
+④ ★ 只拷主文件 vs 三件套 —— **为什么那个 `cp` 必须带 -wal / -shm**
+   只拷 `mcsr.db`：     159744 bytes / tables compared = 8  / migrations = 7（007_editor_role）
+                        / fk 0 / BACKUP_TABLES_MATCH=true ⇒ **退出码 0**
+   三件套都拷：         434176 bytes / tables compared = 19 / migrations = 23（023_live_status）
+                        / fk 0 / BACKUP_TABLES_MATCH=true ⇒ 退出码 0
+   ⇒ 前者是一份**旧的**备份，而它**每一条判据都过**（库在 WAL 模式下主文件要等检查点才更新）。
+     这就是"必须带上 `-wal`"的理由：**这一种失败没有任何读数会提醒你**。
+
+⑤ 路径写错 / 空库（本轮加的守卫）
+   源库不存在：         ✗ 源库不存在：…（退出码 1）；备份目录里**什么都没有留下**，
+                        源路径上也没有被新建任何文件
+   存在但是个空库：     ✗ 这个库里一张表都没有（…）（退出码 1）；那份空快照被删掉
 ```
 
-★ **同一把刀对着上一轮那段脚本（`9971e1c`）**：在同样的并发写下它打印
+★ **同一把刀对着更早两轮的脚本**：`9971e1c` 那段在同样的并发写下打印
 `MISMATCH t9_demo live=6 backup=0` / `tables compared = 20 mismatch = 1`，
 **以退出码 1 结束、没有 `BACKUP_TABLES_MATCH=true`**，而且那份没通过校验的副本**留在盘上**
-（名字长得像一份可用备份）。⇒ 复审那条"会误报没有备份"是**实测**，不是推断。
+（名字长得像一份可用备份）⇒ "会误报没有备份"是**实测**。而 `MCSR_BACKUP_DB` 指向不存在的文件时，
+更早那版会打印 `4096 bytes` / `tables compared = 0 mismatch = 0`（**满足了判据却什么都没测**）
+再以 `no such table: _migrations` 崩掉，并在目录里留下那个 4096 字节的空备份。
 
 ⇒ **"没验过"只剩下一件事**：没有对**生产那份库**真的跑过一次（那要连上服务器）；
-上面那些判据与 SQL 本身已经被本机这一遍钉住了。
+上面那些判据与 SQL 本身已经被本机这几遍钉住了。
 第一次在生产跑请把输出留下：`BACKUP_TABLES_MATCH=true` 与 `mismatch = 0` 没出现，
 就等于**没有备份**，那就不要往下走。
 （把这一步做进 `deploy.sh` —— 做成"迁移之前 + 回读之后才算成功"—— 是一条已知的待办：
@@ -306,50 +353,66 @@ WSL 存根，`pnpm deploy` 会在第一行之前就失败）
 
 **发布前预检**（这三条**必须**在按下回车之前看一眼，它们各自都有"部署报成功而实际上
 没做 / 做错了"的形态。⚠️ 这一段是**建议性**的：`deploy.sh` 不读它、没有任何东西强制它 ——
-它的唯一目的就是让"我这次会跳过整块线上自检"这件事**至少是响的**。只看"有没有值"，**不打印值**）：
+它的唯一目的就是让"我这次会跳过整块线上自检"这件事**至少是响的**。
+⇒ **只有印出来的 `✗` 算数，别把它的退出码当门禁。** 只看"有没有值"，**不打印值**）：
 
 ```bash
 # 在仓库根目录跑（也可以把 deploy/deploy.env 换成别的文件，例如一个副本）
-ENVF="${1:-deploy/deploy.env}"
+(
+  # ★ 不要自己去解析 .env：deploy.sh:28 是 `set -a && source deploy/deploy.env && set +a`，
+  #   所以这里也在**子 shell 里 source 一次**、再直接测变量 —— 这样引号、行尾空白、
+  #   行尾 `# 注释`、以及"同一个键写两次"（bash 取**最后**一次赋值）全都与它一致。
+  #   （2026-10-03 判修：自己解析会在上面那几种形态上与 deploy.sh 漂开，而后果是
+  #    "整块线上自检被跳过、部署照样 exit 0"却看着像通过了。）
+  set -a
+  # shellcheck disable=SC1090,SC1091
+  . "${1:-deploy/deploy.env}" >/dev/null 2>&1 || {
+    echo "  ✗ 读不了 ${1:-deploy/deploy.env}（source 失败）—— 先确认这个文件在不在、能不能被 bash 读"
+    exit 1
+  }
+  set +a
 
-# 取值：认 `K=v` / `export K=v` / `K="v"` / `K='v'`；空串（含 `""`）回空
-val() {
-  sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\?$1=//p" "$ENVF" | head -1 \
-    | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
-}
-# 必须有值：空、`""`、`''` 都判 ✗
-need() {
-  local v; v=$(val "$1")
-  if [ -n "$v" ]; then echo "  ok   $1 已设置（长度 ${#v}）"; else echo "  ✗    $1 为空 —— $2"; fi
-}
+  fail=0
+  need() { # $1 = 键名；$2 = 为空时那句"会坏成什么样"
+    local v="${!1:-}"
+    if [ -n "$v" ]; then echo "  ok   $1 已设置（长度 ${#v}）"; else echo "  ✗    $1 为空 —— $2"; fail=1; fi
+  }
 
-need MCSR_SSH_HOST        'deploy.sh 直接拒绝运行（:30）'
-need MCSR_DOMAIN          'deploy.sh 直接拒绝运行（:31）'
-need MCSR_HEALTHCHECK_URL '★ 整块线上自检会被跳过，而部署**照样 exit 0**（:599）'
+  need MCSR_SSH_HOST        'deploy.sh 直接拒绝运行（:30）'
+  need MCSR_DOMAIN          'deploy.sh 直接拒绝运行（:31）'
+  need MCSR_HEALTHCHECK_URL '★ 整块线上自检会被跳过，而部署**照样 exit 0**（:599）'
 
-v=$(val MCSR_LEGACY_DOMAIN)
-if [ -n "$v" ]; then echo "  ok   MCSR_LEGACY_DOMAIN 已设置（长度 ${#v}）"
-else echo "  ⚠️  MCSR_LEGACY_DOMAIN 为空 —— 这是**合法**配置（= 不做旧域名跳转），但这次部署会**移除**已有的 301（旧链接变死链，:55-62）"; fi
+  if [ -n "${MCSR_LEGACY_DOMAIN:-}" ]; then
+    echo "  ok   MCSR_LEGACY_DOMAIN 已设置（长度 ${#MCSR_LEGACY_DOMAIN}）"
+  else
+    echo "  ⚠️  MCSR_LEGACY_DOMAIN 为空 —— 这是**合法**配置（= 不做旧域名跳转），但这次部署会**移除**已有的 301（旧链接变死链，:55-62）"
+  fi
 
-b=$(val MCSR_BOOTSTRAP)
-[ "$b" = 0 ] && echo '  ok   MCSR_BOOTSTRAP=0（这次不会 bootstrap）' \
-  || echo "  ⚠️  MCSR_BOOTSTRAP='${b:-（这一行缺失）}' —— 缺失时缺省也是 0，但写成别的值会真去跑 bootstrap-server.sh"
+  # 缺这一行与显式写 0 是**同义**的（deploy.sh 的 `${MCSR_BOOTSTRAP:-0}`）⇒ 两者都报 ok
+  if [ "${MCSR_BOOTSTRAP:-0}" = 0 ]; then
+    echo '  ok   MCSR_BOOTSTRAP=0（这次不会 bootstrap）'
+  else
+    echo "  ⚠️  MCSR_BOOTSTRAP='${MCSR_BOOTSTRAP}' —— 不是 0 就会顺带跑 bootstrap-server.sh（装 Node/Caddy、建用户）"
+  fi
+
+  exit $fail
+)
 ```
 
 - ★ **`MCSR_HEALTHCHECK_URL` 为空 ⇒ 整块线上自检被跳过，而部署照样 `exit 0`**
   （`deploy.sh:599` 那个 `if` 包住了 CSP + `/api/file-catalog` + `/api/mod-catalog` 三条回读）
   ⇒ 那意味着一次"成功"的部署**一个回读都没做**。这一条是本节所有回读的前提。
-- ⚠️ **`MCSR_HEALTHCHECK_URL=""`（一对空引号）也算空** —— 它的**字符长度是 2**，
-  所以"看长度有没有值"那种写法会**放过它**，而 `deploy.sh` source 之后它就是空。
-  上面这段**先剥引号再判**，就是这个原因（2026-10-03 判修）。
+- ⚠️ **"实际上为空"有一堆写法**，都会造成上面那条后果：`K=""`、`K="" `（尾随空格）、
+  `K=""` + TAB、`K="" # 暂时停用`、`K=   `（纯空白）、**同一个键写两次而最后一个是 `K=""`**
+  （bash 是**后者胜**）。⇒ 这就是上面**不自己解析、而是 `source` 一次**的理由。
 - **`MCSR_LEGACY_DOMAIN` 为空**是**合法**配置（= 不做旧域名跳转），但部署会把**上一次留下的**
   301 删掉 ⇒ 所以它是 ⚠️ 而不是 ✗ —— 要的就是"你看见它、并且知道自己在做什么"。
-- **`MCSR_BOOTSTRAP` 不是 0** ⇒ 这一次会顺带 `bootstrap-server.sh`（装 Node/Caddy、建用户）；
-  这一行**缺失**时缺省也是 0，所以缺失只给 ⚠️。
+- **`MCSR_BOOTSTRAP` 不是 0** ⇒ 这一次会顺带 `bootstrap-server.sh`（装 Node/Caddy、建用户）。
 
-**这一段本机跑过七种形态**（真 `deploy/deploy.env` 基线 + `K=""` + `export K=v` + 空
-`MCSR_LEGACY_DOMAIN` + 缺 `MCSR_BOOTSTRAP` + `MCSR_BOOTSTRAP=1` + 值带引号）：
-`K=""` **被拦**、`export K=v` **不再误报**、空的 `MCSR_LEGACY_DOMAIN` **只出 ⚠️ 不出 ✗**。
+**这一段本机跑过 17 种形态**（真 `deploy/deploy.env` + 五种"有值"写法 + **六种"实际上为空"**
++ 空 LEGACY + 缺 BOOTSTRAP + `MCSR_BOOTSTRAP=1` + 空 `MCSR_SSH_HOST` + 文件不存在）：
+**六种"实际上为空"全部被拦且点名 `MCSR_HEALTHCHECK_URL`**；`export K=v` / 带引号 / 带行尾注释
+都读作 `ok`；空的 `MCSR_LEGACY_DOMAIN` **只出 ⚠️ 不出 ✗**；文件不存在时明说"读不了"。
 
 ```bash
 & "C:\Program Files\Git\bin\bash.exe" deploy/deploy.sh --with-installer
@@ -386,7 +449,9 @@ immutable 时要重新想一遍。）
 配置是同一个心智模型（正常路径只有 `deploy.sh` 这一条）。
 
 **4. 部署后回读**（⚠️ `deploy.sh` 的自检**不读安装包** —— 它只回读 CSP、`/api/file-catalog`、
-`/api/mod-catalog` 三样，「安装包到没到位」只能自己看，所以这一节不是可选的）
+`/api/mod-catalog` 三样，「安装包到没到位」只能自己看，所以这一节不是可选的。
+⚠️★ **与第 3 步那段预检不同：这一节不是"建议性"的** —— 下面的判据自带退出码，
+**非 0 就是没过**（预检那边反过来：只有印出来的 `✗` 算数、退出码不算门禁）。）
 
 ⚠️ 回读**必须带 `--resolve`**：本机 DNS 不可信（同 `deploy.sh` 自己的自检，`:602-614` 就是把
 域名硬解析到服务器 IP 的）。不带它，S7 那条判据很可能是**假失败**。
