@@ -80,7 +80,91 @@ pnpm build:installer            # = pnpm -F @mcsr/desktop dist（electron-builde
   会让那次更新静默失败），所以打包时**按 `latest.yml` 里那个版本挑文件**，不能 `./*.exe`
   （`deploy.sh` 就是这么做的，见它那一段注释）。
 
-**2. 发布**（在仓库根目录；Windows 上要走 Git Bash —— 本机 PATH 上的 `bash` 是没装发行版的
+**本地自查**（别只看"构建成功"。下面这几条量的**是打包进去的那份字节**，不是仓库里的源码；
+⚠️ 括号里的数字是 **0.0.5 这一次**的读数 —— 以后加了通道要现数一遍，别照抄）：
+
+```bash
+ASAR=apps/desktop/release/win-unpacked/resources/app.asar
+
+# ① electron-updater 比的是**打进 asar 的那一份 package.json**，不是仓库里那份：
+grep -ao '"version": "0.0.5"' "$ASAR" | wc -l    # ⇒ 1
+grep -ao '"version": "0.0.4"' "$ASAR" | wc -l    # ⇒ 0（阴性对照：旧值一个都不该剩）
+#    ⚠️ 第二条找不到时会以 **1** 退出（管道里 `wc -l` 照样打印 0）⇒ 读那个 0，不要读退出码。
+# ② 主进程真的注册了那些 handler（= main.ts 1 + file-updates 8 + mod-folders 15）
+grep -ao 'ipcMain.handle(' "$ASAR" | wc -l       # ⇒ 24
+# ③ 渲染进程发起的 invoke 与它**一对一**（只数 handle 不数 invoke 的话，少接一条也看不出来）
+grep -ao 'ipcRenderer.invoke(' "$ASAR" | wc -l   # ⇒ 24
+grep -ao 'modFolders' apps/desktop/dist/preload.cjs | wc -l   # ⇒ 2（> 0 即那一组被暴露了）
+```
+
+⚠️ 上面用的是 `grep -ao … | wc -l` 而**不是** `grep -c`：`-c` 数的是**行**，
+而打包产物是压过的 JS —— 一行里可能挤着几十个匹配，"数行"会在别的产物上悄悄少数。
+（这一组命令在 2026-10-03 用 Git Bash 真跑过，读数就是右边那几个数。）
+
+> ⚠️ **不要**拿"通道名字符串在不在产物里"当接线证据 —— 那是"看着有、其实什么都没测"：
+> 那 16 个串全都住在**一个**共享常量对象里，把 `initModFolders` 整段删掉、只留常量，
+> 它们照样在（实测：asar 里 `mcsr:modfolders-` 有 16 处）。能承载结论的只有 ②③ 两条。
+
+**2. 发布前：先把线上那个库备份出来**（这一步**不在** `deploy.sh` 里）
+
+`deploy.sh` 的链上是**没有备份的**（全文 grep 不到 `backup`/`VACUUM`），而这次发布**会写库**：
+`:551-578` 在服务器上以 `mcsr` 身份跑 `import.js --apply`（只碰 `source='import'` 的记录，
+但它是真的写）。⇒ **清单第一条就是把库拷出来。**
+
+⚠️ 服务器上**没有 `sqlite3`**（`bash: line 9: sqlite3: command not found`，2026-09-15 实测）
+⇒ 本文件下面那节「备份（M6 落地）」里原来那条 `sqlite3 … VACUUM INTO …` **照着做必然失败**。
+能跑的是 **`node` + `node:sqlite`**（API 自己就用它 ⇒ node 一定在）。
+做法是**连上服务器**再把下面这一段贴上去跑（它自己会回读校验）：
+
+```bash
+ssh <服务器>
+```
+
+```bash
+# 在服务器上（做法取自 2026-09-15「迁移 018」那次**真的用过**的备份脚本；
+# 原来那一份住在开发机一个被 gitignore 的目录里 ⇒ 下面这一段就是它的正式落点）。
+# ⚠️ 表清单**动态取**（不写死）：硬编码一份会随迁移过期，而"清单过期"的表现是漏备份一张表。
+sudo -u mcsr node --input-type=module <<'JS'
+import { DatabaseSync } from 'node:sqlite';
+import { statSync, mkdirSync } from 'node:fs';
+const DB = '/srv/mcsr-helper/api/data/mcsr.db';
+const DIR = '/srv/mcsr-helper/backup';
+mkdirSync(DIR, { recursive: true });
+const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+const OUT = `${DIR}/mcsr-${stamp}-pre0.0.5.db`;
+const live = new DatabaseSync(DB);
+live.exec(`VACUUM INTO '${OUT}'`);           // 目标文件已存在会报错 ⇒ 时间戳保证唯一
+console.log('backup ->', OUT, statSync(OUT).size, 'bytes');
+const bak = new DatabaseSync(OUT, { readOnly: true });
+const one = (db, sql) => Object.values(db.prepare(sql).get())[0];
+const tables = live.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((r) => r.name);
+let bad = 0;
+for (const t of tables) {
+  const a = one(live, `SELECT COUNT(*) AS n FROM "${t}"`);
+  const b = one(bak, `SELECT COUNT(*) AS n FROM "${t}"`);
+  if (String(a) !== String(b)) { console.log(`  MISMATCH ${t} live=${a} backup=${b}`); bad += 1; }
+}
+console.log('tables compared =', tables.length, 'mismatch =', bad);
+console.log('fk violations =', bak.prepare('PRAGMA foreign_key_check').all().length);
+console.log('migrations =', one(bak, 'SELECT MAX(id) AS n FROM _migrations'));
+if (bad > 0) process.exit(1);
+console.log('BACKUP_TABLES_MATCH=true');
+JS
+```
+
+**备份成立的判据**（只认这三样，别只看"文件有了"）：`BACKUP_TABLES_MATCH=true`、
+`fk violations = 0`、以及 `tables compared = N mismatch = 0` 那一行里 `mismatch` 是 **0**。
+（那行 `migrations = N` 是"备份那一刻库里跑到第几号迁移"的读数 —— 判断迁移状态**用它**，
+不要看主文件的 mtime，理由见下。）
+⚠️ **不要用 `ls` 的 mtime 判断"迁移跑没跑"**：库在 WAL 模式下主文件只在检查点之后才更新，
+迁移可能早就跑完了而 mtime 还是十几个小时前（2026-09-15 实测过一次：`_migrations` 已是 18，
+主文件 mtime 比部署时间早 12 小时）。
+⚠️ **本机没法替你在服务器上验证这一段**（它只在服务器上跑）：第一次跑请把输出留下；
+`BACKUP_TABLES_MATCH=true` 与 `mismatch = 0` 没出现，就等于**没有备份**，那就不要往下走。
+（把这一步做进 `deploy.sh` —— 做成"迁移之前 + 回读之后才算成功"—— 是一条已知的待办：
+上面那句"链上没有备份"就是它的现状，别以为它已经被解决了。）
+
+**3. 发布**（在仓库根目录；Windows 上要走 Git Bash —— 本机 PATH 上的 `bash` 是没装发行版的
 WSL 存根，`pnpm deploy` 会在第一行之前就失败）
 
 ```bash
@@ -97,30 +181,77 @@ WSL 存根，`pnpm deploy` 会在第一行之前就失败）
 
 `deploy.sh` 的做法：安装包**单独一次 `scp`**、在所有其他产物**之前**传上去（远端这时还没开始
 换任何东西）；远端那一段里**先换前端产物**（`${WEB_DIR}`），最后才把 `/tmp/installer.tgz`
-解到 `/srv/mcsr-helper/releases/`。⚠️ 这两个动作之间因此有一个**几秒级**的窗口：新页面已经在
-线上要 0.0.5，而 `releases/` 里还是上一版的 `latest.yml`（此时客户端检查更新会说"已是最新"，
-下一次检查就正常了 —— 不是崩溃，老壳走的是 v1 的降级支路）。要消掉它就得把远端那一段里
-解安装包的动作提到换前端之前；本仓今天**没有**这么做，这里如实记着。
+解到 `/srv/mcsr-helper/releases/`。
+
+⚠️★ **这两步之间的那个窗口要按"失败分支"读，不是按"几秒钟"读**（2026-10-03 判修）：
+脚本是 `set -euo pipefail`（`:250`），所以从**前端换完**（`:357`）到**安装包解完**（`:513`）
+之间，任何一处失败都会让脚本**带着非零退出码停下**，而这时线上是"**新页面 + 上一版的
+`latest.yml`**"这个组合，并且它会**一直保持**到有人再跑一次 —— `:433`/`:502` 那两句
+`systemctl enable --now` 是**故意不吞错误**的，`install -m 0644`、`:583` 那句 `exit 1` 同理。
+⇒ **清单里必须有一条**：**若这一次部署在"换前端"之后以非零退出码结束，立刻重跑一次
+`--with-installer` 跑到成功**（重跑是幂等的；不要以为"下次客户端检查更新就好了"）。
+这个窗口的时长取决于部署走多快，不是几秒的物理限制 —— 失败会让它变成永久。
+（要根治就得把远端解安装包的动作提到换前端之前；本仓今天**没有**这么做，这里如实记着。
+另一处同族的细节：`:154` 把 `latest.yml` 放在 tar 的**第一个成员**里 ⇒ **解包时**清单先于
+那 107 MB 的 exe 到位；今天靠"解包很快 + 清单不被缓存"自愈，换成 CDN/R2 而 `.exe` 被标
+immutable 时要重新想一遍。）
 
 ⇒ **这一版的页面不要用一次「不带 `--with-installer`」的部署先发出去** —— 那正是"web 先于 app"，
 用户会停在一个"要 0.0.5 而拿不到 0.0.5"的状态里（`latest.yml` 还是上一版，客户端检查更新会说
 "已是最新"）。也不要手工往 `/srv/mcsr-helper/releases/` 里丢文件：那个目录和 `deploy/` 下的
 配置是同一个心智模型（正常路径只有 `deploy.sh` 这一条）。
 
-**3. 部署后回读**（⚠️ `deploy.sh` 的自检**不读安装包** —— 它只回读 CSP、`/api/file-catalog`、
-`/api/mod-catalog` 三样，「安装包到没到位」只能自己看，所以这一节不是可选的）：
+**4. 部署后回读**（⚠️ `deploy.sh` 的自检**不读安装包** —— 它只回读 CSP、`/api/file-catalog`、
+`/api/mod-catalog` 三样，「安装包到没到位」只能自己看，所以这一节不是可选的）
+
+⚠️ 回读**必须带 `--resolve`**：本机 DNS 不可信（同 `deploy.sh` 自己的自检，`:602-614` 就是把
+域名硬解析到服务器 IP 的）。不带它，S7 那条判据很可能是**假失败**。
 
 ```bash
-curl -sS https://<域名>/installer/latest.yml     # ⇒ version: 0.0.5（与 package.json 一致）
-# ⚠️ exe 的文件名里有空格 ⇒ 手工 curl 要把它编码成 %20
-curl -sS -o /dev/null -w '%{http_code} %{size_download}\n' \
-  "https://<域名>/installer/MCSR%20Helper-Setup-0.0.5.exe"   # ⇒ 200，且字节数与 latest.yml 的 size 相同
-curl -sS https://<域名>/api/desktop/release      # ⇒ 首页下载入口那份 JSON，version 同样是 0.0.5
+IP=<服务器公网 IP>                    # deploy/deploy.env 里 MCSR_SSH_HOST 去掉 user@
+R=(--resolve <域名>:443:$IP)
+
+# ① 清单：正文里的版本 + **响应头里的缓存策略**（两件都要看）
+curl -sS "${R[@]}" -D /tmp/latest.yml.head -o /tmp/latest.yml https://<域名>/installer/latest.yml
+grep -q '^version: 0\.0\.5$' /tmp/latest.yml              # ⇒ 命中
+grep -qi '^cache-control: *no-cache' /tmp/latest.yml.head  # ⇒ 命中（Caddyfile:130-131 那条规则）
+#    ⚠️ 这一条不是装饰：那条 `@manifest path *latest.yml` 规则**曾经静默失效过**
+#    （安装包拿到了 immutable、而 latest.yml 一个 Cache-Control 都没有，见 Caddyfile:121-129）。
+#    清单被缓存住的表现是"用户永远看到已是最新版本"，而我们这边一点痕迹都没有。
+
+# ② exe：状态码 + 字节数（文件名里有空格 ⇒ 手工 curl 要编码成 %20）
+curl -sS "${R[@]}" -o /dev/null -w '%{http_code} %{size_download}\n' \
+  "https://<域名>/installer/MCSR%20Helper-Setup-0.0.5.exe"   # ⇒ 200 112480275（= latest.yml 的 size）
+#    安装包那一侧相反：文件名带版本号 ⇒ `Cache-Control: public, max-age=31536000, immutable`
+#    是对的（`Caddyfile:132-133`），**不要**把它改成 no-cache。
+
+# ③ 首页那一格（用户看得见的那份 JSON；deploy.sh 的自检也不看它）
+curl -sS "${R[@]}" https://<域名>/api/desktop/release        # ⇒ version 0.0.5 / file 同名 / size 同上
+
+# ④ 那三条由 deploy.sh 自检覆盖的（CSP / file-catalog / mod-catalog）：
+#    整次部署的退出码就是它们的结论 —— 非零就是没过，看它逐项打印的那一行。
 ```
 
-`latest.yml` **不许被缓存**：`Caddyfile` 里那条 `@manifest` 规则专门给它 `no-cache`
-（理由写在那一段注释里 —— 它一旦被缓存住，用户会一直看到"已是最新版本"）。
-安装包本身相反，文件名带版本号，`Cache-Control: immutable` 是对的。
+**5. 回滚：安装器**回不去**，坏的 0.0.5 只能靠 0.0.6 顶掉**
+
+发布之前先把这条读一遍，因为它决定了"万一 0.0.5 是坏的怎么办"的答案：
+
+- **`latest.yml` 没有存档**：`deploy.sh:515` 把安装包 tgz 解到 `/srv/mcsr-helper/releases/`，
+  而 tgz 里只有**新版本**那一份清单 ⇒ 上一次的清单被**覆盖**掉（旧版本的 `.exe` 文件还在，
+  但"更新源指向哪个版本"这件事只有一个格子）。
+- **客户端不会降级**：`apps/desktop/src/updater.ts:101-106` 设了 `autoDownload` /
+  `autoInstallOnAppQuit` / `allowPrerelease`，而全仓**没有** `allowDowngrade`（`git grep` 现读
+  无输出）⇒ 走 electron-updater 的默认值 `false` ⇒ 就算把 `latest.yml` 退回 0.0.4，
+  **已经装了 0.0.5 的用户也不会被带回 0.0.4**。
+- ⇒ **唯一的自动补救是发 0.0.6**。手工降级只有一条路：用户自己去 `/installer/` 下载旧 exe
+  重装（服务器上 0.0.1–0.0.4 的 exe 都还在）—— 那不是一条能运营的路，别把它写进应急预案。
+- **前端/API 的回滚**：`${WEB_DIR}.old` 在部署成功后被删掉（`:356`）⇒ 盘上没有"上一版前端"；
+  要回滚前端只能**检出旧提交再部署一次**。⚠️ 那一次如果**带** `--with-installer`，
+  它会用旧提交里的 `version` 重新打一份 `latest.yml` 并**把线上清单也退回去** ——
+  那是"同时回滚安装器"，是另一个动作，别顺手做。要只回滚前端就用**不带**
+  `--with-installer` 的那次部署（代价：页面上"需要桌面版 0.0.5"那句话会消失一阵，
+  已装 0.0.5 的用户看不出该更新）。
+- **库的回滚**：只有上面第 2 步那份备份。`deploy.sh` 不备份、也不装备份计划。
 
 ## ⚠️⚠️ 改 `deploy/**` 之后必须做的一件事：部署后回读
 
@@ -183,12 +314,23 @@ sudo tail -f /var/log/caddy/mcsr-helper.log            # 访问日志
 
 ## 备份（M6 落地）
 
-M1 之后 SQLite 文件在 `/srv/mcsr-helper/api/data/`。计划是每晚：
+M1 之后 SQLite 文件在 `/srv/mcsr-helper/api/data/`。计划是每晚做一次、再推到 Cloudflare R2。
+
+⚠️⚠️ **这一节原来教的是 `sqlite3 … "VACUUM INTO …"`，而那条命令在这台服务器上跑不了**
+（2026-09-15 实测：`bash: line 9: sqlite3: command not found`）。**一份照着做必然失败的文档
+比没有文档更坏**：它让人以为自己有备份，而失败正好发生在"要出事了才去备份"的那一刻。
+⇒ 现在**能跑**的是 `node` + `node:sqlite`（API 自己就用它 ⇒ node 一定在），做法与回读判据
+（逐表比行数、`foreign_key_check`、`_migrations`）写在上面「发布桌面安装包」那一节的
+**第 2 步**里 —— 那一节就是这条纪律现在的落点，别再照着下面这条旧命令做：
 
 ```bash
+# ✗ 跑不了（服务器上没有 sqlite3 这个命令）—— 留在这里只为说明它错在哪
 sqlite3 /srv/mcsr-helper/api/data/mcsr.db "VACUUM INTO '/tmp/mcsr-$(date +%F).db'"
-# 再推到 Cloudflare R2
 ```
+
+⚠️ **今天备份仍然是手工动作**：`deploy.sh` 全文搜不到 `backup` / `备份` / `VACUUM`，
+所以部署链上**没有**任何一次自动备份（`docs/pending.md` §3.8 记着这件事与它的修法：
+做成 `deploy.sh` 里"迁移之前 + 回读之后才算成功"的一步）。
 
 **并且要实际演练一次恢复** —— 没演练过的备份不算备份。这是 M6 的验收项之一。
 
@@ -314,7 +456,7 @@ sudo journalctl -u mcsr-helper-api -n 50 --no-pager    # 看前缀 [file-catalog
 | 文件 | 作用 |
 |---|---|
 | `deploy.env.example` | 部署配置模板，复制成 `deploy.env` 后填写（`deploy.env` 已被 gitignore） |
-| `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物，`--with-installer` 顺带发布桌面安装包与 `latest.yml`（见上一节） |
+| `deploy.sh` | 一条命令部署；`--bootstrap` 首次初始化，`--skip-build` 只推已有产物，`--with-installer` 顺带发布桌面安装包与 `latest.yml`（见上面「**发布桌面安装包**」那一节 —— 那一节里还带着**发布前的备份**与**部署后回读**两张清单） |
 | `verify-csp.sh` | **部署后回读的判据**：吃一份抓好的响应头文本（stdin 或 `--headers`），核对 CSP 四项与 `/api/ranked/status`；预期值**现读** `Caddyfile`。能单独调用 ⇒ 不碰生产配置就能证明"它会红"（见上面那一节） |
 | `verify-file-catalog.sh` | **部署后回读的判据（`/api/file-catalog`）**：吃一份抓好的响应（`--body <文件>`，也接受 stdin），核对 ① 状态码 200 ② `version === 1` ③ `items` 非空。退出码 0 = 三项全过 / 1 = 有项没过 / 2 = 判据没跑起来。`deploy.sh` 的线上自检会调它 |
 | `verify-mod-catalog.sh` | **部署后回读的判据（`/api/mod-catalog`）**：同一个形状与同一套退出码，字段换成 v2 的 —— ① 状态码 200 ② `schema === 2` ③ `releases` 非空。⚠️ 只认 `--body <文件>`（**不吃 stdin**）。`deploy.sh` 的线上自检会调它 |
