@@ -4447,12 +4447,36 @@ export const en: TranslationSchema = {
      */
     channelStale: 'Mirror {{id}} (no longer in the catalog)',
     /*
-     * ★ Third empty state: not one recognizable mod in this folder (rows is empty).
-     *    ⚠️ It is **one sentence only**: the unrecognized file names are still listed
-     *    below (those are real readings), and the missing-path case does not print this
-     *    (we never read that directory, so "nothing inside" would be invented).
+     * ★★ Ruling 64 (2026-10-03 T8 review): a **stale persisted value may be shown, but it
+     *    must not be sent as a new action**. The key above lets the user see that the state
+     *    drifted; this one says "and that is why Update all cannot be sent" - without it,
+     *    that button is simply **not drawn** in this case (see `bulkChannelUsable` in
+     *    `ModFoldersPanel`) and the user just wonders where it went.
+     * ⚠️ The wording has to name the cell ("pick a channel that still exists above"): the
+     *    catalog is not broken, the choice **saved on this machine** is out of date.
+     */
+    channelStaleHint:
+      'The saved bulk channel is no longer in the catalog mirror table - "Update all" cannot be sent until you pick a channel that still exists above.',
+    /*
+     * ★ Third empty state: this folder **was read**, and not one recognizable mod is in it
+     *   (rows is empty). ⚠️ It is **one sentence only**: the unrecognized file names are
+     *   still listed below (those are real readings).
+     * ⚠️★ Ruling 65 (2026-10-03 T8 review): this sentence belongs to the "was read" side
+     *   **only** - a failed scan also leaves `rows` empty, and saying "no recognizable mod"
+     *   then is an invented conclusion (the next key is what that case has to say). They are
+     *   kept apart precisely because `rows.length === 0` cannot tell the two apart.
      */
     folderNoRows: 'No recognizable mod in this folder (not a Fabric mod, or not in the catalog).',
+    /*
+     * ★★ Ruling 65: **no successful scan reading** (the scan failed, or it never ran).
+     *    ⚠️ It must never stand in for `folderNoRows`: one says "we read it, nothing is
+     *    there", the other says "we do not know what is in there yet". Mixing them up shows
+     *    part one's "cannot read this folder (…)" next to part two's "no recognizable mod".
+     * ⚠️ The way out ("press Rescan this folder") belongs in the sentence: it is the only
+     *    thing this case can do, and that button sits in the same head row.
+     */
+    folderNoReading:
+      'No successful scan reading for this folder yet - what it contains is unknown (try "Rescan this folder").',
     /*
      * ★ The two scanned-but-not-updatable kinds (spec §8): no `fabric.mod.json`, or a
      *    modid the catalog does not have. ⚠️ They must stay apart: the first one's way
@@ -4506,7 +4530,21 @@ export const en: TranslationSchema = {
      */
     missingDownloadTo: 'Download into',
     missingDownloadToLabel: 'Download "{{name}}" into',
-    missingDownload: 'Download',
+    /*
+     * ★★ Two download buttons (**Critical** and **Ruling 62②**, 2026-10-03 T8 review).
+     *
+     * ⚠️★ Why two: `MissingModView` now carries that one `release` ⇒ the page can **prove**
+     *    whether a mirror applies (`mirrorsForUrl`), exactly like part one ⇒ non-manual rows
+     *    offer both channels and the accelerator is usable from this list too (which closes
+     *    Ruling 62②).
+     * ⚠️ They must be **two keys** (same reason as part one's pair): the mirror one only
+     *    exists when that release's host really is in some mirror's `hosts`, and printing
+     *    the same sentence on both leaves the user unable to tell which channel they pressed.
+     * ⚠️ A `manual` row gets **neither** (`assertNotManual` refuses) - that one shows the
+     *    "Open original page" link and the `hintManual` sentence instead.
+     */
+    missingDownloadOrigin: 'Download (origin)',
+    missingDownloadMirror: 'Download (mirror)',
     /*
      * ★★ No folder can take it (after the version filter). ⚠️★ This case must **not**
      *    draw the Download button: the main process refuses when the folder's effective

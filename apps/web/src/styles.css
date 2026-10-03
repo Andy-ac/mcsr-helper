@@ -9335,6 +9335,16 @@ html[data-theme='light'] {
   margin: 0 0 24px;
 }
 
+/* ★ 第二块（`.folderspanel`）与第三块（`.missingpanel`）同理：**各有自己的类名**。
+   ⚠️ 它们与那一块同页（`Files` 的 ready 支路）。虽然今天不会同时出现在
+   `filesrender.tsx` 渲染的那一屏上（那一屏永远停在 `unavailable` —— 没有 effect
+   就跑不到 ready），但**那条粗判据是按子串判的** ⇒ 用自己的类名，别把它重新上膛。
+   三块的间距一致：它们是同一层的东西。 */
+.folderspanel,
+.missingpanel {
+  margin: 0 0 24px;
+}
+
 /* 说明那一行（`files.autoHint`；以及"可更新的条目全是已禁用"那一档才会出现的
    `files.updateAllDisabledOnly`）。⚠️ 它是**成段的散文**，所以不指定像素字体
    （像素字体读长句很累，见文件头的分工），字号与 `.notice__sub` 同级。

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * mod 目录行 + mod 文件夹（Plan 2）—— **桌面读路径的可复跑探针**（Task 4 建骨架）。
  *
  * ⚠️ 这不是门禁的一部分，也不在任何 `check` / `check:all` 里。它**离线可跑**：
@@ -973,6 +973,16 @@ async function mainPhase() {
       `missing = ${String(state.missing.length)} 条`,
     );
     /*
+     * ★★ **Ruling 65**（2026-10-03 T8 评审）：`rows` 空有两种原因（"扫过、里面没有" /
+     *    "**这一次没读到**"）⇒ 状态里必须另有一格说出来。这里锚的是"未扫"那一侧，
+     *    下一秒 `getState()` 补扫之后那颗读数要跟着翻（这一格不是恒值）。
+     */
+    check(
+      `★ Ruling 65：这一格说出"我们还没读到过它"（hasReading === false）`,
+      pre !== undefined && pre.hasReading === false,
+      pre === undefined ? '（没有这个文件夹）' : `hasReading=${String(pre.hasReading)}`,
+    );
+    /*
      * ★ **判修 2**：`missing: []` 有两种原因（"真的不缺" / "还不知道"）⇒ 结构化标出来，
      *   界面只在 `'ok'` 时显示清单。这里锚的是"未扫"那一支。
      */
@@ -999,6 +1009,91 @@ async function mainPhase() {
       `扫完之后缺失清单是**真的**那一份：条数 = 1.16.1 下唯一候选的 mod 数（${String(oneRelease1161.length)}）− 已跟踪的 2 个`,
       state.missing.length === oneRelease1161.length - 2,
       `missing = ${String(state.missing.length)} 条（期望 ${String(oneRelease1161.length - 2)}）`,
+    );
+    check(
+      `★ 同一格跟着读数翻过来了：扫过之后 hasReading === true`,
+      after?.hasReading === true,
+      `hasReading=${String(after?.hasReading)}`,
+    );
+    /*
+     * ★★ **Critical + Ruling 62②**（2026-10-03 T8 评审）：清单每一行都带着
+     *    `release`（**主进程会装的那一条**）与 `manual`（界面据此决定给不给下载按钮）。
+     *    判据分三层，缺一层就有一条坏法没人喊：
+     *      ① 形状：每一行的 `release` 都属于**这一行**（modid 与游戏版本都对得上）；
+     *      ② 一致性：`manual ⇔ release.download === 'manual'`（同一个 `isManualTarget`）；
+     *      ③ **正面样本**：手动那半条判据在 1.16.1 下是空集（实测那个版本下**没有**
+     *         manual 的单候选 mod）⇒ 下面换到 1.12.2 去锚它，否则 ② 是空集上的恒真
+     *         （§5.32 的第一类）。
+     *    ⚠️ ① 用的是"属于这一行"而不是"等于目录里那条"：`mcsrranked` 的目标可能来自
+     *       **上游**（本探针的上游桩就是 5.8.26）⇒ 拿目录那条去比会在正确的实现上红。
+     */
+    const singleCandidateAt = (version) =>
+      modCatalog.mods
+        .map((mod) => mod.modid)
+        .filter(
+          (modid) =>
+            modCatalog.releases.filter(
+              (release) => release.modid === modid && release.targetVersions.includes(version),
+            ).length === 1,
+        );
+    const releaseAt = (modid, version) =>
+      modCatalog.releases.find(
+        (release) => release.modid === modid && release.targetVersions.includes(version),
+      );
+    check(
+      `★ 每一行的 release 都属于**这一行**（modid 一样、targetVersions 含这个游戏版本）`,
+      state.missing.every(
+        (m) => m.release?.modid === m.modid && m.release?.targetVersions.includes(m.gameVersion),
+      ),
+      JSON.stringify(
+        state.missing
+          .filter(
+            (m) => m.release?.modid !== m.modid || !m.release?.targetVersions.includes(m.gameVersion),
+          )
+          .map((m) => m.modid)
+          .slice(0, 3),
+      ),
+    );
+    check(
+      `★★ 每一行的 manual 与 release.download 是一致的（manual ⇔ download === 'manual'）`,
+      state.missing.every((m) => (m.release?.download === 'manual') === m.manual),
+      JSON.stringify(
+        state.missing
+          .filter((m) => (m.release?.download === 'manual') !== m.manual)
+          .map((m) => m.modid)
+          .slice(0, 3),
+      ),
+    );
+    /*
+     * ★★ 正面样本：换到一个**真有 manual 单候选**的游戏版本（实测 `optifine|1.12.2`），
+     *    否则上面那两条是在空集上成立的。⚠️ 探针**当场把版本改回 1.16.1** ——
+     *    后面的小节全都按它算（那两格读数各钉一条）。
+     */
+    state = await invoke(MOD_CH.setCatalogGameVersion, '1.12.2');
+    const manualAt1122 = singleCandidateAt('1.12.2').filter(
+      (modid) => releaseAt(modid, '1.12.2')?.download === 'manual',
+    );
+    const manualRows = state.missing.filter((m) => m.manual);
+    check(
+      `（前置）1.12.2 下真的有 manual 的单候选 mod（${manualAt1122.join(', ') || '（一个都没有）'}）`,
+      manualAt1122.length > 0,
+      `目录里那些 = ${String(manualAt1122.length)} 条`,
+    );
+    check(
+      `★★ 换到 1.12.2 之后缺失清单里**真的有 manual 的行**（${manualRows.map((m) => m.modid).join(', ') || '（一条都没有）'}）`,
+      manualRows.length === manualAt1122.length && manualRows.length > 0,
+      `manual 行数 = ${String(manualRows.length)}（期望 ${String(manualAt1122.length)}）`,
+    );
+    check(
+      `★★ 而那些行的 release 都是那条 **manual** 的（界面据此不给下载按钮）`,
+      manualRows.every((m) => m.release.download === 'manual'),
+      JSON.stringify(manualRows.map((m) => `${m.modid}:${m.release.version}:${m.release.download}`).slice(0, 4)),
+    );
+    state = await invoke(MOD_CH.setCatalogGameVersion, '1.16.1');
+    check(
+      `（收尾）版本改回 1.16.1（下面的小节全都按它算）`,
+      state.gameVersion === '1.16.1' && state.missing.length === oneRelease1161.length - 2,
+      `gameVersion=${String(state.gameVersion)} missing=${String(state.missing.length)} 条`,
     );
     check(
       `★ 全部扫到之后 missingStatus 才是 'ok'（界面据此才显示清单）`,

@@ -197,6 +197,7 @@ test('★ 文件夹行：只认 jar 内部 modid；旧副本单列；清单外 m
     gameVersion: '1.16.1',
     autoUpdate: false,
     pathExists: true,
+    hasReading: true,
     scan: [
       { fileName: 'a-1.0.jar', modid: 'antigone', version: '1.0', sha512: null },
       { fileName: 'a-2.0.jar', modid: 'antigone', version: '2.0', sha512: null },
@@ -236,6 +237,99 @@ test('★ ambiguous 的行不出现在缺失清单里（没有"该装哪个"的�
   assert.ok(!miss.some((m) => m.modid === 'optifine'));
 });
 
+test('★★ Critical + Ruling 62②：缺失清单的每一行都带着"主进程会装的那一条 + 是不是 manual"', () => {
+  /*
+   * ★ 这一条是 2026-10-03 T8 评审判修两条判修的共同落点（`MissingModView` 新增的两格）：
+   *   · **Critical**：`manual` 的行**确实会出现在清单里**（1.7.10 的 `optifine` /
+   *     `optifine-light` 就是），而 `downloadMissing` 的 `assertNotManual` **必拒**
+   *     ⇒ 界面必须有这一格才知道"不给下载按钮"；
+   *   · **Ruling 62②**：`release` 是"这条镜像适不适用"的**唯一依据**
+   *     ⇒ 它必须与主进程 `downloadMissing` 里那次 `planCatalogRows(...).official`
+   *     是**同一条**（所以两处共用 `resolveTarget`、上游表都要传进来）。
+   * ⚠️ 实测口径（现读 `content/mod-catalog.json`）：`optifine|1.12.2` 是单候选 manual；
+   *    `mcsrranked|1.16.1` 是单候选且**有上游**（这一期的唯一一个）⇒ 上面那半条判据
+   *    必须拿它验，否则"release 用目录那条还是上游那条"根本分不出来。
+   */
+  const manual = missingMods({
+    catalog,
+    gameVersion: '1.12.2',
+    trackedModids: new Set(),
+  }).find((m) => m.modid === 'optifine');
+  assert.ok(manual !== undefined, 'optifine 在 1.12.2 下要出现在缺失清单里（它确实"缺"）');
+  assert.equal(manual.manual, true, 'manual 的行要带 `manual: true`（界面据此不给下载按钮）');
+  assert.equal(manual.release.download, 'manual', '而 `release` 就是那条 manual 的 release');
+
+  const auto = missingMods({ catalog, gameVersion: '1.16.1', trackedModids: new Set() }).find(
+    (m) => m.modid === 'sodium',
+  );
+  assert.ok(auto !== undefined, 'sodium 在 1.16.1 下要出现在缺失清单里');
+  assert.equal(auto.manual, false, '非 manual 的行 `manual` 必须是 false（否则界面会把它也禁掉）');
+  assert.equal(auto.release.download, 'auto');
+
+  /*
+   * ★★ 上游那条必须**赢**：`release` 不是"目录里那一条"，而是"主进程会装的那一条"。
+   *    ⚠️ 夹具自钉：上游那条的地址与目录那条**必须不同** —— 否则上面那条断言
+   *    （`release.version === '99.0.0'`）测不出"用了哪一条"（地址相同的两条是同一个形状）。
+   */
+  const catalogRanked = catalog.releases.find(
+    (r) => r.modid === 'mcsrranked' && r.targetVersions.includes('1.16.1'),
+  )!;
+  const upstream = {
+    ...catalogRanked,
+    version: '99.0.0',
+    url: 'https://example.invalid/upstream/y.jar',
+  };
+  assert.notEqual(upstream.url, catalogRanked.url, '夹具自钉：上游那条与目录那条的地址必须不同');
+  const ranked = missingMods({
+    catalog,
+    gameVersion: '1.16.1',
+    trackedModids: new Set(),
+    upstreamLatest: new Map([['mcsrranked', upstream]]),
+  }).find((m) => m.modid === 'mcsrranked');
+  assert.ok(ranked !== undefined, 'mcsrranked 在 1.16.1 下要出现在缺失清单里（单候选）');
+  assert.equal(
+    ranked.release.version,
+    '99.0.0',
+    '有上游时 `release` 必须是**上游那条**（与 `planCatalogRows` 的 official 同一条）—— ' +
+      '拿目录那条去判镜像是否适用，判出来的通道可能被主进程拒',
+  );
+});
+
+test('★ Ruling 65：`hasReading` 原样进视图（它与 `rows` 是两件事）', () => {
+  /*
+   * ★ 这条测试**就是 Ruling 65 的那句假话的现场**：扫描失败时 `rows` 也是空的，
+   *   而"里面没有可识别的 mod"与"我们没读到"在数据上分不开。
+   *   ⇒ 视图必须把"有没有读数"单独说出来（这一格是 `pathExists`、`gameVersion`
+   *   之外的第三格边界，不能互相替代）。
+   */
+  const view = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    hasReading: false,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [],
+  });
+  assert.equal(view.hasReading, false);
+  assert.deepEqual(view.rows, [], '扫描失败时行也是空的 —— 正是这两件事必须分开的原因');
+  assert.deepEqual(view.unrecognized, []);
+  assert.equal(view.pathExists, true, '路径在（与"读到过"是两件事：路径不在时也可能有旧读数）');
+  const read = planFolderView({
+    catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
+    pathExists: true,
+    hasReading: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    scan: [],
+  });
+  assert.equal(read.hasReading, true, '对照：读到过（哪怕里面一个 jar 都没有）');
+  assert.deepEqual(read.rows, [], '两边的 rows 都是空的 —— 分得开它们的**只有** hasReading');
+});
+
 test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且不给更新按钮', () => {
   /*
    * ★★ `upstreamLatest` **必须在这里传上**，否则这条测试证明不了它标题说的那件事：
@@ -253,6 +347,7 @@ test('★ 游戏版本未知 ⇒ 该文件夹所有行都是 unknown-version 且
     gameVersion: null,
     autoUpdate: false,
     pathExists: true,
+    hasReading: true,
     scan: [{ fileName: 'a-2.0.jar', modid: 'antigone', version: '2.0', sha512: null }],
     upstreamLatest: new Map([['antigone', { ...antigone, version: '9.9.9' }]]),
   });
@@ -279,6 +374,12 @@ test('★ 路径不存在 ⇒ 行不出现（绑定保留、界面显示"路径�
     gameVersion: '1.16.1',
     autoUpdate: false,
     pathExists: false,
+    /*
+     * ⚠️ 这一格是 `true`：这份 `scan` 非空 ⇒ 说明**读到过**（读数还在缓存里），
+     *    只是目录现在不在了。"`hasReading: false` + 非空 `entries`"在真实代码里
+     *    **不可能出现**（扫描失败那一支配的是空 `entries`）⇒ 夹具不许造一个不存在的形状。
+     */
+    hasReading: true,
     scan: [
       { fileName: 'a-2.0.jar', modid: 'antigone', version: '2.0', sha512: null },
       // ★ 这个条目在这里是**判据的一部分**：它证明"清掉 unrecognized"不是因为扫到的都是可识别的
@@ -467,6 +568,7 @@ test('★ 文件夹行也吃上游解析（Ruling 14）：传了 ⇒ 目标换�
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan: [
@@ -493,6 +595,7 @@ test('★ 文件夹行：没传上游 ⇒ 目标仍是目录那条、targetSourc
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan: [
@@ -520,6 +623,7 @@ test('★ 只升不降在第二部分同样成立：上游那条比**本地**旧
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan: [
@@ -561,6 +665,7 @@ test('★ Ruling 16：上游目标是 `manual` ⇒ 两个 planner 都说 manual�
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan,
@@ -588,6 +693,7 @@ test('★ Ruling 17①：0 条候选 + 有上游 ⇒ 仍然是"没有目标、�
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan: [{ fileName: 'optifine-1.0.jar', modid: 'optifine', version: '1.0', sha512: null }],
@@ -627,6 +733,7 @@ test('★ Ruling 17②：多候选 + 有上游 ⇒ 仍然 `ambiguous`（不许�
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.7.2',
     autoUpdate: false,
     scan,
@@ -692,6 +799,7 @@ test('★ Ruling 18.2：同一份入参下，两个 planner 必须解析出**同
     folderId: 'f1',
     path: 'D:/x/mods',
     pathExists: true,
+    hasReading: true,
     gameVersion: '1.16.1',
     autoUpdate: false,
     scan: [{ fileName: 'a-1.0.jar', modid: 'antigone', version: '1.0', sha512: null }],

@@ -374,6 +374,22 @@ export interface ModFolderView {
   folderId: string;
   path: string;
   pathExists: boolean;
+  /**
+   * ★★ 这个文件夹**有没有成功的扫描读数**（主进程的 `readingOf(id).ok`）。
+   *
+   * ⚠️★ 为什么它必须在状态里（**Ruling 65**，2026-10-03 T8 评审）：
+   *    `rows: []` 有两种**在数据上分不开**的原因 —— "扫过了、里面没有可识别的 mod" 与
+   *    "**这一次扫描失败了**（`mod-folder-scan.ts` 的 `ok: false` 配空 `entries`）"。
+   *    界面只能靠 `rows.length === 0` 猜，而猜错的方向正好是把"读不了"读成
+   *    "这个文件夹里什么都没有" —— 那时页面上会**同时**出现第一部分的"读不了这个文件夹（…）"
+   *    与第二部分的"没有能识别的 mod"，两句互相打脸，而后者是**编出来的结论**。
+   *    ⇒ 与 `missingStatus`（判修 2）是**同一条纪律**：分不清"不知道"与"没有"的读数
+   *      不许当成结论用。
+   * ⚠️ 它**不是**"路径在不在"的另一个名字：路径不存在（`pathExists === false`）时这一格
+   *    可能是 `true`（上一次的读数还在缓存里）—— 两格各回答各的问题，而
+   *    `planFolderView` 对 `pathExists === false` 的处理是"行与无法识别都不给"。
+   */
+  hasReading: boolean;
   /** `null` = 未知（该文件夹所有行都是 `unknown-version`，不给更新按钮）。 */
   gameVersion: string | null;
   autoUpdate: boolean;
@@ -386,6 +402,12 @@ export interface PlanFolderViewInput {
   folderId: string;
   path: string;
   pathExists: boolean;
+  /**
+   * 有没有**成功**的扫描读数（`ModFolderView.hasReading` 的来源，见那一格的注释）。
+   * ⚠️ 它是**必填**的，而且**刻意没有默认值**：给一个默认值就等于替调用方声称
+   *    "我们读到过"，而那正是 Ruling 65 要治的那句假话 —— 缺省值必须由调用方显式说清。
+   */
+  hasReading: boolean;
   gameVersion: string | null;
   autoUpdate: boolean;
   scan: readonly FolderScanEntry[];
@@ -431,9 +453,18 @@ function isNewerLocal(next: FolderScanEntry, best: FolderScanEntry): boolean {
  *     `not-in-catalog`（两者都只显示、不参与更新）。
  */
 export function planFolderView(input: PlanFolderViewInput): ModFolderView {
-  const { catalog, folderId, path, pathExists, gameVersion, autoUpdate, scan, upstreamLatest } =
-    input;
-  const base = { folderId, path, pathExists, gameVersion, autoUpdate };
+  const {
+    catalog,
+    folderId,
+    path,
+    pathExists,
+    hasReading,
+    gameVersion,
+    autoUpdate,
+    scan,
+    upstreamLatest,
+  } = input;
+  const base = { folderId, path, pathExists, hasReading, gameVersion, autoUpdate };
 
   // 路径不存在 ⇒ 一条扫描读数都不作数（理由见上面第一条边界）。
   if (!pathExists) return { ...base, rows: [], unrecognized: [] };
@@ -535,6 +566,33 @@ export interface MissingModView {
   gameVersion: string;
   tags: readonly string[];
   tagLabels: readonly string[];
+  /**
+   * ★★ **主进程会装的那一条 release**（`resolveTarget` 算出来的唯一目标）。
+   *
+   * ⚠️★ 为什么它必须在状态里（**Ruling 62②**，2026-10-03 T8 评审）：底部那一栏的
+   *    「下载」要决定**走哪条通道**，而"这条镜像适用吗"的判据（`mirrorsForUrl` 背后的
+   *    `mirrorsFor`）要**这个 release 的地址**。状态里没有它时，渲染进程只能
+   *    · 发 `'origin'`（永远成立，但**加速站用不上** —— 这是 T8 第一版接受过的代价），或者
+   *    · 猜一个镜像（赌"这条 release 恰好托管在那条镜像的 hosts 上"，赌输的形态是
+   *      "点了被主进程拒"）。
+   *    ⇒ 有了这一格，页面就能像第一部分一样**证明**镜像是否适用。
+   * ⚠️★ 它必须是**主进程会装的那一条**，不是"目录里那一条"：`mcsrranked` 这种有上游的
+   *    mod，目标来自上游（Modrinth）⇒ 拿目录那条去判通道会得到与写盘不同的答案。
+   *    所以 `missingMods()` 与两个 planner 共用 `resolveTarget`（Ruling 11/14 的同一条纪律），
+   *    而调用方要把 `upstreamLatest` 传进来（`MissingModsInput.upstreamLatest`）。
+   */
+  release: ModRelease;
+  /**
+   * ★★ 目标是不是 `download: 'manual'`（与两个 planner 共用 `isManualTarget`）。
+   *
+   * ⚠️★ 为什么它必须在状态里（**Critical**，2026-10-03 T8 评审）：只按"候选数 == 1 + 没被
+   *    跟踪到"筛出来的清单里**有 manual 的行**（实测：1.7.10 下 `optifine` / `optifine-light`），
+   *    而 `downloadMissing` 的 `assertNotManual` **必拒** manual ⇒ 界面给它画一颗「下载」
+   *    就是画了一颗**注定被拒**的按钮（Ruling 47/48）。`MissingModView` 原先没有这一格，
+   *    页面**无从判断** ⇒ 这条判据只能住在这里。
+   *    ⇒ 界面据此：`manual === true` 不给下载控件，只给"打开原网页"（与第一部分同一条）。
+   */
+  manual: boolean;
 }
 
 export interface MissingModsInput {
@@ -542,6 +600,15 @@ export interface MissingModsInput {
   gameVersion: string;
   /** 已绑定文件夹里**命中过**的 modid（主进程扫完文件夹才知道，因此是入参）。 */
   trackedModids: ReadonlySet<string>;
+  /**
+   * 上游（Modrinth）解析出来的"最新"那一条，**键 = `modid`**。语义与
+   * `PlanCatalogRowsInput.upstreamLatest` **逐字相同**（同一份 `resolveTarget`）。
+   *
+   * ⚠️★ 它决定 `MissingModView.release`（见那一格）⇒ 界面据此判镜像是否适用。
+   *    不传（或某个 modid 不在表里）时行为是"目标 = 目录里唯一那条候选"，
+   *    与传入之前**逐字相同**（抓取失败只是退化成旧行为，不是一条错误路径）。
+   */
+  upstreamLatest?: ReadonlyMap<string, ModRelease>;
 }
 
 /**
@@ -549,15 +616,31 @@ export interface MissingModsInput {
  *
  * ⚠️ 多候选（`ambiguous`）与没有 release 的行**都不出现**：那一栏每行要驱动一次下载，
  *    而"该装哪一个"没有唯一答案时，程序不许替用户猜（spec §7.5）。
+ * ⚠️★ `manual` 的行**出现**（它们确实"缺"），但带着 `manual: true` 与那一条 release ——
+ *    界面据此**不给下载按钮**、只给"打开原网页"（Critical，见 `MissingModView.manual`）。
+ *    把它们从清单里删掉是另一个方向的错：用户会以为"什么都不缺"，而 OptiFine 那一份
+ *    确实不在这台机器上。
  */
 export function missingMods(input: MissingModsInput): MissingModView[] {
-  const { catalog, gameVersion, trackedModids } = input;
+  const { catalog, gameVersion, trackedModids, upstreamLatest } = input;
   const index = buildIndex(catalog);
   const out: MissingModView[] = [];
 
   for (const { mod, releases } of rowsForGameVersion(index, gameVersion)) {
     if (releases.length !== 1) continue;
     if (trackedModids.has(mod.modid)) continue;
+    /*
+     * ★★ 目标由**共用的** `resolveTarget` 决定（与 `planCatalogRows` / `planFolderView`
+     *    同一个函数、同一份上游表）—— 这一格会原样进 `MissingModView.release`，
+     *    而界面拿它判"镜像适不适用"、主进程拿它下载（`downloadMissing` 里那次
+     *    `planCatalogRows(...).official`）⇒ 两边必须是**同一条**。
+     * ⚠️ `releases.length === 1` 已经保证了候选唯一，而 `resolveTarget` 在唯一候选下
+     *    **永远给出非空目标**（上游有就给上游那条，没有就给那唯一一条）⇒ 下面不需要
+     *    再判 `target === null`（那会让类型退化成 `ModRelease | null`，而这个清单
+     *    按定义只列"有唯一答案"的行）。
+     */
+    const { target } = resolveTarget(releases, upstreamLatest?.get(mod.modid) ?? null);
+    if (target === null) continue;
     const tags = modTagsOf(mod);
     out.push({
       modid: mod.modid,
@@ -565,6 +648,9 @@ export function missingMods(input: MissingModsInput): MissingModView[] {
       gameVersion,
       tags,
       tagLabels: tagLabelsOf(catalog, tags),
+      release: target,
+      // 与两个 planner 共用 `isManualTarget`（Ruling 16：同一个 mod 两处说法必须一致）。
+      manual: isManualTarget(releases, target),
     });
   }
 

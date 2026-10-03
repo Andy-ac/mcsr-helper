@@ -63,6 +63,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { ModFoldersHandlers } from '@/components/FileUpdatesPanel';
 import { VERDICT_BADGES, VERDICT_HINTS } from '@/components/FileUpdateTable';
+import { Notice } from '@/components/Form';
 
 /** 「没有值的那一格」——与两张表里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
@@ -135,6 +136,28 @@ function channelKeyOf(channel: Channel): string {
   return channel === 'origin' ? 'origin' : channel.mirrorId;
 }
 
+/**
+ * ★★ 状态里那条批量通道**还成立吗**（**Ruling 64**，2026-10-03 T8 评审判修）。
+ *
+ * ⚠️★ 过期的持久化值**可以显示**（`channelOptions` 补出来的那个 `files.channelStale`
+ *    选项，用户看得见"状态漂了"），但**不许被当成一个新动作发出去**：
+ *    `requireChannel`（`apps/desktop/src/mod-folders.ts`）在"这个镜像 id 不在目录的
+ *    `mirrors[]` 里"时**抛** ⇒ 照发的后果是一次**什么都没做**的点击 + 一句红字。
+ * ⇒ 判据收在这一个函数里，两个渲染点（面板头那句解释 / 头行那颗「全部更新」）共用它。
+ * ⚠️ `'origin'` 永远成立（`requireChannel('origin')` 根本不碰目录）⇒ 它不在这条判据里；
+ *    同理**行内那两颗更新按钮**不看它：它们的镜像来自 `state.mirrors`（永远新鲜）。
+ */
+export function bulkChannelUsable(state: ModFoldersState): boolean {
+  /*
+   * ⚠️ 先取到局部 const 再收窄：`Channel` 是联合类型（`'origin' | { mirrorId }`），
+   *    而收窄**穿不过闭包**（`.some(cb)` 里的 `state.bulkChannel.mirrorId` 会让 tsc
+   *    报 TS2339）—— 一个 const 的收窄才在闭包里成立。
+   */
+  const channel = state.bulkChannel;
+  if (channel === 'origin') return true;
+  return state.mirrors.some((mirror) => mirror.id === channel.mirrorId);
+}
+
 export interface ModFoldersPanelProps {
   /** 第二部分唯一的**数据**来源（`ModFoldersState.folders`）。 */
   state: ModFoldersState;
@@ -153,16 +176,31 @@ export interface ModFoldersPanelProps {
  *     挂两个地方（状态里只有一份读数，界面上就该只有一个渲染点）；
  *   · `notices`（含"已转为文件夹跟踪：…"那条迁移提示）也由第一部分印；
  *   · `actionError` 同上（它是**整页**一次动作的原话，不是这一块的）。
+ * ⚠️★ 类名是 `.folderspanel`（**不是** `.filespanel`）：v1 的渲染自检有一条
+ *    "产物里没有 `filespanel` 这个子串"的粗判据，而这一块**可能**与那一屏同页 ——
+ *    用自己的类名就不会在**正确**的产物上把它打红（完整理由见 `routes/Files.tsx`
+ *    里 `ModFoldersUnavailable` 的注释）。
  */
 export function ModFoldersPanel({ state, handlers }: ModFoldersPanelProps) {
   const { t } = useTranslation();
   const busy = state.busy;
+  /** Ruling 64：过期通道时那颗批量按钮不画，这里说清为什么。 */
+  const channelOk = bulkChannelUsable(state);
 
   return (
-    <section className="filespanel" data-folder-count={state.folders.length}>
+    <section
+      className="folderspanel"
+      data-folder-count={state.folders.length}
+      data-bulk-channel-usable={channelOk ? 'yes' : 'no'}
+    >
       <h2>{t('files.partTwoTitle')}</h2>
       <p className="filespanel__hint">{t('files.partTwoHint')}</p>
-
+      {/*
+        ★★ Ruling 64：状态里那条通道已经不成立了 ⇒ 一句解释（**面板级**，不是每个文件夹
+        重复一遍：`prefs.bulkChannel` 是全局的，说一次就够）。
+        ⚠️ 走 `<Notice kind="bad">`：它挡掉的是一个动作（不是脚注）。
+      */}
+      {channelOk ? null : <Notice kind="bad">{t('files.channelStaleHint')}</Notice>}
       {state.folders.length === 0 ? (
         /*
          * ★ 第一处空态：一个文件夹都没绑。⚠️ 它同时是这一期**唯一**的绑定入口
@@ -217,10 +255,23 @@ function FolderBlock({
   /** 版本未知 ⇒ 每一行都是 `unknown-version`，头行要说清（spec §8）。 */
   const versionUnknown = folder.gameVersion === null;
   /**
-   * ★★ 「全部更新」的判据（写在文件头那一段里，逐条对着主进程的拒绝）：
-   *   路径在、版本知道、而且**真的有条目可批量**。三条全中才画那颗按钮。
+   * ★ 这个文件夹的游戏版本**已经不在目录里**了（目录换过之后的旧值）。
+   * ⚠️ 它仍然要出现在选项里（否则 `<select value=X>` 里没有 X 时浏览器会**静默选中
+   *    第一个** —— 那一屏就在撒谎），但它**必须是 `disabled` 的**：`requireGameVersion`
+   *    只认目录里有的版本，把它当成一个可选值发出去就是一次注定被拒的调用
+   *    （**Ruling 64**：过期的持久化值可以显示，不许被当成新动作发出去）。
    */
-  const showUpdateAll = !readOnly && folder.pathExists && !versionUnknown && targets > 0;
+  const staleVersion =
+    folder.gameVersion !== null && !state.gameVersions.includes(folder.gameVersion)
+      ? folder.gameVersion
+      : null;
+  /**
+   * ★★ 「全部更新」的判据（写在文件头那一段里，逐条对着主进程的拒绝）：
+   *   路径在、版本知道、**真的有条目可批量**，而且**状态里那条通道还成立**
+   *   （Ruling 64，见 `bulkChannelUsable`）。四条全中才画那颗按钮。
+   */
+  const showUpdateAll =
+    !readOnly && folder.pathExists && !versionUnknown && targets > 0 && bulkChannelUsable(state);
 
   return (
     <details className="folderbox" data-folder-id={folder.folderId}>
@@ -251,7 +302,12 @@ function FolderBlock({
             >
               <option value="">{t('files.folderGameVersionAuto')}</option>
               {versions.map((version) => (
-                <option key={version} value={version}>
+                /*
+                 * ⚠️★ 过期那一版（`staleVersion`）**照画但 `disabled`**：Ruling 64 ——
+                 *    旧值要看得见（否则 `<select value=X>` 会静默选中第一个），
+                 *    但不许被当成一个新动作发出去（`requireGameVersion` 会拒）。
+                 */
+                <option key={version} value={version} disabled={version === staleVersion}>
                   {version}
                 </option>
               ))}
@@ -366,13 +422,27 @@ function FolderBlock({
 
       <div className="folderbox__body">
         {/*
-          ★ 第三处空态：一个能识别的 mod 都没有。⚠️ 只在真的读了那个目录时说话
-          （`pathExists`）—— 路径不存在那一档由头行那句话解释，而且**不许**说
-          "里面没有"（我们根本没读到它）。
+          ★ 第三处空态：**读到过**这个文件夹、而里面一个能识别的 mod 都没有。
+          ⚠️★ Ruling 65（2026-10-03 T8 评审判修）：这里的判据**必须**带上 `hasReading`
+          —— `rows.length === 0` 在**扫描失败**时同样成立（`ok: false` 配空 `entries`），
+          而那时说"这个文件夹里没有能识别的 mod"是**编出来的结论**（页面上会同时出现
+          第一部分的"读不了这个文件夹（…）"，两句互相打脸）。
+          ⚠️ 路径不存在那一档由头行那句话解释，而且**同样不许**说"里面没有"
+          （我们根本没读到它）。
         */}
-        {folder.pathExists && folder.rows.length === 0 ? (
+        {folder.pathExists && folder.hasReading && folder.rows.length === 0 ? (
           <div className="state state--empty">
             <p>{t('files.folderNoRows')}</p>
+          </div>
+        ) : null}
+        {/*
+          ★★ Ruling 65 的另一半：**没有成功的扫描读数**。⚠️ 它与上面那句是**两句不同的话**
+          （"读到过、里面没有" ≠ "我们还不知道里面有什么"），而且这一档**不画行表、
+          也不画"无法识别"那一栏**（那些读数根本不存在或不作数）。
+        */}
+        {folder.pathExists && !folder.hasReading ? (
+          <div className="state state--empty">
+            <p>{t('files.folderNoReading')}</p>
           </div>
         ) : null}
 
@@ -408,10 +478,10 @@ function FolderBlock({
           ★ 扫到但**不参与更新**的那些（spec §8：单列出来、只显示）。
           ⚠️ 两类**各说各的**：读不出 `fabric.mod.json`（不是 Fabric 模组？）与
           "清单外 mod" —— 合成一句"无法识别"就把用户唯一能行动的线索删掉了。
-          ⚠️ 路径不存在时**不列**（扫描读数可能还在缓存里，而目录已经不在了；
-          列出来等于对着一份过期读数说话）。
+          ⚠️★ 路径不存在时**不列**；**没有成功读数时也不列**（Ruling 65：那份 `entries`
+          不作数 —— 列出来等于对着一份失败的读数说话）。两个条件都写在判据里。
         */}
-        {folder.pathExists && folder.unrecognized.length > 0 ? (
+        {folder.pathExists && folder.hasReading && folder.unrecognized.length > 0 ? (
           <ul className="folderbox__unrecognized">
             {folder.unrecognized.map((entry) => (
               <li key={`${entry.reason}:${entry.fileName}`}>

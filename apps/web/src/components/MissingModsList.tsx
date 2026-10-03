@@ -29,19 +29,37 @@
  *   第三条闸就会重新可达（那时的表现是"点了吃一句红字"）—— 组 ㉔ 那几条断言盯的正是它。
  *
  * ===========================================================================
- * ⚠️★ 通道固定走 `'origin'`（这是**唯一**一个页面证得了的选择）
+ * ⚠️★ 通道：**页面只发它证得了的那条**（两颗按钮，与第一部分同形）
  * ===========================================================================
  * `downloadMissing(modid, gameVersion, folderId, channel)` 的 `channel` 只在
  * `channelUrl` 能给出地址时才成立，而那条判据要**那个 release 的地址**
- * （主机必须在那条镜像的 `hosts` 里）。⚠️★ `MissingModView` 里**没有** release
- * （只有 modid / 名字 / 版本 / 标签）⇒ 页面**证不了**任何镜像适用，发一个
- * `{ mirrorId }` 就是在赌"这条 release 恰好托管在镜像的 hosts 上"，赌输的形态是
- * "点了被主进程拒"（Ruling 47/48 反对的那件事）。
- * ⇒ 走 `'origin'`（`requireChannel('origin')` 永远成立）。代价（认）：底部这一个下载
- *   用不到加速通道 —— 要让它用得上，得先把 release 放进 `MissingModView`
- *   （那是契约级的改动，记在报告里）。
+ * （主机必须在那条镜像的 `hosts` 里）。
+ * ⚠️★ 2026-10-03 T8 评审判修（**Ruling 62②**）：`MissingModView` 现在带着那唯一一条
+ *    `release`（**主进程会装的那一条**，由 `missingMods` 的 `resolveTarget` 决定）
+ *    ⇒ 页面能像第一部分一样**证明**某条镜像适不适用（`mirrorsForUrl`）⇒
+ *    非 manual 的行给出**两颗**按钮：原始那一颗永远成立，镜像那一颗只在
+ *    "这条 release 的主机真的在某条镜像的 `hosts` 里"时出现。
+ *    ⇒ 底部这一栏因此**也用得上加速站**（第一版固定走 `'origin'`，那笔代价在这里关掉）。
+ * ⚠️ 与第一部分那两颗、与文件夹行那两颗**同一份判据**（`mirrorsForUrl`）：
+ *    三处各写一份的话，"哪条通道能用"迟早出现三个会漂的版本。
+ *
+ * ===========================================================================
+ * ⚠️★ `manual` 的行**一颗下载都不给**（Critical，2026-10-03 T8 评审）
+ * ===========================================================================
+ * `missingMods` **会**把 manual 的单候选行列出来（它们确实"缺"：清单实测 1.7.10 下的
+ * `optifine` / `optifine-light`），而 `downloadMissing` 的 `assertNotManual` **必拒**
+ * （spec §3.4：OptiFine 只能手动下载）⇒ 给它们画一颗「下载」就是画了一颗**注定被拒**的
+ * 按钮（Ruling 47/48）。`MissingModView.manual` 就是这一格判据的来源
+ * （页面自己**推不出来** —— 它手上只有 modid / 名字 / 版本 / 标签）。
+ * ⇒ manual 的行画的是「打开原网页」（`release.url`）与 `files.hintManual` 那句话，
+ *   与第一部分那张表的 manual 行**逐字同形**。
  */
-import type { MissingModView, ModFoldersState, ModFolderView } from '@mcsr/shared/modFolders';
+import {
+  type MissingModView,
+  type ModFoldersState,
+  type ModFolderView,
+  mirrorsForUrl,
+} from '@mcsr/shared/modFolders';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ModFoldersHandlers } from '@/components/FileUpdatesPanel';
@@ -82,7 +100,13 @@ export function MissingModsList({ state, handlers }: MissingModsListProps) {
   const showList = status === 'ok' && state.missing.length > 0;
 
   return (
-    <section className="filespanel" data-missing-status={status}>
+    /*
+     * ⚠️★ 类名是 `.missingpanel`（**不是** `.filespanel`）：v1 的渲染自检有一条
+     *    "产物里没有 `filespanel` 这个子串"的粗判据，而这一块**可能**与那一屏同页 ——
+     *    用自己的类名就不会在**正确**的产物上把它打红（完整理由见 `routes/Files.tsx`
+     *    里 `ModFoldersUnavailable` 的注释）。
+     */
+    <section className="missingpanel" data-missing-status={status}>
       <h2>{t('files.partThreeTitle')}</h2>
       {/*
         ⚠️ 这一句里带着**这一栏是按哪个游戏版本算的**（`{{version}}`）：不说的话，
@@ -124,6 +148,7 @@ export function MissingModsList({ state, handlers }: MissingModsListProps) {
                     row={row}
                     folders={state.folders}
                     tagLabels={state.tags}
+                    mirrors={state.mirrors}
                     busy={state.busy}
                     handlers={handlers}
                   />
@@ -142,12 +167,15 @@ function MissingRow({
   row,
   folders,
   tagLabels,
+  mirrors,
   busy,
   handlers,
 }: {
   row: MissingModView;
   folders: readonly ModFolderView[];
   tagLabels: ModFoldersState['tags'];
+  /** 目录里的镜像表（`state.mirrors`）—— 镜像那一颗的**唯一**依据（Ruling 62②）。 */
+  mirrors: ModFoldersState['mirrors'];
   /** 有更新正在跑（`state.busy`）⇒ 这一格的两个控件都按住。 */
   busy: boolean;
   handlers: ModFoldersHandlers | null;
@@ -187,6 +215,13 @@ function MissingRow({
     tagLabels.find((option) => option.key === tag)?.labels[labelLang] ??
     row.tagLabels[index] ??
     tag;
+  /**
+   * ★★ 这条 release 能用哪条镜像 —— 判据与第一部分、与文件夹行**共用 `mirrorsForUrl`**
+   *   （它背后就是主进程 `channelUrl` 用的那个 `mirrorsFor`）⇒ 镜像那一颗只在
+   *   **证得了**的时候出现（Ruling 62② 的落点：`MissingModView.release` 让这一步成立）。
+   * ⚠️ 取第一条（目录里的顺序 = 配置即代码的顺序，可复现）。
+   */
+  const mirror = mirrorsForUrl(mirrors, row.release.url)[0] ?? null;
 
   return (
     <tr className="filetable__row" data-missing-mod={row.modid}>
@@ -206,7 +241,26 @@ function MissingRow({
       </td>
       <td className="filetable__version">{row.gameVersion}</td>
       <td>
-        {eligible.length === 0 ? (
+        {/*
+          ★★ `manual`（OptiFine 那一类）：**一颗下载都不给**，只给"打开原网页"
+          + 自己那句解释。⚠️ 判据是状态里那一格 `row.manual`（Critical，2026-10-03）：
+          `downloadMissing` 的 `assertNotManual` 必拒 ⇒ 画一颗下载就是画一颗注定被拒的按钮，
+          而页面**推不出**这一格（它手上只有 modid / 名字 / 版本 / 标签）。
+          ⚠️ 形状与第一部分那张表的 manual 行**逐字同形**（解释 + 链接，没有按钮）。
+        */}
+        {row.manual ? (
+          <div className="filetable__filebox">
+            <span>{t('files.hintManual')}</span>
+            <a
+              className="ghostbtn"
+              href={row.release.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('files.openPage')}
+            </a>
+          </div>
+        ) : eligible.length === 0 ? (
           /*
            * ★★ 一个能装它的文件夹都没有：**画一句解释，不画那颗按钮**
            *   （主进程会以"版本对不上 / 不是目录"拒，见文件头那一段）。
@@ -236,9 +290,11 @@ function MissingRow({
               ))}
             </select>
             {/*
-              ★ 触发下载（写盘 ⇒ 一次点击，与两张表里那几颗「更新」同一条）。
-              ⚠️ 通道**只有** `'origin'` 这一个字面量（理由写在文件头那一段：
-              页面手上没有 release，证明不了任何镜像适用）。
+              ★★ 两颗下载按钮（写盘 ⇒ 一次点击，与两张表里那几颗「更新」同一条）。
+              ⚠️ 通道各送**自己那条**：第一颗 `'origin'`（永远成立），第二颗
+              `{ mirrorId }`（**只送 id**，地址由主进程按目录那条镜像的 `prefix` 拼）。
+              ⚠️★ 两颗都写 `'origin'` 时镜像那颗是个假按钮，而产物里看不出来
+              ⇒ 那件事由 ㉗ 的源码形状守卫钉着。
               ⚠️★ `disabled` 里两格：没有可选文件夹（`folderId === ''`）与
               **正在写盘**（`busy`）—— 后者是承重的：`downloadMissing` 第一句就是
               `assertNotBusy()`，那时点下去必吃一句"正在更新中"。
@@ -251,8 +307,22 @@ function MissingRow({
                 void handlers.downloadMissing(row.modid, row.gameVersion, folderId, 'origin')
               }
             >
-              {t('files.missingDownload')}
+              {t('files.missingDownloadOrigin')}
             </button>
+            {mirror === null ? null : (
+              <button
+                type="button"
+                className="ghostbtn"
+                disabled={busy || folderId === ''}
+                onClick={() =>
+                  void handlers.downloadMissing(row.modid, row.gameVersion, folderId, {
+                    mirrorId: mirror.id,
+                  })
+                }
+              >
+                {t('files.missingDownloadMirror')}
+              </button>
+            )}
           </div>
         )}
       </td>

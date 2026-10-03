@@ -283,10 +283,18 @@ function folderGameVersion(entry: { path: string; gameVersion: string | null }):
 function folderView(folderId: string, entry: SharedState['folders'][string]): ModFolderView {
   const pathExists = isDirectory(entry.path);
   const gameVersion = folderGameVersion(entry);
+  /*
+   * ★★ **Ruling 65**（2026-10-03 T8 评审）：这一格是"我们真的读到过这个目录吗"，
+   *    与"里面有什么"（`rows`）是**两件事** —— 扫描失败时 `readingOf(id).ok` 是 false
+   *    而 `entries` 是空的，界面拿 `rows.length === 0` 猜就会把"读不了"说成"里面什么都没有"。
+   *    ⇒ 如实报上去（`readingOf` 是那份读数的唯一出处，不另算一遍）。
+   */
+  const hasReading = readingOf(folderId).ok;
   const base: ModFolderView = {
     folderId,
     path: entry.path,
     pathExists,
+    hasReading,
     gameVersion,
     autoUpdate: entry.autoUpdate,
     rows: [],
@@ -307,6 +315,7 @@ function folderView(folderId: string, entry: SharedState['folders'][string]): Mo
     folderId,
     path: entry.path,
     pathExists,
+    hasReading,
     gameVersion,
     autoUpdate: entry.autoUpdate,
     scan: readingOf(folderId).entries,
@@ -436,7 +445,22 @@ function buildState(): ModFoldersState {
           ? 'folder-unscanned'
           : 'ok';
   const missing =
-    missingStatus === 'ok' ? missingMods({ catalog: known!, gameVersion, trackedModids }) : [];
+    missingStatus === 'ok'
+      ? missingMods({
+          catalog: known!,
+          gameVersion,
+          trackedModids,
+          /*
+           * ★★ 上游表必须传（**Ruling 62②**，2026-10-03 T8 评审）：清单每一行的 `release`
+           *    必须是"主进程真会装的那一条"。`downloadMissing` 那一侧用的是
+           *    `planCatalogRows(..., upstreamLatest: upstreamLatestOf())` 的 `official`
+           *    ⇒ 这里少传一次，有上游的 mod（`mcsrranked`）在页面上的 release 就会是
+           *    目录那条，而界面拿它判"镜像适不适用" —— 判出来的通道可能被主进程拒。
+           *    ⚠️ 两次调用的 `upstreamLatestOf()` 是同一份解析结果（同一个函数、同一份缓存）。
+           */
+          upstreamLatest: upstreamLatestOf(),
+        })
+      : [];
   const missingNote =
     missingStatus === 'folder-unscanned'
       ? `有 ${String(foldersWithoutReading)} 个已绑定文件夹还没有扫描读数 ⇒ 缺失清单暂时空着（"没扫过"不等于"你没有"；点一次「重扫」或让页面重新拉一次状态就会补上）`
