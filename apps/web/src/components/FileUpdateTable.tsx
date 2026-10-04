@@ -577,10 +577,15 @@ export const VERDICT_BADGES: Record<
 };
 
 /**
- * 各支欠的那句**解释**（为什么这一行不给更新按钮）。
+ * 各支欠的那句**解释**（用户唯一能行动的线索）。
  *
  * ⚠️★ 三支必须各有各的说法（spec §8）：`newer` / `different-build` / `unknown` 的
- *    **后果**都是"不更新"，但**原因**不同，而原因是用户唯一能行动的线索。
+ *    **后果**不同 —— `newer` 与 `unknown` 是"不给更新"，而 `different-build`
+ *    **有一颗显式的更新按钮**（它正是"要人点一下"那一支，见 `showUpdate` 的注释）
+ *    ⇒ 它那句话要**说清那颗按钮会做什么**（用官方那条替换掉本地这份不同的字节）。
+ *    ⚠️ 文案**不许**承诺"版本号相同"：这一支也装了"两边版本号排不出先后"那一类输入
+ *    （2026-10-04 收口波：实测 `HD_U_F9` vs `HD_U_F10` 就是一次两个版本号**不同**的
+ *    `different-build`）。
  * ⚠️ `ambiguous` 与 `manual` 的解释按各自的判据取（它们与本地读数无关）。
  * ⚠️★ Task 8：这张表按 `FolderVerdict` 定型并与第二部分共用（同一条理由见上面
  *    那段）；`missing-release` 那一句**只在第二部分出现**（第一部分到不了那一支）。
@@ -656,13 +661,20 @@ export interface ModCatalogTableProps {
  *
  * ⚠️★ 每行给**几颗**按钮是按 §6.8 的"每行操作"表和 Ruling 47/48 算的，
  *    而且判据都写在下面那四行 `showUpdate` / `showBind` / `showUnbind` / `mirror` 上：
- *      · 已绑定 + `batchable` ⇒ 「更新（原始）」+（有可用镜像时）「更新（镜像）」；
+ *      · 判定是 `older` **或** `different-build` ⇒ 「更新（原始）」+（有可用镜像时）
+ *        「更新（镜像）」—— 这两个正是主进程 `assertUpdatable` **放行**的状态；
  *      · 未绑定 ⇒ 「绑定本地文件」（`updateCatalogRow` 对没绑定的行会拒）；
  *      · **已绑定** ⇒ 多一颗安静的「解除绑定」（Ruling 60）—— 它与"给不给更新"无关：
  *        绑错的行、迁移采纳的行都要能解掉；
- *      · `manual` 的行**没有**更新按钮、也没有「绑定本地文件」（主进程对两者都会拒）；
- *      · 其余（`newer` / `different-build` / `unknown` / `same` / 多候选）
- *        ⇒ 只解释，不画更新按钮。
+ *      · `manual` 的行**没有**更新按钮（spec §8 的"绝不替换"），但**照给**「绑定本地文件」：
+ *        `bindCatalogRow` 里没有任何 `manual` 检查、§6.8 的动作清单也不豁免它
+ *        （2026-10-04 收口波订正：第一版按 `manual` 把它一起藏了，而那是一条**假**理由）；
+ *      · 其余（`newer` / `unknown` / `same` / 多候选）⇒ 只解释，不画更新按钮。
+ * ⚠️★ **`different-build` 那一支曾经没有入口**（2026-10-04 收口波的真缺陷）：两处都按
+ *    `row.batchable` 给按钮，而 `batchable` 只认 `older` + auto + 可排序 ⇒ 那种行页面上
+ *    一颗按钮都没有，而 `lastRun.skipped` 那句"要人显式点一下这一条"当时是一句**做不到的
+ *    指令**（真实受害者：`standardsettings` 与 1.16.1 下那 4 个主体含非数字段的 mod）。
+ *    ⇒ 按钮的判据换成"**主进程会不会收**"，而**不是**放宽 `batchable`（那会改变批量行为）。
  */
 export function ModCatalogTable({
   rows,
@@ -752,10 +764,31 @@ export function ModCatalogTable({
              */
             const applicable = hasTarget ? mirrorsForUrl(mirrors, row.official!.url) : [];
             const mirror = applicable[0] ?? null;
+            /**
+             * ★★ 「给不给更新按钮」= **主进程会不会收**（2026-10-04 收口波）：
+             *   `assertUpdatable` 放行的只有 `same` / `different-build` / `older`，
+             *   而这里照 spec §8 只画 `older` 与 `different-build` 两颗（`same` = 幂等那一支，
+             *   没有"再点一次"的意义）。
+             * ⚠️ 判据**不是** `row.batchable`：那只认 `older` + `download === 'auto'` + 两边
+             *   版本主体可排序 ⇒ 拿它当闸会让 `different-build` 那一行**一颗按钮都没有**，
+             *   而同一屏的 `lastRun.skipped` 却在叫用户"显式点一下这一条"。
+             * ⚠️ 另外两格不必再写进来（不是省略）：`different-build` / `older` 都要求
+             *   `localVersion` 非空，而 `localVersion` 只在**有绑定**时非空
+             *   （`planCatalogRows` 从 `binding` 取）⇒ 判定本身就是"已绑定且有目标"的证明。
+             *   `official === null` 的那两支判定（`ambiguous` / `missing-release`）不在这个集合里。
+             */
+            const updatableKind =
+              row.verdict.kind === 'older' || row.verdict.kind === 'different-build';
             const showUpdate =
-              withActions && onUpdate !== undefined && row.batchable && !row.manual;
-            const showBind =
-              withActions && onBindLocal !== undefined && row.binding === null && !row.manual;
+              withActions && onUpdate !== undefined && !row.manual && updatableKind;
+            /*
+             * ★ 「绑定本地文件」的判据只有两条：有动作层 + 这一行还没绑定。
+             * ⚠️★ **不看 `manual`**（2026-10-04 收口波订正）：`bindCatalogRow` 里没有任何
+             *    `manual` 检查，§6.8 的动作清单也不豁免它 —— 藏掉它是一条**假**理由，
+             *    代价是 OptiFine 那种行的用户连"绑上我本地这份"都做不到。
+             *    （被挡住的是**更新**：`assertNotManual` 会拒，spec §8 的"绝不替换"。）
+             */
+            const showBind = withActions && onBindLocal !== undefined && row.binding === null;
             /*
              * ★★ Ruling 60：**已绑定**的行多一颗安静的「解除绑定」（与 v1 那张表同一条：
              *    那里也是"已绑定就有它"）。⚠️ 它**不**看 `manual` —— 一个被迁移采纳的

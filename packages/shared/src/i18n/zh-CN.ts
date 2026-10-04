@@ -3885,15 +3885,23 @@ export const zhCN = {
       upstream: '上游最新',
     },
     /*
-     * ★ 四支"只提示、不给按钮"的状态（spec §7.2 的 ④/⑤ 与 §8）。它们**各有各的**说法：
+     * ★ 四支"要人显式处理"的状态（spec §7.2 的 ④/⑤ 与 §8）。它们**各有各的**说法：
      *   合成一句"不能更新"就把"为什么"删掉了，而那是用户唯一能行动的线索。
+     * ⚠️★ `different-build` 那一支的措辞**不许承诺"版本号相同"**（2026-10-04 收口波）：
+     *   `compareLocalToRelease` 把两种输入都归到它名下 —— ① 版本主体相同（真实案例
+     *   `standardsettings`：`2.3+1.16.1` vs `2.3+1.16-1.16.1`）② 两边主体里有非数字段、
+     *   **排不出先后**（实测 `HD_U_F9` vs `HD_U_F10`：那时两个版本号明明**不同**）。
+     *   当时这两句写的是"同版本号/版本号相同" ⇒ 对 ② 是一句**假话**。
+     *   spec §8 里没有为 ② 单开一支（`different` 不在 `ReleaseVerdict` 联合里 ⇒ 造它要动契约），
+     *   所以现在**只说读得出来的那一半**（字节不同）。缺的那一支记在 `docs/pending.md §5.110`。
      */
     verdictNewer: '本地更新',
-    verdictDifferentBuild: '同版本号、字节不同',
+    verdictDifferentBuild: '字节与官方不同',
     verdictUnknown: '比不出来',
     verdictAmbiguous: '候选多于一条',
     hintNewer: '本地这一版比官方新 —— 只提示，不替换（这一栏只升不降）。',
-    hintDifferentBuild: '版本号相同、文件字节不同 —— 不自动替换，请自己确认要用哪一份。',
+    hintDifferentBuild:
+      '本地这份的字节与官方那条不同（版本号要么相同、要么两边没法比大小）—— 不自动替换；点「更新」会用官方那条替换掉它。',
     hintUnknown: '读不出本地版本（或版本号没法比大小）—— 这一行不会被自动更新。',
     /*
      * ★ Ruling 47：`manual` 的 release（OptiFine 那 54 条）**连更新按钮都不给** ——
@@ -4054,8 +4062,13 @@ export const zhCN = {
     /*
      * ★ 旧副本提示（D9.1：更新时会被清掉）。⚠️ 名字**逐个印出来**：只说"另有 2 份"
      *    的话，用户不知道要没的是哪几个文件。
+     * ★★ 后果单独一条词条（spec §4 D9.1："按钮文案写明后果"）：更新会**删掉**它们，
+     *    而且只在**新文件验签就位之后**才删。⚠️ 单独一条而不是并进上面那句，是为了
+     *    让"后果那一句还在不在"有一条能红的断言（`foldersrender` ⑲ 断言它的整句）。
      */
     folderOldCopies: '另有 {{count}} 份旧副本：{{names}}',
+    folderOldCopiesDeleted:
+      ' —— 更新这一行时会把它们一起删掉（新文件验签就位之后才删，删不掉会如实报告）。',
     /*
      * ★★ `FolderVerdict` 比 `ReleaseVerdict` 多的那一支（spec §8：`mmc-pack.json`
      *    读不出来）。⚠️ 它**只在文件夹这一侧存在**：`ModCatalogTable` 的徽章表是按

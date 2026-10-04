@@ -813,17 +813,44 @@ function setTagFilter(tags: unknown): ModFoldersState {
 }
 
 /**
+ * ★ **§13.1 的单一归属**：这个文件已经归某个**已绑定文件夹**跟踪 ⇒ 不许再绑到目录行。
+ *
+ * 为什么非有不可（2026-10-04 收口波）：这条不变式此前**只单向执行** ——
+ *   绑文件夹时 `migrateBindingsInsideFolder` 会把**落在里面**的绑定解掉，而
+ *   `bindCatalogRow` 从不看"这个文件是不是已经在某个已绑定文件夹里" ⇒ 用户能造出
+ *   spec §13.1 明文禁止的那个状态：**一个文件两个归属**（文件夹那一行 + 目录行那一行），
+ *   界面上两处各有一颗更新按钮，而文件夹那一侧的"清理旧副本"（§7.3 第 8 步）
+ *   会把目录行指着的那份文件删掉 ⇒ 那个绑定当场悬空。
+ * ⚠️ 判据**只按路径**（`folderContaining`，与 `migrateBindingsInsideFolder` 同一个判据），
+ *    **不看 modid**：§13.1 的理由是"一个文件只能有一个归属"，与它是不是那个 mod 无关。
+ * ⚠️ 它排在 modid 校验**之前**：这一个更根本（改名/换文件都救不了它 —— 那个位置已经被
+ *    文件夹占着），而且不必为了报它去读 jar。
+ */
+function assertOutsideBoundFolders(picked: string): void {
+  const insideId = folderContaining(picked);
+  if (insideId === null) return;
+  const entry = requireState().folders[insideId];
+  throw new Error(
+    `这个文件落在已绑定的文件夹「${entry?.path ?? insideId}」里面 —— 文件夹那一侧已经在跟踪它了` +
+      `（一个文件只能有一个归属，spec §13.1）⇒ 不绑定：${picked}`,
+  );
+}
+
+/**
  * 绑定第一部分的一行（Ruling 24）：弹**原生 `.jar`** 对话框 ⇒ `readJarMeta` ⇒
  * **校验那个 jar 的 modid 与 `rowId` 里的一致** ⇒ 写 `catalogBindings[rowId]`。
  *
  * ⚠️★ modid 那一条**不是防御性的**：一行如果指向别的 mod 的文件，§7.3 的
  *    "就位后清旧副本"会按 modid 把**别人的文件**删掉（jars 全在同一个目录里，
  *    而"旧副本"的判据是"同一个 modid 的其余 jar"）。所以不一致就**拒**。
+ * ⚠️★ 它之前还有一道**归属**的闸（`assertOutsideBoundFolders`）：§13.1 的
+ *    "一个文件只能有一个归属"此前只有"绑文件夹时解掉里面的绑定"那一半。
  */
 async function bindCatalogRow(rowId: unknown): Promise<ModFoldersState> {
   const row = requireRowId(rowId);
   const picked = await pickOneJar();
   if (picked === null) return modFoldersState();
+  assertOutsideBoundFolders(picked);
 
   let meta: { id: string; version: string };
   try {
@@ -978,14 +1005,29 @@ interface InstallOutcome {
 }
 
 /**
+ * ★ 本模块自己的 `.part` 命名：`<targetName>.<uuid>.part`（`randomUUID()` 的**小写**形状）。
+ *
+ * ⚠️★ 它与 v1 那一种是**两种不同的名字**（见 `stalePartsOf`）：v1 的 `.part` 恰好是
+ *    `${targetPath}.part` —— 也就是 `<targetName>.part`，**没有**中间那个 uuid 段。
+ */
+const OWN_PART_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part$/;
+
+/**
  * 上一次尝试留下的 `.part`（v1 `runUpdate` 的先例：下一轮开始前清一次残留）。
  *
  * ⚠️ 名字里的随机段（`.<uuid>.part`）让"这次要写的那个"与"上次留下的那个"**永不重名**
- *    ⇒ 清残留**只能按前缀扫**（`<targetName>.` 开头、`.part` 结尾）。
+ *    ⇒ 清残留**只能按形状扫**（`<targetName>.` 开头、`<uuid>.part` 结尾）。
  *    不扫的话，下一次更新会在残留旁边再写一个新 `.part`，而旧的一直留在用户的 mods 目录里
  *    （v1 `runUpdate` 的 ② 做的就是这件事：开始下载前先清一次）。
- * ⚠️ 只扫**我们自己那个前缀**（`<targetName>.`）：同一个目录里 v1 给**别的**文件留的
- *    `.part` 不属于这一条 ⇒ 删它是越界（v1 下一轮自己会清，见 `runUpdate` ② 那一段）。
+ * ⚠️★ **只清本模块自己那一种命名**（`OWN_PART_NAME`）：同一个目录里 v1 给**同一个目标名**
+ *    留的 `.part` 是 `${targetPath}.part`（`file-updates.ts` 的 `runUpdate`），它同样满足
+ *    "`<targetName>.` 开头、`.part` 结尾" ⇒ 只按前缀+后缀扫会把 v1 **正在下载的那个半成品**
+ *    删掉，而 v1 随后 rename 的就是那个文件（症状是 v1 那一次更新报"找不到 .part"）。
+ *    这条**可达**：v1 的 `items` 与 `catalogBindings` 可以指着同一个文件
+ *    （`attributeLegacyItems` 把文件夹**外面**的 v1 绑定原样多写一份、`localPath` 逐字相同）
+ *    ⇒ 两个模块可能同时对同一个目标名下载。
+ * ⚠️ 判据是"**这是不是我们写的**"，不是"这个名字像不像半成品"：宁可漏清一个自己造的重名残留
+ *    （下一次下载前还会再扫一次），也不许删别人的活文件。
  */
 function stalePartsOf(targetDir: string, targetName: string): string[] {
   const prefix = `${targetName}.`;
@@ -996,7 +1038,7 @@ function stalePartsOf(targetDir: string, targetName: string): string[] {
     return []; // 目录都读不动 ⇒ 后面 downloadTo 会给出真正的错误，不必在这里造一个
   }
   return names
-    .filter((name) => name.startsWith(prefix) && name.endsWith('.part'))
+    .filter((name) => name.startsWith(prefix) && OWN_PART_NAME.test(name.slice(prefix.length)))
     .map((name) => join(targetDir, name));
 }
 
@@ -1053,6 +1095,20 @@ async function installRelease(opts: {
    *    必须拿"上次读到的 sha512"与"现在盘上的 sha512"对一次，才挡得住"扫描之后被换过的文件"。
    */
   replacing?: { path: string; sha512: string | null };
+  /**
+   * ★ **Ruling 48** 拒掉"扫描之后被换过的文件"时，那句话里叫人**怎么补救**。
+   *
+   * ⚠️★ 两个入口的补救**不是同一件事**（2026-10-04 收口波订正）：
+   *   · **文件夹里的那一行**（`installFolderRow`）：重扫会把 `row.localSha512` 刷新成盘上
+   *     那一份 ⇒ "先重新扫描再更新"**是对的**（这也是缺省值）；
+   *   · **第一部分那一行**（`updateCatalogRow`）：`binding.localSha512` **只有绑定会写**
+   *     （`rescan` 一个字节都不碰 `catalogBindings`），而一个已绑定的行**没有**
+   *     「绑定本地文件」那颗按钮 ⇒ 对它说"先重新扫描"是一句**空话**（照做之后还是拒）。
+   *     它的补救是**先解除绑定、再重新绑定这一行**（`bindCatalogRow` 会重读 sha512）。
+   * ⚠️ 更深的修法（让 `rescan` 也刷新 `catalogBindings` 的读数，那时两边可以共用一句话）
+   *    记在 `docs/pending.md §5.110`。
+   */
+  staleRemedy?: string;
 }): Promise<InstallOutcome> {
   const { targetDir, release, channel } = opts;
   if (!isDirectory(targetDir)) throw new Error(`这个位置不是目录（拒绝写盘）：${targetDir}`);
@@ -1099,7 +1155,8 @@ async function installRelease(opts: {
     if (recorded) {
       if (onDisk !== null && scanned !== null && onDisk !== scanned) {
         throw new Error(
-          `这个文件在扫描之后变过（现在 ${onDisk.slice(0, 16)}…，扫描时是 ${scanned.slice(0, 16)}…）⇒ 先重新扫描再更新：${targetPath}`,
+          `这个文件在扫描之后变过（现在 ${onDisk.slice(0, 16)}…，扫描时是 ${scanned.slice(0, 16)}…）` +
+            `⇒ ${opts.staleRemedy ?? '先重新扫描再更新'}：${targetPath}`,
         );
       }
     } else if (!knownOld) {
@@ -1320,7 +1377,14 @@ function skipReasonOf(row: ModFolderRowView): string {
     case 'same':
       return '这个文件已经是这一份（没有下载、没有写盘）';
     case 'different-build':
-      return '同版本号、字节不同（different-build）⇒ 要人显式点一下这一条';
+      /*
+       * ⚠️★ 措辞只说**读得出来的那一半**（2026-10-04 收口波）：这一支**不等于**"版本号相同"
+       *   —— `compareLocalToRelease` 把两种情形都归到这里：① 版本主体相同（真实案例
+       *   `standardsettings`）② 两边主体里有非数字段、**排不出先后**（实测 `HD_U_F9` vs
+       *   `HD_U_F10`：那时两个版本号是**不同**的）。spec §8 没有为 ② 单开一支（`different`
+       *   不在 `ReleaseVerdict` 里 ⇒ 要造它得动契约）⇒ 界面与这里的文案只能说"字节不同"。
+       */
+      return '本地与官方的字节不同（different-build）⇒ 要人显式点一下这一条';
     case 'newer':
       return '本地这一份比清单里的更新（newer）⇒ 只升不降，不进批量';
     case 'unknown':
@@ -1350,8 +1414,15 @@ function skipReasonOf(row: ModFolderRowView): string {
  *    这里对应的就是本模块自己的 `busy` —— 它**跨整批为真**（不是"某一条正在写"），
  *    所以整批期间第二次调用（单行也一样）会被立刻拒（`writeRun` 与本函数共用这一格）。
  *    ⇒ 与 v1 那条的**已知缺口**（认）：v1 的 `update()`/`updateAll` 看不见本模块的 `busy`，
- *      反向也一样；两个模块今天写的是**不同的绑定**（§13.1：落在文件夹里的 v1 绑定在绑定时已解掉），
- *      所以这条缺口不是"两个写者写同一个文件"。
+ *      而反向是有效的（两个写入口的第一行就是 v1 导出的 `assertNotBusy()`）。
+ *      ⚠️★ **"两个模块写的是不同的绑定"是假的**（2026-10-04 收口波订正；第一版这句注释就是
+ *      这么写的，而它把一个可达的缺口说成了不可达）：`attributeLegacyItems` 会把文件夹
+ *      **外面**的 v1 绑定**原样多写一份**到 `catalogBindings`（`localPath` 逐字相同）⇒
+ *      同一个文件可以同时是 v1 的一个 `item` 与本模块的一行绑定。
+ *      ⇒ v1 那一侧仍在 `busy` 期间可以起手写**同一个文件**（本模块进不去 v1 的批量，
+ *      但 v1 进得来本模块的写窗口）。今天的兜底只有"两边写的多半不是同一份文件"这个巧合，
+ *      以及 `stalePartsOf` 只清自己那一种 `.part` 命名（不再删 v1 的活半成品）。
+ *      ⇒ 要真正堵死得让 v1 也看得见这一格（那是改 v1），记在 `docs/pending.md §5.110`。
  * ⚠️ 整批起手就抛（文件夹不是目录 / 没有扫描读数 / 目录没拉到）时**不写 `failed`**：
  *    `failed[].modid` 是**行**的标识，而这时候**一行都没跑到** ⇒ 编一个假 modid 进去
  *    会让页面显示一条不存在的行。⇒ 记一条 notice（页面看得见）+ 原样抛（IPC 会 reject）。
@@ -1492,6 +1563,12 @@ export async function updateCatalogRow(
       oldCopies: [binding.localPath],
       // ★ Ruling 48：绑定时读到的 sha512 就是这一条"扫描读数"
       replacing: { path: binding.localPath, sha512: binding.localSha512 },
+      /*
+       * ★ Ruling 48 的补救文案（2026-10-04 收口波）：这一侧的 `localSha512` **只有绑定会写**
+       *   ⇒ 缺省的"先重新扫描再更新"对这里是一句空话（重扫不碰 `catalogBindings`），
+       *   而这里确实做得到的动作是"解绑再重新绑定"（`unbindCatalogRow` + `bindCatalogRow`）。
+       */
+      staleRemedy: '先解除绑定、再重新绑定这一行（重新扫描不会刷新第一部分的绑定读数）',
     });
     /*
      * 绑定跟着走（v1 `runUpdate` 的"写回"那一步的对应物）。

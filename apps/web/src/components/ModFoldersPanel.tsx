@@ -13,10 +13,17 @@
  * ⚠️★ 「不给一颗会被主进程拒的按钮」—— 这一层的判据（逐条现读 `mod-folders.ts`）
  * ===========================================================================
  * 与 Ruling 47/48 是同一族（第一部分的 `ModCatalogTable` 那里写着完整的一段）：
- *   · **行内那两颗更新按钮**看 `row.batchable`（= 有目标 + `needsUpdate`：`older`
- *     且 `download === 'auto'` 且两边版本主体可排序）。主进程那三处拒绝全被它盖住：
- *     `updateMod` 的"没有目标"（`official === null`）、`assertUpdatable` 的
- *     `newer` / `unknown` / `different-build`、`assertNotManual` 的 `manual`。
+ *   · **行内那两颗更新按钮**的判据是"**主进程会不会收**"：判定是 `older` **或**
+ *     `different-build`、且不是 `manual`。`assertUpdatable` 放行的正是
+ *     `same` / `different-build` / `older`，而界面照 spec §8 只画前两颗（`same` = 幂等，
+ *     没有"再点一次"的意义）；`updateMod` 那句"没有目标"（`official === null`）由
+ *     `older` / `different-build` 这两支**蕴含**（它们都要求 `official` 非空）。
+ *     ⚠️★ 判据**不是** `row.batchable`（2026-10-04 收口波的真缺陷）：`batchable` 只认
+ *     `older` + `download === 'auto'` + 两边版本主体可排序 ⇒ 拿它当闸时 `different-build`
+ *     那一行**一颗按钮都没有**，而同一屏的 `lastRun.skipped` 却说"要人显式点一下这一条"。
+ *     ⇒ 那 4 个主体含非数字段的 mod（`custom-map-resetter` / `krypton` / `noverworld` /
+ *     `pogworld`）与 `standardsettings` 在这一期之前**没有任何入口能更新**。
+ *     ⚠️ 批量那一侧**一个字都没改**：`updateFolderAll` 仍然只碰 `batchable` 的行。
  *   · **「全部更新」**要 `pathExists` **且** `gameVersion !== null`（spec §8 的两条：
  *     路径不存在 / 版本未知都不给更新动作），另外还要 `batchTargets(rows) > 0` 才画。
  *     ⚠️★ 最后这一条**不是保险**：`updateFolderAll` 在"这个文件夹还没有扫描读数"时
@@ -529,8 +536,16 @@ function FolderRow({
    */
   const mirror =
     row.official === null ? null : (mirrorsForUrl(state.mirrors, row.official.url)[0] ?? null);
-  /** 进批量才给更新按钮（`batchable` 把那四类拒绝全盖住了，见文件头那一段）。 */
-  const showUpdate = handlers !== null && row.batchable;
+  /**
+   * ★★ 进不给更新按钮的判据 = **主进程会不会收**（2026-10-04 收口波）：
+   *   `older` 与 `different-build` 是 `assertUpdatable` 放行的那两支（`same` = 幂等，
+   *   界面不给第二颗）；`manual` 一律不给（spec §8 的"绝不替换"）。
+   *   ⚠️ 判据**不是** `row.batchable`：那只认 `older` + auto + 可排序 ⇒ `different-build`
+   *   那一行会一颗按钮都没有，而 `lastRun.skipped` 正说着"要人显式点一下这一条"。
+   *   ⚠️ 批量那一侧没改（`updateFolderAll` 仍只碰 `batchable`）。
+   */
+  const updatableKind = row.verdict.kind === 'older' || row.verdict.kind === 'different-build';
+  const showUpdate = handlers !== null && !row.manual && updatableKind;
 
   return (
     <tr className="filetable__row" data-verdict={row.verdict.kind} data-folder-row={row.modid}>
@@ -541,6 +556,12 @@ function FolderRow({
           {/*
             ★ 旧副本提示（D9.1：更新时会清掉它们）。⚠️ 名字逐个印出来：只说
             "另有 2 份"的话，用户不知道要没的是哪几个文件。没有旧副本就一个字不印。
+            ★★ 而且**后果必须说出来**（spec §4 D9.1："按钮文案写明后果"）：
+            更新这一行会**删掉**这些文件，只在**新文件验签就位之后**才删。
+            ⚠️ 2026-10-04 收口波之前这里只有"另有 N 份旧副本：names"——
+            说的是"有这些东西"，没说"下一步会把它们删掉" ⇒ 用户点更新前不知道会少文件。
+            单独一条词条（而不是并进上面那句）：这样"后果那一句还在不在"有一条能红的
+            断言（`foldersrender` ⑲ 直接断言它的整句）。
           */}
           {row.oldCopies.length === 0 ? null : (
             <span className="filetable__latestknown">
@@ -548,6 +569,7 @@ function FolderRow({
                 count: row.oldCopies.length,
                 names: row.oldCopies.join(', '),
               })}
+              {t('files.folderOldCopiesDeleted')}
             </span>
           )}
         </div>

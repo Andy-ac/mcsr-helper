@@ -294,8 +294,9 @@ console.log(
 
 /**
  * 通道名在两个产物里的出现次数（ASCII 锚点 ⇒ 与编码无关，§5.92 的教训只针对中文）。
- * ⚠️ `onStatus` 是**推**的（主进程只 `send`），所以 15 条里进 `main.cjs` 的是 15 次名字、
- *    但 `ipcMain.handle` 只有 14 条 —— 两个数分开打，别混。
+ * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"，
+ *    而 `MOD_FOLDERS_CHANNELS` 现有 **16** 个成员）：**16** 个通道名进 `main.cjs`，
+ *    其中 `ipcMain.handle` 只有 **15** 条 —— 第 16 个是 `onStatus`，它只**推**（`send`）。
  */
 function countChannels(path, channels) {
   if (!existsSync(path)) return null;
@@ -313,7 +314,7 @@ function countChannels(path, channels) {
 const mainCounts = countChannels(MAIN_CJS, MOD_CH);
 const preloadCounts = countChannels(PRELOAD_CJS, MOD_CH);
 console.log(
-  `  产物里 mcsr:modfolders-* 的出现：main.cjs 命中 ${String(mainCounts.present)}/15；preload.cjs 命中 ${String(preloadCounts ? preloadCounts.present : '（无 preload.cjs）')}/15`,
+  `  产物里 mcsr:modfolders-* 的出现：main.cjs 命中 ${String(mainCounts.present)}/16；preload.cjs 命中 ${String(preloadCounts ? preloadCounts.present : '（无 preload.cjs）')}/16`,
 );
 if (mainCounts.missing.length > 0) {
   console.log(`    main.cjs 里一个都没有的通道：${mainCounts.missing.join(', ')}`);
@@ -747,7 +748,7 @@ function loadArtifact() {
   require(MAIN_CJS);
 }
 
-/** 等 14 条 invoke 通道注册好（第 15 条 `onStatus` 是推送、没有 handler）。 */
+/** 等 15 条 invoke 通道注册好（第 16 个成员 `onStatus` 是推送、没有 handler）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
   for (let i = 0; i < 240; i += 1) {
@@ -894,15 +895,15 @@ async function mainPhase() {
   const registered = await waitForHandlers();
 
   // =========================================================================
-  await section('① 十四条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
+  await section('① 十五条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
     const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
     const missing = expected.filter((name) => !handlers.has(name));
     check(
-      `ipcMain.handle 注册了 14 条 mcsr:modfolders-*（onStatus 是推送、不算）`,
+      `ipcMain.handle 注册了 15 条 mcsr:modfolders-*（16 个成员里 onStatus 是推送、不算）`,
       registered && missing.length === 0,
       missing.length === 0
         ? `handlers 共 ${String(handlers.size)} 条`
-        : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/15（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/15）`,
+        : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/16（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/16）`,
     );
   });
   if (!registered) {
@@ -1274,6 +1275,51 @@ async function mainPhase() {
         state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding?.localPath ===
           bindJar,
         String(state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding?.localPath),
+      );
+      /*
+       * ★★ **§13.1 的单一归属**（2026-10-04 收口波）：这个 jar 落在**已绑定的 A-mods** 里
+       *    ⇒ `bindCatalogRow` 必须拒。
+       *
+       * ⚠️★ 为什么这一条是载荷性的：这条不变式此前**只单向执行**（绑文件夹时把里面的绑定
+       *    解掉），而 `bindCatalogRow` 不看"这个文件是不是已经在某个已绑定文件夹里"
+       *    ⇒ 用户能造出 spec §13.1 明文禁止的状态：一个文件两个归属、两处各有一颗更新按钮，
+       *    而文件夹那一侧的"清理旧副本"会把目录行指着的**那份文件本身**删掉。
+       * ⚠️ 夹具是 `jarNew`（`a-2.0.jar`，就在 A-mods 里、modid 也正是 antigone）——
+       *    这样"拒"的理由**只能**是归属那一条（modid 是匹配的，走不到 modid 那道闸）。
+       * ⚠️ 三条读数：①抛了且文案点名那个文件夹；②那一格**没有被改写**（还是 D-bind 那份）；
+       *    ③磁盘上那个 jar 逐字节没动（这一支在任何写盘之前）。
+       */
+      const insideShaBefore = sha512Of(jarNew);
+      const boundBeforeRefuse = readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`];
+      openQueue = [{ canceled: false, filePaths: [jarNew] }];
+      let insideRefused = null;
+      try {
+        await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
+      } catch (error) {
+        insideRefused = error;
+      }
+      check(
+        '★ §13.1：绑一个**已经在已绑定文件夹里**的文件 ⇒ 拒（一个文件只能有一个归属）',
+        insideRefused !== null,
+        insideRefused?.message ?? '（没有抛 —— 那就绑上了，于是同一个文件有两个归属）',
+      );
+      check(
+        '★ 理由点名那个文件夹与"归属"这件事（不是撞上 modid 那道闸：夹具的 modid 是匹配的）',
+        typeof insideRefused?.message === 'string' &&
+          insideRefused.message.includes(modsDir) &&
+          insideRefused.message.includes('一个文件只能有一个归属'),
+        insideRefused?.message ?? '（没有抛）',
+      );
+      check(
+        '★ 而且那一格**没有被改写**（还是 D-bind 里那份绑定）',
+        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath ===
+          boundBeforeRefuse?.localPath,
+        JSON.stringify(readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] ?? null),
+      );
+      check(
+        '★ 磁盘上那个 jar 逐字节没动',
+        sha512Of(jarNew) === insideShaBefore,
+        `${insideShaBefore.slice(0, 16)}… → ${sha512Of(jarNew).slice(0, 16)}…`,
       );
       /*
        * ★★ Ruling 60（2026-10-03 评审）：`unbindCatalogRow` —— 有绑定就必须能解绑。
@@ -2108,7 +2154,7 @@ async function writePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  if (!registered) bail('十四条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+  if (!registered) bail('十五条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
 
   /** 绑一个夹具目录（走原生的目录对话框桩）。 */
   const bindAt = async (dir) => {
@@ -2501,6 +2547,63 @@ async function writePhase() {
   });
 
   // =========================================================================
+  // ⑯b（收口波）清 `.part` 残留**只清自己那一种命名**
+  // =========================================================================
+  /*
+   * ⚠️★ 这一条补的是一个**可达的越界**：v1 的半成品命名恰好是 `${targetPath}.part`
+   *    （`file-updates.ts` 的 `runUpdate`），而它同时满足"`<targetName>.` 开头、`.part` 结尾"
+   *    ⇒ 只按前缀+后缀扫的实现会把**v1 正在下载的那个文件**删掉（v1 随后 rename 的就是它）。
+   *    可达的理由：`attributeLegacyItems` 把文件夹**外面**的 v1 绑定原样多写一份到
+   *    `catalogBindings`（`localPath` 逐字相同）⇒ 两个模块可以同时对同一个目标名下载。
+   * ⚠️ 两条读数都必须在**同一趟真下载**上取（`/mirror-good/` 请求数 +1 是那趟真的跑了）：
+   *    · v1 那一种命名的文件**还在**且字节没变；
+   *    · 本模块自己那一种命名（`<target>.<uuid>.part`）**被清掉**。
+   *    只断言前者的实现（"什么都不清"）会在后者上红；只断言后者（现在的实现）会在前者上红。
+   */
+  await section('⑯b（收口波）`.part` 残留只清自己那一种命名（v1 的半成品不许删）', async () => {
+    const dir = join(workRoot, 'mods-parts');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'parts-1.0.jar'), probeJar(fx.good.modid, FIXTURE_JAR_VERSION));
+    const id = await prepare(dir);
+    const targetPath = join(dir, fx.good.targetName);
+    /** v1 的命名（`installDownloadedFile` 之外那一套：`${targetPath}.part`）。 */
+    const v1Part = `${targetPath}.part`;
+    /** 本模块的命名（`randomUUID()` 的形状 —— 小写、带四个连字符）。 */
+    const ownPart = `${targetPath}.11111111-2222-3333-4444-555555555555.part`;
+    writeFileSync(v1Part, 'v1-half-downloaded-bytes');
+    writeFileSync(ownPart, 'our-stale-part');
+    const v1Bytes = readFileSync(v1Part);
+    const beforeReqs = goodReqs();
+    let state = null;
+    try {
+      state = await invoke(MOD_CH.updateMod, id, fx.good.modid, `${fx.good.modid}|1.16.1`, {
+        mirrorId: fx.good.mirrorId,
+      });
+    } catch (error) {
+      state = error;
+    }
+    console.log(`  ${basename(dir)}：${listing(dir)}`);
+    check(
+      '（前置）这一趟真的走完了写盘：目标就位、字节 = 目录里那一条、请求 +1',
+      isState(state) &&
+        existsSync(targetPath) &&
+        sha512Of(targetPath) === fx.good.release.sha512 &&
+        goodReqs() === beforeReqs + 1,
+      `${resultDetail(state)}；请求 ${String(beforeReqs)} → ${String(goodReqs())}`,
+    );
+    check(
+      '★★ v1 那种命名的半成品（`<target>.part`）**还在**、字节也没变（那是别人正在下载的文件）',
+      existsSync(v1Part) && readFileSync(v1Part).equals(v1Bytes),
+      listing(dir),
+    );
+    check(
+      '★ 而本模块自己那种命名的残留（`<target>.<uuid>.part`）被清掉了',
+      !existsSync(ownPart),
+      listing(dir),
+    );
+  });
+
+  // =========================================================================
   // ⑰ 第一部分（目录行）走的是同一段写盘
   // =========================================================================
   await section('⑰ updateCatalogRow：第一部分那一行走的是**同一段**写盘', async () => {
@@ -2550,6 +2653,52 @@ async function writePhase() {
     );
     const row = isState(state) ? state.catalogRows.find((r) => r.rowId === rowId) : undefined;
     check('这一行现在读作"已是最新"', row?.verdict?.kind === 'same', String(row?.verdict?.kind));
+    /*
+     * ★★ **收口波**：Ruling 48 那道闸的**补救文案**在目录行这一侧必须说得出一个
+     *    **真做得到**的动作。
+     *
+     * ⚠️★ 现场：那道闸的文案原来（两个入口共用一句）写的是"先重新扫描再更新"，而
+     *    `binding.localSha512` **只有绑定会写** —— `rescan` 一个字节都不碰
+     *    `catalogBindings`，而且一个已绑定的行**没有**「绑定本地文件」那颗按钮
+     *    ⇒ 用户照做之后**还是被拒**（第二次、第三次都一样）。
+     *    文件夹那一侧不同（`row.localSha512` 来自扫描读数 ⇒ 重扫真的刷得掉），所以
+     *    这一支由 `updateCatalogRow` 自己传一句（`installRelease` 的 `staleRemedy`）。
+     * ⚠️ 夹具就在上一段的状态上：**扫描读数**（绑定里的 sha512）= 官方那条，
+     *    而盘上那份现在被换成别的字节 ⇒ 正好落进"扫描之后变过"那一格。
+     * ⚠️ 两条读数：①文案里有"重新扫描**不**管用"这件事的替代动作（解除绑定）；
+     *    ②一个请求都没发（拒绝发生在任何 I/O 之前）。
+     */
+    const scanRecorded = binding?.localSha512;
+    writeFileSync(targetPath, probeJar(fx.good.modid, FIXTURE_JAR_VERSION, true));
+    const reqsBeforeStale = goodReqs();
+    let staleRefused = null;
+    try {
+      await invoke(MOD_CH.updateCatalogRow, rowId, rowId, { mirrorId: fx.good.mirrorId });
+    } catch (error) {
+      staleRefused = error;
+    }
+    check(
+      '（前置）盘上那份现在**不是**绑定里记着的那一份（否则下面拒的不是那道闸）',
+      typeof scanRecorded === 'string' && sha512Of(targetPath) !== scanRecorded,
+      `${String(scanRecorded).slice(0, 16)}… vs ${sha512Of(targetPath).slice(0, 16)}…`,
+    );
+    check(
+      '★ 拒（"这个文件在扫描之后变过"）—— 与文件夹那一侧走的是**同一道闸**',
+      typeof staleRefused?.message === 'string' && staleRefused.message.includes('扫描之后变过'),
+      staleRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '★★ 而那句补救说的是**真做得到**的动作：解除绑定（不是"先重新扫描"—— 重扫刷不掉绑定读数）',
+      typeof staleRefused?.message === 'string' &&
+        staleRefused.message.includes('解除绑定') &&
+        !staleRefused.message.includes('先重新扫描再更新'),
+      staleRefused?.message ?? '（没有抛）',
+    );
+    check(
+      '★ 而且一个请求都没发（拒绝发生在任何 I/O 之前）',
+      goodReqs() === reqsBeforeStale,
+      `请求数 ${String(reqsBeforeStale)} → ${String(goodReqs())}`,
+    );
   });
 
   // =========================================================================

@@ -4296,18 +4296,26 @@ export const en: TranslationSchema = {
       upstream: 'Upstream latest',
     },
     /*
-     * ★ Four "report only, no button" states (spec §7.2 steps 4/5 and §8). Each keeps its
+     * ★ States the user has to handle explicitly (spec §7.2 steps 4/5 and §8). Each keeps its
      *   **own** wording: folding them into one "cannot update" deletes the reason, which is
      *   the only lead the user has.
+     * ⚠️★ `different-build` must **not** promise "same version" (2026-10-04 close-out wave):
+     *   `compareLocalToRelease` lumps two inputs together — (1) identical version body (the
+     *   real case `standardsettings`: `2.3+1.16.1` vs `2.3+1.16-1.16.1`) and (2) non-numeric
+     *   segments on either side, where the two version strings **cannot be ordered** (measured:
+     *   `HD_U_F9` vs `HD_U_F10` — two genuinely different versions). The old copy said
+     *   "same version number", which is a lie for (2). Spec §8 has no separate state for it
+     *   (`different` is not in the `ReleaseVerdict` union, so adding it means touching the
+     *   contract) ⇒ these strings now state only what is known: the bytes differ.
      */
     verdictNewer: 'Local is newer',
-    verdictDifferentBuild: 'Same version, different bytes',
+    verdictDifferentBuild: 'Bytes differ from official',
     verdictUnknown: 'Cannot compare',
     verdictAmbiguous: 'More than one candidate',
     hintNewer:
       'Your local build is newer than the pinned one - we report it, never replace it (this list never downgrades).',
     hintDifferentBuild:
-      'Same version number, different bytes - we do not replace it automatically; decide yourself which build you want.',
+      'Your local copy has different bytes from the official release (the version numbers are either the same or cannot be ordered) - it is never replaced automatically; Update replaces it with the official build.',
     hintUnknown:
       'The local version cannot be read (or the version numbers cannot be ordered) - this row is never updated automatically.',
     /*
@@ -4489,8 +4497,14 @@ export const en: TranslationSchema = {
      * ★ The older-copies hint (D9.1: an update cleans them up). ⚠️ The names are printed
      *    one by one: "2 older copies" alone leaves the user unable to tell which files
      *    are about to go.
+     * ★★ The consequence is a **separate key** (spec §4 D9.1: "the button copy states the
+     *    consequence"): updating **deletes** them, and only after the new file is verified
+     *    in place. Kept apart from the sentence above so that "is the consequence still on
+     *    screen" has an assertion that can go red (`foldersrender` group ⑲ asserts it).
      */
     folderOldCopies: '{{count}} older copies: {{names}}',
+    folderOldCopiesDeleted:
+      ' - updating this row deletes them too (only after the new file is verified in place; anything that cannot be deleted is reported).',
     /*
      * ★★ The branch `FolderVerdict` has and `ReleaseVerdict` does not (spec §8: the
      *    `mmc-pack.json` cannot be read). ⚠️ It exists on the folder side only: the badge

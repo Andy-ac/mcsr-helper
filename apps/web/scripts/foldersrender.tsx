@@ -48,17 +48,19 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh 31 组、en 32 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
+ * zh 32 组、en 33 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
  * ⚠️ 组号是**顺序**，不是历史编号：
  *   · ①–⑰ 是 Task 7 的第一部分；
  *   · ⑱–㉗ 是 Task 8 的第二部分 / 缺失清单 / 特性检测；
  *   · ㉘–㉚ 是 Task 8 **判修轮**（Critical 的 manual 行 / Ruling 64 的过期持久化值 /
- *     Ruling 65 的"没有读数"）。
+ *     Ruling 65 的"没有读数"）；
+ *   · ㉜（写在 ㉛ 前面）是收口波加的：**真实目录那 48 行真的渲染一遍**（spec §10）。
+ *     ⇒ 计数：zh **32**、en **33**（见文件末尾那条探针）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { en, zhCN } from '@mcsr/shared/i18n';
-import type { ModRelease } from '@mcsr/shared/modCatalog';
+import { type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
   type MissingModView,
@@ -66,6 +68,8 @@ import {
   type ModFoldersState,
   type ModFolderView,
   mirrorsForUrl,
+  planCatalogRows,
+  type TagOptionView,
 } from '@mcsr/shared/modFolders';
 import i18n from 'i18next';
 import * as React from 'react';
@@ -490,6 +494,20 @@ const FROW_NEWER = folderRow({
   candidates: [UPSTREAM_NEW],
   official: UPSTREAM_NEW,
   verdict: { kind: 'newer', release: UPSTREAM_NEW },
+  batchable: false,
+});
+/**
+ * ★★ 收口波：`different-build` 是"要人显式点一下"的那一支 ⇒ **有**更新按钮
+ *    （与第一部分同一份判据，见文件头的 `FolderRow`）。⚠️ `batchable: false` 是
+ *    **故意的**：这一支永远不进批量，而按钮与批量**不是**同一条判据 ——
+ *    夹具这样配，"按钮还在"这条断言才咬得住（拿 `batchable` 当闸的实现会当场红）。
+ */
+const FROW_DIFFERENT_BUILD = folderRow({
+  modid: 'custom-map-resetter',
+  name: 'Custom Map Resetter Plus',
+  candidates: [UPSTREAM_NEW],
+  official: UPSTREAM_NEW,
+  verdict: { kind: 'different-build', release: UPSTREAM_NEW },
   batchable: false,
 });
 /** ★ **第二部分才可达**的那一支：这个游戏版本下清单里没有它。 */
@@ -945,37 +963,49 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
-// ③ `manual` 的行（OptiFine）⇒ **没有更新按钮**，只有「打开原网页」（+ 已绑定时能解绑）
+// ③ `manual` 的行（OptiFine）⇒ **没有更新按钮**，只有「打开原网页」（+ 绑定 / 解绑）
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 这是 Ruling 47/48 的落点：**不给一个主进程会拒的按钮**。`manual` 的 release
- *    在 `assertUpdatable` 那一层被拒（"这一条只能到原网页手动下载"）⇒ 界面上画一颗
- *    「更新」就是让用户白点一次、吃一句红字。`bindCatalogRow` 也不该给（`updateCatalogRow`
- *    对它是"没有目标"；而这一期没有"给 manual 行绑定"的用途）。
+ *    在 `assertNotManual` 那一层被拒（spec §8 的"绝不替换"）⇒ 界面上画一颗
+ *    「更新」就是让用户白点一次、吃一句红字。
  * ⚠️★ 但 **2026-10-03 的 Ruling 60 之后**，"已绑定"的行会多一颗安静的「解除绑定」——
  *    它不是"主进程会拒的按钮"（`unbindCatalogRow` 就是为它加的），所以这一组不再写成
  *    "一颗按钮都没有"，而是**逐颗点名**：既不能多出更新按钮、也不许把解绑那颗藏掉。
  *    （原来的断言是 `buttonsIn(manualRow).length === 0`，那一条**必须改** —— 改的
  *    理由与新旧文本都记在报告里。）
+ * ⚠️★★ **收口波（2026-10-03）再改一次**：「绑定本地文件」那颗对 `manual` 的行**是给**的
+ *    —— `bindCatalogRow` 里**没有**任何 `manual` 检查、§6.8 的动作清单也不豁免它；
+ *    第一版按 `manual` 把它一起藏掉，理由（"主进程对两者都会拒"）是**假的**。
+ *    ⇒ 已绑定那一行的按钮集合**没变**（`[unbind]`：绑着就没有"绑定"可点），
+ *    变的是**未绑定**那一行：从"一颗按钮都没有"变成"恰好一颗「绑定本地文件」"。
  */
 const manualRow = rowOf(tableHtml([ROW_MANUAL]), 'optifine');
 assert.deepEqual(
   labelsIn(manualRow),
   [labelOf('files.unbind')],
-  '★ `manual` 且已绑定的行：**没有**更新按钮、**没有**「绑定本地文件」，只有那一颗「解除绑定」（Ruling 47/60）',
+  '★ `manual` 且已绑定的行：**没有**更新按钮，只有那一颗「解除绑定」（Ruling 47/60）',
 );
 assert.deepEqual(
   labelsIn(manualRow).filter(
     (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
   ),
   [],
-  '★ `manual` 的行不许有更新按钮（主进程的 `assertUpdatable` 必拒）',
+  '★ `manual` 的行不许有更新按钮（主进程的 `assertNotManual` 必拒）',
 );
 const manualUnboundRow = rowOf(tableHtml([{ ...ROW_MANUAL, binding: null }]), 'optifine');
 assert.deepEqual(
-  buttonsIn(manualUnboundRow).length,
-  0,
-  '★ `manual` 且**未绑定**的行：一颗按钮都没有（既没有更新、也没有「绑定本地文件」）',
+  buttonsIn(manualUnboundRow).map((button) => button.label),
+  [labelOf('files.bindLocal')],
+  '★★ `manual` 且**未绑定**的行：恰好一颗「绑定本地文件」' +
+    '（`bindCatalogRow` 不检查 manual —— 藏掉它是一条假理由；更新那颗仍然不许有）',
+);
+assert.deepEqual(
+  labelsIn(manualRow).filter(
+    (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
+  ),
+  [],
+  '★ 反面：上面那一条不是靠"manual 行什么都不画"过的 —— 更新那两颗仍然缺席',
 );
 assert.deepEqual(
   linksIn(manualRow).map((l) => l.label),
@@ -987,22 +1017,27 @@ assert.equal(
   OPTIFINE_URL,
   '★ 那个链接要指向 release 自己的地址（`official.url`）——指向别处等于把用户送去别的地方',
 );
-ok(`③ \`manual\` 的行没有更新按钮（已绑定只剩「解除绑定」那样一颗安静的按钮），只有「打开原网页」`);
+ok(`③ \`manual\` 的行没有更新按钮（已绑定时能解绑、未绑定时能绑定），只有「打开原网页」`);
 
 // ---------------------------------------------------------------------------
-// ④ `newer` / `different-build` / `unknown` 三支：只解释，**不给**更新按钮
+// ④ `newer` / `unknown` 两支只解释；`different-build` 有**自己的**更新入口（收口波）
 // ---------------------------------------------------------------------------
 /*
- * ⚠️★ spec §7.2 的 ④/⑤ 与 §8：这三支**都不进批量**、也不该有一颗按钮
- *    （主进程的 `assertUpdatable` 同样拒它们）。界面欠的是一句**各自的**解释 ——
- *    三支合成一句"不能更新"就把"为什么"删掉了（用户唯一能行动的线索）。
+ * ⚠️★ spec §7.2 的 ④/⑤ 与 §8：
+ *   · `newer` 与 `unknown` **都不进批量**、也不该有一颗按钮（`assertUpdatable` 拒它们）
+ *     ⇒ 界面欠的是一句**各自的**解释（合成一句"不能更新"就把"为什么"删掉了）。
+ *   · ★★ `different-build` **是**"要人显式点一下"那一支（Ruling 47 的纠正、spec §8 的
+ *     按钮文案要求）⇒ 它**必须**有更新按钮，而且那颗按钮要能送它自己那条通道。
+ *     ⚠️ 收口波之前这一组把三支写在一起断言"都没有更新按钮" —— 那条断言**把缺陷钉住了**
+ *     （`different-build` 的行在页面上确实一颗按钮都没有，而 `lastRun.skipped` 那句
+ *     "要人显式点一下这一条"因此是一句**做不到的指令**）。真实受害者：`standardsettings`
+ *     与 1.16.1 下那 4 个主体含非数字段的 mod。
  */
 const newerRow = rowOf(tableHtml([ROW_NEWER]), 'ranked');
 const differentRow = rowOf(tableHtml([ROW_DIFFERENT_BUILD]), 'ranked');
 const unknownRow = rowOf(tableHtml([ROW_UNKNOWN]), 'ranked');
 for (const [name, row, key] of [
   ['newer', newerRow, 'files.hintNewer'],
-  ['different-build', differentRow, 'files.hintDifferentBuild'],
   ['unknown（spec 写作 different）', unknownRow, 'files.hintUnknown'],
 ] as const) {
   assert.ok(
@@ -1018,7 +1053,7 @@ for (const [name, row, key] of [
   );
 }
 /*
- * ★ 反面：这三支与"可更新"那一支**长得要分得开**（同一张表里）。
+ * ★ 反面：这几支与"可更新"那一支**长得要分得开**（同一张表里）。
  *   `ROW_GITHUB` 是同一份夹具的"该给按钮"那一侧 ⇒ 两边都断言，判据才不会退化成空跑。
  *   ⚠️ 数的是**更新**那两颗（`ROW_GITHUB` 是已绑定的 ⇒ 还有一颗「解除绑定」，见 ③）。
  */
@@ -1027,9 +1062,52 @@ assert.equal(
     (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
   ).length,
   2,
-  '★ 反面：可更新的那一行**确实**有那两颗更新按钮（否则上面三条"没有按钮"是空跑）',
+  '★ 反面：可更新的那一行**确实**有那两颗更新按钮（否则上面那些"没有按钮"是空跑）',
 );
-ok('④ newer / different-build / unknown 三支各自有解释、都没有更新按钮（可更新的那一行有）');
+/*
+ * ★★ 收口波的正面读数：`different-build` 那一行**有自己的更新入口**。
+ *   ⚠️ 这一段是这一组里唯一"该有按钮"的反例之一 —— 它与 `newer`/`unknown` 的差别必须
+ *   在两份产物上都钉住（只断言"没有按钮"的话，这一行回到"一颗都没有"照样绿，
+ *   而 `lastRun.skipped` 那句"要人显式点一下这一条"就又变成做不到的指令）。
+ *   `ROW_DIFFERENT_BUILD` 的目标挂在 `GITHUB_URL` 上 ⇒ 镜像那一颗也该在（D5/D6）。
+ */
+assert.deepEqual(
+  labelsIn(differentRow).filter(
+    (label) => label === labelOf('files.updateOrigin') || label === labelOf('files.updateMirror'),
+  ),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★ `different-build` 的行**必须**有那两颗更新按钮（Ruling 47 的纠正 / spec §8：' +
+    '"要人显式点一下"的那一支，而它是 GitHub 来源 ⇒ 镜像那颗也在）',
+);
+assert.ok(
+  textOf(differentRow).includes(textOf(resolved('files.hintDifferentBuild'))),
+  '★ 而且它那句解释要**说清那颗按钮会做什么**（用官方那条替换掉本地这份不同的字节）',
+);
+/*
+ * ★★ 文案的诚实性（§8 的 `different` 状态不存在 ⇒ 只说知道的那一半）：
+ *   `different-build` 同时装着"版本主体相同"与"两边主体排不出先后"两种输入
+ *   ⇒ 两处文案**都不许**声称版本号相同（实测反例 `HD_U_F9` vs `HD_U_F10`）。
+ *   ⚠️ 这两条直接断言**两份字典**（不是渲染产物）：改回"同版本号"那一版就当场红，
+ *   而"字节不同"这一半必须还在（否则为了诚实把信息删光了也是一种坏法）。
+ */
+assert.equal(
+  zhCN.files.verdictDifferentBuild.includes('同版本号') ||
+    zhCN.files.hintDifferentBuild.includes('版本号相同'),
+  false,
+  '★★ 中文文案不许声称"版本号相同"（`different-build` 也装"排不出先后"那一类输入）',
+);
+assert.equal(
+  en.files.verdictDifferentBuild.includes('Same version') ||
+    en.files.hintDifferentBuild.includes('Same version number'),
+  false,
+  '★★ 英文文案不许声称"same version"（同一条理由）',
+);
+assert.equal(
+  zhCN.files.hintDifferentBuild.includes('字节') && en.files.hintDifferentBuild.includes('bytes'),
+  true,
+  '★★ 而"字节不同"这一半必须还在（诚实 ≠ 把已知信息删光）',
+);
+ok('④ `newer` / `unknown` 只解释、没有更新按钮；`different-build` 有自己的更新入口与诚实的文案');
 
 // ---------------------------------------------------------------------------
 // ⑤ `ambiguous`（两个候选）⇒ 列出**全部候选**且要求明确选，**不给**更新按钮
@@ -1883,6 +1961,16 @@ assert.ok(
   ),
   '★ 旧副本那一句的**整句**（含条数）—— 这一句是 D9.1"更新时会清掉它们"在界面上的唯一提示',
 );
+/*
+ * ★★ spec §4 D9.1 明写"**按钮文案写明后果**"（收口波补）：只说"另有 N 份旧副本"
+ *   是在描述现状，没说**更新会把它们删掉** ⇒ 用户点更新之前不知道盘上会少文件。
+ *   ⚠️ 这条断言的是**后果那一句的整句**（独立词条 `folderOldCopiesDeleted`）：
+ *   把那一行渲染删掉、或把词条删了，它当场红（拿"有旧副本那几个字"当判据会恒真）。
+ */
+assert.ok(
+  textOf(folderRow1161).includes(textOf(resolved('files.folderOldCopiesDeleted'))),
+  '★★ 旧副本提示必须写出**后果**（D9.1：更新会把这些文件一起删掉，新文件验签就位之后才删）',
+);
 ok('⑲ 行内六样都在（文件名 / mod 名 / 本地版本 / 官方版本 / 状态徽章 / 旧副本提示）+ 来源标注');
 
 // ---------------------------------------------------------------------------
@@ -1942,6 +2030,8 @@ ok(
  *      · `unknown-version`（整个文件夹）：头行说一次 + 一行按钮都没有。
  *    ⚠️ 每一档都断言**两件事**：没有更新按钮、而且**有自己的解释**（只断言"没有按钮"
  *    的话，"这一列永远不画东西"照样能过 —— 那是 §5.32 的第一类空跑）。
+ * ⚠️★ 而 `different-build` **不在**这份名单里（收口波）：它是"要人显式点一下"的那一支，
+ *    `assertUpdatable` 放行它 ⇒ 它有更新按钮（见下面那一段正面断言）。
  */
 for (const [what, row, hintKey] of [
   ['manual（OptiFine）', FROW_MANUAL, 'files.hintManual'],
@@ -1967,6 +2057,31 @@ for (const [what, row, hintKey] of [
     `★ ${what} 那一行要有**自己的**解释（${hintKey}）—— 只解释不画按钮，用户才知道为什么`,
   );
 }
+/*
+ * ★★ 收口波：`different-build` 在**第二部分**也必须有更新入口（与第一部分同一条判据）。
+ *   ⚠️ 夹具的 `batchable: false` 是承重的：一个"按 `batchable` 给按钮"的实现在这里会红
+ *   （而那一版正是这个缺陷本身 —— `lastRun.skipped` 说"要人显式点一下这一条"，
+ *   页面上却没有那颗按钮）。目标挂 `GITHUB_URL` ⇒ 镜像那颗也该在。
+ */
+const diffBuildFolderHtml = foldersHtmlOf(
+  stateOf([ROW_GITHUB], {
+    folders: [folder({ folderId: 'f-diff', rows: [FROW_DIFFERENT_BUILD] })],
+  }),
+);
+const diffBuildFolderRow = folderRowEl(
+  folderBlockOf(diffBuildFolderHtml, 'f-diff'),
+  FROW_DIFFERENT_BUILD.modid,
+);
+assert.deepEqual(
+  buttonsIn(diffBuildFolderRow).map((button) => button.label),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★ `different-build` 的行**必须**有那两颗更新按钮（`assertUpdatable` 放行它、' +
+    'spec §8 要人显式点一下；而 `batchable` 是 false ⇒ 判据不能是 batchable）',
+);
+assert.ok(
+  textOf(diffBuildFolderRow).includes(textOf(resolved('files.hintDifferentBuild'))),
+  '★ 而且它那句解释要说清那颗按钮做什么（第二部分与第一部分共用 `VERDICT_HINTS`）',
+);
 /*
  * ★★ 多候选那一行：把**每一个**候选都列出来（与第一部分逐字相同）。
  *    ⚠️ 判据是"两个候选的版本号都在"，而不是"有一个列表"——空列表也能过后者。
@@ -2101,9 +2216,12 @@ ok(
  *    就是一串必吃的红字。夹具里刻意放了**四种**文件夹：版本对得上且路径在（该出现）、
  *    另一个版本（不该出现）、版本对得上但路径不在（不该出现）、路径在但版本未知
  *    （不该出现）—— 一条判据砍四个方向。
- * ⚠️★ 第三条闸（"这个文件夹还没有扫描读数"）**不在这一层**：状态里没有那一格，
- *    而 `missingStatus === 'ok'` 的定义就是"每个已绑定文件夹都有成功读数"（见
+ * ⚠️★ 第三条闸（"这个文件夹还没有扫描读数"）**不在这一层**：桌面版 0.0.5 起
+ *    `ModFolderView.hasReading` 就是那一格（Ruling 65），而这一层只拿 `folder` 的
+ *    `pathExists` / `gameVersion` 两个字段做过滤；`missingStatus === 'ok'`
+ *    （"每个已绑定文件夹都有成功读数"）仍然决定**清单画不画**（见
  *    `MissingModsList.tsx` 的文件头）—— ㉔ 断言"另外三档不画清单"就是它的守门人。
+ *    ⚠️ 旧注释写的是"状态里没有那一格"（Ruling 66② 记的那处注释腐坏），已改准。
  * ⚠️ 一个能装它的文件夹都没有时：**一个控件都不画**（那颗下载必被拒），只留一句解释。
  */
 const missingState = stateOf([ROW_GITHUB], {
@@ -2657,9 +2775,12 @@ ok(
 /*
  * ⚠️★ 这一组盯的是"**页面只发它证得了的东西**"：
  *   · 三个设置类动作（版本 / 自动更新 / 批量通道）各接自己那条 onChange，各一处；
- *   · 底部那颗「下载」只送 `'origin'` —— `MissingModView` 里没有 release，
- *     页面证不了任何镜像适用（发 `{ mirrorId }` 是赌，赌输的形态是"点了被拒"）；
+ *   · 底部那颗「下载」送的是 `'origin'` **或**那一行 release 自己适用的镜像
+ *     （**Ruling 62②** 之后 `MissingModView` **有** `release` 了 ⇒ 页面证得了镜像适用，
+ *     所以现在是两颗、各送自己那条通道；两颗的接法由下面那几条守卫逐条钉住）；
  *   · 三块的拼装顺序（第一部分 → 第二部分 → 底部）与特性检测那一支。
+ *   ⚠️ 旧注释写的是"`MissingModView` 里没有 release ⇒ 只走 origin"（Ruling 66② 记的
+ *   那处注释腐坏），已改准 —— 那是判修轮**之前**的契约。
  */
 assert.match(
   foldersPanelCode,
@@ -2769,6 +2890,86 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
+// ㉜ ★★ 真实目录：1.16.1 那 **48 行**真的渲染得出来（spec §10 那条断言）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 为什么要有这一组（2026-10-04 收口波）：spec §10 的渲染自检那一行写着
+ *    "两个筛选维度 × **48 行** × 双按钮 × 缺失清单折叠 × 三处空态 × 老客户端降级"，
+ *    而这一组之前**全部**用的是手写的 3–5 行夹具 ⇒ "48 行"这个数只在数据层
+ *    （`services/api/src/mod-catalog.test.ts` 那类单测）被证过，**页面上没有被渲染过**：
+ *    `planCatalogRows` 的过滤/去重/展开若漂了（例如把 `targetVersions[]` 展开丢掉一层），
+ *    这个脚本一行都不会红。
+ * ⚠️★ 判据分两层，缺一层就有一种坏法没人喊：
+ *    ① **数据层**：`planCatalogRows` 对真目录的 1.16.1 恰好给 48 行（与 spec §3.2 的读数一致）；
+ *    ② **渲染层**：那张表真的把这 48 行画出来了（`data-catalog-rows` 与 `<tr>` 计数
+ *       两条**独立**读数 —— 只数一个的话，"表根本没渲染"或"行数标签写死"都能过）。
+ * ⚠️ 夹具是**真目录**（`content/mod-catalog.json`），走的是与主进程同一段纯逻辑
+ *    （`parseModCatalog` + `planCatalogRows`）；`bindings` 给空表 ⇒ 每一行的判定是
+ *    `unknown`（没有本地读数），所以这一组**不**断言按钮，只断言行数与渲染。
+ * ⚠️ 这个脚本**不进安装包**（`apps/web/scripts/**` 不在任何构建输入里）⇒ 读仓库文件是免费的。
+ * ⚠️ 路径用 `import.meta.url` 推（脚本的 cwd 是 `apps/web`，相对路径会指错地方）。
+ */
+const realParsed = parseModCatalog(
+  JSON.parse(
+    readFileSync(new URL('../../../content/mod-catalog.json', import.meta.url), 'utf8'),
+  ) as unknown,
+);
+/*
+ * ⚠️★ 先证"仓库里那份目录是合法的"：`parseModCatalog` 把错误**返回**而不是抛
+ *    ⇒ 不写这一条的话，一份坏目录会让下面那句 `realCatalog.tagLabels` 抛 `TypeError`
+ *    （症状长得像"脚本写错了"，不像"目录坏了" —— §5.74 那一族）。
+ */
+if (!realParsed.ok) {
+  assert.fail(
+    `content/mod-catalog.json 不合法（这一组要验的是真目录）：${realParsed.problems.join('；')}`,
+  );
+}
+const realCatalog = realParsed.catalog;
+/**
+ * 标签全集 —— **与主进程 `tagOptionsOf` / `requireKnownTags` 同一口径**
+ * （`tagLabels` 的键 ∪ 各个 mod 真的带着的标签）。这一格只影响 chip 的文案：
+ * 不给的话会退回目录里的 `zh` 那一份，而 ㉛ 的零汉字扫描**不许**开豁免口子
+ * （英文那一遍里那一列会是中文）。
+ */
+const realTagLabels: TagOptionView[] = (() => {
+  const keys = new Set<string>(Object.keys(realCatalog.tagLabels));
+  for (const mod of realCatalog.mods) for (const tag of mod.tags) keys.add(tag);
+  return [...keys].map((key) => ({
+    key,
+    labels: realCatalog.tagLabels[key] ?? { zh: key, en: key },
+  }));
+})();
+const realRows = planCatalogRows({
+  catalog: realCatalog,
+  gameVersion: '1.16.1',
+  tagFilter: [],
+  bindings: new Map(),
+});
+assert.equal(
+  realRows.length,
+  48,
+  '★★ 真实目录在 1.16.1 下是 48 行（spec §3.2 / §10 的那个数）—— 少一行说明展开或过滤漂了',
+);
+const realRowsHtml = keep(
+  tableHtml(realRows, { mirrors: realCatalog.mirrors, tagLabels: realTagLabels }),
+);
+assert.ok(
+  realRowsHtml.includes('data-catalog-rows="48"'),
+  '★★ 那一屏真的把 48 行交给了表（`data-catalog-rows` 是"面板给了几行"的读数）',
+);
+assert.equal(
+  (realRowsHtml.match(/class="filetable__row"/g) ?? []).length,
+  48,
+  '★★ 而且 48 个 `<tr>` 真的在产物里（与上面那条**独立**：标签可以写死、行可以没画）',
+);
+assert.deepEqual(
+  rawKeysIn(realRowsHtml),
+  [],
+  '★ 真实目录那一屏的产物里也没有裸 key 泄漏（手写夹具那一遍扫不到这些真实标签名）',
+);
+ok('㉜ 真实目录（content/mod-catalog.json）：1.16.1 的 48 行真的渲染出来了');
+
+// ---------------------------------------------------------------------------
 // ㉛ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
 if (LANG === 'en') {
@@ -2797,9 +2998,10 @@ if (LANG === 'en') {
  *    只有这个数字会变。⇒ 改脚本就要一起改这里（改的时候**现数**，别估）。
  * ⚠️ en 比 zh 多 1：㉛ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
  * ⚠️ Task 8：18 → 28（en 19 → 29），加的正是 ⑱–㉗ 那十组；
- *    判修轮又加了 ㉘–㉚ 三组（Critical / Ruling 64 / Ruling 65）⇒ 28 → **31**、29 → **32**。
+ *    判修轮又加了 ㉘–㉚ 三组（Critical / Ruling 64 / Ruling 65）⇒ 28 → **31**、29 → **32**；
+ *    收口波再加 ㉜ 一组（真实目录的 48 行真的渲染一遍）⇒ 31 → **32**、32 → **33**。
  */
-const expectedGroups = LANG === 'en' ? 32 : 31;
+const expectedGroups = LANG === 'en' ? 33 : 32;
 assert.equal(
   pass,
   expectedGroups,
@@ -2823,5 +3025,8 @@ console.log('     · `hasReading` 是**主进程**算的（`readingOf(id).ok`）
 console.log('       之后渲染成什么样"，那一格的值本身在桌面探针里；');
 console.log('     · 主进程写死的中文（`notices` / `skipped[].reason`）—— 夹具是 ASCII；');
 console.log(
-  '     · 真实目录的 48 行 / 两个重复键 / 54 条 manual（那是 T1/T3 的单测与目录本身的事）。',
+  '     · 两个重复键（`optifine|1.7.2` / `speedrunigt|26.1`）的**真实**形状与 54 条 manual 的',
 );
+console.log('       目录级读数（那是 T1/T3 的单测与目录本身的事）。');
+console.log('     ⚠️ 2026-10-04 收口波订正：**真实目录的 48 行**现在由 ㉜ 真的渲染一遍');
+console.log('       （此前这一行把它列在"没被覆盖"里，而 spec §10 要求它被渲染过）。');
