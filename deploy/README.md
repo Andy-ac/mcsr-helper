@@ -150,6 +150,13 @@ grep -ao 'mcsr:modfolders-' apps/desktop/release/win-unpacked/resources/app.asar
 `\dist\main.cjs` 这种反斜杠路径、直接喂给 `extractFile` 一个都取不到 —— 所以这里按**偏移**归属，
 不走那条路）。
 
+⚠️★ **这一节的已知缺口（2026-10-04 记录，未修）**：上面 ①②③ 与那两个复跑块读的**全是**
+`release/win-unpacked/resources/app.asar` —— 那是**打包器的输入**，**不是**发布出去的那份字节。
+**没有任何一步打开那个 exe**、把它**内部**的 asar 取出来与这一份比 ⇒ 今天能说的只是"输入里是什么"，
+**不是**"用户下载到的那个 exe 里是什么"。⇒ 真正把**已发布的字节**钉到清单上的是**部署之后**那一次回读：
+把**下载回来的 exe** 现算 sha512 与 `latest.yml` 里的 `sha512` 比对（本文件安装器一节 ② 里已经写着
+这一条判据）。⚠️ 在那一次比对跑过之前，"这个 exe 里的 asar 就是我量过的那一份"**是推断，不是读数**。
+
 **2. 发布前：先把线上那个库备份出来**（这一步**不在** `deploy.sh` 里）
 
 `deploy.sh` 的链上是**没有备份的**（全文 grep 不到 `backup`/`VACUUM`），而这次发布**会写库**：
@@ -497,6 +504,20 @@ exit $fail          # ← 这一节只要看这一个退出码：0 = 全过
 `no-cache`。⇒ **只有"对生产那一次 GET"没有跑过**，判据本身不是"看起来对"。
 （安装包那一侧相反：文件名带版本号 ⇒ `Cache-Control: public, max-age=31536000, immutable`
 是对的，见 `Caddyfile:132-133`，**不要**把它改成 no-cache。）
+
+> ⚠️★ **上面那个"112,480,275"作废（2026-10-04 文档订正波）**：0.0.5 的安装器**重打过一次**
+> （收口波改了 `apps/desktop/src/**` 与 `packages/shared/src/**` ⇒ 打进 `app.asar` 的东西变了，
+> 必须重打、重验）⇒ 那一版 exe 的读数不再有效。**本次现读**（`apps/desktop/release/` 下那一份）：
+>
+> - `MCSR Helper-Setup-0.0.5.exe`：**112,481,525** 字节，
+>   `sha512` = `+VY0lUz28K6J7e3erobwu00mw2zl4feFqzJNpI4XFIVYWCzieUzIsPT0vzXLm9K2ja0qFejlo2zQkwwNzJ7UnQ==`；
+> - `latest.yml` **351** 字节（`version: 0.0.5`；它里面的 `size` 与 `sha512` 与上面那份 exe **逐字符相同**）、
+>   `MCSR Helper-Setup-0.0.5.exe.blockmap` **118,393** 字节、
+>   `win-unpacked/resources/app.asar` **8,607,765** 字节。
+>
+> ★ 上面那个块（②）的**判据形状一个字都没变** —— 它照样是"部署后要跑的那一段"，变的只是**示例读数**。
+> 而且真跑时 `MANIFEST_SIZE` / `MANIFEST_SHA` 是脚本自己从线上那份 `latest.yml` 现读的 ⇒
+> **不需要**为了换读数去改这一段（下次发版要改的只有那两处 `version: 0.0.5`）。
 
 ```bash
 # ③ 部署之后库还在不在（这次部署会重启 API ⇒ 会跑迁移；备份就是为这一步存在的）

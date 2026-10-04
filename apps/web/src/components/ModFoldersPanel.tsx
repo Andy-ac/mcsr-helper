@@ -37,8 +37,11 @@
  *   · **通道**：页面只发它**证得了**的那条。判据与主进程的 `channelUrl` 是同一份实现
  *     （`mirrorsForUrl`，即 `mirrorsFor`）⇒ 行内两颗按钮各自明说自己那条通道，而镜像
  *     那一颗只在"这条 release 的主机真的在某条镜像的 `hosts` 里"时出现（D5）。
- *     ⚠️★ 这一条也是**底部的「下载」只走原地址**的理由（见 `MissingModsList.tsx`）：
- *     `MissingModView` 里**没有** release，页面证不了任何镜像适用。
+ *     ⚠️★ **底部那一栏走的是同一条判据**（见 `MissingModsList.tsx`）：`MissingModView.release`
+ *     是**必填**（`packages/shared/src/modFolders.ts`，Ruling 62②/63）⇒ 页面证得了"这条
+ *     release 的镜像适不适用"，非 manual 的行因此画**两颗**下载（原地址 + 镜像）。
+ *     ⚠️ 旧注释说"`MissingModView` 里**没有** release、底部的「下载」只走原地址" ——
+ *     那两半在 Ruling 63 之后都是假的（2026-10-04 文档订正波改准；见 `docs/pending.md` §5.110 ⑤）。
  *
  * ===========================================================================
  * ⚠️★ 没有逐行进度（T6 §9.6 第 3 条）
