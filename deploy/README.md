@@ -176,7 +176,12 @@ ssh <服务器>
 # 在服务器上（做法取自 2026-09-15「迁移 018」那次**真的用过**的备份脚本；
 # 原来那一份住在开发机一个被 gitignore 的目录里 ⇒ 下面这一段就是它的正式落点）。
 # ⚠️ 表清单**动态取**（不写死）：硬编码一份会随迁移过期，而"清单过期"的表现是漏备份一张表。
-sudo -u mcsr node --input-type=module <<'JS'
+# ⚠️ 2026-10-04 **实跑订正**：这一段原来挂在 `sudo -u mcsr` 下 —— **照字面跑必然失败**。
+#    实测：`/srv/mcsr-helper/backup` 是 `root:root 755`（历史那几份备份也都是 root 建的），
+#    所以 `mcsr` 建不了那个快照，报的是 `unable to open database: …/mcsr-<戳>.-pre…db`（看着像"库坏了"，
+#    其实是**权限**）。⇒ 以 **root** 跑（root 能读那份 `drwx------ mcsr` 的库；产出与历史备份同属 root）。
+#    要改成以 mcsr 跑，就得先 `install -d -o mcsr -g mcsr /srv/mcsr-helper/backup`。
+node --input-type=module <<'JS'
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 // ⚠️ DB / DIR 可以用环境变量覆盖 —— 这不是给生产的旋钮，是为了**能在本机副本上真跑一遍**
@@ -465,7 +470,13 @@ immutable 时要重新想一遍。）
 
 ```bash
 IP=<服务器公网 IP>                    # deploy/deploy.env 里 MCSR_SSH_HOST 去掉 user@
-R=(--resolve <域名>:443:$IP)
+# ★ 2026-10-04 实跑订正：**必须加 `--noproxy '*'`**。本机（或任何装了 HTTP 代理的环境）上
+#   curl 会走 CONNECT，回读到的"响应头"里会混进代理自己的
+#   `HTTP/1.1 200 Connection established` 段 ⇒ 下面那条 CSP 判据读到的是代理那一段，
+#   于是报 `✗ 响应里没有 Content-Security-Policy 头`（**假失败**），而部署**明明成功了**，
+#   却以非零退出码收场 ⇒ 触发"换前端之后非零就要立刻重跑"那条纪律，白跑一次。
+#   （同族的第 ③ 条也受影响：它抓到的 URL 会变成首页而不是 `/api/ranked/status`。）
+R=(--resolve <域名>:443:$IP --noproxy '*')
 
 # ① 抓：清单（头 + 正文）、exe、首页那份 JSON。三条都是只读 GET。
 curl -sS "${R[@]}" -D /tmp/latest.yml.head -o /tmp/latest.yml https://<域名>/installer/latest.yml
