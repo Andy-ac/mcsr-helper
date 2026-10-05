@@ -53,35 +53,33 @@ test('channelUrl：origin 用原 URL；镜像用 prefix + 原 URL；未登记的
   assert.equal(channelUrl(catalog, cdn, { mirrorId: mirror.id }), null);
 });
 
-test('★ 目录行：只升不降 —— 本地 5.8.26 / 官方 5.8.22 ⇒ newer 且不进批量', () => {
+test('★★ 目录行没有本地读数（A 的 T6）：单候选 ⇒ unknown、永不进批量、`rowId` 形状不变', () => {
   /*
-   * ⚠️ `bindings` 的键是 **`rowId`（`${modid}|${gameVersion}`）**，不是裸 `modid`
-   *    （契约见本文件用的那个接口：`bindings: ReadonlyMap<string, …>; // 键 = rowId`，
-   *    状态文件那一侧同理 —— `catalogBindings` 按 `rowId` 键控）。
-   *    用裸 modid 当键时那一行**根本没绑上** ⇒ `verdict` 是 `unknown`（无绑定的默认值）：
-   *      · `verdict.kind === 'newer'` **会红**（`'unknown' !== 'newer'` —— 当初就是它
-   *        把这条夹具缺陷照出来的）；
-   *      · 而下面那两条批量断言（`batchable === false` 与 `batchTargets(rows) === 0`）
-   *        **照样绿** —— `unknown` 恰好也不进批量 ⇒ 它们测的是"没绑定的默认路径"、
-   *        不是"只升不降"（AGENTS §5.32①：读数看着有、其实什么都没测）。
-   *    ⇒ 修法是**把键写对**（并顺手把 `rowId` 本身也钉一条断言），不是放宽断言。
+   * ⚠️★ 这条测试**替换**了原来那条"只升不降：本地 5.8.26 / 官方 5.8.22 ⇒ newer"
+   *    （2026-10-04，A 的 T6）。它原来的夹具是 `bindings: new Map([['mcsrranked|1.16.1', …]])`
+   *    —— 而 `planCatalogRows` 在 T6 **不再收 `bindings`**（`catalogBindings` 那三个通道
+   *    删了，D8/裁决 B）⇒ 目录行没有"本地那一份"可言，`older` / `newer` / `same` /
+   *    `different-build` 四支在目录行上**不可达**（它们都要一份本地字节/版本读数）。
+   *
+   * ⚠️★ 所以这里钉的是**收缩之后**的判据（不是"放宽"）：单候选 ⇒ `unknown`，
+   *    而且 `batchable` 恒 `false`（进批量的唯一入口 `older` 到不了）。
+   *    ⚠️ 文件夹行那一侧的"只升不降"**一个字都没动**：它的本地读数是扫到的 jar
+   *    （`planFolderView` 的 `scan`），断言在那里与本文件里都有。
+   *    ⚠️ 上游解析那一支（`upstreamLatest`）另有两组测试（传了 / 没传），也在这个文件里。
    */
   const rows = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map([
-      [
-        'mcsrranked|1.16.1',
-        { localPath: 'C:/x/mcsrranked-5.8.26.jar', localVersion: '5.8.26', localSha512: null },
-      ],
-    ]),
   });
   const row = rows.find((r) => r.modid === 'mcsrranked')!;
-  assert.equal(row.rowId, 'mcsrranked|1.16.1', 'rowId 的形状是 <modid>|<gameVersion>');
-  assert.equal(row.verdict.kind, 'newer');
-  assert.equal(row.batchable, false);
-  assert.equal(batchTargets(rows), 0, 'newer 绝不进批量');
+  assert.equal(row.rowId, 'mcsrranked|1.16.1', 'rowId 的形状仍是 <modid>|<gameVersion>');
+  assert.equal(
+    row.verdict.kind,
+    'unknown',
+    '没有本地读数 ⇒ 单候选行是 unknown（一个仍然"能判出 older/newer"的实现会在这里红）',
+  );
+  assert.equal(row.batchable, false, 'unknown 绝不进批量');
+  assert.equal(batchTargets(rows), 0, '整份目录行都不进批量（目录行没有本地读数）');
 });
 
 test('★ manual（OptiFine）连更新按钮都不给：manual = true 且 batchable = false', () => {
@@ -96,8 +94,6 @@ test('★ manual（OptiFine）连更新按钮都不给：manual = true 且 batch
   const rows = planCatalogRows({
     catalog,
     gameVersion: '1.12.2',
-    tagFilter: [],
-    bindings: new Map(),
   });
   const opti = rows.find((r) => r.modid === 'optifine')!;
   assert.ok(opti.official !== null, 'optifine|1.12.2 实测单候选，必须有唯一目标');
@@ -108,8 +104,6 @@ test('★ manual（OptiFine）连更新按钮都不给：manual = true 且 batch
   const rows172 = planCatalogRows({
     catalog,
     gameVersion: '1.7.2',
-    tagFilter: [],
-    bindings: new Map(),
   });
   assert.ok(
     rows172.some((r) => r.manual),
@@ -121,8 +115,6 @@ test('★ 多候选 ⇒ ambiguous、列出全部候选、不进批量', () => {
   const rows = planCatalogRows({
     catalog,
     gameVersion: '1.7.2',
-    tagFilter: [],
-    bindings: new Map(),
   });
   const amb = rows.find((r) => r.modid === 'optifine')!;
   assert.equal(amb.verdict.kind, 'ambiguous');
@@ -130,69 +122,54 @@ test('★ 多候选 ⇒ ambiguous、列出全部候选、不进批量', () => {
   assert.equal(amb.batchable, false);
 });
 
-test('★ 标签筛选是"与"：只留下同时带全部所选标签的行；标签一个 mod 可以有多个', () => {
-  const all = planCatalogRows({
-    catalog,
-    gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map(),
-  });
-  const someTag = all.find((r) => r.tags.length > 0)!;
-  const tagA = someTag.tags[0]!;
-  const only = planCatalogRows({
-    catalog,
-    gameVersion: '1.16.1',
-    tagFilter: [tagA],
-    bindings: new Map(),
-  });
-  assert.ok(only.length <= all.length);
-  assert.ok(only.every((r) => r.tags.includes(tagA)));
-
+test('★★ D2（A 的 T6）：标签只显示、不筛选 —— 目录行是**全量**，而且入参里没有这一格', () => {
   /*
-   * ★ 第二个标签必须**真的不同**，而且要与 `tagA` **共现**在某个真实行上。
+   * ⚠️★ 这条测试**替换**了原来那条"标签筛选是**与**语义"（2026-10-04，A 的 T6，spec D2）。
+   *    原判据（`tagFilter.every(...)` 丢掉不匹配的行）在 T6 **删掉了**，理由是实的：
+   *    唯一能改这个筛选的界面（第一部分那两个筛选器之一）随第一部分下线，
+   *    而 `prefs.tagFilter` 是会**持久化**的 ⇒ 一个陈旧的值会让第三段
+   *    「该版本**全部** mod」不再是全量，而**用户无处可清**（T5 评审点名的那个真缺陷）。
+   *    ⇒ 修法是结构性的：`PlanCatalogRowsInput` 里**根本没有**这一格。
    *
-   * 原来这里是 `[...someTag.tags, ...另一个 mod 的 tags].slice(0, 2)`，而在**已提交的
-   * 目录**上 1.16.1 的前两个带标签的行是 `antigone[legal]` 与 `antiresourcereload[legal]`
-   * ⇒ **`two === ['legal', 'legal']`**（实测）⇒ "与"和"或"在这条断言下**读数相同**
-   * （实测：都是 31 行）⇒ 把 `tagFilter.every(...)` 改成 `some(...)` 它**照样绿**，
-   * 也就是这条测试抓不到它标题宣称的那个 bug。
-   * ⇒ 改成从一个**带 ≥2 个标签的真实行**上取两个不同的共现标签，
-   *   并把"两个必须不同"本身写成断言（否则这个夹具缺陷会静默回来）。
+   * ⚠️★ 判据分两半，缺一半就有一种坏法没人喊：
+   *    ① **编译期**：往入参里塞 `tagFilter` 必须**编译不过**（`@ts-expect-error` ——
+   *       哪天有人把那一格加回去，这一条会变成"未使用的 expect-error"而当场红）；
+   *    ② **运行期**：带标签的行与不带标签的行**都在**（一个"只留下带某标签的行"的实现
+   *       在这里红），而标签本身仍然画得出来（D2：**只显示**）。
    */
-  const mate = all.find((r) => r.tags.includes(tagA) && r.tags.some((tg) => tg !== tagA));
-  assert.ok(mate, `1.16.1 下必须有"同时带 ${tagA} 与另一个标签"的行，否则"与/或"无法区分`);
-  const tagB = mate.tags.find((tg) => tg !== tagA)!;
-
-  const onlyB = planCatalogRows({
+  const rows = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [tagB],
-    bindings: new Map(),
   });
-  const two = [tagA, tagB];
-  assert.notEqual(tagA, tagB, '两个标签必须不同 —— 相同的话"与"和"或"是同一个判据');
-
-  const both = planCatalogRows({
-    catalog,
-    gameVersion: '1.16.1',
-    tagFilter: two,
-    bindings: new Map(),
-  });
-  assert.ok(both.length > 0, '必须至少有一行同时带这两个标签（否则这条断言什么都没测）');
-  // ★ 承重的一条：与 ⇒ 交集 < 单标签那一边；改成"或"时并集 ≥ 两边 ⇒ 必红
+  /*
+   * ★ 判据（**不按"带标签/不带标签"分**，实测那一刀切不出来）：1.16.1 下**每一行都至少
+   *   带一个标签**（48/48）⇒ "不带标签的行还在不在"是个空集上的恒真（§5.32①）。
+   *   能咬住筛选的判据是这一条：**任取一个真实标签，不带它的行必须还在**。
+   *   一个"按标签筛过"的实现（不论筛哪个标签）会当场红。
+   */
+  const someTag = rows.find((row) => row.tags.length > 0)!.tags[0]!;
+  const withoutTag = rows.filter((row) => !row.tags.includes(someTag));
   assert.ok(
-    both.length < only.length,
-    `"与"必须真的比单标签窄：both=${both.length} only(${tagA})=${only.length}`,
+    withoutTag.length > 0,
+    `夹具自钉 + 判据：不带 ${someTag} 的行必须还在（实测 ${String(rows.length)} 行里 ` +
+      `${String(withoutTag.length)} 行不带它）—— 一个"按标签筛过"的实现在这里红`,
   );
-  assert.ok(
-    both.length <= Math.min(only.length, onlyB.length),
-    `交集不可能大于任一单标签集合：both=${both.length} only(${tagA})=${only.length} only(${tagB})=${onlyB.length}`,
+  assert.equal(
+    rows.length,
+    48,
+    '1.16.1 下的目录行是**全量** 48 行（spec §3.2 的读数；`foldersrender.tsx` ㉜ 钉的是同一个数）',
   );
-  // 行级判据（简报原本那一条）：留下来的每一行都必须同时带两个标签。
-  // ⚠️ 它排在两条长度断言**之后**是有意的：`assert` 在第一次不满足时就抛，
-  //    排前面的话"与/或"那把刀会先撞上它（消息只有一句 "evaluated to a falsy value"），
-  //    而长度那两条会报出 `both=31 only(legal)=31` 这种能直接看出"并集"的读数。
-  assert.ok(both.every((r) => two.every((tg) => r.tags.includes(tg))));
+  // ★ D2 的另一半：标签仍然**显示**得出来（行上带着 key + 显示名，逐位对应）
+  for (const row of rows) {
+    assert.equal(row.tagLabels.length, row.tags.length, `${row.modid} 的标签显示名与 key 逐位对应`);
+  }
+  /*
+   * ★★ 编译期那一条（刀）：`tagFilter` 已经不是入参 —— 把这一格加回
+   *    `PlanCatalogRowsInput`（或者恢复 `planCatalogRows` 里的筛选），
+   *    这一行的 `@ts-expect-error` 会变成"多余的 expect-error" ⇒ `typecheck` 红。
+   */
+  // @ts-expect-error tagFilter 在 T6 已经从入参里删掉了（D2：标签只显示、不筛选）
+  planCatalogRows({ catalog, gameVersion: '1.16.1', tagFilter: ['legal'] });
 });
 
 test('★ 文件夹行：只认 jar 内部 modid；旧副本单列；清单外 mod 单列；无 fabric.mod.json 单列', () => {
@@ -467,6 +444,50 @@ test('★ 状态迁移：v1 → v2 只加字段、不删内容；再跑一次不
   );
 });
 
+test('★★ D8（A 的 T6）：`catalogBindings` 里有旧数据时**读到就忽略**（清成 `{}`）', () => {
+  /*
+   * ⚠️★ spec D8 的"具体形状"：`catalogBindings` 停止写入、读到时**忽略**、**不升状态版本号**。
+   *    那三个写它的通道（`bindCatalogRow` / `unbindCatalogRow` / `updateCatalogRow`）在 T6
+   *    删了（裁决 B：契约 17 → 14），而盘上那份旧数据可能还在 ⇒ 这一条钉住
+   *    "读进来不认它"。
+   *
+   * ⚠️★ 为什么判据是"清成 `{}`"而不是"这个键消失"（spec 的字面是后者）：`StateFileV2` 的
+   *    写盘路径住在 `apps/desktop/src/file-updates.ts`（v1 那一套，本任务不许动），
+   *    而它的写盘是 `{...磁盘, ...我们这份}` 的**浅合并** —— 我们这份里没有这个键时，
+   *    磁盘那份会被**捡回来**。⇒ "键消失"要靠改那条写盘路径才成立。
+   *    **可达到、也在这里钉住的那一半**正是 D8 要的结果：旧数据读到就忽略，
+   *    而且**第一次持久化之后**它不再存在（我们这份的 `{}` 覆盖掉磁盘那份的旧内容）。
+   *    ⚠️ 刀：把 `migrateState` 的早返回改回 `return raw as StateFileV2` ⇒ 这一条红。
+   */
+  const stale = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {
+      'sodium|1.16.1': {
+        localPath: 'D:/mods/sodium.jar',
+        localVersion: '0.1.2',
+        localSha512: null,
+        releaseKey: null,
+        autoUpdate: false,
+      },
+    },
+    folders: {},
+    prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
+  };
+  const migrated = migrateState(stale);
+  assert.deepEqual(migrated.catalogBindings, {}, '旧绑定读到就忽略（清成空表，不是留着不看）');
+  assert.deepEqual(
+    migrateState(migrated),
+    migrated,
+    '幂等仍然成立：再跑一次逐字段相同（`catalogBindings` 还是 `{}`）',
+  );
+  // ★ 对照：**只有**那一格被清（别把"清空 catalogBindings"做成"整份重建"）
+  assert.deepEqual(migrated.folders, stale.folders);
+  assert.deepEqual(migrated.prefs, stale.prefs);
+  assert.deepEqual(migrated.items, stale.items);
+});
+
 test('★ 状态迁移：坏输入不抛（返回可写的干净状态，由调用方决定要不要覆盖）', () => {
   for (const bad of [null, 42, 'x', [], { version: 1 }]) {
     const s = migrateState(bad);
@@ -475,62 +496,64 @@ test('★ 状态迁移：坏输入不抛（返回可写的干净状态，由调�
   }
 });
 
-test('★ older + auto ⇒ 真的进批量（`batchable` 与 `batchTargets` 的自增分支必须被执行）', () => {
+test('★ older + auto ⇒ 真的进批量（在**文件夹行**上：`batchable` 与 `batchTargets` 的自增分支）', () => {
   /*
-   * ⚠️ 这是**唯一**会走到 `batchable === true` 的断言，而它必须存在：
-   *    在它之前，每一条绑定给的都是 `newer`（或压根没绑）⇒ `batchTargets` 的
-   *    `count + 1` 那一支从未执行 ⇒ 下面三种坏法**全套断言照样绿**：
+   * ⚠️★ 这条测试在 2026-10-04（A 的 T6）**换了个 planner**：`batchable === true` 那一支
+   *    在**目录行**上已经不可达（`planCatalogRows` 不收 `bindings` 了 ⇒ 判不出 `older`）
+   *    ⇒ 它原来那份夹具会永远拿到 `unknown`。而这一支**必须**有断言：
    *      · 把 `batchable` 写死成 `false`；
    *      · 把 `needsUpdate(verdict)` 换成自己写的 `verdict.kind === 'older'`；
-   *      · **整个删掉**那次 `needsUpdate` 调用。
-   *    而"不许自己重写判据、必须调 `needsUpdate`"正是本任务被单独点名的全局约束。
-   * 实测：`antigone|1.16.1` 是单候选 `2.0.0[auto]`；本地 `1.0.0` ⇒ 主体 `1.0.0 < 2.0.0`
-   * ⇒ `older`；候选是 `auto` ⇒ 进批量。
+   *      · **整个删掉**那次 `needsUpdate` 调用；
+   *    这三种坏法会让 `batchTargets` 的 `count + 1` 那一支从未执行 ⇒ 少了这一条，
+   *    整套断言照样绿（AGENTS §5.32①）。
+   *    ⇒ 判据搬到"还有本地读数"的那一侧：**文件夹行**（`planFolderView` 的 `scan`）。
+   *    实测：`antigone|1.16.1` 是单候选 `2.0.0[auto]`；本地 `1.0.0` ⇒ 主体 `1.0.0 < 2.0.0`
+   *    ⇒ `older`；候选是 `auto` ⇒ 进批量。
+   *    ⚠️ 与 `mod-catalog-real-folder.test.ts`（真目录那份）不重复：那一条数的是
+   *    "older 的行有几行"，这一条钉的是 `batchTargets()` 的自增分支与 `needsUpdate` 的调用。
    */
-  const rows = planCatalogRows({
+  const view = planFolderView({
     catalog,
+    folderId: 'f1',
+    path: 'D:/x/mods',
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map([
-      [
-        'antigone|1.16.1',
-        { localPath: 'D:/x/mods/a-1.0.0.jar', localVersion: '1.0.0', localSha512: null },
-      ],
-    ]),
+    autoUpdate: false,
+    pathExists: true,
+    hasReading: true,
+    scan: [{ fileName: 'a-1.0.0.jar', modid: 'antigone', version: '1.0.0', sha512: null }],
   });
-  const row = rows.find((r) => r.modid === 'antigone')!;
+  const row = view.rows.find((r) => r.modid === 'antigone')!;
   assert.equal(row.verdict.kind, 'older');
   assert.equal(row.manual, false);
   assert.equal(row.batchable, true, 'older + download=auto 是进批量的唯一组合');
-  assert.equal(batchTargets(rows), 1, '其余行没有绑定 ⇒ unknown ⇒ 一个都不进批量');
+  assert.equal(batchTargets(view.rows), 1, '这个文件夹里只有一行可批量');
 });
 
 test('★ 上游解析：传了 `upstreamLatest` ⇒ 目标换成上游那条（`candidates` 仍来自目录）', () => {
   /*
    * spec §7.2 / D1：`mod.upstream != null` 时**目标 = 上游解析的那条**。
    * 实测：只有 `mcsrranked` 有 `upstream`（`modrinth:I9W1u5Ac`），而目录给它的是
-   * `5.8.22`（`mcsrranked|1.16.1` 实测只有这一条候选）。⇒ 本地 `5.8.24` 时，
-   * **目录**会说"你比 5.8.22 新"（D1：不许降级），只有**上游**知道它其实是旧的。
+   * `5.8.22`（`mcsrranked|1.16.1` 实测只有这一条候选）。
+   * ⚠️★ T6 之后这一条**不再有本地读数**（`bindings` 从入参里删了）⇒ 判定的那两条断言
+   *    跟着换成了收缩之后的真相（`unknown` / 不进批量）；"目标换成上游那条"那几条
+   *    一个字都没动 —— 那才是这一条测试的主题。
    */
   const ranked = catalog.releases.find((r) => r.modid === 'mcsrranked')!;
   const upstream = { ...ranked, version: '5.8.26' };
   const rows = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map([
-      [
-        'mcsrranked|1.16.1',
-        { localPath: 'C:/x/mcsrranked-5.8.24.jar', localVersion: '5.8.24', localSha512: null },
-      ],
-    ]),
     upstreamLatest: new Map([['mcsrranked', upstream]]),
   });
   const row = rows.find((r) => r.modid === 'mcsrranked')!;
   assert.equal(row.official?.version, '5.8.26', '目标 = 上游那条');
   assert.equal(row.targetSource, 'upstream', '界面必须能"读"出来源，不许靠推断');
-  assert.equal(row.verdict.kind, 'older', '对**上游**判：5.8.24 < 5.8.26');
-  assert.equal(row.batchable, true);
+  assert.equal(
+    row.verdict.kind,
+    'unknown',
+    '没有本地读数 ⇒ 单候选行是 unknown（与上一条同一判据）',
+  );
+  assert.equal(row.batchable, false);
   assert.equal(row.manual, false);
   // ★ `candidates` **不受上游影响**（界面要能显示"这条来自目录"）
   assert.deepEqual(
@@ -540,24 +563,16 @@ test('★ 上游解析：传了 `upstreamLatest` ⇒ 目标换成上游那条（
   );
 });
 
-test('★ 上游解析：没传 ⇒ 目标仍是目录那条（D1：本地比目录新就不许降级）', () => {
-  // 与上一条**同一个本地版本** `5.8.24`（受控对照）：只差"传没传上游"。
+test('★ 上游解析：没传 ⇒ 目标仍是目录那条（D1 的"只升不降"在**文件夹行**上另有断言）', () => {
+  // 与上一条**同一个游戏版本**（受控对照）：只差"传没传上游"。
   const rows = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map([
-      [
-        'mcsrranked|1.16.1',
-        { localPath: 'C:/x/mcsrranked-5.8.24.jar', localVersion: '5.8.24', localSha512: null },
-      ],
-    ]),
   });
   const row = rows.find((r) => r.modid === 'mcsrranked')!;
   assert.equal(row.official?.version, '5.8.22', '没传上游 ⇒ 目标 = 目录里唯一那条候选');
   assert.equal(row.targetSource, 'catalog');
-  assert.equal(row.verdict.kind, 'newer', '本地 5.8.24 > 目录 5.8.22');
-  assert.equal(row.batchable, false, 'newer 绝不进批量（D1）');
+  assert.equal(row.batchable, false, '目录行不进批量（没有本地读数）');
 });
 
 test('★ 文件夹行也吃上游解析（Ruling 14）：传了 ⇒ 目标换成上游那条、targetSource=upstream', () => {
@@ -662,8 +677,6 @@ test('★ Ruling 16：上游目标是 `manual` ⇒ 两个 planner 都说 manual�
   const catalogRow = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map(),
     upstreamLatest,
   }).find((r) => r.modid === 'mcsrranked')!;
   const folderRow = planFolderView({
@@ -730,8 +743,6 @@ test('★ Ruling 17②：多候选 + 有上游 ⇒ 仍然 `ambiguous`（不许�
   const catalogRow = planCatalogRows({
     catalog,
     gameVersion: '1.7.2',
-    tagFilter: [],
-    bindings: new Map(),
     upstreamLatest,
   }).find((r) => r.modid === 'optifine')!;
   const folderRow = planFolderView({
@@ -767,8 +778,6 @@ test('★ Ruling 18.1：上游那条与目录那条**版本号相同** ⇒ 来�
   const row = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map(),
     upstreamLatest: new Map([['antigone', upstream]]),
   }).find((r) => r.modid === 'antigone')!;
 
@@ -782,22 +791,20 @@ test('★ Ruling 18.1：上游那条与目录那条**版本号相同** ⇒ 来�
 test('★ Ruling 18.2：同一份入参下，两个 planner 必须解析出**同一个**目标与来源', () => {
   /*
    * 直接钉住 Ruling 14 那条不变量：同一个 `(modid, 游戏版本)` + 同一份 `upstreamLatest`。
-   * ⚠️ 两边给**同一个本地读数**（目录行绑同一份 `1.0` 的 jar、文件夹扫到同一份），否则
-   *    `verdict` 会因为"本地读数不同"而合理地不同 —— 那测的就不是这条不变量了
-   *    （第一版就是漏了绑定，`'older' !== 'unknown'`）。
+   * ⚠️★ 2026-10-04（A 的 T6）**缩了范围**：原来两边还给**同一份本地读数**（目录行绑一份
+   *    `1.0` 的 jar、文件夹扫到同一份）⇒ 连 `verdict` 与 `batchable` 都逐格相等。
+   *    而目录行在 T6 **没有本地读数可言**了（`bindings` 从入参里删了，D8/裁决 B）
+   *    ⇒ "两边同一个 verdict"这件事**在目录行这一侧不可测**（它恒是 `unknown`）。
+   *    ⚠️★ 剩下的那半条不变量仍然承重，而且它才是 Ruling 14 的现场：
+   *    **目标与来源必须同源**（`official` / `targetSource`）—— 两个 planner 收同一份
+   *    `upstreamLatest` 时必须都选那条上游的。判定那一格由**文件夹行自己**的测试钉
+   *    （本文件里 `older` / `newer` / 上游那几组）。
    */
   const antigone = catalog.releases.find((r) => r.modid === 'antigone')!;
   const upstreamLatest = new Map([['antigone', { ...antigone, version: '3.0.0' }]]);
   const catalogRow = planCatalogRows({
     catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map([
-      [
-        'antigone|1.16.1',
-        { localPath: 'D:/x/mods/a-1.0.jar', localVersion: '1.0', localSha512: null },
-      ],
-    ]),
     upstreamLatest,
   }).find((r) => r.modid === 'antigone')!;
   const folderRow = planFolderView({
@@ -817,12 +824,8 @@ test('★ Ruling 18.2：同一份入参下，两个 planner 必须解析出**同
   assert.deepEqual(folderRow.official, catalogRow.official);
   assert.equal(folderRow.official?.version, '3.0.0');
   assert.equal(catalogRow.official?.version, '3.0.0');
-  assert.equal(
-    folderRow.verdict.kind,
-    catalogRow.verdict.kind,
-    '同一个目标 + 同一个本地读数 ⇒ 同一个判定',
-  );
-  assert.equal(folderRow.batchable, catalogRow.batchable);
+  assert.equal(catalogRow.verdict.kind, 'unknown', '目录行侧没有本地读数（T6 之后它恒是 unknown）');
+  assert.equal(folderRow.verdict.kind, 'older', '而文件夹行有本地读数 ⇒ 它照常判得出来');
 });
 
 test('★ 标签显示名：目录里没有这个名字时**退化成 key 本身**，且与 `tags` 逐位对应', () => {
@@ -882,8 +885,6 @@ test('★ 标签显示名：目录里没有这个名字时**退化成 key 本身
   const rows = planCatalogRows({
     catalog: synthetic.catalog,
     gameVersion: '1.16.1',
-    tagFilter: [],
-    bindings: new Map(),
   });
   const row = rows.find((r) => r.modid === 'synthetic')!;
   assert.deepEqual(row.tags, ['legal', '没有显示名的标签']);
@@ -916,8 +917,9 @@ function stateWith(over: Partial<ModFoldersState> = {}): ModFoldersState {
     //    隐式前提（文件夹也必须给 1.16.1，否则该版本下一个文件夹都筛不出来）。
     gameVersion: '1.16.1',
     gameVersions: ['1.16.1'],
-    tagFilter: [],
     tags: [],
+    /* ⚠️★ 这一格在 T6 之后**不筛选任何东西**（D2）—— 它只是"记住的值"，投影也不读它。 */
+    tagFilter: [],
     bulkChannel: 'origin',
     mirrors: [],
     catalogRows: [],
@@ -939,8 +941,6 @@ function rowsForVersion(
   return planCatalogRows({
     catalog,
     gameVersion,
-    tagFilter: [],
-    bindings: new Map(),
     upstreamLatest,
   });
 }

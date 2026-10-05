@@ -171,11 +171,14 @@ const bridge: DesktopBridge = {
    *     页面指定不了主进程去哪儿取字节（地址由主进程拿目录里的 `mirrors[]` 拼）。
    *   · **"下载哪一个"的入口按通道各不相同**（2026-10-03 评审 Important 1：上一版这里
    *     写成了"`releaseKey` 由页面带回来"那一句，而**只有两条**收它）：
-   *     `releaseKey` 只有 `updateMod` / `updateCatalogRow` 收（页面**从它自己渲染的那一行**
-   *     带回来的 key，主进程按它在目录里查 release）；`updateFolderAll` 的目标来自主进程
-   *     自己的状态、`downloadMissing` 按 `(modid, 游戏版本)` 在目录里查
+   *     `releaseKey` 只有 `updateMod` 收（页面**从它自己渲染的那一行**带回来的 key，
+   *     主进程按它在目录里查 release）；`updateFolderAll` 的目标来自主进程自己的状态、
+   *     `downloadMissing` 按 `(modid, 游戏版本)` 在目录里查
    *     ⇒ 这一组**没有任何一条收地址**：能按 id 触发写盘，但**写哪里、从哪儿取都不是
    *     页面说了算**（完整那段见 `@mcsr/shared/desktop` 里 `modFolders` 的注释）。
+   *     ⚠️★ 2026-10-04（A 的 T6）：原来收 `releaseKey` 的是**两条**，第二条是
+   *     `updateCatalogRow`（第一部分的绑定）—— 它与 `bindCatalogRow` / `unbindCatalogRow`
+   *     一起删了（契约 17 → 14，裁决 B）⇒ 今天**只有 `updateMod` 一条**收那个 key。
    *   · ★ `openFolder(folderId)`（A 的 S2 新增）是**唯一一条会让用户的操作系统去打开一个
    *     位置**的通道：转发这一条时同样**只递 id** —— 这一行里没有路径，
    *     路径由主进程从它自己的状态里取（这正是那条通道存在的理由）。
@@ -202,18 +205,6 @@ const bridge: DesktopBridge = {
     },
     bindFolder(): Promise<ModFoldersState> {
       return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.bindFolder) as Promise<ModFoldersState>;
-    },
-    bindCatalogRow(rowId: string): Promise<ModFoldersState> {
-      return ipcRenderer.invoke(
-        MOD_FOLDERS_CHANNELS.bindCatalogRow,
-        rowId,
-      ) as Promise<ModFoldersState>;
-    },
-    unbindCatalogRow(rowId: string): Promise<ModFoldersState> {
-      return ipcRenderer.invoke(
-        MOD_FOLDERS_CHANNELS.unbindCatalogRow,
-        rowId,
-      ) as Promise<ModFoldersState>;
     },
     unbindFolder(folderId: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(
@@ -263,18 +254,6 @@ const bridge: DesktopBridge = {
         MOD_FOLDERS_CHANNELS.updateMod,
         folderId,
         modid,
-        releaseKey,
-        channel,
-      ) as Promise<ModFoldersState>;
-    },
-    updateCatalogRow(
-      rowId: string,
-      releaseKey: string,
-      channel: Channel,
-    ): Promise<ModFoldersState> {
-      return ipcRenderer.invoke(
-        MOD_FOLDERS_CHANNELS.updateCatalogRow,
-        rowId,
         releaseKey,
         channel,
       ) as Promise<ModFoldersState>;

@@ -245,22 +245,23 @@ export interface CatalogRowView {
   verdict: ReleaseVerdict;
   /** 目标是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
   manual: boolean;
-  /** `needsUpdate(verdict)` 的结果（含 `download === 'auto'` 与排序守卫）+ "必须有目标"。 */
+  /**
+   * `needsUpdate(verdict)` 的结果（含 `download === 'auto'` 与排序守卫）+ "必须有目标"。
+   *
+   * ⚠️★ **2026-10-04（A 的 T6）之后它在目录行上恒为 `false`**：`older`（进批量的唯一
+   *    入口）要求有一份**本地读数**，而目录行的本地绑定（`catalogBindings`）在 T6
+   *    连同那三个通道一起删了 —— 目录行只剩"没有本地文件"这一种情形 ⇒ 判定恒为
+   *    `unknown` / `ambiguous` / `missing-release`。
+   *    ⇒ 这一格留着是**如实的读数**（"这一行不会进批量"），不是遗留的开关：它由 `verdict`
+   *      派生，没有任何调用方能让它为真。进批量那条路今天只由文件夹行走
+   *      （`planFolderView` 的 `batchable` + `batchTargets`）。
+   */
   batchable: boolean;
-  /** 这一行绑定的本地文件（没有绑定时 `null`）。 */
-  binding: { localPath: string; localVersion: string | null } | null;
 }
 
 export interface PlanCatalogRowsInput {
   catalog: ModCatalog;
   gameVersion: string;
-  /** 标签筛选，**"与"语义**：留下的行必须同时带全部所选标签。 */
-  tagFilter: readonly string[];
-  /** 键 = `rowId`（`${modid}|${gameVersion}`）。 */
-  bindings: ReadonlyMap<
-    string,
-    { localPath: string; localVersion: string | null; localSha512: string | null }
-  >;
   /**
    * 上游（Modrinth）解析出来的"最新"那一条，**键 = `modid`**。
    * 判据来源：spec §7.2 / D1 —— `mod.upstream != null` 时**目标换成上游解析的那条**
@@ -281,6 +282,23 @@ export interface PlanCatalogRowsInput {
   upstreamLatest?: ReadonlyMap<string, ModRelease>;
 }
 
+/*
+ * ⚠️★ 2026-10-04（A 的 T6）：这一份入参**少了三格**，各自有各自的裁决 ——
+ *   · `tagFilter`（删）：**D2 —— 标签只显示、不筛选**。它原来在这一层丢掉不匹配的行，
+ *     而 T6 之后**没有任何界面**能改它（标签筛选器随第一部分一起下线）⇒ 一个陈旧的
+ *     `prefs.tagFilter` 会**静默**把第三段「该版本**全部** mod」变成"全部减去被筛掉的那些"，
+ *     而用户无处可清。修法是**结构性的**：这一层不再有筛选这一格 ⇒ 没有任何调用方
+ *     能再让标签影响目录行（代价：`prefs.tagFilter` / `ModFoldersState.tagFilter` 仍在
+ *     契约里 —— D2 明确不为删一个字段动契约 —— 但读到就只是"记住的值"）。
+ *   · `bindings`（删）：它是 `catalogBindings` 在**目录行**上的投影来源（`CatalogRowView.binding`
+ *     与"本地读数决定 verdict"）。那三个通道（`bindCatalogRow` / `unbindCatalogRow` /
+ *     `updateCatalogRow`）在 T6 删了，状态里那份绑定也没人读写了（D8）⇒ 目录行**没有**
+ *     本地读数可言：`verdict` 只剩 `unknown` / `ambiguous` / `missing-release` 三种。
+ *     ⚠️ 文件夹行**不受影响**：它们的本地读数是"扫到这个目录里的 jar"（`planFolderView`
+ *     的 `scan`），那条路一个字没动。
+ *   · `catalogGameVersion` 那一类**从来就不在**这里：游戏版本是必填的 `gameVersion`。
+ */
+
 /**
  * 目录行的判定。**一条都不在这里重新推导**（见文件头第二节）。
  *
@@ -290,16 +308,14 @@ export interface PlanCatalogRowsInput {
  *    那会让契约多一个"调用方必须先建索引"的隐藏前提。
  */
 export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
-  const { catalog, gameVersion, tagFilter, bindings, upstreamLatest } = input;
+  const { catalog, gameVersion, upstreamLatest } = input;
   const index = buildIndex(catalog);
   const rows: CatalogRowView[] = [];
 
   for (const { mod, releases } of rowsForGameVersion(index, gameVersion)) {
     const tags = modTagsOf(mod);
-    if (!tagFilter.every((tag) => tags.includes(tag))) continue;
 
     const rowId = releaseKey(mod.modid, gameVersion);
-    const binding = bindings.get(rowId) ?? null;
     /*
      * ★ 目标 + 它的来源，**都交给共用的 `resolveTarget`**（规则只留一份）：
      *   ① 传了上游解析结果 ⇒ 上游那条；② 否则目录唯一那条候选；③ 否则 `null`。
@@ -312,11 +328,13 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
       releases,
       upstreamLatest?.get(mod.modid) ?? null,
     );
-    const verdict = judgeRelease(
-      binding?.localSha512 ?? null,
-      binding?.localVersion ?? null,
-      target !== null ? [target] : releases,
-    );
+    /*
+     * ⚠️★ 本地读数那两格恒为 `null`（T6）：目录行不再有本地绑定（见上面那一段入参注释）
+     *    ⇒ 单候选行的判定是 `unknown`、多候选是 `ambiguous`、0 候选是 `missing-release`。
+     *    ⚠️ 「同版本号、字节不同」那两支（`same` / `different-build`）在**目录行上不可达** ——
+     *    它们都要一份本地字节读数。那是文件夹行才有的事（`planFolderView` 的 `scan`）。
+     */
+    const verdict = judgeRelease(null, null, target !== null ? [target] : releases);
 
     rows.push({
       rowId,
@@ -339,11 +357,10 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
        * ★ 进批量的唯一组合收在 `needsUpdate` 里（`older` 且 `download === 'auto'`，
        *   且**两边版本主体都能安全排序**）。这里只补一个前提：**必须有目标** ——
        *   `ambiguous` 不知道"该更新成哪一个"，`missing-release` 没有目标。
+       * ⚠️★ T6 之后目录行这一格**恒为 false**（没有本地读数 ⇒ 判不出 `older`）：
+       *   见 `CatalogRowView.batchable` 上那一段。留着它是**如实的读数**，不是开关。
        */
       batchable: target !== null && needsUpdate(verdict),
-      binding: binding
-        ? { localPath: binding.localPath, localVersion: binding.localVersion }
-        : null,
     });
   }
 
@@ -741,6 +758,14 @@ export interface ModFoldersState {
    * ⚠️ 目录不可用时是**空数组**（不是"猜一个版本表"）：界面那一档会说明目录没拉到。
    */
   gameVersions: readonly string[];
+  /**
+   * 第一部分的标签筛选（`prefs.tagFilter` 的副本）。
+   *
+   * ⚠️★ **2026-10-04（A 的 T6，spec D2）：它只是一个"记住的值"，不再筛选任何东西。**
+   *    `planCatalogRows` 不收 `tagFilter` 了（D2：标签只作为徽章显示），而唯一能改它的
+   *    界面（标签多选）随第一部分一起下线 ⇒ 一个陈旧的值**读到就忽略**（D8 同一条纪律：
+   *    不升版本号、不迁移）。它留在契约里是 D2 明写的取舍："为删一个字段动契约不划算"。
+   */
   tagFilter: readonly string[];
   /**
    * 目录里**全部**标签（键 + 两种语言的显示名）—— 标签多选的**选项源**与 chip 的
@@ -850,6 +875,17 @@ export interface StateFileV2 {
   version: 1;
   stateVersion: 2;
   items: Record<string, unknown>;
+  /**
+   * ★★ **2026-10-04（A 的 T6，spec D8）：本模块既不读也不写这一格。**
+   *
+   * 它原来装的是"第一部分那一行绑定的本地文件"（`bindCatalogRow` 写、`buildState` 读）。
+   * 那三个通道在 T6 删了（裁决 B：契约 17 → 14），第一部分整个下线 ⇒
+   * `migrateState` 读到它**一律清成 `{}`**（旧数据读到就忽略、第一次持久化之后不再存在）。
+   * ⚠️★ **形状仍然留在这里**：这个类型是**状态文件**的形状，而那个文件的读/写路径住在
+   * `apps/desktop/src/file-updates.ts`（v1 的 `initFileUpdates` 那一套，本任务不许动；
+   * 它的浅合并写盘会把"我们这份里没有的键"从磁盘捡回来）⇒ 在这里删掉字段 = 让那个文件
+   * 编译不过，且**达不到**"键消失"（见 `migrateState` 的 ④）。⇒ 收口是那一件事，记在报告里。
+   */
   catalogBindings: Record<
     string,
     {
@@ -893,20 +929,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 把盘上读到的东西迁移成 v2。**纯函数、不抛、不写盘**。
  *
- * 判据（三条，方向都是"不丢数据"）：
- *   ① `stateVersion === 2` ⇒ **原样返回**（幂等：再跑一次逐字段相同）。
- *      不重建的理由：将来往 v2 里加字段时，重建会把新字段**静默剥掉**；
- *      代价是一个被**截断**的 v2 不会在这里被补全 —— 那是调用方那份三态读的活
- *      （v1 的 `fatal` ⇒ 绝不覆盖）。
+ * 判据（四条，方向都是"不丢数据"）：
+ *   ① `stateVersion === 2` ⇒ **原样返回**（幂等：再跑一次逐字段相同），
+ *      **除了 `catalogBindings` 那一格**（见 ④）。不重建的理由：将来往 v2 里加字段时，
+ *      重建会把新字段**静默剥掉**；代价是一个被**截断**的 v2 不会在这里被补全 ——
+ *      那是调用方那份三态读的活（v1 的 `fatal` ⇒ 绝不覆盖）。
  *   ② 否则（v1、或任何读不出来的输入）⇒ 造一份干净的 v2：`items` **只在它真的是个
  *      对象时**保留，其余字段给默认值。**不做删除式迁移** —— 读不出来不等于可以丢。
  *   ③ 任何输入都不抛：调用方拿到的一定是一份"写下去也安全"的状态，由它决定要不要覆盖。
  *      （读不出来的输入**不在这里报错**：怎么报是主进程的事，它手里才有路径与三态读。）
+ *   ④ ★★ **2026-10-04（A 的 T6，spec D8）：`catalogBindings` 一律清成 `{}`** ——
+ *      那三个写它的通道（`bindCatalogRow` / `unbindCatalogRow` / `updateCatalogRow`）
+ *      删了，本模块也不再读它（`planCatalogRows` 不再收 `bindings`）⇒ 盘上那份旧数据
+ *      读进来**只当作不存在**。
+ *      ⚠️★ 为什么是"清成 `{}`"而不是"把这个键丢掉"（spec D8 的字面是后者）：这个键的
+ *      **形状**住在 `StateFileV2`，而写它的那一半住在 `apps/desktop/src/file-updates.ts`
+ *      （v1 的读/写路径，本任务**不许动**），它的写盘是 `{...磁盘, ...我们这份}` 的**浅合并**
+ *      —— 我们这份里没有这个键时，磁盘那份会被**捡回来**（`mergeWithDisk` 的注释写着这条
+ *      是**载荷性**约束）。⇒ "键消失"要靠改 v1 的写盘路径才成立，那是另一件事。
+ *      **可达到、也已断言的那一半**是 D8 真正要的结果：旧数据**读到就忽略**，
+ *      而且**第一次持久化之后**它不再存在（我们这份的 `{}` 覆盖掉磁盘那份的旧内容）。
+ *      ⚠️ 幂等仍然成立：`migrateState(migrateState(x))` 逐字段相同（第二次也是 `{}`）。
  */
 export function migrateState(raw: unknown): StateFileV2 {
   const record = isRecord(raw) ? raw : null;
 
-  if (record?.stateVersion === 2) return raw as StateFileV2;
+  if (record?.stateVersion === 2) {
+    return { ...(raw as StateFileV2), catalogBindings: {} };
+  }
 
   return {
     version: 1,

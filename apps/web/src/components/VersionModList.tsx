@@ -67,10 +67,9 @@
 import type { ModFoldersState, VersionModRow, VersionPage } from '@mcsr/shared/modFolders';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { tagLabelFor } from '@/components/FileUpdatesPanel';
-import { VERDICT_HINTS } from '@/components/FileUpdateTable';
 import { Notice } from '@/components/Form';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
+import { tagLabelFor, VERDICT_HINTS } from '@/components/ModFoldersData';
 
 /** 「没有值的那一格」——与两张表、jar 列表里那个 `DASH` 是同一个字符。 */
 const DASH = '—';

@@ -10,7 +10,7 @@
  * 跑法：
  *   node apps/desktop/scripts/verify-mod-folders.mjs                 # 主相位（读路径的全部判据）
  *   node apps/desktop/scripts/verify-mod-folders.mjs --keep           # 保留临时目录
- *   node apps/desktop/scripts/verify-mod-folders.mjs --phase state-file --case a|b|c
+ *   node apps/desktop/scripts/verify-mod-folders.mjs --phase state-file --case a|b|c|d
  *       ↑ §13.1/`readStateFile` 加固那三条**由主相位自己 spawn 的子进程**跑
  *         （每条要一份全新的模块状态 ⇒ 必须新进程），平时不用手敲。
  *   node apps/desktop/scripts/verify-mod-folders.mjs --phase write
@@ -167,8 +167,8 @@ const listing = (dir) =>
         .join(' | ')
     : '（目录不在）';
 
-if (PHASE === 'state-file' && !['a', 'b', 'c'].includes(CASE)) {
-  bail(`--phase state-file 的 --case 只接受 a / b / c，收到「${CASE}」`);
+if (PHASE === 'state-file' && !['a', 'b', 'c', 'd'].includes(CASE)) {
+  bail(`--phase state-file 的 --case 只接受 a / b / c / d，收到「${CASE}」`);
 }
 if (PHASE === 'prefs' && !['d', 'e', 'f', 'g'].includes(CASE)) {
   bail(`--phase prefs 的 --case 只接受 d / e / f / g，收到「${CASE}」`);
@@ -295,9 +295,10 @@ console.log(
 /**
  * 通道名在两个产物里的出现次数（ASCII 锚点 ⇒ 与编码无关，§5.92 的教训只针对中文）。
  * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"；
- *    **A 的 S2 加了 `openFolder` 之后是 17 个成员**）：**17** 个通道名进 `main.cjs`，
- *    其中 `ipcMain.handle` 只有 **16** 条 —— 第 17 个是 `onStatus`，它只**推**（`send`）。
- * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 16/17：
+ *    **A 的 S2** 加了 `openFolder` 之后是 17 个成员；**A 的 T6** 删掉那三条（裁决 B）
+ *    之后是 **14** 个成员）：**14** 个通道名进 `main.cjs`，
+ *    其中 `ipcMain.handle` 只有 **13** 条 —— 第 14 个是 `onStatus`，它只**推**（`send`）。
+ * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 13/14：
  *    手抄的数字会在"通道表加了/删了一条"时变成一句**看起来还在的假话**（§5.32 ④）。
  */
 function countChannels(path, channels) {
@@ -915,17 +916,82 @@ async function mainPhase() {
   const registered = await waitForHandlers();
 
   // =========================================================================
-  await section('① 十六条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
+  await section('① 十三条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
     const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
     const missing = expected.filter((name) => !handlers.has(name));
     check(
-      `ipcMain.handle 注册了 16 条 mcsr:modfolders-*（17 个成员里 onStatus 是推送、不算）`,
+      `ipcMain.handle 注册了 13 条 mcsr:modfolders-*（14 个成员里 onStatus 是推送、不算）`,
       registered && missing.length === 0,
       missing.length === 0
         ? `handlers 共 ${String(handlers.size)} 条`
         : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/${String(MOD_CH_COUNT)}（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/${String(MOD_CH_COUNT)}）`,
     );
   });
+
+  // =========================================================================
+  /*
+   * ★★ spec §9.15（A 的 T6）：**删掉的那三条通道不再注册** —— 这是"删干净了"的读数。
+   *
+   * ⚠️★ 为什么要单独一节、而不是"注册数从 16 变成 13 就够了"：那是一个**差**，
+   *    而"差"说不出**哪三条**没了 —— 少注册一条别的通道、或者契约里换了一条，
+   *    读数一样。⇒ 这里钉的是**那三个具体的串**：`bindCatalogRow` / `unbindCatalogRow` /
+   *    `updateCatalogRow`（第一部分那一行的绑定与写盘，裁决 B：契约 17 → 14）。
+   * ⚠️ 判据**两条独立**的读数（§5.38：一个 0 要有第二条读数印证）：
+   *    ① **契约表**里没有那三个键（源码现读的 `MOD_CH`）；
+   *    ② **两个产物**里连那三个**通道串**都一次都不出现（ASCII 锚点，与编码无关）——
+   *       契约删了但 preload/主进程留着转发时，这一条会红（那正是"删了一半"的形状）。
+   * ⚠️ 三条旧串是**手抄**的（它们已经从树里消失了，没有现数的地方）—— 抄错一个字母
+   *    会让这一条**永远绿**。⇒ 下面那条"三个键都不在 `MOD_CH` 里"是它的对照：
+   *    抄错的串仍然会被"产物里 0 次"满足，但"键不在表里"那一条是按**键名**判的（现读）。
+   * ⚠️★ 位置（T6 判修）：这一节排在"通道都注册了"那条 `if (!registered) return` **之前** ——
+   *    否则"加回一条通道"时它会**整节跳过**，读数只有"缺一条 handler"（实测过：K7 那把刀
+   *    第一次跑出来的正是这个形状）。这一节的判据本来就不依赖 handler 注册（第 ④ 条
+   *    `handlers.has(...)` 读的是注册表**没有**那三个名字，缺别的 handler 不影响它）。
+   */
+  const REMOVED_CHANNELS = [
+    'bindCatalogRow',
+    'unbindCatalogRow',
+    'updateCatalogRow',
+  ];
+  const REMOVED_CHANNEL_STRINGS = [
+    'mcsr:modfolders-bind-catalog-row',
+    'mcsr:modfolders-unbind-catalog-row',
+    'mcsr:modfolders-update-catalog-row',
+  ];
+  await section('★★ A 的 T6（spec §9.15）：删掉的三条通道**不再注册**、产物里也没有它们', async () => {
+    check(
+      `契约表里没有那三个键（现读 MOD_FOLDERS_CHANNELS 共 ${String(MOD_CH_COUNT)} 条；删之前是 17）`,
+      REMOVED_CHANNELS.every((key) => !(key in MOD_CH)),
+      `表里的键：${Object.keys(MOD_CH).join(', ')}`,
+    );
+    check(
+      '那三条**旧通道串**在 main.cjs 里一次都不出现（删了一半的形状在这里红）',
+      REMOVED_CHANNEL_STRINGS.every((name) => !readFileSync(MAIN_CJS, 'utf8').includes(name)),
+      REMOVED_CHANNEL_STRINGS.map(
+        (name) => `${name}: ${String(readFileSync(MAIN_CJS, 'utf8').split(name).length - 1)} 次`,
+      ).join('；'),
+    );
+    check(
+      'preload.cjs 里也没有（转发与契约必须一起删）',
+      preloadCounts !== null &&
+        REMOVED_CHANNEL_STRINGS.every((name) => !readFileSync(PRELOAD_CJS, 'utf8').includes(name)),
+      preloadCounts === null
+        ? '（没有 preload.cjs —— 这一条没跑起来）'
+        : REMOVED_CHANNEL_STRINGS.map(
+            (name) => `${name}: ${String(readFileSync(PRELOAD_CJS, 'utf8').split(name).length - 1)} 次`,
+          ).join('；'),
+    );
+    check(
+      '主进程注册表里也没有（`ipcMain.handle` 那一侧现读）',
+      REMOVED_CHANNEL_STRINGS.every((name) => !handlers.has(name)),
+      `handlers 共 ${String(handlers.size)} 条`,
+    );
+  });
+
+  /*
+   * ⚠️ 这一条闸（"通道都注册了"）排在 §9.15 **之后**：§9.15 问的是"删掉的那三条不在"，
+   *    它不依赖别的 handler；而这一条之后的所有判据都要走 `invoke` ⇒ 必须挡在这里。
+   */
   if (!registered) {
     console.log('  ⇒ 后面那些判据全都要走 invoke，跳过。');
     return { workRoot, ok: false };
@@ -1206,50 +1272,14 @@ async function mainPhase() {
       onDisk?.items?.[insideId] === undefined,
       JSON.stringify(onDisk?.items?.[insideId] ?? null),
     );
-    check(
-      'catalogBindings 里也没有它（不是搬走、是解绑）',
-      !Object.values(onDisk?.catalogBindings ?? {}).some(
-        (b) => resolve(b.localPath).toLowerCase() === resolve(jarNew).toLowerCase(),
-      ),
-      JSON.stringify(Object.keys(onDisk?.catalogBindings ?? {})),
-    );
-    check(
-      'notices 里有「已转为文件夹跟踪：Antigone」（不许静默）',
-      (state?.notices ?? []).includes('已转为文件夹跟踪：Antigone'),
-      JSON.stringify(state?.notices ?? []),
-    );
-  });
-
-  // =========================================================================
-  await section('④ 归属：文件夹**外面**那条 v1 绑定多写一份到 catalogBindings', async () => {
-    const onDisk = readStateFileJson();
-    const rowId = `${ANTIGONE}|${state.gameVersion}`;
-    const bound = onDisk?.catalogBindings?.[rowId];
-    check(
-      `catalogBindings['${rowId}'] 指向那个 jar（读 jar 得到 modid ⇒ 归属到这一行）`,
-      bound !== undefined &&
-        resolve(bound.localPath).toLowerCase() === resolve(legacyJar).toLowerCase(),
-      JSON.stringify(bound ?? null),
-    );
-    check(
-      '值形状 = {localPath, localVersion, localSha512, releaseKey: null, autoUpdate: false}',
-      bound?.localVersion === '1.5' &&
-        bound?.localSha512 === sha512Of(legacyJar) &&
-        bound?.releaseKey === null &&
-        bound?.autoUpdate === false,
-      `${String(bound?.localVersion)} / ${String(bound?.localSha512).slice(0, 12)}… / releaseKey=${String(bound?.releaseKey)} / autoUpdate=${String(bound?.autoUpdate)}`,
-    );
+    /*
+     * ★ v1 的 `items` **不许被剪枝 / 改写**（T6 从删掉的 §④ 里搬过来的那一半：
+     *   那一条原来挂在"多写一份到 `catalogBindings`"上，而"v1 的字段一个都不许动"
+     *   与 `catalogBindings` 无关 —— 它是 spec §2.2"v1 的管道留着"的读数，不能跟着删）。
+     */
     const kept = onDisk?.items?.[outsideId];
     check(
-      `v1 的 items 里那条（${outsideId}）**仍在**（多写一份，不是搬走）`,
-      kept !== undefined &&
-        resolve(kept.localPath).toLowerCase() === resolve(legacyJar).toLowerCase() &&
-        kept.autoUpdate === true &&
-        kept.lastCheckedAt === 1_700_000_000_000,
-      JSON.stringify(kept ?? null),
-    );
-    check(
-      '它 8 个字段一个都没变（v1 的字段不许被剪枝/改写）',
+      `v1 的 items 里那条（${outsideId}，在 A-mods 外）**逐字段仍在**（本模块绝不改写它）`,
       kept !== undefined &&
         Object.keys(kept).length === 8 &&
         Object.entries(seeded.items[outsideId]).every(([k, v]) => kept[k] === v),
@@ -1257,7 +1287,31 @@ async function mainPhase() {
         ? '（不见了）'
         : `${String(Object.keys(kept).length)} 个字段：${Object.keys(kept).join(',')}`,
     );
+    check(
+      'notices 里有「已转为文件夹跟踪：Antigone」（不许静默）',
+      (state?.notices ?? []).includes('已转为文件夹跟踪：Antigone'),
+      JSON.stringify(state?.notices ?? []),
+    );
+    /*
+     * ⚠️★ T6 删掉了这一组原来的第二条（"catalogBindings 里也没有它"）：那一格整个退役了
+     *    （D8 / 裁决 B）⇒ 它恒为空表，断言"旧那一条不在里面"是一条**恒真**的守卫
+     *    （§5.32①）。**读到就忽略**这件事现在由下面两条独立的读数钉住：
+     *      · 契约层：`MOD_FOLDERS_CHANNELS` 里没有那三个键（spec §9.15 那一节）；
+     *      · 状态文件层：state-file 相位里"预置了旧数据的 `catalogBindings` 干净地活过启动"
+     *        （那个相位的 case c）。
+     */
   });
+
+  // =========================================================================
+  /*
+   * ⚠️★ T6 删掉了这里的一整节（原 §④「归属：文件夹**外面**那条 v1 绑定多写一份到
+   *    `catalogBindings`」）：那件事的实现（`attributeLegacyItems`）随 `catalogBindings`
+   *    一起删了（D8 / 裁决 B）—— **归属不再有落点**。
+   *    ⚠️ 代价（认，写在 `mod-folders.ts` 的 `bindFolder` 上）：v1 的 `items` 里那些
+   *    **不在任何已绑定文件夹里**的单文件绑定，从今往后没有人接手（它们仍在文件里、
+   *    仍归 v1 那九条通道管）。下面 §③ 那一半（**落在新绑定文件夹里**的 ⇒ 解绑）
+   *    一个字都没动，它才是 §13.1 的落地。
+   */
 
   // =========================================================================
   await section('⑤ resolveGameVersion：.minecraft 实例里推断得出，普通目录推断不出', async () => {
@@ -1314,158 +1368,7 @@ async function mainPhase() {
     );
   });
 
-  // =========================================================================
-  await section('⑦ bindCatalogRow：modid 必须与 rowId 里的一致', async () => {
-    openQueue = [{ canceled: false, filePaths: [foreignJar] }];
-    let refused = null;
-    try {
-      await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
-    } catch (error) {
-      refused = error;
-    }
-    check(
-      '拿一个 modid=lithium 的 jar 去绑 antigone 那一行 ⇒ 拒绝',
-      refused !== null,
-      refused?.message ?? '（没有抛）',
-    );
-    check(
-      '拒绝的文案报出它读到的 modid（用户才知道是自己选错了文件）',
-      typeof refused?.message === 'string' && refused.message.includes('lithium'),
-      refused?.message ?? '（没有抛）',
-    );
-    openQueue = [{ canceled: false, filePaths: [bindJar] }];
-    let ok = true;
-    try {
-      state = await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
-    } catch (error) {
-      ok = false;
-      check('（正例）modid 一致的 jar ⇒ 绑定成功', false, error?.message ?? '');
-    }
-    if (ok) {
-      const onDisk = readStateFileJson();
-      const bound = onDisk?.catalogBindings?.[`${ANTIGONE}|1.16.1`];
-      check(
-        '写进 catalogBindings[rowId]，值是 {localPath, localVersion: 2.0.0, localSha512, releaseKey: null, autoUpdate: false}',
-        bound !== undefined &&
-          resolve(bound.localPath).toLowerCase() === resolve(bindJar).toLowerCase() &&
-          bound.localVersion === '2.0.0' &&
-          bound.localSha512 === sha512Of(bindJar) &&
-          bound.releaseKey === null &&
-          bound.autoUpdate === false,
-        JSON.stringify(bound ?? null),
-      );
-      check(
-        '第一部分的这一行读得到那个绑定（页面不必自己记一份）',
-        state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding?.localPath ===
-          bindJar,
-        String(state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding?.localPath),
-      );
-      /*
-       * ★★ **§13.1 的单一归属**（2026-10-04 收口波）：这个 jar 落在**已绑定的 A-mods** 里
-       *    ⇒ `bindCatalogRow` 必须拒。
-       *
-       * ⚠️★ 为什么这一条是载荷性的：这条不变式此前**只单向执行**（绑文件夹时把里面的绑定
-       *    解掉），而 `bindCatalogRow` 不看"这个文件是不是已经在某个已绑定文件夹里"
-       *    ⇒ 用户能造出 spec §13.1 明文禁止的状态：一个文件两个归属、两处各有一颗更新按钮，
-       *    而文件夹那一侧的"清理旧副本"会把目录行指着的**那份文件本身**删掉。
-       * ⚠️ 夹具是 `jarNew`（`a-2.0.jar`，就在 A-mods 里、modid 也正是 antigone）——
-       *    这样"拒"的理由**只能**是归属那一条（modid 是匹配的，走不到 modid 那道闸）。
-       * ⚠️ 三条读数：①抛了且文案点名那个文件夹；②那一格**没有被改写**（还是 D-bind 那份）；
-       *    ③磁盘上那个 jar 逐字节没动（这一支在任何写盘之前）。
-       */
-      const insideShaBefore = sha512Of(jarNew);
-      const boundBeforeRefuse = readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`];
-      openQueue = [{ canceled: false, filePaths: [jarNew] }];
-      let insideRefused = null;
-      try {
-        await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
-      } catch (error) {
-        insideRefused = error;
-      }
-      check(
-        '★ §13.1：绑一个**已经在已绑定文件夹里**的文件 ⇒ 拒（一个文件只能有一个归属）',
-        insideRefused !== null,
-        insideRefused?.message ?? '（没有抛 —— 那就绑上了，于是同一个文件有两个归属）',
-      );
-      check(
-        '★ 理由点名那个文件夹与"归属"这件事（不是撞上 modid 那道闸：夹具的 modid 是匹配的）',
-        typeof insideRefused?.message === 'string' &&
-          insideRefused.message.includes(modsDir) &&
-          insideRefused.message.includes('一个文件只能有一个归属'),
-        insideRefused?.message ?? '（没有抛）',
-      );
-      check(
-        '★ 而且那一格**没有被改写**（还是 D-bind 里那份绑定）',
-        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath ===
-          boundBeforeRefuse?.localPath,
-        JSON.stringify(readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] ?? null),
-      );
-      check(
-        '★ 磁盘上那个 jar 逐字节没动',
-        sha512Of(jarNew) === insideShaBefore,
-        `${insideShaBefore.slice(0, 16)}… → ${sha512Of(jarNew).slice(0, 16)}…`,
-      );
-      /*
-       * ★★ Ruling 60（2026-10-03 评审）：`unbindCatalogRow` —— 有绑定就必须能解绑。
-       *
-       * ⚠️ 为什么这一条是**载荷性**的：新 UI 在 `modFolders` 存在的客户端里只渲染第一部分
-       *    ⇒ v1 的 `unbind(itemId)` 在那一页上不可达；这一组契约原先只有 `bindCatalogRow`
-       *    ⇒ 绑错的行、T4 迁移采纳的行都**永远解不掉**。这条通道就是补上的那一半。
-       * ⚠️ 三条读数：①那一格从 `catalogBindings` 里消失（**磁盘上**也要消失）；
-       *    ②视图里那一行的 `binding` 变回 `null`；③**用户磁盘上的 jar 一个字节没动**
-       *    （解绑 ≠ 删文件 —— 与 v1 的 `unbind` 同一条语义）。
-       * ⚠️ 最后把它**再绑回来**：后面的判据（v2 写入那几条）要"一条目录行绑定"这个前提。
-       */
-      const boundBefore =
-        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] !== undefined;
-      state = await invoke(MOD_CH.unbindCatalogRow, `${ANTIGONE}|1.16.1`);
-      const afterUnbind = readStateFileJson();
-      check(
-        '★ unbindCatalogRow ⇒ 那一格从 catalogBindings（磁盘）里消失、视图里那一行的 binding 变回 null',
-        boundBefore &&
-          afterUnbind?.catalogBindings?.[`${ANTIGONE}|1.16.1`] === undefined &&
-          state.catalogRows.find((r) => r.rowId === `${ANTIGONE}|1.16.1`)?.binding === null,
-        JSON.stringify(afterUnbind?.catalogBindings ?? {}),
-      );
-      check(
-        '★ 解绑**不动**用户磁盘上的那个 jar（解绑 ≠ 删文件）',
-        existsSync(bindJar),
-        existsSync(bindJar) ? bindJar : `${bindJar} 不见了`,
-      );
-      openQueue = [{ canceled: false, filePaths: [bindJar] }];
-      state = await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}|1.16.1`);
-      check(
-        '（还原）重新绑定之后那一格回来了（后面几条判据的前提）',
-        readStateFileJson()?.catalogBindings?.[`${ANTIGONE}|1.16.1`] !== undefined,
-        JSON.stringify(readStateFileJson()?.catalogBindings ?? {}),
-      );
-      let badUnbind = null;
-      try {
-        await invoke(MOD_CH.unbindCatalogRow, `${ANTIGONE}`);
-      } catch (error) {
-        badUnbind = error;
-      }
-      check(
-        '解绑一个形状不对的 rowId ⇒ 拒绝（不猜是哪一行）',
-        badUnbind !== null,
-        badUnbind?.message ?? '（没有抛）',
-      );
-    }
-    let bad = null;
-    try {
-      await invoke(MOD_CH.bindCatalogRow, `${ANTIGONE}`);
-    } catch (error) {
-      bad = error;
-    }
-    check(
-      'rowId 里没有「|」⇒ 拒绝（不猜是哪一行）',
-      bad !== null,
-      bad?.message ?? '（没有抛）',
-    );
-  });
-
-  // =========================================================================
-  await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推', async () => {
+await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推', async () => {
     state = await invoke(MOD_CH.setFolderAutoUpdate, folderId, false);
     check(
       'setFolderAutoUpdate ⇒ 该文件夹视图里的开关跟着变',
@@ -1515,13 +1418,36 @@ async function mainPhase() {
       badVersion?.message ?? '（没有抛）',
     );
 
+    /*
+     * ★★ D2（A 的 T6）：`setTagFilter` 仍然**记得住**那个值，但它**不筛选任何东西** ——
+     *    「该版本**全部** mod」在有一个陈旧/当前筛选值时都是全量。
+     *
+     * ⚠️★ 这一条是 T6 那条**真缺陷**的回归守卫：这一层原来把 `prefs.tagFilter` 传给
+     *    `planCatalogRows`，而那一层会丢掉不匹配的行 ⇒ 一个陈旧的值会让第三段不再是全量，
+     *    而唯一能清它的界面（标签筛选器）随第一部分下线了。
+     * ⚠️ 判据**两条一起**才有牙齿（§5.38：一个读数要有第二条印证）：
+     *    ① 那个标签**真的会筛掉行**（不是所有行都带 `legal`）—— 少了它，
+     *       一个"什么都不筛"的实现与"筛了但恰好全中"分不开；
+     *    ② 而 `catalogRows` 的行数与设筛选**之前**逐字相同（筛过的实现会少几行）。
+     *    ★ 刀：把 `apps/desktop/src/mod-folders.ts` 的 `buildState` 改回"按
+     *    `st.prefs.tagFilter` 过滤 `catalogRows`" ⇒ 这一条红（行数变小）。
+     */
+    const rowsBeforeTagFilter = state.catalogRows.length;
     state = await invoke(MOD_CH.setTagFilter, ['legal']);
     check(
-      'setTagFilter(["legal"]) ⇒ 每一行都带这个标签，且状态里记着它',
-      state.tagFilter.length === 1 &&
-        state.tagFilter[0] === 'legal' &&
-        state.catalogRows.every((r) => r.tags.includes('legal')),
-      `tagFilter=${JSON.stringify(state.tagFilter)}；rows=${String(state.catalogRows.length)}`,
+      '（前置）`legal` 这个标签**真的会筛掉行**（不是所有行都带它）—— 否则下面那条是空跑',
+      state.catalogRows.some((r) => !r.tags.includes('legal')),
+      `不带 legal 的行：${String(state.catalogRows.filter((r) => !r.tags.includes('legal')).length)} / ${String(state.catalogRows.length)}`,
+    );
+    check(
+      'setTagFilter(["legal"]) ⇒ 状态里记着它（契约那一格照旧）',
+      state.tagFilter.length === 1 && state.tagFilter[0] === 'legal',
+      `tagFilter=${JSON.stringify(state.tagFilter)}`,
+    );
+    check(
+      '★★ D2：设了标签筛选之后目录行**一行都没少**（标签只显示、不筛选）',
+      state.catalogRows.length === rowsBeforeTagFilter && rowsBeforeTagFilter > 0,
+      `setTagFilter 之前 ${String(rowsBeforeTagFilter)} 行 → 之后 ${String(state.catalogRows.length)} 行`,
     );
     const onDisk = readStateFileJson();
     check(
@@ -1546,12 +1472,17 @@ async function mainPhase() {
     // ---- 先把"v2 这一侧"的当前值记下来（它们必须活过下面那次 v1 写入）----
     const v2Before = readStateFileJson();
     const foldersBefore = Object.values(v2Before?.folders ?? {}).map((f) => f.path);
-    const bindingBefore = v2Before?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath;
+    /*
+     * ⚠️★ T6 换掉了这一格的"可丢的东西"：原来它拿的是 `catalogBindings` 里那条绑定，
+     *    而那一格退役了（D8 / 裁决 B）⇒ 换成 `prefs.catalogGameVersion`（同样是 v2 侧
+     *    持久化的一格，而且 v1 从不写它）。
+     */
+    const versionBefore = v2Before?.prefs?.catalogGameVersion;
     const bulkBefore = v2Before?.prefs?.bulkChannel?.mirrorId;
     check(
-      '（前置）v2 这一侧此刻有东西可丢：≥2 个文件夹、一条目录行绑定、bulkChannel 是镜像',
-      foldersBefore.length >= 2 && bindingBefore !== undefined && bulkBefore === 'gh-proxy',
-      `folders=${String(foldersBefore.length)} binding=${String(bindingBefore)} bulk=${String(bulkBefore)}`,
+      '（前置）v2 这一侧此刻有东西可丢：≥2 个文件夹、catalogGameVersion、bulkChannel 是镜像',
+      foldersBefore.length >= 2 && versionBefore === '1.16.1' && bulkBefore === 'gh-proxy',
+      `folders=${String(foldersBefore.length)} version=${String(versionBefore)} bulk=${String(bulkBefore)}`,
     );
 
     /*
@@ -1563,15 +1494,15 @@ async function mainPhase() {
     await invoke(FILE_CH.bind, insideId);
     const v1Write = readStateFileJson();
     check(
-      '① v1 写了一次之后，v2 那三格**还在、而且是当前值**（文件夹没退回启动时那份、绑定与通道没被抹掉）',
+      '① v1 写了一次之后，v2 那两格**还在、而且是当前值**（文件夹没退回启动时那份、通道没被抹掉）',
       JSON.stringify(Object.values(v1Write?.folders ?? {}).map((f) => f.path)) ===
         JSON.stringify(foldersBefore) &&
-        v1Write?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath === bindingBefore &&
+        v1Write?.prefs?.catalogGameVersion === versionBefore &&
         v1Write?.prefs?.bulkChannel?.mirrorId === bulkBefore &&
         v1Write?.stateVersion === 2,
       JSON.stringify({
         folders: Object.values(v1Write?.folders ?? {}).map((f) => f.path),
-        binding: v1Write?.catalogBindings?.[`${ANTIGONE}|1.16.1`]?.localPath,
+        version: v1Write?.prefs?.catalogGameVersion,
         bulk: v1Write?.prefs?.bulkChannel,
       }),
     );
@@ -1818,15 +1749,44 @@ async function stateFilePhase() {
   };
   /** case b：`stateVersion: 2` 但三格**缺失** ⇒ 补默认（不是坏文件、不许备份）。 */
   const missing = { version: 1, stateVersion: 2, items: {} };
+  /**
+   * ★★ case d（A 的 T6，spec §9.16 / D8）：一份**好文件**，但 `catalogBindings` 里
+   *    **真的有旧数据** —— 那一格在 T6 停止读写（那三个通道删了，裁决 B：
+   *    契约 17 → 14）。
+   *    ⇒ 判据两条：① 启动**不报错**、**不当坏文件**（不产生 `.corrupt-*`、不弹框）；
+   *      ② **第一次持久化之后**那份旧数据不再存在（读到就忽略 + 我们这份的 `{}` 覆盖磁盘）。
+   *    ⚠️ 夹具里那份旧数据的形状是**真的**（`{localPath, localVersion, localSha512,
+   *    releaseKey, autoUpdate}`，与 `normalizeCatalogBindings` 收的形状逐格一致）——
+   *    形状错了的话"被清掉"这件事会因为"读进来就丢掉"而变成另一回事（§5.79）。
+   */
+  const staleBinding = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {
+      'antigone|1.16.1': {
+        localPath: join(workRoot, 'old-mods', 'a-2.0.jar'),
+        localVersion: '2.0.0',
+        localSha512: 'd'.repeat(128),
+        releaseKey: 'antigone|1.16.1',
+        autoUpdate: false,
+      },
+    },
+    folders: {
+      keepme: { path: join(workRoot, 'somewhere'), gameVersion: null, autoUpdate: true, boundAt: 5 },
+    },
+    prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
+  };
 
-  const seed = CASE === 'a' ? bad : CASE === 'b' ? missing : good;
+  const seed =
+    CASE === 'a' ? bad : CASE === 'b' ? missing : CASE === 'd' ? staleBinding : good;
   const seededBytes = JSON.stringify(seed, null, 2);
   writeFileSync(stateFile(), seededBytes, 'utf8');
   console.log(`  预置状态文件（case ${CASE}）：${seededBytes.length} 字节`);
 
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 16 条通道注册起来了', registered);
+  check('（前置）这一相位也把 13 条 invoke 通道注册起来了', registered);
 
   // 给启动那一路（目录抓取 + 扫盘）一点时间落盘
   await new Promise((r) => setTimeout(r, 1500));
@@ -1898,6 +1858,26 @@ async function stateFilePhase() {
         after?.prefs?.bulkChannel?.mirrorId === 'gh-proxy' &&
         after?.prefs?.catalogGameVersion === '1.8.9' &&
         after?.prefs?.tagFilter?.[0] === 'legal',
+      JSON.stringify({ folders: after?.folders, prefs: after?.prefs }),
+    );
+  }
+  if (CASE === 'd') {
+    check(
+      '★ D8/§9.16：`catalogBindings` 里有旧数据 ⇒ 启动**不报错、不当坏文件**（没有 .corrupt-*）',
+      backups.length === 0 && messages.length === 0,
+      `${listing(currentUserDataDir)}；弹框 ${String(messages.length)} 次`,
+    );
+    check(
+      '★★ 而**第一次持久化之后**那份旧数据不再存在（读到就忽略 + 我们这份的 `{}` 覆盖磁盘）',
+      after?.catalogBindings !== undefined && Object.keys(after.catalogBindings).length === 0,
+      `磁盘上的 catalogBindings = ${JSON.stringify(after?.catalogBindings ?? null)}`,
+    );
+    check(
+      '· 对照：清掉那一格**没有**动别的东西（folder 与 prefs 逐格照旧）',
+      after?.folders?.keepme?.path === staleBinding.folders.keepme.path &&
+        after?.folders?.keepme?.boundAt === 5 &&
+        after?.prefs?.bulkChannel === 'origin' &&
+        after?.prefs?.catalogGameVersion === '1.16.1',
       JSON.stringify({ folders: after?.folders, prefs: after?.prefs }),
     );
   }
@@ -1990,7 +1970,7 @@ async function prefsPhase() {
   upstreamMode = 'ok';
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 16 条通道注册起来了', registered);
+  check('（前置）这一相位也把 13 条 invoke 通道注册起来了', registered);
 
   /*
    * 等 `startUp` 真正跑完：判据是**推给页面的那份状态**（`onStatus`）里
@@ -2689,114 +2669,7 @@ async function writePhase() {
 
   // =========================================================================
   // ⑰ 第一部分（目录行）走的是同一段写盘
-  // =========================================================================
-  await section('⑰ updateCatalogRow：第一部分那一行走的是**同一段**写盘', async () => {
-    const rowId = `${fx.good.modid}|1.16.1`;
-    openQueue = [{ canceled: false, filePaths: [catOld] }];
-    const bound = await invoke(MOD_CH.bindCatalogRow, rowId);
-    check(
-      '（前置）绑定成功（读 jar 里的 modid = 这一行的 modid）',
-      bound.catalogRows.find((row) => row.rowId === rowId)?.binding?.localPath === catOld,
-      listing(dirCat),
-    );
-    const targetPath = join(dirCat, fx.good.targetName);
-    const beforeReqs = goodReqs();
-    let state = null;
-    try {
-      state = await invoke(MOD_CH.updateCatalogRow, rowId, rowId, { mirrorId: fx.good.mirrorId });
-    } catch (error) {
-      state = error;
-    }
-    console.log(`  ${basename(dirCat)}：${listing(dirCat)}`);
-    check('updateCatalogRow 成功', isState(state), resultDetail(state));
-    check(
-      '★ 目标就位、字节 = 目录里那一条（文件名来自 `release.url` —— 两个写入口共用同一段）',
-      existsSync(targetPath) && sha512Of(targetPath) === fx.good.release.sha512,
-      listing(dirCat),
-    );
-    check('旧那份（cat-old.jar）也被删掉', !existsSync(catOld), listing(dirCat));
-    check('没有 `.part` / `.old` 残留', noPartsOrOlds(dirCat), listing(dirCat));
-    check(
-      '只发了 1 个请求（`/mirror-good/`）',
-      goodReqs() === beforeReqs + 1,
-      `请求数 ${String(beforeReqs)} → ${String(goodReqs())}`,
-    );
-    const binding = readStateFileJson()?.catalogBindings?.[rowId];
-    check(
-      '★ 绑定跟着走了：localPath → 新文件、localSha512 = 目录里那一条、releaseKey = 这一行',
-      binding !== undefined &&
-        resolve(binding.localPath).toLowerCase() === resolve(targetPath).toLowerCase() &&
-        binding.localSha512 === fx.good.release.sha512 &&
-        binding.releaseKey === rowId,
-      JSON.stringify(binding ?? null),
-    );
-    check(
-      '★ 而版本号是**从那个文件里读的**（jar 内部写的是 9.9.9、目录里那条 release 写的是别的）',
-      binding?.localVersion === SERVED_JAR_VERSION,
-      `${String(binding?.localVersion)}（release 上是 ${fx.good.release.version}）`,
-    );
-    const row = isState(state) ? state.catalogRows.find((r) => r.rowId === rowId) : undefined;
-    check('这一行现在读作"已是最新"', row?.verdict?.kind === 'same', String(row?.verdict?.kind));
-    /*
-     * ★★ **收口波**：Ruling 48 那道闸的**补救文案**在目录行这一侧必须说得出一个
-     *    **真做得到**的动作。
-     *
-     * ⚠️★ 现场：那道闸的文案原来（两个入口共用一句）写的是"先重新扫描再更新"，而
-     *    `binding.localSha512` **只有绑定会写** —— `rescan` 一个字节都不碰
-     *    `catalogBindings`，而且一个已绑定的行**没有**「绑定本地文件」那颗按钮
-     *    ⇒ 用户照做之后**还是被拒**（第二次、第三次都一样）。
-     *    文件夹那一侧不同（`row.localSha512` 来自扫描读数 ⇒ 重扫真的刷得掉），所以
-     *    这一支由 `updateCatalogRow` 自己传一句（`installRelease` 的 `staleRemedy`）。
-     * ⚠️ 夹具就在上一段的状态上：**扫描读数**（绑定里的 sha512）= 官方那条，
-     *    而盘上那份现在被换成别的字节 ⇒ 正好落进"扫描之后变过"那一格。
-     * ⚠️ 两条读数：①文案里有"重新扫描**不**管用"这件事的替代动作（解除绑定）；
-     *    ②一个请求都没发（拒绝发生在任何 I/O 之前）。
-     */
-    const scanRecorded = binding?.localSha512;
-    writeFileSync(targetPath, probeJar(fx.good.modid, FIXTURE_JAR_VERSION, true));
-    const reqsBeforeStale = goodReqs();
-    let staleRefused = null;
-    try {
-      await invoke(MOD_CH.updateCatalogRow, rowId, rowId, { mirrorId: fx.good.mirrorId });
-    } catch (error) {
-      staleRefused = error;
-    }
-    check(
-      '（前置）盘上那份现在**不是**绑定里记着的那一份（否则下面拒的不是那道闸）',
-      typeof scanRecorded === 'string' && sha512Of(targetPath) !== scanRecorded,
-      `${String(scanRecorded).slice(0, 16)}… vs ${sha512Of(targetPath).slice(0, 16)}…`,
-    );
-    check(
-      '★ 拒（"这个文件在扫描之后变过"）—— 与文件夹那一侧走的是**同一道闸**',
-      typeof staleRefused?.message === 'string' && staleRefused.message.includes('扫描之后变过'),
-      staleRefused?.message ?? '（没有抛）',
-    );
-    check(
-      '★★ 而那句补救说的是**真做得到**的动作：解除绑定（不是"先重新扫描"—— 重扫刷不掉绑定读数）',
-      typeof staleRefused?.message === 'string' &&
-        staleRefused.message.includes('解除绑定') &&
-        !staleRefused.message.includes('先重新扫描再更新'),
-      staleRefused?.message ?? '（没有抛）',
-    );
-    check(
-      '★ 而且一个请求都没发（拒绝发生在任何 I/O 之前）',
-      goodReqs() === reqsBeforeStale,
-      `请求数 ${String(reqsBeforeStale)} → ${String(goodReqs())}`,
-    );
-  });
-
-  // =========================================================================
-  // ⑱（brief 之外的一条）同名旧文件被换掉 + 旧副本删不掉 ⇒ 报告"部分成功"
-  // =========================================================================
-  /*
-   * 这一条补的是 spec §7.3 第 7–8 步里**没有别的地方会走到**的两支：
-   *   · 目标位置上**已经有一个同名文件**（真实世界里最常见：同一个 mod、同一个文件名、
-   *     不同的构建）⇒ `installDownloadedFile` 会先把它挪成 `.<uuid>.old`，就位之后**必须删掉**它
-   *     （不删的话用户的 mods 目录里会一直躺着一个 `.old`）；
-   *   · 旧副本**删不掉**（这里用另一个进程占住它）⇒ 新文件已经就位，所以**不许判失败**，
-   *     但也不许装没看见 ⇒ `lastRun.updated` 里是成功、`notices` 里有一条"部分成功"。
-   */
-  await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删不掉 ⇒ 报告"部分成功"', async () => {
+await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删不掉 ⇒ 报告"部分成功"', async () => {
     const dir = join(workRoot, 'mods-partial');
     mkdirSync(dir);
     const targetPath = join(dir, fx.good.targetName);
@@ -3614,8 +3487,8 @@ if (PHASE === 'state-file') {
 } else {
   result = await mainPhase();
   // 三条 readStateFile 加固的判据在子进程里跑（各要一份全新的模块状态）
-  console.log('\n## ⑪ readStateFile 加固（三条，各起一个子进程）');
-  for (const c of ['a', 'b', 'c']) {
+  console.log('\n## ⑪ readStateFile 加固（四条，各起一个子进程）');
+  for (const c of ['a', 'b', 'c', 'd']) {
     const child = spawnSync(process.execPath, [self, '--phase', 'state-file', '--case', c], {
       stdio: 'inherit',
       cwd: repoRoot,

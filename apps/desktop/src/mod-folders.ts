@@ -9,10 +9,13 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十六条 IPC 的注册**（其中 `onStatus` 只推、不 handle）；
- *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod` / `updateCatalogRow`（第一部分的绑定）、
- *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 四个入口共用
+ *   · **十三条 IPC 的注册**（14 个契约成员里 `onStatus` 只推、不 handle；
+ *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
+ *     `updateCatalogRow`，契约 17 → 14，裁决 B）；
+ *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
+ *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 三个入口共用
  *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
+ *     ⚠️ T6 之前是四个入口，第四个（`updateCatalogRow`）随第一部分一起删了。
  *     ⚠️ 两道闸分住两处（不是一处）：`installRelease` 管"这一个目标位置能不能动"（Ruling 47/48），
  *     而"这一**行**该不该装"由**各个入口自己**过 `assertUpdatable`（见那里为什么不许挪进 `installRelease`）。
  *   · **判断一条都不在这里**：`planCatalogRows` / `planFolderView` / `missingMods` /
@@ -61,7 +64,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import {
@@ -74,10 +77,8 @@ import {
   releasesFor,
 } from '@mcsr/shared/modCatalog';
 import {
-  attributeLegacyBindings,
   type Channel,
   channelUrl,
-  type LegacyBinding,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
@@ -94,7 +95,6 @@ import {
   messageOf,
   notify,
   pickDirectory,
-  pickOneJar,
   readJarMeta,
   sha512OfFile,
   sharedStateFile,
@@ -258,12 +258,6 @@ function modNameOf(modid: string | null): string | null {
   return modFor(index, modid)?.name ?? null;
 }
 
-function nameOfRowId(rowId: string): string {
-  const bar = rowId.indexOf('|');
-  return modNameOf(bar === -1 ? rowId : rowId.slice(0, bar)) ?? rowId;
-}
-
-/** 一个 jar 路径的 mod 名（读不出 modid ⇒ 退回文件名；目录里没有它 ⇒ 退回 modid/文件名）。 */
 function nameOfJarPath(path: string): string {
   try {
     return modNameOf(readJarMeta(path).id) ?? basename(path);
@@ -386,27 +380,25 @@ function buildState(): ModFoldersState {
   const st = requireState();
   const gameVersion = st.prefs.catalogGameVersion;
 
-  const bindings = new Map<
-    string,
-    { localPath: string; localVersion: string | null; localSha512: string | null }
-  >();
-  for (const [rowId, binding] of Object.entries(st.catalogBindings)) {
-    bindings.set(rowId, {
-      localPath: binding.localPath,
-      localVersion: binding.localVersion,
-      localSha512: binding.localSha512,
-    });
-  }
-
   const known = catalogOf();
+  /*
+   * ⚠️★ 2026-10-04（A 的 T6）：这里原来先组一份 `catalogBindings` 的表（键 = `rowId`）
+   *    再交给 `planCatalogRows`。那三个写它的通道（`bindCatalogRow` / `unbindCatalogRow` /
+   *    `updateCatalogRow`）删了 ⇒ **目录行没有本地读数**，`planCatalogRows` 也不再收
+   *    `bindings`（D8：读到就忽略）。⚠️ 文件夹那一侧的本地读数是另一条路
+   *    （`planFolderView` 的 `scan`），一个字都没动。
+   *
+   * ⚠️★ 同一处还有第二个改动（**D2：标签不再筛选**）：这里原来传
+   *    `tagFilter: st.prefs.tagFilter`，而 `planCatalogRows` 会丢掉不匹配的行
+   *    ⇒ 一个陈旧的 `prefs.tagFilter` 会让第三段「该版本**全部** mod」不再是全量，
+   *    而唯一能清它的界面（标签筛选器）已经下线。现在这一层**根本没有**这一格可传。
+   */
   const catalogRows =
     known === null
       ? []
       : planCatalogRows({
           catalog: known,
           gameVersion,
-          tagFilter: st.prefs.tagFilter,
-          bindings,
           upstreamLatest: upstreamLatestOf(),
         });
 
@@ -541,14 +533,6 @@ function folderIdOf(folderPath: string): string {
   return createHash('sha1').update(key).digest('hex').slice(0, 16);
 }
 
-/** 这个路径落在哪个已绑定文件夹里（不在任何文件夹里 ⇒ `null`）。 */
-function folderContaining(path: string): string | null {
-  for (const [folderId, entry] of sortedFolders(requireState())) {
-    if (isInsideFolder(path, entry.path)) return folderId;
-  }
-  return null;
-}
-
 /**
  * 已绑定文件夹的**有效**游戏版本（表头那一格）。
  *
@@ -584,8 +568,15 @@ function adoptFolderGameVersion(): void {
  *   ① 建/复用实体（同一个路径再绑一次不会绑出第二个）；
  *   ② 先扫一次（"绑完马上看得到东西"是这个动作的全部意义）；
  *   ③ §13.1：把这个文件夹**里面**的旧绑定解掉并说出来；
- *   ④ 归属：把文件夹**外面**的 v1 绑定多写一份到 `catalogBindings`；
- *   ⑤ 采纳游戏版本（只在用户没显式选过时）。
+ *   ④ 采纳游戏版本（只在用户没显式选过时）。
+ *
+ * ⚠️★ 2026-10-04（A 的 T6）：这里原来还有第 ④ 步"把文件夹**外面**的 v1 绑定多写一份到
+ *    `catalogBindings`"（`attributeLegacyItems`）。`catalogBindings` 整个退役了（D8）
+ *    ⇒ 那一整段删掉：**归属这件事不再有落点**。代价（认）：v1 的 `items` 里那些
+ *    **不在任何已绑定文件夹里**的单文件绑定，从今往后**没有人接手**（它们仍在文件里、
+ *    仍归 v1 那九条通道管；本模块既不读也不写）。
+ *    ⚠️ 第 ③ 步（**落在新绑定文件夹里**的那一半，`migrateBindingsInsideFolder`）
+ *    **保留**：它是"一个文件只能有一个归属"（§13.1）的落地，与 `catalogBindings` 无关。
  */
 async function bindFolder(): Promise<ModFoldersState> {
   const st = requireState();
@@ -609,7 +600,6 @@ async function bindFolder(): Promise<ModFoldersState> {
   persist();
   await queueScan(folderId, picked, { onlyIfMissing: false });
   migrateBindingsInsideFolder(picked);
-  attributeLegacyItems();
   adoptFolderGameVersion();
   rebuild();
   return modFoldersState();
@@ -624,6 +614,9 @@ async function bindFolder(): Promise<ModFoldersState> {
  * ⚠️ 解绑要**说出来**（`已转为文件夹跟踪：<mod 名>`）：它同时改掉用户原来在单文件那一行
  *    的自动更新开关（那个开关被文件夹那一层取代了）⇒ 静默就是"用户的东西悄悄变了"。
  * ⚠️ v1 的 `items` **只删这一种**（路径落在文件夹里的）：其余一个字段都不动。
+ * ⚠️★ 2026-10-04（A 的 T6）：这里原来还有第二个循环（同一件事对 `catalogBindings` 做一遍）。
+ *    那一格整个退役了（D8 / 裁决 B）⇒ 删掉。v1 的 `items` 那一半**一个字都没动**
+ *    （老客户端 0.0.4 还在读它，spec §2.2 明写"它的管道留着"）。
  */
 function migrateBindingsInsideFolder(folderPath: string): void {
   const st = requireState();
@@ -633,82 +626,6 @@ function migrateBindingsInsideFolder(folderPath: string): void {
     delete st.items[key];
     changed = true;
     pushNotice(`已转为文件夹跟踪：${nameOfJarPath(item.localPath)}`);
-  }
-  for (const [rowId, binding] of Object.entries(st.catalogBindings)) {
-    if (!isInsideFolder(binding.localPath, folderPath)) continue;
-    delete st.catalogBindings[rowId];
-    changed = true;
-    pushNotice(`已转为文件夹跟踪：${nameOfRowId(rowId)}`);
-  }
-  if (changed) persist();
-}
-
-/**
- * v1 遗留绑定的归属（Global Constraints 第 2 条第 2 款）。
- *
- * 每一条：读那个 jar 的 modid（读不出来 ⇒ `null`）⇒ `attributeLegacyBindings`（T1）给出
- * `adopt` / `drop` / `keepUnknown` 三份结果 ⇒ 落状态 + **推 notice**。
- *
- * ⚠️★ 游戏版本是**按每一条**算的（brief 的字面）：该 jar 所在文件夹推断出的版本，
- *    推断不到取界面当前选中的版本。而 T1 的 `attributeLegacyBindings` 一次只收
- *    **一个** `selectedGameVersion` ⇒ 这里按版本**分组**调用它（同一份规则、同一个函数，
- *    只是喂进去的版本按组不同）。写成"全部用界面那个版本"就等于把 brief 那半句丢掉。
- * ⚠️ 归属只是**多写一份** `catalogBindings`：v1 的 `items` **不搬走、不剪枝**
- *    （老客户端 0.4 还在读它）。
- * ⚠️ 已经存在的 v2 绑定**不被覆盖**（用户显式绑的那一份更具体）—— 只推一条说明。
- */
-function attributeLegacyItems(): void {
-  const st = requireState();
-  const groups = new Map<string, LegacyBinding[]>();
-
-  for (const [key, item] of Object.entries(st.items)) {
-    if (item.localPath === '') continue;
-    let modid: string | null = null;
-    try {
-      modid = readJarMeta(item.localPath).id;
-    } catch {
-      modid = null;
-    }
-    const insideFolderId = folderContaining(item.localPath);
-    const entry = insideFolderId === null ? undefined : st.folders[insideFolderId];
-    const gameVersion =
-      (entry === undefined
-        ? resolveGameVersion(dirname(item.localPath))
-        : folderGameVersion(entry)) ?? st.prefs.catalogGameVersion;
-    const list = groups.get(gameVersion) ?? [];
-    list.push({ key, localPath: item.localPath, modid, insideFolderId });
-    groups.set(gameVersion, list);
-  }
-
-  let changed = false;
-  for (const [gameVersion, legacy] of groups) {
-    const result = attributeLegacyBindings({ legacy, selectedGameVersion: gameVersion });
-    for (const { key, rowId } of result.adopt) {
-      const item = st.items[key];
-      if (item === undefined) continue;
-      const existing = st.catalogBindings[rowId];
-      if (
-        existing !== undefined &&
-        normalizedPath(existing.localPath) !== normalizedPath(item.localPath)
-      ) {
-        pushNotice(`这条绑定没有归属（${key}）：${rowId} 已经有另一份绑定了`);
-        continue;
-      }
-      st.catalogBindings[rowId] = {
-        localPath: item.localPath,
-        localVersion: item.localVersion,
-        localSha512: item.localSha512,
-        releaseKey: null,
-        // 这一期没有"目录行的自动更新"这条路径 ⇒ 一律 false（不假装它开着）
-        autoUpdate: false,
-      };
-      changed = true;
-      pushNotice(`已按 modid 归属到目录行：${nameOfRowId(rowId)} → ${rowId}`);
-    }
-    for (const key of result.keepUnknown) {
-      pushNotice(`这条绑定读不出来，保留原样：${key}`);
-    }
-    // `result.drop` = 路径落在某个已绑定文件夹里的那些，`migrateBindingsInsideFolder` 已经处理
   }
   if (changed) persist();
 }
@@ -837,94 +754,18 @@ function setTagFilter(tags: unknown): ModFoldersState {
   return modFoldersState();
 }
 
-/**
- * ★ **§13.1 的单一归属**：这个文件已经归某个**已绑定文件夹**跟踪 ⇒ 不许再绑到目录行。
+/*
+ * ⚠️★ 2026-10-04（A 的 T6）：这里原来还有三个函数 —— `assertOutsideBoundFolders`
+ *    （§13.1 那一半"这个文件已经在某个已绑定文件夹里 ⇒ 不许再绑到目录行"）、
+ *    `bindCatalogRow`（弹原生 `.jar` 对话框 + 校验 modid）与 `unbindCatalogRow`（Ruling 60）。
+ *    它们服务的是**第一部分那一行**，而第一部分整个下线了（spec §2.1 第 7 条 / D1）
+ *    ⇒ 连那三条通道（契约 17 → 14，裁决 B）一起删了。
  *
- * 为什么非有不可（2026-10-04 收口波）：这条不变式此前**只单向执行** ——
- *   绑文件夹时 `migrateBindingsInsideFolder` 会把**落在里面**的绑定解掉，而
- *   `bindCatalogRow` 从不看"这个文件是不是已经在某个已绑定文件夹里" ⇒ 用户能造出
- *   spec §13.1 明文禁止的那个状态：**一个文件两个归属**（文件夹那一行 + 目录行那一行），
- *   界面上两处各有一颗更新按钮，而文件夹那一侧的"清理旧副本"（§7.3 第 8 步）
- *   会把目录行指着的那份文件删掉 ⇒ 那个绑定当场悬空。
- * ⚠️ 判据**只按路径**（`folderContaining`，与 `migrateBindingsInsideFolder` 同一个判据），
- *    **不看 modid**：§13.1 的理由是"一个文件只能有一个归属"，与它是不是那个 mod 无关。
- * ⚠️ 它排在 modid 校验**之前**：这一个更根本（改名/换文件都救不了它 —— 那个位置已经被
- *    文件夹占着），而且不必为了报它去读 jar。
+ *    ⚠️ `setTagFilter` **留着**（D2）：标签只显示、不筛选，但它是一条**已发布的契约通道**，
+ *    为删一个字段动契约不划算。今天没有任何界面调它 —— 那一格的显示值就是
+ *    `ModFoldersState.tagFilter`（"记住的值"，读到就忽略，D8 同一条纪律）。
+ *    ⚠️ `requireKnownTags` 也留着（它就是 `setTagFilter` 的入参校验）。
  */
-function assertOutsideBoundFolders(picked: string): void {
-  const insideId = folderContaining(picked);
-  if (insideId === null) return;
-  const entry = requireState().folders[insideId];
-  throw new Error(
-    `这个文件落在已绑定的文件夹「${entry?.path ?? insideId}」里面 —— 文件夹那一侧已经在跟踪它了` +
-      `（一个文件只能有一个归属，spec §13.1）⇒ 不绑定：${picked}`,
-  );
-}
-
-/**
- * 绑定第一部分的一行（Ruling 24）：弹**原生 `.jar`** 对话框 ⇒ `readJarMeta` ⇒
- * **校验那个 jar 的 modid 与 `rowId` 里的一致** ⇒ 写 `catalogBindings[rowId]`。
- *
- * ⚠️★ modid 那一条**不是防御性的**：一行如果指向别的 mod 的文件，§7.3 的
- *    "就位后清旧副本"会按 modid 把**别人的文件**删掉（jars 全在同一个目录里，
- *    而"旧副本"的判据是"同一个 modid 的其余 jar"）。所以不一致就**拒**。
- * ⚠️★ 它之前还有一道**归属**的闸（`assertOutsideBoundFolders`）：§13.1 的
- *    "一个文件只能有一个归属"此前只有"绑文件夹时解掉里面的绑定"那一半。
- */
-async function bindCatalogRow(rowId: unknown): Promise<ModFoldersState> {
-  const row = requireRowId(rowId);
-  const picked = await pickOneJar();
-  if (picked === null) return modFoldersState();
-  assertOutsideBoundFolders(picked);
-
-  let meta: { id: string; version: string };
-  try {
-    meta = readJarMeta(picked);
-  } catch (error) {
-    throw new Error(`读不出「${basename(picked)}」里的 fabric.mod.json：${messageOf(error)}`);
-  }
-  if (meta.id !== row.modid) {
-    // 两边的 id 都要报出来（spec §7.1 的同一条）：只说"不匹配"用户不知道是谁错了
-    throw new Error(
-      `这个文件里的 mod id 是「${meta.id}」，不是「${row.modid}」⇒ 不绑定（${basename(picked)}）`,
-    );
-  }
-
-  const localSha512 = await sha512OfFile(picked);
-  requireState().catalogBindings[row.rowId] = {
-    localPath: picked,
-    localVersion: meta.version,
-    localSha512,
-    releaseKey: null,
-    autoUpdate: false,
-  };
-  persist();
-  rebuild();
-  return modFoldersState();
-}
-
-/**
- * 解绑第一部分的一行（**Ruling 60**）：把 `catalogBindings[rowId]` 那一格删掉，重算并推送。
- *
- * ⚠️★ 为什么必须有它：新 UI 只渲染第一部分 ⇒ v1 的 `unbind(itemId)` 在那一页上不可达，
- *    而这一组契约原先只有 `bindCatalogRow` ⇒ **绑定了就永远解不掉**（绑错的行、T4 迁移
- *    采纳的行都留在那里）。这是把 v1 的一处能力还回来，不是新增一种行为。
- * ⚠️ 它**不动用户磁盘上的文件**（解绑 ≠ 删文件）：删的只是一格状态。与 v1 的 `unbind`
- *    同一条语义（那条也只是把 `items[itemId]` 里的绑定清掉）。
- * ⚠️ 没有这一格绑定就**拒**（不静默成功）：与 `unbindFolder` 对不存在的 folderId 同一条
- *    纪律 —— 界面只在已绑定的行上画那颗按钮，真收到"没绑定的行"说明状态漂了，那要看得见。
- */
-function unbindCatalogRow(rowId: unknown): ModFoldersState {
-  const row = requireRowId(rowId);
-  const st = requireState();
-  if (st.catalogBindings[row.rowId] === undefined) {
-    throw new Error(`这一行还没有绑定本地文件（没有可解的绑定）：${row.rowId}`);
-  }
-  delete st.catalogBindings[row.rowId];
-  persist();
-  rebuild();
-  return modFoldersState();
-}
 
 // ---------------------------------------------------------------------------
 // 入参校验（「渲染进程说的每个 id 都要在状态或目录里查得到」）
@@ -970,11 +811,6 @@ function requirePairKey(
     throw new Error(`目录里没有这一条（${modid} 在 ${gameVersion} 下没有 release）：${value}`);
   }
   return { key: value, modid, gameVersion };
-}
-
-function requireRowId(rowId: unknown): { rowId: string; modid: string; gameVersion: string } {
-  const pair = requirePairKey(rowId, 'rowId');
-  return { rowId: pair.key, modid: pair.modid, gameVersion: pair.gameVersion };
 }
 
 /** 游戏版本必须是目录里真的出现过的那一个（"9.9.9"这类输入当场拒）。 */
@@ -1048,9 +884,10 @@ const OWN_PART_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  *    留的 `.part` 是 `${targetPath}.part`（`file-updates.ts` 的 `runUpdate`），它同样满足
  *    "`<targetName>.` 开头、`.part` 结尾" ⇒ 只按前缀+后缀扫会把 v1 **正在下载的那个半成品**
  *    删掉，而 v1 随后 rename 的就是那个文件（症状是 v1 那一次更新报"找不到 .part"）。
- *    这条**可达**：v1 的 `items` 与 `catalogBindings` 可以指着同一个文件
- *    （`attributeLegacyItems` 把文件夹**外面**的 v1 绑定原样多写一份、`localPath` 逐字相同）
- *    ⇒ 两个模块可能同时对同一个目标名下载。
+ *    这条**可达**：v1 的 `items` 与本模块文件夹里的一行可以指着同一个文件
+ *    （用户把同一个 jar 既绑给 v1、又放在一个已绑定文件夹里）⇒ 两个模块可能同时对同一个
+ *    目标名下载。⚠️★ T6 之前还有第二条来源（`attributeLegacyItems` 把文件夹**外面**的
+ *    v1 绑定原样多写一份到 `catalogBindings`），而那一格整个退役了（D8）⇒ 今天只剩上面那一条。
  * ⚠️ 判据是"**这是不是我们写的**"，不是"这个名字像不像半成品"：宁可漏清一个自己造的重名残留
  *    （下一次下载前还会再扫一次），也不许删别人的活文件。
  */
@@ -1070,8 +907,9 @@ function stalePartsOf(targetDir: string, targetName: string): string[] {
 /**
  * 把一条 release **就位**到 `targetDir`（spec §7.3 的第 2–8 步）。
  *
- * ⚠️★ **两个写入口共用这一份**（`updateMod` 与 `updateCatalogRow`）：两处各写一遍必然漂，
+ * ⚠️★ **两个写入口共用这一份**（`updateMod` 与 `downloadMissing`）：两处各写一遍必然漂，
  *    而漂的那一份在**动用户的文件**。这也是本任务把"写盘那一段"抽出来的全部理由。
+ *    ⚠️ T6 之前是三个（还有第一部分的 `updateCatalogRow`）—— 它随第一部分删了。
  *
  * 每一步与它的刀：
  *   ① `originFileNameOf(release.url)` —— 落盘文件名**唯一**的来源（basename + 拒穿越 /
@@ -1105,9 +943,11 @@ async function installRelease(opts: {
    * 调用方**已经知道**的、这条 release 在**该目录**里的旧副本（绝对路径）。
    *
    * ⚠️ brief 钉的签名是 `{ targetDir, release, channel }`，这一格是**加出来的**（报告里写明了）：
-   *    "旧副本"只有调用方知道（文件夹那一侧来自扫描读数 `oldCopies` **∪ 主文件名**；
-   *    目录行那一侧来自 `catalogBindings[rowId].localPath`），而**删它们的那段代码必须只有一份**
-   *    （spec §7.3 第 8 步）—— 让两个调用方各删一遍，正是本函数要消灭的那种漂移。
+   *    "旧副本"只有调用方知道（文件夹那一侧来自扫描读数 `oldCopies` **∪ 主文件名**），
+   *    而**删它们的那段代码必须只有一份**（spec §7.3 第 8 步）—— 让两个调用方各删一遍，
+   *    正是本函数要消灭的那种漂移。
+   *    ⚠️★ T6 之前还有第二个调用方（第一部分那一行，旧副本 = `catalogBindings[rowId].localPath`）
+   *    —— 它随第一部分删了，而**共用**这件事仍然是这一格的形状（`downloadMissing` 会用）。
    * ⚠️ 等于 `targetPath` 的会被跳过：名字相同时 `installDownloadedFile` 已经把它挪成 `.old`，
    *    不跳就会把**刚就位的新文件**删掉。
    */
@@ -1120,20 +960,6 @@ async function installRelease(opts: {
    *    必须拿"上次读到的 sha512"与"现在盘上的 sha512"对一次，才挡得住"扫描之后被换过的文件"。
    */
   replacing?: { path: string; sha512: string | null };
-  /**
-   * ★ **Ruling 48** 拒掉"扫描之后被换过的文件"时，那句话里叫人**怎么补救**。
-   *
-   * ⚠️★ 两个入口的补救**不是同一件事**（2026-10-04 收口波订正）：
-   *   · **文件夹里的那一行**（`installFolderRow`）：重扫会把 `row.localSha512` 刷新成盘上
-   *     那一份 ⇒ "先重新扫描再更新"**是对的**（这也是缺省值）；
-   *   · **第一部分那一行**（`updateCatalogRow`）：`binding.localSha512` **只有绑定会写**
-   *     （`rescan` 一个字节都不碰 `catalogBindings`），而一个已绑定的行**没有**
-   *     「绑定本地文件」那颗按钮 ⇒ 对它说"先重新扫描"是一句**空话**（照做之后还是拒）。
-   *     它的补救是**先解除绑定、再重新绑定这一行**（`bindCatalogRow` 会重读 sha512）。
-   * ⚠️ 更深的修法（让 `rescan` 也刷新 `catalogBindings` 的读数，那时两边可以共用一句话）
-   *    记在 `docs/pending.md §5.110`。
-   */
-  staleRemedy?: string;
 }): Promise<InstallOutcome> {
   const { targetDir, release, channel } = opts;
   if (!isDirectory(targetDir)) throw new Error(`这个位置不是目录（拒绝写盘）：${targetDir}`);
@@ -1181,7 +1007,7 @@ async function installRelease(opts: {
       if (onDisk !== null && scanned !== null && onDisk !== scanned) {
         throw new Error(
           `这个文件在扫描之后变过（现在 ${onDisk.slice(0, 16)}…，扫描时是 ${scanned.slice(0, 16)}…）` +
-            `⇒ ${opts.staleRemedy ?? '先重新扫描再更新'}：${targetPath}`,
+            `⇒ 先重新扫描再更新：${targetPath}`,
         );
       }
     } else if (!knownOld) {
@@ -1540,97 +1366,6 @@ export async function updateMod(
 }
 
 /**
- * ★ 写盘：**第一部分**（目录行）那一行的绑定走**同一段**写盘（spec §7.5 的"下载到 ▾"也是它）。
- *
- * 与 `updateMod` 的差别只有"目标在哪儿"：
- *   · 目录 = 那条绑定的 `dirname(localPath)`（路径是主进程记下来的，页面给不了）；
- *   · 装完之后 `catalogBindings[rowId]` 要跟着改（否则这一行还指着**刚被删掉的那份旧文件**）。
- *
- * ⚠️ "这一行"必须在**当前**游戏版本下（`prefs.catalogGameVersion`）查得到：页面上能点的那一行
- *    就是它（`requireRowId` 只保证"目录里有这一对"，那是**任意**游戏版本）。
- */
-export async function updateCatalogRow(
-  rowId: unknown,
-  releaseKey: unknown,
-  channel: unknown,
-): Promise<ModFoldersState> {
-  assertNotBusy();
-  const row = requireRowId(rowId);
-  const chan = requireChannel(channel);
-  const key = requirePairKey(releaseKey, 'releaseKey');
-  if (key.modid !== row.modid || key.gameVersion !== row.gameVersion) {
-    throw new Error(`releaseKey（${key.key}）与这一行（${row.rowId}）对不上`);
-  }
-  const view = current.catalogRows.find((candidate) => candidate.rowId === row.rowId);
-  if (view === undefined) {
-    throw new Error(
-      `这一行不在当前游戏版本（${requireState().prefs.catalogGameVersion}）下 ⇒ 更新不了它：${row.rowId}`,
-    );
-  }
-  const release = view.official;
-  if (release === null) {
-    throw new Error(
-      `这一行现在没有目标（清单里没有它的 release，或候选多于一条要先明确选一个）：${row.rowId}`,
-    );
-  }
-  // ★ Ruling 47：与 `updateMod` 同一道闸（`newer` / `manual` / `unknown` 一律拒）
-  assertUpdatable(view, row.rowId);
-  const binding = requireState().catalogBindings[row.rowId];
-  if (binding === undefined || binding.localPath === '') {
-    throw new Error(`这一行还没有绑定本地文件（先绑定一次 —— 这一期不替用户挑文件）：${row.rowId}`);
-  }
-  const targetDir = dirname(binding.localPath);
-  return writeRun(row.modid, async () => {
-    const outcome = await installRelease({
-      targetDir,
-      release,
-      channel: chan,
-      oldCopies: [binding.localPath],
-      // ★ Ruling 48：绑定时读到的 sha512 就是这一条"扫描读数"
-      replacing: { path: binding.localPath, sha512: binding.localSha512 },
-      /*
-       * ★ Ruling 48 的补救文案（2026-10-04 收口波）：这一侧的 `localSha512` **只有绑定会写**
-       *   ⇒ 缺省的"先重新扫描再更新"对这里是一句空话（重扫不碰 `catalogBindings`），
-       *   而这里确实做得到的动作是"解绑再重新绑定"（`unbindCatalogRow` + `bindCatalogRow`）。
-       */
-      staleRemedy: '先解除绑定、再重新绑定这一行（重新扫描不会刷新第一部分的绑定读数）',
-    });
-    /*
-     * 绑定跟着走（v1 `runUpdate` 的"写回"那一步的对应物）。
-     * ⚠️ 基从**内存里**现取（`requireState()` 是同一个对象），而且**下载期间被解绑就不复活它**：
-     *    下载要几十秒，用户完全可能在这期间解绑 ⇒ 整条写回会把它变回来（v1 评审必修 1 的现场）。
-     * ⚠️ 版本号**现读那个文件**（v1 同一步："不是相信我们刚写的东西"）；读不出来就用 release 上
-     *    那个字符串并记一行日志 —— **不抛**：文件已经就位了，为一个标签判失败是对用户说反话。
-     */
-    let localVersion = release.version;
-    try {
-      localVersion = readJarMeta(outcome.targetPath).version;
-    } catch (error) {
-      console.warn('[mod-folders] 换上新文件之后读不出它的版本（用 release 上那一版）：', error);
-    }
-    const st = requireState();
-    const now = st.catalogBindings[row.rowId];
-    if (now === undefined) {
-      console.warn('[mod-folders] 更新期间这一行被解绑了，不再写回它：', row.rowId);
-    } else {
-      now.localPath = outcome.targetPath;
-      now.localVersion = localVersion;
-      now.localSha512 = release.sha512;
-      // 这一格今天没有消费者（`buildState` 不读它），但**它就是事实**：这个文件里装的是这一行的 release
-      now.releaseKey = row.rowId;
-      persist();
-    }
-    // 装到了某个已绑定文件夹里 ⇒ 那个文件夹的读数也过期了（§13.1 允许这种绑定存在）
-    const inside = folderContaining(outcome.targetPath);
-    if (inside !== null) {
-      const entry = st.folders[inside];
-      if (entry !== undefined) await queueScan(inside, entry.path, { onlyIfMissing: false });
-    }
-    return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
-  });
-}
-
-/**
  * ★ 写盘：**整夹更新**（spec §7.4）—— 走完这个文件夹的行，把**可批量的**那些装掉。
  *
  * 形状照 v1 `updateAll`（:1512 那一段）：`busy` 标记 + `assertNotBusy()` + 每条之间
@@ -1716,13 +1451,14 @@ export async function updateFolderAll(
  *
  * 与另外三个入口的差别只有"这一行是从哪来的"：它**不在任何一个文件夹里**（那正是"缺失"的定义）
  * ⇒ 目标由 `(modid, 游戏版本)` 在目录里决定，而**"该装哪一个"的判定仍然是内核的**：
- * 这里拿 `planCatalogRows` 现算那一行（与页面渲染第一部分用的是**同一个函数**、同一份目录、
+ * 这里拿 `planCatalogRows` 现算那一行（与页面渲染第三段用的是**同一个函数**、同一份目录、
  * 同一个游戏版本）⇒"缺失清单里点了确定"装的就是"目录行上写着的那一条"。
- * ⚠️ **有两格入参是有意不同的**（别把上面那句读成"逐字同一份入参"）：
- *    · `tagFilter: []` —— 不筛：这一条问的是"这一对在不在目录里"，与界面上的标签筛选无关
- *      （筛了的话，用户当前那个筛选会让一条本来下得了的缺失项下不了）；
- *    · `bindings: new Map()` —— 空表："缺失"就是**没有本地文件** ⇒ 判定从"未绑定"那一侧算起。
- *      后果是那一格 `verdict` 恒为 `unknown`，而**这一支不消费 verdict**（理由见 `assertNotManual`）。
+ * ⚠️★ T6 之后这一次调用与页面那一处（`buildState`）**逐格相同**：入参里那两格
+ *    （`tagFilter` / `bindings`）已经不存在了（D2 删了标签筛选、D8 删了本地绑定）
+ *    ⇒ 上面那句"有两格入参是有意不同的"作废，改成"两处问的是同一件事"。
+ *    ⚠️ 后果（已经是事实、不再是"有意不同"）：目录行的 `verdict` 恒为
+ *    `unknown` / `ambiguous` / `missing-release`，而**这一支不消费 verdict**
+ *    （理由见 `assertNotManual`）。
  *
  * ⚠️★ 两道闸各自开火在它**成立**的前提上（写在这里，免得下一个人以为漏了一道）：
  *   · `installRelease` 那一道（Ruling 47/48）照常 —— 目标位置上要是已经有一个我们没见过的文件，
@@ -1789,15 +1525,15 @@ export async function downloadMissing(
    * ★ 目标那一行**由内核现算**（不是在这儿 `releasesFor(...)` 再推一遍）：`planCatalogRows`
    *   就是页面第一部分用的那个函数 ⇒ "缺失清单里点了确定"与"目录行上写着的那一条"是同一个东西
    *   （含上游解析、`manual`、`official` 的取舍）。
-   * ⚠️ `tagFilter: []` 与 `bindings: new Map()` 是**有意**与页面那一次不同的两格，
-   *   理由写在函数头那段（一句话：筛标签会让缺失项下不了；"缺失"就是未绑定 ⇒ `verdict` 恒 `unknown`，
-   *   而这一支不消费 `verdict`）。
+   * ⚠️★ T6：入参里那两格（`tagFilter` / `bindings`）**已经不存在了** ——
+   *   D2 删了标签筛选、D8 删了本地绑定 ⇒ 这一次调用与页面那一处（`buildState`）
+   *   现在**逐格相同**（`catalog` / `gameVersion` / `upstreamLatest`），"两处不一样"这件事
+   *   连同它的理由一起作废。⇒ 今天这一条问的仍然是"这一对在不在目录里"，
+   *   而 answered 它的正是同一个函数。
    */
   const row = planCatalogRows({
     catalog: known,
     gameVersion: version,
-    tagFilter: [],
-    bindings: new Map(),
     upstreamLatest: upstreamLatestOf(),
   }).find((candidate) => candidate.modid === modid);
   if (row === undefined) {
@@ -1840,7 +1576,7 @@ export async function downloadMissing(
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十四条 `ipcMain.handle`（第十五条 `onStatus` 是**推**给页面的：主进程只 `send`）。
+ * 注册十三条 `ipcMain.handle`（第 14 条 `onStatus` 是**推**给页面的：主进程只 `send`）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
  *    写错一个字母**类型检查看不见**，而失败形态是静默的（`invoke` reject / `on` 永不触发）。
@@ -1860,13 +1596,6 @@ function registerIpc(): void {
     return modFoldersState();
   });
   ipcMain.handle(MOD_FOLDERS_CHANNELS.bindFolder, () => bindFolder());
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.bindCatalogRow, (_event, rowId: unknown) =>
-    bindCatalogRow(rowId),
-  );
-  /* ★ Ruling 60：与上一条成对（有绑定就必须要能解绑）。 */
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindCatalogRow, (_event, rowId: unknown) =>
-    unbindCatalogRow(rowId),
-  );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindFolder, (_event, folderId: unknown) =>
     unbindFolder(folderId),
   );
@@ -1901,17 +1630,14 @@ function registerIpc(): void {
     (_event, folderId: unknown, modid: unknown, releaseKey: unknown, channel: unknown) =>
       updateMod(folderId, modid, releaseKey, channel),
   );
-  ipcMain.handle(
-    MOD_FOLDERS_CHANNELS.updateCatalogRow,
-    (_event, rowId: unknown, releaseKey: unknown, channel: unknown) =>
-      updateCatalogRow(rowId, releaseKey, channel),
-  );
   /*
    * ★ Task 6：批量那两条。入参一律 `unknown`（与上面同一条纪律）。
-   *    ⚠️ 这两条**不收 `releaseKey`**（那是页面唯一能指定"下哪一个"的入口，只有上面两条有）：
+   *    ⚠️ 这两条**不收 `releaseKey`**（那是页面唯一能指定"下哪一个"的入口，只有 `updateMod` 有）：
    *       `updateFolderAll` 的目标来自主进程自己那份行视图、`downloadMissing` 按
    *       `(modid, 游戏版本)` 在目录里现算 ⇒ 页面能按 id 触发写盘，但**写哪里、从哪儿取**
    *       仍然不是它说了算（`preload.ts` 文件头那一段）。
+   *    ⚠️★ T6：这里原来还有第三条 `updateCatalogRow`（第一部分的绑定）。它随那三个通道
+   *       一起删了（契约 17 → 14）⇒ 今天收 `releaseKey` 的**只有 `updateMod` 一条**。
    */
   ipcMain.handle(
     MOD_FOLDERS_CHANNELS.updateFolderAll,
@@ -1925,7 +1651,7 @@ function registerIpc(): void {
 }
 
 /**
- * 初始化：**接手 v1 那份状态对象** → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册十三条 IPC → 后台抓目录 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个

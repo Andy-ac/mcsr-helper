@@ -82,7 +82,7 @@ import {
   channelOptions,
   folderGameVersionOptions,
   staleGameVersion,
-} from '@/components/ModFoldersPanel';
+} from '@/components/ModFoldersData';
 
 /**
  * 版本徽章（一行里"这是哪一版"的那一格）。

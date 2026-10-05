@@ -50,8 +50,8 @@ import {
   type VersionFolderBlock,
 } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
-import { VERDICT_BADGES, VERDICT_HINTS } from '@/components/FileUpdateTable';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
+import { isUpdatableRow, VERDICT_BADGES, VERDICT_HINTS } from '@/components/ModFoldersData';
 
 /** 「没有值的那一格」——与两张表、旧第二部分里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
@@ -188,14 +188,15 @@ function JarRow({
   const mirror =
     row.official === null ? null : (mirrorsForUrl(mirrors, row.official.url)[0] ?? null);
   /**
-   * ★★ 给不给更新按钮 = **主进程会不会收**（与旧第二部分逐字相同）：`older` 与
-   *    `different-build` 是 `assertUpdatable` 放行的那两支，`manual` 一律不给
-   *    （spec §8 的"绝不替换"）。
+   * ★★ 给不给更新按钮 = **主进程会不会收**：`isUpdatableRow(row)`（`older` 与
+   *    `different-build` 是 `assertUpdatable` 放行的那两支，`manual` 一律不给 ——
+   *    spec §8 的"绝不替换"）。
    *    ⚠️ 判据**不是** `row.batchable`：那只认 `older` + auto + 可排序 ⇒ `different-build`
    *    那一行会一颗按钮都没有（自检 ㊱ 的夹具里它是 `batchable: false`，专门咬这一条）。
+   *    ⚠️★ T6 之前这条 allow-list 在本文件里是**第三处**逐字抄写（评审点名）；现在它
+   *    只有一处实现（`ModFoldersData.tsx`），另外两处在 T6 随旧组件删掉了。
    */
-  const updatableKind = row.verdict.kind === 'older' || row.verdict.kind === 'different-build';
-  const showUpdate = !row.manual && updatableKind;
+  const showUpdate = isUpdatableRow(row);
   /** 目录里这个 mod 的主页（查不到就是 `null` ⇒ 印 `—`）。 */
   const homepage = homepageOf.get(row.modid) ?? null;
 

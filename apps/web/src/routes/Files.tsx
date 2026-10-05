@@ -36,17 +36,17 @@ import { desktopBridge } from '@mcsr/shared/desktop';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DesktopDownload } from '@/components/DesktopDownload';
-import {
-  ModCatalogScanning,
-  type ModFoldersHandlers,
-  useModFolders,
-} from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
 import {
   ModDownloadPanel,
   type ModPageAction,
   type ModPageActionHandler,
 } from '@/components/ModDownloadPanel';
+import {
+  ModCatalogScanning,
+  type ModFoldersHandlers,
+  useModFolders,
+} from '@/components/ModFoldersData';
 import { ToolsPanel } from '@/components/ToolsPanel';
 
 /**

@@ -141,10 +141,10 @@ export interface DesktopBridge {
    *    （`channelUrl` ⇒ `mirrorUrl`）—— 渲染进程**永远不能让主进程去下载一个它给出的地址**。
    *    这是 v1 立的规矩，这一组**不许破**：被注入的页面能按 id 触发写盘，
    *    但**指定不了写到哪（路径是主进程记下的）、也指定不了从哪儿取**。
-   * ⚠️ **"下载哪一个"这四条的入口各不相同，按各自的参数读**（别混成一句 —— 这是
-   *    2026-10-03 评审的 Important 1：上一版把四条都写成"多要一个 `releaseKey`"，而**只有两条**要）：
-   *    · `updateMod(folderId, modid, releaseKey, channel)` 与
-   *      `updateCatalogRow(rowId, releaseKey, channel)` —— **只有这两条收 `releaseKey`**，
+   * ⚠️ **"下载哪一个"这四条（T6 之后是**三条**）的入口各不相同，按各自的参数读**（别混成一句
+   *    —— 这是 2026-10-03 评审的 Important 1：上一版把四条都写成"多要一个 `releaseKey`"，
+   *    而**只有两条**要；T6 删掉 `updateCatalogRow` 之后**只有一条**要）：
+   *    · `updateMod(folderId, modid, releaseKey, channel)` —— **只有这条收 `releaseKey`**，
    *      而它是页面**从它自己渲染的那一行**带回来的 key ⇒ 主进程**必须按它在目录里查**
    *      （查不到就抛）。这是"页面能指定下载哪一个"的**唯一**入口，所以它只能是 key：
    *      让页面递一个 release 对象或一个地址，等于把"下载什么"整个交给页面。
@@ -153,13 +153,14 @@ export interface DesktopBridge {
    *    · `downloadMissing(modid, gameVersion, folderId, channel)` 收的是
    *      `(modid, 游戏版本)`，主进程**照这两个值在目录里查** release（spec §7.5：这一栏只列
    *      **唯一候选**的行）⇒ 页面能选的只有目录里已有的那一条，同样给不出地址。
-   *    ⇒ 四条唯一的共同点是：**没有任何一条收地址**（`channel` 是 id、`releaseKey` 是 key）。
+   *    ⇒ 三条唯一的共同点是：**没有任何一条收地址**（`channel` 是 id、`releaseKey` 是 key）。
    *
    * ⚠️⚠️ 出参方向是反的，而且必须反（`fileUpdates` 那段写着同一件事）：`getState()` 的
    *    返回值与 `onStatus` 推给页面的那份 `ModFoldersState` 里**确实带着已绑定文件夹的
-   *    绝对路径**（`ModFolderView.path`，以及目录行绑定里的 `CatalogRowView.binding.localPath`）
-   *    —— 这份状态按 `modFolders.ts` 里的定义就是**页面唯一的数据来源**，路径是它的一部分
-   *    （页面靠它指出"正在更新的是哪个目录里的哪个文件"）。
+   *    绝对路径**（`ModFolderView.path`）—— 这份状态按 `modFolders.ts` 里的定义就是
+   *    **页面唯一的数据来源**，路径是它的一部分（页面靠它指出"正在更新的是哪个目录里的哪个文件"）。
+   *    ⚠️★ T6 删掉了另一处路径来源（`CatalogRowView.binding.localPath`，目录行的绑定）——
+   *    那一格随第一部分一起没了 ⇒ 今天搬运路径的只有 `ModFolderView.path` 一处。
    *    ⇒ **入参不含路径 ≠ 这条通道不搬运路径**；这是本期**有意接受**的代价，不是没想过。
    *
    * ── 状态对象：这一组只搬 T1 那一份，不另造平行类型 ──
@@ -198,33 +199,18 @@ export interface DesktopBridge {
     onStatus(callback: (state: ModFoldersState) => void): () => void;
     /** 弹**原生**目录对话框，建一个"文件夹实体"（无入参 ⇒ 选哪里由主进程决定）。 */
     bindFolder(): Promise<ModFoldersState>;
-    /**
-     * 弹**原生** `.jar` 对话框，把选中的文件绑到**第一部分**的那一行（**Ruling 24** 加的）。
-     *
-     * 语义（**实现是 Task 4 的**，这里只声明）：`readJarMeta` 读出那个 jar 的 modid，
-     * **必须与 `rowId` 里的 modid 一致**（不一致就拒 —— 不许把别的 mod 绑到这一行），
-     * 然后把 `{ localPath, localVersion, localSha512, releaseKey: null, autoUpdate: false }`
-     * 写进 `catalogBindings[rowId]`。
-     * ⚠️ 入参仍然**只有 id**（`.jar` 的路径由主进程自己的对话框产生）—— 这正是这条通道
-     *    存在的理由：spec §6.8 要求第一部分**每一行**都能"绑定本地文件"，而 v1 的
-     *    `fileUpdates.bind` 只认 v1 的 item id、**收不了 `rowId`**。
+    /*
+     * ⚠️★ 2026-10-04（A 的 T6，裁决 B）：这里原来还有三条 —— `bindCatalogRow`（弹原生
+     *    `.jar` 对话框，把选中的文件绑到**第一部分**那一行，Ruling 24）、
+     *    `unbindCatalogRow`（Ruling 60 的"有绑定就必须能解绑"）与
+     *    `updateCatalogRow`（第一部分那一行的写盘）。**第一部分整个下线了**
+     *    （spec §2.1 第 7 条 / D1：v1 的单文件界面与第一部分一起删）
+     *    ⇒ 契约 17 → **14**，preload 转发、主进程实现与注册、web 侧的接线
+     *    （`ModFoldersHandlers` 的三个成员 + `makeModFoldersHandlers` 的三个实现）同时删干净。
+     *    ⚠️ 代价（认）：`CatalogRowView.binding` 与"目录行有本地读数"这条能力一起没了 ——
+     *    目录行的 `verdict` 只剩 `unknown` / `ambiguous` / `missing-release`
+     *    （见 `modFolders.ts` 的 `planCatalogRows`）。
      */
-    bindCatalogRow(rowId: string): Promise<ModFoldersState>;
-    /**
-     * 解绑第一部分的**一行**（`catalogBindings[rowId]` 那一格删掉，随后重算并推送）。
-     *
-     * ⚠️★ 为什么必须有它（**Ruling 60**，2026-10-03 评审）：新 UI 在 `modFolders` 存在的
-     *    客户端里**不再渲染 v1 那张带写盘按钮的表**（Ruling 49：v1 的 `assertNotBusy()`
-     *    看不见本模块的 `busy`）⇒ v1 的 `unbind(itemId)` 在那一页上**不可达**，而这一组
-     *    契约原先只有 `bindCatalogRow`：**绑定了就永远解不掉**（绑错的行、T4 迁移采纳的行
-     *    都留在那里）。这条通道把 v1 的那一处能力还回来，代价是契约多一条。
-     *
-     * ⚠️ 入参与 `bindCatalogRow` 一样**只有 id**（`rowId` = `modid|游戏版本`）；主进程按它
-     *    在同一份状态里查那一格，查不到就拒（不猜是哪一行）。
-     * ⚠️ 它**不是**写盘动作：删的是状态文件里的一格绑定，用户磁盘上那个 jar 一个字节都不动
-     *    （与 v1 的 `unbind` 同一条语义 —— 解绑 ≠ 删文件）。
-     */
-    unbindCatalogRow(rowId: string): Promise<ModFoldersState>;
     unbindFolder(folderId: string): Promise<ModFoldersState>;
     /**
      * 在系统文件管理器里打开这个 mod 文件夹（**A 的 S2 新增**）。
@@ -261,8 +247,6 @@ export interface DesktopBridge {
       releaseKey: string,
       channel: Channel,
     ): Promise<ModFoldersState>;
-    /** ★ 写盘：第一部分（目录行）那一行的绑定走**同一段**写盘（**Task 5** 实现）。 */
-    updateCatalogRow(rowId: string, releaseKey: string, channel: Channel): Promise<ModFoldersState>;
     /** ★ 批量写盘：只有该文件夹里 `batchable` 的行会进（**Task 6** 实现）。 */
     updateFolderAll(folderId: string, channel: Channel): Promise<ModFoldersState>;
     /** ★ 装一个缺失清单里的 mod（**Task 6** 实现）；`gameVersion` 决定装哪一版。 */
@@ -352,7 +336,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十七条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十四条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -360,8 +344,14 @@ export function desktopBridge(): DesktopBridge | null {
  * **引用同一个常量对象**，两边各自手写一遍从而漂移就不可能发生。
  *
  * ⚠️ **v1 那九条一个字节都不动**（`FILE_UPDATES_CHANNELS` 原样保留）：老客户端 0.0.4
- *    读的是那些串，改一个字母就是"点了没反应"。这一组**只加**（本任务加 `openFolder`，
- *    16 → 17）。
+ *    读的是那些串，改一个字母就是"点了没反应"。
+ * ⚠️★ 2026-10-04（A 的 T6，裁决 B）：这一组**删了三条** —— `bindCatalogRow` /
+ *    `unbindCatalogRow` / `updateCatalogRow`（第一部分那一行的绑定与写盘）。
+ *    17 → **14**。为什么与 preload、主进程、web 接线、probe 的删除断言**一起**做：
+ *    一次删净才能让**每一个中间提交都绿**（只删契约会让 `apps/web` 的 typecheck 红成
+ *    七处 —— 那几个 handler 的类型派生自 `DesktopBridge['modFolders']`）。
+ *    ⚠️ 那条 `satisfies Record<keyof DesktopBridge['modFolders'], string>` **就是这次删除的
+ *    对齐判据**：少写一条 / 多写一条都当场编译失败。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
  * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**四处不是纯 kebab**
@@ -370,8 +360,9 @@ export function desktopBridge(): DesktopBridge | null {
  *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
  *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
- *    其余**十三个**都是方法名的逐字 kebab（新加的 `openFolder` ⇒ `-open-folder` 也在其中；
- *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准）。
+ *    其余**十个**都是方法名的逐字 kebab（新加的 `openFolder` ⇒ `-open-folder` 也在其中；
+ *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准；
+ *    T6 删掉那三条之后：14 个成员 − 4 个非纯 kebab = **10**）。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -383,9 +374,6 @@ export const MOD_FOLDERS_CHANNELS = {
   /** 状态推送。**同一个串同时用于订阅与取消订阅**（与 v1 同一条纪律）。 */
   onStatus: 'mcsr:modfolders-status',
   bindFolder: 'mcsr:modfolders-bind-folder',
-  bindCatalogRow: 'mcsr:modfolders-bind-catalog-row',
-  /** ⚠️ 与 `bindCatalogRow` 是一对（Ruling 60）：有绑定就必须要能解绑。 */
-  unbindCatalogRow: 'mcsr:modfolders-unbind-catalog-row',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
   /**
    * ⚠️★ 唯一一条**会让用户的操作系统去打开一个位置**的通道：入参只有 id
@@ -397,7 +385,6 @@ export const MOD_FOLDERS_CHANNELS = {
   setFolderAutoUpdate: 'mcsr:modfolders-set-folder-auto',
   setBulkChannel: 'mcsr:modfolders-set-bulk-channel',
   updateMod: 'mcsr:modfolders-update-mod',
-  updateCatalogRow: 'mcsr:modfolders-update-catalog-row',
   updateFolderAll: 'mcsr:modfolders-update-folder-all',
   downloadMissing: 'mcsr:modfolders-download-missing',
   setCatalogGameVersion: 'mcsr:modfolders-set-catalog-version',

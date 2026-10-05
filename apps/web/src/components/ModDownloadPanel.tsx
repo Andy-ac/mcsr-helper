@@ -46,9 +46,8 @@ import {
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AllFoldersView } from '@/components/AllFoldersView';
-import { gameVersionOptions, reasonOf } from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
-import { bulkChannelUsable } from '@/components/ModFoldersPanel';
+import { bulkChannelUsable, gameVersionOptions, reasonOf } from '@/components/ModFoldersData';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
 
