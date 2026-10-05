@@ -17,7 +17,8 @@
  *   `isUpdatableRow(row)`（`components/ModFoldersData.tsx`，T6 抽出来的）。
  *   T4 那一轮它在本文件里是**第三处**逐字抄写（前两处是 `ModCatalogTable` 与
  *   `ModFoldersPanel`）；T6 把那两个文件删掉之后，这一处也收进了共用函数
- *   ⇒ 今天**一处**都没有了，`FolderRow` 那一格的账已经闭合。
+ *   ⇒ 今天**逐字抄写一份都不剩**（而判据本身仍是上面那**一处**实现：`isUpdatableRow`），
+ *   `FolderRow` 那一格的账已经闭合。
  *   （T4 当时记的是"抽成共用函数要动不在文件边界里的 `ModFoldersPanel.tsx`"，
  *   而 T6 正是那个边界被打开的一轮。）
  *

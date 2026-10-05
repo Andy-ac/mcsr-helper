@@ -855,7 +855,15 @@ export interface ModFoldersState {
  * ⇒ 那条断言成了多余的公开符号（Ruling 25）。
  */
 
-/** v1 状态文件里的一条绑定，喂给 `attributeLegacyBindings`（由主进程读盘后组装）。 */
+/**
+ * v1 状态文件里的一条绑定，喂给 `attributeLegacyBindings`。
+ *
+ * ⚠️★ 2026-10-04（A 的 T6）：**主进程不再组装它、也不再调用那个函数**
+ *    （`attributeLegacyItems` 随 `catalogBindings` 一起退役，D8 / 裁决 B）⇒
+ *    今天唯一的调用者是**单测**（`services/api/src/mod-folders-shared.test.ts` 里那一组）。
+ *    它留在共享内核里是"归属规则那一份实现仍在、且仍被测试钉住"的代价，
+ *    不是"主进程还在用它"。
+ */
 export interface LegacyBinding {
   key: string;
   localPath: string;

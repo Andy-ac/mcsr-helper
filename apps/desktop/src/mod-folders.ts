@@ -27,9 +27,10 @@
  *   · **I/O 也不在这里**：`readJarMeta` / `sha512OfFile` / `downloadTo` /
  *     `installDownloadedFile` / `assertNotBusy` / `readStateFile` / `writeStateFile` /
  *     `fetchVersions` / `pickDirectory` / `notify`
- *     ⚠️★ `pickOneJar`（弹 `.jar` 对话框）T6 之后没人用了（它唯一的调用方是第一部分那条
- *     `bindCatalogRow`）⇒ 已从 import 里删掉；那一半能力随第一部分下线（`file-updates.ts`
- *     里那个函数还在，v1 自己也不用它）
+ *     ⚠️★ `pickOneJar`（弹 `.jar` 对话框）T6 之后**只有本模块不再用它**（它在本模块里唯一的
+ *     调用方是第一部分那条 `bindCatalogRow`）⇒ 已从本文件的 import 里删掉。
+ *     ⚠️★ **v1 仍然在用**（别把它从 `file-updates.ts` 删掉）：`FILE_UPDATES_CHANNELS.bind`
+ *     → `file-updates.ts` 的 `bind()`（`:1138`）→ `pickOneJar()`（`:1140`）。
  *     全部**复用** `./file-updates`（Task 3 抽出来的那一批）。
  *     复制一份的下场与本仓踩过的每一次都同型：两份迟早漂，而漂的那一份在动用户的文件。
  *

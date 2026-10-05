@@ -112,13 +112,13 @@ await i18n.init({
 });
 
 /*
- * ⚠️ 刻意**不用 JSX**（与 `filesrender.tsx` 同一条）：`scripts/**` 不在 tsconfig 的
+ * ⚠️ 刻意**不用 JSX**（这条纪律沿用自已删的 `filesrender.tsx`）：`scripts/**` 不在 tsconfig 的
  *    `include` 里 ⇒ JSX 走 classic runtime ⇒ 必须 `import React from 'react'`，
  *    而 biome 的 `noUnusedImports` 会把它判成未使用并提供一个**不安全自动修复** ——
  *    谁点了那个修复，脚本就在运行时崩。
  */
 
-/** 一段渲染产物 → 人看到的那串字（与 filesrender 同一个口径：空白一律压掉）。 */
+/** 一段渲染产物 → 人看到的那串字（口径：空白一律压掉）。 */
 const decode = (s: string): string =>
   s
     .replace(/&#x27;/g, "'")
@@ -132,7 +132,7 @@ const textOf = (markup: string): string =>
 const t = (key: string, opts?: Record<string, unknown>): string => i18n.t(key, opts) as string;
 
 /**
- * 针孔探针（本仓老规矩，与 filesrender 同一个）：词条必须**真的解析出译文**。
+ * 针孔探针（本仓老规矩）：词条必须**真的解析出译文**。
  *
  * ⚠️ 缺键时 i18next **原样返回 key** ⇒ 正面断言比的是 key 与 key（照样通过）、
  *    反面断言（"这一行不许出现 X"）**直接静默变绿**。
@@ -172,7 +172,7 @@ const keep = (markup: string): string => {
 // ---------------------------------------------------------------------------
 
 /*
- * ⚠️★ 三个 ASCII 夹具，各自都有理由（照 `filesrender.tsx` 的 `FAILURE` 那一段）：
+ * ⚠️★ 三个 ASCII 夹具，各自都有理由（照已删的 `filesrender.tsx` 的 `FAILURE` 那一段）：
  *   · `TAG_LABEL`：`CatalogRowView.tagLabels` 只带目录里的 **`zh`** 那一份
  *     （`packages/shared/src/modFolders.ts` 的 `tagLabelsOf` 写着这件事：这一层没有
  *     locale 参数）⇒ 真实目录里它**是中文**。夹具换成中文的话，⑱ 那条"英文产物零汉字"
@@ -906,11 +906,12 @@ ok('㉜ 真实目录（content/mod-catalog.json）：1.16.1 的 48 行在**第�
 // Task 3（A 的第三片）：页面骨架 —— tab / 顶部并排区 / 按版本分组的文件夹区
 // ===========================================================================
 /*
- * ⚠️★ 与上面 ⑱–㉚ 的关系：这一批渲染的是**新页面**的四个组件
- *    （`ModDownloadPanel` / `VersionFolderList` / `ToolsPanel` / `AllFoldersView`），
- *    而 ⑱–㉚ 渲染的 `ModFoldersPanel`（旧第二部分）**同时还在**：T3 只把**页面**
- *    从"三块"换成"tab 骨架"，旧组件与它那十几组断言一起留到 T6（那一轮删文件 + 删断言）。
- *    ⇒ 两条路各自的判据并存一个提交周期，**不是**重复（各自的实现不同、删的时机不同）。
+ * ⚠️★ 与上面 ⑱–㉚ 的关系（**T6 之后只剩历史意义**）：这一批渲染的是**新页面**的四个组件
+ *    （`ModDownloadPanel` / `VersionFolderList` / `ToolsPanel` / `AllFoldersView`）。
+ *    当年 ⑱–㉚ 渲染的 `ModFoldersPanel`（旧第二部分）**同时还在**：T3 只把**页面**
+ *    从"三块"换成"tab 骨架"，旧组件与它那十几组断言一起留到 T6 ——
+ *    ⚠️★ **T6 已经把它们删了**（删文件 + 删断言，空号清单见本文件文件头）
+ *    ⇒ 今天这一页只有本文件这一批判据，两条路并存的那个提交周期结束了。
  * ⚠️★ 「默认在 mod 下载」**不能**靠"某个字符串不在场"来证（那是恒真一类，§5.32①）：
  *    这里真的渲染一次**页面外壳**（`Files` + `shellStub(true)`，照 ⑰ 的写法），
  *    断言的是**选中态**（`data-tab="mods"` 那颗按钮带 `aria-selected="true"`）。
@@ -1437,7 +1438,7 @@ assert.deepEqual(
   labelsIn(jarRowOf(jarListHtml, 'sodium')),
   [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
   '★★ 已识别的行给**既有那两颗**更新按钮（`older` + GitHub 来源 ⇒ 镜像那颗也在）：' +
-    '判据与旧第二部分 `ModFoldersPanel.FolderRow` **逐字相同**（`older | different-build` 且非 manual）',
+    '判据与旧第二部分 `ModFoldersPanel.FolderRow`（T6 已删）**逐字相同**（`older | different-build` 且非 manual）',
 );
 assert.ok(
   textOf(jarRowOf(jarListHtml, 'sodium')).includes('sodium-build-A.jar') &&
@@ -2359,7 +2360,7 @@ if (LANG === 'en') {
 // 组数探针（手抄的，理由见下）
 // ---------------------------------------------------------------------------
 /*
- * ⚠️ 组数是**手抄的**（本仓惯例，`filesrender.tsx` 末段写着同一条）：它防的是
+ * ⚠️ 组数是**手抄的**（本仓惯例；已删的 `filesrender.tsx` 末段当年写着同一条）：它防的是
  *    "把某一段整块摘掉" —— 删掉一整组断言之后脚本照样绿、照样打印"通过 N 项"，
  *    只有这个数字会变。⇒ 改脚本就要一起改这里（改的时候**现数**，别估）。
  * ⚠️ en 比 zh 多 1：㉛ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
