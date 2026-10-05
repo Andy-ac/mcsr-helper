@@ -161,12 +161,15 @@ export function VersionFolderList({
    *    `VersionFolderBlock` / `ModFolderRowView` 都**不带** homepage（它只在
    *    `CatalogRowView` 上，由 `planCatalogRows` 从 `ModEntry.homepage` 填）
    *    ⇒ "jar 行给主页链接"这一条只能由页面把这份映射喂下去（2026-10-04 T1 评审的裁定）。
-   * ⚠️ 它是**纯展示联结**：`?? null` 只是把"目录里没写"与"没有这一格"合成同一个值，
-   *    **不含任何判断**（没有任何判定依赖 homepage）。
-   * ⚠️ 每次渲染重算：`catalogRows` 是这一版那几十行（真目录实测 48 行）⇒ 一次 O(48) 的
+   * ⚠️★ **CT-4（最终修复波）：来源是 `page.mods`（投影），不是 `state.catalogRows`。**
+   *    修之前这一层与投影**各建了一份** `modid → homepage` 的映射（第三段读的是投影那一份）
+   *    ⇒ 同一个 modid 可能在一张表里有链接、在另一张里是 `—`（两份映射哪天不同源就漂）。
+   *    今天两份的来源恰好相同，但"恰好"不是判据：**一处真相**在投影里（`VersionModRow.homepage`），
+   *    这一层只是把它摊成 Map（**纯展示联结**，不含任何判断）。
+   * ⚠️ 每次渲染重算：`page.mods` 是这一版那几十行（真目录实测 48 行）⇒ 一次 O(48) 的
    *    map 构造，比在这一层加一份 `useMemo` 的记忆状态便宜（也与"这一层不存状态"同一条）。
    */
-  const homepageOf = new Map(state.catalogRows.map((row) => [row.modid, row.homepage ?? null]));
+  const homepageOf = new Map(page.mods.map((row) => [row.modid, row.homepage]));
 
   return (
     <section
@@ -177,6 +180,29 @@ export function VersionFolderList({
       <h3 className="folderlist__title">
         {t('files.versionFoldersTitle', { version: page.version })}
       </h3>
+      {/*
+        ★★ G1（最终修复波）：**常驻的**「添加文件夹」入口。
+        ⚠️★ 修之前唯一的渲染点在下面那个 `page.folders.length === 0` 的支路里 ⇒
+        一个**已经有文件夹**的版本**没有任何添加入口**，而 spec §2.1 第 2 条的目标是
+        "一个版本下可以绑定**多个** mod 文件夹"（D3 也按这个前提写）⇒ 那半条目标在界面上
+        根本无法达成（用户只能先解绑再绑，而解绑会忘掉扫描读数）。
+        ⚠️ 它与空态里那一颗是**两颗按钮、同一个动作**：空态那一颗说的是"这一版还什么都没有，
+        从这一颗开始"，这一颗是"再添一个"。两者都发 `kind: 'bind-folder'` 并带上
+        **当前这一版**（G2 / D3：新文件夹的版本预置为它，仍可改）。
+        ⚠️ `disabled={state.busy}`：`bindFolder` 会建实体 + 立刻扫一次（改状态、读磁盘）。
+      */}
+      <div className="folderlist__actions">
+        <button
+          type="button"
+          className="cta"
+          data-action="bind-folder"
+          data-bind-scope="section"
+          disabled={state.busy}
+          onClick={() => void onAction({ kind: 'bind-folder', version: page.version })}
+        >
+          {t('files.bindFolder')}
+        </button>
+      </div>
       {/*
         ★ 第一处空态（spec §8 第一行）：这个版本下**一个文件夹都没有**。
         ⚠️★ 它同时是**这一期唯一的绑定入口**（`bindFolder` 弹原生目录对话框建实体）；
@@ -190,9 +216,10 @@ export function VersionFolderList({
               type="button"
               className="cta"
               data-action="bind-folder"
+              data-bind-scope="empty"
               /* ⚠️ 正在写盘时按住：`bindFolder` 会建实体 + 立刻扫一次（改状态、读磁盘）。 */
               disabled={state.busy}
-              onClick={() => void onAction({ kind: 'bind-folder' })}
+              onClick={() => void onAction({ kind: 'bind-folder', version: page.version })}
             >
               {t('files.bindFolder')}
             </button>

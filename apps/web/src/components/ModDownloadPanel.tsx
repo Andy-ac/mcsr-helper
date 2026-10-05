@@ -64,7 +64,19 @@ import { VersionModList } from '@/components/VersionModList';
  */
 export type ModPageAction =
   | { kind: 'open-folder'; folderId: string }
-  | { kind: 'bind-folder' }
+  /*
+   * ★★ G2（最终修复波 / spec D3）：添加文件夹时**带上当时看着的那一版**。
+   *
+   * ⚠️★ 修之前这个成员**不带任何东西**，而 `bindFolder()` 也没有入参 ⇒ 主进程只能
+   *    "自己推断"（`.minecraft` / `mmc-pack.json`），推不出来的那些路径得到的是
+   *    `gameVersion: null`（每一行都是 `unknown-version`）⇒ 用户"在 1.16.1 下面加了一个
+   *    1.16.1 的文件夹"，它却出现在**版本未知**那一组里。spec D3 明写的是"在版本 X 下点
+   *    「添加文件夹」⇒ 选完目录后把该文件夹的版本**预置**为 X（仍可改）"。
+   * ⚠️ `version` 就是 `page.version`（= `state.gameVersion`），不是组件自己算的第二个版本。
+   *    ⚠️ `null` 仍然允许，含义是"交回自动推断"（契约里那两格与 `setFolderGameVersion`
+   *    同一条语义）—— 今天没有任何调用点发它（页面总是知道自己在看哪一版）。
+   */
+  | { kind: 'bind-folder'; version: string | null }
   | { kind: 'rescan-folder'; folderId: string }
   | { kind: 'unbind-folder'; folderId: string }
   | { kind: 'set-folder-version'; folderId: string; version: string | null }

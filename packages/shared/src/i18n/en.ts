@@ -4001,6 +4001,15 @@ export const en: TranslationSchema = {
    * lands. The repo's "a key with no consumer does not stay" rule is read here as
    * "the consumer is the very next task, and that task cannot edit this file" —
    * so do not delete them on the "nobody uses it" instinct.
+   * ⚠️★ **Final fix wave correction (present tense)**: the paragraph above describes
+   *    the 2026-09-24 shape; today `components/FileUpdateTable.tsx` and
+   *    `components/FileUpdatesPanel.tsx` are **both gone** (A's T6 removed them with
+   *    the first section / D1, and `foldersrender.tsx` ㊵ pins that they are not in
+   *    the tree). The surviving half (`VERDICT_BADGES` / `VERDICT_HINTS` /
+   *    `RAW_KEY_RE` / `rawKeysIn` and that batch of shared predicates) lives in
+   *    **`apps/web/src/components/ModFoldersData.tsx`** ⇒ every pointer below to
+   *    those two deleted files reads as "where it lived back then"; **to change it
+   *    today, go to `ModFoldersData.tsx`**.
    *
    * ===========================================================================
    * ⚠️★ Two places differ from the plan's table, neither of them a matter of taste
@@ -4010,7 +4019,10 @@ export const en: TranslationSchema = {
    *    merge them (corrected in review, 2026-09-24: this note used to claim both are
    *    "plain sentences rendered as-is", which is **wrong** for `browserOnly`):
    *      · `autoHint` renders inside a bare `<p>` (`.filespanel__hint` in
-   *        `components/FileUpdatesPanel.tsx`) and **never** goes through `em()` ⇒ keeping
+   *        `components/FileUpdatesPanel.tsx` back then; ⚠️★ that file was removed by
+   *        A's T6 ⇒ this note is history **and** the reason `files.autoHint` has **no
+   *        render point** today — it is one of the 45 dead keys in §5.112) and
+   *        **never** goes through `em()` ⇒ keeping
    *        the marks would print two literal asterisks. That one really was broken.
    *      · `browserOnly` renders inside `<Notice>`, and `Notice` runs `em()` on **string**
    *        children (`components/Form.tsx`: `typeof children === 'string' ? em(children)`)
@@ -4063,7 +4075,12 @@ export const en: TranslationSchema = {
      * ★ Not in the plan's table: **unbinding one item** (`unbind(itemId)` — the channel
      *   T3 built, the implementation T4 wrote).
      * ⚠️ Why it needs a consumer (Task 6's ruling; the full reasoning is on the button in
-     *   `apps/web/src/components/FileUpdateTable.tsx`): the T6 brief's `Produces` line lists
+     *   `apps/web/src/components/FileUpdateTable.tsx`):
+     *   ⚠️★ Final fix wave correction: that file and that button were **both removed by
+     *   A's T6** (the first section went down with the v1 panel, D1) ⇒ the sentence above
+     *   now reads as "the reason back then", and this key itself is one of the 45 dead
+     *   keys in §5.112.
+     *   the T6 brief's `Produces` line lists
      *   `onUnbind` in the table's interface, and **no render rule** says which state draws
      *   it ⇒ without it that prop is dead, and `unbind()` has **no other consumer anywhere
      *   in the UI** (read today: nothing under `apps/web/src` calls it except the panel's
@@ -4165,6 +4182,11 @@ export const en: TranslationSchema = {
      *    `apps/desktop/src/file-updates.ts` says so in the `bind()` note — the reject
      *    message is the only channel back to the renderer). Catch and display both live
      *    in the handler wrapper in `components/FileUpdatesPanel.tsx`.
+     *    ⚠️★ Final fix wave correction (**this key is still live**): that file (v1's
+     *    handler wrapper) was removed by A's T6; today the same landing spot is
+     *    **`reasonOf` + `makeModFoldersHandlers`' `fail(...)` in
+     *    `components/ModFoldersData.tsx`**, rendered by `ModDownloadPanel`'s
+     *    `<Notice kind="bad">` (which is what uses `files.actionFailed`).
      * ⚠️ Cancelling the file dialog is **not** a failure (the main process returns the
      *    unchanged state), so every message that shows up here is a real failure.
      * ⚠️ Cost: `{{message}}` is the **main process's own wording**, which is Chinese ⇒
@@ -4229,10 +4251,13 @@ export const en: TranslationSchema = {
      * ===================================================================
      * ⚠️★ Why every key below keeps the `files.` prefix (instead of opening a new
      *    `mods.` / `folders.` namespace): `/files` is this page's namespace, and the
-     *    **raw-key leak scanner** (`RAW_KEY_RE` in `FileUpdateTable.tsx`, shared by v1's
-     *    ⑲ and T7's ⑬) only knows `files.` and `common.` ⇒ keeping the prefix means this
-     *    batch is watched **without touching the scanner** (a new prefix plus a forgotten
-     *    scanner extension means raw keys on that branch go unnoticed).
+     *    **raw-key leak scanner** (`RAW_KEY_RE` — ⚠️★ final fix wave correction: it used
+     *    to live in `FileUpdateTable.tsx` (the one object v1's ⑲ and T7's ⑬ shared), and
+     *    that file was removed by A's T6; today it lives in
+     *    **`apps/web/src/components/ModFoldersData.tsx`**, consumed by
+     *    `scripts/foldersrender.tsx`) only knows `files.` and `common.` ⇒ keeping the
+     *    prefix means this batch is watched **without touching the scanner** (a new prefix
+     *    plus a forgotten scanner extension means raw keys on that branch go unnoticed).
      */
     partOneTitle: 'Part one: mods in the catalog',
     /*
@@ -4458,8 +4483,12 @@ export const en: TranslationSchema = {
      * ★★ Ruling 64 (2026-10-03 T8 review): a **stale persisted value may be shown, but it
      *    must not be sent as a new action**. The key above lets the user see that the state
      *    drifted; this one says "and that is why Update all cannot be sent" - without it,
-     *    that button is simply **not drawn** in this case (see `bulkChannelUsable` in
-     *    `ModFoldersPanel`) and the user just wonders where it went.
+     *    that button is simply **not drawn** in this case (see `bulkChannelUsable` -
+     *    ⚠️★ final fix wave correction: that function used to live in
+     *    `ModFoldersPanel.tsx`, removed by A's T6; today it lives in
+     *    **`components/ModFoldersData.tsx`**, and this key is rendered by
+     *    **`components/ModDownloadPanel.tsx`**'s `<Notice kind="bad">`) and the user just
+     *    wonders where it went.
      * ⚠️ The wording has to name the cell ("pick a channel that still exists above"): the
      *    catalog is not broken, the choice **saved on this machine** is out of date.
      */
@@ -4508,8 +4537,12 @@ export const en: TranslationSchema = {
     /*
      * ★★ The branch `FolderVerdict` has and `ReleaseVerdict` does not (spec §8: the
      *    `mmc-pack.json` cannot be read). ⚠️ It exists on the folder side only: the badge
-     *    table in `ModCatalogTable` is typed by `ReleaseVerdict`, so folder rows use that
-     *    same table plus this branch (see `VERDICT_BADGES` in `FileUpdateTable.tsx`).
+     *    table is typed by `FolderVerdict` (a `Record<…, …>` ⇒ adding a kind fails to
+     *    compile), so folder rows and catalog rows use that **same** table plus this
+     *    branch (see `VERDICT_BADGES` - ⚠️★ final fix wave correction: it used to live in
+     *    `FileUpdateTable.tsx`, removed by A's T6; today it lives in
+     *    **`apps/web/src/components/ModFoldersData.tsx`**, rendered by `FolderJarList.tsx`
+     *    and `VersionModList.tsx`).
      */
     verdictUnknownVersion: 'Game version unknown',
     /*
@@ -4719,10 +4752,20 @@ export const en: TranslationSchema = {
     alreadyDownloaded: 'Already downloaded',
     /*
      * ★★ No folder can be a target (spec §8): the button is **disabled** and says why.
-     * ⚠️ The `downloadTargets` rule is "path exists **and** it has a scan reading" - a user may
-     * well have one folder that fails either half, so the sentence names both conditions.
+     * ⚠️ The `downloadTargets` rule is "path exists **and** it has a scan reading **and** it does
+     * not already hold this modid" (the last half is B2) - a user may well have one folder that
+     * fails one of them, so the sentence names the conditions that matter for this branch.
      */
     noFolderForDownload:
       'There is no folder to download into - a bound folder whose game version is {{version}}, whose path still exists and which has been scanned once.',
+    /*
+     * ★★ B2 (final fix wave): `downloadTargets` is the **legal** target list (the projection
+     * drops folders that already hold the modid, because the main process refuses that target
+     * unconditionally) ⇒ "no target at all" has two causes, and this is the other one.
+     * ⚠️ It must be a different sentence from `noFolderForDownload`: one exit is "bind a
+     * folder", the other is "expand that folder and you will see it".
+     */
+    alreadyInFolder:
+      'This mod is already in {{folder}} - expand that folder to see it; there is nothing to download.',
   },
 };

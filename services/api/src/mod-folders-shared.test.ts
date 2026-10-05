@@ -1004,11 +1004,47 @@ test('planVersionPage：只给该版本的文件夹，且分组按有效版本',
   assert.deepEqual(
     grouped.map((g) => g.version),
     ['1.16.1', '1.8.9', null],
-    '分组按状态里的首次出现顺序；版本未知的那些成一组（version = null）',
+    '分组的形状：每个版本一组、版本未知的那些成一组（version = null）；' +
+      '⚠️ **顺序**这件事这一份证不了（它的插入序恰好等于代码单元序）—— 见下面那份 unsorted',
   );
   assert.deepEqual(
     grouped.map((g) => g.folders.map((f) => f.folderId)),
     [['a'], ['b'], ['c']],
+  );
+
+  /*
+   * ★★ T1 ①②（最终修复波）：**插入序 ≠ 字典序**的那一份夹具。
+   *
+   * ⚠️★ 上面那一份分不出"首次出现序"与"字典序"：`['1.16.1','1.8.9',null]` 恰好**同时**
+   *    是插入序与"代码单元序"（`'1.16.1' < '1.8.9'`，而 `null` 排在末位）⇒ 把实现换成
+   *    排序之后那一份断言**照样绿**。这条断言就是为此存在的：
+   *    先绑 `1.8.9`、再绑 `1.16.1` ⇒ 排序会给出 `['1.16.1','1.8.9',null]`，
+   *    而"按用户的绑定顺序画"要的是 `['1.8.9','1.16.1',null]`。
+   * ⚠️ 组员也一起排成不对称的（`b` 在 `a` 前面、各自一组）：只比版本序列的话，
+   *    "把组按版本排序但保留组内顺序"这种坏法过得了 —— 这一份里"顺序错了"在第一格就看得见。
+   * ★ 刀（读数在最终修复波报告里）：把 `groupFoldersByVersion` 的 `order.push(key)` 那一段
+   *    换成最后 `[...bucket.keys()].sort(...)`（或先对 `state.folders` 按 `gameVersion`
+   *    排一遍）⇒ 下面这条红。
+   */
+  const unsorted = groupFoldersByVersion(
+    stateWith({
+      folders: [
+        folderView({ folderId: 'early', gameVersion: '1.8.9' }),
+        folderView({ folderId: 'late', gameVersion: '1.16.1' }),
+        folderView({ folderId: 'unknown', gameVersion: null }),
+      ],
+    }),
+  );
+  assert.deepEqual(
+    unsorted.map((g) => g.version),
+    ['1.8.9', '1.16.1', null],
+    '★ T1 ①②：组的顺序 = 状态里的**首次出现顺序**（这一份的插入序恰好与代码单元序相反 ⇒ ' +
+      "一个\"排一遍再分组\"的实现会给出 ['1.16.1','1.8.9',null]）",
+  );
+  assert.deepEqual(
+    unsorted.map((g) => g.folders.map((f) => f.folderId)),
+    [['early'], ['late'], ['unknown']],
+    '★ T1 ①②：组员跟着组走（不是"按 gameVersion 排完再画"）',
   );
 });
 
@@ -1036,6 +1072,18 @@ test('planVersionPage：已下载只在被展开的文件夹里成立', () => {
    */
   const onlyB = planVersionPage(state, ['b']).mods.find((m) => m.modid === 'sodium');
   assert.deepEqual(onlyB?.downloadedIn, []);
+  /*
+   * ★★ B2（最终修复波）：`presentIn` **不看展开态** —— 同一个 modid，`expanded` 从 `[]`
+   *   到 `['a']` 都不改变它。它与 `downloadedIn` 是同一次识别的两个投影。
+   */
+  assert.deepEqual(none.presentIn, ['a'], '★★ presentIn 与展开态无关（没展开也答得出"哪里有它"）');
+  assert.deepEqual(onlyA?.presentIn, ['a'], '★★ presentIn 在展开之后仍然是同一格');
+  assert.deepEqual(onlyB?.presentIn, ['a'], '★★ 展开别的文件夹不改变 presentIn');
+  assert.deepEqual(
+    planVersionPage(state, []).mods.find((m) => m.modid !== 'sodium')?.presentIn,
+    [],
+    '★ 对照：另一个 modid 的 presentIn 是空的（否则上面那几条可能只是"presentIn 恒为全部分文件夹"）',
+  );
 });
 
 test('planVersionPage：未识别的 jar 不进 recognizedModids，但仍在文件夹的行里', () => {
@@ -1106,7 +1154,7 @@ test('planVersionPage：链接字段取的是目标 release（没有目标 ⇒ �
   assert.equal(amb.releaseVersion, null);
 });
 
-test('planVersionPage：下载目标是"路径在 + 有读数 + 版本已知"的那些', () => {
+test('planVersionPage：下载目标是"路径在 + 有读数 + 里面还没有它"的那些', () => {
   const state = stateWith({
     gameVersion: '1.16.1',
     folders: [
@@ -1126,4 +1174,43 @@ test('planVersionPage：下载目标是"路径在 + 有读数 + 版本已知"的
   assert.equal(page.folders[1]!.folder.pathExists, false, 'b 的差别是路径不在');
   assert.equal(page.folders[2]!.folder.hasReading, false, 'c 的差别是没有读数');
   assert.deepEqual(row.downloadTargets, ['a']);
+  /*
+   * ★★ B2（最终修复波）：`downloadTargets` **还要把"已经有它"的文件夹排掉**。
+   *
+   * 现场：主进程 `downloadMissing` 对"**目标**文件夹里已经有这个 modid"是**无条件拒**的
+   * （`apps/desktop/src/mod-folders.ts` 里 `present !== undefined` 那一段），而 `expanded`
+   * 默认是空的 ⇒ 只看 `downloadedIn` 的话，默认视图里每一个"已经在唯一那个文件夹里"的 mod
+   * 都会画出一颗**注定被拒**的按钮（点下去是一条红字）。
+   * ⚠️ 上面那一份夹具三个文件夹都是**空的**（`scan` 默认 `[]`）⇒ 它证不了这一条：
+   *    这里另起一份，一个文件夹里有 sodium、另一个没有。
+   * ⚠️ 判据的**对称性**是刻意的：sodium 的目标表是 `['b']`、lithium 的是 `['a','b']` ——
+   *    少了后一半，"把所有文件夹都排掉"这种坏法过得了前一条。
+   * ★ 刀（读数在报告里）：把投影里
+   *    `.filter((folder) => !presentIds.has(folder.folderId))` 删掉 ⇒ 第一条红。
+   */
+  const presentState = stateWith({
+    gameVersion: '1.16.1',
+    folders: [
+      folderView({
+        folderId: 'a',
+        gameVersion: '1.16.1',
+        scan: [{ fileName: 'sodium-1.0.jar', modid: 'sodium', version: '1.0', sha512: null }],
+      }),
+      folderView({ folderId: 'b', gameVersion: '1.16.1', scan: [] }),
+    ],
+    catalogRows: rowsForVersion('1.16.1'),
+  });
+  const presentPage = planVersionPage(presentState, []);
+  const sodium = presentPage.mods.find((m) => m.modid === 'sodium');
+  const lithium = presentPage.mods.find((m) => m.modid === 'lithium');
+  assert.ok(
+    sodium !== undefined && lithium !== undefined,
+    '夹具自钉：两个 modid 都在这一版的 mods 里',
+  );
+  assert.deepEqual(sodium.downloadTargets, ['b'], '★★ a 里已经有 sodium ⇒ 它不再是下载目标');
+  assert.deepEqual(
+    lithium.downloadTargets,
+    ['a', 'b'],
+    '★ 对照：没有它的那个 modid 两个文件夹都能装（否则上面那条可能只是"目标表被清空了"）',
+  );
 });

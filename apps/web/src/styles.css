@@ -9709,8 +9709,10 @@ html[data-theme='light'] {
   background: var(--bg);
 }
 
-/* 「工具下载」那一格（占位卡）。⚠️ 它自己是自己的类名（不复用 `.filespanel`：
-   v1 的渲染自检有一条"产物里没有 `filespanel` 这个子串"的粗判据）。 */
+/* 「工具下载」那一格（占位卡）。⚠️ 它自己是自己的类名（**曾经**因为 v1 的渲染自检
+   `apps/web/scripts/filesrender.tsx` 有一条"产物里没有 `filespanel` 这个子串"的粗判据；
+   ⚠️★ 那个脚本已随 A 的 T6 删除 ⇒ 这条理由今天**只是沿用**，不是还能红的约束
+   —— 与 `routes/Files.tsx` 里 `ModFoldersUnavailable` 那段注释同一条订正）。 */
 .toolspanel {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
@@ -9753,6 +9755,36 @@ html[data-theme='light'] {
 }
 
 .folderlist__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0 0 8px;
+}
+
+/* ★★ G1（最终修复波）：「添加文件夹」那一排 —— **常驻**的入口（不再是空态专属的那一颗）。
+   ⚠️ 它自己一行：那一颗按钮要在一列文件夹**上方**看得见，与标题同属"这一栏的头"。
+   ⚠️ 与 `.filespanel__actions`（空态里那一颗）**同意图、不同位置**：两处都画了规则，
+   是因为它们确实在两个不同的容器里（这一颗在标题下面、空态那一颗在空态卡里面）。 */
+.folderlist__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+
+/* ★★ CT-12（最终修复波）：第三段（「该版本所有 mod」）的容器与标题。
+   ⚠️★ 修之前这两个类名在整份 `styles.css` 里**一条规则都没有**（只有包装与标题，
+   表格复用 `.filetable`）⇒ 那一栏的标题落回**浏览器默认的 `h3`**，而这一页每一个
+   兄弟标题（`.folderlist__title` / `.toolspanel__title` / 面板头）都是像素字体 + 弱化色
+   —— 同一页上"这一段是什么"的字长着两个样子。
+   ⚠️ 数值照 `.folderlist__title`（它们是同一页上的同一种标题）；`margin` 取大一点，
+   因为这一段在文件夹区**下面**（多一档间隔才看得出是另一段）。 */
+.modlist {
+  margin: 24px 0 0;
+}
+
+.modlist__title {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   color: var(--fg-muted);

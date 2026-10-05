@@ -10,9 +10,12 @@
  *
  * ⚠️★ 它是**纯组件、不取数、不订阅**（与这一页别的组件同一条）：自检里
  * `html(<ToolsPanel />)` 就要能渲染出来，否则这一格一个字都断言不到。
- * ⚠️ 它的类名是**自己的**（`.toolspanel`，不复用 `.filespanel` / `.folderlist`）：
- * v1 的渲染自检有一条"产物里没有 `filespanel` 这个子串"的粗判据
+ * ⚠️★ 它的类名是**自己的**（`.toolspanel`，不复用 `.filespanel` / `.folderlist`）：
+ * 这条选择来自 v1 的渲染自检那一条"产物里没有 `filespanel` 这个子串"的粗判据
  * （`routes/Files.tsx` 里 `ModFoldersUnavailable` 的注释写着完整的一段）。
+ * ⚠️★ **那个脚本（`apps/web/scripts/filesrender.tsx`）已随 A 的 T6 删除**
+ * （`foldersrender.tsx` ㊵ 还钉着"它必须真的不在树里"）⇒ 这条理由今天**只是沿用**：
+ * 类名不动，但它不再是"改错了会红"的约束。
  */
 import { useTranslation } from 'react-i18next';
 

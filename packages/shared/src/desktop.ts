@@ -201,8 +201,23 @@ export interface DesktopBridge {
     getState(): Promise<ModFoldersState>;
     /** 状态推送。**同一个串同时用于订阅与取消订阅**（散开写就会漏改一处）。 */
     onStatus(callback: (state: ModFoldersState) => void): () => void;
-    /** 弹**原生**目录对话框，建一个"文件夹实体"（无入参 ⇒ 选哪里由主进程决定）。 */
-    bindFolder(): Promise<ModFoldersState>;
+    /**
+     * 弹**原生**目录对话框，建一个"文件夹实体"。路径只能由主进程弹自己的对话框去选
+     * （渲染进程永远递不进路径）。
+     *
+     * ★★ **G2（最终修复波 / spec D3）：入参是"当时看着的那一版"** —— 主进程把它当作新
+     * 文件夹的**有效版本**存下来（仍可手改，见 `setFolderGameVersion`）。
+     * ⚠️★ 修之前这条通道**一个参数都没有**，版本只能由主进程推断
+     * （`.minecraft` / `mmc-pack.json`）⇒ 推不出来的路径得到 `gameVersion: null`
+     * （每一行都是 `unknown-version`），而 spec D3 明写的是"在版本 X 下点「添加文件夹」
+     * ⇒ 把该文件夹的版本**预置**为 X（仍可改）"。
+     * ⚠️ `null`（或省略）= **交回自动推断**（与 `setFolderGameVersion(folderId, null)`
+     * 同一条语义）：不是"不改"，也不是"版本是 null 这件事要写下来"。
+     * ⚠️ 已经绑过的路径**不改**它的版本：那是一个用户可能手改过的值，重绑不该把它改回去。
+     * ⚠️ 参数形状照这条通道的入参纪律收窄成 `unknown` 之后校验（主进程那一侧）：
+     * 非空字符串或 `null`，其余一律抛。
+     */
+    bindFolder(gameVersion?: string | null): Promise<ModFoldersState>;
     /*
      * ⚠️★ 2026-10-04（A 的 T6，裁决 B）：这里原来还有三条 —— `bindCatalogRow`（弹原生
      *    `.jar` 对话框，把选中的文件绑到**第一部分**那一行，Ruling 24）、

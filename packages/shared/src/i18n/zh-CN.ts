@@ -3626,6 +3626,13 @@ export const zhCN = {
    * 代价：`colFile` / `colLocal` / `colAuto`… 这些条目在 Task 5 落地时**还没有渲染点**。
    * 本仓"没有消费者的 key 不留"的口径在这里按"消费者就在下一个任务里、而那个任务
    * 改不了这个文件"来处置 —— 所以别照"没人用就删"的直觉把它们删掉。
+   * ⚠️★ **最终修复波订正（现在时）**：上面那段说的是 2026-09-24 那一次的形状；
+   *    今天 `components/FileUpdateTable.tsx` 与 `components/FileUpdatesPanel.tsx`
+   *    **都已经不在了**（A 的 T6 随第一部分 / D1 一起删，`foldersrender.tsx` ㊵ 钉着
+   *    "它们不在树里"）。还活着的那一半（`VERDICT_BADGES` / `VERDICT_HINTS` /
+   *    `RAW_KEY_RE` / `rawKeysIn` / 那一批共用判断）住在
+   *    **`apps/web/src/components/ModFoldersData.tsx`** ⇒ 本节下面每一处指向那两个
+   *    已删文件的行号式指路，读作"当年的落点"，**今天要改去 `ModFoldersData.tsx`**。
    *
    * ===========================================================================
    * ⚠️★ 与计划表**两处不一样**的地方，都不是口味问题
@@ -3633,8 +3640,10 @@ export const zhCN = {
    * ① 计划表里 `autoHint` / `browserOnly` 的中文值带 `**…**`，两条都按控制器的裁决
    *    去掉了 —— ⚠️★ 但**两条的理由不一样**，别把它们并成一句（2026-09-24 评审订正：
    *    原先这里写的是"都是整句直接渲染的普通文本"，那句对 `browserOnly` 是**错的**）。
-   *      · `autoHint` 渲染在一个裸 `<p>`（`components/FileUpdatesPanel.tsx` 的
-   *        `.filespanel__hint`）里，**不经过 `em()`** ⇒ 留着那对星号，用户看到的就是
+   *      · `autoHint` 渲染在一个裸 `<p>`（当年是 `components/FileUpdatesPanel.tsx` 的
+   *        `.filespanel__hint`；⚠️★ 那个文件已随 A 的 T6 删除 ⇒ 这一条今天既是历史，
+   *        也是"`files.autoHint` 为什么**没有渲染点**"的原因 —— 它在 §5.112 的 45 条
+   *        死键清单里）里，**不经过 `em()`** ⇒ 留着那对星号，用户看到的就是
    *        两个字面星号。这一条是真的坏。
    *      · `browserOnly` 渲染在 `<Notice>` 里，而 `Notice` 对**字符串子节点**会走 `em()`
    *        （`components/Form.tsx` 的 `typeof children === 'string' ? em(children)`）
@@ -3679,6 +3688,9 @@ export const zhCN = {
      * ★ 计划表里没有的一条：**解开一条绑定**（`unbind(itemId)` —— T3 建的通道、T4 的实现）。
      * ⚠️ 为什么它必须有消费者（Task 6 的裁决，理由完整地写在
      *    `apps/web/src/components/FileUpdateTable.tsx` 那颗按钮的注释里）：
+     *    ⚠️★ 最终修复波订正：那个文件与那颗按钮**都已随 A 的 T6 删除**（第一部分与
+     *    v1 面板一起下线，D1）⇒ 上面这一句今天读作"当年的理由"，而这一条词条本身是
+     *    §5.112 的 45 条死键之一（v1 那一侧的「解除绑定」随面板一起没了）。
      *    T6 brief 的 `Produces` 把 `onUnbind` 列进了表格的接口，而**没有任何一条渲染规则**
      *    说了哪一支画它 ⇒ 不画的话那个 prop 是死的，而 `unbind()` 在全仓界面上
      *    **没有第二个消费者**（现读：`apps/web/src` 里除了面板那七个动作的包装，没有别处调它）。
@@ -3767,6 +3779,10 @@ export const zhCN = {
      *    没有任何一格记"这一次操作的结果"（T4 的 `apps/desktop/src/file-updates.ts`
      *    在 `bind()` 那一段注释里明写了这件事：失败只能靠 `reject` 把消息带回渲染进程）。
      *    ⇒ 捕获与显示都在 `components/FileUpdatesPanel.tsx` 的 handlers 包装那一层。
+     *    ⚠️★ 最终修复波订正（**这一条仍然是活的**）：那个文件（v1 的 handlers 包装）
+     *    已随 A 的 T6 删除；今天同一个落点是 **`components/ModFoldersData.tsx` 的
+     *    `reasonOf` + `makeModFoldersHandlers` 的 `fail(...)`**，渲染点是
+     *    `ModDownloadPanel` 那一格 `<Notice kind="bad">`（`files.actionFailed` 也是它用的词条）。
      * ⚠️ 用户在选择对话框里**取消**不算失败（主进程返回原状态、一个字节都不变），
      *    所以这里出现的每一句都是真失败。
      * ⚠️ 代价：`{{message}}` 是**主进程的原话**（中文写死的）⇒ 英文界面上这句会夹中文。
@@ -3822,7 +3838,10 @@ export const zhCN = {
      * ===================================================================
      * ⚠️★ 这一批为什么全用 `files.` 前缀（而不是新开一个 `mods.` / `folders.`）：
      *    `/files` 这一页的词条命名空间就是 `files.`，而**裸 key 泄漏扫描器**
-     *    （`FileUpdateTable.tsx` 的 `RAW_KEY_RE`，v1 的 ⑲ 与 T7 的 ⑬ 共用同一个对象）
+     *    （`RAW_KEY_RE` —— ⚠️★ 最终修复波订正：它当年住 `FileUpdateTable.tsx`
+     *    （v1 的 ⑲ 与 T7 的 ⑬ 共用同一个对象），那个文件已随 A 的 T6 删除；
+     *    今天它住在 **`apps/web/src/components/ModFoldersData.tsx`**，消费者是
+     *    `scripts/foldersrender.tsx`）
      *    认的正是 `files.` 与 `common.` 两个前缀 ⇒ 用同一个前缀，这一批词条的泄漏
      *    **不需要改扫描器**就有人看着（新开前缀而忘了扩扫描器 = 那一支上的裸 key 空跑）。
      */
@@ -4027,7 +4046,11 @@ export const zhCN = {
      * ★★ Ruling 64（2026-10-03 T8 评审判修）：**过期的持久化值可以显示，但不许被当成
      *    新动作发出去**。上面那条 `channelStale` 让用户看得见"状态漂了"，而这一条说的是
      *    "所以「全部更新」现在按不了" —— 没有它的话，那一档那颗按钮**根本不画**
-     *    （见 `ModFoldersPanel` 的 `bulkChannelUsable`），用户只会觉得"按钮怎么没了"。
+     *    （见 `bulkChannelUsable` —— ⚠️★ 最终修复波订正：那个函数当年住
+     *    `ModFoldersPanel.tsx`，那个文件已随 A 的 T6 删除；今天它住在
+     *    **`components/ModFoldersData.tsx`**，而这一条词条的渲染点是
+     *    **`components/ModDownloadPanel.tsx`** 那一格 `<Notice kind="bad">`），
+     *    用户只会觉得"按钮怎么没了"。
      * ⚠️ 措辞必须说清是**哪一格**的问题（"先在上面选一条还存在的通道"）：这不是目录坏，
      *    而是**本机存下来的那个选择**过期了。
      */
@@ -4071,9 +4094,13 @@ export const zhCN = {
       ' —— 更新这一行时会把它们一起删掉（新文件验签就位之后才删，删不掉会如实报告）。',
     /*
      * ★★ `FolderVerdict` 比 `ReleaseVerdict` 多的那一支（spec §8：`mmc-pack.json`
-     *    读不出来）。⚠️ 它**只在文件夹这一侧存在**：`ModCatalogTable` 的徽章表是按
-     *    `ReleaseVerdict` 定型的，所以文件夹行用的是同一张表加上这一支
-     *    （见 `FileUpdateTable.tsx` 的 `VERDICT_BADGES`）。
+     *    读不出来）。⚠️ 它**只在文件夹这一侧存在**：徽章表是按
+     *    `FolderVerdict` 定型的（`Record<…, …>` ⇒ 加一支就编译失败），所以文件夹行
+     *    与目录行用的是**同一张表**加上这一支
+     *    （见 `VERDICT_BADGES` —— ⚠️★ 最终修复波订正：它当年住
+     *    `FileUpdateTable.tsx`，那个文件已随 A 的 T6 删除；今天住在
+     *    **`apps/web/src/components/ModFoldersData.tsx`**，两个渲染点是
+     *    `FolderJarList.tsx` 与 `VersionModList.tsx`）。
      */
     verdictUnknownVersion: '游戏版本未知',
     /*
@@ -4277,6 +4304,18 @@ export const zhCN = {
      */
     noFolderForDownload:
       '没有可以下载到的文件夹 —— 需要一个游戏版本是 {{version}}、路径还在、而且扫过一次的已绑定文件夹。',
+    /*
+     * ★★ B2（最终修复波）：`downloadTargets` 是**合法**目标表（投影把"已经有它"的文件夹
+     *    排掉了，因为主进程 `downloadMissing` 对那种目标**无条件拒**）⇒ "一个目标都没有"
+     *    有两种成因，这一条说的是**另一种**：能装它的文件夹里都已经有它了。
+     *    ⚠️★ 它与 `noFolderForDownload` **必须是两句不同的话**：一支的出路是"去绑一个文件夹"，
+     *    另一支的出路是"展开那个文件夹就能看到它"（或者什么都不用做）—— 混起来会把用户
+     *    指去绑一个他并不需要的文件夹。
+     *    ⚠️ 它在**默认视图里是常态**（`expanded` 为空、而这一版只有一个文件夹）：修之前
+     *    那一屏画的正是一颗注定被拒的按钮（"这个文件夹里已经有 X 了"）。
+     *    ⚠️ 与本节其余词条同一条：值里不许出现 `⇒`（U+21D2）与 `▾`（U+25BE）。
+     */
+    alreadyInFolder: '这个 mod 已经在 {{folder}} 里了 —— 展开那个文件夹就能看到它，不再重复下载。',
   },
 };
 

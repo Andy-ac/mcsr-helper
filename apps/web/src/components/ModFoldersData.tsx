@@ -49,6 +49,8 @@ import {
   batchTargets,
   type Channel,
   type FolderVerdict,
+  isKnownGameVersion,
+  isKnownMirror,
   type ModFoldersState,
   type ModFolderView,
 } from '@mcsr/shared/modFolders';
@@ -98,7 +100,13 @@ export interface ModFoldersHandlers {
   setTagFilter: ModFoldersAction<'setTagFilter'>;
   rescan: ModFoldersAction<'rescan'>;
   /* ---- 文件夹那一层 ---- */
-  /** 弹原生目录对话框建一个"文件夹实体"（**新语义**，与 v1 那条同名通道不是一回事）。 */
+  /**
+   * 弹原生目录对话框建一个"文件夹实体"（**新语义**，与 v1 那条同名通道不是一回事）。
+   *
+   * ★★ G2（最终修复波 / spec D3）：入参是**当时看着的那一版**（`page.version`）——
+   * 主进程把它**预置**成新文件夹的有效版本（仍可手改），而不是自己推断一个可能是 `null`
+   * 的版本。⚠️ `null` = "交回自动推断"（与 `setFolderGameVersion` 同一条语义）。
+   */
   bindFolder: ModFoldersAction<'bindFolder'>;
   unbindFolder: ModFoldersAction<'unbindFolder'>;
   setFolderGameVersion: ModFoldersAction<'setFolderGameVersion'>;
@@ -185,7 +193,12 @@ function makeModFoldersHandlers(
       run(() => api.setCatalogGameVersion(gameVersion)),
     setTagFilter: (tags: readonly string[]) => run(() => api.setTagFilter(tags)),
     rescan: () => run(() => api.rescan()),
-    bindFolder: () => run(() => api.bindFolder()),
+    /*
+     * ⚠️ 形参写成 `?`（可选）而不是 `: string | null`：`ModFoldersAction` 派生的是
+     * 契约的 `Parameters`，而契约那一格是可选的（`gameVersion?: string | null`
+     * ⇒ 实际类型含 `undefined`）—— 写窄了 tsc 会在这一行报 TS2322。
+     */
+    bindFolder: (gameVersion?: string | null) => run(() => api.bindFolder(gameVersion)),
     unbindFolder: (folderId: string) => run(() => api.unbindFolder(folderId)),
     setFolderGameVersion: (folderId: string, gameVersion: string | null) =>
       run(() => api.setFolderGameVersion(folderId, gameVersion)),
@@ -366,7 +379,9 @@ export function isUpdatableRow(row: { verdict: FolderVerdict; manual: boolean })
  */
 export function folderGameVersionOptions(state: ModFoldersState, folder: ModFolderView): string[] {
   const version = folder.gameVersion;
-  if (version === null || state.gameVersions.includes(version)) return [...state.gameVersions];
+  if (version === null || isKnownGameVersion(state.gameVersions, version)) {
+    return [...state.gameVersions];
+  }
   return [version, ...state.gameVersions];
 }
 
@@ -400,7 +415,7 @@ export function channelOptions(state: ModFoldersState): ChannelOption[] {
     });
   }
   const current = state.bulkChannel;
-  if (current !== 'origin' && !state.mirrors.some((mirror) => mirror.id === current.mirrorId)) {
+  if (current !== 'origin' && !isKnownMirror(state.mirrors, current.mirrorId)) {
     options.push({
       value: current.mirrorId,
       key: 'files.channelStale',
@@ -439,7 +454,7 @@ export function bulkChannelUsable(state: ModFoldersState): boolean {
    */
   const channel = state.bulkChannel;
   if (channel === 'origin') return true;
-  return state.mirrors.some((mirror) => mirror.id === channel.mirrorId);
+  return isKnownMirror(state.mirrors, channel.mirrorId);
 }
 
 /**
@@ -455,7 +470,7 @@ export function bulkChannelUsable(state: ModFoldersState): boolean {
  */
 export function staleGameVersion(state: ModFoldersState, folder: ModFolderView): string | null {
   const version = folder.gameVersion;
-  if (version === null || state.gameVersions.includes(version)) return null;
+  if (version === null || isKnownGameVersion(state.gameVersions, version)) return null;
   return version;
 }
 
@@ -587,7 +602,7 @@ export function tagLabelFor(tags: ModFoldersState['tags'], tag: string, lang: 'z
  *    ⇒ 不在全集里就把它补在最前面（用户看得见自己选的是哪个，也看得见它已经不在目录里）。
  */
 export function gameVersionOptions(state: ModFoldersState): string[] {
-  return state.gameVersions.includes(state.gameVersion)
+  return isKnownGameVersion(state.gameVersions, state.gameVersion)
     ? [...state.gameVersions]
     : [state.gameVersion, ...state.gameVersions];
 }

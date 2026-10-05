@@ -710,6 +710,34 @@ export function batchTargets(rows: readonly { batchable: boolean }[]): number {
   return rows.reduce((count, row) => (row.batchable ? count + 1 : count), 0);
 }
 
+/*
+ * ===========================================================================
+ * CT-1（最终修复波）：两条"目录里有没有这一格"的判断各**只留一处实现**
+ * ===========================================================================
+ * 这两条判据在两侧（`apps/web` 与 `apps/desktop`）各有自己的状态形状，但**判据本身**
+ * 逐字相同 —— 各写一份的下场是"一侧改了、另一侧照旧"：
+ *   · 版本那一支漂了 ⇒ 界面画出一个版本、而主进程 `requireGameVersion` 当场拒
+ *     （或者反过来：一个目录里真有的版本在下拉里消失）；
+ *   · 镜像那一支漂了 ⇒ 界面画出一颗"更新（镜像）"、而 `requireChannel` 拒
+ *     （**Ruling 64** 记的就是这件事的现场）。
+ * ⇒ 两条都收成**一个具名函数**，两侧各自喂自己手里那一份表。
+ * ⚠️ 形参刻意收窄成"`readonly string[]` / `readonly { id: string }[]`"：两侧的表
+ *    类型不同（`ModFoldersState['gameVersions']` / `ModIndex['gameVersions']`、
+ *    `ModMirror[]`），而不变的只有这两件事 —— 收窄让"喂一个别的东西进来"编译期就红。
+ * ⚠️ 主进程那两条**不在这里**（它们要抛一句带上下文的原话）：它们调用这两个函数，
+ *    抛不抛是它们自己的事 —— 判据仍然只有这一处。
+ */
+
+/** 这个游戏版本在目录里出现过吗（`gameVersions` 是目录的版本全集）。 */
+export function isKnownGameVersion(gameVersions: readonly string[], version: string): boolean {
+  return gameVersions.includes(version);
+}
+
+/** 这条镜像 id 还在目录的镜像表里吗（`mirrors` 是目录那份镜像表）。 */
+export function isKnownMirror(mirrors: readonly { id: string }[], mirrorId: string): boolean {
+  return mirrors.some((mirror) => mirror.id === mirrorId);
+}
+
 // ---------------------------------------------------------------------------
 // 状态文件 v2
 // ---------------------------------------------------------------------------
@@ -1065,15 +1093,32 @@ export interface VersionModRow {
   releaseVersion: string | null;
   /** 判定沿用行视图里那一个（`judgeRelease` 只算过一次，这里不重判）。 */
   verdict: ReleaseVerdict;
-  /** 目标是从哪来的（指定版本 / 上游最新）—— 行视图那一格的透传，页面**不要**自己推断。 */
-  source: TargetSource | null;
-  /** 这一行会不会进批量（`needsUpdate` 的结果，行视图里算好的）。 */
-  batchable: boolean;
   /** 目标是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
   manual: boolean;
   /** 该 modid 出现在哪些**已展开**的文件夹里（空 ⇒ 显示下载按钮）。 */
   downloadedIn: readonly string[];
-  /** 该版本里可以当作下载目标的文件夹 id（`pathExists && hasReading`）。 */
+  /**
+   * ★★ **不论展开与否**，这个 modid 出现在这一版的哪些文件夹里（spec D5 的另一半）。
+   *
+   * ⚠️★ 为什么 `downloadedIn` 不够（B2，最终修复波）：`downloadedIn` 是"**在你眼前**
+   *    下过"，而 `downloadTargets` 答的是"能往哪儿下"。主进程 `downloadMissing` 对
+   *    "**目标**文件夹里已经有这个 modid"是**无条件拒**的（`mod-folders.ts` 的
+   *    `present !== undefined` 那一段）⇒ 只看 `downloadedIn` 的话，折叠着的那个文件夹
+   *    仍会被当成合法目标，界面画出一颗**注定被拒**的按钮 —— 而那正是这一页的规矩
+   *    （"会拒的一律不画/不放开"）要消灭的东西。
+   * ⚠️ 它与 `downloadedIn` 的分工**不是**两份判断：同一格 `recognizedModids` 的两个投影，
+   *    差别只在"要不要按展开态过滤"。
+   */
+  presentIn: readonly string[];
+  /**
+   * ★★ 该版本里**可以把这一行下进去**的文件夹 id（D6）：`pathExists && hasReading`，
+   *    **而且里面还没有这个 modid**（B2：主进程对"目标里已经有它"是**无条件拒**的）。
+   *
+   * ⚠️★ 这一格是**合法的目标表**，不是"这一版有几个文件夹"：`presentIn` 里的那些
+   *    必须排除在外 —— 否则折叠着的文件夹会变成一颗注定被拒的按钮（B2 的现场）。
+   * ⚠️ 空数组的含义因此有**两支**，由 `presentIn` 区分（页面据此说两句不同的话）：
+   *    `presentIn` 空 ⇒ "这一版没有一个能装的文件夹"；非空 ⇒ "能装它的文件夹里都已经有它了"。
+   */
   downloadTargets: readonly string[];
 }
 
@@ -1099,11 +1144,13 @@ export interface VersionPage {
  *     页面据此显示下载按钮。⚠️ 它**不是**"这台机器上没有"—— 折叠着的文件夹里有没有，
  *     是界面要不要给它看的选择，不是投影能推断的事实（Ruling 65 的同一条纪律：分不清
  *     "不知道"与"没有"的读数不许当结论用）。
- *   · `downloadTargets` 与 `downloadedIn` **都由这里算**（页面不做判断）。前者答的是
- *     "这一版里哪些文件夹能当下载目标"：路径要在（`pathExists`）、要有扫描读数
- *     （`hasReading` —— 没有读数的文件夹我们不知道它里面有什么）、版本要已知
- *     （`folder.gameVersion === version` 这一句已经保证了它，因为 `version` 是 `string`；
- *     再写一次 `folder.gameVersion !== null` 会是一条**永远为假**的分支）。
+ *   · `downloadTargets` 与 `downloadedIn` **都由这里算**（页面不做判断）。后者答的是
+ *     "这一行**在哪些已展开的文件夹里**已经有了"（D5），前者答的是"这一版里哪些文件夹
+ *     **能装它**"：路径要在（`pathExists`）、要有扫描读数（`hasReading` —— 没有读数的
+ *     文件夹我们不知道它里面有什么）、版本要已知（`folder.gameVersion === version`
+ *     这一句已经保证了它，因为 `version` 是 `string`；再写一次
+ *     `folder.gameVersion !== null` 会是一条**永远为假**的分支），**而且里面还没有这个
+ *     modid**（B2：主进程对"目标里已经有它"是无条件拒的，见 `VersionModRow.presentIn`）。
  */
 export function planVersionPage(state: ModFoldersState, expanded: readonly string[]): VersionPage {
   const version = state.gameVersion;
@@ -1125,6 +1172,8 @@ export function planVersionPage(state: ModFoldersState, expanded: readonly strin
       const known = folders.filter((folder) =>
         (recognized.get(folder.folderId) ?? []).includes(row.modid),
       );
+      /** 已经**有**它的那些文件夹（不论展开与否）—— `downloadTargets` 要把它们排掉（B2）。 */
+      const presentIds = new Set(known.map((folder) => folder.folderId));
       return {
         modid: row.modid,
         name: row.name,
@@ -1140,15 +1189,25 @@ export function planVersionPage(state: ModFoldersState, expanded: readonly strin
         releaseUrl: row.official?.url ?? null,
         releaseVersion: row.official?.version ?? null,
         verdict: row.verdict,
-        source: row.targetSource,
-        batchable: row.batchable,
         manual: row.manual,
         // 只在**已展开**的文件夹里判定（理由见上面第二条边界）。
         downloadedIn: known
           .filter((folder) => expandedSet.has(folder.folderId))
           .map((folder) => folder.folderId),
+        // 不论展开与否（B2：`downloadTargets` 要用它排掉"已经有它"的那些）。
+        presentIn: known.map((folder) => folder.folderId),
+        /*
+         * ★★ 合法的目标 = 路径在 + 有扫描读数 + **里面还没有这个 modid**（B2）。
+         *    ⚠️ 最后那一条是**主进程那条闸的镜像**（`downloadMissing` 的
+         *    `folderView(id, entry).rows.find((row) => row.modid === modid)` ⇒ 非
+         *    `undefined` 就抛"这个文件夹里已经有 X 了"）⇒ 少了它，默认视图（`expanded`
+         *    为空）里每一个"已经在唯一那个文件夹里"的 mod 都会画出一颗**注定被拒**的按钮。
+         *    ⚠️ 判据是 `presentIds`（`recognizedModids` 的投影），**不是** `folder.rows`
+         *    里翻一遍：同一格事实只有一份来源。
+         */
         downloadTargets: folders
           .filter((folder) => folder.pathExists && folder.hasReading)
+          .filter((folder) => !presentIds.has(folder.folderId))
           .map((folder) => folder.folderId),
       };
     }),

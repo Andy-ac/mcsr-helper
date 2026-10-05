@@ -1227,7 +1227,39 @@ assert.ok(
 );
 assert.ok(
   noFolderPanelHtml.includes('data-action="bind-folder"'),
-  '★ 而且它带来**唯一的绑定入口**（spec §8 / §9.17：A 只挪位置，不删能力）',
+  '★ 而且空态里那一颗「添加文件夹」**在**（spec §8 第一行；⚠️★ G1 之前它是**唯一**的入口，' +
+    '所以这一条当时同时承担着"能不能加"与"至少有一条路"两件事 —— 现在它只管前者，' +
+    '下面那条管后者）',
+);
+/*
+ * ★★ G1（最终修复波）：**已经有文件夹**的版本也必须有一个添加入口。
+ *
+ * 现场：修之前唯一的渲染点在 `page.folders.length === 0` 那一支里 ⇒ 一个版本只要绑过
+ * 一个文件夹，就**再也没有**「添加文件夹」这条路，而 spec §2.1 第 2 条明写"一个版本下可以
+ * 绑定**多个** mod 文件夹"（D3 也按这个前提写）⇒ 那半条目标在界面上根本无法达成
+ * （用户只能先解绑再绑，而解绑会丢掉那个文件夹的扫描读数）。
+ * ⚠️★ 判据用**有 1 个文件夹**的那一份面板（那一支里空态块**不渲染**）⇒ 产物里那颗
+ *    `data-action="bind-folder"` 只可能来自**常驻的那一颗**，上面那条空态断言证不了它。
+ * ★ 刀（读数在报告里）：把 `VersionFolderList` 里那个 `folderlist__actions` 那一块删掉
+ *   ⇒ 这一条红（上面那条照旧绿）。
+ */
+const oneFolderPanelHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })] }),
+      onAction: noop,
+    }),
+  ),
+);
+assert.ok(
+  oneFolderPanelHtml.includes('data-folder-count="1"'),
+  '★ 对照（这一条钉的是**夹具**）：这一份面板真的画出了**1 个**文件夹（`data-folder-count="1"`）' +
+    '—— 否则下面那条"常驻入口在"会因为空态块也在渲染而变成空跑',
+);
+assert.ok(
+  oneFolderPanelHtml.includes('data-action="bind-folder"'),
+  '★★ G1：这一版**已经有文件夹**，而「添加文件夹」照样在（spec §2.1 第 2 条：一个版本可以绑多个）' +
+    '—— 修之前这一条是**空跑**：产物里一个 `bind-folder` 都没有',
 );
 /* —— 迁移提示（§13.1）：原来的渲染点在第一部分，而第一部分不在这一页上了 —— */
 const noticePanelHtml = keep(
@@ -1244,7 +1276,7 @@ assert.ok(
     '它原来的渲染点在第一部分，而第一部分在 T3 从页面上消失 ⇒ 渲染点跟着搬到了面板上',
 );
 ok(
-  '㉞ 按版本分组的文件夹区：两个同版本的文件夹都画出来、那一行的全套控件（展开/打开文件夹/版本手改/自动更新/批量通道/全部更新/重扫/解绑）、折叠与展开两态、过期通道那句解释、Ruling 65 的两支空态、版本空态与绑定入口、迁移提示；第一部分与 v1 的元素不再出现',
+  '㉞ 按版本分组的文件夹区：两个同版本的文件夹都画出来、那一行的全套控件（展开/打开文件夹/版本手改/自动更新/批量通道/全部更新/重扫/解绑）、折叠与展开两态、过期通道那句解释、Ruling 65 的两支空态、版本空态与绑定入口（**G1 起：空态与"已经有文件夹"两档都有一颗**）、迁移提示；第一部分与 v1 的元素不再出现',
 );
 
 // ---------------------------------------------------------------------------
@@ -1315,6 +1347,14 @@ const downloadPanelCode = withoutComments(
 const fePanelCode = withoutComments(
   readFileSync(new URL('../src/components/ModFoldersData.tsx', import.meta.url), 'utf8'),
 );
+/*
+ * ⚠️ `VersionFolderList.tsx` 的源码在**两处**被读：㊱ 里的 CT-4 源码守卫（"`homepageOf`
+ *    从投影摊"）与 ㊴ 里的 G2 四条（"添加文件夹那条线带着版本"）。⇒ 定义在这里（第一次用到
+ *    之前），后面直接用。
+ */
+const versionFolderListCode = withoutComments(
+  readFileSync(new URL('../src/components/VersionFolderList.tsx', import.meta.url), 'utf8'),
+);
 assert.match(
   versionListCode,
   /data-action="open-folder"[\s\S]{0,400}?onAction\(\{\s*kind:\s*'open-folder',\s*folderId:\s*block\.folder\.folderId,?\s*\}\)/,
@@ -1384,7 +1424,11 @@ assert.ok(
 /**
  * 渲染一个文件夹**展开体里那张 jar 表**（`FolderJarList` 是纯 props 组件 ⇒ 喂一份投影就画）。
  *
- * ⚠️★ `homepageOf` 的组装**逐字照页面**（`new Map(state.catalogRows.map(…))`）。
+ * ⚠️★ `homepageOf` 的组装**逐字照页面当年的那一句**（`new Map(state.catalogRows.map(…))`）。
+ *    ⚠️★ **CT-4（最终修复波）之后页面改成了从投影摊**（`new Map(page.mods.map(…))`）——
+ *    这一份**自检自己的**夹具仍然照旧（两处的值今天逐格相同，见下面那条源码守卫：
+ *    它才是"页面那一侧用的是投影"的判据）。⇒ 这里不改，是因为它测的是 `FolderJarList`
+ *    收到一份 Map 之后画成什么样，与那份 Map 从哪来无关。
  *    ⚠️★ **但这一组里"喂 prop"那几条证明不了"页面真的喂了它"**（判修轮订正，2026-10-04）：
  *    这一组里三格 prop（`homepageOf` / `mirrors` / `busy`）都是**自检自己传的** ⇒ 把
  *    `VersionFolderList` 那一处调用点换成空 Map / 空镜像表 / 写死 `busy={false}`，
@@ -1565,6 +1609,46 @@ assert.match(
   /color:\s*var\(--redstone\)/,
   '★★★ 而且那条规则把颜色设成**红石色**（`--redstone`：与 `.badge--problem` 同一个语义红）' +
     '—— "标红"这件事只有这一处能证',
+);
+/*
+ * ★★ CT-12 / G1（最终修复波）：三个类名各自**有规则**（判据与上面那条同一条：先剥注释，
+ *    再找 `选择器 { … }`）。
+ *
+ * 现场：
+ *   · **CT-12**：`.modlist` / `.modlist__title` 在整份 `styles.css` 里**一条规则都没有**
+ *     ⇒ 第三段的标题落回**浏览器默认的 `h3`**，而这一页每一个兄弟标题
+ *     （`.folderlist__title` / `.toolspanel__title`）都是像素字体 + 弱化色
+ *     —— 同一页上"这一段是什么"的字长着两个样子。
+ *   · **G1**：`.folderlist__actions` 是这一波**新增的容器**（常驻的「添加文件夹」那一排）
+ *     ⇒ 它必须有规则（本仓 §5.70：组件里出现的类名必须有规则）。
+ * ⚠️ 判据钉**属性**而不是"类名在文件里"：只 `includes('.modlist')` 的话，
+ *    上面那段注释本身就满足它（§5.82 那个假绿，与 `.jar--unrecognized` 那条同源）。
+ * ★ 刀（读数在报告里）：把 `.modlist__title` 那条规则删掉（注释留着）⇒ 这一条红。
+ */
+for (const [selector, mustMatch, why] of [
+  ['.modlist__title', /font-family:\s*var\(--font-pixel\)/, '第三段的标题要与其他标题同一种字体'],
+  ['.folderlist__actions', /display:\s*flex/, '常驻的「添加文件夹」那一排要有布局规则'],
+]) {
+  const rule = withoutCssComments(stylesCode).match(
+    new RegExp(`${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
+  );
+  assert.ok(
+    rule,
+    `★★ CT-12/G1：\`${selector}\` 在 \`apps/web/src/styles.css\` 里**有规则** —— ${why}`,
+  );
+  assert.match(rule[1], mustMatch, `★★ 而且那条规则里写着应有的那一格（${String(mustMatch)}）`);
+}
+/*
+ * ★★ CT-4（最终修复波）：页面那一份 `modid → homepage` 的映射**从投影摊**，不再从
+ *    `state.catalogRows` 另起一份 —— 两处各建一份时，同一个 modid 可能在一张表里有链接、
+ *    在另一张里是 `—`（投影是唯一真相，页面只做展示联结）。
+ * ★ 刀（读数在报告里）：把那一句改回 `new Map(state.catalogRows.map(…))` ⇒ 这一条红。
+ */
+assert.match(
+  versionFolderListCode,
+  /new Map\(page\.mods\.map\(\(row\) => \[row\.modid, row\.homepage\]\)\)/,
+  '★★ CT-4：`VersionFolderList` 的 `homepageOf` 来自**投影**（`page.mods`）—— ' +
+    '它原来是 `state.catalogRows` 的第二份映射（同一件事两处实现）',
 );
 // —— ④ homepage 是**查表**，不是编出来的：目录里没有这个 modid ⇒ 那一格印 `—` ——
 /*
@@ -1876,6 +1960,7 @@ assert.equal(
 );
 // —— ② 一行里的四样东西：mod 名 / 标签徽章 / 目标版本 / homepage 链接 ——
 const sodiumClosed = modRowOf(closedMods, 'sodium');
+const lithiumClosed = modRowOf(closedMods, 'lithium');
 assert.ok(
   textOf(sodiumClosed).includes(textOf('Sodium Prime')) &&
     textOf(sodiumClosed).includes(textOf(MOD_TAG_SHOWN)) &&
@@ -1892,22 +1977,41 @@ assert.deepEqual(
   [SODIUM_HOMEPAGE],
   '★★ homepage 那一格是**这一行**的 `row.homepage`（写死一个别的地址、或者拿 release 地址顶上，都会红）',
 );
-assert.ok(
-  countOf(sodiumClosed, 'data-target-picker') === 1,
-  '★★ 该版本有**两个**文件夹 ⇒ 行内给一个目标选择器（D6；⚠️ 下面那条"只有一个文件夹时不画它"是它的反面）',
+/*
+ * —— ②b ★★ B2（最终修复波）：**已经有它的那个文件夹不再是下载目标** ——
+ *
+ * `f1` 里有 `sodium`（折叠着）⇒ 投影把它从 `sodium` 的 `downloadTargets` 里排掉
+ * （主进程 `downloadMissing` 对"目标里已经有它"是**无条件拒**的）。
+ * ⚠️★ 这一条与下面 ④b 那一条合起来才是完整的判据：**这里测的是"还剩一个合法目标"，
+ *    那里测的是"一个都不剩"** —— 两处的表现不同（可点的按钮 / 禁用的按钮 + 一句解释）。
+ */
+assert.equal(
+  countOf(sodiumClosed, 'data-target-picker'),
+  0,
+  '★★ B2：`f1` 里有 sodium ⇒ 它只剩**一个**合法目标（`f2`）⇒ 不画选择器（D6：1 个就直接下到它）',
 );
 assert.deepEqual(
-  selectsIn(sodiumClosed).map((select) => select.values),
+  buttonsIn(sodiumClosed).map((button) => button.disabled),
+  [false],
+  '★ 而那一颗下载按钮**是可点的**（它下到 `f2` —— 一个真的接收它的文件夹）',
+);
+// —— ②c 多目标那一行：`sodium` 被排掉之后，`lithium` 才是"两个都能装"的那一行 ——
+assert.ok(
+  countOf(lithiumClosed, 'data-target-picker') === 1,
+  '★★ 该版本有**两个**合法目标 ⇒ 行内给一个目标选择器（D6；⚠️ 下面那条"只有一个时不画它"是它的反面）',
+);
+assert.deepEqual(
+  selectsIn(lithiumClosed).map((select) => select.values),
   [['f1', 'f2']],
   '★★ 选择器的选项就是**该版本可作目标**的那两个文件夹（`row.downloadTargets`，顺序 = 状态里的顺序）',
 );
 assert.ok(
-  textOf(sodiumClosed).includes(textOf('D:\\instances\\f1\\mods')) &&
-    textOf(sodiumClosed).includes(textOf('D:\\instances\\f2\\mods')),
+  textOf(lithiumClosed).includes(textOf('D:\\instances\\f1\\mods')) &&
+    textOf(lithiumClosed).includes(textOf('D:\\instances\\f2\\mods')),
   '★★ 选项上印的是**文件夹路径**（`page.folders` 里那一格），不是 id —— 印 `f1`/`f2` 的实现在这里红',
 );
 assert.equal(
-  selectsIn(sodiumClosed)[0]?.selected,
+  selectsIn(lithiumClosed)[0]?.selected,
   'f1',
   '★ 默认选中**第一个**可用文件夹（`<select value=X>` 里没有 X 时浏览器会静默选中第一个 ⇒ ' +
     '那一屏就在撒谎：默认值必须来自 `downloadTargets`，不是组件自己记的）',
@@ -1955,6 +2059,45 @@ assert.equal(
   2,
   '★ 而下载按钮照旧（2 行各一颗）—— 与上一条**互相独立**（"按钮也没了"过得了那条、过不了这条）',
 );
+/*
+ * —— ④b ★★★ B2（最终修复波）：**一个合法目标都不剩**时，说的是"它已经在了"而不是"去绑一个" ——
+ *
+ * 现场：这一版只有一个文件夹 `f1`，而 `f1` 里**已经有** `sodium`（折叠着 ⇒ `downloadedIn`
+ * 为空）⇒ 修之前那一屏画的是一颗**可点的**按钮，点下去必然拿到主进程那句
+ * "这个文件夹里已经有 sodium 了"（一条红字）。这就是这一页的规矩
+ * （"会拒的一律不画/不放开"）要消灭的东西，也是 B2 那条 Critical 的现场。
+ * ⚠️★ 判据是**三件事一起**：那一句解释是 `alreadyInFolder`（**不是** `noFolderForDownload`）、
+ *    那颗按钮**在、而且禁用**、以及机器读数说得清是哪一支空。少了中间那半，
+ *    "印了句子但按钮照旧可点"会一路绿。
+ * ★ 刀（读数在报告里）：把投影里 `!presentIds.has(folder.folderId)` 那一句删掉
+ *   ⇒ `f1` 重新成为合法目标 ⇒ **这一条与 ②b 那条一起红**。
+ */
+const sodiumSingle = modRowOf(singleTargetHtml, 'sodium');
+assert.ok(
+  textOf(sodiumSingle).includes(
+    textOf(resolved('files.alreadyInFolder', { folder: 'D:\\instances\\f1\\mods' })),
+  ),
+  '★★★ B2：能装它的那个文件夹里**已经有它了** ⇒ 说这一句（用户真正的出路是"展开 f1"，' +
+    '不是"再去绑一个文件夹"）',
+);
+assert.equal(
+  textOf(sodiumSingle).includes(
+    textOf(resolved('files.noFolderForDownload', { version: '1.16.1' })),
+  ),
+  false,
+  '★★★ 反面：这一档**不许**说"没有可以下载到的文件夹" —— 用户手上明明有一个（它在 `presentIn` 里）',
+);
+assert.deepEqual(
+  buttonsIn(sodiumSingle).map((button) => button.disabled),
+  [true],
+  '★★ 而那颗按钮**在、而且禁用**（禁用不是消失：旁边那句话就是答案；' +
+    '"干脆不画它"会让这个数组变空 ⇒ 同样红）',
+);
+assert.equal(
+  sodiumSingle.includes('data-no-target="already-present"'),
+  true,
+  '★ 机器读数：那一格说得清是哪一支空（与下面 ⑤ 的 `no-folder` 互为反面）',
+);
 // —— ⑤ 一个能当目标的文件夹都没有 ⇒ 按钮**禁用** + 说清为什么（spec §8） ——
 const noTargetHtml = modListHtmlOf(
   stateOf(modListState.catalogRows, { tags: [MOD_TAG], folders: [] }),
@@ -1967,6 +2110,12 @@ assert.ok(
   ),
   '★★★ 0 个目标 ⇒ **说清为什么**（spec §8：按钮禁用并说明"先绑定一个文件夹"）—— ' +
     '一颗静默的死按钮正是这一条要消灭的东西',
+);
+assert.equal(
+  noTargetRow.includes('data-no-target="no-folder"'),
+  true,
+  '★ 机器读数：这一支是"这一版一个能装的文件夹都没有"（与 ④b 的 `already-present` 互为反面 —— ' +
+    '两句不同的出路各有一条读数）',
 );
 assert.deepEqual(
   buttonsIn(noTargetRow).map((button) => button.disabled),
@@ -1999,8 +2148,8 @@ const refuseHtml = modListHtmlOf(refuseState, []);
 assert.equal(
   countOf(refuseHtml, 'data-action="download-mod"'),
   1,
-  '★★★ 三行里**只有能下的那一行**有下载按钮：`manual` 与没有目标那两行一颗都不给' +
-    '（主进程必拒 ⇒ Ruling 47/48：会拒的一律不画）',
+  '★★★ 三行里**只有 `sodium` 那一行**有下载按钮（它那一颗是**禁用**的，理由见 ④b）：' +
+    '`manual` 与没有目标那两行一颗都不给（主进程必拒 ⇒ Ruling 47/48：会拒的一律不画）',
 );
 assert.ok(
   textOf(modRowOf(refuseHtml, 'optifine')).includes(textOf(resolved('files.hintManual'))),
@@ -2044,9 +2193,17 @@ assert.ok(
   '夹具自钉：那两个 mod **都能下**（否则"两个下载按钮"是一条空跑）',
 );
 assert.deepEqual(
-  planVersionPage(modListState, []).mods[0]?.downloadTargets,
-  ['f1', 'f2'],
-  '夹具自钉：两个文件夹都够格当目标（`pathExists && hasReading`）⇒ 选择器那两条才有对象',
+  planVersionPage(modListState, []).mods.map((row) => [
+    row.modid,
+    row.presentIn,
+    row.downloadTargets,
+  ]),
+  [
+    ['sodium', ['f1'], ['f2']],
+    ['lithium', [], ['f1', 'f2']],
+  ],
+  '夹具自钉（B2）：`sodium` 在 `f1` 里 ⇒ `presentIn=[f1]`、目标只剩 `f2`（选择器那两条因此挂在 ' +
+    '`lithium` 上）；`lithium` 一个都不在 ⇒ 两个文件夹都能装（"排掉"与"没排掉"各有一条读数）',
 );
 assert.deepEqual(
   planVersionPage(modListState, []).mods.map((row) => row.downloadedIn),
@@ -2065,7 +2222,7 @@ assert.deepEqual(
     '少一条 `en` 翻译时 i18next 会把 key 原样印出来）',
 );
 ok(
-  '㊳ 第三段（该版本所有 mod）：全量行（mod 名 / 标签显示名 / 目标版本 / homepage 的 href）、没展开 ⇒ 每行一颗下载按钮、展开后重叠的那一行变「已下载」且**没有**下载按钮与选择器、不重叠的仍有、目标选择只在 ≥2 个文件夹时出现（选项是路径、默认第一个）、0 个目标 ⇒ 禁用 + 说明、`manual` 与没有目标那两行一颗都不给、目录不可用 ⇒ 既有文案且不画表、没有 mod ⇒ 一句话、四条夹具自钉 + 裸 key 自钉',
+  '㊳ 第三段（该版本所有 mod）：全量行（mod 名 / 标签显示名 / 目标版本 / homepage 的 href）、没展开 ⇒ 每行一颗下载按钮、展开后重叠的那一行变「已下载」且**没有**下载按钮与选择器、不重叠的仍有、目标选择只在 ≥2 个**合法**目标时出现（选项是路径、默认第一个；B2："已经有它"的文件夹不算目标）、0 个目标 ⇒ 禁用 + 说明（B2：分"没有文件夹"与"能装它的文件夹里已经有它了"两句）、`manual` 与没有目标那两行一颗都不给、目录不可用 ⇒ 既有文案且不画表、没有 mod ⇒ 一句话、夹具自钉 + 裸 key 自钉',
 );
 
 // ---------------------------------------------------------------------------
@@ -2079,6 +2236,10 @@ ok(
  *    ⇒ 这一组的判据打在 **`ModDownloadPanel` 渲染出来的产物**上。
  * ⚠️ 夹具用**本组自己的**一格标签（`MOD_TAG`：显示名与 key 大小写不同）⇒ 标签那两条
  *    才咬得住；文件夹用两个（`f1` / `f1b`）⇒ 目标选择器在页面产物里也画得出来。
+ * ⚠️★ 那两个文件夹刻意是**空的**（`rows: []`）：`folder()` 的默认行里**有** `sodium`
+ *     ⇒ 在 B2 之后它会从 `sodium` 的 `downloadTargets` 里被排掉，于是"不忙时那颗按钮可用"
+ *    那条对照会变成"恒禁用"（一条**空跑**）—— 这一组的判据是"三格 prop 真的喂下来了"，
+ *    与文件夹里有什么无关，所以把行清空。
  * ⚠️★ 面板里的 `expanded` 是它自己的 `useState`（静态渲染恒为空）⇒ **「已下载」那一半
  *    在这一层证不了**（它由上一组按投影喂出来）；这一层证的是"页面真的把这三格喂下去了"。
  * ⚠️ 后四条是**接线守卫**（与 ⑯/㉖/㉗/㉟/㊲ 同一族）：产物里看不见事件处理器，
@@ -2086,8 +2247,14 @@ ok(
  */
 const panelModState = stateOf([{ ...ROW_GITHUB, tags: [MOD_TAG.key] }], {
   tags: [MOD_TAG],
-  folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f1b' })],
+  folders: [folder({ folderId: 'f1', rows: [] }), folder({ folderId: 'f1b', rows: [] })],
 });
+assert.deepEqual(
+  planVersionPage(panelModState, []).mods.map((row) => [row.presentIn, row.downloadTargets]),
+  [[[], ['f1', 'f1b']]],
+  '夹具自钉（B2）：这一版两个文件夹都是空的 ⇒ `sodium` 一个都不在、两个都能装' +
+    '（否则下面"不忙时那颗按钮可用"会变成一条恒禁用的空跑）',
+);
 const panelModHtml = keep(
   html(React.createElement(ModDownloadPanel, { state: panelModState, onAction: noop })),
 );
@@ -2213,8 +2380,47 @@ assert.match(
   '★ 契约那条通道在动作层**已有**实现（`downloadMissing` 是 T8 就有的那一条：T5 复用它，' +
     '不另加一条同义通道）',
 );
+/*
+ * ===========================================================================
+ * ★★ G2（最终修复波 / spec D3）：添加文件夹那条线**带上了版本**（三层各一条）
+ * ===========================================================================
+ * 修之前这条线上没有任何一格版本：动作成员是 `{ kind: 'bind-folder' }`、`Files.tsx` 调
+ * `handlers.bindFolder()`、动作层调 `api.bindFolder()` ⇒ 主进程只能自己推断
+ * （推不出来就是 `null`），而 spec D3 要的是"在版本 X 下添加 ⇒ 预置为 X（仍可改）"。
+ * ⚠️★ 三条**各钉一层**，因为漏任何一层都会**静默退回**旧行为（`bindFolder(undefined)`
+ *    与"不带参数"在主进程那一侧同义）⇒ 只钉产物或只钉一处都不够：
+ *    · 动作成员上那一格（类型声明）；
+ *    · `Files.tsx` 的接线（值真的**从动作里**取，不是原样转一个 `undefined`）；
+ *    · 动作层到契约的转发。
+ * ⚠️ 第四条（`VersionFolderList.tsx` 发出的那一格）是它们的**源头**：那一格必须是
+ *    `page.version`（投影里那一版），不是组件自己记的常量。
+ *    ⚠️ 它的源码那份 `versionFolderListCode` 定义在文件**前面**（㊱ 的 CT-4 守卫先用它）。
+ */
+assert.match(
+  downloadPanelCode,
+  /kind:\s*'bind-folder';\s*version:\s*string \| null/,
+  '★★ G2：`ModPageAction` 的 `bind-folder` 成员带着 `version: string | null`（缺这一格就传不出去了）',
+);
+assert.match(
+  filesRouteCode,
+  /case 'bind-folder':[\s\S]{0,400}?await handlers\.bindFolder\(action\.version\);/,
+  '★★ G2：`Files.tsx` 把**动作上那一格**转给 `handlers.bindFolder`（写成不带参数的调用就是' +
+    '「原样退回旧行为」，而那正是这一条要钉住的那一次退化）',
+);
+assert.match(
+  fePanelCode,
+  /bindFolder:\s*\(gameVersion\??: string \| null\)\s*=>\s*run\(\(\)\s*=>\s*api\.bindFolder\(gameVersion\)\)/,
+  '★★ G2：动作层把那一格转发到契约（`api.bindFolder(gameVersion)` —— 与 `setFolderGameVersion` 同一条入参语义）',
+);
+assert.match(
+  versionFolderListCode,
+  /kind:\s*'bind-folder',\s*version:\s*page\.version/,
+  '★★ G2：页面发出的那一格是**投影里的版本**（`page.version` = `state.gameVersion`）—— ' +
+    '组件里不存第二份版本号（写死一个字符串会落进夹具的取值里 ⇒ 恰好绿）',
+);
 ok(
-  "㊴ 第三段的喂入与接线：页面产物里**有**那一行、那颗下载按钮、标签显示名来自 `state.tags`、`busy` 时它禁用（正反各一条）、唯一一处 `kind: 'download-mod'`（送 origin）、不重算投影、面板那一处调用点喂三格、`Files.tsx` 接到 `handlers.downloadMissing`、而那条通道在动作层已有实现",
+  "㊴ 第三段的喂入与接线：页面产物里**有**那一行、那颗下载按钮、标签显示名来自 `state.tags`、`busy` 时它禁用（正反各一条）、唯一一处 `kind: 'download-mod'`（送 origin）、不重算投影、面板那一处调用点喂三格、`Files.tsx` 接到 `handlers.downloadMissing`、那条通道在动作层已有实现、" +
+    '而 G2 那条线（添加文件夹）在**三层**上都带着 `page.version`',
 );
 
 // ---------------------------------------------------------------------------
@@ -2236,12 +2442,18 @@ ok(
  *    （"它原来是 `ModFoldersPanel` 的…"），不剥注释的话这一组在**正确**的产物上报红。
  * ⚠️ 第二条（文件真的不在树里）与第一条**独立**：一个被 `git restore` 回来的文件可以
  *    没有任何人 import 它 ⇒ 源码那条照样绿，只有这一条会红。
+ * ★★ **CT-5（最终修复波）：`ModFoldersData.tsx` 也在扫描面里。** 它是这一页的**共用层**
+ *    （`Files.tsx` + `VersionFolderList` + `VersionModList` + `ModDownloadPanel` 都 import 它），
+ *    而原稿的 7 个文件里**没有它** ⇒ 从那个文件里 import 一个已删模块可以一路绿 ——
+ *    而那正是这一组要防的形状（T6 从 `FileUpdateTable` 搬走 `VERDICT_HINTS` 就是一次真实的搬家）。
  * ★ 能红的刀（读数在报告里）：把 `import { VERDICT_HINTS } from '@/components/FileUpdateTable';`
- *    加回 `VersionModList.tsx` ⇒ 第一条红；再把那个文件从快照拷回来 ⇒ 第二条红。
+ *    加回 `VersionModList.tsx` ⇒ 第一条红；再把那个文件从快照拷回来 ⇒ 第二条红；
+ *    ⚠️ 加回 **`ModFoldersData.tsx`** ⇒ 现在第一条也会红（CT-5 之前它不会）。
  */
 const PAGE_TREE = [
   '../src/routes/Files.tsx',
   '../src/components/ModDownloadPanel.tsx',
+  '../src/components/ModFoldersData.tsx',
   '../src/components/VersionFolderList.tsx',
   '../src/components/VersionModList.tsx',
   '../src/components/FolderJarList.tsx',

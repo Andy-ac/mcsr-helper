@@ -9,7 +9,10 @@
  * `renderToStaticMarkup` 不跑 effect 那一段）。
  * 这一层读的全是**别人算好的**读数：
  *   · `downloadedIn`（哪些**已展开**的文件夹里有它 ⇒ 空就显示下载按钮，D5）；
- *   · `downloadTargets`（该版本里能当目标的文件夹 id，D6）；
+ *   · `presentIn`（**不论展开与否**，哪里有它 —— B2：没有合法目标时那句出路靠它分两支）；
+ *   · `downloadTargets`（该版本里**能把这一行装进去**的文件夹 id，D6 + B2：
+ *     投影已经把"已经有它"的那些排掉了，因为主进程 `downloadMissing` 对那种目标是
+ *     **无条件拒**的）；
  *   · `releaseVersion` / `releaseUrl` / `homepage` / `manual` / `verdict`。
  * ⚠️★ 这一层**不许**调 `planVersionPage`、也不许自己 `filter` 一遍文件夹
  *    （自检㊴ 有一条源码形状守卫钉着这件事：`downloadedIn` 的判据**只许**读投影那一格）。
@@ -215,7 +218,7 @@ function VersionModItem({
    */
   const downloadable = row.releaseUrl !== null && !row.manual;
   /**
-   * 不能下时那句解释：`manual` 有它自己的话；其余两档（`ambiguous` / `missing-release`）
+   * ★★ 不能下时那句解释：`manual` 有它自己的话；其余两档（`ambiguous` / `missing-release`）
    * 复用共享的 `VERDICT_HINTS`。
    * ⚠️ `??` 那一支**不可达**（`releaseUrl === null` 只可能是那两档，而两档都有 hint）；
    *    写它是为了类型收窄（`VERDICT_HINTS` 是 `Partial`），取的是"读不出来"那句最泛的话。
@@ -223,6 +226,25 @@ function VersionModItem({
   const whyKey = row.manual
     ? 'files.hintManual'
     : (VERDICT_HINTS[row.verdict.kind] ?? 'files.hintUnknown');
+  /**
+   * ★★ B2（最终修复波）：**没有合法目标**时那句话分两支，判据是 `presentIn`。
+   *
+   * ⚠️★ 为什么必须有这一支：`downloadTargets` 是**合法**目标表（投影把"已经有它"的
+   *    文件夹排掉了，因为主进程 `downloadMissing` 对那种目标是**无条件拒**的）⇒
+   *    "空"有两种毫不相干的成因，说同一句话会把用户指错方向：
+   *      · `presentIn` 空 ⇒ 这一版**没有一个能装的文件夹**（"先绑定一个文件夹"）；
+   *      · `presentIn` 非空 ⇒ 能装它的文件夹里**都已经有它了** —— 此时正确的动作是
+   *        **展开那个文件夹**（或干脆什么都不做：它已经在了），而不是去绑一个新文件夹。
+   *    ⚠️ 这一支**在默认视图里是常态**（`expanded` 为空、而这一版只有一个文件夹）
+   *    —— 修之前那一屏画的是一颗**注定被拒**的按钮（B2 的现场）。
+   * ⚠️ 路径取 `pathOf`（= `page.folders` 里那一格）⇒ 与目标选择器里的选项文字同源；
+   *    查不到时退回 id（与选择器里 `pathOf.get(id) ?? id` 同一条退化）。
+   */
+  const firstPresent = row.presentIn[0] ?? '';
+  const noTargetKey =
+    row.presentIn.length === 0
+      ? t('files.noFolderForDownload', { version })
+      : t('files.alreadyInFolder', { folder: pathOf.get(firstPresent) ?? firstPresent });
 
   return (
     <tr
@@ -304,12 +326,19 @@ function VersionModItem({
               </select>
             ) : null}
             {/*
-              ★★ 0 个目标（spec §8 那一行）：按钮**禁用**并说清出路 —— 一颗静默的死按钮
-              正是这一条要消灭的东西（"先绑定一个文件夹"）。
+              ★★ 0 个**合法**目标（spec §8 那一行）：按钮**禁用**并说清出路 —— 一颗静默的
+              死按钮正是这一条要消灭的东西。
+              ⚠️★ B2：那句出路分两支（见上面 `noTargetKey`）—— "先绑定一个文件夹"与
+              "能装它的文件夹里都已经有它了"是两件事，说成一件会把人指错方向。
               ⚠️ 按钮**留着**（不是消失）：它旁边那句话就是为什么点不动的答案。
             */}
             {row.downloadTargets.length === 0 ? (
-              <span className="filetable__err">{t('files.noFolderForDownload', { version })}</span>
+              <span
+                className="filetable__err"
+                data-no-target={row.presentIn.length === 0 ? 'no-folder' : 'already-present'}
+              >
+                {noTargetKey}
+              </span>
             ) : null}
             <button
               type="button"

@@ -146,7 +146,13 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
         await handlers.openFolder(action.folderId);
         break;
       case 'bind-folder':
-        await handlers.bindFolder();
+        /*
+         * ★★ G2（最终修复波 / spec D3）：把**当时看着的那一版**转过去 —— 主进程用它把
+         *   新文件夹的版本**预置**成它（仍可手改），而不是自己推断一个可能是 `null` 的版本。
+         *   ⚠️ 这一格是契约 `bindFolder(gameVersion?)` 的第一个入参，转丢的表现是
+         *   "在 X 下面添加、却归到别的组"（D3 要消灭的正是这件事）。
+         */
+        await handlers.bindFolder(action.version);
         break;
       case 'rescan-folder':
         await handlers.rescan(action.folderId);
