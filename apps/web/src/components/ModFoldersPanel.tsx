@@ -141,8 +141,10 @@ export function channelOptions(state: ModFoldersState): ChannelOption[] {
 /**
  * 头行那个通道下拉的**当前值**（`state.bulkChannel` 的字符串形式）。
  * ⚠️ 一处记忆：这个值只从状态读，组件里**不存**第二份（Ruling 23）。
+ * ⚠️ 导出是给 A 的 T3 那一行（`VersionFolderList`）复用的：通道的**形状**只有这一处
+ * 实现（`'origin' | { mirrorId }` ⇒ 下拉的字符串），两处各写一份就会有一天对不上。
  */
-function channelKeyOf(channel: Channel): string {
+export function channelKeyOf(channel: Channel): string {
   return channel === 'origin' ? 'origin' : channel.mirrorId;
 }
 

@@ -9664,6 +9664,251 @@ html[data-theme='light'] {
   line-height: 1.7;
 }
 
+/* ------------------------------------------------------------------
+   mod 下载页重构（A）· Task 3：tab 骨架 + 按版本分组的文件夹行
+
+   ★ 这一批类名属于**新页面**（`ModDownloadPanel` / `VersionFolderList` /
+     `AllFoldersView` / `ToolsPanel`），与上面 `.folderbox*`（旧第二部分，
+     Task 6 会删）**并存一个提交周期**：T3 只换页面，旧组件的样式与它的断言一起留到 T6。
+   ⚠️★ 与 `.files*` 那一节同一条纪律：组件里出现的每一个类名在这里**都必须有规则**
+     （样式是全局的、没有 CSS Modules，而"渲染了一个不存在的类名"全仓没有门禁发现得了，
+     `docs/pending.md §5.70`）。⚠️ 复用已有类的（`.badge*` / `.filters__select` /
+     `.ghostbtn` / `.cta` / `.state` / `.filespanel__actions`）在这里不再写第二遍。
+   ------------------------------------------------------------------ */
+
+/* tab 那一条（`role="tablist"`）。⚠️ 它与下面那一格**是同一块的两个面**：
+   间距给 0 到第一格上，让"标签下面紧跟着内容"（标签自己带下边距会让它看起来像两件事）。 */
+.modtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 一颗 tab。⚠️ 名字走**像素字体**（与 `.filetable__head th` 同族：短标签）——
+   它是导航，不是散文。⚠️ `is-active` 的同时还带着 `aria-selected="true"`
+   （颜色只是加强，语义在属性上：spec §8 那一条纪律）。 */
+.modtabs__tab {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  padding: 8px 12px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.modtabs__tab.is-active {
+  color: var(--fg);
+  border-color: var(--line);
+  /* ⚠️ 颜色要与页面背景一致：那一格"接上"下面那条横线，看起来才是选中的那一页。 */
+  background: var(--bg);
+}
+
+/* 「工具下载」那一格（占位卡）。⚠️ 它自己是自己的类名（不复用 `.filespanel`：
+   v1 的渲染自检有一条"产物里没有 `filespanel` 这个子串"的粗判据）。 */
+.toolspanel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 12px;
+}
+
+.toolspanel__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0 0 6px;
+}
+
+/* ⚠️ 成句的散文 ⇒ 正文字体（像素字体读长句很累，与 `.filespanel__hint` 同一条）。 */
+.toolspanel__hint {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin: 0;
+}
+
+/* 「mod 下载」那一格的面板。 */
+.moddownload {
+  margin: 0 0 24px;
+}
+
+/* ★ 顶部并排区（版本下拉 + 「显示全部已绑定的文件夹」；B 会再往这里加一格）。
+   ⚠️ `flex-wrap` 不是保险：两种语言里这一行的长度差很多，窄屏下必须能换行。 */
+.moddownload__toprow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 16px;
+}
+
+/* 按版本分组的那一栏。 */
+.folderlist {
+  margin: 0 0 20px;
+}
+
+.folderlist__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0 0 8px;
+}
+
+/* 一个文件夹（**受控**折叠：展开态在页面手里，不是原生 `<details>`）。
+   ⚠️ 视觉照 `.folderbox`：它们是同一页上的同一种东西（一列文件夹）。 */
+.folderrow {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin: 0 0 12px;
+  padding: 0 12px 4px;
+}
+
+/* 那一行（永远可见）：展开控件 + 路径 + 徽章 + 「打开文件夹」+ 一整排控件。
+   ⚠️ `flex-wrap` + 较大的 `row-gap`：与 `.folderbox__head` 同一条理由。 */
+.folderrow__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 0;
+}
+
+/* 展开控件（「▸ 展开 / ▾ 收起」那一颗）。⚠️ 它是按钮、不是 `<summary>`：
+   折叠块是受控的（展开态要喂给投影），理由写在 `VersionFolderList` 的文件头。 */
+.folderrow__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid transparent;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+/* ★★ 那个三角**用 CSS 画**（与 `.video-embed__playshape` 同一招）：
+   `▸` / `▾` 两个字符**不在**自托管像素字体的子集里（`check-font-coverage.mjs` 扫的是
+   i18n，扫不到组件里的字符 ⇒ 它不会红，而用户会看到豆腐块）。
+   ⚠️ 形状由 `data-open` 决定（`yes` = 展开 ⇒ 转 90°，指向下）。 */
+.folderrow__caret {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+  transition: transform 0.12s ease;
+}
+
+.folderrow__caret[data-open='yes'] {
+  transform: rotate(90deg);
+}
+
+/* 路径：磁盘上的内容，原样印（与 `.folderbox__path` 逐字相同）。 */
+.folderrow__path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg);
+  word-break: break-all;
+  min-width: 180px;
+}
+
+/* 一组控件（`<label>`：名字 + 控件）。⚠️ 与 `.folderbox__field` 逐字相同 ——
+   这一页上两组控件是同一种东西，长得不一样只会让人以为哪一组坏了。 */
+.folderrow__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+/* 展开体里那几句解释（路径不存在 / 版本未知）。⚠️ 正文字体、撑满一行。 */
+.folderrow__note {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin: 0 0 6px;
+}
+
+/* 展开体（T4 会把 jar 列表放进来）。 */
+.folderrow__body {
+  padding: 0 0 8px;
+}
+
+/* ★ 「显示全部已绑定的文件夹」那一栏（跨版本总览）。⚠️ 它与版本区**视觉上分开**：
+   它回答的是另一个问题（这台机器上一共绑了哪些），混在一起会让人以为它也是"这一版"。 */
+.allfolders {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 12px;
+  margin: 0 0 16px;
+}
+
+.allfolders__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0 0 8px;
+}
+
+.allfolders__group {
+  margin: 0 0 10px;
+}
+
+/* 一个版本的标题（版本号 + 这一组有几个）。⚠️ 等宽字体：版本号是机器串
+   （与 `.filetable__version` 同族），两种语言下都不该换行。 */
+.allfolders__version {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  margin: 0 0 4px;
+}
+
+.allfolders__count {
+  color: var(--fg-faint);
+  font-size: var(--fs-px-sm);
+}
+
+.allfolders__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.allfolders__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 4px 0;
+}
+
+/* 路径（同上：磁盘内容、等宽、可断行）。 */
+.allfolders__path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg);
+  word-break: break-all;
+  min-width: 180px;
+}
+
+/* 版本徽章。⚠️ 它只是一个普通 `.badge`（颜色不承载语义：版本对不对是看数字的），
+   单独一条规则是为了**把类名登记下来**（组件里出现的类名必须在这里有规则）。 */
+.badge--version {
+  font-family: var(--font-mono);
+}
+
 
 
 

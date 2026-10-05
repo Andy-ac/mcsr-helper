@@ -4592,5 +4592,55 @@ export const en: TranslationSchema = {
      */
     partTwoUnavailable:
       'This section needs desktop 0.0.5 (this client has no mod-folder support yet) - everything above keeps working.',
+    /*
+     * ===================================================================
+     * A (mod-download page restructure) - Task 3: the tab skeleton
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`
+     * (the bare-key scanner only knows `files.` and `common.`).
+     * ⚠️ No `=>` arrows (U+21D2) or `down triangle` (U+25BE) in these values:
+     * neither is in the self-hosted pixel font subsets, and
+     * `check-font-coverage.mjs` scans exactly this directory.
+     * (The row's disclosure triangle is drawn with CSS for that reason.)
+     */
+    tabMods: 'Mod downloads',
+    tabTools: 'Tool downloads',
+    /*
+     * ⚠️ A placeholder card must say why it is empty: a blank tab cannot be told
+     * apart from a broken one (docs/pending.md §5.63).
+     */
+    toolsComingSoon:
+      'Tool downloads are not built yet - there is nothing here on purpose, this is not a load failure.',
+    /*
+     * ⚠️ Both are the disclosure control's own label (spec §8's last row asks for
+     * the marker **plus** the words): the marker alone is not readable.
+     */
+    expand: 'Expand',
+    collapse: 'Collapse',
+    /*
+     * ⚠️ The folder path itself is never translated (it is disk content): this is
+     * only the button that opens it in the OS file manager.
+     */
+    openFolder: 'Open folder',
+    /*
+     * ⚠️ One string, two render points (the top-row button and the section heading):
+     * they are two ways of naming the same thing, and a second wording would turn
+     * into two names for it.
+     */
+    allBoundFolders: 'Show all bound folders',
+    /*
+     * ★ The empty state of **one version** (spec §8's first row). It is deliberately
+     * not `folderNone` (that one mentions the missing list, which this page no longer
+     * renders), and it carries the only "add a folder" entry point on this page.
+     */
+    folderNoneVersion:
+      'No mods folder is bound for this version yet - bind one and the mods inside it are checked against the catalog.',
+    /** The heading of the version-grouped folder section (`{{version}}` is a version string). */
+    versionFoldersTitle: 'Mod folders under {{version}}',
+    /*
+     * ⚠️ The short **badge** for "no successful scan yet" (Ruling 65: it must be told
+     * apart from "there is nothing in there"). The long explanation is `folderNoReading`.
+     */
+    folderNoReadingBadge: 'No scan yet',
   },
 };

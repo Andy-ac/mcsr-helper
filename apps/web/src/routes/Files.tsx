@@ -1,70 +1,63 @@
 /**
- * 「文件更新」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-03 加了第一部分，
- * 同一天 Task 8 加了第二部分与底部缺失清单）。
- *
- * ⚠️★ **一页三块**（spec §6.8）：第一部分 = 目录行（T7）、第二部分 = 已绑定的文件夹
- * （T8）、底部 = 缺失清单（T8）。三块共用**同一份** `ModFoldersState` 与同一个动作层
- * ⇒ 拼装只有一处（下面那个 `ModFoldersParts` 纯组件，自检渲染的也是它）。
+ * 「文件更新」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-04 **A 的 T3** 换成 tab 骨架）。
  *
  * ===========================================================================
- * ⚠️★ 这一页在**两种模式下是两个产品**，而它们共用同一份组件
+ * ★★ 这一页现在的形状（spec §4）：**一格一个模块，按游戏版本组织**
  * ===========================================================================
- *   · **桌面壳里**（`window.mcsr` 存在）：数据全部来自桌面壳，
- *     **一个字节都不走 HTTP**。⚠️ 但"桌面壳"有两个世代，判据不同（Task 7）：
- *       · **0.0.5+**（`window.mcsr.modFolders` 存在）：第一部分走
- *         `modFolders.getState()`（`useModFolders()`）—— 目录行、两个筛选器、
- *         双通道更新都在那一份状态里；v1 那张带写盘按钮的表**不再渲染**
- *         （Ruling 49：新界面不暴露 v1 的写通道）。
- *       · **0.0.4**（只有 `fileUpdates`）：一个字节都不变，走下面那条 v1 的路
- *         （`useFileUpdates()`），它看到的第一部分就是 v1 那张表 —— spec §6.8 说的
- *         "老客户端的第一部分只有一行"正是这件事，那是**正确**的降级。
- *   · **浏览器里**：既没有 `window.mcsr`、也没有任何本地文件 ⇒ 走 v1 那条路
- *     （`browserState()`）：把 `GET /api/file-catalog` 的**目录**列出来（每条都是
- *     "未绑定"），并说清"本地文件的读写只发生在桌面版里"，给出装桌面版的入口。
- *     ⚠️★ 那段说明**必须在这一页上**，不能只写在桌面版里：用户在浏览器里看到的是一张
- *     "未绑定"的表，第一反应是"为什么点不动"，而不是"我需要装桌面版"。
- *     ⚠️ 装桌面版的入口**复用首页那个 `<DesktopDownload />`**，不另造一个。
+ *   · **tab**：「mod 下载」（默认）与「工具下载」（占位卡，写明"待更新"）；
+ *   · **mod 下载**那一格里：顶部并排区（版本下拉 + 「显示全部已绑定的文件夹」）
+ *     → 跨版本那一栏（点开才画）→ **按版本分组的文件夹行**（默认折叠）
+ *     → 「该版本所有 mod」（**T5** 接进来）。
+ * ⚠️★ 那些块**只在** `modFolders` 通道在的客户端（桌面版 0.0.5+）画：
+ *    没有那条通道 ⇒ 这一页**只有一句**"需要桌面版 0.0.5"（spec §9.12 / D1：
+ *    0.0.4 与浏览器**都**是这一档，区别只在上面多不多一句 `browserOnly`）。
+ *    ⇒ v1 那张带写盘按钮的表**不再挂在这一页上**（它的组件与判据留到 **T6** 一起删）。
  *
  * ===========================================================================
- * ⚠️ 取数不在这里，在这个页面的容器里
+ * ⚠️★ 取数不在这里，在这一页的容器里（`useModFolders()`）
  * ===========================================================================
- * 两条取数都在 `components/FileUpdatesPanel.tsx` 里：`useFileUpdates()`（v1）与
- * `useModFolders()`（第一部分）。这一页只做三件事：**选哪一条路**、摆放组件、
- * 渲染标题与说明。
- * ⚠️ 为什么这么分：`renderToStaticMarkup`（Task 7 的渲染自检）**不跑 effect** ——
- *    取数写在页面里的话，自检渲染这一页永远只能看到「加载中」，页面上每一块都断言不到
- *    （`docs/pending.md §5.63`）。
- * ⚠️★ 判据只有**一处**：`useModFolders()` 的 `status === 'unavailable'` 就是"这个壳没有
- *    `modFolders`"⇒ 这一页不去**再读一次** `desktopBridge()`（这个文件里如果出现两处
- *    "我是不是 0.0.5" 的判断，它们迟早在某一支上分叉 —— `shared/desktop.ts` 的
- *    `desktopBridge()` 是那条唯一入口的注释里写着这件事）。
+ * ⚠️ 为什么：`renderToStaticMarkup`（渲染自检）**不跑 effect** ⇒ 取数写在页面里的话，
+ *    自检渲染这一页永远只能看到「正在扫描…」，页面上每一块都断言不到
+ *    （`docs/pending.md §5.63`；`ModDownloadPanel` / `VersionFolderList` 之所以是
+ *    纯 props 组件，也是同一条）。
+ *
+ * ===========================================================================
+ * ⚠️★ 这一页里"我是谁"只问两个问题，各**一处**判据（T3 改准）
+ * ===========================================================================
+ *   · "这个壳有没有 `modFolders` 通道" ⇒ `useModFolders().status === 'unavailable'`
+ *     —— 它就是"这个客户端太老"那一条（0.0.4 与浏览器都落在这里）；
+ *   · "这是不是一个桌面壳" ⇒ `desktopBridge()`（**只**用来决定浏览器那句说明与装桌面版的
+ *     入口要不要画）。⚠️ 上个版本这一格是从 v1 的 `useFileUpdates().handlers` 推的，
+ *     而 v1 的面板已经从这一页下去了 ⇒ 那一格不能再依赖 v1 的取数。
+ * ⚠️★ 两处判据问的是**两个不同的问题**，所以不会分叉；而"我是不是 0.0.5"这个问题
+ *    仍然只有第一处问（别在这里再读一次 `desktopBridge()?.modFolders`）。
  */
-import type { ModFoldersState } from '@mcsr/shared/modFolders';
+import { desktopBridge } from '@mcsr/shared/desktop';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DesktopDownload } from '@/components/DesktopDownload';
 import {
-  FileUpdatesPanel,
   ModCatalogScanning,
-  ModCatalogSection,
   type ModFoldersHandlers,
-  useFileUpdates,
   useModFolders,
 } from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
-import { MissingModsList } from '@/components/MissingModsList';
-import { ModFoldersPanel } from '@/components/ModFoldersPanel';
+import {
+  ModDownloadPanel,
+  type ModPageAction,
+  type ModPageActionHandler,
+} from '@/components/ModDownloadPanel';
+import { ToolsPanel } from '@/components/ToolsPanel';
 
 /**
- * 这一页的**第二部分 + 底部**在 `modFolders` 不存在时的样子（**特性检测**，
- * spec §6.8 / §8 的最后一行）：说清"需要桌面版 0.0.5"，而且**第一部分与 v1 照常**。
+ * 这一页在 `modFolders` 不存在时的样子（**特性检测**，spec §6.8 / §8 的最后一行）：
+ * 说清"需要桌面版 0.0.5"。
  *
  * ⚠️★ 单独导出一个**纯组件**的理由与 `ModCatalogScanning` 同一个：自检里没有 preload
  *    （`window.mcsr` 是 `undefined`）⇒ `useModFolders()` 恒为 `unavailable`，
- *    而那一支渲染的是 v1 那条路 —— 「需要桌面版 0.0.5」这句话只有单独拿组件渲染
- *    才断言得到（`foldersrender.tsx` 的 ㉕）。
+ *    而那一支渲染的就是它 ⇒ 只有单独拿组件渲染才断言得到（`foldersrender.tsx` 的 ㉕）。
  * ⚠️ 它同时覆盖两种壳：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
  *    （连 `mcsr` 都没有 —— 那时页面上面还有一句 `browserOnly` 说清了原因）。
- *    两种壳都该看到它：这一栏要的确实是桌面版 0.0.5 才有的能力。
  * ⚠️★ 它的类名**刻意不是** `.filespanel`（第一版是它，2026-10-03 跑 `check:all` 时红了）：
  *    v1 的渲染自检（`apps/web/scripts/filesrender.tsx` ⑰）有一条**粗糙的**判据 ——
  *    `assert.equal(pageHtml.includes('filespanel'), false, '还没拿到状态就不画面板')`
@@ -85,52 +78,108 @@ export function ModFoldersUnavailable() {
   );
 }
 
-export interface ModFoldersPartsProps {
-  state: ModFoldersState;
-  handlers: ModFoldersHandlers;
-  /** 一次动作失败的原话（只有第一部分印它 —— 它是整页动作层的东西）。 */
-  actionError?: string | null;
+/** 两个 tab（顺序即 spec §4 那个图）。 */
+type ModTab = 'mods' | 'tools';
+
+/**
+ * tab 那一条。
+ *
+ * ⚠️★ 为什么整条住在这里（页面外壳）而**不在** `ModDownloadPanel` 里：
+ *    面板要一份 `ModFoldersState` 才画得出来，而那份读数要等 `useModFolders()` 的 IPC
+ *    回包（静态渲染跑不到 effect）⇒ 面板里放 tab 条的话，"默认选中哪一格"**永远断言不到**。
+ *    而外壳的 `loading` 支路也画着这一条 ⇒ 自检第一次渲染就看得到它。
+ * ⚠️ ARIA：`role="tablist"` + `role="tab"` + `aria-selected` 是**完整**那一套的一半，
+ *    另一半是 `aria-controls` 指向的 `role="tabpanel"`（下面那个 wrapper）——
+ *    `Videos.tsx` 那一处写着"只挂半个 `role="tab"` 会被读屏念成一个没有对应面板的选项卡"，
+ *    所以这里两边都挂了。代价（认）：未选中的那一格**不渲染**（面板里的东西不便宜）
+ *    ⇒ 它那颗按钮的 `aria-controls` 在选中之前指向一个不存在的 id（读屏会忽略它）。
+ */
+function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTab) => void }) {
+  const { t } = useTranslation();
+  const items: readonly { id: ModTab; label: string }[] = [
+    { id: 'mods', label: t('files.tabMods') },
+    { id: 'tools', label: t('files.tabTools') },
+  ];
+  return (
+    <div className="modtabs" role="tablist">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          id={`modtab-${item.id}`}
+          className={item.id === tab ? 'modtabs__tab is-active' : 'modtabs__tab'}
+          /* ⚠️ `data-tab` 必须在 `aria-selected` **前面**：自检那两条正则吃的是这个顺序。 */
+          data-tab={item.id}
+          aria-selected={item.id === tab}
+          aria-controls={`modtabpanel-${item.id}`}
+          onClick={() => onSelect(item.id)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /**
- * `modFolders` 在的客户端上，这一页的**三块**（spec §6.8）。
+ * 动作联合 ⇒ 契约里那条通道（**这一处是全页唯一的动作接线**）。
  *
- * ⚠️★ 抽成一个**纯 props 组件**是为了让"三块真的拼在一起"这件事**能被断言**：
- *    `Files` 的 ready 那一支要靠 `useModFolders()` 的 IPC 回包（自检里一行 effect
- *    都不跑）⇒ 直接渲染 `Files` 永远停在「正在扫描…」，三块里一块都断言不到。
- *    这一层只吃 `state` / `handlers`，所以 `foldersrender.tsx` 的 ㉕ 能一次渲染出
- *    第一块的标题、第二块的文件夹、第三块的缺失行**与第一块里那句迁移提示**
- *    （`notices` 的渲染点在第一部分，而 §13.1 要求它**看得见** —— 这一条断言因此
- *    必须落在"三块同时在场"的那一份产物上，而不是只渲染第一块的那一份）。
- * ⚠️ 顺序就是 spec 说的顺序：第一部分（目录行）→ 第二部分（文件夹）→ 底部（缺失清单）。
- *    ⚠️ 三块**共用同一份 state**：它们说的是同一份读数，各拉一次就等于让"同一份状态"
- *    有三个会漂的版本。
+ * ⚠️★ 为什么是一个函数而不是就地写在 JSX 里：`switch` 的穷尽性由 `tsc` 盯着
+ *    （加一个 `ModPageAction` 的成员而不在这里处理 ⇒ 这个函数不再返回 `Promise<void>`），
+ *    而"一个动作只接一条通道"也只有一个地方会错。
+ * ⚠️★ 这里**不 catch**：`makeModFoldersHandlers()` 那一层已经接住并落到 `actionError`
+ *    （页面把它传给 `ModDownloadPanel` 印出来）。`openFolder` 走的是那一层**新加的那一条**
+ *    （主进程对未知 id 是**抛**，`mod-folders.ts:941`）—— 接住它的地方与别的动作同源。
  */
-export function ModFoldersParts({ state, handlers, actionError = null }: ModFoldersPartsProps) {
-  return (
-    <>
-      <ModCatalogSection state={state} handlers={handlers} actionError={actionError} />
-      <ModFoldersPanel state={state} handlers={handlers} />
-      <MissingModsList state={state} handlers={handlers} />
-    </>
-  );
+export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHandler {
+  return async (action: ModPageAction): Promise<void> => {
+    switch (action.kind) {
+      case 'open-folder':
+        await handlers.openFolder(action.folderId);
+        break;
+      case 'bind-folder':
+        await handlers.bindFolder();
+        break;
+      case 'rescan-folder':
+        await handlers.rescan(action.folderId);
+        break;
+      case 'unbind-folder':
+        await handlers.unbindFolder(action.folderId);
+        break;
+      case 'set-folder-version':
+        await handlers.setFolderGameVersion(action.folderId, action.version);
+        break;
+      case 'set-folder-auto-update':
+        await handlers.setFolderAutoUpdate(action.folderId, action.on);
+        break;
+      case 'set-bulk-channel':
+        await handlers.setBulkChannel(action.channel);
+        break;
+      case 'update-folder-all':
+        await handlers.updateFolderAll(action.folderId, action.channel);
+        break;
+      case 'set-catalog-version':
+        await handlers.setCatalogGameVersion(action.version);
+        break;
+    }
+  };
 }
 
 export function Files() {
   const { t } = useTranslation();
-  const data = useFileUpdates();
   /*
-   * ★ 第一部分的数据源（Task 7）。⚠️ 它在浏览器 / 0.0.4 里恒为 `unavailable`
-   *   （那条路一个字节都不变），只有 0.0.5+ 的壳才会给出 `ready`。
+   * ★ 数据源（T7）：只有 0.0.5+ 的桌面壳才会给出 `ready`；浏览器与 0.0.4 恒为 `unavailable`。
    */
   const mods = useModFolders();
-
+  /** 当前 tab（默认「mod 下载」；spec §4）。 */
+  const [tab, setTab] = useState<ModTab>('mods');
   /**
-   * ⚠️ 判据是 `handlers`（只有桌面壳里才有），不是**再读一次** `desktopBridge()`：
-   *    这个页面里如果出现两处"我是不是桌面壳"的判断，它们迟早在某一支上分叉
-   *    （`shared/desktop.ts` 的 `desktopBridge()` 是那条唯一入口的注释里写着这件事）。
+   * ⚠️ 判据是 `desktopBridge()`（**不是** `useModFolders()`）：后者答的是"有没有那条通道"，
+   *    而这个答的是"这是不是一个桌面壳"—— 浏览器要看到装桌面版的入口，0.0.4 不要
+   *    （它已经是桌面壳了）。⚠️ 两者问的是两个问题 ⇒ 不会分叉（见文件头那一段）。
    */
-  const desktop = data.handlers !== null;
+  const desktop = desktopBridge() !== null;
 
   return (
     <>
@@ -158,84 +207,46 @@ export function Files() {
 
       {/*
         ===================================================================
-        ★★ 两条路的分岔口（Task 7）：`unavailable` ⇒ v1 那条路（一个字节不变）
+        ★★ 唯一的岔口（T3）：**没有 `modFolders` 通道**的壳 ⇒ 只有一句话
         ===================================================================
-        ⚠️★ 三条支路**互斥**，而且都能从这一屏看出自己在哪一支：
-          · `unavailable`（浏览器 / 0.0.4）⇒ 下面那三块 v1 的老画面；
-          · `loading` ⇒ 「正在扫描…」（Ruling 42：首拉可能等一次补扫）；
-          · `failed` ⇒ 一句带原因的话（**不许**留一个「正在扫描…」，那是撒谎：
-            `ShareIntro` 的注释里记着同一条 —— 分不出"慢"和"挂了"就是撒谎）。
+        ⚠️★ 那一档**不画 tab**（spec §9.12 / D1：0.0.4 用户"只能看到升级提示"）：
+           tab 是"这一页有几个模块"的导航，而没有那条通道时一个模块都没有 ——
+           画出来会让"这个客户端太老"看起来像"还有一个模块没做"。
       */}
       {mods.status === 'unavailable' ? (
-        <>
-          {data.status === 'loading' ? <p className="state">{t('common.loading')}</p> : null}
-
-          {/*
-            ⚠️★ 连第一份状态都没拿到 —— 这句话**必须**说出来。留一个「加载中」的话，
-            用户既没有重试、也分不出"慢"和"挂了"（`ShareIntro` 的注释里记着同一条）。
-            ⚠️ 两条路的原因**不是同一件事**，所以是两条词条：
-               · 浏览器 = 网页自己拉的目录失败（`files.catalogError`，`{{reason}}` 是服务端
-                 那个机器可读的码或 HTTP 状态码）；
-               · 桌面壳 = 主进程那半边**根本没回话**（`files.stateError`）。
-            ⚠️ 主进程**回了一份状态、里面写着目录拉取失败**那一支不走这里，它走面板
-               （`state.catalogError`，那句话由主进程写好、面板原样显示）—— 见
-               `components/FileUpdatesPanel.tsx` 里 `catalogError` 那一段。
-            ⚠️ 这一段**刻意没有就地重试按钮**（代价写明：要用户自己刷新这一页）：
-               两种原因都不是"再点一次就会好" —— 浏览器这边多半是"这一次部署没把目录
-               文件送到服务器上"，桌面壳那边是"那条 IPC 通道根本没人接"。
-               而桌面态真正能重试的是 v1 那颗「检查」（T4 的 `check()` 会重拉一次目录），
-               浏览器这半边没有第二个取数动作，刷新就是重试。
-          */}
-          {data.status === 'failed' ? (
-            <Notice kind="bad">
-              {data.failedAt === 'catalog'
-                ? t('files.catalogError', { reason: data.reason })
-                : t('files.stateError', { reason: data.reason })}
-            </Notice>
-          ) : null}
-
-          {data.status === 'ready' ? (
-            <FileUpdatesPanel
-              state={data.state}
-              handlers={data.handlers}
-              actionError={data.actionError}
-            />
-          ) : null}
-
-          {/*
-            ★★ 特性检测的落点（Task 8，spec §6.8 / §8 的最后一行）。
-            ⚠️★ 它**只**说第二部分要什么，第三块（缺失清单）也一并不画：
-              缺失清单是第二部分那份读数的下游（"哪些 mod 没在任何已绑定文件夹里"），
-              壳里没有 `modFolders` 时连"已绑定文件夹"这个概念都不存在。
-            ⚠️ 位置在 v1 那三块**之后**：那是"第二部分"在页面上的位置（第一块 = 第一部分）。
-          */}
-          <ModFoldersUnavailable />
-        </>
-      ) : mods.status === 'loading' ? (
-        /*
-         * ★★ Ruling 42：第一次 `getState()` 会先等一次**补扫**（读每个 jar 的内部版本
-         * 与哈希），可能要几秒 ⇒ 从第一帧就说"正在扫描…"，否则这一页看起来是挂了。
-         */
-        <ModCatalogScanning />
-      ) : mods.status === 'failed' ? (
-        /*
-         * ⚠️ 与 v1 的 `stateError` **不是同一条词条**：这一条说的是新通道
-         * （`modFolders.getState()`）拿不到。两条通道的失败原因不同，所以不合并。
-         */
-        <Notice kind="bad">{t('files.partOneStateError', { reason: mods.reason })}</Notice>
+        <ModFoldersUnavailable />
       ) : (
-        /*
-         * ★★ 一页三块（spec §6.8）：第一部分（目录行）+ 第二部分（文件夹）+
-         *    底部（缺失清单）。⚠️ 三块**共用同一份 state**（`mods.state`）与同一个
-         *    动作层（`mods.handlers`）—— 各拉一次就等于让同一份读数有三个会漂的版本。
-         * ⚠️ 拼装住在 `ModFoldersParts` 那个纯组件里（不在这里就地散开）：自检要
-         *    一次渲染出三块才断言得到"它们真的在一起"（见那个组件的注释）。
-         */
-        <ModFoldersParts
-          state={mods.state}
-          handlers={mods.handlers}
-          actionError={mods.actionError}
-        />
+        <>
+          <ModTabs tab={tab} onSelect={setTab} />
+          <div role="tabpanel" id={`modtabpanel-${tab}`} aria-labelledby={`modtab-${tab}`}>
+            {tab === 'tools' ? (
+              <ToolsPanel />
+            ) : mods.status === 'loading' ? (
+              /*
+               * ★★ Ruling 42：第一次 `getState()` 会先等一次**补扫**（读每个 jar 的内部
+               * 版本与哈希），可能要几秒 ⇒ 从第一帧就说"正在扫描…"，否则这一页看起来是挂了。
+               */
+              <ModCatalogScanning />
+            ) : mods.status === 'failed' ? (
+              /*
+               * ⚠️ 与 v1 的 `stateError` **不是同一条词条**：这一条说的是新通道
+               * （`modFolders.getState()`）拿不到。两条通道的失败原因不同，所以不合并。
+               */
+              <Notice kind="bad">{t('files.partOneStateError', { reason: mods.reason })}</Notice>
+            ) : (
+              /*
+               * ★★ 只有**一处**拿得到 `state` 与 `handlers`（`ready` 那一支）⇒ 动作接线
+               * 也只在这里造一次（`makeModPageAction`）。⚠️ `actionError` 是本页
+               * 唯一的动作失败面，它必须交给面板印出来（否则"接住了却不显示"）。
+               */
+              <ModDownloadPanel
+                state={mods.state}
+                onAction={makeModPageAction(mods.handlers)}
+                actionError={mods.actionError}
+              />
+            )}
+          </div>
+        </>
       )}
     </>
   );

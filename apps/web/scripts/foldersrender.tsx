@@ -48,27 +48,33 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh 32 组、en 33 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
+ * zh 35 组、en 36 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
  * ⚠️ 组号是**顺序**，不是历史编号：
  *   · ①–⑰ 是 Task 7 的第一部分；
  *   · ⑱–㉗ 是 Task 8 的第二部分 / 缺失清单 / 特性检测；
  *   · ㉘–㉚ 是 Task 8 **判修轮**（Critical 的 manual 行 / Ruling 64 的过期持久化值 /
  *     Ruling 65 的"没有读数"）；
  *   · ㉜（写在 ㉛ 前面）是收口波加的：**真实目录那 48 行真的渲染一遍**（spec §10）。
- *     ⇒ 计数：zh **32**、en **33**（见文件末尾那条探针）。
+ *   · ㉝–㉟ 是 A（mod 下载页重构）的 **T3**：新页面的骨架（tab / 按版本分组的折叠文件夹行 /
+ *     跨版本列表与接线守卫）。⚠️ 它们与 ⑱–㉚ 那十几组**并存一个提交周期**：T3 只换**页面**，
+ *     旧组件（`ModFoldersPanel` 等）与它们的断言留到 T6 那一轮一起删。
+ *     ⇒ 计数：zh **35**、en **36**（见文件末尾那条探针）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import { type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
+  groupFoldersByVersion,
   type MissingModView,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
   mirrorsForUrl,
   planCatalogRows,
+  planVersionPage,
   type TagOptionView,
 } from '@mcsr/shared/modFolders';
 import i18n from 'i18next';
@@ -76,6 +82,7 @@ import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
+import { AllFoldersView } from '@/components/AllFoldersView';
 import {
   ModCatalogScanning,
   ModCatalogSection,
@@ -86,8 +93,11 @@ import {
 } from '@/components/FileUpdatesPanel';
 import { ModCatalogTable, RAW_KEY_RE, rawKeysIn } from '@/components/FileUpdateTable';
 import { MissingModsList } from '@/components/MissingModsList';
+import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import { ModFoldersPanel } from '@/components/ModFoldersPanel';
-import { Files, ModFoldersParts } from '@/routes/Files';
+import { ToolsPanel } from '@/components/ToolsPanel';
+import { VersionFolderList } from '@/components/VersionFolderList';
+import { Files } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -381,7 +391,7 @@ function stateOf(rows: CatalogRowView[], extra: Partial<ModFoldersState> = {}): 
 }
 
 const noop = (): void => undefined;
-/** 六个动作的包装 —— **值不会被执行**（静态渲染一行事件处理器都不跑），只为把 props 填满。 */
+/** 这些动作的包装 —— **值不会被执行**（静态渲染一行事件处理器都不跑），只为把 props 填满。 */
 const HANDLERS: ModFoldersHandlers = {
   setCatalogGameVersion: async () => undefined,
   setTagFilter: async () => undefined,
@@ -389,6 +399,11 @@ const HANDLERS: ModFoldersHandlers = {
   unbindCatalogRow: async () => undefined,
   updateCatalogRow: async () => undefined,
   rescan: async () => undefined,
+  /*
+   * ★ Task 3（A 的第三片）：新增的第 15 条 —— 新页面那一行「打开文件夹」走它。
+   * ⚠️ 它**不是** `run()` 那一族（返回值不是状态），但这一格是夹具，形状对就行。
+   */
+  openFolder: async () => undefined,
 };
 
 /** 渲染整个第一部分（默认**桌面态**：有动作层）。 */
@@ -639,25 +654,6 @@ const missingHtmlOf = (
       React.createElement(MissingModsList, {
         state,
         handlers: props.handlers === undefined ? HANDLERS : props.handlers,
-      }),
-    ),
-  );
-
-/**
- * 渲染页面 ready 那一支的**三块**（`ModFoldersParts` 那个纯组件）。
- *
- * ⚠️★ 为什么必须是它而不是 `Files`：`Files` 的 ready 支路要等 `useModFolders()` 的
- *    IPC 回包，而静态渲染一行 effect 都不跑 ⇒ 直接渲染 `Files` 永远停在「正在扫描…」。
- *    这一层只吃 props，所以"三块真的拼在一起、而且第一块那句迁移提示就在同一份产物里"
- *    才断言得到（㉕）。
- */
-const partsHtmlOf = (state: ModFoldersState): string =>
-  keep(
-    html(
-      React.createElement(ModFoldersParts, {
-        state,
-        handlers: HANDLERS,
-        actionError: null,
       }),
     ),
   );
@@ -1776,6 +1772,14 @@ function shellStub(withModFolders: boolean) {
             bindCatalogRow: async () => ({}),
             unbindCatalogRow: async () => ({}),
             unbindFolder: async () => ({}),
+            /*
+             * ★ Task 3（A 的第三片）补的：T2 加了这条通道，而**这个桩没有类型**
+             *   （`shellStub` 是对象字面量，不经 `satisfies`）⇒ 少了它不会有任何门禁出声，
+             *   而那一格正是新页面「打开文件夹」走的路（T2 复审点名的那条交接）。
+             *   ⚠️ ㉝ 里有一条断言把**这个对象**与 `MOD_FOLDERS_CHANNELS` 逐条对账 ——
+             *   它才是"以后再加通道时不会又漏一格"的判据。
+             */
+            openFolder: async () => ({ ok: true }),
             rescan: async () => ({}),
             setFolderGameVersion: async () => ({}),
             setFolderAutoUpdate: async () => ({}),
@@ -2436,40 +2440,19 @@ ok(
 );
 
 // ---------------------------------------------------------------------------
-// ㉕ 特性检测 + 三块拼装 + 迁移提示（§6.8 / §13.1）
+// ㉕ 特性检测（§6.8 / §8 的最后一行）—— T3 之后**只剩**这一件事
 // ---------------------------------------------------------------------------
 /*
- * ⚠️★ 这一组是**唯一**能一次看到"三块同时在页面上"的地方（`Files` 的 ready 支路要等
- *    IPC 回包，静态渲染跑不到）⇒ 两件事都落在这一份产物上：
- *      ① 三块真的拼在一起（三个标题 + 第二块的文件夹 + 第三块那一行）；
- *      ② §13.1 那句迁移提示（`notices`，渲染点在第一块）与它们**同屏可见**
- *         —— 迁移"不许静默"，而"看得见"的判据只能是"它在这一页的产物里"。
- * ⚠️★ 特性检测那两刀（0.0.4 的壳与纯浏览器）真的渲染 `Files`：两种壳都该看到
- *    "需要桌面版 0.0.5"，而 **v1 那条路照常**（第一帧还是它自己的加载态）。
+ * ⚠️★ 2026-10-04（A 的 T3）改准：这一组原来还管"三块拼装 + 迁移提示同屏"
+ *    （`ModFoldersParts` 那个纯组件渲染三块）。T3 把 `/files` 换成 **tab 骨架**：
+ *    第一部分（目录行）与第三块（缺失清单）**不再挂在这一页上**（spec §9.12 / D1
+ *    "0.0.4 用户只能看到升级提示"）⇒ `ModFoldersParts` 随之下线，那两条判据
+ *    **搬去了 ㉞**（迁移提示的渲染点现在在 `ModDownloadPanel` 上；"面板里看得见
+ *    文件夹与提示"由那一组钉）。这一组只留**特性检测**：两种没有 `modFolders` 的壳。
+ * ⚠️★ 两种壳都真的渲染 `Files`：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
+ *    （连 `mcsr` 都没有）都该看到"需要桌面版 0.0.5"；而**只有**纯浏览器该看到
+ *    `browserOnly` 那一句（0.0.4 是桌面壳）。
  */
-const partsState = stateOf([ROW_GITHUB], {
-  folders: [FOLDER],
-  missing: [MISSING_1161],
-  missingStatus: 'ok',
-  notices: [NOTE],
-});
-const partsHtml = partsHtmlOf(partsState);
-for (const key of ['files.partOneTitle', 'files.partTwoTitle', 'files.partThreeTitle'] as const) {
-  assert.ok(
-    textOf(partsHtml).includes(textOf(resolved(key))),
-    `★ 三块要同时在页面上（这一块缺了：${key}）—— 顺序即 spec §6.8 的三块`,
-  );
-}
-assert.ok(
-  textOf(partsHtml).includes(textOf(NOTE)),
-  '★★ `notices`（迁移提示"已转为文件夹跟踪：…"）必须与第二、三块**在同一份产物里**：' +
-    '§13.1 要求它看得见，而它的渲染点在第一块 —— 三块分开渲染就证不出"同屏"',
-);
-assert.ok(
-  textOf(partsHtml).includes(textOf(FOLDER_PATH)) &&
-    textOf(partsHtml).includes(textOf(MISSING_1161.name)),
-  '★ 而且第二块那个文件夹与第三块那一行都真的在里面（不是只渲染了三个标题）',
-);
 /* —— 0.0.4 的壳：有 `mcsr`、没有 `modFolders` —— */
 Object.assign(globalThis, { mcsr: shellStub(false) });
 const oldShellHtml = keep(
@@ -2478,11 +2461,13 @@ const oldShellHtml = keep(
 delete (globalThis as { mcsr?: unknown }).mcsr;
 assert.ok(
   textOf(oldShellHtml).includes(textOf(resolved('files.partTwoUnavailable'))),
-  '★★ 特性检测：`window.mcsr?.modFolders` 不存在 ⇒ 第二部分显示"需要桌面版 0.0.5"（spec §6.8/§8）',
+  '★★ 特性检测：`window.mcsr?.modFolders` 不存在 ⇒ 显示"需要桌面版 0.0.5"（spec §6.8/§8）',
 );
-assert.ok(
+assert.equal(
   textOf(oldShellHtml).includes(textOf(resolved('common.loading'))),
-  '★★ 而**第一部分与 v1 照常**：0.0.4 的壳走的是 v1 那条路（第一帧是它自己的加载态，不是新通道那一屏）',
+  false,
+  '★★ 反面（T3 之后改准）：0.0.4 的壳上**不再**有 v1 的「加载中…」—— 这一页现在只画 ' +
+    '"需要桌面版 0.0.5"这一句（原来那句断言的是"v1 那条路照常"，而 v1 的面板在 T3 从页面上消失了）',
 );
 assert.equal(
   textOf(oldShellHtml).includes(textOf(resolved('files.catalogScanning'))),
@@ -2520,7 +2505,7 @@ assert.equal(
  *    ⇒ 顺手把那个未使用的 import 也删了（留着 biome 会红）。
  */
 ok(
-  '㉕ 三块同屏（含第一块里那句迁移提示）+ 特性检测：0.0.4 与纯浏览器都看到"需要桌面版 0.0.5"而 v1 那条路照常',
+  '㉕ 特性检测：0.0.4 与纯浏览器都看到"需要桌面版 0.0.5"（而 v1 的「加载中…」与第一部分都不再挂在这一页上）',
 );
 
 // ---------------------------------------------------------------------------
@@ -2869,16 +2854,24 @@ assert.match(
   '★★ 「下载到」的选项必须**同时**过滤"路径还在"与"版本对得上"（主进程那两条闸）' +
     '—— 去掉任一半，用户点下去就是一句必吃的红字',
 );
-// —— 守卫 6：页面那一支的三块顺序 + 特性检测那一支 ——
-assert.match(
-  filesCode,
-  /<ModCatalogSection[\s\S]{0,300}?<ModFoldersPanel[\s\S]{0,300}?<MissingModsList/,
-  '★★ 页面那一支必须是三块：第一部分 → 第二部分 → 底部（顺序即 spec §6.8 的三块）',
-);
+// —— 守卫 6：页面那一支的两条 tab 支路 + 特性检测那一支（T3 改准）——
+/*
+ * ⚠️★ 2026-10-04（A 的 T3）改准：这里原来断言的是"三块顺序（第一部分 → 第二部分 →
+ *    底部）"。T3 把页面换成 **tab 骨架** ⇒ 第一部分与底部**不在这一页上**了
+ *    （spec §9.12），那条守卫随之作废。取而代之的是**新的**那一支的形状：
+ *      ① mod 下载那一格渲染 `ModDownloadPanel`；工具下载那一格渲染 `ToolsPanel`；
+ *      ② 没有 `modFolders` 的那一支仍然只有 `ModFoldersUnavailable`（不许画 tab）。
+ *    ⚠️ "两个 tab 真的画出来了、而且默认选中哪一个"**不在这里**：那是产物能证的事
+ *    （㉝ 渲染整个页面外壳，断言两个标签都在 + `aria-selected` 的选中态）。
+ *    ⚠️ 而"点了另一颗换哪一块"没有产物能证（静态渲染不跑事件处理器）⇒ 这一组那两条
+ *    组件守卫就是它唯一的前提。
+ */
+assert.match(filesCode, /<ModDownloadPanel\b/, '★★ mod 下载那一格渲染 `ModDownloadPanel`');
+assert.match(filesCode, /<ToolsPanel\s*\/>/, '★★ 工具下载那一格渲染 `ToolsPanel`（占位卡）');
 assert.match(
   filesCode,
   /<ModFoldersUnavailable \/>/,
-  '★★ 特性检测那一支要渲染"需要桌面版 0.0.5"那一块（`modFolders` 不存在时的第二部分）',
+  '★★ 特性检测那一支要渲染"需要桌面版 0.0.5"那一块（`modFolders` 不存在时的那一格）',
 );
 assert.equal(
   filesCode.match(/<ModFoldersUnavailable \/>/g)?.length,
@@ -2886,7 +2879,7 @@ assert.equal(
   '★ 只许一处（那句提示挂在不存在的壳那一支上，不是常驻说明）',
 );
 ok(
-  '㉗ 接线守卫（设置与底部）：版本/自动更新/通道各一处、空串变 null、底部两颗下载各送自己的通道且 `manual` 行在渲染期分岔、选项两条过滤、三块顺序与特性检测那一支',
+  '㉗ 接线守卫（设置与底部）：版本/自动更新/通道各一处、空串变 null、底部两颗下载各送自己的通道且 `manual` 行在渲染期分岔、选项两条过滤、两条 tab 支路与特性检测那一支',
 );
 
 // ---------------------------------------------------------------------------
@@ -2969,6 +2962,295 @@ assert.deepEqual(
 );
 ok('㉜ 真实目录（content/mod-catalog.json）：1.16.1 的 48 行真的渲染出来了');
 
+// ===========================================================================
+// Task 3（A 的第三片）：页面骨架 —— tab / 顶部并排区 / 按版本分组的文件夹区
+// ===========================================================================
+/*
+ * ⚠️★ 与上面 ⑱–㉚ 的关系：这一批渲染的是**新页面**的四个组件
+ *    （`ModDownloadPanel` / `VersionFolderList` / `ToolsPanel` / `AllFoldersView`），
+ *    而 ⑱–㉚ 渲染的 `ModFoldersPanel`（旧第二部分）**同时还在**：T3 只把**页面**
+ *    从"三块"换成"tab 骨架"，旧组件与它那十几组断言一起留到 T6（那一轮删文件 + 删断言）。
+ *    ⇒ 两条路各自的判据并存一个提交周期，**不是**重复（各自的实现不同、删的时机不同）。
+ * ⚠️★ 「默认在 mod 下载」**不能**靠"某个字符串不在场"来证（那是恒真一类，§5.32①）：
+ *    这里真的渲染一次**页面外壳**（`Files` + `shellStub(true)`，照 ⑰ 的写法），
+ *    断言的是**选中态**（`data-tab="mods"` 那颗按钮带 `aria-selected="true"`）。
+ *    ⚠️★ tab 条住在**页面外壳**里，不在 `ModDownloadPanel` 里：计划里那条断言渲染的是面板
+ *    本身，而面板在静态渲染下**永远到不了**（它的 `state` 要等 `useModFolders()` 的回包）
+ *    ⇒ 只有外壳的 loading 支路画着 tab 条，"默认选中"才断言得到（报告里记着这处偏离）。
+ */
+
+/** 一次页面外壳渲染（装桩 → 渲染 `Files` → 立刻拆桩；与 ⑰ 逐字同一个写法）。 */
+function pageShellOf(withModFolders: boolean): string {
+  Object.assign(globalThis, { mcsr: shellStub(withModFolders) });
+  const markup = keep(
+    html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
+  );
+  delete (globalThis as { mcsr?: unknown }).mcsr;
+  return markup;
+}
+
+// ---------------------------------------------------------------------------
+// ㉝ tab 骨架：两个 tab、默认在「mod 下载」、工具下载是占位（spec §4 / §9.6）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 判据全部**渲染**出来（没有一条是"扫源码"）：tab 的选中态是 `aria-selected`，
+ *    而它只在产物里看得见。⚠️ 三条反面各管一种假通过：
+ *      · 只断言"mods 被选中" ⇒ "两个都选中"照样绿（下面第二条）；
+ *      · 只断言"没有 modFolders 时画了那句话" ⇒ "tab 也画出来了"照样绿（第四条）。
+ * ★ 能红的刀（跑过的读数在报告里）：① 把 `useState('mods')` 改成 `useState('tools')`
+ *   ⇒ 第一条红；② 把 tab 条画到"没有 `modFolders`"那一支上 ⇒ 第四条红。
+ */
+const modTabShellHtml = pageShellOf(true);
+const oldShellTabHtml = pageShellOf(false);
+assert.ok(
+  /data-tab="mods"[^>]*aria-selected="true"/.test(modTabShellHtml),
+  '★★ 默认选中的是「mod 下载」（真的渲染了一次页面外壳；桩是 `shellStub(true)`）',
+);
+assert.equal(
+  /data-tab="tools"[^>]*aria-selected="true"/.test(modTabShellHtml),
+  false,
+  '★★ 反面：同一份产物里「工具下载」**没有**被选中（两条一起才排除"两个都是 true"那一类假通过）',
+);
+assert.ok(
+  textOf(modTabShellHtml).includes(textOf(resolved('files.tabMods'))) &&
+    textOf(modTabShellHtml).includes(textOf(resolved('files.tabTools'))),
+  '★ 两个 tab 都在页面外壳上（判据是两条词条都**解析出了译文**，不是"含某个字符串"）',
+);
+assert.ok(
+  textOf(modTabShellHtml).includes(textOf(resolved('files.catalogScanning'))),
+  '★ 新通道那一支的第一帧仍然画在**mod 下载**这一格里（Ruling 42；⑰ 钉的是同一屏的文案）',
+);
+assert.equal(
+  oldShellTabHtml.includes('data-tab='),
+  false,
+  '★★ 反面（spec §9.12 / D1）：没有 `modFolders` 的壳上**一个 tab 都没有** —— ' +
+    '那一档只有"需要桌面版 0.0.5"那一句（无条件画 tab 会让"没有这个能力"看起来像"还没加载"）',
+);
+/*
+ * ★★ 夹具与契约逐条对账（T2 复审点名的那条交接）：`shellStub` 是**无类型**的对象字面量
+ *    ⇒ 契约加一条通道而桩忘了加时，没有任何门禁会出声，而那一格在页面上的覆盖是零。
+ */
+assert.deepEqual(
+  Object.keys(shellStub(true).modFolders ?? {}).sort(),
+  Object.keys(MOD_FOLDERS_CHANNELS).sort(),
+  '★★ 桌面壳桩必须逐条列出契约里的**全部**通道（`MOD_FOLDERS_CHANNELS` 是唯一真相）：' +
+    '少一条 ⇒ 那一格在夹具里等于"这个壳没有这个能力"，而那正是"按钮零覆盖"的形状',
+);
+const toolsPanelHtml = keep(html(React.createElement(ToolsPanel, null)));
+assert.ok(
+  textOf(toolsPanelHtml).includes(textOf(resolved('files.toolsComingSoon'))),
+  '★ 「工具下载」那一格是占位卡、而且写明"待更新"（绝不留空白：空白分不出"还没做"与"坏了"）',
+);
+ok(
+  '㉝ tab 骨架：两个 tab 都在、默认选中「mod 下载」、没有 modFolders 时一个 tab 都不画、工具下载写明"待更新"、桩与契约逐条对账',
+);
+
+// ---------------------------------------------------------------------------
+// ㉞ 按版本分组的文件夹区：折叠行 + 展开标识 + 打开文件夹（spec §9.7/§10/§12/§17）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 夹具用的是这份自检里**已有的** `folder()` / `stateOf()`（`f1` 这个 id 是这一组
+ *    自己写的，不是从产品里抄的常量）。
+ * ⚠️★「折叠态：没有 jar 行」这一半**今天咬不住**：T4 的 `data-jar` 还不存在
+ *    ⇒ `!includes('data-jar="')` 恒真（§5.32①）。它的牙齿由**另一半**补上：
+ *    "折叠时**展开体整块不渲染**"（`data-folder-body` 不在产物里），那一半有刀。
+ * ⚠️★ 三条与"内容"有关的空态都落在**展开体**里（spec §8：路径不存在"展开后说明"），
+ *    而折叠时它们一个都不画 —— 与"头行永远看得见的那一格"是徽章（`FolderStatusBadge`）。
+ */
+const skeletonState = stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })] });
+const skeletonHtml = keep(
+  html(React.createElement(ModDownloadPanel, { state: skeletonState, onAction: noop })),
+);
+assert.ok(
+  skeletonHtml.includes('data-folder-id="f1"'),
+  '★ 该版本的文件夹画出来了（`data-folder-id` 是这一行唯一的机器可读标识）',
+);
+assert.equal(
+  skeletonHtml.includes('data-jar="'),
+  false,
+  '★ 折叠态：一行 jar 都没有（⚠️ T4 之前这一条恒真 —— 它的牙齿是下面"展开体不渲染"那条）',
+);
+assert.match(
+  skeletonHtml,
+  /data-folder-id="f1"[\s\S]{0,400}?aria-expanded="false"/,
+  '★★ 折叠行带展开标识（spec §8 最后一行：▸/▾ + 文案 + `aria-expanded`）',
+);
+assert.match(
+  skeletonHtml,
+  /data-folder-id="f1"[\s\S]{0,800}?data-action="open-folder"/,
+  '★ 每个文件夹行都有「打开文件夹」（spec §9.13 的按钮就在这一行里）',
+);
+assert.equal(
+  textOf(skeletonHtml).includes(textOf(resolved('files.partOneTitle'))),
+  false,
+  '★★ 第一部分（目录行那一块）**不再出现在这一页上**（spec §9.12）',
+);
+assert.equal(
+  textOf(skeletonHtml).includes(textOf(resolved('files.bindLocal'))),
+  false,
+  '★★ 反面：v1 的「绑定本地文件」也不在。⚠️ 计划里那条断言写的是 `files.bindLocalFile`，' +
+    '而**没有这个键**（`t()` 对未知 key 原样返回 key ⇒ 那条断言恒真）；这里换成真的那个键 ' +
+    '`files.bindLocal` —— 而且用 `resolved()` 自钉（键名再写错一次会当场红）',
+);
+/*
+ * ★★ 折叠 / 展开两态：`VersionFolderList` 是**纯 props** 组件 ⇒ 两次渲染。
+ *    ⚠️ 这是"T4 加 jar 列表之前"折叠态"什么都没有"唯一证明得了的形状。
+ */
+const collapsedListHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: skeletonState,
+      page: planVersionPage(skeletonState, []),
+      expanded: [],
+      onToggle: noop,
+      onAction: noop,
+    }),
+  ),
+);
+const expandedListHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: skeletonState,
+      page: planVersionPage(skeletonState, ['f1']),
+      expanded: ['f1'],
+      onToggle: noop,
+      onAction: noop,
+    }),
+  ),
+);
+assert.equal(
+  collapsedListHtml.includes('data-folder-body'),
+  false,
+  '★★ 折叠时**展开体整块不渲染**（"折叠态没有 jar 行"今天唯一有牙齿的判据）',
+);
+assert.match(
+  expandedListHtml,
+  /data-folder-id="f1"[\s\S]{0,400}?aria-expanded="true"/,
+  '★★ 展开态：同一个标记变成 `true`（两条一起才排除"写死 false"—— spec §9.10 要求"值随展开变化"）',
+);
+assert.ok(
+  expandedListHtml.includes('data-folder-body="f1"'),
+  '★ 而展开时那一块真的在（T4 会把 jar 列表放进它里面）',
+);
+/* —— 空态（spec §8 第一行）：这个版本下一个文件夹都没绑 —— */
+const noFolderState = stateOf([ROW_GITHUB], { folders: [] });
+const noFolderPanelHtml = keep(
+  html(React.createElement(ModDownloadPanel, { state: noFolderState, onAction: noop })),
+);
+assert.ok(
+  textOf(noFolderPanelHtml).includes(textOf(resolved('files.folderNoneVersion'))),
+  '★ 空态：这个版本下没有文件夹要**说出来**（0 行 ⇒ 用户分不出"没有"与"没渲染"）',
+);
+assert.ok(
+  noFolderPanelHtml.includes('data-action="bind-folder"'),
+  '★ 而且它带来**唯一的绑定入口**（spec §8 / §9.17：A 只挪位置，不删能力）',
+);
+/* —— 迁移提示（§13.1）：原来的渲染点在第一部分，而第一部分不在这一页上了 —— */
+const noticePanelHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })], notices: [NOTE] }),
+      onAction: noop,
+    }),
+  ),
+);
+assert.ok(
+  textOf(noticePanelHtml).includes(textOf(NOTE)),
+  '★★ `notices`（迁移提示"已转为文件夹跟踪：…"）必须**看得见**（§13.1）—— ' +
+    '它原来的渲染点在第一部分，而第一部分在 T3 从页面上消失 ⇒ 渲染点跟着搬到了面板上',
+);
+ok(
+  '㉞ 按版本分组的文件夹区：折叠行（`aria-expanded` 随展开变化）+ 打开文件夹 + 空态与绑定入口 + 迁移提示；第一部分与 v1 的元素不再出现',
+);
+
+// ---------------------------------------------------------------------------
+// ㉟ 跨版本列表 + 动作失败的落点 + 三条接线守卫（spec §9.11 / §8）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 「显示全部已绑定的文件夹」那一栏是**跨版本**的：夹具刻意放两个版本，
+ *    而断言必须先证明两个都在（否则"含 f2"可能只是"只画了 f2"）。
+ * ⚠️★ 动作失败那一格是**渲染点**的判据（静态渲染不跑事件处理器 ⇒ 证不了 catch 真的跑过）：
+ *    把原话喂进 props，它必须出现在产物里。`openFolder` 对未知 id 会**抛**
+ *    （`mod-folders.ts:941` 的 `requireFolder`），而"渲染后又被解绑"真的会发生。
+ *    能红的刀：把那一格 `<Notice>` 删掉 ⇒ 红。
+ * ⚠️★ 后面三条是**接线守卫**（与 ⑯/㉖/㉗ 同一族）：产物里看不见事件处理器，
+ *    这里钉"那条线在、而且接的是这一行的那个 id"。
+ */
+const crossState = stateOf([], {
+  folders: [
+    folder({ folderId: 'f1', gameVersion: '1.16.1' }),
+    folder({ folderId: 'f2', gameVersion: '1.8.9' }),
+  ],
+});
+const crossHtml = keep(
+  html(
+    React.createElement(AllFoldersView, {
+      groups: groupFoldersByVersion(crossState),
+      onAction: noop,
+    }),
+  ),
+);
+assert.ok(
+  crossHtml.includes('data-folder-id="f1"') && crossHtml.includes('data-folder-id="f2"'),
+  '★ 对照：两个版本的文件夹都在这一栏里（下面那条"含 f2"因此不是空跑）',
+);
+assert.ok(
+  crossHtml.includes('data-folder-id="f2"'),
+  '★★ 「显示全部已绑定的文件夹」那一栏含**另一个版本**的文件夹（spec §9.11）',
+);
+assert.ok(
+  textOf(crossHtml).includes(textOf('1.8.9')),
+  '★★ 而且每个文件夹带**版本标签**（1.8.9 是另一个版本的读数：没有它这一栏分不出谁是谁）',
+);
+const failedPanelHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: skeletonState,
+      onAction: noop,
+      actionError: 'BOOM-1',
+    }),
+  ),
+);
+assert.ok(
+  textOf(failedPanelHtml).includes(textOf(resolved('files.actionFailed', { message: 'BOOM-1' }))),
+  '★★★ 一次动作失败的原话必须**看得见**（`ModDownloadPanel` 的那一格 `Notice`）—— ' +
+    '接住了却不显示，与"未处理的 rejection"对用户是同一件事（什么都没发生）',
+);
+const versionListCode = withoutComments(
+  readFileSync(new URL('../src/components/VersionFolderList.tsx', import.meta.url), 'utf8'),
+);
+const downloadPanelCode = withoutComments(
+  readFileSync(new URL('../src/components/ModDownloadPanel.tsx', import.meta.url), 'utf8'),
+);
+const fePanelCode = withoutComments(
+  readFileSync(new URL('../src/components/FileUpdatesPanel.tsx', import.meta.url), 'utf8'),
+);
+assert.match(
+  versionListCode,
+  /data-action="open-folder"[\s\S]{0,400}?onAction\(\{\s*kind:\s*'open-folder',\s*folderId:\s*block\.folder\.folderId,?\s*\}\)/,
+  '★★ 「打开文件夹」必须把**这一行那个** folderId 发出去（写死一个 id ⇒ 点 A 打开 B，而产物里看不出来）',
+);
+assert.match(
+  fePanelCode,
+  /openFolder:\s*async\s*\(folderId:\s*string\)[\s\S]{0,600}?catch\s*\(/,
+  '★★ `handlers.openFolder` 必须在**动作层**接住那个 reject：主进程对未知 id 是**抛**，' +
+    '而契约类型写的是返回 `{ok:false, reason}` ⇒ 少了这个 catch 就是一次未处理的 rejection ' +
+    '（接住之后走 `actionError`，上面那条渲染点把它印出来）',
+);
+assert.match(
+  downloadPanelCode,
+  /try\s*\{[\s\S]{0,300}?await onAction\(/,
+  '★★ `ModDownloadPanel` 的包装必须在 `try` 里 `await onAction(...)`：`onAction` 是**页面的接缝**，' +
+    '实现换成一个会 reject 的版本时，未处理的 rejection 要在这里被接住',
+);
+assert.ok(
+  textOf(expandedListHtml).includes(textOf('D:\\instances\\f1\\mods')),
+  '★ 行里印的是**状态里那个路径**（`folder.path`）—— 写死一个目录的话，绑第二个文件夹就露馅',
+);
+ok(
+  '㉟ 跨版本列表（含另一个版本的文件夹 + 版本标签）、动作失败的原话看得见、三条接线守卫（openFolder 的实参 / 动作层的 catch / 面板的 try-await）',
+);
+
 // ---------------------------------------------------------------------------
 // ㉛ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
@@ -2980,8 +3262,9 @@ if (LANG === 'en') {
    *    那一份（2026-10-03 的判修顺带修掉了"英文界面上标签名是中文"）。
    *    主进程写死的 `notices` / `skipped[].reason` 仍然是中文，而那是**已接受的代价**
    *    —— 这里**不开豁免口子**：开口子的扫描在**最该抓人的那一处**是瞎的。
-   * ⚠️ Task 8 的三块产物也在 `samples` 里（`foldersHtmlOf` / `missingHtmlOf` / `partsHtmlOf`
-   *    都走 `keep()`）⇒ 新加的那些词条（含判修轮的四条）一旦哪一条漏了 `en`，
+   * ⚠️ Task 8 的三块产物也在 `samples` 里（`foldersHtmlOf` / `missingHtmlOf`
+   *    都走 `keep()`；⚠️ T3 之后 `partsHtmlOf` 没了，新页面那几组自己 `keep()`）⇒
+   *    新加的那些词条（含判修轮的四条与 T3 的七条）一旦哪一条漏了 `en`，
    *    这一条会当场红（而不是让英文界面上冒出一串中文）。
    */
   const han = textOf(samples.join('')).match(/[\u4e00-\u9fff]+/g) ?? [];
@@ -2999,9 +3282,12 @@ if (LANG === 'en') {
  * ⚠️ en 比 zh 多 1：㉛ 那个零汉字扫描只在 en 那一遍跑，两个数差 1 是**正常的**，别抹平。
  * ⚠️ Task 8：18 → 28（en 19 → 29），加的正是 ⑱–㉗ 那十组；
  *    判修轮又加了 ㉘–㉚ 三组（Critical / Ruling 64 / Ruling 65）⇒ 28 → **31**、29 → **32**；
- *    收口波再加 ㉜ 一组（真实目录的 48 行真的渲染一遍）⇒ 31 → **32**、32 → **33**。
+ *    收口波再加 ㉜ 一组（真实目录的 48 行真的渲染一遍）⇒ 31 → **32**、32 → **33**；
+ *    A 的 T3 再加 ㉝–㉟ 三组（tab 骨架 / 版本分组的文件夹区 / 跨版本列表与接线）⇒ 32 → **35**、33 → **36**。
+ *    ⚠️ 同一轮里 ㉕ 从"三块拼装 + 特性检测"缩成"只有特性检测"（那一半搬进了 ㉞）——
+ *    **组数没变**（它仍然是一个 `ok()`），变的是它盖的范围。
  */
-const expectedGroups = LANG === 'en' ? 33 : 32;
+const expectedGroups = LANG === 'en' ? 36 : 35;
 assert.equal(
   pass,
   expectedGroups,
@@ -3011,13 +3297,18 @@ assert.equal(
 console.log('');
 console.log(`通过 ${pass} 项。`);
 console.log('');
-console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯㉖㉗ 的源码形状）：');
+console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函数与 ⑯㉖㉗㉟ 的源码形状）：');
 console.log('   没有点击、没有请求、没有真实浏览器、也没有主进程。');
 console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点一下真的走了哪条通道 / 真的弹了原生对话框 —— 静态渲染不跑事件处理器，');
-console.log('       ⑯㉖㉗ 只钉住"那条接线在、而且只有一条"；');
+console.log('       ⑯㉖㉗㉟ 只钉住"那条接线在、而且只有一条"；');
 console.log('     · `<details>` 展开收起本身，以及点 `<summary>` 里那颗按钮会不会顺带折叠');
 console.log('       —— 那是浏览器的默认动作，产物里只有结构（控件真的住在 <summary> 里）；');
+console.log('     · tab 那两颗按钮**点下去之后**换的是哪一块（T3 的 tab 条是页面外壳的 useState，');
+console.log('       静态渲染只画得到默认那一态；㉝ 证的是"默认选中"，换栏由 ㉗ 的形状守卫兜着）；');
+console.log(
+  '     · `openFolder` 那一次**真的**调用与它的 reject 被接住（㉟ 只钉"接线在"与"接住的那一格在"）；',
+);
 console.log('     · `useModFolders()` 的另外两条支路（订阅回包 / 失败）：⑰ 只证了**第一帧**；');
 console.log('     · 缺失清单的"那个文件夹还没有扫描读数"那条拒绝：它由 `missingStatus ===');
 console.log('       "ok"` 的**定义**挡在不可达那一侧（㉔ 断言另外三档不画清单）；');

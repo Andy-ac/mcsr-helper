@@ -262,8 +262,14 @@ export function UpdateAllConfirm({
   );
 }
 
-/** `Error` 之外的抛出物（IPC 那层理论上会给字符串）也要能变成一句人话。 */
-function reasonOf(error: unknown): string {
+/**
+ * `Error` 之外的抛出物（IPC 那层理论上会给字符串）也要能变成一句人话。
+ *
+ * ⚠️ 导出是给 A 的 T3 那两个新组件用的（`ModDownloadPanel` 的 `onAction` 包装要接住
+ * 页面接缝上漏过来的 reject）—— **一处实现**：两个地方各写一份
+ * `error instanceof Error ? …` 就是同一件事有两个说法，而失败时它们会不一样。
+ */
+export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -838,6 +844,15 @@ export interface ModFoldersHandlers {
   updateFolderAll: ModFoldersAction<'updateFolderAll'>;
   /** 底部缺失清单的「下载」（`gameVersion` 决定装哪一版）。 */
   downloadMissing: ModFoldersAction<'downloadMissing'>;
+  /* ---- A 的 T3：新页面那一行「打开文件夹」---- */
+  /**
+   * ★★ 打开那个文件夹（spec §9.13）。
+   *
+   * ⚠️★ 它是**唯一一条返回值不是 `ModFoldersState`** 的通道（主进程不改状态，
+   *    只回一次动作的结果）⇒ 它**不走 `run()`**，接 reject 的地方写在下面的实现里。
+   * ⚠️ 入参只有 id：路径由主进程从自己的状态里取（渲染进程影响不了"打开哪个目录"）。
+   */
+  openFolder: ModFoldersAction<'openFolder'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -881,13 +896,14 @@ export function reduceModFoldersLoad(
 }
 
 /**
- * `ModFoldersHandlers` 那十四个动作的包装（与 v1 的 `makeHandlers()` 同型）。
+ * `ModFoldersHandlers` 那十五个动作的包装（与 v1 的 `makeHandlers()` 同型）。
  *
  * ⚠️ 两件事**只有这一处实现**：把主进程返回的状态落到界面上；以及接住 `reject`。
  * ⚠️ 开跑之前先撤掉**上一次**的失败结论（它说的是上一次那个动作）。
- * ⚠️★ 条数是**现数的**（`ModFoldersHandlers` 的成员：第一部分 6 条 + Task 8 的 8 条）；
- *    加一条动作时这句话要一起改（与 `package.json` 里那句"十三个渲染门禁"同一条纪律：
- *    手抄的数字一定会过期，所以它旁边写着怎么现数）。
+ * ⚠️★ 条数是**现数的**（`ModFoldersHandlers` 的成员：第一部分 6 条 + Task 8 的 8 条 +
+ *    A 的 T3 加的那 1 条 `openFolder` = 15）；加一条动作时这句话要一起改
+ *    （与 `package.json` 里那句"十三个渲染门禁"同一条纪律：手抄的数字一定会过期，
+ *    所以它旁边写着怎么现数）。
  */
 function makeModFoldersHandlers(
   api: DesktopBridge['modFolders'],
@@ -931,6 +947,27 @@ function makeModFoldersHandlers(
       run(() => api.updateFolderAll(folderId, channel)),
     downloadMissing: (modid: string, gameVersion: string, folderId: string, channel: Channel) =>
       run(() => api.downloadMissing(modid, gameVersion, folderId, channel)),
+    /*
+     * ★★ A 的 T3：`openFolder` 是唯一一条**不改状态**的通道（返回值是"这一次的结果"）
+     *    ⇒ 它不能用上面那个 `run`（那个签名收的是 `() => Promise<ModFoldersState>`）。
+     * ⚠️★ 而它必须**在这里**接住 reject，两个来源都要接：
+     *   · **主进程对未知 id 是"抛"**（`apps/desktop/src/mod-folders.ts` 的 `requireFolder`：
+     *     `状态里没有这个文件夹：<id>`），而契约类型写的是返回 `{ ok: false, reason }`
+     *     —— 类型与实现对不上，**行为以实现在准**（T2 复审点名，要求保留"抛"）；
+     *   · `shell.openPath` 自己失败时走的是那条返回（"成功给空串、失败给一句文案"）。
+     * ⇒ 两条都落到 `fail(...)`（就是 `actionError`），由页面把它印出来。
+     *   ⚠️ "渲染之后那个文件夹又被解绑了"真的会发生（另一个窗口 / 上一次动作的推送）——
+     *   不接住它就是一次**未处理的 rejection**，而用户什么都看不到。
+     */
+    openFolder: async (folderId: string): Promise<void> => {
+      fail(null);
+      try {
+        const result = await api.openFolder(folderId);
+        if (!result.ok) fail(result.reason);
+      } catch (error) {
+        fail(reasonOf(error));
+      }
+    },
   };
 }
 
