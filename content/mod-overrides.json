@@ -21,7 +21,24 @@
     "mcsrranked": ["ranked"]
   },
   "upstream": {
-    "mcsrranked": { "provider": "modrinth", "project": "I9W1u5Ac" }
+    "mcsrranked": { "provider": "modrinth", "project": "I9W1u5Ac" },
+    "draftout": { "provider": "modrinth", "project": "wNlielYC" }
+  },
+  "modrinthLatest": {
+    "draftout": {
+      "project": "wNlielYC",
+      "reason": "2026-10-04 用户钉的判据：目录里 draftout **只保留一条 release = Modrinth 上最新那条**（mc.sr 快照里那条 1.16.0 / 26.1.1 因此被丢掉，不是两条并存），而 targetVersions 取**那一条 version 自己**的 game_versions。实测：项目级 game_versions 是跨版本并集「26.1.1」「26.3」，而最新那条 1.17.2 自己只声明「26.3」⇒ 必须是「26.3」——拿并集会把只支持 26.3 的包推荐给 26.1.1 的玩家。数据来自 content/upstream/modrinth-versions-wNlielYC.json（--refresh 抓的逐字节快照）。"
+    }
+  },
+  "manualMods": {
+    "boardraid": {
+      "name": "BoardRaid",
+      "homepage": "https://boardraid.cn/",
+      "description": "Same-seed advancement bingo for Minecraft 1.16.1. Race your opponent to the same board.",
+      "list": "extra",
+      "tags": [],
+      "reason": "2026-10-04 实测：mc.sr 两份上游清单都没有它（mods.json / extra.json 都没有 boardraid），Modrinth 也没有这个项目（GET /v2/project/boardraid = 404、搜索 total_hits = 0）⇒ 只能手工登记。⚠️ **一条 release 都没有**，这是有意的：站点只给 /version.json（version 0.4.9 / gameVersion 1.16.1 / Fabric / sha256 73e05e21… / size 3219802）与一个**通配**的下载路径 —— GET /downloads/boardraid-0.4.9.jar、/downloads/boardraid-9.9.9.jar、/downloads/nope.jar **全都回 200**（同一个 latest 内容）⇒ 没有稳定的产物地址，而一条 release 要 url + sha1 + sha512（那份清单只有 sha256）。编一条出来 = 把「落盘前必须对得上 sha512」那道闸门拆掉。要装它请走 homepage 那一页。"
+    }
   },
   "downloadRules": [
     {

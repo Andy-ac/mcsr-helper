@@ -9,6 +9,28 @@ import { parseModCatalog } from '@mcsr/shared/modCatalog';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
+/**
+ * Modrinth 那几份快照（`content/upstream/modrinth-versions-<project>.json`），键 = project。
+ *
+ * ⚠️ 它是 `buildCatalog` 的**第四样输入**（2026-10-04 加的），与那两份 mc.sr 快照平级：
+ *    少给它，凡是引用了 `overrides.modrinthLatest` 的 modid 都会让 `buildCatalog` **抛**
+ *    （那是故意的：缺快照 = 仓库坏了，不是"这个 mod 没有 release"）。
+ */
+function modrinthSnapshots(): Record<string, unknown> {
+  const overrides = JSON.parse(read('content/mod-overrides.json')) as {
+    modrinthLatest?: Record<string, { project: string }>;
+  };
+  const projects = [
+    ...new Set(Object.values(overrides.modrinthLatest ?? {}).map((entry) => entry.project)),
+  ].sort();
+  return Object.fromEntries(
+    projects.map((project) => [
+      project,
+      JSON.parse(read(`content/upstream/modrinth-versions-${project}.json`)),
+    ]),
+  );
+}
+
 describe('生成的目录（提交进仓库的那份字节）', () => {
   it('通过严格校验', () => {
     const result = parseModCatalog(JSON.parse(read('content/mod-catalog.json')));
@@ -27,7 +49,7 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
       releases: { modid: string; targetVersions: string[] }[];
       source: { schemaVersion: number };
     };
-    assert.equal(catalog.mods.length, 70);
+    assert.equal(catalog.mods.length, 71);
     assert.equal(catalog.releases.length, 555);
     assert.equal(catalog.source.schemaVersion, 7);
 
@@ -101,12 +123,115 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
     );
   });
 
-  it('★ mcsrranked 有 upstream 且指向 Modrinth（它是唯一一个已知 mc.sr 数据滞后的）', () => {
+  it('★ 两条 upstream 都指向 Modrinth（mc.sr 数据滞后的那两个）；别的 mod 一律 null', () => {
+    /*
+     * ⚠️ 这一条原来写的是"mcsrranked 是**唯一一个**已知 mc.sr 数据滞后的"。
+     *    2026-10-04 加了第二条（`draftout`：mc.sr 停在 1.16.0 / 26.1.1，Modrinth 已经到 1.17.2 / 26.3），
+     *    ⇒ 断言跟着改成"**恰好这两条**"（而不是只钉一条、把"唯一"留在标题里当一句假话）。
+     */
     const catalog = JSON.parse(read('content/mod-catalog.json')) as {
       mods: { modid: string; upstream: unknown }[];
     };
+    const withUpstream = catalog.mods
+      .filter((mod) => mod.upstream !== null)
+      .map((mod) => mod.modid)
+      .sort();
+    assert.deepEqual(withUpstream, ['draftout', 'mcsrranked']);
     const ranked = catalog.mods.find((m) => m.modid === 'mcsrranked');
     assert.deepEqual(ranked?.upstream, { provider: 'modrinth', project: 'I9W1u5Ac' });
+    const draftout = catalog.mods.find((m) => m.modid === 'draftout');
+    assert.deepEqual(draftout?.upstream, { provider: 'modrinth', project: 'wNlielYC' });
+  });
+
+  it('★ 手工登记的那一条：boardraid 在 mods[] 里、homepage 指官网、而且**一条 release 都没有**', () => {
+    /*
+     * ★ 这条钉的是"上游不收的 mod 也能被认得"这件事，以及它**有意**的另一半：
+     *    没有 release（站点没有稳定产物地址 ⇒ 不能编一个 sha1/sha512 出来）。
+     *    为什么"零 release"值得一条断言：`planFolderView` 判"清单外"只看 `mods[]`
+     *    （不看有没有 release），而这条记录的**全部价值**就是让 boardraid 的 jar
+     *    不再掉进"认不出"那一栏 —— 那一半要是没了，这条记录就白加了。
+     */
+    const catalog = JSON.parse(read('content/mod-catalog.json')) as {
+      mods: { modid: string; homepage?: string; description?: string; tags: string[] }[];
+      releases: { modid: string }[];
+    };
+    const mod = catalog.mods.find((m) => m.modid === 'boardraid');
+    assert.ok(mod, 'boardraid 必须在 mods[] 里（否则它的 jar 仍然是"清单外"）');
+    assert.equal(mod.homepage, 'https://boardraid.cn/');
+    assert.equal(
+      mod.description,
+      'Same-seed advancement bingo for Minecraft 1.16.1. Race your opponent to the same board.',
+    );
+    assert.deepEqual(mod.tags, ['extra']);
+    assert.equal(
+      catalog.releases.some((r) => r.modid === 'boardraid'),
+      false,
+      'boardraid 不许有 release（没有稳定产物地址 ⇒ 不许编）',
+    );
+  });
+
+  it('★★ draftout：目录里**只有一条** release，且 targetVersions = 那一条自己的 game_versions', () => {
+    /*
+     * ★★ 这是 2026-10-04 用户钉的判据（`overrides.modrinthLatest`），三条都在这一条里：
+     *    ① 只有一条（最新那条）—— mc.sr 快照给的那条 `1.16.0` 必须**没了**；
+     *    ② `targetVersions` = **最新那条 version 自己**的 `game_versions`（这里是 `["26.3"]`），
+     *       **不是**项目级那个跨版本并集（实测并集是 `["26.1.1","26.3"]`）；
+     *    ③ 数据来源是 Modrinth 的版本列表快照本身（下面现算并集来对照）。
+     *
+     * ⚠️★ 这一条**能红在哪**（改这几判据之前先看清楚）：
+     *    · 把 `latest.gameVersions` 换成"跨所有 version 的并集" ⇒ 第 4、5 个断言红；
+     *    · 把"丢掉上游那一条"去掉（两条并存）⇒ 第 1 个断言红；
+     *    · 把"按 date_published 取最大"换成"取第一条" ⇒ 换了上游排序就会红
+     *      （下面那条"不许依赖返回顺序"就是给它准备的刀）。
+     */
+    const catalog = JSON.parse(read('content/mod-catalog.json')) as {
+      releases: {
+        modid: string;
+        version: string;
+        url: string;
+        sha512: string;
+        targetVersions: string[];
+      }[];
+    };
+    const mine = catalog.releases.filter((release) => release.modid === 'draftout');
+    assert.equal(mine.length, 1, '判据①：只应有一条（最新那条）');
+    const only = mine[0]!;
+    assert.equal(only.version, '1.17.2');
+    assert.deepEqual(only.targetVersions, ['26.3'], '判据②：最新那条 version 自己的 game_versions');
+
+    // 现算"项目级并集"当对照组（它必须**不等于**上面那个读数，否则这条判据什么都没测）。
+    const snapshot = JSON.parse(read('content/upstream/modrinth-versions-wNlielYC.json')) as {
+      version_number: string;
+      game_versions: string[];
+      date_published: string;
+    }[];
+    const union = [...new Set(snapshot.flatMap((v) => v.game_versions))].sort();
+    assert.deepEqual(union, ['26.1.1', '26.3'], '并集就是项目级那个字段（跨版本）');
+    assert.notDeepEqual(only.targetVersions, union, '并集是用户明确不接受的答案');
+
+    // 而"最新那条"是快照里按 date_published 最大的那一条（不是第一条、也不是最后一条）。
+    const latest = [...snapshot]
+      .sort((a, b) =>
+        a.date_published < b.date_published ? -1 : a.date_published > b.date_published ? 1 : 0,
+      )
+      .at(-1)!;
+    assert.equal(latest.version_number, '1.17.2');
+    assert.deepEqual(only.targetVersions, [...latest.game_versions].sort());
+
+    // 产物必须指向 Modrinth 上那一条自己的主文件（字节与 sha512 逐字钉住）。
+    assert.equal(
+      only.url,
+      'https://cdn.modrinth.com/data/wNlielYC/versions/keCFw7dS/draftout-1.17.2.jar',
+    );
+    assert.equal(
+      only.sha512,
+      'dbbfeaca3bf2e0acea94305e4534266632b08e354fe707853b84cbe2f393993891d89a0e54363c3944746cccefdcbfaef7b7f2ffe1ceffa8e334546216e369f8',
+    );
+    assert.equal(
+      catalog.releases.some((r) => r.modid === 'draftout' && r.version === '1.16.0'),
+      false,
+      'mc.sr 快照那条 1.16.0 必须被丢掉（判据①：不是两条并存）',
+    );
   });
 
   it('★ 生成的字节可复现：同样的输入 ⇒ 逐字节相同（这条是 --check 的地基）', async () => {
@@ -119,6 +244,7 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
       extraRaw: JSON.parse(read('content/upstream/extra.json')),
       overrides: JSON.parse(read('content/mod-overrides.json')),
       sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: modrinthSnapshots(),
     };
     const once = catalogBytes(buildCatalog(input));
     const twice = catalogBytes(buildCatalog(input));
@@ -145,6 +271,7 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
       extraRaw: JSON.parse(read('content/upstream/extra.json')),
       overrides,
       sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: modrinthSnapshots(),
     };
     const changed = {
       ...base,
@@ -196,6 +323,7 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
         extraRaw: JSON.parse(extra),
         overrides: JSON.parse(read('content/mod-overrides.json')),
         sha256: { mods: sha256(mods), extra: sha256(extra) },
+        modrinthVersionsRaw: modrinthSnapshots(),
       }),
     );
 
@@ -219,6 +347,131 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
 });
 
 /*
+ * Modrinth 那一支的**合成输入**（不依赖那份已提交产物的读数）：
+ * 手法与上面的 `brokenSnapshot` 同一套 —— 拿真快照当基线，只动一个变量。
+ */
+function modrinthInput(mutate: (versions: Record<string, unknown>[]) => void): {
+  input: {
+    modsRaw: unknown;
+    extraRaw: unknown;
+    overrides: unknown;
+    sha256: { mods: string; extra: string };
+    modrinthVersionsRaw: Record<string, unknown>;
+  };
+} {
+  const versions = JSON.parse(read('content/upstream/modrinth-versions-wNlielYC.json')) as Record<
+    string,
+    unknown
+  >[];
+  mutate(versions);
+  return {
+    input: {
+      modsRaw: JSON.parse(read('content/upstream/mods.json')),
+      extraRaw: JSON.parse(read('content/upstream/extra.json')),
+      overrides: JSON.parse(read('content/mod-overrides.json')),
+      sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: { wNlielYC: versions },
+    },
+  };
+}
+
+describe('Modrinth 那一支（只取最新一条 / targetVersions 取那一条自己的）', () => {
+  const draftoutOf = (catalog: unknown): { version: string; targetVersions: string[] }[] =>
+    (
+      catalog as { releases: { modid: string; version: string; targetVersions: string[] }[] }
+    ).releases.filter((release) => release.modid === 'draftout');
+
+  it('★ 不许依赖返回顺序：把版本列表**倒序** ⇒ 产物逐字节不变', async () => {
+    /*
+     * 上游换一下排序不该改变产物（`--check` 的地基）。这条同时也是一条**刀**：
+     * 把"按 date_published 取最大"改成"取第一条" ⇒ 倒序之后选中的就是**最旧**那条 ⇒ 红。
+     */
+    const { buildCatalog, catalogBytes } = (await import('./modCatalogBuild')) as {
+      buildCatalog: (input: unknown) => unknown;
+      catalogBytes: (catalog: unknown) => string;
+    };
+    const forward = modrinthInput(() => undefined);
+    const backward = modrinthInput((versions) => versions.reverse());
+    const a = catalogBytes(buildCatalog(forward.input));
+    const b = catalogBytes(buildCatalog(backward.input));
+    assert.equal(a, b);
+    // 阳性对照：倒序那一趟真的把列表动过了（否则上面那句"相等"什么都没测）。
+    const reversed = (
+      backward.input.modrinthVersionsRaw as { wNlielYC: { version_number: string }[] }
+    ).wNlielYC;
+    assert.notEqual(reversed[0]!.version_number, '1.17.2');
+  });
+
+  it('★★ 判据②按**构建结果**判（不是按已提交产物判）：并集在这里就红', async () => {
+    /*
+     * ⚠️★ 为什么这条必须存在（§5.32 的第 ④ 类）：上面那条 draftout 断言读的是**已提交的产物**，
+     *    把生成器改成"用并集"它**照样绿**（产物没动）—— 只有"重新生成 == 提交的那份"那条会红。
+     *    于是"用并集"这个错误做法要在**两步之后**才被抓住（改代码 → 重新生成）。
+     *    这一条把判据钉在**构建结果**上：拿真快照喂进去、当场看 `targetVersions` 是什么。
+     *    ⇒ 把生成器改成并集 ⇒ **本条直接红**（这就是用户要的那把刀）。
+     */
+    const { buildCatalog } = (await import('./modCatalogBuild')) as {
+      buildCatalog: (input: unknown) => unknown;
+    };
+    const { input } = modrinthInput(() => undefined);
+    const only = draftoutOf(buildCatalog(input))[0]!;
+    assert.equal(only.version, '1.17.2');
+    assert.deepEqual(only.targetVersions, ['26.3']);
+
+    const versions = (input.modrinthVersionsRaw as { wNlielYC: { game_versions: string[] }[] })
+      .wNlielYC;
+    const union = [...new Set(versions.flatMap((v) => v.game_versions))].sort();
+    assert.deepEqual(union, ['26.1.1', '26.3'], '并集 = 项目级那个跨版本字段');
+    assert.notDeepEqual(only.targetVersions, union, '并集是用户明确不接受的答案');
+  });
+
+  it('★ 判据③：快照里**一条版本都没有** ⇒ 这个 mod 一条 release 都不产出（也绝不退回并集）', async () => {
+    const { buildCatalog } = (await import('./modCatalogBuild')) as {
+      buildCatalog: (input: unknown) => unknown;
+    };
+    const { input } = modrinthInput((versions) => versions.splice(0, versions.length));
+    const catalog = buildCatalog(input);
+    assert.deepEqual(draftoutOf(catalog), []);
+  });
+
+  it('★ 缺快照（project 不在输入里）⇒ 抛，且消息里有 project 与 manualMods 之外的出路', async () => {
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const { input } = modrinthInput(() => undefined);
+    const broken = { ...input, modrinthVersionsRaw: {} };
+    assert.throws(
+      () => buildCatalog(broken),
+      (error: unknown) =>
+        error instanceof ModCatalogBuildError && error.message.includes('modrinth[wNlielYC]'),
+    );
+  });
+
+  it('★ `modrinthLatest` 指了一个不在 `mods[]` 里的 modid ⇒ 抛（不许产出一条没有归属的 release）', async () => {
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const { input } = modrinthInput(() => undefined);
+    const overrides = JSON.parse(read('content/mod-overrides.json')) as Record<string, unknown>;
+    assert.throws(
+      () =>
+        buildCatalog({
+          ...input,
+          overrides: {
+            ...overrides,
+            modrinthLatest: {
+              ...(overrides.modrinthLatest as Record<string, unknown>),
+              'no-such-mod': {
+                project: 'wNlielYC',
+                reason: '故意指向一个不存在的 modid（测试用）',
+              },
+            },
+          },
+        }),
+      (error: unknown) =>
+        error instanceof ModCatalogBuildError &&
+        error.message.includes('overrides.modrinthLatest.no-such-mod'),
+    );
+  });
+});
+
+/*
  * ★ 模块头部那句"上游字段**不许**顺手兼容"的**自动化证据**（评审 Important 1）。
  *
  * 手法统一：拿**真快照**当基线，只把第一条 release 的某一个字段改坏（删掉 / 换成错类型），
@@ -236,6 +489,7 @@ function brokenSnapshot(mutate: (release: Record<string, unknown>) => void): {
     extraRaw: unknown;
     overrides: unknown;
     sha256: { mods: string; extra: string };
+    modrinthVersionsRaw: Record<string, unknown>;
   };
   path: string;
 } {
@@ -250,6 +504,7 @@ function brokenSnapshot(mutate: (release: Record<string, unknown>) => void): {
       extraRaw: JSON.parse(read('content/upstream/extra.json')),
       overrides: JSON.parse(read('content/mod-overrides.json')),
       sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: modrinthSnapshots(),
     },
     // 与 `modCatalogBuild.ts` 里 `at` 的拼法逐字一致（这条断言同时钉住"路径指名道姓"的格式）。
     path: `mods.json.mods[${first.modid}].versions[0]`,
@@ -302,5 +557,40 @@ describe('构建器的错误路径（上游改形状时必须看得见，不许�
       delete release.obsolete;
     });
     assert.doesNotThrow(() => buildCatalog(input));
+  });
+
+  it('★ 手工登记的 modid 与上游撞车 ⇒ 抛，并点名是人工配置那一层', async () => {
+    /*
+     * 为什么值得一条：撞车**本来**也会在产物那一层被抓住（`parseModCatalog` 的
+     * "mods[].modid 重复"），但那句话说不清"谁和谁撞了、该去改哪一边"，
+     * 而且它要到 `catalog:check` / 测试跑起来才出现。这里当场抛、带上
+     * `overrides.manualMods.<modid>` 这个路径（与上面几条同一种话术）。
+     */
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const overrides = JSON.parse(read('content/mod-overrides.json')) as Record<string, unknown>;
+    const input = {
+      modsRaw: JSON.parse(read('content/upstream/mods.json')),
+      extraRaw: JSON.parse(read('content/upstream/extra.json')),
+      overrides: {
+        ...overrides,
+        manualMods: {
+          mcsrranked: {
+            name: '撞车的那一条',
+            homepage: 'https://example.invalid/',
+            list: 'extra',
+            tags: [],
+            reason: '故意与上游撞车（测试用）',
+          },
+        },
+      },
+      sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: modrinthSnapshots(),
+    };
+    assert.throws(
+      () => buildCatalog(input),
+      (error: unknown) =>
+        error instanceof ModCatalogBuildError &&
+        error.message.includes('overrides.manualMods.mcsrranked'),
+    );
   });
 });

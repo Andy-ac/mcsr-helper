@@ -9,6 +9,11 @@
  *   node --import tsx scripts/build-mod-catalog.mjs --stats     # 打印 spec §3.1 那张表的读数
  *   （`--refresh` / `--stats` 可与其他模式组合；`--write` 与 `--check` **互斥**。）
  *
+ * ⚠️★ `--refresh` 抓的是**三样**上游，落在 `content/upstream/` 下：
+ *   `mods.json` / `extra.json`（mc.sr 那两份，见 SOURCES）与
+ *   `modrinth-versions-<project>.json`（Modrinth 的版本列表，project 清单来自
+ *   `content/mod-overrides.json` 的 `modrinthLatest` —— 见 MODRINTH_API 上面那段）。
+ *
  * 退出码：0 = 通过；1 = 不一致（真的漂了）；2 = 这条检查**自己没跑成**（读不懂输入、参数不对）——
  *         与 `deploy/verify-file-catalog.sh` 同一套话术：**别把"没跑"读成"通过"**。
  *
@@ -39,6 +44,19 @@ const SOURCES = {
   mods: 'https://meta.mc.sr/schema-7/mods.json',
   extra: 'https://meta.mc.sr/schema-7/extra.json',
 };
+
+/*
+ * ★★ 第三样上游：**Modrinth 的版本列表**（2026-10-04 用户钉的判据）。
+ *
+ * 抓哪些 project：`content/mod-overrides.json` 的 `modrinthLatest`（键是 modid、
+ * 值是 `{ project, reason }`）—— 也就是"这个 mod 的 release 只取 Modrinth 最新那一条"。
+ * 存哪儿：`content/upstream/modrinth-versions-<project>.json`，**逐字节**保存响应体
+ * （与那两份 mc.sr 快照同一条纪律：`git diff content/upstream/` 要能直接看出上游改了什么）。
+ * 抓不到就**失败退出**（不是"跳过这一条"）：快照宁可保持上一次成功的读数，
+ * 也不该让"这次没抓到"变成"目录里那条 release 悄悄没了"。
+ */
+const MODRINTH_API = 'https://api.modrinth.com/v2/project';
+const MODRINTH_UA = 'mcsr-helper-catalog-refresh/1.0 (+https://mcsrhelper.com)';
 
 const MODES = ['--refresh', '--write', '--check', '--stats'];
 
@@ -74,7 +92,10 @@ function writeSnapshots(texts) {
   mkdirSync(SNAPSHOT, { recursive: true });
   // ⚠️ **逐字节**保存响应体：这样"上游改了什么"能直接 git diff 看出来，
   //    而不是被我们重新格式化之后混在一起。
-  for (const [name, body] of Object.entries(texts)) {
+  // ⚠️ 只写 `SOURCES` 里那几个键：`texts` 现在还有一个 `modrinth`（它是按 project 分的另一组），
+  //    照 `Object.entries(texts)` 写会多出一个 `modrinth.json`（内容是对象，不是响应体）。
+  for (const name of Object.keys(SOURCES)) {
+    const body = texts[name];
     writeFileSync(join(SNAPSHOT, `${name}.json`), body);
     console.log(
       `  快照 ${name}.json 已更新（${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…）`,
@@ -88,6 +109,48 @@ function readSnapshot(name) {
   return readFileSync(file, 'utf8');
 }
 
+/** Modrinth 那些 project —— 来自人工配置（`modrinthLatest`），排序后返回（同一份输入同一份顺序）。 */
+function modrinthProjects() {
+  if (!existsSync(OVERRIDES)) fail(`人工配置不在：${OVERRIDES}`);
+  const overrides = JSON.parse(readFileSync(OVERRIDES, 'utf8'));
+  const projects = Object.values(overrides.modrinthLatest ?? {}).map((entry) => entry.project);
+  return [...new Set(projects)].sort();
+}
+
+const modrinthSnapshotName = (project) => `modrinth-versions-${project}.json`;
+
+/** 每个 project 抓一次 `/version`（**只读进内存**，落盘在 build 成功之后 —— 见上面 M1 那段）。 */
+async function fetchModrinth(projects) {
+  const texts = {};
+  for (const project of projects) {
+    const url = `${MODRINTH_API}/${encodeURIComponent(project)}/version`;
+    const res = await fetch(url, { headers: { 'user-agent': MODRINTH_UA } });
+    if (!res.ok) fail(`抓 ${url} 失败：HTTP ${res.status}`, 1);
+    const body = await res.text();
+    texts[project] = body;
+    console.log(
+      `  抓到 modrinth ${project}  ${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…`,
+    );
+  }
+  return texts;
+}
+
+function writeModrinthSnapshots(texts) {
+  mkdirSync(SNAPSHOT, { recursive: true });
+  for (const [project, body] of Object.entries(texts)) {
+    writeFileSync(join(SNAPSHOT, modrinthSnapshotName(project)), body);
+    console.log(
+      `  快照 ${modrinthSnapshotName(project)} 已更新（${body.length} 字节  sha256=${sha256(body).slice(0, 16)}…）`,
+    );
+  }
+}
+
+function readModrinthSnapshot(project) {
+  const file = join(SNAPSHOT, modrinthSnapshotName(project));
+  if (!existsSync(file)) fail(`快照不在：${file}（先跑 --refresh）`);
+  return readFileSync(file, 'utf8');
+}
+
 function build(texts) {
   if (!existsSync(OVERRIDES)) fail(`人工配置不在：${OVERRIDES}`);
   const catalog = buildCatalog({
@@ -95,6 +158,9 @@ function build(texts) {
     extraRaw: JSON.parse(texts.extra),
     overrides: JSON.parse(readFileSync(OVERRIDES, 'utf8')),
     sha256: { mods: sha256(texts.mods), extra: sha256(texts.extra) },
+    modrinthVersionsRaw: Object.fromEntries(
+      Object.entries(texts.modrinth).map(([project, body]) => [project, JSON.parse(body)]),
+    ),
   });
   return catalogBytes(catalog);
 }
@@ -136,11 +202,23 @@ if (want('--write') && want('--check')) {
 }
 
 try {
-  const fetched = want('--refresh') ? await fetchSources() : null;
-  const texts = fetched ?? { mods: readSnapshot('mods'), extra: readSnapshot('extra') };
+  const projects = modrinthProjects();
+  const fetched = want('--refresh')
+    ? { ...(await fetchSources()), modrinth: await fetchModrinth(projects) }
+    : null;
+  const texts =
+    fetched ??
+    {
+      mods: readSnapshot('mods'),
+      extra: readSnapshot('extra'),
+      modrinth: Object.fromEntries(projects.map((p) => [p, readModrinthSnapshot(p)])),
+    };
   // ★ 先把字节算出来（build 会抛就什么都不写），**成功了才落盘快照** —— 见 fetchSources 上面那段。
   const bytes = build(texts);
-  if (fetched !== null) writeSnapshots(fetched);
+  if (fetched !== null) {
+    writeSnapshots(fetched);
+    writeModrinthSnapshots(fetched.modrinth);
+  }
   if (want('--stats')) stats(bytes);
 
   if (want('--write')) {

@@ -127,6 +127,20 @@
       "homepage": "https://github.com/RedLime/BiomeThreadLocalFix"
     },
     {
+      "modid": "boardraid",
+      "name": "BoardRaid",
+      "list": "extra",
+      "tags": [
+        "extra"
+      ],
+      "traits": [],
+      "obsolete": false,
+      "incompatibilities": [],
+      "upstream": null,
+      "homepage": "https://boardraid.cn/",
+      "description": "Same-seed advancement bingo for Minecraft 1.16.1. Race your opponent to the same board."
+    },
+    {
       "modid": "boundlesswindow",
       "name": "BoundlessWindow",
       "list": "legal",
@@ -248,7 +262,10 @@
       "traits": [],
       "obsolete": false,
       "incompatibilities": [],
-      "upstream": null,
+      "upstream": {
+        "provider": "modrinth",
+        "project": "wNlielYC"
+      },
       "description": "Draftout - local 1v1 lockout bingo with over 250 goals",
       "homepage": "https://draftoutmc.com"
     },
@@ -2543,19 +2560,17 @@
     },
     {
       "modid": "draftout",
-      "version": "1.16.0",
-      "url": "https://cdn.modrinth.com/data/wNlielYC/versions/7dQG329C/draftout-1.16.0.jar",
-      "sha1": "3b88d5d9cab5a8c32f5e06d99c1b36f14759dacd",
-      "sha512": "e0df7682edb67a0f4b7d0184f10ca7130e23e158650077e759f585a14dc47c2055c4c2fdae33e0c3f503eafefbb66bae923ea3e7059d79c70c2cb423d0a9e70b",
-      "size": 6856532,
+      "version": "1.17.2",
+      "url": "https://cdn.modrinth.com/data/wNlielYC/versions/keCFw7dS/draftout-1.17.2.jar",
+      "sha1": "98f58a55a63595a8a745ba8de622d0538095bb5a",
+      "sha512": "dbbfeaca3bf2e0acea94305e4534266632b08e354fe707853b84cbe2f393993891d89a0e54363c3944746cccefdcbfaef7b7f2ffe1ceffa8e334546216e369f8",
+      "size": 7017588,
       "targetVersions": [
-        "26.1.1"
+        "26.3"
       ],
       "dependencies": [],
       "obsolete": false,
-      "intermediary": [
-        "net.fabricmc:intermediary"
-      ],
+      "intermediary": [],
       "download": "auto"
     },
     {
