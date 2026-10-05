@@ -1717,6 +1717,82 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
     console.log(`  读过的 jar：a-1.0.jar=${readJarMeta(jarOld).id} a-2.0.jar=${readJarMeta(jarNew).id}`);
   });
 
+  // =========================================================================
+  /*
+   * ★★ G2（最终修复波 / spec D3）：「在版本 X 下点「添加文件夹」⇒ 选完目录后把该文件夹的
+   *    版本**预置**为 X（仍可改）」。
+   *
+   * ⚠️★ 这条通道修之前**一个入参都没有**（`bindFolder()`），版本只能由主进程推断
+   *    （`.minecraft` / `mmc-pack.json`）⇒ 推不出来的路径拿到的是 `null`（每一行都是
+   *    `unknown-version`，一颗更新按钮都没有）—— 于是"在 1.16.1 下面添加、却归到版本未知
+   *    那一组"。页面那一侧同一件事也有读数：`foldersrender.tsx` ㊴ 有四条源码形状守卫
+   *    （动作成员 / `Files.tsx` 的接线 / 动作层的转发 / 那一格的来源）。
+   *
+   * ⚠️★ 四条判据一起才关得住（每一条都能单独被一个坏实现骗过去）：
+   *    · 带版本绑 ⇒ **状态里**那一格就是它；
+   *    · 盘上也是它（不是"内存里看着对、写盘时丢了"）；
+   *    · 仍可改（`setFolderGameVersion` 能把它改掉 / 交回自动推断）—— spec D3 的"仍可改"；
+   *    · ★ **对照**：不带版本绑（老调用点 / 探针的 `bindAt`）⇒ 同一个推断不出来的路径
+   *      仍然是 `null`。少了这一条，"永远预置成某个常量"这种坏法过得了前三条。
+   * ⚠️ 这一节跑在**相位末尾**（⑩ 之后）：那时 `catalogGameVersionChosen` 已经是 `true`
+   *    （⑧ 里探针自己调过 `setCatalogGameVersion`）⇒ `bindFolder` 里那次
+   *    `adoptFolderGameVersion()` **不会**因为预置的 1.8.9 而改 `prefs`，
+   *    前面每一条判据读到的 `gameVersion` 因此不受影响。
+   * ★ 刀（读数在报告里）：把 `bindFolder` 里 `gameVersion: preset` 改回 `gameVersion: null`
+   *    ⇒ 第 1、2 条红（第 3、4 条照旧绿 —— 它们测的是别的两件事）。
+   * ★ 另一把（读数在报告里）：把 `presetFolderVersion` 的 `undefined`/`null` 那一支也
+   *    收成一个默认版本 ⇒ 第 4 条红。
+   */
+  await section('⑤b（G2 / spec D3）添加文件夹时把版本**预置**成当时看着的那一版（仍可改）', async () => {
+    const presetDir = join(workRoot, 'H-preset');
+    const autoDir = join(workRoot, 'I-auto');
+    mkdirSync(presetDir, { recursive: true });
+    mkdirSync(autoDir, { recursive: true });
+
+    openQueue = [{ canceled: false, filePaths: [presetDir] }];
+    // ⚠️ 页面发出去的就是 `page.version`（= 状态里选中的那一版）⇒ 这里原样喂 '1.8.9'。
+    state = await invoke(MOD_CH.bindFolder, '1.8.9');
+    const preset = folderByPath(state, presetDir);
+    check(
+      '★★ 带版本绑（`bindFolder("1.8.9")`）⇒ 新文件夹的有效版本**就是它**（不是推断出来的那个 null）',
+      preset?.gameVersion === '1.8.9',
+      `gameVersion=${String(preset?.gameVersion)}`,
+    );
+    const presetDisk = readStateFileJson();
+    const presetOnDisk = Object.values(presetDisk?.folders ?? {}).find(
+      (candidate) => resolve(String(candidate.path)).toLowerCase() === resolve(presetDir).toLowerCase(),
+    );
+    check(
+      '★ 而且**盘上**那一格也是它（不是"内存里看着对、写盘时丢了"）',
+      presetOnDisk?.gameVersion === '1.8.9',
+      JSON.stringify(presetOnDisk ?? null),
+    );
+    state = await invoke(MOD_CH.setFolderGameVersion, preset?.folderId ?? '', null);
+    check(
+      '★ 仍是**可改**的：`setFolderGameVersion(id, null)` 交回自动推断（这个路径推不出来 ⇒ null）',
+      folderByPath(state, presetDir)?.gameVersion === null,
+      `gameVersion=${String(folderByPath(state, presetDir)?.gameVersion)}`,
+    );
+    state = await invoke(MOD_CH.setFolderGameVersion, preset?.folderId ?? '', '1.16.1');
+    check(
+      '★ 也能手改成目录里那一版（1.16.1 真的写进去了）',
+      folderByPath(state, presetDir)?.gameVersion === '1.16.1',
+      `gameVersion=${String(folderByPath(state, presetDir)?.gameVersion)}`,
+    );
+
+    /*
+     * ★★ 对照（少了它，上面三条可以坏成"永远预置成一个常量"）：同一个推断不出来的
+     *    路径，**不带版本**绑 ⇒ 仍然是 `null`（= 自动推断，与 G2 之前逐字相同的行为）。
+     */
+    openQueue = [{ canceled: false, filePaths: [autoDir] }];
+    state = await invoke(MOD_CH.bindFolder);
+    check(
+      '★★ 对照：**不带版本**绑（老调用点 / 探针的 `bindAt`）⇒ 推断不出来的路径仍然是 null',
+      folderByPath(state, autoDir)?.gameVersion === null,
+      `gameVersion=${String(folderByPath(state, autoDir)?.gameVersion)}`,
+    );
+  });
+
   return { workRoot, ok: failures === 0 };
 }
 
@@ -2619,7 +2695,10 @@ async function writePhase() {
    *    ⇒ 只按前缀+后缀扫的实现会把**v1 正在下载的那个文件**删掉（v1 随后 rename 的就是它）。
    *    可达的理由（⚠️★ T6 之后只剩这一条路）：v1 自己的 `bind`
    *    （`FILE_UPDATES_CHANNELS.bind`）可以把一个**已经在某个已绑定文件夹里**的 jar 绑成
-   *    它的一个 `item`（§13.1 的迁移只在**新绑那个文件夹**时跑一次，此后 v1 照绑）
+   *    它的一个 `item`（§13.1 的迁移**每次 `bindFolder` 都跑** —— `mod-folders.ts` 里那一句
+   *    在 `if (st.folders[folderId] === undefined)` 那个守卫**之外**；⚠️ 这条注释原来写的是
+   *    "只在新绑那个文件夹时跑一次"，那是**不精确**的，最终修复波改准 —— 而它的可达性结论
+   *    不受影响：迁移只处理**那一刻**已经落在文件夹里的 `items`，此后 v1 照绑）
    *    ⇒ 同一个文件可以同时是 v1 的 `item` 与本模块文件夹里的一行 ⇒ 两个模块可以同时
    *    对同一个目标名下载。（T6 之前还有第二条来源：`attributeLegacyItems` 把文件夹外的
    *    v1 绑定多写一份到 `catalogBindings` —— 那个函数随 D8 退役了。）
