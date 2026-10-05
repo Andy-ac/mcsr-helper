@@ -4642,5 +4642,41 @@ export const en: TranslationSchema = {
      * apart from "there is nothing in there"). The long explanation is `folderNoReading`.
      */
     folderNoReadingBadge: 'No scan yet',
+    /*
+     * ===================================================================
+     * A (mod download page restructure) - Task 4: the jar list inside an expanded folder
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.` (the bare-key
+     * scanner only knows `files.` and `common.`); no `=>` (U+21D2) or down-triangle
+     * (U+25BE) in these values (neither is in the self-hosted pixel font subsets).
+     * ⚠️ The first three columns and the "status"/"actions" columns **reuse** the first
+     * section's `colFile` / `colMod` / `colLocal` / `colStatus` / `colActions`: renaming
+     * one column of the same table in one place only makes them look like two things.
+     */
+    colDownload: 'Download',
+    colHomepage: 'Homepage',
+    /*
+     * ★★ The two links must be two separate strings (same reason as
+     * `updateOrigin` / `updateMirror`): both read like "open ...", and printing the same
+     * words for both leaves the user unable to tell which one they pressed.
+     * ⚠️ The target cell reuses `openPage` (it opens that release's page); only the
+     * homepage cell needs its own wording - "original page" and "project homepage" are
+     * not the same place.
+     */
+    openHomepage: 'Open project homepage',
+    /*
+     * ★★ The **marker** on an unrecognized row (spec §8: "mark the row red, saying this
+     * cannot be recognized as any catalog mod").
+     * ⚠️★ The red is **not** carried by this string: it comes from the
+     * `.jar--unrecognized` rule in `styles.css`. Printing only this sentence without
+     * that red row is exactly the regression spec §9's knife ⑧ hunts for.
+     * ⚠️ The two reasons (cannot read `fabric.mod.json` / not in the catalog) are told
+     * **separately**: the explaining sentence reuses `folderUnrecognizedNoMeta` /
+     * `folderUnrecognizedNotInCatalog`, the only implementation of those two sentences
+     * (their only render point today, the old second section, is deleted in T6, so from
+     * T4 on this table renders them - merging them would delete the user's only
+     * actionable clue).
+     */
+    jarUnrecognized: 'Not recognized as a catalog mod',
   },
 };

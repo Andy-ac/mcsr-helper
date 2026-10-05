@@ -131,7 +131,10 @@ function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTab) => v
  *    **不是** `switch` 自己 —— T3 判修轮实测：这个 tsconfig **没有** `noImplicitReturns`，
  *    一个非穷尽的 `switch`（少一支、函数声明成 `Promise<void>`）**编译通过、`tsc` 退出 0**
  *    ⇒ 加一个 `ModPageAction` 成员而忘了在这里处理，会得到一颗**哑按钮、零门禁输出**。
- *    ⚠️ T5 正要往那个联合里加成员（`download-mod` 之类）⇒ 这一句是给它的保险。
+ *    ⚠️★ **T4 已经吃过它一次**：展开体里那一行的更新加了 `update-mod` 这个成员，
+ *    接在这一层（`case 'update-mod'`）—— 刀就是把那一支删掉 ⇒ `tsc` 报
+ *    `TS2322: Type '{ kind: "update-mod"; … }' is not assignable to type 'never'`。
+ *    ⚠️ T5 还要往那个联合里加成员（`download-mod` 之类）⇒ 这一句继续是给它的保险。
  * ⚠️★ 这里**不 catch**：`makeModFoldersHandlers()` 那一层已经接住并落到 `actionError`
  *    （页面把它传给 `ModDownloadPanel` 印出来）。`openFolder` 走的是那一层**新加的那一条**
  *    （主进程对未知 id 是**抛**，`mod-folders.ts:941`）—— 接住它的地方与别的动作同源。
@@ -162,6 +165,14 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
         break;
       case 'update-folder-all':
         await handlers.updateFolderAll(action.folderId, action.channel);
+        break;
+      case 'update-mod':
+        /*
+         * ★ Task 4（A 的第四片）：展开体里那一行的更新。⚠️ `releaseKey` **原样**转过去
+         *   （转成大写 / 重新拼一遍都会让主进程的 `requirePairKey` 拒，而症状只是
+         *    "这一行点更新没反应"）。
+         */
+        await handlers.updateMod(action.folderId, action.modid, action.releaseKey, action.channel);
         break;
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);

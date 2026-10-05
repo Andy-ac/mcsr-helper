@@ -210,13 +210,17 @@ export interface CatalogRowView {
    *    的语义是"**目录里的** `mod.homepage`"（spec §5.1），而 `ModFoldersState` **不带
    *    整份目录**（只有 `catalogRows` / `folders` / `tags` / `mirrors` …）⇒ 这一格不在
    *    行视图里，渲染进程就**没有任何地方**读得到它：页面只能把那一条画成空，或者去猜。
-   * ⚠️ 它与源头一样是**可选**的（`ModEntry.homepage` 也是 `z.string().optional()`）：
-   *    `planCatalogRows` 一定会填（`mod.homepage ?? null`，实测目录里 70/70 都有），
-   *    但既有调用方手搓 `CatalogRowView` 字面量时不必跟着改（那是渲染自检的夹具）。
-   *    代价（认）：夹具忘了写这一格时读出来是 `null`（= "这个 mod 没有主页"），
-   *    与"目录没写"分不开 —— 这个方向的退化只是少一条链接，不影响任何判定。
+   * ★★ **必填**（2026-10-04 A 的 T4 落实 T1 评审的待办）：源头 `ModEntry.homepage` 是
+   *    `z.string().optional()`，而唯一的生产者 `planCatalogRows` 一定会填它
+   *    （`mod.homepage ?? null`；实测目录里 70/70 都有）⇒ "这个 mod 没有主页"在这一层
+   *    只有**一个**表示：`null`。
+   *    ⚠️ 改必填前的代价（T1 评审记的那条）是"夹具忘了写这一格 ⇒ 读出来是 `null`，
+   *    与'目录里没有'分不开"，而那个方向的退化只少一条链接、不影响任何判定 ⇒
+   *    当时判"保持可选"。T4 付了这个账：手搓 `CatalogRowView` 字面量的调用方
+   *    （今天的 `apps/web/scripts/foldersrender.tsx`）现在必须显式写出这一格，
+   *    换来的正是"忘了写 = **编译错**"。
    */
-  homepage?: string | null;
+  homepage: string | null;
   /** 该 `(modid, gameVersion)` 下的全部候选（0 / 1 / 2+ 条，顺序继承目录）。 */
   candidates: readonly ModRelease[];
   /**

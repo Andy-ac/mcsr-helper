@@ -13,16 +13,23 @@
  * ⚠️★ 判断不在这里：`page` 是**投影**算好的
  * ===========================================================================
  * "这一版有哪些文件夹"由 `planVersionPage()`（T1）算好；这一层只渲染 `page.folders`。
- * ⚠️ 唯一从 `state` 里另取的东西是**选项表与闸**（`state.gameVersions` / `state.mirrors` /
- * `state.bulkChannel` / `state.busy`）—— 它们不是"这一版"的投影，而是整页共用的那份读数
- * （主进程的 `prefs`）。⚠️ 那几个判据（版本选项表 / 通道选项表 / 通道还成不成立）
- * **复用 `ModFoldersPanel` 里那几个已导出的函数**，不在这里重写第二份：
- *   · `folderGameVersionOptions`（全集 = 目录的 107 版，且当前值必须可选）；
- *   · `channelOptions` / `channelKeyOf` / `bulkChannelUsable`（Ruling 23 / 64）。
+ * ⚠️ 从 `state` 里另取的东西有两类 —— **都不是"这一版"的投影**：
+ *   · **选项表与闸**（`state.gameVersions` / `state.mirrors` / `state.bulkChannel` /
+ *     `state.busy`）：它们是整页共用的那份读数（主进程的 `prefs`）。⚠️ 那几个判据
+ *     （版本选项表 / 通道选项表）**复用 `ModFoldersPanel` 里那几个已导出的函数**，
+ *     不在这里重写第二份：
+ *       · `folderGameVersionOptions`（全集 = 目录的 107 版，且当前值必须可选）；
+ *       · `channelOptions` / `channelKeyOf`（Ruling 23）。
+ *   · **展开体里那一格主页**（T4）：`state.catalogRows` 组出 `homepageOf` 喂给
+ *     `FolderJarList` —— 它是**纯展示联结**（没有任何判定依赖 homepage），
+ *     理由写在下面那一行的注释里。
  * ⚠️★ 而"给不给「全部更新」"与"哪一版是过期的旧值"这两条也**各只有一处实现**：
  *    `canUpdateFolderAll()` / `staleGameVersion()`（`ModFoldersPanel.tsx`，两处调用点共用）。
  *    ⚠️ 判修轮之前这两条在本文件里各抄了一份**逐字相同**的表达式 —— 那种抄写正是
  *    "同一个判断有两个会漂的版本"，而漂的表现是"少画一颗按钮 / 下拉里少一个 `disabled`"。
+ *    ⚠️ `bulkChannelUsable`（Ruling 64 那条）**不在这一层**：它由 `ModDownloadPanel`
+ *    渲染一次（面板级那句解释）⇒ 本文件不 import 它（T3 复审 Minor ① 记的正是这一行
+ *    原来把它列在"复用项"里，而那时本文件根本没有 import 过它）。
  *
  * ===========================================================================
  * ⚠️★ 折叠是**受控**的（`expanded` 从外面来），不是 `<details>`
@@ -67,6 +74,7 @@ import {
   type VersionPage,
 } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
+import { FolderJarList } from '@/components/FolderJarList';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
 import {
   canUpdateFolderAll,
@@ -144,6 +152,19 @@ export function VersionFolderList({
 }: VersionFolderListProps) {
   const { t } = useTranslation();
   const expandedSet = new Set(expanded);
+  /**
+   * ★★ 目录里每个 modid 的 homepage（展开体里那一格要它）。
+   *
+   * ⚠️★ 为什么**必须**在这里组、而不是让 `FolderJarList` 自己去 `state` 里翻：
+   *    `VersionFolderBlock` / `ModFolderRowView` 都**不带** homepage（它只在
+   *    `CatalogRowView` 上，由 `planCatalogRows` 从 `ModEntry.homepage` 填）
+   *    ⇒ "jar 行给主页链接"这一条只能由页面把这份映射喂下去（2026-10-04 T1 评审的裁定）。
+   * ⚠️ 它是**纯展示联结**：`?? null` 只是把"目录里没写"与"没有这一格"合成同一个值，
+   *    **不含任何判断**（没有任何判定依赖 homepage）。
+   * ⚠️ 每次渲染重算：`catalogRows` 是这一版那几十行（真目录实测 48 行）⇒ 一次 O(48) 的
+   *    map 构造，比在这一层加一份 `useMemo` 的记忆状态便宜（也与"这一层不存状态"同一条）。
+   */
+  const homepageOf = new Map(state.catalogRows.map((row) => [row.modid, row.homepage ?? null]));
 
   return (
     <section
@@ -181,6 +202,7 @@ export function VersionFolderList({
           key={block.folder.folderId}
           state={state}
           block={block}
+          homepageOf={homepageOf}
           isExpanded={expandedSet.has(block.folder.folderId)}
           onToggle={onToggle}
           onAction={onAction}
@@ -190,16 +212,19 @@ export function VersionFolderList({
   );
 }
 
-/** 一个文件夹：一行（永远可见）+ 展开体（T4 往里面放 jar 列表）。 */
+/** 一个文件夹：一行（永远可见）+ 展开体（T4 起里面是那一夹的 jar 列表）。 */
 function FolderRow({
   state,
   block,
+  homepageOf,
   isExpanded,
   onToggle,
   onAction,
 }: {
   state: ModFoldersState;
   block: VersionFolderBlock;
+  /** 目录里每个 modid 的 homepage（展开体里那一格要它，见 `VersionFolderList`）。 */
+  homepageOf: ReadonlyMap<string, string | null>;
   isExpanded: boolean;
   onToggle: (folderId: string) => void;
   onAction: ModPageActionHandler;
@@ -395,10 +420,11 @@ function FolderRow({
       </div>
 
       {/*
-        ★★ 展开体（T4 会把 jar 列表放进它里面）。
+        ★★ 展开体（T4 起里面是 `FolderJarList`：那一夹的全部 jar，含未识别标红的行）。
         ⚠️★ 折叠时**整块不渲染**（不是"渲染了但藏起来"）：这一页可能有十几个文件夹、
-        每个几十行 —— 藏起来等于把它们全留在 DOM 里。而"折叠态没有 jar 行"这条判据
-        在 T4 之前**只有这一半有牙齿**（见 ㉞ 的注释）。
+        每个几十行 —— 藏起来等于把它们全留在 DOM 里。⚠️ T4 之前"折叠态没有 jar 行"
+        这条判据**只有这一半有牙齿**（`data-jar` 那时不存在 ⇒ 另半条恒真）；
+        T4 之后它由 ㉞ 里**一正一反**两条读数一起兜着（见那个脚本的注释）。
         ⚠️ 三句话的分工（spec §8 / Ruling 65）：路径不存在 / 版本未知 / 还没有成功读数
         —— 它们**互斥**，而且每一句都只在它那一档出现。
         ⚠️★ **"读到过、里面没有"也在这里**（判修轮补的）：Ruling 65 是**两支** ——
@@ -406,7 +432,8 @@ function FolderRow({
         少了后半支，扫过但是空的文件夹展开后是一个**空白框**，而那正是 Ruling 65 要消灭的
         那种"分不出没有与不知道"。⚠️ 判据与旧那一版（`ModFoldersPanel` 的 body）**逐字相同**：
         `pathExists && hasReading && rows.length === 0`（两个条件缺一不可 —— 扫描失败时
-        `rows` 也是空的）。⚠️ T4 的 jar 列表进来之后，这一句仍然属于"没有可列的行"那一档。
+        `rows` 也是空的）。⚠️ 这一句说的是"没有**能识别**的 mod"，而 T4 的 jar 列表
+        照旧会把**未识别**的那些文件名列出来（两者不互斥，见下面那一块的判据）。
       */}
       {isExpanded ? (
         <div className="folderrow__body" data-folder-body={folder.folderId}>
@@ -426,6 +453,24 @@ function FolderRow({
               <p>{t('files.folderNoRows')}</p>
             </div>
           ) : null}
+          {/*
+            ★★ T4：这一夹的全部 jar（已识别的行 + **未识别标红**的行）。
+            ⚠️★ 判据是"**有东西可列**"（认出来的 **或** 认不出来的都算）：
+              上面的空态管的是"一个能识别的都没有"（Ruling 65 的后半支），
+              而那时**未识别的文件名照旧要列出来**（它们是看得见的读数）——
+              拿 `rows.length === 0` 当这一层的闸，会把它们一起藏掉。
+            ⚠️ `pathExists` 不在这里重复判：`planFolderView` 对"路径不存在"给的就是
+              `rows: []` + `unrecognized: []`（两格都清）⇒ 那一档这一块根本画不出来。
+          */}
+          {folder.rows.length + folder.unrecognized.length === 0 ? null : (
+            <FolderJarList
+              block={block}
+              homepageOf={homepageOf}
+              mirrors={state.mirrors}
+              busy={busy}
+              onAction={onAction}
+            />
+          )}
         </div>
       ) : null}
     </div>

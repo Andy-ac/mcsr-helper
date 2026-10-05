@@ -67,6 +67,20 @@ export type ModPageAction =
   | { kind: 'set-folder-auto-update'; folderId: string; on: boolean }
   | { kind: 'set-bulk-channel'; channel: Channel }
   | { kind: 'update-folder-all'; folderId: string; channel: Channel }
+  /*
+   * ★ Task 4（A 的第四片）：展开体里**一行**的更新（那两颗按钮）。
+   * ⚠️★ `releaseKey` **不是**显示用的东西：它是 `${modid}|${游戏版本}`（`releaseKey()` 的
+   *    形状），主进程拿它跟这个文件夹的**有效**版本对一遍（`requirePairKey`）。
+   *    ⇒ 它由渲染行按 `folder.gameVersion` 拼好、原样送过去，页面**不重新拼**第二遍。
+   * ⚠️ 通道是 `Channel`（id 或 `'origin'`），与上面那条批量的是同一个类型 —— 地址由主进程拼。
+   */
+  | {
+      kind: 'update-mod';
+      folderId: string;
+      modid: string;
+      releaseKey: string;
+      channel: Channel;
+    }
   | { kind: 'set-catalog-version'; version: string };
 
 /**

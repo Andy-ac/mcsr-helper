@@ -22,7 +22,7 @@
  * ===========================================================================
  * `renderToStaticMarkup` **不点击、不跑事件处理器、不跑 effect**（`docs/pending.md §5.73`）：
  *   · 「点一下真的走了哪条通道」/「点了真的会弹原生对话框」——**一件都不碰**。
- *     通道的接线只由 ⑯ / ㉖ / ㉗ 那几条**源码形状守卫**兜着（它们证的是"那条路在、
+ *     通道的接线只由 ⑯ / ㉖ / ㉗ / ㉟ / ㊲ 那几条**源码形状守卫**兜着（它们证的是"那条路在、
  *     而且只有一条"）；
  *   · `useModFolders()` 的三条支路（订阅 / 首拉 / 失败）在自检里**跑不到**：
  *     `window.mcsr` 是 `undefined` ⇒ 它只会停在 `unavailable`（浏览器那一支）。
@@ -58,7 +58,8 @@
  *   · ㉝–㉟ 是 A（mod 下载页重构）的 **T3**：新页面的骨架（tab / 按版本分组的折叠文件夹行 /
  *     跨版本列表与接线守卫）。⚠️ 它们与 ⑱–㉚ 那十几组**并存一个提交周期**：T3 只换**页面**，
  *     旧组件（`ModFoldersPanel` 等）与它们的断言留到 T6 那一轮一起删。
- *     ⇒ 计数：zh **35**、en **36**（见文件末尾那条探针）。
+ *   · ㊱–㊲ 是 A 的 **T4**：展开体里那张 jar 列表（含未识别标红）与单行更新的接线守卫。
+ *     ⇒ 计数：zh **37**、en **38**（见文件末尾那条探针）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -92,6 +93,7 @@ import {
   toggleTag,
 } from '@/components/FileUpdatesPanel';
 import { ModCatalogTable, RAW_KEY_RE, rawKeysIn } from '@/components/FileUpdateTable';
+import { FolderJarList } from '@/components/FolderJarList';
 import { MissingModsList } from '@/components/MissingModsList';
 import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import { ModFoldersPanel } from '@/components/ModFoldersPanel';
@@ -215,6 +217,20 @@ const GITHUB_URL =
   'https://github.com/CaffeineMC/sodium-fabric/releases/download/mc1.16.1-0.1.3/sodium-fabric-0.1.3.jar';
 const CDN_URL = 'https://cdn.modrinth.com/data/AANobbMI/versions/abc123/sodium-fabric-0.1.3.jar';
 const OPTIFINE_URL = 'https://optifine.net/adloadx?f=OptiFine_1.16.1_HD_U_G2.jar';
+/**
+ * `ROW_GITHUB` 那一行**在目录里**的 homepage。
+ *
+ * ⚠️★ 2026-10-04 A 的 T4：`CatalogRowView.homepage` 从"可选"改成了**必填**
+ *    （T1 评审留给 T4 的待办）⇒ 这一格必须显式写出来。
+ *    ⚠️★ 但"忘了写"在这个文件里**不是编译错**：`apps/web/scripts/**` 不在任何 tsconfig
+ *    的 `include` 里（`tsc` 不看它、`tsx` 只剥类型不做检查 —— 刀 K14 实测：往本文件里
+ *    插一句 `const x: number = 'not-a-number';`，`typecheck` 与本脚本双双照样绿）。
+ *    ⇒ 这一格的守卫是 ㊱ 开头那句**夹具自钉**（`assert.ok(ROW_GITHUB.homepage, …)`），
+ *    类型层面的守卫是一次性的 `tsc` 探针（报告 §刀 K14 里有全文与命令）。
+ * ⚠️ 展开体那一组（㊱）会**覆盖**这个值来造夹具：两处不同 ⇒ "href 就是目录里那个值"
+ *    那条断言同时排除了"照抄这个常量"。
+ */
+const SODIUM_HOMEPAGE = 'https://example.invalid/sodium-homepage';
 
 function release(
   modid: string,
@@ -251,6 +267,8 @@ const ROW_GITHUB: CatalogRowView = {
   rowId: 'sodium|1.16.1',
   modid: 'sodium',
   name: 'Sodium',
+  /* ⚠️ 必填（T4 改的）：值见 `SODIUM_HOMEPAGE`；守卫是 ㊱ 那句夹具自钉（**不是**编译错）。 */
+  homepage: SODIUM_HOMEPAGE,
   gameVersion: '1.16.1',
   tags: ['legal'],
   tagLabels: [TAG_LABEL],
@@ -731,6 +749,21 @@ function folderRowSpanOf(markup: string, folderId: string): string {
   );
   const next = markup.indexOf('data-folder-id="', start + 1);
   return next === -1 ? markup.slice(start) : markup.slice(start, next);
+}
+
+/**
+ * 展开体里的一行 jar（`data-jar="<modid>"` 那一格）。找不到就当场红。
+ *
+ * ⚠️ 它**只**匹配已识别那一行：未识别的行没有 `data-jar`（它带的是
+ *    `data-jar-unrecognized="true"` ⇒ `data-jar="` 那个引号对不上）。
+ */
+function jarRowOf(markup: string, modid: string): string {
+  const found = markup.match(new RegExp(`<tr[^>]*data-jar="${modid}"[\\s\\S]*?</tr>`));
+  assert.ok(
+    found,
+    `产物里找不到 data-jar="${modid}" 的那一行 —— 那一行没渲染出来，或者 data-jar 不再写在那里`,
+  );
+  return found[0];
 }
 
 /**
@@ -3120,11 +3153,12 @@ assert.ok(
   skeletonHtml.includes('data-folder-id="f1"') && skeletonHtml.includes('data-folder-id="f1b"'),
   '★★ 该版本的文件夹**都**画出来了（两个同版本的 id 都在 —— 只画第一个的实现会红在这里）',
 );
-assert.equal(
-  skeletonHtml.includes('data-jar="'),
-  false,
-  '★ 折叠态：一行 jar 都没有（⚠️ T4 之前这一条恒真 —— 它的牙齿是下面"展开体不渲染"那条）',
-);
+/*
+ * ⚠️★ 这里原来有一条 `assert.equal(skeletonHtml.includes('data-jar="'), false)` ——
+ *    它在 T4 之前**恒真**（`data-jar` 那时还不存在：§5.32① 那一类），T4 把它改成了
+ *    **正反一对**、并且搬到 `collapsedListHtml` / `expandedListHtml` 那两个产物上
+ *    （下面"折叠 / 展开两态"那一段）：折叠态没有 jar 行 **且** 展开态真的有一行。
+ */
 assert.match(
   skeletonHtml,
   /data-folder-id="f1"[\s\S]{0,400}?aria-expanded="false"/,
@@ -3177,6 +3211,24 @@ assert.equal(
   collapsedListHtml.includes('data-folder-body'),
   false,
   '★★ 折叠时**展开体整块不渲染**（"折叠态没有 jar 行"今天唯一有牙齿的判据）',
+);
+/*
+ * ★★ T4（判修：把一条**恒真**的断言换成一正一反）—— 原来这里写的是
+ *    `assert.equal(skeletonHtml.includes('data-jar="'), false)`，而 T4 之前 `data-jar`
+ *    这个属性**根本不存在**（§5.32① 的第一类：断言恒真）。现在两个方向各有一条读数，
+ *    而且它们必须**同时**成立才说明"折叠/展开真的分岔"：
+ *      · 折叠态没有 jar 行 —— 一个"永远不画 jar 行"的实现过得了这一条；
+ *      · 展开态**真的**画出那一行 —— 一个"折叠时也画"的实现过得了这一条。
+ */
+assert.equal(
+  collapsedListHtml.includes('data-jar="'),
+  false,
+  '★★ 折叠态：一行 jar 都没有（T4 起这一条与下面那条**互为反面**）',
+);
+assert.ok(
+  expandedListHtml.includes('data-jar="sodium"'),
+  '★★ 而展开时那个文件夹里的 jar 行真的在（`f1` 的默认两行里有 `sodium`）—— ' +
+    '与上面那条**独立**：只写"折叠时没有"的话，"永远不画 jar 行"照样绿（那正是 T4 之前那条断言的形状）',
 );
 assert.match(
   expandedListHtml,
@@ -3431,6 +3483,361 @@ ok(
   '㉟ 跨版本列表（含另一个版本的文件夹 + 行内版本标签）、动作失败的原话看得见、三条接线守卫（openFolder 的实参 / 动作层的 catch / 面板的 try-await）',
 );
 
+// ===========================================================================
+// Task 4（A 的第四片）：展开的文件夹 —— jar 列表 + 未识别标红
+// ===========================================================================
+/*
+ * ⚠️★ 这一组验的是**展开体里那张表**（`FolderJarList`）：已识别行（文件名 / mod 名 /
+ *    本地版本 / 下载链接 / homepage / 既有徽章与操作）与**未识别行**（标红）。
+ *
+ * ⚠️★ 夹具必须让 `homepage` **真的非空**（T1 评审点名过的那件事）：`homepageOf` 由页面从
+ *    `state.catalogRows` 组装，而带 homepage 的目录行只有 `planCatalogRows` 那一支
+ *    ⇒ 夹具写 `stateOf([], …)` 会让"homepage 链接"那条**恒红、而且原因不对**。
+ *    这里展开一个**已有的目录行常量**（`ROW_GITHUB`）并覆盖 `homepage`；覆盖值与常量里
+ *    那个**不同** ⇒ "href 就是目录里那个值"这条同时排除了"照抄夹具常量"。
+ * ⚠️★ `FolderUnrecognizedRow.reason` 是**必填**的（`'no-fabric-meta' | 'not-in-catalog'`）：
+ *    计划/简报的夹具写的是 `{ fileName: 'mystery.jar' }`（**少一格**）—— 而那在本仓
+ *    **不会**变成编译错（`scripts/**` 不在任何 tsconfig 里，见 ㊱ 开头那句夹具自钉的注释），
+ *    它会静默落进"不是 `no-fabric-meta`"那一支 ⇒ 报成"清单外"（**说错原因**）。
+ *    这里两类**各给一个** —— 旧第二部分那两句解释必须分得开（它们不许被合成一句）。
+ */
+
+/** 目录里那个 mod 的 homepage（`ROW_GITHUB` 的兜底值；这一组会**覆盖**它，见下）。 */
+const HOMEPAGE_IN_CATALOG = 'https://example.invalid/sodium-project';
+
+/*
+ * ★★ 夹具自钉：`ROW_GITHUB` 那一格**真的**非空。
+ *
+ * ⚠️★ 为什么这一条必须存在（T4 的刀 K14 实测出来的）：`CatalogRowView.homepage` 是从
+ *    "可选"改成**必填**的（T1 评审留给 T4 的待办），而 `apps/web/scripts/**`
+ *    **不在任何 tsconfig 的 `include` 里**（`tsc` 不看这些文件，`tsx` 只剥类型、
+ *    不做检查 —— 实测：往本文件里插一句 `const x: number = 'not-a-number';`，
+ *    `pnpm -F @mcsr/web typecheck` 与这个脚本**双双照样绿**）。
+ *    ⇒ "夹具忘了写 homepage"在**门禁上完全无声**，而那正是那个待办要消灭的那一种坏。
+ *    类型层面的判据只能靠一次性的 `tsc` 探针（报告 §刀 K14 里给了全文与命令）；
+ *    这里补的是**跑得起来**的那一条：忘写 ⇒ 这一句当场红。
+ */
+assert.ok(
+  ROW_GITHUB.homepage,
+  '夹具自钉：`ROW_GITHUB` 必须带一个非空 homepage —— 这一格是**必填**的，' +
+    '而 `scripts/**` 不在任何 tsconfig 里（"忘了写"在门禁上是无声的，只有这一条抓得住）',
+);
+
+/**
+ * 渲染一个文件夹**展开体里那张 jar 表**（`FolderJarList` 是纯 props 组件 ⇒ 喂一份投影就画）。
+ *
+ * ⚠️★ `homepageOf` 的组装**逐字照页面**（`new Map(state.catalogRows.map(…))`）：自检里
+ *    重写一遍组装方式的话，"页面真的喂了它"这件事就没有证据了（这一组验的是组件，
+ *    而"谁喂的"由 ㊲ 的形状守卫与 `VersionFolderList` 那一处调用点兜着）。
+ */
+function jarListHtmlOf(state: ModFoldersState, folderId: string): string {
+  const page = planVersionPage(state, [folderId]);
+  const block = page.folders.find((candidate) => candidate.folder.folderId === folderId);
+  assert.ok(block, `夹具自钉：\`${folderId}\` 在投影里（不在的话下面每一条断言都是空跑）`);
+  return keep(
+    html(
+      React.createElement(FolderJarList, {
+        block,
+        homepageOf: new Map(state.catalogRows.map((r) => [r.modid, r.homepage ?? null])),
+        mirrors: state.mirrors,
+        busy: state.busy,
+        onAction: noop,
+      }),
+    ),
+  );
+}
+
+// —— ① 一个已识别 + 两类未识别的夹具 ——
+const rowWithHome = { ...ROW_GITHUB, homepage: HOMEPAGE_IN_CATALOG };
+const jarState = stateOf([rowWithHome], {
+  folders: [
+    folder({
+      folderId: 'f-jars',
+      rows: [folderRow({ modid: 'sodium', name: 'Sodium' })],
+      unrecognized: [
+        { fileName: 'mystery.jar', reason: 'not-in-catalog' },
+        { fileName: 'broken.jar', reason: 'no-fabric-meta' },
+      ],
+    }),
+  ],
+});
+const jarListHtml = jarListHtmlOf(jarState, 'f-jars');
+assert.ok(
+  jarListHtml.includes('data-jar-count="3"'),
+  '★★ 列表自己报条数（1 个已识别 + 2 个未识别）—— 与下面那些行标记**独立**的一条读数',
+);
+/*
+ * ★ 已识别那一行：**扫描读数**（文件名不是 modid）+ mod 名 + 本地版本 + 两个链接 + 两颗按钮。
+ *   ⚠️ 锚的是产物里的文字与 `href`，不锚 class（与 ⑱/㉑ 对旧行同一个口径）。
+ */
+assert.deepEqual(
+  labelsIn(jarRowOf(jarListHtml, 'sodium')),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★ 已识别的行给**既有那两颗**更新按钮（`older` + GitHub 来源 ⇒ 镜像那颗也在）：' +
+    '判据与旧第二部分 `ModFoldersPanel.FolderRow` **逐字相同**（`older | different-build` 且非 manual）',
+);
+assert.ok(
+  textOf(jarRowOf(jarListHtml, 'sodium')).includes('sodium-build-A.jar') &&
+    textOf(jarRowOf(jarListHtml, 'sodium')).includes('Sodium') &&
+    textOf(jarRowOf(jarListHtml, 'sodium')).includes('0.1.2'),
+  '★★ 那一行印的是**扫描读数**：文件名（`row.fileName`，不是 modid）+ mod 名 + 本地版本',
+);
+/*
+ * ★★ `busy`（主进程正在写盘）：那两颗按钮**禁用**（不是消失）—— 与头行、旧那一部分
+ *    逐字同一条（`disabled={busy}` 是"别在写盘期间再发一次"的唯一表达）。
+ *    ⚠️ 夹具只把 `state.busy` 翻成 `true`，别的格一个都不动 ⇒ 红点只可能落在这一条上。
+ */
+const busyJarHtml = jarListHtmlOf({ ...jarState, busy: true }, 'f-jars');
+assert.deepEqual(
+  buttonsIn(jarRowOf(busyJarHtml, 'sodium')).map((button) => button.disabled),
+  [true, true],
+  '★★ 正在写盘 ⇒ 那两颗更新按钮都**禁用**（`busy` 从状态来，不是这一层自己记的）',
+);
+assert.deepEqual(
+  buttonsIn(jarRowOf(jarListHtml, 'sodium')).map((button) => button.disabled),
+  [false, false],
+  '★ 反面：不忙时两颗都可用（只写"忙时禁用"的话，一个恒禁用的实现照样绿）',
+);
+assert.match(
+  jarListHtml,
+  /data-jar="sodium"[\s\S]{0,600}?<a[^>]+data-link="download"[^>]*href="/,
+  '★★ 已识别的行给**下载链接**（`row.official.url`；`official === null` 的那一档印 `—`）—— ' +
+    '⚠️ 窗口 600 字符：那一格必须排在前面几格之内（排到行尾会红，那是**排版**的判据）。' +
+    '⚠️★ 判据里**必须**带 `data-link="download"`：简报那条裸 `<a[^>]+href=` **不是**这一条的判据 —— ' +
+    '下面那条 homepage 的 `<a>` 也在 600 字符之内 ⇒ 把下载那一格整个删掉，裸正则**照样绿**' +
+    '（刀 K4 实测过：删掉下载链接后红的是下面那条 `deepEqual`，不是这一条）',
+);
+assert.match(
+  jarListHtml,
+  /data-jar="sodium"[\s\S]{0,900}?data-link="homepage"/,
+  '★★ 而且给 **homepage 链接**（`data-link="homepage"` 是它的机器读数）',
+);
+assert.deepEqual(
+  linksIn(jarRowOf(jarListHtml, 'sodium')).map((link) => link.href),
+  [SODIUM_NEW.url, HOMEPAGE_IN_CATALOG],
+  '★★★ 那两颗链接的 `href` 各来自**状态**：下载那一格是 `row.official.url`、homepage 那一格是' +
+    '`homepageOf` 里那个值 —— 写死一个地址、或者拿候选兜底，都会红',
+);
+assert.ok(
+  textOf(jarListHtml).includes(textOf(resolved('files.jarUnrecognized'))),
+  '★ 未识别那一行说了一句"认不出这是目录里的哪个 mod"（spec §8 那一格）',
+);
+// —— ② 未识别那两行：真的画出来了、**带机器读数与类名**、而且两类原因分开说 ——
+const unrecognizedJarRows = [
+  ...jarListHtml.matchAll(/<tr class="jarrow jar--unrecognized"[\s\S]*?<\/tr>/g),
+].map((match) => match[0]);
+assert.equal(
+  unrecognizedJarRows.length,
+  2,
+  '★★ 两个未识别的条目**各占一行**（塞进一行、或者只画第一个，都会红）',
+);
+assert.match(
+  jarListHtml,
+  /<tr class="jarrow jar--unrecognized"[^>]*data-jar-unrecognized="true"/,
+  '★★★ 未识别那一行带**机器读数** `data-jar-unrecognized="true"` **与**那个类名 —— ' +
+    '两样都要（读数给自检、类名给 `styles.css` 上那条红规则）',
+);
+/** 那两行里带 `fileName` 的那一行（`fileName` 是扫描读数，必然在文件名那一格里）。 */
+function unrecognizedJarRowOf(fileName: string): string {
+  const found = unrecognizedJarRows.find((row) => textOf(row).includes(fileName));
+  assert.ok(found, `产物里找不到未识别的那一行（${fileName}）—— 那一行没渲染出来`);
+  return found;
+}
+assert.ok(
+  textOf(jarListHtml).includes('mystery.jar') && textOf(jarListHtml).includes('broken.jar'),
+  '★★ 两个未识别的**文件名**都在产物里（`fileName` 是磁盘上的内容、不翻译）',
+);
+assert.ok(
+  textOf(unrecognizedJarRowOf('mystery.jar')).includes(
+    textOf(resolved('files.folderUnrecognizedNotInCatalog', { name: 'mystery.jar' })),
+  ),
+  '★★ 「清单外」那一句（复用旧第二部分那条词条：它是这句话**唯一**的实现）',
+);
+assert.ok(
+  textOf(unrecognizedJarRowOf('broken.jar')).includes(
+    textOf(resolved('files.folderUnrecognizedNoMeta', { name: 'broken.jar' })),
+  ),
+  '★★ 「读不出 `fabric.mod.json`」那一句（与上一条各自成立 ⇒ 不是"两句都印"）',
+);
+assert.equal(
+  textOf(unrecognizedJarRowOf('broken.jar')).includes(
+    textOf(resolved('files.folderUnrecognizedNotInCatalog', { name: 'mystery.jar' })),
+  ),
+  false,
+  '★ 反面：这一行**不许**印另一类原因的那句话（两类合成一句正是旧那一版不许做的事）',
+);
+// —— ③ 红是**真的**：`styles.css` 里那条规则 ——
+/*
+ * ⚠️★ 为什么要有这一段：`data-jar-unrecognized` 与那个类名都只是"名字"——
+ *    把 `styles.css` 里那条规则删掉，那一行在屏幕上是**同一个颜色**，而上面每一条
+ *    断言照样绿（§5.70：渲染得出来、但什么都不生效的类名）。
+ * ⚠️ 匹配前**先剥注释**（§5.82 那个假绿）：这一段注释里就逐字写着 `.jar--unrecognized`，
+ *    裸 `includes` 对"只留注释、删掉规则"恒绿 —— 下面第一条探针正是这件事的读数。
+ */
+const stylesCode = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+/** 剥掉 CSS 注释（只剥块注释：`//` 会咬到 `url(https://…)` 那种值）。 */
+const withoutCssComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+assert.equal(
+  stylesCode.includes('.jar--unrecognized'),
+  true,
+  '★ 探针：`styles.css` 真的读进来了（这个类名在文件里）',
+);
+assert.equal(
+  withoutCssComments(stylesCode).includes('.jar.disabled'),
+  false,
+  '★★ 探针：**只在注释里**出现过的类名不算"有规则"（`.jar.disabled` 在 `styles.css` 里' +
+    '只写在注释里）—— 不剥注释的话，下面那条规则断言对"删掉规则、留下注释"恒绿',
+);
+const unrecognizedCssRule = withoutCssComments(stylesCode).match(
+  /\.jar--unrecognized[^{]*\{([^}]*)\}/,
+);
+assert.ok(
+  unrecognizedCssRule,
+  '★★★ `.jar--unrecognized` 在 `apps/web/src/styles.css` 里**有规则** —— 没有它，' +
+    '未识别那一行只是"多了一个名字"，屏幕上与别的行**同一个颜色**（spec §8 / §9 的刀 ⑧）',
+);
+assert.match(
+  unrecognizedCssRule[1],
+  /color:\s*var\(--redstone\)/,
+  '★★★ 而且那条规则把颜色设成**红石色**（`--redstone`：与 `.badge--problem` 同一个语义红）' +
+    '—— "标红"这件事只有这一处能证',
+);
+// —— ④ homepage 是**查表**，不是编出来的：目录里没有这个 modid ⇒ 那一格印 `—` ——
+/*
+ * ★★ 这一条同时是"镜像判据"的读数：`FROW_CDN` 的目标在 `cdn.modrinth.com`，而状态里
+ *    那条镜像只认 `github.com`（`MIRROR.hosts`）⇒ **只有原始那一颗**（D5 的降级）。
+ *    ⚠️ 拿 `mirrors[0]` 无条件画第二颗的实现会红在这里。
+ */
+const noHomeState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f-nohome', rows: [FROW_CDN] })],
+});
+const noHomeHtml = jarListHtmlOf(noHomeState, 'f-nohome');
+const noHomeRow = jarRowOf(noHomeHtml, FROW_CDN.modid);
+assert.equal(
+  noHomeRow.includes('data-link="homepage"'),
+  false,
+  '★★ 目录里没有这个 modid ⇒ homepage 那一格**不许**画链接（`homepageOf` 是一次查表：' +
+    '查不到就是 `null`，不许拿别的行顶上）',
+);
+assert.ok(
+  textOf(noHomeRow).includes('—'),
+  '★ 而那一格印 `—`（空着与"没渲染"分不开 —— 与两张表里那个 `DASH` 同一个字符）',
+);
+assert.deepEqual(
+  labelsIn(noHomeRow),
+  [labelOf('files.updateOrigin')],
+  '★★ 目标在 CDN ⇒ 状态里那条镜像**不适用** ⇒ 只有原始那一颗：判据是 `mirrorsForUrl`' +
+    '（主机匹配只有 `mirrorsFor` 一份实现），不是"有镜像表就给"',
+);
+// —— ⑤ 既有 allow-list 照旧：`different-build` 有入口，`manual` / `newer` / `missing-release` 没有 ——
+/*
+ * ⚠️★ 与 ⑳/㉑ 对旧第二部分那两条**同一条理由**（Ruling 47/48）：主进程会拒的一律不画，
+ *    而 `different-build` 是 `assertUpdatable` **放行**的那一支（夹具里 `batchable: false`
+ *    是承重的：按 `batchable` 给按钮的实现在这里红）。
+ */
+const allowState = stateOf([ROW_GITHUB], {
+  folders: [
+    folder({
+      folderId: 'f-allow',
+      rows: [FROW_DIFFERENT_BUILD, FROW_MANUAL, FROW_NEWER, FROW_NO_RELEASE],
+    }),
+  ],
+});
+const allowRowsHtml = jarListHtmlOf(allowState, 'f-allow');
+assert.deepEqual(
+  labelsIn(jarRowOf(allowRowsHtml, FROW_DIFFERENT_BUILD.modid)),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★ `different-build` 的行**有**那两颗更新按钮（`assertUpdatable` 放行它；`batchable` 是 false ⇒ ' +
+    '判据不能是 `batchable`）',
+);
+for (const [what, row, hintKey] of [
+  ['manual（OptiFine）', FROW_MANUAL, 'files.hintManual'],
+  ['newer（只升不降）', FROW_NEWER, 'files.hintNewer'],
+  ['missing-release（这一版清单里没有它）', FROW_NO_RELEASE, 'files.hintMissingRelease'],
+] as const) {
+  const rowHtml = jarRowOf(allowRowsHtml, row.modid);
+  assert.deepEqual(
+    buttonsIn(rowHtml).filter(
+      (button) =>
+        button.label === labelOf('files.updateOrigin') ||
+        button.label === labelOf('files.updateMirror'),
+    ),
+    [],
+    `★ ${what} 那一行**不许**有更新按钮（主进程会拒 —— Ruling 47/48）`,
+  );
+  assert.ok(
+    textOf(rowHtml).includes(textOf(resolved(hintKey))),
+    `★ ${what} 那一行要有**自己的**解释（${hintKey}）—— 它复用 ` +
+      '`VERDICT_HINTS`（与第一部分、旧第二部分同一张表），不在这里另写一份',
+  );
+}
+assert.deepEqual(
+  rawKeysIn(jarListHtml),
+  [],
+  '★ 这一组三份产物里也没有裸 key 泄漏（⚠️ ⑬ 那条扫描跑在**这一组之前** ⇒ 新词条要在这里自钉）',
+);
+ok(
+  '㊱ 展开的 jar 列表：已识别的行（文件名/mod 名/本地版本/两颗链接的 href/既有徽章与操作）+ 未识别两行（机器读数+类名+两类原因分开说）+ `styles.css` 里那条红规则真的在 + homepage 查不到就印 `—` + 既有 allow-list（`different-build` 有入口、manual/newer/missing-release 没有）',
+);
+
+// ---------------------------------------------------------------------------
+// ㊲ 单行更新的接线守卫（spec §9.13 的同族：产物里看不见事件处理器）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 「按哪条通道」没有产物可锚（静态渲染不跑事件处理器）⇒ 只由这一组**源码形状**兜着，
+ *    与 ⑯/㉖/㉗/㉟ 同一条纪律。⚠️ 而 `ModPageAction` 是页面手里的那个联合：
+ *    "加了成员却忘了接线"由 `Files.tsx` 的 `never` 守卫在**编译期**红（T3 判修 3），
+ *    这里钉的是**接对了哪条通道**（`updateMod` 而不是别的）。
+ */
+const jarListCode = withoutComments(
+  readFileSync(new URL('../src/components/FolderJarList.tsx', import.meta.url), 'utf8'),
+);
+const filesRouteCode = withoutComments(
+  readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8'),
+);
+assert.match(
+  jarListCode,
+  /onAction\(\{\s*kind:\s*'update-mod',[\s\S]{0,160}?channel:\s*'origin',?\s*\}\)/,
+  "★★ 「更新（原始）」送的是 `'origin'`（release 自己的地址，永远成立）",
+);
+assert.match(
+  jarListCode,
+  /onAction\(\{\s*kind:\s*'update-mod',[\s\S]{0,220}?channel:\s*\{\s*mirrorId:\s*mirror\.id,?\s*\},?\s*\}\)/,
+  '★★ 「更新（镜像）」送的是 `{ mirrorId: mirror.id }`（**只送 id**，地址由主进程拼）—— ' +
+    '两颗都送 `origin` 时镜像那颗是个假按钮，而产物里看不出来',
+);
+assert.equal(
+  jarListCode.match(/kind:\s*'update-mod'/g)?.length,
+  2,
+  "★★ `kind: 'update-mod'` 只许出现两次（就是那两颗按钮；多一处就是第二条写盘路径）",
+);
+assert.match(
+  jarListCode,
+  /mirrorsForUrl\(mirrors,\s*row\.official\.url\)/,
+  '★★ 镜像那一颗的可用性来自**状态里的镜像表 + 那一行的目标**（镜像规则只有 `mirrorsFor` 一份实现）',
+);
+assert.match(
+  jarListCode,
+  /VERDICT_BADGES\[row\.verdict\.kind\]/,
+  '★★ 徽章表与第一部分 / 旧第二部分**共用一份**（`VERDICT_BADGES`）—— 在这一层另写一张表，' +
+    '就是"同一个判定、两处说法"的第一个版本',
+);
+assert.match(
+  downloadPanelCode,
+  /kind:\s*'update-mod';\s*folderId:\s*string;\s*modid:\s*string;\s*releaseKey:\s*string;\s*channel:\s*Channel/,
+  '★ `ModPageAction` 里新增的那一条带**四格**（folderId / modid / releaseKey / channel）—— ' +
+    '缺一格就发不出主进程要的那个键',
+);
+assert.match(
+  filesRouteCode,
+  /case 'update-mod':\s*await handlers\.updateMod\(action\.folderId,\s*action\.modid,\s*action\.releaseKey,\s*action\.channel\);/,
+  '★★ 那个动作真的被接到 `handlers.updateMod(…)` 上（联合里加了成员而不接线 ⇒ `never` 守卫在编译期红；' +
+    '这一条钉的是**接对了哪条通道**）',
+);
+ok(
+  '㊲ 单行更新的接线守卫：两颗按钮各送自己那条通道（`origin` / `{mirrorId}`，各一处）、镜像判据来自状态、徽章表共用一份、联合新增的那一格形状、`Files.tsx` 接到 `handlers.updateMod`',
+);
+
 // ---------------------------------------------------------------------------
 // ㉛ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
@@ -3466,8 +3873,11 @@ if (LANG === 'en') {
  *    A 的 T3 再加 ㉝–㉟ 三组（tab 骨架 / 版本分组的文件夹区 / 跨版本列表与接线）⇒ 32 → **35**、33 → **36**。
  *    ⚠️ 同一轮里 ㉕ 从"三块拼装 + 特性检测"缩成"只有特性检测"（那一半搬进了 ㉞）——
  *    **组数没变**（它仍然是一个 `ok()`），变的是它盖的范围。
+ *    A 的 T4 再加 ㊱–㊲ 两组（展开的 jar 列表 / 单行更新的接线守卫）⇒ 35 → **37**、36 → **38**。
+ *    ⚠️ 同一轮里 T3 那条**恒真**的 `!skeletonHtml.includes('data-jar="')` 被换成了
+ *    "折叠没有 + 展开真的有"一正一反两条（落在㉞**已有**的那一组里）—— 组数不变。
  */
-const expectedGroups = LANG === 'en' ? 36 : 35;
+const expectedGroups = LANG === 'en' ? 38 : 37;
 assert.equal(
   pass,
   expectedGroups,
@@ -3481,7 +3891,7 @@ console.log('⚠️ 这个脚本验的是**渲染**（外加 ⑫⑭ 两个纯函
 console.log('   没有点击、没有请求、没有真实浏览器、也没有主进程。');
 console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点一下真的走了哪条通道 / 真的弹了原生对话框 —— 静态渲染不跑事件处理器，');
-console.log('       ⑯㉖㉗㉟ 只钉住"那条接线在、而且只有一条"；');
+console.log('       ⑯㉖㉗㉟㊲ 只钉住"那条接线在、而且只有一条"；');
 console.log('     · `<details>` 展开收起本身，以及点 `<summary>` 里那颗按钮会不会顺带折叠');
 console.log('       —— 那是浏览器的默认动作，产物里只有结构（控件真的住在 <summary> 里）；');
 console.log('     · tab 那两颗按钮**点下去之后**换的是哪一块（T3 的 tab 条是页面外壳的 useState，');

@@ -9838,9 +9838,107 @@ html[data-theme='light'] {
   margin: 0 0 6px;
 }
 
-/* 展开体（T4 会把 jar 列表放进来）。 */
+/* 展开体（T4 起里面是那张 jar 列表）。 */
 .folderrow__body {
   padding: 0 0 8px;
+}
+
+/* ------------------------------------------------------------------
+   展开体里那张 jar 列表（A 的 Task 4）
+
+   ★ 它长得与第一部分那张表同族（同一份 `--line` / 等宽版本号 / `.badge` / `.ghostbtn`），
+     差异只有块名：这一张住在展开体里、列比第一部分少（没有"目标来源"那一格）。
+   ⚠️ **未识别那一行是红的**，而红由 `.jar--unrecognized` 承载（不是那句文案给的）——
+     spec §8 要的是"标红"，自检㊱ 里有一条"这条规则真的在、而且颜色是红石色"的断言。
+     ⚠️ 那个类名里的 `jar--` 前缀是**简报逐字给定**的（块名是 `jarrow`，修饰符照写）。
+     ⚠️ 这一段注释里**逐字**写着 `.jar--unrecognized` ⇒ 自检匹配前先剥注释（§5.82）：
+       只留注释、把规则删掉，裸正则照样绿。
+   ------------------------------------------------------------------ */
+.jarlist {
+  margin: 6px 0 0;
+  overflow-x: auto;
+}
+
+.jarlist__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jarlist__head th {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+  text-align: left;
+  font-weight: 400;
+  padding: 2px 8px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+/* 一行（已识别 / 未识别共用）。⚠️ `td` 与第一部分同一条：上边一条细线，没有竖线。 */
+.jarrow td {
+  padding: 4px 8px 4px 0;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+/* 文件名：磁盘上的内容（与 `.folderrow__path` 同一条：等宽、可断行）。 */
+.jarrow__file {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  min-width: 150px;
+}
+
+/* 版本号那一格（与 `.filetable__version` 同一条：机器串、等宽、不许换行）。 */
+.jarrow__version {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* 两颗链接那一格（下载 / 主页）。 */
+.jarrow__link {
+  white-space: nowrap;
+}
+
+/* ★★ 没有值的那一格（`—`）：灰、不当成错误（与 `.badge--disabled` 同一个语义）。 */
+.jarrow__none {
+  color: var(--fg-faint);
+}
+
+/* 状态那一格里的解释（`VERDICT_HINTS` 那几句与 `manual` 那句）。 */
+.jarrow__hint {
+  display: block;
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+
+/* 未识别那一行，右半边那一格（标记 + 原因）。 */
+.jarrow__note {
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+
+/* 行内那两颗更新按钮。 */
+.jarrow__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ★★★ 未识别的那一行：**整行红**（spec §8 / §9 的刀 ⑧）。
+   ⚠️ 红石色是全站"这一行现在不成立"的那个红（与 `.badge--problem` 同一个变量）——
+     不是"删除类破坏性动作"的用法。⚠️ 判据在自检㊱：这条规则**必须**在，
+     而且颜色**必须**是 `var(--redstone)`（把规则删掉 ⇒ 那一行与别的行同色，而
+     `data-jar-unrecognized` 照样在产物里 ⇒ 只有这一条断言抓得住）。 */
+.jar--unrecognized td {
+  color: var(--redstone);
+}
+
+/* 那一行里的文件名也红（它是最先被看到的一格）。 */
+.jar--unrecognized .jarrow__file {
+  color: var(--redstone);
 }
 
 /* ★ 「显示全部已绑定的文件夹」那一栏（跨版本总览）。⚠️ 它与版本区**视觉上分开**：
