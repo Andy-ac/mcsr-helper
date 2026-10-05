@@ -1113,9 +1113,13 @@ export function tagOptionKeys(state: ModFoldersState): string[] {
  *
  * ⚠️ 查不到时退回 **key 本身**（不是猜一个名字）：目录里没有它的显示名就是目录的缺陷，
  *    界面上显示 key 正是"看得见的缺陷"（与 `tagLabelsOf` 的退化同一条纪律）。
+ * ⚠️★ 2026-10-04（A 的 T5）：第一格从 `state` 收窄成 `state.tags` 并**导出** ——
+ *    第三段（`VersionModList`）也要取显示名，而它手里只有那一格标签全集
+ *    （`VersionModRow` 不带 `tagLabels`，页面把 `state.tags` 当 prop 喂下去）。
+ *    ⇒ 这是"同一件事只有一处实现"：第三个渲染点**复用**它，不再抄一份查表。
  */
-function tagLabelFor(state: ModFoldersState, tag: string, lang: 'zh' | 'en'): string {
-  return state.tags.find((option) => option.key === tag)?.labels[lang] ?? tag;
+export function tagLabelFor(tags: ModFoldersState['tags'], tag: string, lang: 'zh' | 'en'): string {
+  return tags.find((option) => option.key === tag)?.labels[lang] ?? tag;
 }
 
 /**
@@ -1234,7 +1238,7 @@ export function ModCatalogSection({ state, handlers, actionError = null }: ModCa
                     void handlers.setTagFilter(toggleTag(state.tagFilter, tag));
                 }}
               >
-                {tagLabelFor(state, tag, labelLang)}
+                {tagLabelFor(state.tags, tag, labelLang)}
               </button>
             );
           })}

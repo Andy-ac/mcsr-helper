@@ -20,11 +20,15 @@
  *   —— 那条路有断言（㉟ 把原话喂进 props，它必须出现在产物里）。
  *
  * ===========================================================================
- * ⚠️★ 本任务（T3）**不建也不 import `VersionModList`**
+ * ⚠️★ 第三段（「该版本所有 mod」）由 T5 接在这里
  * ===========================================================================
- * spec §4 那个图里还有第三段「该版本所有 mod」。计划原先让 T3 先放一个"占位"组件，
- * 而它由 T5 创建 ⇒ T3 的自检**编译不过**，而且"占位组件"有被发布出去的风险。
- * ⇒ 裁定：**T3 的这一格就是"还没有第三段"**（不是假组件），T5 建好之后接进来。
+ * spec §4 那个图里的第三段是 `VersionModList`（T5 建）。T3 那会儿这一格**只有前两段**
+ * （不是假组件：留桩会让"占位"有机会被发布），T5 把它接在文件夹区**下面**（与 spec §4
+ * 那张图的顺序一致）。
+ * ⚠️★ 它拿到的 `page` 与 `VersionFolderList` 是**同一份**（`planVersionPage(state, expanded)`）
+ *   —— "已下载"的判定靠的就是这一份里的 `expanded`（D5），两处各算一遍就会漂。
+ * ⚠️ 另外喂下去的两格（`tagLabels` / `busy`）都是**整页共用的读数**（`state.tags` /
+ *   `state.busy`），不是"这一版"的投影；理由写在 `VersionModList` 的文件头。
  *
  * ===========================================================================
  * ⚠️★ 展开态与"显示全部"都住在这里（界面状态，不进持久化）
@@ -46,6 +50,7 @@ import { gameVersionOptions, reasonOf } from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
 import { bulkChannelUsable } from '@/components/ModFoldersPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
+import { VersionModList } from '@/components/VersionModList';
 
 /**
  * 这一页能发的**全部**动作（页面把它翻成 `ModFoldersHandlers` 上的某一条通道）。
@@ -79,6 +84,27 @@ export type ModPageAction =
       folderId: string;
       modid: string;
       releaseKey: string;
+      channel: Channel;
+    }
+  /*
+   * ★ Task 5（A 的第五片）：第三段那一行的**下载**（`downloadMissing` —— T8 就有的那条通道）。
+   *
+   * ⚠️★ 为什么 `kind` 是**新的**、不复用 `'update-mod'`：两者是**两条不同的写盘路径**
+   *    （`updateMod` 要求"这个文件夹里已经有它"，`downloadMissing` 要求"它**不在**这个
+   *    文件夹里"），闸也不同（`assertUpdatable` vs `assertNotManual` + 目录里唯一候选）。
+   *    ⚠️ 而且自检㊲ 有一条"`kind: 'update-mod'` 在 `FolderJarList.tsx` 里只许出现两次"的
+   *    计数守卫 —— 复用那个 kind 会让那一条**当场变红**（而它正是"只有一处写盘路径"的读数）。
+   * ⚠️ 入参与契约逐格对应：`gameVersion` 就是这一版的版本号（主进程拿它跟**目标文件夹的
+   *    有效版本**对一遍 —— 那一条是 `downloadMissing` 里最贵的一格：不一致会往一个别的
+   *    游戏版本的目录里装 jar，而它在目录里看起来完全正常）。
+   * ⚠️ 通道是 `Channel`（id 或 `'origin'`）；这一段只发 `'origin'`（理由与代价写在
+   *    `VersionModList` 的文件头）。
+   */
+  | {
+      kind: 'download-mod';
+      modid: string;
+      gameVersion: string;
+      folderId: string;
       channel: Channel;
     }
   | { kind: 'set-catalog-version'; version: string };
@@ -223,6 +249,15 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
         onToggle={toggle}
         onAction={run}
       />
+
+      {/*
+        ★★ 第三段（spec §4）：该版本目录里的**全部** mod（不是旧页面那栏"缺失的"）。
+        ⚠️ 顺序是 spec §4 那张图：文件夹区在下、第三段在最下。
+        ⚠️ 三格都从**这一层**喂（`page` 与上面那份**同一份**；`tagLabels` / `busy` 是整页
+        共用的读数）—— 自检㊴ 的三条打在**这一处的产物**上（T4 判修轮的教训：
+        自检自己喂的 prop 证明不了页面真的喂了它）。
+      */}
+      <VersionModList page={page} tagLabels={state.tags} busy={state.busy} onAction={run} />
     </section>
   );
 }

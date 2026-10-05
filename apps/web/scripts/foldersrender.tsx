@@ -3,6 +3,9 @@
  * 「文件更新」`/files` 那一页 · **第一部分（目录行）+ 第二部分（文件夹）+ 底部（缺失清单）**
  * 的渲染自检（2026-10-03，Task 7 写了 ①–⑰；同一天 **Task 8** 加了 ⑱–㉗ 并把脚本接进
  * `check:all` —— 第 14 个渲染自检）。
+ * ⚠️ A（mod 下载页重构，2026-10-04）的 T3–T5 加的 ㉝–㊴ 验的是**新页面**（tab 骨架 /
+ *    按版本分组的文件夹 / 展开的 jar 列表 / 第三段「该版本所有 mod」）；旧那三块与它们的
+ *    断言在 T6 之前**并存**（一次删净会让中间每一个提交的门禁变红）。
  *
  * 跑法（从仓库根）：
  *   & "$env:APPDATA\npm\pnpm.cmd" -F @mcsr/web check:folders
@@ -48,7 +51,7 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh 35 组、en 36 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
+ * zh **39** 组、en **40** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑）。
  * ⚠️ 组号是**顺序**，不是历史编号：
  *   · ①–⑰ 是 Task 7 的第一部分；
  *   · ⑱–㉗ 是 Task 8 的第二部分 / 缺失清单 / 特性检测；
@@ -59,7 +62,8 @@
  *     跨版本列表与接线守卫）。⚠️ 它们与 ⑱–㉚ 那十几组**并存一个提交周期**：T3 只换**页面**，
  *     旧组件（`ModFoldersPanel` 等）与它们的断言留到 T6 那一轮一起删。
  *   · ㊱–㊲ 是 A 的 **T4**：展开体里那张 jar 列表（含未识别标红）与单行更新的接线守卫。
- *     ⇒ 计数：zh **37**、en **38**（见文件末尾那条探针）。
+ *   · ㊳–㊴ 是 A 的 **T5**：第三段「该版本所有 mod」（全量 + 「已下载」 + 目标选择）与它的
+ *     喂入/接线守卫。⇒ 计数：zh **39**、en **40**（见文件末尾那条探针）。
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -99,6 +103,7 @@ import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import { ModFoldersPanel } from '@/components/ModFoldersPanel';
 import { ToolsPanel } from '@/components/ToolsPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
+import { VersionModList } from '@/components/VersionModList';
 import { Files } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
@@ -882,7 +887,9 @@ function selectedOption(markup: string): string {
 const withoutComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
 
-console.log(`【${LANG}】文件更新页 · 第一部分（目录行）+ 第二部分（文件夹）+ 底部（缺失清单）`);
+console.log(
+  `【${LANG}】文件更新页 · 旧三块（目录行 / 文件夹 / 缺失清单）+ 新页面（tab 骨架 / 按版本分组的文件夹 / 第三段「该版本所有 mod」）`,
+);
 
 // ---------------------------------------------------------------------------
 // ① 两个筛选维度：游戏版本下拉（选项 = 状态里的**全集**）+ 标签多选
@@ -3929,6 +3936,427 @@ ok(
   '㊲ 单行更新的接线守卫：两颗按钮各送自己那条通道（`origin` / `{mirrorId}`，各一处）、镜像判据来自状态、徽章表共用一份、那个键走共用的 `releaseKey()`、联合新增的那一格形状、`Files.tsx` 接到 `handlers.updateMod`',
 );
 
+// ===========================================================================
+// Task 5（A 的第五片）：第三段「该版本所有 mod」—— 全量 + 「已下载」 + 目标选择
+// ===========================================================================
+/*
+ * 这一组验的是**第三段**（`VersionModList`，spec §4）：该版本目录里的**全部** mod
+ *    （不是旧底部那栏"缺失的"）、与**已展开**文件夹重叠的那一行显示「已下载」而
+ *    **不给**下载按钮（D5 / §9.9）、以及单个下载的目标文件夹选择（D6 / §8）。
+ *
+ * ⚠️★ 判断一格都不在这一层：`downloadedIn` / `downloadTargets` / `releaseVersion` / `homepage`
+ *    全是**投影**（`planVersionPage`，T1）算好的 ⇒ 这一层只渲染（spec §5.1）。
+ *    能红的刀（逐条读数在报告里）：
+ *      · `downloadedIn.length > 0` → `>= 0`（恒真）⇒ "两个下载按钮"那条先红；
+ *      · 把两颗一起画（不互斥）⇒ "已下载那一行不再有下载按钮"红；
+ *      · 目标选择的闸 `> 1` → `>= 1` ⇒ "只有一个文件夹时不该有选择器"红；
+ *      · 0 个目标那一支的 `disabled` / 那句解释删掉 ⇒ 那两条红；
+ *      · `manual` / 没有目标那两行的闸删掉 ⇒ "只有一行有下载按钮"红。
+ *
+ * ⚠️★ 三格 prop（`page` / `tagLabels` / `busy`）由**页面产物**上那几条钉着（下一组）：
+ *    这一组喂的是**自检自己组的那份** `state`（与 T4 判修轮同一个教训 —— 自检自己喂的 prop
+ *    证明不了"页面真的喂了它"）。
+ */
+
+/** 产物里某个字面量出现了几次（简报里那个 `countOf` 的一行版）。 */
+const countOf = (markup: string, needle: string): number => markup.split(needle).length - 1;
+
+/**
+ * 第三段里的一行（`data-modid="<modid>"` 那一格）。找不到就当场红。
+ * ⚠️ 它与 `jarRowOf`（展开体里那一行，`data-jar`）**不是**同一个东西：两处都可能出现
+ *    同一个 modid（`sodium` 既在目录里、也在文件夹里），锚错了就会拿文件夹那一行去比。
+ */
+function modRowOf(markup: string, modid: string): string {
+  const found = markup.match(new RegExp(`<tr[^>]*data-modid="${modid}"[\\s\\S]*?</tr>`));
+  assert.ok(
+    found,
+    `产物里找不到 data-modid="${modid}" 的那一行 —— 第三段那一行没渲染出来（或者 data-modid 不再写在那里）`,
+  );
+  return found[0];
+}
+
+/**
+ * 渲染第三段（`VersionModList` 是纯 props 组件 ⇒ 喂 `page` + 三格就同步画完）。
+ * ⚠️ `tagLabels` / `busy` 照**页面**那一处调用点喂（下一组会证明页面真的喂了）。
+ */
+function modListHtmlOf(state: ModFoldersState, expanded: readonly string[]): string {
+  return keep(
+    html(
+      React.createElement(VersionModList, {
+        page: planVersionPage(state, expanded),
+        tagLabels: state.tags,
+        busy: state.busy,
+        onAction: noop,
+      }),
+    ),
+  );
+}
+
+/*
+ * ★★ 夹具：**两个**目录行 + **两个**同版本的文件夹（`f1` 里有 `sodium`、`f2` 是空的）。
+ * ⚠️ 名字与 modid **不同**（`Sodium Prime` vs `sodium`）：一样的话，"印的是 `row.name`"
+ *    那条断言会因为 modid 也在产物里而恒真（T4 那条"文件名里不带版本号"的同一条纪律）。
+ * ⚠️ 标签用**本组自己的**一格（`MOD_TAG`），而且显示名（`TAG-RANKED-ZH`）与 key（`ranked`）
+ *    大小写不同：这样"印显示名、不是印 key"那条反面断言才咬得住
+ *    （用现成的 `TAG_OPTION` 时 `legal-label-zh` 里含着 `legal`，反面断言恒真）。
+ */
+const MOD_TAG = { key: 'ranked', labels: { zh: 'TAG-RANKED-ZH', en: 'TAG-RANKED-EN' } };
+/** 这一遍语言下那个标签**应当**显示的字（两种语言各一条读数，见 ⑱ 的零汉字扫描）。 */
+const MOD_TAG_SHOWN = LANG === 'en' ? MOD_TAG.labels.en : MOD_TAG.labels.zh;
+const modRowFixture = (modid: string, name: string): CatalogRowView => ({
+  ...ROW_GITHUB,
+  modid,
+  name,
+  tags: [MOD_TAG.key],
+  tagLabels: [MOD_TAG.labels.zh],
+});
+const modListState = stateOf(
+  [modRowFixture('sodium', 'Sodium Prime'), modRowFixture('lithium', 'Lithium Prime')],
+  {
+    tags: [MOD_TAG],
+    folders: [
+      folder({ folderId: 'f1', rows: [folderRow({ modid: 'sodium' })] }),
+      folder({ folderId: 'f2', rows: [] }),
+    ],
+  },
+);
+
+// —— ① 没有展开任何文件夹 ⇒ 两个 mod 都有下载按钮（D5） ——
+const closedMods = modListHtmlOf(modListState, []);
+assert.ok(
+  closedMods.includes('data-modid="sodium"') && closedMods.includes('data-modid="lithium"'),
+  '★ 对照：两个 mod **都**画出来了 —— 下面"两个下载按钮"因此不是"只画了一行"的巧合',
+);
+assert.equal(
+  countOf(closedMods, 'data-action="download-mod"'),
+  2,
+  '★★ 没有展开任何文件夹 ⇒ 两个 mod 都有下载按钮（D5：不展开 = "没在你眼前下过"）',
+);
+assert.ok(
+  textOf(closedMods).includes(
+    textOf(resolved('files.versionModsTitle', { version: '1.16.1', count: 2 })),
+  ),
+  '★ 列表标题带**该版本**与条数（简报那条裸 `includes("1.16.1")` 会被 `data-version` 属性满足 ⇒ ' +
+    '这里比的是**标题那一句话**：版本号与条数各是一格读数）',
+);
+assert.equal(
+  textOf(closedMods).includes(textOf(resolved('files.colActions'))),
+  false,
+  '★★ **不再有「操作」列**（用户明确要求）：那一列的表头不许出现在第三段里',
+);
+// —— ② 一行里的四样东西：mod 名 / 标签徽章 / 目标版本 / homepage 链接 ——
+const sodiumClosed = modRowOf(closedMods, 'sodium');
+assert.ok(
+  textOf(sodiumClosed).includes(textOf('Sodium Prime')) &&
+    textOf(sodiumClosed).includes(textOf(MOD_TAG_SHOWN)) &&
+    textOf(sodiumClosed).includes(textOf(SODIUM_NEW.version)),
+  '★★ 那一行印：mod 名（`row.name`）+ 标签徽章 + **目标版本**（`row.releaseVersion`）',
+);
+assert.equal(
+  textOf(sodiumClosed).includes(MOD_TAG.key),
+  false,
+  `★ 反面：标签那一格印的是**显示名**（${MOD_TAG_SHOWN}），不是目录里的 key（${MOD_TAG.key}）`,
+);
+assert.deepEqual(
+  linksIn(sodiumClosed).map((link) => link.href),
+  [SODIUM_HOMEPAGE],
+  '★★ homepage 那一格是**这一行**的 `row.homepage`（写死一个别的地址、或者拿 release 地址顶上，都会红）',
+);
+assert.ok(
+  countOf(sodiumClosed, 'data-target-picker') === 1,
+  '★★ 该版本有**两个**文件夹 ⇒ 行内给一个目标选择器（D6；⚠️ 下面那条"只有一个文件夹时不画它"是它的反面）',
+);
+assert.deepEqual(
+  selectsIn(sodiumClosed).map((select) => select.values),
+  [['f1', 'f2']],
+  '★★ 选择器的选项就是**该版本可作目标**的那两个文件夹（`row.downloadTargets`，顺序 = 状态里的顺序）',
+);
+assert.ok(
+  textOf(sodiumClosed).includes(textOf('D:\\instances\\f1\\mods')) &&
+    textOf(sodiumClosed).includes(textOf('D:\\instances\\f2\\mods')),
+  '★★ 选项上印的是**文件夹路径**（`page.folders` 里那一格），不是 id —— 印 `f1`/`f2` 的实现在这里红',
+);
+assert.equal(
+  selectsIn(sodiumClosed)[0]?.selected,
+  'f1',
+  '★ 默认选中**第一个**可用文件夹（`<select value=X>` 里没有 X 时浏览器会静默选中第一个 ⇒ ' +
+    '那一屏就在撒谎：默认值必须来自 `downloadTargets`，不是组件自己记的）',
+);
+// —— ③ ★★★ 展开 `f1` 之后：重叠的那一行变成「已下载」、而且**不再有**下载按钮 ——
+const openedMods = modListHtmlOf(modListState, ['f1']);
+const sodiumOpened = modRowOf(openedMods, 'sodium');
+assert.ok(
+  textOf(sodiumOpened).includes(textOf(resolved('files.alreadyDownloaded'))),
+  '★★★ 与**已展开**的文件夹重叠的 mod 显示「已下载」（spec §9.9 / D5）',
+);
+assert.ok(
+  sodiumOpened.includes('data-state="downloaded"'),
+  '★ 而且带**机器读数**（文案以后再改，这条读数还在）',
+);
+assert.equal(
+  countOf(sodiumOpened, 'data-action="download-mod"'),
+  0,
+  '★★★ 而且那一行**不再有**下载按钮 —— 只说"显示已下载"的话，"两个一起画"照样绿（spec §9 的刀 ⑨）',
+);
+assert.equal(
+  countOf(sodiumOpened, 'data-target-picker'),
+  0,
+  '★ 那一行也不给目标选择器（它没有下载按钮，选择器没有落点）',
+);
+const lithiumOpened = modRowOf(openedMods, 'lithium');
+assert.equal(
+  countOf(lithiumOpened, 'data-action="download-mod"'),
+  1,
+  '★★ 不重叠的那个**仍有**下载按钮（与上面那条**互相独立**：一个"永远不画按钮"的实现过得了那条、过不了这条）',
+);
+// —— ④ 只有一个文件夹 ⇒ 直接下到它，不画选择器（D6 的另一半） ——
+const singleTargetState = stateOf(modListState.catalogRows, {
+  tags: [MOD_TAG],
+  folders: [folder({ folderId: 'f1', rows: [folderRow({ modid: 'sodium' })] })],
+});
+const singleTargetHtml = modListHtmlOf(singleTargetState, []);
+assert.equal(
+  countOf(singleTargetHtml, 'data-target-picker'),
+  0,
+  '★★ 该版本**只有一个**文件夹 ⇒ **不画**选择器（D6：多一个选择器就是多一步没有信息量的点击）',
+);
+assert.equal(
+  countOf(singleTargetHtml, 'data-action="download-mod"'),
+  2,
+  '★ 而下载按钮照旧（2 行各一颗）—— 与上一条**互相独立**（"按钮也没了"过得了那条、过不了这条）',
+);
+// —— ⑤ 一个能当目标的文件夹都没有 ⇒ 按钮**禁用** + 说清为什么（spec §8） ——
+const noTargetHtml = modListHtmlOf(
+  stateOf(modListState.catalogRows, { tags: [MOD_TAG], folders: [] }),
+  [],
+);
+const noTargetRow = modRowOf(noTargetHtml, 'sodium');
+assert.ok(
+  textOf(noTargetRow).includes(
+    textOf(resolved('files.noFolderForDownload', { version: '1.16.1' })),
+  ),
+  '★★★ 0 个目标 ⇒ **说清为什么**（spec §8：按钮禁用并说明"先绑定一个文件夹"）—— ' +
+    '一颗静默的死按钮正是这一条要消灭的东西',
+);
+assert.deepEqual(
+  buttonsIn(noTargetRow).map((button) => button.disabled),
+  [true],
+  '★★ 0 个目标时那颗按钮**在、而且禁用**（这一条同时管两件事：只印一句解释、按钮照旧可点 ⇒ 红；' +
+    '而"干脆不画那颗按钮" ⇒ 这个数组是空的 ⇒ 同样红 —— 静默的死按钮与被吞掉的按钮都不是答案）',
+);
+// —— ⑥ 主进程必拒的那两行**一颗下载都不给**（`manual` / 没有目标） ——
+/*
+ * ⚠️★ `downloadMissing` 现读下来有两道"整条拒"的闸（`apps/desktop/src/mod-folders.ts`）：
+ *    · `assertNotManual(row.manual, what, '下载')` ⇒ `manual`（OptiFine 那一类 54 条）必拒；
+ *    · `row.candidates.length !== 1` / `official === null` ⇒ `ambiguous` 与
+ *      `missing-release` 那两档**没有"该装哪一个"的答案**，也必拒。
+ *    ⇒ 给它们画下载按钮就是画一颗**注定被拒**的按钮（Ruling 47/48，T8 那次 Critical 的同一条）。
+ *    ⚠️★ 判据**不是**第一部分的更新 allow-list（那是"给不给更新按钮"）：这里读的是投影里
+ *    **为下载准备**的两格（`releaseUrl` / `manual`），所以它不是第四份 allow-list。
+ */
+const refuseState = stateOf(
+  [
+    modRowFixture('sodium', 'Sodium Prime'),
+    { ...ROW_MANUAL, modid: 'optifine', name: 'OptiFine Prime' },
+    { ...ROW_AMBIGUOUS, modid: 'speedrunigt', name: 'SpeedRunIGT Prime' },
+  ],
+  {
+    tags: [MOD_TAG],
+    folders: [folder({ folderId: 'f1', rows: [folderRow({ modid: 'sodium' })] })],
+  },
+);
+const refuseHtml = modListHtmlOf(refuseState, []);
+assert.equal(
+  countOf(refuseHtml, 'data-action="download-mod"'),
+  1,
+  '★★★ 三行里**只有能下的那一行**有下载按钮：`manual` 与没有目标那两行一颗都不给' +
+    '（主进程必拒 ⇒ Ruling 47/48：会拒的一律不画）',
+);
+assert.ok(
+  textOf(modRowOf(refuseHtml, 'optifine')).includes(textOf(resolved('files.hintManual'))),
+  '★ `manual` 那一行给出**它自己**的解释（复用共享那条词条，不在这里另写一句）',
+);
+assert.ok(
+  textOf(modRowOf(refuseHtml, 'speedrunigt')).includes(textOf(resolved('files.hintAmbiguous'))),
+  '★ 没有目标那一行给出 `ambiguous` 的解释（复用共享的 `VERDICT_HINTS`）',
+);
+// —— ⑦ 目录不可用 ⇒ 既有文案、不画表（spec §8；与"这一版没有 mod"分开说） ——
+const noCatalogHtml = modListHtmlOf({ ...modListState, missingStatus: 'catalog-unavailable' }, []);
+assert.ok(
+  textOf(noCatalogHtml).includes(textOf(resolved('files.catalogUnavailable'))),
+  '★★ 目录不可用 ⇒ 用**既有**那条文案（spec §8："沿用 `catalogStatus` 的四态文案"）',
+);
+assert.equal(
+  noCatalogHtml.includes('data-modid='),
+  false,
+  '★★ 而且**一张表都不画**：`catalogAvailable === false` 时"读不到目录"与"这一版没有 mod"必须分开说',
+);
+// —— ⑧ 目录可用、但这一版一条 mod 都没有 ⇒ 一句话（空表与"没渲染"分不开） ——
+const emptyModsHtml = modListHtmlOf(stateOf([], { folders: [] }), []);
+assert.ok(
+  textOf(emptyModsHtml).includes(textOf(resolved('files.versionModsNone'))),
+  '★ 该版本一条目录 mod 都没有 ⇒ 说一句（不许画一张空表）',
+);
+assert.equal(
+  emptyModsHtml.includes('<table'),
+  false,
+  '★ 反面：那一档**连表都不画**（画一张空表与"没渲染"分不开，而且它看起来像坏了；' +
+    '⚠️ 判据是 `<table` 而不是 `data-modid=` —— 后者在 `mods: []` 下**恒真**：§5.32 的第一类）',
+);
+// —— ⑨ 夹具自钉 + 裸 key 自钉（`scripts/**` 不在任何 tsconfig 里 ⇒ 写错了门禁是无声的） ——
+/*
+ * ⚠️★ 这一段照 T4 的那条（`assert.ok(ROW_GITHUB.homepage, …)`）：`apps/web/scripts/**`
+ *    **不在任何 tsconfig 的 `include` 里**（`tsc` 不看它、`tsx` 只剥类型）⇒ 夹具写错
+ *    在门禁上**完全无声**。下面四条钉的是"上面那些断言真的有可能红"。
+ */
+assert.ok(
+  planVersionPage(modListState, []).mods.every((row) => row.releaseUrl !== null && !row.manual),
+  '夹具自钉：那两个 mod **都能下**（否则"两个下载按钮"是一条空跑）',
+);
+assert.deepEqual(
+  planVersionPage(modListState, []).mods[0]?.downloadTargets,
+  ['f1', 'f2'],
+  '夹具自钉：两个文件夹都够格当目标（`pathExists && hasReading`）⇒ 选择器那两条才有对象',
+);
+assert.deepEqual(
+  planVersionPage(modListState, []).mods.map((row) => row.downloadedIn),
+  [[], []],
+  '夹具自钉：没展开时 `downloadedIn` 是空的（"两个下载按钮"那条的判据）',
+);
+assert.deepEqual(
+  planVersionPage(modListState, ['f1']).mods.map((row) => row.downloadedIn),
+  [['f1'], []],
+  '夹具自钉：展开 `f1` 之后**只有** `sodium` 命中（否则"不重叠的那个仍有按钮"是一条空跑）',
+);
+assert.deepEqual(
+  rawKeysIn(closedMods + openedMods + refuseHtml + noCatalogHtml + emptyModsHtml),
+  [],
+  '★ 这一段五份产物里没有裸 key 泄漏（⑬ 那条扫描跑在这一组**之前** ⇒ 新词条要在这里自钉：' +
+    '少一条 `en` 翻译时 i18next 会把 key 原样印出来）',
+);
+ok(
+  '㊳ 第三段（该版本所有 mod）：全量行（mod 名 / 标签显示名 / 目标版本 / homepage 的 href）、没展开 ⇒ 每行一颗下载按钮、展开后重叠的那一行变「已下载」且**没有**下载按钮与选择器、不重叠的仍有、目标选择只在 ≥2 个文件夹时出现（选项是路径、默认第一个）、0 个目标 ⇒ 禁用 + 说明、`manual` 与没有目标那两行一颗都不给、目录不可用 ⇒ 既有文案且不画表、没有 mod ⇒ 一句话、四条夹具自钉 + 裸 key 自钉',
+);
+
+// ---------------------------------------------------------------------------
+// ㊴ 第三段的**喂入**与接线守卫（spec §5.1 / §9.13 的同族）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 为什么必须有这一组（T4 判修轮那条教训，逐字同一条）：上面那一组的三格 prop
+ *    （`page` / `tagLabels` / `busy`）全是**自检自己传的** ⇒ 把 `ModDownloadPanel`
+ *    那一处调用点改成 `page={{…mods: []}}` / `tagLabels={[]}` / `busy={false}`，
+ *    上面**一条都不会红**（"页面把这三格喂空了"曾经是全绿的）。
+ *    ⇒ 这一组的判据打在 **`ModDownloadPanel` 渲染出来的产物**上。
+ * ⚠️ 夹具用**本组自己的**一格标签（`MOD_TAG`：显示名与 key 大小写不同）⇒ 标签那两条
+ *    才咬得住；文件夹用两个（`f1` / `f1b`）⇒ 目标选择器在页面产物里也画得出来。
+ * ⚠️★ 面板里的 `expanded` 是它自己的 `useState`（静态渲染恒为空）⇒ **「已下载」那一半
+ *    在这一层证不了**（它由上一组按投影喂出来）；这一层证的是"页面真的把这三格喂下去了"。
+ * ⚠️ 后四条是**接线守卫**（与 ⑯/㉖/㉗/㉟/㊲ 同一族）：产物里看不见事件处理器，
+ *    这里钉"那条线在、而且只有一条"。
+ */
+const panelModState = stateOf([{ ...ROW_GITHUB, tags: [MOD_TAG.key] }], {
+  tags: [MOD_TAG],
+  folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f1b' })],
+});
+const panelModHtml = keep(
+  html(React.createElement(ModDownloadPanel, { state: panelModState, onAction: noop })),
+);
+assert.ok(
+  panelModHtml.includes('data-modid="sodium"'),
+  '★★★ 页面**真的**把 `page` 喂给了第三段（那一行出现在 `ModDownloadPanel` 的产物里）—— ' +
+    '把那一格换成 `mods: []` ⇒ 这一条红，而上一组照样绿',
+);
+assert.ok(
+  panelModHtml.indexOf('data-folder-id="f1"') < panelModHtml.indexOf('data-modid="sodium"'),
+  '★★ 第三段在**文件夹区下面**（spec §4 那张图的顺序：先"这一版下的 mod 文件夹"、' +
+    '再"该版本所有 mod"）—— 产物里的**先后**是这一条唯一的读数',
+);
+assert.equal(
+  countOf(panelModHtml, 'data-action="download-mod"'),
+  1,
+  '★★ 而那一颗下载按钮也在页面产物里（同上：`mods: []` ⇒ 红）',
+);
+const panelModRow = modRowOf(panelModHtml, 'sodium');
+assert.ok(
+  textOf(panelModRow).includes(textOf(MOD_TAG_SHOWN)),
+  '★★★ 标签徽章印的是**状态里那一格**的显示名 ⇒ `tagLabels` 真的从页面喂下来了' +
+    '（换成 `tagLabels={[]}` ⇒ 那一格退回 key ⇒ 这一条与下面那条一起红）',
+);
+assert.equal(
+  textOf(panelModRow).includes(MOD_TAG.key),
+  false,
+  '★★★ 反面：页面产物里不许出现裸的标签 key（`tagLabels={[]}` 时它会原样印出来）',
+);
+const busyPanelModHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: { ...panelModState, busy: true },
+      onAction: noop,
+    }),
+  ),
+);
+assert.deepEqual(
+  buttonsIn(modRowOf(busyPanelModHtml, 'sodium')).map((button) => button.disabled),
+  [true],
+  '★★★ 状态 `busy` 时那颗下载按钮**禁用** ⇒ `busy` 真的从页面喂下来了' +
+    '（换成写死 `busy={false}` ⇒ 这一条红；⚠️ `downloadMissing` 第一句就是 `assertNotBusy()`，' +
+    '那一档点下去必吃一句红字）',
+);
+assert.deepEqual(
+  buttonsIn(panelModRow).map((button) => button.disabled),
+  [false],
+  '★ 反面：不忙时它可用（只写"忙时禁用"的话，一个恒禁用的实现照样绿）',
+);
+const versionModListCode = withoutComments(
+  readFileSync(new URL('../src/components/VersionModList.tsx', import.meta.url), 'utf8'),
+);
+assert.match(
+  versionModListCode,
+  /onAction\(\{\s*kind:\s*'download-mod',[\s\S]{0,200}?channel:\s*'origin',?\s*\}\),?/,
+  "★★ 那颗按钮把 **modid / gameVersion / folderId / channel** 一起发出去（`channel` 是 `'origin'`：",
+);
+assert.equal(
+  versionModListCode.match(/kind:\s*'download-mod'/g)?.length,
+  1,
+  '★★ 只有**一处**发这个动作（多一处就是第二条写盘路径）',
+);
+assert.equal(
+  versionModListCode.includes('planVersionPage'),
+  false,
+  '★★ 第三段**不重算**任何判断（spec §5.1：`downloadedIn` / `downloadTargets` 是投影算好的）',
+);
+assert.match(
+  versionModListCode,
+  /row\.downloadedIn\.length > 0/,
+  '★★ 「已下载」的判据读的是**投影那一格** `row.downloadedIn`（⚠️ 锚在**判定那一句**上：' +
+    '只锚 `row.downloadedIn` 的话，"把它 alias 成一个局部量"这种改写会让守卫红、而行为一模一样）',
+);
+assert.match(
+  versionModListCode,
+  /row\.downloadTargets\.length > 1/,
+  '★★ 目标选择器的闸读的是**投影那一格** `row.downloadTargets`（同上：锚在判定那一句上）',
+);
+assert.match(
+  downloadPanelCode,
+  /<VersionModList[\s\S]{0,300}?page=\{page\}[\s\S]{0,300}?tagLabels=\{state\.tags\}[\s\S]{0,300}?busy=\{state\.busy\}/,
+  '★★ 面板那一处调用点把**三格**都喂下去（产物上那三条是主证据，这一条钉的是"同一处"）',
+);
+assert.match(
+  filesRouteCode,
+  /case 'download-mod':\s*await handlers\.downloadMissing\(\s*action\.modid,\s*action\.gameVersion,\s*action\.folderId,\s*action\.channel,?\s*\);/,
+  '★★ 那个动作被接到 `handlers.downloadMissing(…)` 上（联合里加了成员却不接线 ⇒ `never` 守卫在' +
+    '**编译期**红；这一条钉的是**接对了哪条通道**）',
+);
+assert.match(
+  fePanelCode,
+  /downloadMissing:\s*\(modid: string, gameVersion: string, folderId: string, channel: Channel\)\s*=>\s*run\(\(\)\s*=>\s*api\.downloadMissing\(modid, gameVersion, folderId, channel\)\)/,
+  '★ 契约那条通道在动作层**已有**实现（`downloadMissing` 是 T8 就有的那一条：T5 复用它，' +
+    '不另加一条同义通道）',
+);
+ok(
+  "㊴ 第三段的喂入与接线：页面产物里**有**那一行、那颗下载按钮、标签显示名来自 `state.tags`、`busy` 时它禁用（正反各一条）、唯一一处 `kind: 'download-mod'`（送 origin）、不重算投影、面板那一处调用点喂三格、`Files.tsx` 接到 `handlers.downloadMissing`、而那条通道在动作层已有实现",
+);
+
 // ---------------------------------------------------------------------------
 // ㉛ 英文那一遍：全部渲染产物零汉字
 // ---------------------------------------------------------------------------
@@ -3967,8 +4395,10 @@ if (LANG === 'en') {
  *    A 的 T4 再加 ㊱–㊲ 两组（展开的 jar 列表 / 单行更新的接线守卫）⇒ 35 → **37**、36 → **38**。
  *    ⚠️ 同一轮里 T3 那条**恒真**的 `!skeletonHtml.includes('data-jar="')` 被换成了
  *    "折叠没有 + 展开真的有"一正一反两条（落在㉞**已有**的那一组里）—— 组数不变。
+ *    A 的 T5 再加 ㊳–㊴ 两组（第三段「该版本所有 mod」/ 它的喂入与接线守卫）
+ *    ⇒ 37 → **39**、38 → **40**。
  */
-const expectedGroups = LANG === 'en' ? 38 : 37;
+const expectedGroups = LANG === 'en' ? 40 : 39;
 assert.equal(
   pass,
   expectedGroups,

@@ -174,6 +174,19 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
          */
         await handlers.updateMod(action.folderId, action.modid, action.releaseKey, action.channel);
         break;
+      case 'download-mod':
+        /*
+         * ★ Task 5（A 的第五片）：第三段那一行的下载。⚠️ 它走的是 T8 就有的那条通道
+         *   （`downloadMissing` —— 底部旧清单原本用它）⇒ 这里**不新增**一条同义通道；
+         *   四个入参逐格原样转过去（`gameVersion` 是主进程核对自己状态的那一格）。
+         */
+        await handlers.downloadMissing(
+          action.modid,
+          action.gameVersion,
+          action.folderId,
+          action.channel,
+        );
+        break;
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);
         break;

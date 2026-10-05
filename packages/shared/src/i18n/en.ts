@@ -4687,5 +4687,42 @@ export const en: TranslationSchema = {
      * actionable clue).
      */
     jarUnrecognized: 'Not recognized as a catalog mod',
+    /*
+     * ===================================================================
+     * A (mod download page restructure) - Task 5: the "all mods for this version" section
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2) or
+     * down-triangle (U+25BE) in these values (neither is in the self-hosted pixel subsets).
+     */
+    /*
+     * ★★ The heading **must carry the version** (without it the reader takes this section as
+     * global - the old bottom list's `missingHint` wrote the same rule) plus the count.
+     * ⚠️ The old key was `partThreeTitle` ("Missing mods") - this one is the **full** list.
+     */
+    versionModsTitle: 'All mods under {{version}} ({{count}})',
+    /*
+     * ⚠️ Catalog available but nothing for this version: **say so** (an empty table cannot be
+     * told apart from "not rendered"), and it is a different thing from "catalog unavailable".
+     */
+    versionModsNone: 'There are no mods to list for this version.',
+    /*
+     * ★★ Downloading one mod. ⚠️ Not `missingDownloadOrigin` ("Download (origin)"): that
+     * string is paired with a mirror button, and this section only ever sends the **origin**
+     * channel (the reason and the cost are in `VersionModList`'s header).
+     */
+    downloadMod: 'Download',
+    /*
+     * ★★★ "Already downloaded": overlapping an **expanded** folder **replaces** the download
+     * button (spec §9.9 / D5). It means "it is here where you are looking right now", not
+     * "it is on this machine".
+     */
+    alreadyDownloaded: 'Already downloaded',
+    /*
+     * ★★ No folder can be a target (spec §8): the button is **disabled** and says why.
+     * ⚠️ The `downloadTargets` rule is "path exists **and** it has a scan reading" - a user may
+     * well have one folder that fails either half, so the sentence names both conditions.
+     */
+    noFolderForDownload:
+      'There is no folder to download into - a bound folder whose game version is {{version}}, whose path still exists and which has been scanned once.',
   },
 };
