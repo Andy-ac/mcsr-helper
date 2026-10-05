@@ -226,6 +226,18 @@ export interface DesktopBridge {
      */
     unbindCatalogRow(rowId: string): Promise<ModFoldersState>;
     unbindFolder(folderId: string): Promise<ModFoldersState>;
+    /**
+     * 在系统文件管理器里打开这个 mod 文件夹（**A 的 S2 新增**）。
+     *
+     * ⚠️★ 只收 **folderId**（与其它通道同一条纪律）：路径从主进程**自己的状态**里取，
+     *    渲染进程永远递不进任意路径 —— 这个通道的"打开"意味着"会让用户的操作系统
+     *    去打开一个位置"，是本仓**唯一**一条有这种副作用的通道。
+     * ⚠️ 入参收窄与拒绝的形状**照 `unbindFolder`**（同一个 `requireFolder`、同一句文案）：
+     *    状态里没有这个 id 就**抛**（不猜、更不把 id 当路径用）。
+     * ⚠️ 返回值只说"那一次打开动作"的结果（`shell.openPath` 失败时给一句错误文案），
+     *    **不是** `ModFoldersState` —— 它不改状态，所以没有新状态可推。
+     */
+    openFolder(folderId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
     /** 不带 `folderId` = 全部重扫；只读（不下载、不写盘）。 */
     rescan(folderId?: string): Promise<ModFoldersState>;
     /**
@@ -340,7 +352,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十六条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十七条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -348,7 +360,8 @@ export function desktopBridge(): DesktopBridge | null {
  * **引用同一个常量对象**，两边各自手写一遍从而漂移就不可能发生。
  *
  * ⚠️ **v1 那九条一个字节都不动**（`FILE_UPDATES_CHANNELS` 原样保留）：老客户端 0.0.4
- *    读的是那些串，改一个字母就是"点了没反应"。这一组**只加**。
+ *    读的是那些串，改一个字母就是"点了没反应"。这一组**只加**（本任务加 `openFolder`，
+ *    16 → 17）。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
  * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**四处不是纯 kebab**
@@ -357,7 +370,8 @@ export function desktopBridge(): DesktopBridge | null {
  *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
  *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
- *    其余十一个都是方法名的逐字 kebab。
+ *    其余**十三个**都是方法名的逐字 kebab（新加的 `openFolder` ⇒ `-open-folder` 也在其中；
+ *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准）。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -373,6 +387,11 @@ export const MOD_FOLDERS_CHANNELS = {
   /** ⚠️ 与 `bindCatalogRow` 是一对（Ruling 60）：有绑定就必须要能解绑。 */
   unbindCatalogRow: 'mcsr:modfolders-unbind-catalog-row',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
+  /**
+   * ⚠️★ 唯一一条**会让用户的操作系统去打开一个位置**的通道：入参只有 id
+   * （见契约上那一格：路径由主进程从自己的状态里取）。
+   */
+  openFolder: 'mcsr:modfolders-open-folder',
   rescan: 'mcsr:modfolders-rescan',
   setFolderGameVersion: 'mcsr:modfolders-set-folder-version',
   setFolderAutoUpdate: 'mcsr:modfolders-set-folder-auto',

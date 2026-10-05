@@ -294,9 +294,11 @@ console.log(
 
 /**
  * 通道名在两个产物里的出现次数（ASCII 锚点 ⇒ 与编码无关，§5.92 的教训只针对中文）。
- * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"，
- *    而 `MOD_FOLDERS_CHANNELS` 现有 **16** 个成员）：**16** 个通道名进 `main.cjs`，
- *    其中 `ipcMain.handle` 只有 **15** 条 —— 第 16 个是 `onStatus`，它只**推**（`send`）。
+ * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"；
+ *    **A 的 S2 加了 `openFolder` 之后是 17 个成员**）：**17** 个通道名进 `main.cjs`，
+ *    其中 `ipcMain.handle` 只有 **16** 条 —— 第 17 个是 `onStatus`，它只**推**（`send`）。
+ * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 16/17：
+ *    手抄的数字会在"通道表加了/删了一条"时变成一句**看起来还在的假话**（§5.32 ④）。
  */
 function countChannels(path, channels) {
   if (!existsSync(path)) return null;
@@ -311,10 +313,11 @@ function countChannels(path, channels) {
     missing: counts.filter((c) => c.n === 0).map((c) => c.name),
   };
 }
+const MOD_CH_COUNT = Object.keys(MOD_CH).length;
 const mainCounts = countChannels(MAIN_CJS, MOD_CH);
 const preloadCounts = countChannels(PRELOAD_CJS, MOD_CH);
 console.log(
-  `  产物里 mcsr:modfolders-* 的出现：main.cjs 命中 ${String(mainCounts.present)}/16；preload.cjs 命中 ${String(preloadCounts ? preloadCounts.present : '（无 preload.cjs）')}/16`,
+  `  产物里 mcsr:modfolders-* 的出现：main.cjs 命中 ${String(mainCounts.present)}/${String(MOD_CH_COUNT)}；preload.cjs 命中 ${String(preloadCounts ? preloadCounts.present : '（无 preload.cjs）')}/${String(MOD_CH_COUNT)}`,
 );
 if (mainCounts.missing.length > 0) {
   console.log(`    main.cjs 里一个都没有的通道：${mainCounts.missing.join(', ')}`);
@@ -327,6 +330,12 @@ const handlers = new Map();
 const pushes = [];
 const windows = [];
 const dialogCalls = [];
+/**
+ * ★ A 的 S2：`shell.openPath` 收到的**每一个**参数（原样记下来 —— 判据就是"它收到了什么"）。
+ * ⚠️ 记的是**参数本身**，不是"调用次数"：`openFolder` 那条纪律是"路径只能来自主进程的状态"，
+ *    而"调用了几次"对"参数是不是那个 id"一个字都没说。
+ */
+const openCalls = [];
 let openQueue = [];
 let messageResponses = [];
 
@@ -410,7 +419,18 @@ const electronStub = {
       setPermissionCheckHandler: () => {},
     },
   },
-  shell: { openExternal: () => Promise.resolve() },
+  /*
+   * ★ A 的 S2（spec §9.14）：`openFolder` 是**唯一一条会让用户的操作系统去打开一个位置**的
+   *   通道 ⇒ 桩要能把"到底打开了哪个路径"记下来。返回空串 = 成功
+   *   （Electron 的 `shell.openPath` 就是"失败时给一句错误文案、成功时给空串"）。
+   */
+  shell: {
+    openExternal: () => Promise.resolve(),
+    openPath: async (p) => {
+      openCalls.push(p);
+      return '';
+    },
+  },
 };
 
 /** `app.getPath('userData')` 要读的那个目录（每个相位一份临时目录）。 */
@@ -748,7 +768,7 @@ function loadArtifact() {
   require(MAIN_CJS);
 }
 
-/** 等 15 条 invoke 通道注册好（第 16 个成员 `onStatus` 是推送、没有 handler）。 */
+/** 等 16 条 invoke 通道注册好（第 17 个成员 `onStatus` 是推送、没有 handler）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
   for (let i = 0; i < 240; i += 1) {
@@ -895,15 +915,15 @@ async function mainPhase() {
   const registered = await waitForHandlers();
 
   // =========================================================================
-  await section('① 十五条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
+  await section('① 十六条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
     const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
     const missing = expected.filter((name) => !handlers.has(name));
     check(
-      `ipcMain.handle 注册了 15 条 mcsr:modfolders-*（16 个成员里 onStatus 是推送、不算）`,
+      `ipcMain.handle 注册了 16 条 mcsr:modfolders-*（17 个成员里 onStatus 是推送、不算）`,
       registered && missing.length === 0,
       missing.length === 0
         ? `handlers 共 ${String(handlers.size)} 条`
-        : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/16（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/16）`,
+        : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/${String(MOD_CH_COUNT)}（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/${String(MOD_CH_COUNT)}）`,
     );
   });
   if (!registered) {
@@ -951,6 +971,70 @@ async function mainPhase() {
     );
   });
   if (folderId === '') return { workRoot, ok: false };
+
+  // =========================================================================
+  /*
+   * ★ A 的 S2（spec D7 / §9.14）：`openFolder` —— **入参只有 id，路径只能来自主进程的状态**。
+   *
+   * 为什么**两半**都要（spec §9.14 就是两句：合法 id ⇒ 用**该文件夹的路径**调
+   *   `shell.openPath`；未知 id ⇒ 拒且**不调用**）：
+   *   · 只有"未知 id ⇒ 不调用"那一半时，一个"把入参直接当路径"的坏实现**也可能是绿的**
+   *     （`'no-such-folder-id'` 被当成一个路径打开了 —— 那正是刀 ① 要红的形态）；
+   *   · 只有"合法 id ⇒ 调用了"那一半时，参数是什么分不清（"打开了一个路径"与
+   *     "打开了**这个**路径"是两件事）。
+   * ★ 决定性的一句是**参数本身**：这个 folderId 是主进程 `folderIdOf(path)` 生成的 uuid，
+   *   与路径毫无字面关系 ⇒ `openPath` 收到 `modsDir` 这件事**只能**来自主进程那份状态。
+   * ⚠️ 未知 id 那一条**必须是"拒"**（抛；与 `unbindFolder` 对不存在的 folderId 同一条 ——
+   *   `requireFolder` 是这一组入参收窄的唯一入口），而且判据钉的是**那句文案**而不是"抛了"：
+   *   "这条通道压根没注册"同样满足"抛了"，而那是一条恒真的假绿（§5.32 ①）。
+   */
+  await section('★ A（spec §9.14）：openFolder —— id 进、路径从主进程的状态出', async () => {
+    /*
+     * 两条**静态**读数（通道表 + 产物）住在这一层而不是文件头上那一段：
+     * 文件头那一段在每个相位都会跑一遍（主相位 + state-file ×3 + prefs ×3 + write ×1 = 8 遍），
+     * 而 `check()` 是全局计数、`failures !== 0` 会让**每个子进程**都以 1 退出
+     * ⇒ 一条红的通道判据会连坐出 8 条假的"（子进程）…成立"红。实测过那一次：64 ✗ / 274 ✓。
+     */
+    check(
+      'A：openFolder 在通道表里（分母现数：本任务之后是 17 条）',
+      'openFolder' in MOD_CH,
+      `${String(MOD_CH.openFolder ?? '（没有这一条）')}；表里共 ${String(MOD_CH_COUNT)} 条`,
+    );
+    const openFolderCount = countChannels(MAIN_CJS, { openFolder: MOD_CH.openFolder });
+    check(
+      'A：main.cjs 注册了 openFolder（产物里命中那个串）',
+      openFolderCount !== null && openFolderCount.present >= 1,
+      `命中 ${String(openFolderCount?.present ?? '（没有产物）')}；期望通道名 ${String(MOD_CH.openFolder)}`,
+    );
+    openCalls.length = 0;
+    let opened = null;
+    try {
+      opened = await invoke(MOD_CH.openFolder, folderId);
+    } catch (error) {
+      opened = error;
+    }
+    check(
+      '★ 合法 id ⇒ 用**该文件夹的路径**调 shell.openPath（而参数是 id，不是路径）',
+      opened?.ok === true &&
+        openCalls.length === 1 &&
+        resolve(String(openCalls[0])).toLowerCase() === resolve(modsDir).toLowerCase(),
+      `返回值 ${JSON.stringify(opened ?? null)}；openPath 收到 ${JSON.stringify(openCalls)}；期望 ${modsDir}`,
+    );
+    openCalls.length = 0;
+    let unknownRefused = null;
+    try {
+      await invoke(MOD_CH.openFolder, 'no-such-folder-id');
+    } catch (error) {
+      unknownRefused = error;
+    }
+    check(
+      'A：openFolder 未知 id ⇒ 拒且**一个 openPath 都没调**（同一个状态里查不到就不猜）',
+      openCalls.length === 0 &&
+        typeof unknownRefused?.message === 'string' &&
+        unknownRefused.message.includes('状态里没有这个文件夹'),
+      `${unknownRefused?.message ?? '（没有抛）'}；openPath 收到 ${JSON.stringify(openCalls)}`,
+    );
+  });
 
   // =========================================================================
   /*
@@ -1742,7 +1826,7 @@ async function stateFilePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 15 条通道注册起来了', registered);
+  check('（前置）这一相位也把 16 条通道注册起来了', registered);
 
   // 给启动那一路（目录抓取 + 扫盘）一点时间落盘
   await new Promise((r) => setTimeout(r, 1500));
@@ -1906,7 +1990,7 @@ async function prefsPhase() {
   upstreamMode = 'ok';
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 15 条通道注册起来了', registered);
+  check('（前置）这一相位也把 16 条通道注册起来了', registered);
 
   /*
    * 等 `startUp` 真正跑完：判据是**推给页面的那份状态**（`onStatus`）里
@@ -2154,7 +2238,7 @@ async function writePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  if (!registered) bail('十五条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+  if (!registered) bail('十六条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
 
   /** 绑一个夹具目录（走原生的目录对话框桩）。 */
   const bindAt = async (dir) => {

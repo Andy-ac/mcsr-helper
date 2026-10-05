@@ -176,6 +176,9 @@ const bridge: DesktopBridge = {
    *     自己的状态、`downloadMissing` 按 `(modid, 游戏版本)` 在目录里查
    *     ⇒ 这一组**没有任何一条收地址**：能按 id 触发写盘，但**写哪里、从哪儿取都不是
    *     页面说了算**（完整那段见 `@mcsr/shared/desktop` 里 `modFolders` 的注释）。
+   *   · ★ `openFolder(folderId)`（A 的 S2 新增）是**唯一一条会让用户的操作系统去打开一个
+   *     位置**的通道：转发这一条时同样**只递 id** —— 这一行里没有路径，
+   *     路径由主进程从它自己的状态里取（这正是那条通道存在的理由）。
    *
    * ⚠️ **读**方向与上面一组同样反过来：`getState` / `onStatus` 交出去的
    *    `ModFoldersState` 里带着已绑定文件夹的**绝对路径**（含用户名）—— 那是
@@ -217,6 +220,15 @@ const bridge: DesktopBridge = {
         MOD_FOLDERS_CHANNELS.unbindFolder,
         folderId,
       ) as Promise<ModFoldersState>;
+    },
+    /*
+     * ★ 这一组里唯一一条**返回值不是 `ModFoldersState`** 的转发：它不改状态，
+     *   只说"那一次打开动作"的结果。⚠️ 只递 id —— 路径由主进程从自己的状态里取。
+     */
+    openFolder(folderId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.openFolder, folderId) as Promise<
+        { ok: true } | { ok: false; reason: string }
+      >;
     },
     rescan(folderId?: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.rescan, folderId) as Promise<ModFoldersState>;

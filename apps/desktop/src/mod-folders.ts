@@ -9,7 +9,7 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十五条 IPC 的注册**（其中 `onStatus` 只推、不 handle）；
+ *   · **十六条 IPC 的注册**（其中 `onStatus` 只推、不 handle）；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod` / `updateCatalogRow`（第一部分的绑定）、
  *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 四个入口共用
  *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
@@ -86,7 +86,7 @@ import {
   planFolderView,
   type TagOptionView,
 } from '@mcsr/shared/modFolders';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import {
   assertNotBusy,
   downloadTo,
@@ -725,6 +725,31 @@ async function unbindFolder(folderId: unknown): Promise<ModFoldersState> {
   persist();
   rebuild();
   return modFoldersState();
+}
+
+/**
+ * ★ A 的 S2（spec D7 / §9.14）：**在系统文件管理器里打开这个文件夹**。
+ *
+ * ⚠️★ 为什么它只收 `folderId`：这是本仓**唯一**一条"会让用户的操作系统去打开一个位置"
+ *    的通道 ⇒ 它必须与本组其它每一条同一条纪律 —— **路径永远不从渲染进程来**。
+ *    页面递进来的是一个 id，主进程拿它去**自己那份状态**里查路径（查不到就拒）；
+ *    把它写成"页面给路径、我们去打开"，等于给被注入的页面一个"让用户的机器打开任意位置"
+ *    的原语（`file://` 之类只是其中最轻的一种）。
+ * ⚠️ 入参收窄、以及"状态里没有这个 id"的拒绝形状**照 `unbindFolder`**：
+ *    同一个 `requireFolder`（`typeof folderId !== 'string' || ''` ⇒ 抛；
+ *    状态里查不到 ⇒ 抛 `状态里没有这个文件夹：<id>`）。
+ * ⚠️ 返回值**不是** `ModFoldersState`（本组唯一一条）：它不改状态、没有新状态可推，
+ *    只说那一次动作的结果 —— `shell.openPath` 的约定是"成功给空串、失败给一句错误文案"，
+ *    所以那一句文案原样带回去（页面要能说出"为什么没打开"）。
+ * 代价（认）：`shell.openPath` 在各平台对"文件夹"的行为差异**本机只能验 Windows**
+ *    （spec §12 的未验证项），所以这里不替平台做任何假设、也不吞它的错误文案。
+ */
+async function openFolder(
+  folderId: unknown,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { entry } = requireFolder(folderId);
+  const error = await shell.openPath(entry.path);
+  return error === '' ? { ok: true } : { ok: false, reason: error };
 }
 
 /**
@@ -1844,6 +1869,10 @@ function registerIpc(): void {
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindFolder, (_event, folderId: unknown) =>
     unbindFolder(folderId),
+  );
+  /* ★ A 的 S2：系统文件管理器里打开这个文件夹（入参只有 id，路径见实现里那一段）。 */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.openFolder, (_event, folderId: unknown) =>
+    openFolder(folderId),
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.rescan, (_event, folderId: unknown) => rescan(folderId));
   ipcMain.handle(
