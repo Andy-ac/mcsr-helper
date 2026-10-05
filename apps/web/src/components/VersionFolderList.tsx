@@ -19,8 +19,10 @@
  * **复用 `ModFoldersPanel` 里那几个已导出的函数**，不在这里重写第二份：
  *   · `folderGameVersionOptions`（全集 = 目录的 107 版，且当前值必须可选）；
  *   · `channelOptions` / `channelKeyOf` / `bulkChannelUsable`（Ruling 23 / 64）。
- * ⚠️★ 而"给不给「全部更新」"这一条**只有一处实现**：判据写在下面那条 `showUpdateAll`
- * 里，逐条对着主进程的拒绝（路径在 / 版本知道 / 真有可批量的行 / 通道还成立）。
+ * ⚠️★ 而"给不给「全部更新」"与"哪一版是过期的旧值"这两条也**各只有一处实现**：
+ *    `canUpdateFolderAll()` / `staleGameVersion()`（`ModFoldersPanel.tsx`，两处调用点共用）。
+ *    ⚠️ 判修轮之前这两条在本文件里各抄了一份**逐字相同**的表达式 —— 那种抄写正是
+ *    "同一个判断有两个会漂的版本"，而漂的表现是"少画一颗按钮 / 下拉里少一个 `disabled`"。
  *
  * ===========================================================================
  * ⚠️★ 折叠是**受控**的（`expanded` 从外面来），不是 `<details>`
@@ -67,10 +69,11 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
 import {
-  bulkChannelUsable,
+  canUpdateFolderAll,
   channelKeyOf,
   channelOptions,
   folderGameVersionOptions,
+  staleGameVersion,
 } from '@/components/ModFoldersPanel';
 
 /**
@@ -212,25 +215,16 @@ function FolderRow({
   const versionUnknown = folder.gameVersion === null;
   /**
    * ★ 这个文件夹的游戏版本**已经不在目录里**了（目录换过之后的旧值）。
-   * ⚠️ 它仍然要出现在选项里（否则 `<select value=X>` 里没有 X 时浏览器会**静默选中
-   *    第一个** —— 那一屏就在撒谎），但它**必须是 `disabled` 的**：
-   *    `requireGameVersion` 只认目录里有的版本（**Ruling 64**：过期的持久化值可以显示，
-   *    不许被当成新动作发出去）。
+   * ⚠️ 判据与理由都在 `staleGameVersion()`（**一处实现**，旧那一版也用同一个函数）。
    */
-  const staleVersion =
-    folder.gameVersion !== null && !state.gameVersions.includes(folder.gameVersion)
-      ? folder.gameVersion
-      : null;
+  const staleVersion = staleGameVersion(state, folder);
   /**
-   * ★★ 「全部更新」的判据 —— 与旧那一版（`ModFoldersPanel` 的 `showUpdateAll`）
-   * **逐条相同**，对着主进程的拒绝：路径在、版本知道、**真的有条目可批量**，
-   * 而且**状态里那条通道还成立**（Ruling 64）。
-   * ⚠️ 最后一条不是保险：`updateFolderAll` 在"这个文件夹还没有扫描读数"时**拒**，
-   *    而"没扫过"与"它是空的"在状态里长得一样（`rows` 都是空数组）⇒ 0 条可批量时
-   *    根本不画那颗按钮，那条拒绝就**不可达**了。
+   * ★★ 「全部更新」的判据 —— 四条闸住在 `canUpdateFolderAll()` 里（**一处实现**，
+   * 旧那一版也用同一个函数），逐条对着主进程的拒绝：路径在、版本知道、
+   * **真的有条目可批量**，而且**状态里那条通道还成立**（Ruling 64）。
+   * ⚠️ 这一行**没有**"只读"那一档：新页面只在 `ready` 支路渲染（`onAction` 恒定存在）。
    */
-  const showUpdateAll =
-    folder.pathExists && !versionUnknown && targets > 0 && bulkChannelUsable(state);
+  const showUpdateAll = canUpdateFolderAll(state, folder);
 
   return (
     <div className="folderrow" data-folder-id={folder.folderId}>
@@ -406,8 +400,13 @@ function FolderRow({
         每个几十行 —— 藏起来等于把它们全留在 DOM 里。而"折叠态没有 jar 行"这条判据
         在 T4 之前**只有这一半有牙齿**（见 ㉞ 的注释）。
         ⚠️ 三句话的分工（spec §8 / Ruling 65）：路径不存在 / 版本未知 / 还没有成功读数
-        —— 它们**互斥**，而且每一句都只在它那一档出现（"里面没有 mod"是 T4 那一层的事：
-        它要有 jar 列表才说得清"扫到了什么"）。
+        —— 它们**互斥**，而且每一句都只在它那一档出现。
+        ⚠️★ **"读到过、里面没有"也在这里**（判修轮补的）：Ruling 65 是**两支** ——
+        "读不了"（`!hasReading`）与"读到过而一个都没有"（`hasReading && rows.length === 0`）。
+        少了后半支，扫过但是空的文件夹展开后是一个**空白框**，而那正是 Ruling 65 要消灭的
+        那种"分不出没有与不知道"。⚠️ 判据与旧那一版（`ModFoldersPanel` 的 body）**逐字相同**：
+        `pathExists && hasReading && rows.length === 0`（两个条件缺一不可 —— 扫描失败时
+        `rows` 也是空的）。⚠️ T4 的 jar 列表进来之后，这一句仍然属于"没有可列的行"那一档。
       */}
       {isExpanded ? (
         <div className="folderrow__body" data-folder-body={folder.folderId}>
@@ -420,6 +419,11 @@ function FolderRow({
           {folder.pathExists && !folder.hasReading ? (
             <div className="state state--empty">
               <p>{t('files.folderNoReading')}</p>
+            </div>
+          ) : null}
+          {folder.pathExists && folder.hasReading && folder.rows.length === 0 ? (
+            <div className="state state--empty">
+              <p>{t('files.folderNoRows')}</p>
             </div>
           ) : null}
         </div>

@@ -170,6 +170,45 @@ export function bulkChannelUsable(state: ModFoldersState): boolean {
   return state.mirrors.some((mirror) => mirror.id === channel.mirrorId);
 }
 
+/**
+ * ★ 这个文件夹的游戏版本**已经不在目录里**了（目录换过之后的旧值）；不是那种情况给 `null`。
+ *
+ * ⚠️★ 抽出来是 A 的 T3 **判修轮**要求的：新那一行（`VersionFolderList`）与旧这一版
+ *    （下面的 `FolderBlock`）各写了一份**逐字相同**的表达式 ⇒ 两份迟早会漂，
+ *    而漂的表现是"下拉里少一个 `disabled`"（看起来像目录坏了）。
+ * ⚠️ 它为什么必须**照画**（而不是把旧值藏掉）：`<select value=X>` 里没有 X 时浏览器会
+ *    **静默选中第一个** —— 那一屏就在撒谎（Ruling 23 反对的正是这件事）；而它必须
+ *    `disabled`：`requireGameVersion` 只认目录里有的版本（**Ruling 64**：
+ *    过期的持久化值可以显示，不许被当成新动作发出去）。
+ */
+export function staleGameVersion(state: ModFoldersState, folder: ModFolderView): string | null {
+  const version = folder.gameVersion;
+  if (version === null || state.gameVersions.includes(version)) return null;
+  return version;
+}
+
+/**
+ * ★★ 「全部更新」那一颗**画不画**（一次批量写盘的四条闸）：路径在 / 版本知道 /
+ *    真的有可批量的行 / 状态里那条通道还成立（Ruling 64）。
+ *
+ * ⚠️★ 抽出来是 A 的 T3 **判修轮**要求的：新那一行（`VersionFolderList`）与旧这一版
+ *    （下面的 `FolderBlock`）原来各写着**逐字相同**的四条件表达式 ⇒ 一处漂了，另一处
+ *    会照旧画一颗主进程必拒的按钮（或者相反：静默少一颗，用户只会觉得"按钮怎么没了"）。
+ * ⚠️ 旧那一版另有 `!readOnly`（`handlers === null` ⇒ 一颗按钮都不画）—— 那是**旧组件自己的**
+ *    一格（新页面只在 `ready` 支路渲染 ⇒ 没有只读态），所以它留在调用点，**不在**这个函数里。
+ * ⚠️ "真有可批量的行"那一条不是保险：`updateFolderAll` 在"这个文件夹还没有扫描读数"时**拒**
+ *    （它那句 `readingOf(id).ok`），而"没扫过"与"它是空的"在状态里长得一模一样（`rows` 都是
+ *    空数组）⇒ 0 条可批量时干脆不画，那条拒绝就**不可达**了。
+ */
+export function canUpdateFolderAll(state: ModFoldersState, folder: ModFolderView): boolean {
+  return (
+    folder.pathExists &&
+    folder.gameVersion !== null &&
+    batchTargets(folder.rows) > 0 &&
+    bulkChannelUsable(state)
+  );
+}
+
 export interface ModFoldersPanelProps {
   /** 第二部分唯一的**数据**来源（`ModFoldersState.folders`）。 */
   state: ModFoldersState;
@@ -268,22 +307,15 @@ function FolderBlock({
   const versionUnknown = folder.gameVersion === null;
   /**
    * ★ 这个文件夹的游戏版本**已经不在目录里**了（目录换过之后的旧值）。
-   * ⚠️ 它仍然要出现在选项里（否则 `<select value=X>` 里没有 X 时浏览器会**静默选中
-   *    第一个** —— 那一屏就在撒谎），但它**必须是 `disabled` 的**：`requireGameVersion`
-   *    只认目录里有的版本，把它当成一个可选值发出去就是一次注定被拒的调用
-   *    （**Ruling 64**：过期的持久化值可以显示，不许被当成新动作发出去）。
+   * ⚠️ 判据与理由都在 `staleGameVersion()`（**一处实现**，新那一行也用同一个函数）。
    */
-  const staleVersion =
-    folder.gameVersion !== null && !state.gameVersions.includes(folder.gameVersion)
-      ? folder.gameVersion
-      : null;
+  const staleVersion = staleGameVersion(state, folder);
   /**
-   * ★★ 「全部更新」的判据（写在文件头那一段里，逐条对着主进程的拒绝）：
-   *   路径在、版本知道、**真的有条目可批量**，而且**状态里那条通道还成立**
-   *   （Ruling 64，见 `bulkChannelUsable`）。四条全中才画那颗按钮。
+   * ★★ 「全部更新」的判据（写在文件头那一段里，逐条对着主进程的拒绝）：四条全中才画那颗按钮。
+   * ⚠️ 四条住在 `canUpdateFolderAll()` 里（**一处实现**，新那一行也用同一个函数）；
+   *    这里多出来的 `!readOnly` 是**旧组件自己的**一格，见那个函数的注释。
    */
-  const showUpdateAll =
-    !readOnly && folder.pathExists && !versionUnknown && targets > 0 && bulkChannelUsable(state);
+  const showUpdateAll = !readOnly && canUpdateFolderAll(state, folder);
 
   return (
     <details className="folderbox" data-folder-id={folder.folderId}>

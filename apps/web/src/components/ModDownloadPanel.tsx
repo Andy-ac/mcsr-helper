@@ -44,6 +44,7 @@ import { useTranslation } from 'react-i18next';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { gameVersionOptions, reasonOf } from '@/components/FileUpdatesPanel';
 import { Notice } from '@/components/Form';
+import { bulkChannelUsable } from '@/components/ModFoldersPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
 
 /**
@@ -51,8 +52,9 @@ import { VersionFolderList } from '@/components/VersionFolderList';
  *
  * ⚠️★ 为什么是一个联合而不是"把 handlers 传下去"：见文件头第一段。⚠️ 加新动作时
  * **两处要一起改**（这份联合 + `routes/Files.tsx` 的 `makeModPageAction`）——
- * 而 `switch` 上是穷尽的（`noFallthroughCasesInSwitch` + 缺一支时那个函数不返回
- * `Promise<void>`），漏一支会被 `tsc` 抓住。
+ * 而"漏了一支"由 `makeModPageAction` 那个 `default` 里的 `const never: never = action`
+ * 在**编译期**抓住（⚠️ 实测：**不是** `switch` 自己 —— 这个 tsconfig 没开
+ * `noImplicitReturns`，非穷尽的 `switch` 编译通过、退出 0；T3 判修轮把那一句补上了）。
  * ⚠️ `channel` 与契约里的 `Channel` 是**同一个类型**（不是字符串字面量的复制）：
  * 通道是 id 或 `'origin'`，地址由主进程拼（spec §6.1）。
  */
@@ -143,6 +145,18 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
           {note}
         </Notice>
       ))}
+
+      {/*
+        ★★ 过期批量通道那句解释（**判修 1 补**，`files.channelStaleHint`）。
+        ⚠️★ 为什么它必须在这一层（而且只说一次）：状态里那条通道已经不成立时，
+        `canUpdateFolderAll()` 会让**每一行**的「全部更新」都不画（那是对的 ——
+        `requireChannel` 对"目录里没有这条镜像"会抛）⇒ 用户看到的是"按钮怎么没了"。
+        那句话就是唯一的答案，而它是**全局**的（`prefs.bulkChannel` 一份）：
+        每个文件夹重复一遍是噪声（Ruling 64 的原话）。
+        ⚠️ 它原来的渲染点在旧第二部分（`ModFoldersPanel`）里，而那个组件在 T3 之后
+        **没有任何产品文件 import** 了 ⇒ 判修轮把渲染点补到这里（不重写判断，只补渲染点）。
+      */}
+      {bulkChannelUsable(state) ? null : <Notice kind="bad">{t('files.channelStaleHint')}</Notice>}
 
       {/*
         ★★ 顶部并排区（spec §4）：版本下拉 + 「显示全部已绑定的文件夹」。

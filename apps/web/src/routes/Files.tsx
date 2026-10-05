@@ -64,7 +64,9 @@ import { ToolsPanel } from '@/components/ToolsPanel';
  *    —— 它拿"产物里有没有这个类名"代理"有没有画出**那张表**"。这一块复用了那个类名
  *    ⇒ 它在**正确**的产物上报红（那一屏画的是"需要桌面版 0.0.5"这句话，不是一张空表）。
  *    ⇒ 两条路：改 v1 那条判据（放宽它），或者给这一块一个自己的类名。选**后者**：
- *      v1 一个字节都不动（Global Constraints：v1 的行为与判据都不许变），代价是多一条 CSS 规则。
+ *      **这一条** v1 判据一个字节都不动，代价是多一条 CSS 规则。
+ *      ⚠️ T3 确实改过 `filesrender.tsx` ⑰ 里**另一条**断言（v1 的「加载中…」不再挂在这一页上）——
+ *      那是这一页形状变了，不是放宽这条粗判据，见那个脚本 ⑰ 里的注释。
  *    ⚠️ 记一笔给 T10：`filesrender.tsx` 那条判据**本身是粗的**（把 v1 面板换成用另一个
  *      类名渲染，它照样绿）—— 那是 v1 的既有缺口，本任务不碰。
  */
@@ -125,9 +127,11 @@ function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTab) => v
 /**
  * 动作联合 ⇒ 契约里那条通道（**这一处是全页唯一的动作接线**）。
  *
- * ⚠️★ 为什么是一个函数而不是就地写在 JSX 里：`switch` 的穷尽性由 `tsc` 盯着
- *    （加一个 `ModPageAction` 的成员而不在这里处理 ⇒ 这个函数不再返回 `Promise<void>`），
- *    而"一个动作只接一条通道"也只有一个地方会错。
+ * ⚠️★★ 穷尽性是**下面那个 `default` 分支**盯住的（`const never: never = action`），
+ *    **不是** `switch` 自己 —— T3 判修轮实测：这个 tsconfig **没有** `noImplicitReturns`，
+ *    一个非穷尽的 `switch`（少一支、函数声明成 `Promise<void>`）**编译通过、`tsc` 退出 0**
+ *    ⇒ 加一个 `ModPageAction` 成员而忘了在这里处理，会得到一颗**哑按钮、零门禁输出**。
+ *    ⚠️ T5 正要往那个联合里加成员（`download-mod` 之类）⇒ 这一句是给它的保险。
  * ⚠️★ 这里**不 catch**：`makeModFoldersHandlers()` 那一层已经接住并落到 `actionError`
  *    （页面把它传给 `ModDownloadPanel` 印出来）。`openFolder` 走的是那一层**新加的那一条**
  *    （主进程对未知 id 是**抛**，`mod-folders.ts:941`）—— 接住它的地方与别的动作同源。
@@ -162,6 +166,17 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);
         break;
+      default: {
+        /*
+         * ★★ 穷尽性守卫：走到这里说明 `ModPageAction` 多了一个没人处理的成员 ——
+         * 而那一支在**编译期**就该红（`action` 在这里的类型是 `never`，赋给 `never`
+         * 才合法）。运行期这一句到不了（除非有人绕过了类型检查）；真到了就**抛**，
+         * 让 `ModDownloadPanel` 的 `try/catch` 把它变成用户看得见的一句原话
+         * （哑按钮的另一种形态是"点了什么都不发生"，那一类最难查）。
+         */
+        const never: never = action;
+        throw new Error(`未处理的动作：${JSON.stringify(never)}`);
+      }
     }
   };
 }

@@ -974,8 +974,13 @@ function makeModFoldersHandlers(
 /** `useModFolders()` 的产物。⚠️ 只有 `ready` 那一支有动作层（其余三支没有东西可动）。 */
 export type ModFoldersData =
   /**
-   * 桌面壳里**没有** `modFolders`（0.0.4 的老客户端、或纯浏览器）⇒ 这一页走 v1 那条路
-   * （那是正确降级：spec §6.8 的"老客户端的第一部分只有一行"说的就是这件事）。
+   * 桌面壳里**没有** `modFolders`（0.0.4 的老客户端、或纯浏览器）。
+   *
+   * ⚠️★ 2026-10-04（A 的 T3）改准：**这一支不再走 v1 那条路了**。这一页从 T3 起是
+   *    tab 骨架，`modFolders` 不在时它只画一句"需要桌面版 0.0.5"（spec §9.12 / D1：
+   *    "0.0.4 用户只能看到升级提示"）；v1 的面板**不再挂在这一页上**（它的组件与判据
+   *    留到 T6 一起删）。⇒ 这一支读作"这个客户端没有 mod 文件夹功能"，
+   *    而 `Files.tsx` 那一边的渲染点就是 `ModFoldersUnavailable`。
    */
   | { status: 'unavailable' }
   /**
@@ -999,7 +1004,9 @@ export type ModFoldersData =
  *    **没有任何人收到**，表现是"界面上永远停在加载中"，而完全不报错。
  * ⚠️★ 判据是 `desktopBridge()?.modFolders` 在不在，**不是** `desktopBridge()` 在不在：
  *    0.0.4 的壳有 `mcsr` 但**没有** `modFolders`（`shared/desktop.ts` 的契约是 0.0.5 才有的）
- *    ⇒ 那种客户端必须继续走 v1 那条路（spec §6.8 / D9.3），一个字节都不变。
+ *    ⇒ 那种客户端在这一页上**只有一句"需要桌面版 0.0.5"**（T3 改准：它原来走 v1 那条路 ——
+ *    spec §6.8 / D9.3 说的"老客户端第一部分只有一行"是 T3 之前的形状，见上面 `unavailable`
+ *    那一支的注释；D1 记的正是这次能力损失的代价）。
  */
 export function useModFolders(): ModFoldersData {
   const [load, setLoad] = useState<ModFoldersLoad>(NO_MOD_FOLDERS_LOAD);
@@ -1021,7 +1028,11 @@ export function useModFolders(): ModFoldersData {
   );
 
   useEffect(() => {
-    // 浏览器 / 老客户端：这一栏根本不存在（`Files.tsx` 会走 v1 那一条路）。
+    /*
+     * 浏览器 / 老客户端：这一栏根本不存在。
+     * ⚠️★ T3 改准：`Files.tsx` 在那一支上**不再走 v1 那条路**了（这一页现在是 tab 骨架，
+     *    那一支只画"需要桌面版 0.0.5"）—— 旧注释写的是"`Files.tsx` 会走 v1 那一条路"。
+     */
     if (api === null) return;
     const unsubscribe = api.onStatus(accept);
     void api.getState().then(

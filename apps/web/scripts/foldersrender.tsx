@@ -712,6 +712,28 @@ function missingRowEl(markup: string, modid: string): string {
 }
 
 /**
+ * 新页面里**一行文件夹**（`div.folderrow`）那一段产物 —— 从 `data-folder-id="X"` 起、
+ * 到**下一个** `data-folder-id=`（没有下一个就到产物末尾）为止。
+ *
+ * ⚠️★ 它不是"配平地切出那个 `<div>`"：这一行里面还套着 `.folderrow__head` / `.folderrow__body`
+ *    两层 div，非贪婪正则会在第一个 `</div>` 上截断（切出来的东西长得像"这一行"，
+ *    其实是"这一行的头一段" —— `summaryOf` 那种写法在这里不成立）。
+ *    ⚠️ 而断言真正需要的只是"**这一行那一段**里有什么"：相邻两行之间的边界正好就是
+ *    下一个 `data-folder-id` ⇒ 这个窗口够用，而且它**变宽**只会让断言更宽松、不会更严。
+ *    能红的刀：把某一颗控件从这一行里删掉（读数在报告里）。
+ */
+function folderRowSpanOf(markup: string, folderId: string): string {
+  const start = markup.indexOf(`data-folder-id="${folderId}"`);
+  assert.notEqual(
+    start,
+    -1,
+    `产物里找不到 data-folder-id="${folderId}" 那一行 —— 那个文件夹没渲染出来`,
+  );
+  const next = markup.indexOf('data-folder-id="', start + 1);
+  return next === -1 ? markup.slice(start) : markup.slice(start, next);
+}
+
+/**
  * 一段产物里**每一个** `<select>` 的选项值与被选中的那个（按渲染顺序）。
  *
  * ⚠️★ 为什么必须按 `<select>` 切开：文件夹头行里**有两个**下拉（游戏版本 + 批量通道），
@@ -2868,6 +2890,34 @@ assert.match(
  */
 assert.match(filesCode, /<ModDownloadPanel\b/, '★★ mod 下载那一格渲染 `ModDownloadPanel`');
 assert.match(filesCode, /<ToolsPanel\s*\/>/, '★★ 工具下载那一格渲染 `ToolsPanel`（占位卡）');
+/*
+ * ★★ 判修 1（§9.12 的**源码级**钉子）：上面那两条只证"新的东西**在场**"，而"第一部分与
+ *    v1 **不在**这一页上"在本脚本里没有任何产物能证 —— 页面的 `ready` 支路在静态渲染里
+ *    **到不了**（要等 `useModFolders()` 的回包），而 ㉞ 里那两条否定断言打在
+ *    `ModDownloadPanel` **自己那份标记**上（那个组件从来就没渲染过第一部分或 v1 那张表
+ *    ⇒ 它们是"另一个失败"的证据，不是这一条）。改这一版之前，钉住"三块序列"的正是这一组
+ *    （那条守卫已被替换）⇒ 不补下面这三条就是**把 §9.12 的证据弄松了**。
+ * ⚠️ 第三条查的是**导入名与 JSX 名**两处，**不是**裸名字：模块路径
+ *    `@/components/FileUpdatesPanel` 里也有这个子串，而这一页**必须**继续从那里 import
+ *    `useModFolders` / `ModCatalogScanning` / `ModFoldersHandlers`。
+ * ★ 能红的刀（读数在报告里）：把 `ModCatalogSection` / `MissingModsList` 的一个 import
+ *   加回 `Files.tsx`、或把 `FileUpdatesPanel,` 加回那个 import 列表 ⇒ 对应那条红。
+ */
+assert.equal(
+  filesCode.includes('ModCatalogSection'),
+  false,
+  '★★ 页面源码里不许再出现第一部分（`ModCatalogSection`）—— spec §9.12：它已经不在这一页上',
+);
+assert.equal(
+  filesCode.includes('MissingModsList'),
+  false,
+  '★★ 同样不许出现底部缺失清单（`MissingModsList`）—— 它原来那一格的位置，T5 会画"该版本所有 mod"',
+);
+assert.equal(
+  /\{\s*FileUpdatesPanel\b/.test(filesCode) || /<FileUpdatesPanel\b/.test(filesCode),
+  false,
+  '★★ 也不许再 import / 渲染 **v1 那个面板组件本身**（`{ FileUpdatesPanel` 或 `<FileUpdatesPanel`）',
+);
 assert.match(
   filesCode,
   /<ModFoldersUnavailable \/>/,
@@ -2879,7 +2929,7 @@ assert.equal(
   '★ 只许一处（那句提示挂在不存在的壳那一支上，不是常驻说明）',
 );
 ok(
-  '㉗ 接线守卫（设置与底部）：版本/自动更新/通道各一处、空串变 null、底部两颗下载各送自己的通道且 `manual` 行在渲染期分岔、选项两条过滤、两条 tab 支路与特性检测那一支',
+  '㉗ 接线守卫（设置与底部）：版本/自动更新/通道各一处、空串变 null、底部两颗下载各送自己的通道且 `manual` 行在渲染期分岔、选项两条过滤、两条 tab 支路与特性检测那一支、页面源码里没有第一部分/缺失清单/v1 面板（§9.12 的源码级钉子）',
 );
 
 // ---------------------------------------------------------------------------
@@ -3049,21 +3099,26 @@ ok(
 // ㉞ 按版本分组的文件夹区：折叠行 + 展开标识 + 打开文件夹（spec §9.7/§10/§12/§17）
 // ---------------------------------------------------------------------------
 /*
- * ⚠️★ 夹具用的是这份自检里**已有的** `folder()` / `stateOf()`（`f1` 这个 id 是这一组
+ * ⚠️★ 夹具用的是这份自检里**已有的** `folder()` / `stateOf()`（`f1` / `f1b` 这两个 id 是这一组
  *    自己写的，不是从产品里抄的常量）。
+ * ⚠️★ **两个**同版本的文件夹（判修 2a）：只给一个的话，"只画第一个文件夹"那种回归
+ *    （`.map` → `.slice(0, 1)` / `.find`）**完全无声** —— 而 §9.7 说的正是"一个版本下画出
+ *    它的**多个**文件夹"。⇒ 断言里两个 id 都要在。
  * ⚠️★「折叠态：没有 jar 行」这一半**今天咬不住**：T4 的 `data-jar` 还不存在
  *    ⇒ `!includes('data-jar="')` 恒真（§5.32①）。它的牙齿由**另一半**补上：
  *    "折叠时**展开体整块不渲染**"（`data-folder-body` 不在产物里），那一半有刀。
  * ⚠️★ 三条与"内容"有关的空态都落在**展开体**里（spec §8：路径不存在"展开后说明"），
  *    而折叠时它们一个都不画 —— 与"头行永远看得见的那一格"是徽章（`FolderStatusBadge`）。
  */
-const skeletonState = stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })] });
+const skeletonState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f1b' })],
+});
 const skeletonHtml = keep(
   html(React.createElement(ModDownloadPanel, { state: skeletonState, onAction: noop })),
 );
 assert.ok(
-  skeletonHtml.includes('data-folder-id="f1"'),
-  '★ 该版本的文件夹画出来了（`data-folder-id` 是这一行唯一的机器可读标识）',
+  skeletonHtml.includes('data-folder-id="f1"') && skeletonHtml.includes('data-folder-id="f1b"'),
+  '★★ 该版本的文件夹**都**画出来了（两个同版本的 id 都在 —— 只画第一个的实现会红在这里）',
 );
 assert.equal(
   skeletonHtml.includes('data-jar="'),
@@ -3132,6 +3187,125 @@ assert.ok(
   expandedListHtml.includes('data-folder-body="f1"'),
   '★ 而展开时那一块真的在（T4 会把 jar 列表放进它里面）',
 );
+/*
+ * ★★ 判修 2b：**旧那一版的全套控件**（spec §9.17：A 只挪位置，不删能力）。
+ *    ⚠️ 判修前的覆盖只有 `open-folder` 与 `bind-folder` ⇒ 自动更新开关 / 批量通道 /
+ *    全部更新 / 重扫 / 解绑 / 版本手改**全都不见了也不会红**。
+ *    ⚠️ 锚的是**产物里那颗按钮的文字与那两个下拉的内容**（不锚函数名、也不锚 class）：
+ *    与 ⑱ 那一条对旧行是同一个口径。
+ */
+const f1Row = folderRowSpanOf(skeletonHtml, 'f1');
+assert.deepEqual(
+  labelsIn(f1Row),
+  [
+    labelOf('files.expand'),
+    labelOf('files.openFolder'),
+    labelOf('files.folderUpdateAll', { count: 2 }),
+    labelOf('files.folderRescan'),
+    labelOf('files.unbind'),
+  ],
+  '★★ 那一行的控件**一颗都不许少**：展开 / 打开文件夹 / 全部更新（带 `batchTargets` 的数字）/ ' +
+    '重扫这个文件夹 / 解除绑定 —— 一条不许少、也不许多',
+);
+assert.deepEqual(
+  selectsIn(f1Row).map((select) => select.values),
+  [
+    ['', '1.16.1'],
+    ['origin', MIRROR.id],
+  ],
+  '★★ 两个下拉都在：版本手改（空取值 = 交回自动推断 + 状态里的版本全集）与批量通道' +
+    '（`origin` + 状态里的镜像表 —— Ruling 58 / 55 的那两个唯一来源）',
+);
+assert.deepEqual(
+  selectsIn(f1Row).map((select) => select.selected),
+  ['1.16.1', 'origin'],
+  '★ 而且两个的当前值都来自状态（`folder.gameVersion` / `prefs.bulkChannel`，Ruling 23 一处记忆）',
+);
+const rowBoxes = [...f1Row.matchAll(/<input type="checkbox"[^>]*>/g)];
+assert.equal(
+  rowBoxes.length,
+  1,
+  '★ 那一行恰好一个勾选框：整夹自动更新开关（spec §9.17 清单里的单独一项）',
+);
+assert.ok(
+  /* ⚠️ 比 `decode(…)` 之后的产物：英文那条词条里带引号，属性值里会被转义（与 ⑱ 同一条）。 */
+  decode(f1Row).includes(t('files.autoLabel', { name: 'D:\\instances\\f1\\mods' })),
+  '★ 那个勾选框的可访问名里带**路径**（一页上好几个文件夹，读屏要分得开是哪一个）',
+);
+/*
+ * ★★ 判修 4①：**过期批量通道那句解释**（`files.channelStaleHint`）。
+ *    ⚠️ 那一档「全部更新」在每一行上都不画（`canUpdateFolderAll` 里那条"通道还成立"）——
+ *    没有这句话，用户看到的只有"按钮怎么没了"。渲染点在**面板级**（说一次就够）。
+ */
+const staleChannelState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f1' })],
+  bulkChannel: { mirrorId: 'gh-proxy-GONE' },
+});
+const staleChannelPanelHtml = keep(
+  html(React.createElement(ModDownloadPanel, { state: staleChannelState, onAction: noop })),
+);
+assert.ok(
+  textOf(staleChannelPanelHtml).includes(textOf(resolved('files.channelStaleHint'))),
+  '★★ 过期通道 ⇒ 那句解释必须看得见（Ruling 64）—— 那一档那颗按钮不画，' +
+    '没有这句话用户只会觉得"按钮怎么没了"',
+);
+assert.equal(
+  textOf(skeletonHtml).includes(textOf(resolved('files.channelStaleHint'))),
+  false,
+  '★ 反面：通道成立时**不许**出现那句（一句只在它那一档出现的解释）',
+);
+/*
+ * ★★ 判修 4②：Ruling 65 的**两支**在展开体里各要有一个渲染点 ——
+ *    "读不了"（`!hasReading`）与"读到过、里面没有"（`hasReading && rows.length === 0`）。
+ *    ⚠️ 少了后半支，扫过但是空的文件夹展开后是一个**空白框**（§8 的三种空态少一种）。
+ *    ⚠️ 两条互为对照（同一份 `rows: []`，只有 `hasReading` 不同），与 ㉚ 对旧组件那一组同形。
+ */
+const newEmptyReadState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f-empty', hasReading: true, rows: [], unrecognized: [] })],
+});
+const newEmptyReadHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: newEmptyReadState,
+      page: planVersionPage(newEmptyReadState, ['f-empty']),
+      expanded: ['f-empty'],
+      onToggle: noop,
+      onAction: noop,
+    }),
+  ),
+);
+assert.ok(
+  textOf(newEmptyReadHtml).includes(textOf(resolved('files.folderNoRows'))),
+  '★★ 读到过而一个能识别的 mod 都没有 ⇒ 说"里面没有能识别的 mod"（Ruling 65 的后半支）',
+);
+assert.equal(
+  textOf(newEmptyReadHtml).includes(textOf(resolved('files.folderNoReading'))),
+  false,
+  '★ 反面：这一档**不许**说"还没有读数"（两句话说的是两件事）',
+);
+const newNoReadingState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f-noreading', hasReading: false, rows: [], unrecognized: [] })],
+});
+const newNoReadingHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: newNoReadingState,
+      page: planVersionPage(newNoReadingState, ['f-noreading']),
+      expanded: ['f-noreading'],
+      onToggle: noop,
+      onAction: noop,
+    }),
+  ),
+);
+assert.ok(
+  textOf(newNoReadingHtml).includes(textOf(resolved('files.folderNoReading'))),
+  '★★ 没有成功读数 ⇒ 说"还不知道里面有什么"（Ruling 65 的前半支）',
+);
+assert.equal(
+  textOf(newNoReadingHtml).includes(textOf(resolved('files.folderNoRows'))),
+  false,
+  '★★★ 反面：那一档**不许**印"里面没有能识别的 mod"—— 那是**编出来的结论**（Ruling 65 的判据）',
+);
 /* —— 空态（spec §8 第一行）：这个版本下一个文件夹都没绑 —— */
 const noFolderState = stateOf([ROW_GITHUB], { folders: [] });
 const noFolderPanelHtml = keep(
@@ -3160,7 +3334,7 @@ assert.ok(
     '它原来的渲染点在第一部分，而第一部分在 T3 从页面上消失 ⇒ 渲染点跟着搬到了面板上',
 );
 ok(
-  '㉞ 按版本分组的文件夹区：折叠行（`aria-expanded` 随展开变化）+ 打开文件夹 + 空态与绑定入口 + 迁移提示；第一部分与 v1 的元素不再出现',
+  '㉞ 按版本分组的文件夹区：两个同版本的文件夹都画出来、那一行的全套控件（展开/打开文件夹/版本手改/自动更新/批量通道/全部更新/重扫/解绑）、折叠与展开两态、过期通道那句解释、Ruling 65 的两支空态、版本空态与绑定入口、迁移提示；第一部分与 v1 的元素不再出现',
 );
 
 // ---------------------------------------------------------------------------
@@ -3200,7 +3374,13 @@ assert.ok(
 );
 assert.ok(
   textOf(crossHtml).includes(textOf('1.8.9')),
-  '★★ 而且每个文件夹带**版本标签**（1.8.9 是另一个版本的读数：没有它这一栏分不出谁是谁）',
+  '★ 分组标题也印版本号（⚠️ 这一条**只**证"1.8.9 在产物里"—— 行内那一颗由下面那条锚住）',
+);
+assert.match(
+  crossHtml,
+  /data-folder-id="f2"[\s\S]{0,400}?1\.8\.9/,
+  '★★ 那个文件夹**自己那一行**要带版本标签（判修 5：不锚在行上的话，把行内那颗徽章删掉' +
+    '照样绿 —— 分组标题已经印了同一个版本号，所以原来那条断言的证据是"标题"而不是"这一行"）',
 );
 const failedPanelHtml = keep(
   html(
@@ -3248,7 +3428,7 @@ assert.ok(
   '★ 行里印的是**状态里那个路径**（`folder.path`）—— 写死一个目录的话，绑第二个文件夹就露馅',
 );
 ok(
-  '㉟ 跨版本列表（含另一个版本的文件夹 + 版本标签）、动作失败的原话看得见、三条接线守卫（openFolder 的实参 / 动作层的 catch / 面板的 try-await）',
+  '㉟ 跨版本列表（含另一个版本的文件夹 + 行内版本标签）、动作失败的原话看得见、三条接线守卫（openFolder 的实参 / 动作层的 catch / 面板的 try-await）',
 );
 
 // ---------------------------------------------------------------------------
