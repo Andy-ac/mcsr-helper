@@ -2617,8 +2617,12 @@ async function writePhase() {
    * ⚠️★ 这一条补的是一个**可达的越界**：v1 的半成品命名恰好是 `${targetPath}.part`
    *    （`file-updates.ts` 的 `runUpdate`），而它同时满足"`<targetName>.` 开头、`.part` 结尾"
    *    ⇒ 只按前缀+后缀扫的实现会把**v1 正在下载的那个文件**删掉（v1 随后 rename 的就是它）。
-   *    可达的理由：`attributeLegacyItems` 把文件夹**外面**的 v1 绑定原样多写一份到
-   *    `catalogBindings`（`localPath` 逐字相同）⇒ 两个模块可以同时对同一个目标名下载。
+   *    可达的理由（⚠️★ T6 之后只剩这一条路）：v1 自己的 `bind`
+   *    （`FILE_UPDATES_CHANNELS.bind`）可以把一个**已经在某个已绑定文件夹里**的 jar 绑成
+   *    它的一个 `item`（§13.1 的迁移只在**新绑那个文件夹**时跑一次，此后 v1 照绑）
+   *    ⇒ 同一个文件可以同时是 v1 的 `item` 与本模块文件夹里的一行 ⇒ 两个模块可以同时
+   *    对同一个目标名下载。（T6 之前还有第二条来源：`attributeLegacyItems` 把文件夹外的
+   *    v1 绑定多写一份到 `catalogBindings` —— 那个函数随 D8 退役了。）
    * ⚠️ 两条读数都必须在**同一趟真下载**上取（`/mirror-good/` 请求数 +1 是那趟真的跑了）：
    *    · v1 那一种命名的文件**还在**且字节没变；
    *    · 本模块自己那一种命名（`<target>.<uuid>.part`）**被清掉**。
