@@ -3,15 +3,21 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
+import { type ModRelease, parseModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
 import {
   attributeLegacyBindings,
   batchTargets,
+  type CatalogRowView,
   channelUrl,
+  type FolderScanEntry,
+  groupFoldersByVersion,
+  type ModFoldersState,
+  type ModFolderView,
   migrateState,
   missingMods,
   planCatalogRows,
   planFolderView,
+  planVersionPage,
 } from '@mcsr/shared/modFolders';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -887,4 +893,237 @@ test('★ 标签显示名：目录里没有这个名字时**退化成 key 本身
     '有显示名就用显示名；没有就退化成 key 本身（spec §15：目录坏了要看得见）',
   );
   assert.equal(row.tagLabels.length, row.tags.length, '两者必须逐位对应（消费方按下标取用）');
+});
+
+/*
+ * ===========================================================================
+ * Task 1（mod 下载页重构）：版本页投影 `planVersionPage` / `groupFoldersByVersion`
+ * ===========================================================================
+ * ⚠️ 简报把 `stateWith` / `catalogRow` / `folderView` / `folderRow` / `release` 记成
+ *    "该文件里已有的构造辅助" —— **它们在这个文件里一个都不存在**（现读全文件：只有
+ *    `catalog` 这一份真目录，加 `planCatalogRows` / `planFolderView` 两个真 planner）。
+ *    ⇒ 下面的夹具沿用这个文件一直以来的口径：**用真目录 + 真 planner 造视图对象**，
+ *      而不是手搓 `CatalogRowView` / `ModFolderView` 字面量。好处是"投影消费的是**真的**
+ *      行视图 / 文件夹视图"这件事由夹具保证；代价是断言里的值（modid / url / homepage）
+ *      都取自已提交的 `content/mod-catalog.json`，每一条都带"夹具自钉"。
+ */
+
+/** 一份最小的 `ModFoldersState`：只填投影读得到的格，其余给"空 / 无"。 */
+function stateWith(over: Partial<ModFoldersState> = {}): ModFoldersState {
+  return {
+    catalogStatus: 'ok',
+    // ⚠️ 简报里第 3、4 条测试的 `stateWith({...})` **不带** `gameVersion` ⇒ 这一格是它们的
+    //    隐式前提（文件夹也必须给 1.16.1，否则该版本下一个文件夹都筛不出来）。
+    gameVersion: '1.16.1',
+    gameVersions: ['1.16.1'],
+    tagFilter: [],
+    tags: [],
+    bulkChannel: 'origin',
+    mirrors: [],
+    catalogRows: [],
+    folders: [],
+    missing: [],
+    missingStatus: 'ok',
+    notices: [],
+    busy: false,
+    lastRun: null,
+    ...over,
+  };
+}
+
+/** 该版本的目录行（真目录 + 真 `planCatalogRows`）。 */
+function rowsForVersion(
+  gameVersion: string,
+  upstreamLatest?: ReadonlyMap<string, ModRelease>,
+): CatalogRowView[] {
+  return planCatalogRows({
+    catalog,
+    gameVersion,
+    tagFilter: [],
+    bindings: new Map(),
+    upstreamLatest,
+  });
+}
+
+/** 一份文件夹视图（真 `planFolderView`；`gameVersion` 默认与 `stateWith` 的默认一致）。 */
+function folderView(over: {
+  folderId: string;
+  gameVersion?: string | null;
+  pathExists?: boolean;
+  hasReading?: boolean;
+  scan?: readonly FolderScanEntry[];
+}): ModFolderView {
+  return planFolderView({
+    catalog,
+    folderId: over.folderId,
+    path: `D:/mods/${over.folderId}`,
+    pathExists: over.pathExists ?? true,
+    hasReading: over.hasReading ?? true,
+    gameVersion: over.gameVersion === undefined ? '1.16.1' : over.gameVersion,
+    autoUpdate: false,
+    scan: over.scan ?? [],
+  });
+}
+
+test('planVersionPage：只给该版本的文件夹，且分组按有效版本', () => {
+  const state = stateWith({
+    gameVersion: '1.16.1',
+    folders: [
+      folderView({ folderId: 'a', gameVersion: '1.16.1' }),
+      folderView({ folderId: 'b', gameVersion: '1.8.9' }),
+    ],
+  });
+  const page = planVersionPage(state, []);
+  assert.deepEqual(
+    page.folders.map((f) => f.folder.folderId),
+    ['a'],
+  );
+  assert.equal(page.version, '1.16.1');
+  // spec §9.1 的另一半：给一个没有文件夹的版本 ⇒ 空数组（不是"退回全部文件夹"）
+  assert.deepEqual(
+    planVersionPage(stateWith({ gameVersion: '1.7.10', folders: state.folders }), []).folders,
+    [],
+  );
+
+  /*
+   * ★ 标题里那半句"**且**分组按有效版本"在简报的断言里没有落点（只断言了 `page.version`）
+   *   ⇒ 补上 `groupFoldersByVersion`。它还顺手钉住了两件简报没写、但契约里有的事：
+   *     · 组的顺序 = 状态里的首次出现顺序（页面画出来的组因此是稳定的）；
+   *     · `gameVersion === null`（版本未知）的那些文件夹自成一组，`version` 就是 `null`
+   *       —— 不是被"归到某一版"、也不是被丢掉。
+   */
+  const grouped = groupFoldersByVersion(
+    stateWith({
+      folders: [
+        folderView({ folderId: 'a', gameVersion: '1.16.1' }),
+        folderView({ folderId: 'b', gameVersion: '1.8.9' }),
+        folderView({ folderId: 'c', gameVersion: null }),
+      ],
+    }),
+  );
+  assert.deepEqual(
+    grouped.map((g) => g.version),
+    ['1.16.1', '1.8.9', null],
+    '分组按状态里的首次出现顺序；版本未知的那些成一组（version = null）',
+  );
+  assert.deepEqual(
+    grouped.map((g) => g.folders.map((f) => f.folderId)),
+    [['a'], ['b'], ['c']],
+  );
+});
+
+test('planVersionPage：已下载只在被展开的文件夹里成立', () => {
+  const state = stateWith({
+    gameVersion: '1.16.1',
+    folders: [
+      folderView({
+        folderId: 'a',
+        gameVersion: '1.16.1',
+        scan: [{ fileName: 'sodium-1.0.jar', modid: 'sodium', version: '1.0', sha512: null }],
+      }),
+      folderView({ folderId: 'b', gameVersion: '1.16.1', scan: [] }),
+    ],
+    catalogRows: rowsForVersion('1.16.1'),
+  });
+  const none = planVersionPage(state, []).mods.find((m) => m.modid === 'sodium');
+  assert.ok(none !== undefined, '夹具自钉：sodium 必须在 1.16.1 的 mods 里');
+  assert.deepEqual(none.downloadedIn, []);
+  const onlyA = planVersionPage(state, ['a']).mods.find((m) => m.modid === 'sodium');
+  assert.deepEqual(onlyA?.downloadedIn, ['a']);
+  /*
+   * ★ 承重的一条：`b` **也被展开了**，只是它里面没有 sodium ⇒ `downloadedIn` 仍为空。
+   *   少了它，"展开过滤"可以坏成"expanded 非空就算已下载"而整块照样绿。
+   */
+  const onlyB = planVersionPage(state, ['b']).mods.find((m) => m.modid === 'sodium');
+  assert.deepEqual(onlyB?.downloadedIn, []);
+});
+
+test('planVersionPage：未识别的 jar 不进 recognizedModids，但仍在文件夹的行里', () => {
+  const state = stateWith({
+    folders: [
+      folderView({
+        folderId: 'a',
+        gameVersion: '1.16.1',
+        scan: [{ fileName: 'mystery.jar', modid: null, version: null, sha512: null }],
+      }),
+    ],
+  });
+  const page = planVersionPage(state, ['a']);
+  assert.equal(page.folders.length, 1, '夹具自钉：这一版下就是这一个文件夹');
+  const block = page.folders[0]!;
+  assert.deepEqual(block.recognizedModids, []);
+  assert.equal(block.folder.unrecognized.length, 1);
+  // 标题那半句"但仍在文件夹的行里"：认不出的那一条要能按**文件名**找回来（页面据此标红）
+  assert.equal(block.folder.unrecognized[0]!.fileName, 'mystery.jar');
+  assert.equal(block.folder.unrecognized[0]!.reason, 'no-fabric-meta');
+});
+
+test('planVersionPage：链接字段取的是目标 release（没有目标 ⇒ 不许拿候选兜底）', () => {
+  const sodiumRelease = catalog.releases.find(
+    (r) => r.modid === 'sodium' && r.targetVersions.includes('1.16.1'),
+  )!;
+  const upstream: ModRelease = {
+    ...sodiumRelease,
+    version: '99.0.0',
+    url: 'https://example.invalid/upstream/sodium-99.0.0.jar',
+  };
+  assert.notEqual(upstream.url, sodiumRelease.url, '夹具自钉：上游那条与目录那条的地址必须不同');
+
+  const row = planVersionPage(
+    stateWith({
+      gameVersion: '1.16.1',
+      catalogRows: rowsForVersion('1.16.1', new Map([['sodium', upstream]])),
+    }),
+    [],
+  ).mods.find((m) => m.modid === 'sodium')!;
+  assert.equal(row.releaseUrl, upstream.url, '有目标（上游那条）⇒ 链接取的是目标');
+  assert.equal(row.releaseVersion, '99.0.0');
+
+  /*
+   * `homepage` 取的是**目录里这个 mod 的** homepage（spec §5.1）。
+   * ⚠️ 简报的夹具写的是 `catalogRow({ modid: 'sodium', homepage: 'h' })`，而**真实的
+   *    `CatalogRowView` 没有 `homepage` 这一格**（现读 `modFolders.ts` 里那个接口的字段清单）
+   *    ⇒ 这一格是 Task 1 顺手补的（`planCatalogRows` 从 `ModEntry.homepage` 填；实测 70/70
+   *    都有）。断言因此只能取真目录里那个值 —— 下面那条自钉保证它不是 `undefined`。
+   */
+  const sodiumHomepage = catalog.mods.find((m) => m.modid === 'sodium')!.homepage;
+  assert.ok(sodiumHomepage, '夹具自钉：sodium 在目录里有 homepage');
+  assert.equal(row.homepage, sodiumHomepage);
+
+  /*
+   * ★ 承重的一条：**没有目标**的行不许拿候选兜底。
+   *   `official?.url ?? candidates[0]?.url` 在"有目标"那一支根本走不到 ⇒ 只断言上面
+   *   那两条的话，它就抓不到这个坏法（Step 5 的刀③落在这里）。
+   */
+  const ambSource = rowsForVersion('1.7.2').find((r) => r.modid === 'optifine')!;
+  assert.equal(ambSource.official, null, '夹具自钉：optifine@1.7.2 是多候选 ⇒ 没有目标');
+  assert.ok(ambSource.candidates.length >= 2, '夹具自钉：候选非空 ⇒ "候选兜底"有东西可兜');
+  const amb = planVersionPage(
+    stateWith({ gameVersion: '1.7.2', catalogRows: rowsForVersion('1.7.2') }),
+    [],
+  ).mods.find((m) => m.modid === 'optifine')!;
+  assert.equal(amb.releaseUrl, null, '没有目标 ⇒ 没有下载链接（候选不是目标）');
+  assert.equal(amb.releaseVersion, null);
+});
+
+test('planVersionPage：下载目标是"路径在 + 有读数 + 版本已知"的那些', () => {
+  const state = stateWith({
+    gameVersion: '1.16.1',
+    folders: [
+      folderView({ folderId: 'a', gameVersion: '1.16.1' }),
+      folderView({ folderId: 'b', gameVersion: '1.16.1', pathExists: false }),
+      folderView({ folderId: 'c', gameVersion: '1.16.1', hasReading: false }),
+    ],
+    catalogRows: rowsForVersion('1.16.1'),
+  });
+  const page = planVersionPage(state, []);
+  const row = page.mods.find((m) => m.modid === 'sodium')!;
+  assert.deepEqual(
+    page.folders.map((f) => f.folder.folderId),
+    ['a', 'b', 'c'],
+    '夹具自钉：三个文件夹都在这一版里（差别只在下面两格）',
+  );
+  assert.equal(page.folders[1]!.folder.pathExists, false, 'b 的差别是路径不在');
+  assert.equal(page.folders[2]!.folder.hasReading, false, 'c 的差别是没有读数');
+  assert.deepEqual(row.downloadTargets, ['a']);
 });

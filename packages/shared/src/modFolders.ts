@@ -203,6 +203,20 @@ export interface CatalogRowView {
   tags: readonly string[];
   /** 显示名；目录里没有这个标签的名字时是 key 本身。 */
   tagLabels: readonly string[];
+  /**
+   * 目录里这个 mod 的 `homepage`（`ModEntry.homepage`）；目录没写就是 `null`。
+   *
+   * ⚠️★ 它为什么必须在这里（2026-10-04 Task 1 的现场）：新投影 `VersionModRow.homepage`
+   *    的语义是"**目录里的** `mod.homepage`"（spec §5.1），而 `ModFoldersState` **不带
+   *    整份目录**（只有 `catalogRows` / `folders` / `tags` / `mirrors` …）⇒ 这一格不在
+   *    行视图里，渲染进程就**没有任何地方**读得到它：页面只能把那一条画成空，或者去猜。
+   * ⚠️ 它与源头一样是**可选**的（`ModEntry.homepage` 也是 `z.string().optional()`）：
+   *    `planCatalogRows` 一定会填（`mod.homepage ?? null`，实测目录里 70/70 都有），
+   *    但既有调用方手搓 `CatalogRowView` 字面量时不必跟着改（那是渲染自检的夹具）。
+   *    代价（认）：夹具忘了写这一格时读出来是 `null`（= "这个 mod 没有主页"），
+   *    与"目录没写"分不开 —— 这个方向的退化只是少一条链接，不影响任何判定。
+   */
+  homepage?: string | null;
   /** 该 `(modid, gameVersion)` 下的全部候选（0 / 1 / 2+ 条，顺序继承目录）。 */
   candidates: readonly ModRelease[];
   /**
@@ -297,6 +311,7 @@ export function planCatalogRows(input: PlanCatalogRowsInput): CatalogRowView[] {
       rowId,
       modid: mod.modid,
       name: mod.name,
+      homepage: mod.homepage ?? null,
       gameVersion,
       tags,
       tagLabels: tagLabelsOf(catalog, tags),
@@ -936,4 +951,164 @@ export function attributeLegacyBindings(input: {
   }
 
   return { adopt, drop, keepUnknown };
+}
+
+// ---------------------------------------------------------------------------
+// 第三部分：版本页投影（mod 下载页重构，spec §5.1）
+// ---------------------------------------------------------------------------
+
+/**
+ * 该版本下的一个文件夹（新页面第二段的一行：折叠时画它，展开时画 `folder.rows`）。
+ *
+ * ⚠️ 为什么是"**整个 `ModFolderView`** + 一格投影"，而不是像 spec §5.1 的 `FolderBlock`
+ *    那样把文件夹的字段抄平：展开那一栏要画的正是**文件夹视图本身**（`path` /
+ *    `gameVersion` / `pathExists` / `hasReading` / `rows` / `unrecognized` …一个都不能少）。
+ *    抄平 = 同一批事实有第二份形状，将来 `ModFolderView` 加一格时这里会**静默**漏掉它，
+ *    而漏掉的表现是"展开后少了一列"，看不出是契约漂了。
+ */
+export interface VersionFolderBlock {
+  folder: ModFolderView;
+  /**
+   * 这个文件夹里**认出来的** modid（`folder.rows` 的投影）—— 「已下载」判定用它。
+   *
+   * ⚠️ `folder.unrecognized` **不算**：那些条目恰恰是"认不出这是目录里的哪个 mod"
+   *    （`FolderUnrecognizedRow` 只有文件名与原因，连 modid 都没有）⇒ 把它们算进来
+   *    等于凭空承认"这个 mod 已经下过了"。它们仍留在 `folder.unrecognized` 里（页面标红）。
+   */
+  recognizedModids: readonly string[];
+}
+
+/** 该版本「全部 mod」里的一行（`state.catalogRows` 的投影）。 */
+export interface VersionModRow {
+  modid: string;
+  name: string;
+  tags: readonly string[];
+  /** 目录里这个 mod 的 `homepage`（来源是 `CatalogRowView.homepage`）；目录没写就是 `null`。 */
+  homepage: string | null;
+  /**
+   * 该行**目标** release 的 url / 版本（`CatalogRowView.official` —— 可能是目录那条、
+   * 也可能是有上游时的上游那条）。**没有目标就是 `null`**（`ambiguous` / `missing-release`）。
+   */
+  releaseUrl: string | null;
+  releaseVersion: string | null;
+  /** 判定沿用行视图里那一个（`judgeRelease` 只算过一次，这里不重判）。 */
+  verdict: ReleaseVerdict;
+  /** 目标是从哪来的（指定版本 / 上游最新）—— 行视图那一格的透传，页面**不要**自己推断。 */
+  source: TargetSource | null;
+  /** 这一行会不会进批量（`needsUpdate` 的结果，行视图里算好的）。 */
+  batchable: boolean;
+  /** 目标是 `download: 'manual'` ⇒ 只给"打开原网页"，**连更新按钮都不给**。 */
+  manual: boolean;
+  /** 该 modid 出现在哪些**已展开**的文件夹里（空 ⇒ 显示下载按钮）。 */
+  downloadedIn: readonly string[];
+  /** 该版本里可以当作下载目标的文件夹 id（`pathExists && hasReading`）。 */
+  downloadTargets: readonly string[];
+}
+
+/** 该版本一页要画的全部东西（页面只渲染，不再判断）。 */
+export interface VersionPage {
+  /** 就是 `state.gameVersion`（一处真相，理由见 `planVersionPage`）。 */
+  version: string;
+  /** 目录在这一版可不可用（由 `missingStatus` 派生）；`false` ⇒ 第三段显示提示而不是列表。 */
+  catalogAvailable: boolean;
+  folders: readonly VersionFolderBlock[];
+  mods: readonly VersionModRow[];
+}
+
+/**
+ * 把界面状态投影成"**一个版本的一页**"。纯函数：不读盘、不判断目录、不判镜像。
+ *
+ * 三条边界：
+ *   · **只画 `state.gameVersion` 这一版**，而且版本从状态里取、不另收一个 `version` 入参
+ *     （spec §5.1 写计划时的订正）：`catalogRows` 本来就是按它算出来的，多一个"必须等于
+ *     另一个字段"的参数，传错时不会报错、只会**静悄悄画空**。
+ *   · `downloadedIn` **只在已展开的文件夹里**成立（展开态是界面状态，由 `expanded` 传进来，
+ *     不进持久化状态）。⇒ 它为空的含义**只有一个**："在你此刻看得见的地方没下过"，
+ *     页面据此显示下载按钮。⚠️ 它**不是**"这台机器上没有"—— 折叠着的文件夹里有没有，
+ *     是界面要不要给它看的选择，不是投影能推断的事实（Ruling 65 的同一条纪律：分不清
+ *     "不知道"与"没有"的读数不许当结论用）。
+ *   · `downloadTargets` 与 `downloadedIn` **都由这里算**（页面不做判断）。前者答的是
+ *     "这一版里哪些文件夹能当下载目标"：路径要在（`pathExists`）、要有扫描读数
+ *     （`hasReading` —— 没有读数的文件夹我们不知道它里面有什么）、版本要已知
+ *     （`folder.gameVersion === version` 这一句已经保证了它，因为 `version` 是 `string`；
+ *     再写一次 `folder.gameVersion !== null` 会是一条**永远为假**的分支）。
+ */
+export function planVersionPage(state: ModFoldersState, expanded: readonly string[]): VersionPage {
+  const version = state.gameVersion;
+  const folders = state.folders.filter((folder) => folder.gameVersion === version);
+  const expandedSet = new Set(expanded);
+  const recognized = new Map(
+    folders.map((folder) => [folder.folderId, folder.rows.map((row) => row.modid)] as const),
+  );
+
+  return {
+    version,
+    // 目录不可用 ⇒ 第三段没有东西可列（"读不到目录"与"这一版没有 mod"必须分开说）。
+    catalogAvailable: state.missingStatus !== 'catalog-unavailable',
+    folders: folders.map((folder) => ({
+      folder,
+      recognizedModids: recognized.get(folder.folderId) ?? [],
+    })),
+    mods: state.catalogRows.map((row) => {
+      const known = folders.filter((folder) =>
+        (recognized.get(folder.folderId) ?? []).includes(row.modid),
+      );
+      return {
+        modid: row.modid,
+        name: row.name,
+        tags: row.tags,
+        homepage: row.homepage ?? null,
+        /*
+         * ⚠️ 链接取的是**目标**（`official`），没有目标（`ambiguous` / `missing-release`）
+         *    就给 `null` —— **不许**拿 `candidates[0]` 兜底。兜底的坏处是实的：
+         *    `ambiguous` 的含义正是"该装哪一个还没定，要用户明确选一个"（spec §8），
+         *    给它画一条能点的下载链接，等于替用户选了一个。候选链接要显示时由页面
+         *    自己按 `verdict` 决定（那是它那一格的文案），投影不下这个决定。
+         */
+        releaseUrl: row.official?.url ?? null,
+        releaseVersion: row.official?.version ?? null,
+        verdict: row.verdict,
+        source: row.targetSource,
+        batchable: row.batchable,
+        manual: row.manual,
+        // 只在**已展开**的文件夹里判定（理由见上面第二条边界）。
+        downloadedIn: known
+          .filter((folder) => expandedSet.has(folder.folderId))
+          .map((folder) => folder.folderId),
+        downloadTargets: folders
+          .filter((folder) => folder.pathExists && folder.hasReading)
+          .map((folder) => folder.folderId),
+      };
+    }),
+  };
+}
+
+/** 「显示全部已绑定的文件夹」那一栏的一组。 */
+export interface VersionGroup {
+  /** `null` = 版本未知的那些文件夹（`ModFolderView.gameVersion` 为 `null`）。 */
+  version: string | null;
+  folders: readonly ModFolderView[];
+}
+
+/**
+ * 按**有效版本**给全部已绑定文件夹分组（`state.folders` 的全集，不只是选中的那一版）。
+ *
+ * ⚠️ 顺序 = 状态里的**首次出现顺序**，不是字典序：这一栏按用户的绑定顺序画，排序会让
+ *    "刚加的那个文件夹"跳到别处。⚠️ 版本未知的那些**自成一组**（`version` 为 `null`）：
+ *    它们不属于任何一版，但也不许从这一栏里消失（Ruling 65：读不出来 ≠ 没有）。
+ */
+export function groupFoldersByVersion(state: ModFoldersState): readonly VersionGroup[] {
+  const order: (string | null)[] = [];
+  const bucket = new Map<string | null, ModFolderView[]>();
+  for (const folder of state.folders) {
+    const key = folder.gameVersion;
+    const list = bucket.get(key);
+    if (list === undefined) {
+      bucket.set(key, [folder]);
+      order.push(key);
+    } else {
+      list.push(folder);
+    }
+  }
+  return order.map((version) => ({ version, folders: bucket.get(version) ?? [] }));
 }
