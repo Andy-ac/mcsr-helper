@@ -752,6 +752,29 @@ function folderRowSpanOf(markup: string, folderId: string): string {
 }
 
 /**
+ * 一个文件夹的**展开体**那一段产物 —— 从 `data-folder-body="X"` 起，到**下一个**
+ * `data-folder-id=`（没有下一个就到产物末尾）为止。找不到就当场红。
+ *
+ * ⚠️★ 为什么另起一个（判修轮，2026-10-04 T4）：T4 的三格 prop（`homepageOf` / `mirrors` /
+ *    `busy`）是**页面**喂下来的，而上面那些断言喂的是**自检自己组的那份**
+ *    ⇒ "页面把空 Map 传下去"曾经**全绿**（评审点名的那条）。这一段的判据必须打在
+ *    **`VersionFolderList` 渲染出来的产物**上（`expandedListHtml` / 忙碌那一份），
+ *    而不是打在 `<FolderJarList>` 单独的产物上。
+ * ⚠️ 切法与 `folderRowSpanOf` 同一条理由（非贪婪正则会在第一个 `</div>` 上截断）；
+ *    而展开体正好在"这一行的头行之后、下一个文件夹那一行之前" ⇒ 这个窗口够用。
+ */
+function folderBodyOf(markup: string, folderId: string): string {
+  const start = markup.indexOf(`data-folder-body="${folderId}"`);
+  assert.notEqual(
+    start,
+    -1,
+    `产物里找不到 data-folder-body="${folderId}" —— 那个文件夹的展开体没渲染出来`,
+  );
+  const next = markup.indexOf('data-folder-id="', start + 1);
+  return next === -1 ? markup.slice(start) : markup.slice(start, next);
+}
+
+/**
  * 展开体里的一行 jar（`data-jar="<modid>"` 那一格）。找不到就当场红。
  *
  * ⚠️ 它**只**匹配已识别那一行：未识别的行没有 `data-jar`（它带的是
@@ -3526,9 +3549,13 @@ assert.ok(
 /**
  * 渲染一个文件夹**展开体里那张 jar 表**（`FolderJarList` 是纯 props 组件 ⇒ 喂一份投影就画）。
  *
- * ⚠️★ `homepageOf` 的组装**逐字照页面**（`new Map(state.catalogRows.map(…))`）：自检里
- *    重写一遍组装方式的话，"页面真的喂了它"这件事就没有证据了（这一组验的是组件，
- *    而"谁喂的"由 ㊲ 的形状守卫与 `VersionFolderList` 那一处调用点兜着）。
+ * ⚠️★ `homepageOf` 的组装**逐字照页面**（`new Map(state.catalogRows.map(…))`）。
+ *    ⚠️★ **但这一组的产物证明不了"页面真的喂了它"**（判修轮订正，2026-10-04）：这一组里
+ *    三格 prop（`homepageOf` / `mirrors` / `busy`）都是**自检自己传的** ⇒ 把
+ *    `VersionFolderList` 那一处调用点换成空 Map / 空镜像表 / 写死 `busy={false}`，
+ *    这一组**一条都不会红**（评审点名的那条：注释原来谎称"由 ㊲ 与那一处调用点兜着"，
+ *    而 ㊲ 只读 `FolderJarList.tsx` / `Files.tsx` / `ModDownloadPanel.tsx` 的**源码**）。
+ *    ⇒ 页面那一侧的证据是下面 ⑥ 那三条，它们打在 **`VersionFolderList` 的产物**上。
  */
 function jarListHtmlOf(state: ModFoldersState, folderId: string): string {
   const page = planVersionPage(state, [folderId]);
@@ -3776,8 +3803,56 @@ assert.deepEqual(
   [],
   '★ 这一组三份产物里也没有裸 key 泄漏（⚠️ ⑬ 那条扫描跑在**这一组之前** ⇒ 新词条要在这里自钉）',
 );
+// —— ⑥ ★★★ 页面**真的**把三格喂下去了（判修 1：上面那五块喂的都是自检自己的夹具） ——
+/*
+ * ⚠️★ 为什么这一段必须在**页面那一侧**的产物上打（2026-10-04 T4 判修轮，评审点名）：
+ *    上面 ①–⑤ 里的三格 prop 全是**自检自己传的** ⇒ 把 `VersionFolderList` 那一处调用点
+ *    改成 `homepageOf={new Map()}` / `mirrors={[]}` / `busy={false}`，
+ *    "主页列 / 镜像按钮 / 写盘期间的锁"三件事一起废掉，而上面每一条**照样绿**。
+ *    ⇒ 这里用的是 `expandedListHtml`（**`VersionFolderList` 渲染出来的**那一份，
+ *    夹具是 `skeletonState`：`ROW_GITHUB` 带 `SODIUM_HOMEPAGE`、`state.mirrors` 有那条
+ *    GitHub 镜像、`f1` 的默认两行里有 `sodium`）—— 一条新夹具都不需要。
+ * ⚠️ 判据打在 `data-folder-body="f1"` 那一段里：头行里没有这些东西（头行那一条
+ *    "精确按钮集合"的断言反过来正好是这一段不含头行控件时的读数）。
+ */
+const pageBodyOfF1 = folderBodyOf(expandedListHtml, 'f1');
+assert.match(
+  pageBodyOfF1,
+  /data-jar="sodium"[\s\S]{0,900}?data-link="homepage"/,
+  '★★★ 展开体里那一行有 **homepage 链接** ⇒ `homepageOf` 真的从页面喂进来了' +
+    '（把那一格换成 `new Map()` ⇒ 这一条红，而 ①–⑤ 照样绿 —— 它们的 map 是自检自己组的）',
+);
+assert.ok(
+  linksIn(pageBodyOfF1).some((link) => link.href === SODIUM_HOMEPAGE),
+  '★★★ 而且 `href` 就是 `ROW_GITHUB.homepage`（***自检没有替页面组 map***：' +
+    '这一条走的是 `VersionFolderList` 那一处调用点，写死一个别的地址会红）',
+);
+assert.deepEqual(
+  labelsIn(jarRowOf(pageBodyOfF1, 'sodium')),
+  [labelOf('files.updateOrigin'), labelOf('files.updateMirror')],
+  '★★★ 镜像那一颗**也在** ⇒ `mirrors` 真的从页面喂进来了（换成 `mirrors={[]}` ⇒ 这一条红）',
+);
+const busyListState = { ...skeletonState, busy: true };
+const busyListHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: busyListState,
+      page: planVersionPage(busyListState, ['f1']),
+      expanded: ['f1'],
+      onToggle: noop,
+      onAction: noop,
+    }),
+  ),
+);
+assert.deepEqual(
+  buttonsIn(jarRowOf(folderBodyOf(busyListHtml, 'f1'), 'sodium')).map((button) => button.disabled),
+  [true, true],
+  '★★★ 状态 `busy` 时那两颗按钮在展开体里也**禁用** ⇒ `busy` 真的从页面喂进来了' +
+    '（换成写死 `busy={false}` ⇒ 这一条红；⚠️ 这一份是把同一个夹具的 `busy` 翻成 `true`，' +
+    '别的格一个都没动）',
+);
 ok(
-  '㊱ 展开的 jar 列表：已识别的行（文件名/mod 名/本地版本/两颗链接的 href/既有徽章与操作）+ 未识别两行（机器读数+类名+两类原因分开说）+ `styles.css` 里那条红规则真的在 + homepage 查不到就印 `—` + 既有 allow-list（`different-build` 有入口、manual/newer/missing-release 没有）',
+  '㊱ 展开的 jar 列表：已识别的行（文件名/mod 名/本地版本/两颗链接的 href/既有徽章与操作）+ 未识别两行（机器读数+类名+两类原因分开说）+ `styles.css` 里那条红规则真的在 + homepage 查不到就印 `—` + 既有 allow-list（`different-build` 有入口、manual/newer/missing-release 没有）+ **页面真的把 `homepageOf` / `mirrors` / `busy` 三格喂了下来**',
 );
 
 // ---------------------------------------------------------------------------
@@ -3822,6 +3897,22 @@ assert.match(
   '★★ 徽章表与第一部分 / 旧第二部分**共用一份**（`VERDICT_BADGES`）—— 在这一层另写一张表，' +
     '就是"同一个判定、两处说法"的第一个版本',
 );
+/*
+ * ★★ 送给主进程的那个键走**共用**的 `releaseKey()`（`modCatalog.ts:302`，它的注释写着
+ *    "分隔符只此一处"）。⚠️ 判修轮之前这里是手搓的第二份 `${row.modid}|${…}`
+ *    （评审点名）：分隔符漂一个字符的症状只是"这一行点更新没反应"（主进程 `requirePairKey`
+ *    拒），而**产物里看不出来** ⇒ 由这两条钉住（下面那条是反面：不许再手搓一份）。
+ */
+assert.match(
+  jarListCode,
+  /releaseKey\(row\.modid,\s*folder\.gameVersion\s*\?\?\s*''\)/,
+  '★★ 那个键来自共用的 `releaseKey(modid, gameVersion)`（分隔符只有这一处实现）',
+);
+assert.equal(
+  /\$\{row\.modid\}\|/.test(jarListCode),
+  false,
+  '★★ 反面：**不许**手搓第二份 `modid|版本`（漂一个字符 ⇒ 主进程拒，症状只是"点了没反应"）',
+);
 assert.match(
   downloadPanelCode,
   /kind:\s*'update-mod';\s*folderId:\s*string;\s*modid:\s*string;\s*releaseKey:\s*string;\s*channel:\s*Channel/,
@@ -3835,7 +3926,7 @@ assert.match(
     '这一条钉的是**接对了哪条通道**）',
 );
 ok(
-  '㊲ 单行更新的接线守卫：两颗按钮各送自己那条通道（`origin` / `{mirrorId}`，各一处）、镜像判据来自状态、徽章表共用一份、联合新增的那一格形状、`Files.tsx` 接到 `handlers.updateMod`',
+  '㊲ 单行更新的接线守卫：两颗按钮各送自己那条通道（`origin` / `{mirrorId}`，各一处）、镜像判据来自状态、徽章表共用一份、那个键走共用的 `releaseKey()`、联合新增的那一格形状、`Files.tsx` 接到 `handlers.updateMod`',
 );
 
 // ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@
  * "路径不存在 / 版本未知 / 没有读数 / 读到过而一个都没有"四档由 `VersionFolderList` 画
  * （它才是决定"要不要画这张表"的那一层）—— 这一层是**一份哑列表**：给它行就画行。
  */
-import type { ModMirror } from '@mcsr/shared/modCatalog';
+import { type ModMirror, releaseKey } from '@mcsr/shared/modCatalog';
 import {
   type ModFolderRowView,
   type ModFolderView,
@@ -91,7 +91,7 @@ export function FolderJarList({ block, homepageOf, mirrors, busy, onAction }: Fo
             <th>{t('files.colFile')}</th>
             <th>{t('files.colMod')}</th>
             <th>{t('files.colLocal')}</th>
-            <th>{t('files.colDownload')}</th>
+            <th>{t('files.colReleasePage')}</th>
             <th>{t('files.colHomepage')}</th>
             <th>{t('files.colStatus')}</th>
             <th>{t('files.colActions')}</th>
@@ -169,13 +169,17 @@ function JarRow({
   const badge = VERDICT_BADGES[row.verdict.kind];
   const hint = VERDICT_HINTS[row.verdict.kind];
   /**
-   * ★★ `releaseKey` 的形状与旧第二部分**逐字相同**：`${modid}|${游戏版本}`，而版本取
-   *    `folder.gameVersion`（状态里那一版）—— 行里没有版本字段，而"这个文件夹是哪一版"
-   *    正是主进程 `requirePairKey` 要核对的那一格。
-   *    ⚠️ 版本未知时它是 `${modid}|`（主进程必拒的形状），而那一档 `rows` 里的判定全是
-   *    `unknown-version` ⇒ 两颗按钮根本画不出来，这个值也发不出去。
+   * ★★ 主进程要的那个键 —— **分隔符只有一处实现**：`releaseKey()`（`@mcsr/shared/modCatalog`，
+   *    `modCatalog.ts:302`，那段注释写着"分隔符只此一处"）。版本取 `folder.gameVersion`
+   *    （状态里那一版）—— 行里没有版本字段，而"这个文件夹是哪一版"正是主进程
+   *    `requirePairKey` 要核对的那一格。
+   *    ⚠️★ 判修轮之前这里是**手搓的第二份** `${row.modid}|${folder.gameVersion ?? ''}`
+   *    （评审点名）：分隔符漂一个字符时，症状只是"这一行点更新没反应"
+   *    （主进程 `requirePairKey` 拒），而自检里没有任何东西盯得住那个字符串。
+   *    ⚠️ 版本未知时 `?? ''` 让它变成 `${modid}|`（主进程必拒的形状），而那一档 `rows` 里的
+   *    判定全是 `unknown-version` ⇒ 两颗按钮根本画不出来，这个值也发不出去。
    */
-  const releaseKey = `${row.modid}|${folder.gameVersion ?? ''}`;
+  const pairKey = releaseKey(row.modid, folder.gameVersion ?? '');
   /**
    * ★★ 这条 release 能用哪条镜像 —— **判据与主进程共用 `mirrorsFor` 那一份实现**
    * （`mirrorsForUrl` 只是把状态里那份镜像表喂给它）。取第一条（目录里的顺序 =
@@ -274,7 +278,7 @@ function JarRow({
                   kind: 'update-mod',
                   folderId: folder.folderId,
                   modid: row.modid,
-                  releaseKey,
+                  releaseKey: pairKey,
                   channel: 'origin',
                 })
               }
@@ -291,7 +295,7 @@ function JarRow({
                     kind: 'update-mod',
                     folderId: folder.folderId,
                     modid: row.modid,
-                    releaseKey,
+                    releaseKey: pairKey,
                     channel: { mirrorId: mirror.id },
                   })
                 }

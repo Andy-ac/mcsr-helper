@@ -216,9 +216,16 @@ export interface CatalogRowView {
    *    只有**一个**表示：`null`。
    *    ⚠️ 改必填前的代价（T1 评审记的那条）是"夹具忘了写这一格 ⇒ 读出来是 `null`，
    *    与'目录里没有'分不开"，而那个方向的退化只少一条链接、不影响任何判定 ⇒
-   *    当时判"保持可选"。T4 付了这个账：手搓 `CatalogRowView` 字面量的调用方
-   *    （今天的 `apps/web/scripts/foldersrender.tsx`）现在必须显式写出这一格，
-   *    换来的正是"忘了写 = **编译错**"。
+   *    当时判"保持可选"。
+   *    ⚠️★ 改必填之后的**收益边界**（2026-10-04 T4 判修轮，实测）：它是
+   *    **类型层**的必填 —— `apps/web/src/**` 与任何被 tsconfig 收进去的消费者漏了这一格
+   *    都会当场编译失败（一次性 `tsc` 探针：`TS2741: Property 'homepage' is missing …
+   *    but required`）。⚠️ **但手搓 `CatalogRowView` 字面量的那个渲染自检不算在内**：
+   *    `apps/web/scripts/**` **不在任何 tsconfig 的 `include` 里**（`tsc` 不看它、
+   *    `tsx` 只剥类型不做检查）⇒ 那个文件里"忘了写"**不是编译错**（实测：往它里面插
+   *    一句 `const x: number = 'not-a-number';`，`typecheck` 与那个脚本双双照样绿）。
+   *    ⇒ 那一侧的守卫是**运行期**的夹具自钉（`foldersrender.tsx` ㊱ 开头那句
+   *    `assert.ok(ROW_GITHUB.homepage, …)`），不是编译器。
    */
   homepage: string | null;
   /** 该 `(modid, gameVersion)` 下的全部候选（0 / 1 / 2+ 条，顺序继承目录）。 */

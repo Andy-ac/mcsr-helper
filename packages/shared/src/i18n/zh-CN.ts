@@ -4208,7 +4208,15 @@ export const zhCN = {
      *    `colLocal` / `colStatus` / `colActions`：同一张表的同一列在两处换措辞，
      *    只会让用户以为是两回事。
      */
-    colDownload: '下载',
+    /*
+     * ★★ 那一列里放的是**目标 release 的页面链接**（`row.official.url` + `openPage`），
+     *    所以列头说"原网页"，与那一格的行为对齐。
+     *    ⚠️★ 判修轮之前这一格的 key 叫 `colDownload`、值是"下载"—— **与那一格的行为矛盾**：
+     *    那一格的 `<a href>` 打开的是 release 的页面（渲染进程里根本没有一步下载；
+     *    写盘只有「更新」那两颗按钮走主进程）。spec §4 的草图写的是 `[下载]`，但
+     *    `row.official.url` 给出来的就是"到哪里去拿"，按实际行为定 ⇒ 列头跟着链接走。
+     */
+    colReleasePage: '原网页',
     colHomepage: '主页',
     /*
      * ★★ 两颗链接**必须是两条词条**（与 `updateOrigin` / `updateMirror` 同一条理由）：

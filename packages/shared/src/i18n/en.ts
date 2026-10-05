@@ -4653,7 +4653,16 @@ export const en: TranslationSchema = {
      * section's `colFile` / `colMod` / `colLocal` / `colStatus` / `colActions`: renaming
      * one column of the same table in one place only makes them look like two things.
      */
-    colDownload: 'Download',
+    /*
+     * ★★ That column holds the **target release's page link** (`row.official.url` +
+     * `openPage`), so the header says "original page" - aligned with what the cell does.
+     * ⚠️★ Before the fix round this key was `colDownload` with the value "Download",
+     * which **contradicted the cell**: its `<a href>` opens the release page (the
+     * renderer never downloads anything; only the two "update" buttons write, through the
+     * main process). Spec §4's sketch says `[Download]`, but `row.official.url` is a
+     * "where to get it" address, and the cell's actual behaviour wins.
+     */
+    colReleasePage: 'Original page',
     colHomepage: 'Homepage',
     /*
      * ★★ The two links must be two separate strings (same reason as
