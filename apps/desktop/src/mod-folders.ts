@@ -88,6 +88,9 @@ import {
 import {
   type Channel,
   channelUrl,
+  type FolderVerdict,
+  isKnownGameVersion,
+  isKnownMirror,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
@@ -571,15 +574,47 @@ function adoptFolderGameVersion(): void {
 }
 
 /**
+ * ★★ G2（最终修复波 / spec D3）：`bindFolder` 那个入参（"**当时看着的那一版**"）的形状判据。
+ *
+ * 返回值是"要预置的版本"，`null` = **交回自动推断**（与 `setFolderGameVersion(folderId, null)`
+ * 同一条语义）。三种输入归 `null`：`undefined`（老调用点 / 探针的 `bindAt`）、`null`
+ * （页面显式说"不知道看的是哪一版"）、以及没有（IPC 少传一格）；其余必须是**非空字符串**。
+ *
+ * ⚠️★ 只判形状、**不查目录**（与 `requireGameVersion` 刻意不同）：绑定是"建实体 + 扫一次"，
+ *    它**不依赖目录** —— 而 `requireGameVersion` 在目录还没拉到时**抛**
+ *    （`requireIndex()` 那一句），那会把"添加文件夹"这个与目录无关的动作一起拒掉
+ *    （那一刻 `state.gameVersion` 就是 `prefs` 里那个默认值，不在任何"目录版本全集"里）。
+ *    "这一版已经不在目录里"由**界面**处理：`staleGameVersion()` 会把它画成一个
+ *    `disabled` 的选项（Ruling 64：旧值看得见、但不许被当成一个新动作发出去），
+ *    与用户手改版本那条路完全同一条。
+ * ⚠️ 因此**不许**把它换成 `requireGameVersion`（那是一条看起来更"严"、实际会拒掉
+ *    合法动作的改动）：它是判据的一处实现，抄一份到别处更糟。
+ */
+function presetFolderVersion(gameVersion: unknown): string | null {
+  if (gameVersion === undefined || gameVersion === null) return null;
+  if (typeof gameVersion !== 'string' || gameVersion === '') {
+    throw new Error('非法参数：gameVersion 必须是非空字符串（"当时看着的那一版"）或 null');
+  }
+  return gameVersion;
+}
+
+/**
  * 绑定一个文件夹（**弹主进程自己的原生目录对话框**——路径只能这么来）。
  *
  * 顺序是有意的：
- *   ① 建/复用实体（同一个路径再绑一次不会绑出第二个）；
- *   ② 先扫一次（"绑完马上看得到东西"是这个动作的全部意义）；
- *   ③ §13.1：把这个文件夹**里面**的旧绑定解掉并说出来；
- *   ④ 采纳游戏版本（只在用户没显式选过时）。
+ *   ① 判入参形状（**在弹对话框之前**：一个坏入参不该先弹一个框再报错）；
+ *   ② 建/复用实体（同一个路径再绑一次不会绑出第二个）；
+ *   ③ 先扫一次（"绑完马上看得到东西"是这个动作的全部意义）；
+ *   ④ §13.1：把这个文件夹**里面**的旧绑定解掉并说出来（**每次 `bindFolder` 都跑**，
+ *      不是"只在新绑时跑一次"—— 它住在这个 `if` 之外，见下面那条注释）；
+ *   ⑤ 采纳游戏版本（只在用户没显式选过时）。
  *
- * ⚠️★ 2026-10-04（A 的 T6）：这里原来还有第 ④ 步"把文件夹**外面**的 v1 绑定多写一份到
+ * ★★ G2（最终修复波 / spec D3）：入参 = **当时看着的那一版**，新实体直接**以它为有效版本**
+ *    （`gameVersion: preset`），不再一律给 `null` 让主进程去推断。修之前"在 1.16.1 下面
+ *    添加一个 1.16.1 的文件夹"会归到**版本未知**那一组（路径里没有 `.minecraft` /
+ *    `mmc-pack.json` 就推不出来）。⚠️ 已经绑过的路径**不覆盖**它的版本：那可能是用户手改过的。
+ *
+ * ⚠️★ 2026-10-04（A 的 T6）：这里原来还有一步"把文件夹**外面**的 v1 绑定多写一份到
  *    `catalogBindings`"（`attributeLegacyItems`）。`catalogBindings` 整个退役了（D8）
  *    ⇒ 那一整段删掉：**归属这件事不再有落点**。代价（认）：v1 的 `items` 里那些
  *    **不在任何已绑定文件夹里**的单文件绑定，从今往后**没有人接手**（它们仍在文件里、
@@ -587,7 +622,8 @@ function adoptFolderGameVersion(): void {
  *    ⚠️ 第 ③ 步（**落在新绑定文件夹里**的那一半，`migrateBindingsInsideFolder`）
  *    **保留**：它是"一个文件只能有一个归属"（§13.1）的落地，与 `catalogBindings` 无关。
  */
-async function bindFolder(): Promise<ModFoldersState> {
+async function bindFolder(gameVersion: unknown): Promise<ModFoldersState> {
+  const preset = presetFolderVersion(gameVersion);
   const st = requireState();
   const picked = await pickDirectory();
   if (picked === null) return modFoldersState(); // 取消 ⇒ 一个字节都不改
@@ -598,16 +634,24 @@ async function bindFolder(): Promise<ModFoldersState> {
      * 新文件夹默认 `autoUpdate: true`（与 v1 的 `bind()` 同一条裁决）：
      * 启动时只扫开着开关的文件夹 ⇒ 默认 false 的话，新绑的文件夹在下次启动时会被
      * 启动那一次扫描漏掉，而界面上那个勾选框看起来是开着的。
+     * ⚠️ `gameVersion: preset`：`null` = 自动推断（**不是**"1.16.1"），G2 之前它恒为 `null`。
      */
     st.folders[folderId] = {
       path: picked,
-      gameVersion: null, // null = 自动推断（不是"1.16.1"）
+      gameVersion: preset,
       autoUpdate: true,
       boundAt: Date.now(),
     };
   }
   persist();
   await queueScan(folderId, picked, { onlyIfMissing: false });
+  /*
+   * ⚠️★ 这一句在 `if (st.folders[folderId] === undefined)` 那个块**之外**
+   *    （`:596-608` 那个守卫管的是"建不建实体"）：⇒ **每次** `bindFolder` 都会跑一次，
+   *    不是"只在新绑那个文件夹时跑"。准确的读法是"每次 `bindFolder` 都跑，而它只处理
+   *    **那一刻**已经落在（任意一个）已绑定文件夹里的 `items`" —— 此后 v1 再绑进来的
+   *    文件不会被它清掉（`mod-folders.ts` 里那条 `bulkRun` 的注释据此论证可达性）。
+   */
   migrateBindingsInsideFolder(picked);
   adoptFolderGameVersion();
   rebuild();
@@ -827,7 +871,12 @@ function requireGameVersion(gameVersion: unknown, what: string): string {
   if (typeof gameVersion !== 'string' || gameVersion === '') {
     throw new Error(`非法参数：${what} 必须是非空字符串`);
   }
-  if (!requireIndex().gameVersions.includes(gameVersion)) {
+  /*
+   * ⚠️★ CT-1（最终修复波）：判据是共享内核里那**一个** `isKnownGameVersion`
+   *    （`apps/web` 的三处下拉选项表也用它）—— 各写一份 `gameVersions.includes(...)`
+   *    的表现是"界面画得出、主进程拒"（或反过来），而两边都编译得过。
+   */
+  if (!isKnownGameVersion(requireIndex().gameVersions, gameVersion)) {
     throw new Error(`目录里没有这个游戏版本：${gameVersion}`);
   }
   return gameVersion;
@@ -839,7 +888,12 @@ function requireChannel(channel: unknown): Channel {
   if (isRecord(channel) && typeof channel.mirrorId === 'string' && channel.mirrorId !== '') {
     const mirrors = catalogOf()?.mirrors ?? null;
     if (mirrors === null) throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
-    if (!mirrors.some((mirror) => mirror.id === channel.mirrorId)) {
+    /*
+     * ⚠️★ CT-1（最终修复波）：与 `apps/web` 那两处（`bulkChannelUsable` / `channelOptions`）
+     *    共用共享内核里那**一个** `isKnownMirror` —— 漂的表现正是 Ruling 64 记的那件事：
+     *    界面画出一颗"更新（镜像）"、而这里当场拒。
+     */
+    if (!isKnownMirror(mirrors, channel.mirrorId)) {
       throw new Error(`目录里没有这条镜像：${channel.mirrorId}`);
     }
     return { mirrorId: channel.mirrorId };
@@ -1124,6 +1178,54 @@ async function writeRun(
   return modFoldersState();
 }
 
+/*
+ * ===========================================================================
+ * ★★ CT-2（最终修复波）：能装的判定是一张**正向列**，不是一张"拒绝表"
+ * ===========================================================================
+ * 修之前的形状是"逐条拒 `newer` / `unknown` / `unknown-version`，其余一律放行" ⇒
+ * **新加一支 `FolderVerdict` 时会落在"放行"那一侧**（一个没人做过的决定被静默接受），
+ * 而网页那一侧同一件事是一张**正向列**（`isUpdatableRow`：只有 `older` / `different-build`
+ * 给按钮）⇒ 同一个新判定在两侧的结果相反。
+ * ⇒ 这里改成一张**定型**的正向列：`INSTALLABLE` 是 `Record<FolderVerdict['kind'], boolean>`
+ *   ⇒ 判定加一支时这里**当场编译失败**（与 `VERDICT_BADGES` 那条同一招），必须显式表态。
+ *
+ * ⚠️★ 两侧的**集合不同**，而且**不是**疏忽：
+ *   · 网页（`isUpdatableRow`）画的是"要不要给一颗**更新**按钮" ⇒ `older` / `different-build`；
+ *     `same` 不给按钮（那一行显示"已是最新"）。
+ *   · 这里管的是"这个**写请求**能不能执行" ⇒ `same` **必须放行** —— "点第二次"走的正是它，
+ *     而那正是幂等那条判据本身（Ruling 47 的原话）。
+ *   · `ambiguous` / `missing-release` 在这里是 `false`：它们的 `official` 恒为 `null`
+ *     （`resolveTarget` 只在**恰好一条**候选时才给目标），而 `installFolderRow` 在调本函数
+ *     **之前**就已经用"这一行现在没有目标"拒了 ⇒ 这两支永远不会走到这里，标 `false`
+ *     只是把"没有目标 = 没有东西可装"这件事在正向列上写实。
+ */
+const INSTALLABLE = {
+  same: true,
+  older: true,
+  'different-build': true,
+  newer: false,
+  unknown: false,
+  'unknown-version': false,
+  ambiguous: false,
+  'missing-release': false,
+} satisfies Record<FolderVerdict['kind'], boolean>;
+
+/**
+ * 不许装时那句原话（`INSTALLABLE[kind] === false` 的那几支）。
+ *
+ * ⚠️ 三支老文案**逐字照旧**（探针 ⑲ 钉着 `newer` 那一句）；新加的那两句只说"没有答案 /
+ *    没有东西可装"，与 `installFolderRow` 更早那条"没有目标"的拒**不冲突**（到不了这里）。
+ * ⚠️ `Partial`：正向列是**唯一**的表态处（`INSTALLABLE` 逼着人表态），这一张只提供措辞；
+ *    缺一句时的兜底在下面（不会静默放行 —— 放行与否只看 `INSTALLABLE`）。
+ */
+const REFUSE_UPDATE: Partial<Record<FolderVerdict['kind'], (what: string) => string>> = {
+  newer: (what) => `本地这一份比清单里的更新（newer）⇒ 不给更新（只升不降）：${what}`,
+  unknown: (what) => `本地版本读不出来（unknown）⇒ 不知道会换掉什么，不给更新：${what}`,
+  'unknown-version': (what) => `这个文件夹的游戏版本还不知道 ⇒ 不给更新：${what}`,
+  ambiguous: (what) => `候选多于一条（ambiguous）⇒ 没有"该装哪一个"的答案，不给更新：${what}`,
+  'missing-release': (what) => `清单里这个游戏版本下没有它（missing-release）⇒ 不给更新：${what}`,
+};
+
 /**
  * ★ **Ruling 47**（2026-10-03 复审判修 1）：写盘前**必须拒掉那两类"不许装"的行**。
  *
@@ -1140,19 +1242,16 @@ async function writeRun(
  * ⚠️ 这**不是**"重推判据"（brief 那句"内核决定"）：`verdict` / `manual` 就**在写路径刚读的那个
  *    对象上**（`planFolderView` / `planCatalogRows` 算好的，T1 的 `shared/modFolders.ts`）——
  *    消费它 ≠ 在写路径里重新 `judgeRelease`。
+ * ⚠️★ CT-2：形状是 `INSTALLABLE[kind]` 那一次**正向查表**（理由与那张表写在它头顶）。
  */
-function assertUpdatable(row: { manual: boolean; verdict: { kind: string } }, what: string): void {
+function assertUpdatable(row: { manual: boolean; verdict: FolderVerdict }, what: string): void {
   assertNotManual(row.manual, what, '更新');
   const kind = row.verdict.kind;
-  if (kind === 'newer') {
-    throw new Error(`本地这一份比清单里的更新（newer）⇒ 不给更新（只升不降）：${what}`);
-  }
-  if (kind === 'unknown') {
-    throw new Error(`本地版本读不出来（unknown）⇒ 不知道会换掉什么，不给更新：${what}`);
-  }
-  if (kind === 'unknown-version') {
-    throw new Error(`这个文件夹的游戏版本还不知道 ⇒ 不给更新：${what}`);
-  }
+  if (INSTALLABLE[kind]) return;
+  const refuse = REFUSE_UPDATE[kind];
+  throw new Error(
+    refuse === undefined ? `这一行的判定（${kind}）⇒ 不给更新：${what}` : refuse(what),
+  );
 }
 
 /**
@@ -1277,8 +1376,12 @@ function skipReasonOf(row: ModFolderRowView): string {
  *      而反向是有效的（两个写入口的第一行就是 v1 导出的 `assertNotBusy()`）。
  *      ⚠️★ **"两个模块写的是不同的绑定"是假的**（2026-10-04 收口波订正；第一版这句注释就是
  *      这么写的，而它把一个可达的缺口说成了不可达）：v1 自己的 `bind` 可以把一个
- *      **已经在某个已绑定文件夹里**的 jar 绑成它的一个 `item`（§13.1 的迁移只在**新绑那个
- *      文件夹**时跑一次）⇒ 同一个文件可以同时是 v1 的一个 `item` 与本模块文件夹里的一行。
+ *      **已经在某个已绑定文件夹里**的 jar 绑成它的一个 `item`（§13.1 的迁移
+ *      **每次 `bindFolder` 都跑** —— 它在"建不建实体"那个守卫**之外**，见 `bindFolder`
+ *      里那一句的注释；而它只处理**那一刻**已经落在文件夹里的 `items`，此后 v1 照绑。
+ *      ⚠️ 这条注释原来写的是"只在**新绑那个文件夹**时跑一次"，那是**不精确**的，
+ *      最终修复波改准；可达性结论不受影响）
+ *      ⇒ 同一个文件可以同时是 v1 的一个 `item` 与本模块文件夹里的一行。
  *      ⚠️★ T6 之后**只剩这一条路**：原来还有第二条（`attributeLegacyItems` 把文件夹**外面**
  *      的 v1 绑定原样多写一份到 `catalogBindings`），那个函数随 D8 一起退役了。
  *      ⇒ v1 那一侧仍在 `busy` 期间可以起手写**同一个文件**（本模块进不去 v1 的批量，
@@ -1606,7 +1709,9 @@ function registerIpc(): void {
     rebuild();
     return modFoldersState();
   });
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.bindFolder, () => bindFolder());
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.bindFolder, (_event, gameVersion: unknown) =>
+    bindFolder(gameVersion),
+  );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.unbindFolder, (_event, folderId: unknown) =>
     unbindFolder(folderId),
   );

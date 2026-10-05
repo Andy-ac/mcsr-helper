@@ -187,10 +187,16 @@ const bridge: DesktopBridge = {
    *    `ModFoldersState` 里带着已绑定文件夹的**绝对路径**（含用户名）—— 那是
    *    "页面唯一的数据来源"的一部分，本期**有意接受**（文件头那一段写着这条决定）。
    *
-   * ⚠️ 主进程那一半（`ipcMain.handle` 的注册）是 **Task 4** 的，今天还不存在 ⇒
-   *    此刻这几条 `invoke` 一律 reject（Electron 的 "No handler registered for
-   *    'mcsr:modfolders-…'"）。这是"契约与转发先落地、行为随后"，**不是静默失败**：
-   *    通道名与契约同源（上面那个常量），Task 4 接上之后这里一个字符都不用改。
+   * ⚠️★ 主进程那一半（`ipcMain.handle` 的注册）**早就在了**（Task 4 落地、现在住
+   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **14 条**通道里
+   *    **13 条**是真注册的 handler（现数：`ipcMain.handle` 那 13 条），第 14 条
+   *    `onStatus` 是**推**给页面的（主进程只 `send`，没有 handler 可注册）——
+   *    所以"14 条通道 / 13 个 handler"不是少了一条。
+   *    ⚠️ 这条注释原来写的是"主进程那一半是 Task 4 的、今天还不存在 ⇒ 这几条 invoke 一律
+   *    reject" —— 那是**转发先落地、行为随后**那个中间态的一句话，Task 4 之后就成了假话
+   *    （T2 复审的 Minor ③ 记的正是它，最终修复波改准）。
+   *    ⚠️ 保留的仍然是那条纪律：**通道名与契约同源**（上面那个常量对象），
+   *    两边任何一条漂了都由 `MOD_FOLDERS_CHANNELS` 那条 `satisfies` 在编译期咬住。
    */
   modFolders: {
     getState(): Promise<ModFoldersState> {
@@ -203,8 +209,17 @@ const bridge: DesktopBridge = {
         ipcRenderer.off(MOD_FOLDERS_CHANNELS.onStatus, listener);
       };
     },
-    bindFolder(): Promise<ModFoldersState> {
-      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.bindFolder) as Promise<ModFoldersState>;
+    bindFolder(gameVersion?: string | null): Promise<ModFoldersState> {
+      /*
+       * ★★ G2（最终修复波 / spec D3）：入参是**当时看着的那一版**（页面把
+       * `page.version` 递过来）—— 主进程把它预置成新文件夹的有效版本。
+       * ⚠️ `undefined` 也要如实递过去（不是"省略"）：契约上它与 `null` 同义
+       * （交回自动推断），而主进程那一侧按 `unknown` 收、自己判形状。
+       */
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.bindFolder,
+        gameVersion,
+      ) as Promise<ModFoldersState>;
     },
     unbindFolder(folderId: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(
