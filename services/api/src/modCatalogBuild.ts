@@ -14,7 +14,14 @@
  *    ⇒ 所以这里遇到标量**直接报错**，而不是悄悄包成数组：
  *    上游若真改了形状，我们要**看见**它，而不是把一个未核实的假设固化进代码。
  */
-import type { ModCatalog, ModEntry, ModMirror, ModRelease } from '@mcsr/shared/modCatalog';
+import {
+  MOD_UPSTREAM_CHANNELS,
+  type ModCatalog,
+  type ModEntry,
+  type ModMirror,
+  type ModRelease,
+  type ModUpstreamChannel,
+} from '@mcsr/shared/modCatalog';
 
 export class ModCatalogBuildError extends Error {
   constructor(message: string) {
@@ -126,6 +133,36 @@ function requiredSize(value: unknown, path: string): number {
   return value;
 }
 
+/**
+ * `overrides.upstream.<modid>.channels`（可选）—— 这一条 upstream **接受哪些发布通道**。
+ *
+ * ⚠️★ **认不出的通道名当场抛**（不是静默丢掉）：一个打错的字（`releases`）会让这一条
+ *    upstream 变成"什么都不接受"，而它在界面上的表现正是那句"上游没有匹配的 release" ——
+ *    从那里看不出是人工配置打错了字。缺省（没写这个字段）**不是**"什么都不接受"，
+ *    而是"只认 release"（= 加这个字段之前的行为，由 `upstreamChannelsOf` 给）。
+ * ⚠️ 空数组也抛：它的意图说不清（要"什么都不接受"就别配 `upstream`），
+ *    而 `ModUpstreamShape` 那一侧的 `min(1)` 是同一个判据 —— 两处都要拦在各自的入口。
+ */
+function upstreamChannelsAt(value: unknown, path: string): ModUpstreamChannel[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const channels = strArray(value, path).map((item, index) => {
+    const known = MOD_UPSTREAM_CHANNELS.find((channel) => channel === item);
+    if (known === undefined) {
+      throw new ModCatalogBuildError(
+        `${path}[${index}]: 认不出这个发布通道 ${JSON.stringify(item)} —— ` +
+          `只认 ${MOD_UPSTREAM_CHANNELS.join(' / ')}`,
+      );
+    }
+    return known;
+  });
+  if (channels.length === 0) {
+    throw new ModCatalogBuildError(
+      `${path}: 空数组 —— 要么别写这个字段（缺省 = 只认 release），要么至少写一个通道`,
+    );
+  }
+  return channels;
+}
+
 function hostOf(url: string, path: string): string {
   try {
     return new URL(url).host;
@@ -153,7 +190,18 @@ interface Overrides {
   mirrors: ModMirror[];
   tagLabels: Record<string, { zh: string; en: string }>;
   tags: Record<string, string[]>;
-  upstream: Record<string, { provider: 'modrinth'; project: string }>;
+  /**
+   * `upstream`（人工层）—— 运行期"这个 mod 的最新版本去上游查"。
+   *
+   * ⚠️★ `channels` **可选**，缺省 = 只认 `release`（= 加这个字段之前的行为）。
+   *    `draftout` 是唯一写了它的条目（`["release","beta"]`）：它的最新版只发 beta，
+   *    只认 release 会一个版本都匹配不上。逐条的理由与契约写在
+   *    `packages/shared/src/modCatalog.ts` 的 `ModUpstreamShape.channels` 上。
+   */
+  upstream: Record<
+    string,
+    { provider: 'modrinth'; project: string; channels?: ModUpstreamChannel[] }
+  >;
   /**
    * ★★ **手工登记的 mod**（mc.sr 两份清单都不收、而我们要认得的那些）。
    *
@@ -272,11 +320,22 @@ function readOverrides(raw: unknown): Overrides {
                   `overrides.upstream.${modid}.provider: 这一期只认 modrinth`,
                 );
               }
+              const channels = upstreamChannelsAt(
+                u.channels,
+                `overrides.upstream.${modid}.channels`,
+              );
               return [
                 modid,
                 {
                   provider: 'modrinth' as const,
                   project: str(u.project, `overrides.upstream.${modid}.project`),
+                  /*
+                   * ⚠️ 没写 `channels` 就**不让这个键出现在产物里**（与 `manualMods.description`
+                   *    同一种写法）：产物是**逐字节**比较的（`--check`），而"这一条没写接受集"
+                   *    与"写了一个 `undefined`"在字节上虽然一样（`JSON.stringify` 丢掉它），
+                   *    显式地不带它更清楚 —— 读产物的人不必去猜那个键为什么不在。
+                   */
+                  ...(channels === undefined ? {} : { channels }),
                 },
               ];
             }),

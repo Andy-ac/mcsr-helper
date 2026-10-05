@@ -264,7 +264,11 @@
       "incompatibilities": [],
       "upstream": {
         "provider": "modrinth",
-        "project": "wNlielYC"
+        "project": "wNlielYC",
+        "channels": [
+          "release",
+          "beta"
+        ]
       },
       "description": "Draftout - local 1v1 lockout bingo with over 250 goals",
       "homepage": "https://draftoutmc.com"

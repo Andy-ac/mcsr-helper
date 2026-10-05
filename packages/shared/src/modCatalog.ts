@@ -40,7 +40,7 @@
  *    调用方只读自己认识的字段，这没问题；但**不许**把解析结果再原样回写给服务端。
  */
 import { z } from 'zod';
-import { compareLocalVersions } from './fileUpdates';
+import { compareLocalVersions, type ModrinthVersion, pickLatestVersion } from './fileUpdates';
 
 /**
  * 一个 GitHub 加速站。
@@ -68,15 +68,42 @@ export const ModTagLabelSchema = z.object(ModTagLabelShape);
 const ModTagLabelStrictSchema = z.strictObject(ModTagLabelShape);
 
 /**
+ * Modrinth 的三种发布通道。
+ *
+ * ⚠️ 与 `FileSourceSchema.channel`（`fileUpdates.ts`）是**同一份词汇表**，但**不共用那个
+ *    schema 实例**：那里问的是"一条 v1 条目钉死哪个通道"（单选、必填、被 9 条 IPC 通道用着），
+ *    这里问的是"一条 upstream **接受哪些**通道"（可多选、可缺省）。两者的必填性不同，
+ *    共用一个 schema 会把 v1 那一侧一起放松。
+ */
+export const MOD_UPSTREAM_CHANNELS = ['release', 'beta', 'alpha'] as const;
+export type ModUpstreamChannel = (typeof MOD_UPSTREAM_CHANNELS)[number];
+
+/** 没写 `channels` 时接受的那一套（= 加这个字段**之前**的行为：只认 release）。 */
+const DEFAULT_UPSTREAM_CHANNELS: readonly ModUpstreamChannel[] = ['release'];
+
+/**
  * "这个 mod 的最新版本去上游查"。
  *
- * 这一期**只有一个**（`mcsrranked` → Modrinth），而且是**显式写出来**的，不做自动判断：
+ * 这一期只有两条（`mcsrranked` / `draftout` → Modrinth），而且是**显式写出来**的，不做自动判断：
  * 判据是"mc.sr 给的版本比上游旧"（实测 mc.sr 是 5.8.22、Modrinth 是 5.8.26），
  * 而那种判断没有通用依据。写错 `upstream` 会让"最新"指向错误的地方。
  */
 const ModUpstreamShape = {
   provider: z.literal('modrinth'),
   project: z.string().min(1),
+  /**
+   * ★ 这一条 upstream **接受哪些发布通道**（可选；缺省 = 只有 `release`）。
+   *
+   * ⚠️★ 为什么是"接受集"而不是"钉死一个通道"：draftout 的最新版（`1.17.2`）**只发 beta**
+   *    ⇒ 只认 release 时它一个版本都匹配不上（界面上的表现是那句"上游没有匹配的 release"，
+   *    目标退回目录里那条候选）。用户 2026-10-04 要的是"draftout 同时接受 release 与 beta"，
+   *    而 mcsrranked 这类**保持只认 release**（beta 不该被自动推给排位玩家）。
+   * ⚠️ 可选是契约纪律：桌面端读的是**线上**目录（宽松那一套），仓库里这一份是严格的 ⇒
+   *    两边都必须能解析"没写 `channels`"的条目，否则加字段就成了一次破坏性变更。
+   * ⚠️ `min(1)`：空数组不是"什么都不接受"，它是一个说不清意图的配置 —— 当场拒掉，
+   *    别让它在运行期变成"这一条 upstream 永远解析不出东西"。
+   */
+  channels: z.array(z.enum(MOD_UPSTREAM_CHANNELS)).min(1).optional(),
 };
 export const ModUpstreamSchema = z.object(ModUpstreamShape);
 const ModUpstreamStrictSchema = z.strictObject(ModUpstreamShape);
@@ -217,6 +244,62 @@ export type ModCatalog = z.infer<typeof ModCatalogWireSchema>;
 export type ModCatalogParseResult =
   | { ok: true; catalog: ModCatalog }
   | { ok: false; problems: string[] };
+
+// ---------------------------------------------------------------------------
+// 上游的接受集与"最新那一版"
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条 upstream **实际接受**的通道集合。
+ *
+ * 没写 `channels`（或写了个空数组）⇒ `['release']` —— 也就是加这个字段**之前**的行为。
+ * 空数组那一支是**防御性**的：严格校验（`parseModCatalog`）已经用 `min(1)` 拒掉它，
+ * 但线上那一份走的是宽松校验、而且老客户端读的可能是手改过的文件 ⇒ 这里不抛、按缺省走。
+ */
+export function upstreamChannelsOf(
+  upstream: Pick<ModUpstream, 'channels'>,
+): readonly ModUpstreamChannel[] {
+  const channels = upstream.channels;
+  return channels === undefined || channels.length === 0 ? DEFAULT_UPSTREAM_CHANNELS : channels;
+}
+
+/**
+ * 在**接受集**里挑最新的一版（判据 = `date_published` 最大；`loader` / `gameVersion` 照旧要匹配）。
+ *
+ * ⚠️★ 语义是"接受集的并集里取日期最大的那一个"，所以**更新的 beta 会赢过更旧的 release**，
+ *    而只有 release 存在时那一条 release 照样赢 —— 这正是 draftout（最新版只发 beta）
+ *    与 mcsrranked（只认 release）共用的那条规则。
+ *
+ * ⚠️ 为什么是"每个通道各调一次 `pickLatestVersion` 再比日期"，而不是**加宽**它：
+ *    ① 它住在 `packages/shared/src/fileUpdates.ts`，而那份契约是 v1（9 条 IPC 通道）
+ *       正在用的；把入参从"一个 channel"改成"一个 channel 或一组 channel"等于把 v1
+ *       那一侧的判据一起放松，而本轮的改动范围明确不含那个文件；
+ *    ② 逐通道挑完再比日期与"并起来挑"**等价**（每个通道内部按日期取最大，
+ *       跨通道再按日期取最大 = 全集里按日期取最大），而它把"哪个通道赢"这件事
+ *       留在**一个地方**看得见。
+ *    代价（认）：接受集里每多一个通道就多一趟 `filter`（最多 3 趟、每次几十条）——
+ *    在启动时那一次解析里可以忽略。
+ */
+export function pickLatestUpstreamVersion(
+  versions: readonly ModrinthVersion[],
+  source: { gameVersion: string; loader: string; channels: readonly ModUpstreamChannel[] },
+): ModrinthVersion | null {
+  let best: ModrinthVersion | null = null;
+  for (const channel of source.channels) {
+    const candidate = pickLatestVersion(versions, {
+      gameVersion: source.gameVersion,
+      loader: source.loader,
+      channel,
+    });
+    if (candidate === null) continue;
+    // ⚠️ 严格 `>`：日期**相同**时保留先查到的那个通道（`channels` 的顺序说了算）——
+    //    "同一时刻发了两条"这种事没有通用答案，与其猜不如让它可预测。
+    if (best === null || Date.parse(candidate.date_published) > Date.parse(best.date_published)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
 
 /** 与 `fileUpdates.ts` 的 `parseFileCatalog` 同一种话术：失败时**指名道姓**。 */
 function problemsOf(error: z.ZodError): string[] {

@@ -27,7 +27,7 @@
  * 代价（认）：本模块多一个"必须先 `initCatalog`"的前提 —— 没 init 时 `queueLoadCatalog`
  *   会抛"模块还没初始化"（**不会**静默地抓一个错地址）。
  */
-import { type ModrinthVersion, pickLatestVersion, primaryFileOf } from '@mcsr/shared/fileUpdates';
+import { type ModrinthVersion, primaryFileOf } from '@mcsr/shared/fileUpdates';
 import {
   buildIndex,
   type ModCatalog,
@@ -35,7 +35,9 @@ import {
   type ModIndex,
   type ModRelease,
   parseModCatalogWire,
+  pickLatestUpstreamVersion,
   releasesFor,
+  upstreamChannelsOf,
 } from '@mcsr/shared/modCatalog';
 import { fetchVersions, messageOf } from './file-updates';
 
@@ -49,9 +51,16 @@ import { fetchVersions, messageOf } from './file-updates';
  */
 const CATALOG_TIMEOUT_MS = 15_000;
 
-/** 上游（Modrinth）那一侧的固定两格：这一期的 mod 全是 Fabric 的 release。 */
+/**
+ * 上游（Modrinth）那一侧的固定一格：这一期的 mod 全是 Fabric。
+ *
+ * ⚠️★ **通道（`channel`）不在这里** —— 它随每一条 `upstream` 走（`upstream.channels`，
+ *    缺省 = 只认 `release`）：draftout 的最新版只发 beta，只认 release 会一个版本都匹配不上。
+ *    规则与挑选实现住在 `@mcsr/shared/modCatalog` 的 `upstreamChannelsOf` /
+ *    `pickLatestUpstreamVersion`（那边能用单元测试钉住，"更新的 beta 赢过更旧的 release"
+ *    这条判据必须能红）。
+ */
 const UPSTREAM_LOADER = 'fabric';
-const UPSTREAM_CHANNEL = 'release';
 
 interface CatalogDeps {
   siteOrigin: string;
@@ -307,11 +316,13 @@ async function resolveUpstream(c: ModCatalog): Promise<void> {
 
     const resolved: ModRelease[] = [];
     let unusable = false;
+    // 这一条 upstream **接受哪些通道**（没写 = 只认 release，见 `upstreamChannelsOf`）。
+    const channels = upstreamChannelsOf(upstream);
     for (const gameVersion of gameVersions) {
-      const latest = pickLatestVersion(versions, {
+      const latest = pickLatestUpstreamVersion(versions, {
         gameVersion,
         loader: UPSTREAM_LOADER,
-        channel: UPSTREAM_CHANNEL,
+        channels,
       });
       const release = latest === null ? null : upstreamRelease(mod, latest);
       if (release === null) {

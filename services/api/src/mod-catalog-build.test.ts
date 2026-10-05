@@ -140,7 +140,17 @@ describe('生成的目录（提交进仓库的那份字节）', () => {
     const ranked = catalog.mods.find((m) => m.modid === 'mcsrranked');
     assert.deepEqual(ranked?.upstream, { provider: 'modrinth', project: 'I9W1u5Ac' });
     const draftout = catalog.mods.find((m) => m.modid === 'draftout');
-    assert.deepEqual(draftout?.upstream, { provider: 'modrinth', project: 'wNlielYC' });
+    /*
+     * ⚠️ 2026-10-04：`draftout` 那一条多了 `channels`（它**接受 release 与 beta 两个通道** ——
+     *    它的最新版 1.17.2 只发 beta，只认 release 会一个版本都匹配不上）。规则与判据住在
+     *    `services/api/src/mod-upstream-channels.test.ts`；这里只把**产物里的字段**钉住，
+     *    而 `mcsrranked` 那一条**仍然不许带这个键**（缺省 = 只认 release，是它**该有的**行为）。
+     */
+    assert.deepEqual(draftout?.upstream, {
+      provider: 'modrinth',
+      project: 'wNlielYC',
+      channels: ['release', 'beta'],
+    });
   });
 
   it('★ 手工登记的那一条：boardraid 在 mods[] 里、homepage 指官网、而且**一条 release 都没有**', () => {
@@ -592,5 +602,42 @@ describe('构建器的错误路径（上游改形状时必须看得见，不许�
         error instanceof ModCatalogBuildError &&
         error.message.includes('overrides.manualMods.mcsrranked'),
     );
+  });
+
+  it('★ upstream.channels 里认不出的通道名 / 空数组 ⇒ 抛，并点名是人工配置那一层', async () => {
+    /*
+     * 为什么值得一条（与上面那条同一条理由）：写错一个通道名（`releases`）**不会**在别处红 ——
+     * 它会让这一条 upstream 变成"什么都不接受"，而界面上那句"上游没有匹配的 release"
+     * 看不出是配置打错了字。所以在生成器这一层当场抛，并带上
+     * `overrides.upstream.<modid>.channels` 这个路径。
+     * ⚠️ 对照组（`['release','beta']` 不抛）是必须的：少了它，一个"只要有 channels 就抛"
+     *    的实现也能骗过下面那两条（§5.32①）。
+     */
+    const { buildCatalog, ModCatalogBuildError } = await import('./modCatalogBuild');
+    const overrides = JSON.parse(read('content/mod-overrides.json')) as {
+      upstream: Record<string, Record<string, unknown>>;
+    };
+    const withChannels = (channels: unknown): Parameters<typeof buildCatalog>[0] => ({
+      modsRaw: JSON.parse(read('content/upstream/mods.json')),
+      extraRaw: JSON.parse(read('content/upstream/extra.json')),
+      overrides: {
+        ...overrides,
+        upstream: {
+          ...overrides.upstream,
+          draftout: { ...overrides.upstream.draftout, channels },
+        },
+      },
+      sha256: { mods: 'a'.repeat(64), extra: 'b'.repeat(64) },
+      modrinthVersionsRaw: modrinthSnapshots(),
+    });
+    assert.doesNotThrow(() => buildCatalog(withChannels(['release', 'beta'])));
+    for (const bad of [['releases'], []]) {
+      assert.throws(
+        () => buildCatalog(withChannels(bad)),
+        (error: unknown) =>
+          error instanceof ModCatalogBuildError &&
+          error.message.includes('overrides.upstream.draftout.channels'),
+      );
+    }
   });
 });

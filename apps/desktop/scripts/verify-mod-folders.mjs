@@ -558,7 +558,15 @@ function legacyItem(localPath, version, sha512) {
   };
 }
 
-/** 上游（Modrinth）的**构造**响应：目录里是 5.8.22，上游给 5.8.26（spec §7.2 的真实形状）。 */
+/**
+ * 上游（Modrinth）的**构造**响应：目录里是 5.8.22，上游给 5.8.26（spec §7.2 的真实形状）。
+ *
+ * ⚠️★ 第三条（`stub-5.9.0-beta.1`）是 2026-10-04 加的，**故意比两条 release 都新**：
+ *    `upstream.channels` 的判据（"接受集里按 `date_published` 取最大"）需要一个
+ *    "开关接受集就会改变答案"的形状。`mcsrranked` **没写** `channels` ⇒ 缺省只认 release
+ *    ⇒ 这一条 beta 必须被忽略（⑥ 里那两条读数就是钉它的）；而下面把接受集显式打开时，
+ *    它必须赢过两条 release。
+ */
 const UPSTREAM_VERSIONS = [
   {
     id: 'stub-5.8.22',
@@ -591,6 +599,23 @@ const UPSTREAM_VERSIONS = [
         size: 222,
         primary: true,
         hashes: { sha1: 'c'.repeat(40), sha512: 'd'.repeat(128) },
+      },
+    ],
+  },
+  {
+    id: 'stub-5.9.0-beta.1',
+    version_number: '5.9.0-beta.1',
+    version_type: 'beta',
+    date_published: '2026-10-02T00:00:00Z',
+    game_versions: ['1.16.1'],
+    loaders: ['fabric'],
+    files: [
+      {
+        filename: 'mcsrranked-5.9.0-beta.1.jar',
+        url: 'https://cdn.modrinth.com/data/I9W1u5Ac/versions/stubbeta/mcsrranked-5.9.0-beta.1.jar',
+        size: 333,
+        primary: true,
+        hashes: { sha1: 'e'.repeat(40), sha512: 'f'.repeat(128) },
       },
     ],
   },
@@ -1365,6 +1390,52 @@ async function mainPhase() {
       '上游那条的主文件也带过来了（url 指向夹具里那个文件名）',
       row?.official?.url.includes('mcsrranked-5.8.26.jar') === true,
       String(row?.official?.url),
+    );
+    /*
+     * ★★ `upstream.channels`（2026-10-04 加的）：一条 upstream 可以**接受多于一个发布通道**。
+     *
+     * 为什么这三条要在这里（而不是只在上游那个纯函数的单元测试里）：
+     *   单元测试证明的是**规则**，而这里证明的是**产物真的按那条规则走** ——
+     *   桌面端读的是线上目录里的 `upstream.channels`，中间还隔着"生成器有没有把它带进目录"
+     *   这一跳。夹具里那条 `5.9.0-beta.1` **比两条 release 都新**，所以：
+     *     · `mcsrranked` 没写 `channels`（缺省只认 release）⇒ 上面那条 5.8.26 的读数
+     *       **同时**证明了 beta 没有参与（一个"不筛通道"的实现会在那里挑到 beta ⇒ 红）；
+     *     · 把接受集显式打开 ⇒ 更新的 beta 必须赢；收回 ⇒ 退回 release。
+     *   ⚠️ 这一段改的是**桩目录里的那一条**（`modCatalog` 是内存对象，`/api/mod-catalog`
+     *      每次请求现序列化）⇒ `rescan` 之后产品读到的就是新接受集。跑完**必须收回**，
+     *      后面几段依赖"目标 = 5.8.26"。
+     */
+    const rankedEntry = modCatalog.mods.find((m) => m.modid === MCSRRANKED);
+    if (rankedEntry === undefined || rankedEntry.upstream === undefined) {
+      bail(`夹具前提不成立：${MOD_CATALOG_FILE} 里 ${MCSRRANKED} 没有 upstream（⑥ 的接受集那一段要用它）`);
+    }
+    const betaFixture = UPSTREAM_VERSIONS.find((v) => v.version_type === 'beta');
+    check(
+      '（前置）夹具里那条 beta 比最新的 release 更新 —— 否则下面两条分不出东西',
+      betaFixture !== undefined &&
+        Date.parse(betaFixture.date_published) > Date.parse('2026-10-01T00:00:00Z'),
+      `${betaFixture?.version_number ?? '（没有 beta）'} ${betaFixture?.date_published ?? ''}`,
+    );
+    check(
+      '缺省（没写 channels）= 只认 release ⇒ 更新的 beta **不**参与（目标仍是 5.8.26）',
+      rankedEntry.upstream.channels === undefined && rowOf(state)?.official?.version === '5.8.26',
+      `channels=${JSON.stringify(rankedEntry.upstream.channels)} / 目标 ${String(rowOf(state)?.official?.version)}`,
+    );
+    rankedEntry.upstream.channels = ['release', 'beta'];
+    state = await invoke(MOD_CH.rescan);
+    check(
+      '接受集写成 ["release","beta"] ⇒ 更新的 beta 当目标',
+      rowOf(state)?.official?.version === '5.9.0-beta.1' &&
+        rowOf(state)?.targetSource === 'upstream' &&
+        rowOf(state)?.official?.url.includes('mcsrranked-5.9.0-beta.1.jar') === true,
+      `${String(rowOf(state)?.official?.version)} / ${String(rowOf(state)?.targetSource)}`,
+    );
+    delete rankedEntry.upstream.channels;
+    state = await invoke(MOD_CH.rescan);
+    check(
+      '收回 channels ⇒ 退回 release（5.8.26）—— 上面那条不是"beta 永远赢"',
+      rowOf(state)?.official?.version === '5.8.26',
+      String(rowOf(state)?.official?.version),
     );
   });
 

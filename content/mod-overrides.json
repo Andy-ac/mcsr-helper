@@ -22,7 +22,7 @@
   },
   "upstream": {
     "mcsrranked": { "provider": "modrinth", "project": "I9W1u5Ac" },
-    "draftout": { "provider": "modrinth", "project": "wNlielYC" }
+    "draftout": { "provider": "modrinth", "project": "wNlielYC", "channels": ["release", "beta"] }
   },
   "modrinthLatest": {
     "draftout": {
