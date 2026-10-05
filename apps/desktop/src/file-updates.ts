@@ -41,6 +41,7 @@ import {
 import { open } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { FILE_UPDATES_CHANNELS } from '@mcsr/shared/desktop';
+import { parseFabricModJson } from '@mcsr/shared/fabricMeta';
 import {
   compareLocalToLatest,
   compareLocalVersions,
@@ -466,6 +467,12 @@ export function stateFileBlocked(): string | null {
  * ⚠️ 这个函数是**同步**的（`readFileSync` + `unzipSync`）：调用点都在主进程里、
  *    都在一次点击或一次检查上，代价是那一下会阻塞主进程几十毫秒（27 MB 读盘 + 解一条）。
  *    改成流式要换一个能流式读 ZIP 的库，本期不值。
+ *
+ * ⚠️★ **解析那一步不在这里**（2026-10-04）：文本交给 `@mcsr/shared/fabricMeta` 的
+ *    `parseFabricModJson`。搬出去的唯一理由是那个文件头写的：宽松重试这一段是要被断言
+ *    钉住的纯逻辑，而 `apps/desktop` 没有测试运行器。**这里的行为一个字没变**：
+ *    仍然是"解不出来就抛，抛出的 message 由调用方原样交给界面"（原地那次 `JSON.parse`
+ *    的错误与"没有 id / version"那两种文案都由那一份实现给出，逐字相同）。
  */
 export function readJarMeta(jarPath: string): { id: string; version: string } {
   const bytes = readFileSync(jarPath);
@@ -474,11 +481,7 @@ export function readJarMeta(jarPath: string): { id: string; version: string } {
   });
   const raw = entries['fabric.mod.json'];
   if (!raw) throw new Error('这个文件里没有 fabric.mod.json（不是 Fabric 模组？）');
-  const parsed = JSON.parse(new TextDecoder().decode(raw)) as { id?: unknown; version?: unknown };
-  if (typeof parsed.id !== 'string' || typeof parsed.version !== 'string') {
-    throw new Error('fabric.mod.json 里没有 id / version');
-  }
-  return { id: parsed.id, version: parsed.version };
+  return parseFabricModJson(new TextDecoder().decode(raw));
 }
 
 // ---------------------------------------------------------------------------
