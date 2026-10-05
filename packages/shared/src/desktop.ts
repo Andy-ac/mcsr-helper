@@ -176,6 +176,10 @@ export interface DesktopBridge {
    *    **按机器记住**的（spec §6.8）⇒ 它们住在**主进程的 `prefs`** 里、随状态文件
    *    （`StateFileV2.prefs` 的 `catalogGameVersion` / `tagFilter`）一起持久化，
    *    读回来的那一份就是状态里的 `gameVersion` / `tagFilter`。
+   *    ⚠️★ **2026-10-04（A 的 T6，spec D2）**：这一段说的是它们**当年**为什么是通道
+   *    （判据仍然是"两处记忆必然有一天不一致"）。今天只剩 `gameVersion` 还在筛
+   *    （页面上那个版本下拉）；`tagFilter` **不再是筛选维度**（标签只显示）⇒
+   *    那一格与 `setTagFilter` 留着的理由见它自己那段注释（不再破坏旧状态）。
    *    渲染进程再用 localStorage 记一份，等于同一个选择有**两处**记忆 —— 两处必然有一天
    *    不一致（一处说旧版本、一处说新版本），所以它**只能是通道**。
    * ⚠️ **`bulkChannel` 是同一个道理的第三样**（Ruling 23）：它也住 `prefs`，也必须**读得回来**
@@ -258,7 +262,16 @@ export interface DesktopBridge {
     ): Promise<ModFoldersState>;
     /** 第一部分选中的游戏版本 —— 与 `tagFilter` 一样住主进程 `prefs`（见上面那一段）。 */
     setCatalogGameVersion(gameVersion: string): Promise<ModFoldersState>;
-    /** 第一部分的标签筛选，**"与"语义**（留下的行必须同时带全部所选标签）。 */
+    /**
+     * 旧第一部分的标签筛选（**A 的 T6 / spec D2 之后它不再筛选任何东西**）。
+     *
+     * ⚠️★ 这一格**留着只为不再破坏旧状态**（D2 明写的取舍："为删一个字段动契约不划算"）：
+     *    `planCatalogRows` 已经不收 `tagFilter` 了（标签只作为行上的徽章**显示**），
+     *    而唯一能改它的界面（标签多选）随第一部分下线 ⇒ 今天没有任何界面调这条通道，
+     *    写进来的值只是"记住的值"（`ModFoldersState.tagFilter` 会如实带回去，读到就忽略）。
+     *    ⚠️ **不许**把"按标签筛掉行"这件事加回任何一层 —— 那正是 T6 修掉的那条缺陷
+     *    （一个陈旧的值会让第三段「该版本**全部** mod」不再是全量，而用户无处可清）。
+     */
     setTagFilter(tags: readonly string[]): Promise<ModFoldersState>;
   };
 }

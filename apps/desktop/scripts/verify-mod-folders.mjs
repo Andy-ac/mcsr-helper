@@ -769,7 +769,7 @@ function loadArtifact() {
   require(MAIN_CJS);
 }
 
-/** 等 16 条 invoke 通道注册好（第 17 个成员 `onStatus` 是推送、没有 handler）。 */
+/** 等 13 条 invoke 通道注册好（14 个成员里 `onStatus` 是推送、没有 handler）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
   for (let i = 0; i < 240; i += 1) {
@@ -1062,7 +1062,7 @@ async function mainPhase() {
      * ⇒ 一条红的通道判据会连坐出 8 条假的"（子进程）…成立"红。实测过那一次：64 ✗ / 274 ✓。
      */
     check(
-      'A：openFolder 在通道表里（分母现数：本任务之后是 17 条）',
+      'A：openFolder 在通道表里（分母**现数**：下面那条读数会打印表里共几条；A 的 T6 之后是 14）',
       'openFolder' in MOD_CH,
       `${String(MOD_CH.openFolder ?? '（没有这一条）')}；表里共 ${String(MOD_CH_COUNT)} 条`,
     );
@@ -2218,7 +2218,7 @@ async function writePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  if (!registered) bail('十六条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+  if (!registered) bail('十三条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
 
   /** 绑一个夹具目录（走原生的目录对话框桩）。 */
   const bindAt = async (dir) => {

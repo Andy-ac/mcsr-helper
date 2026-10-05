@@ -11,7 +11,8 @@
  * ⚠️★ 那些块**只在** `modFolders` 通道在的客户端（桌面版 0.0.5+）画：
  *    没有那条通道 ⇒ 这一页**只有一句**"需要桌面版 0.0.5"（spec §9.12 / D1：
  *    0.0.4 与浏览器**都**是这一档，区别只在上面多不多一句 `browserOnly`）。
- *    ⇒ v1 那张带写盘按钮的表**不再挂在这一页上**（它的组件与判据留到 **T6** 一起删）。
+ *    ⇒ v1 那张带写盘按钮的表**不再挂在这一页上**（它的组件与判据在 **T6** 已经连文件
+ *    一起删了：`FileUpdateTable.tsx` 与 `scripts/filesrender.tsx` 都不在树里了）。
  *
  * ===========================================================================
  * ⚠️★ 取数不在这里，在这一页的容器里（`useModFolders()`）
@@ -55,20 +56,19 @@ import { ToolsPanel } from '@/components/ToolsPanel';
  *
  * ⚠️★ 单独导出一个**纯组件**的理由与 `ModCatalogScanning` 同一个：自检里没有 preload
  *    （`window.mcsr` 是 `undefined`）⇒ `useModFolders()` 恒为 `unavailable`，
- *    而那一支渲染的就是它 ⇒ 只有单独拿组件渲染才断言得到（`foldersrender.tsx` 的 ㉕）。
+ *    而那一支渲染的就是它 ⇒ 只有单独拿组件渲染才断言得到（`foldersrender.tsx` 的
+ *    ㉕「特性检测」那一组 —— 它今天**还在**，见那个脚本的 `ok(...)` 清单）。
  * ⚠️ 它同时覆盖两种壳：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
  *    （连 `mcsr` 都没有 —— 那时页面上面还有一句 `browserOnly` 说清了原因）。
  * ⚠️★ 它的类名**刻意不是** `.filespanel`（第一版是它，2026-10-03 跑 `check:all` 时红了）：
- *    v1 的渲染自检（`apps/web/scripts/filesrender.tsx` ⑰）有一条**粗糙的**判据 ——
+ *    当时 v1 的渲染自检（`apps/web/scripts/filesrender.tsx` ⑰）有一条**粗糙的**判据 ——
  *    `assert.equal(pageHtml.includes('filespanel'), false, '还没拿到状态就不画面板')`
  *    —— 它拿"产物里有没有这个类名"代理"有没有画出**那张表**"。这一块复用了那个类名
  *    ⇒ 它在**正确**的产物上报红（那一屏画的是"需要桌面版 0.0.5"这句话，不是一张空表）。
- *    ⇒ 两条路：改 v1 那条判据（放宽它），或者给这一块一个自己的类名。选**后者**：
- *      **这一条** v1 判据一个字节都不动，代价是多一条 CSS 规则。
- *      ⚠️ T3 确实改过 `filesrender.tsx` ⑰ 里**另一条**断言（v1 的「加载中…」不再挂在这一页上）——
- *      那是这一页形状变了，不是放宽这条粗判据，见那个脚本 ⑰ 里的注释。
- *    ⚠️ 记一笔给 T10：`filesrender.tsx` 那条判据**本身是粗的**（把 v1 面板换成用另一个
- *      类名渲染，它照样绿）—— 那是 v1 的既有缺口，本任务不碰。
+ *    ⇒ 当时的处置是给这一块一个自己的类名（改那条判据等于放宽它），代价是多一条 CSS 规则。
+ *    ⚠️★ T6 之后这条**历史理由已经消失**：`filesrender.tsx` 连文件一起删了
+ *      ⇒ 今天 `.filesunavailable` 只是**沿用**（那一格与"v1 那张表"不再可能同屏）。
+ *      ⚠️ 原来那句"记一笔给 T10（那条判据本身是粗的）"随之作废 —— 那条判据已经不存在了。
  */
 export function ModFoldersUnavailable() {
   const { t } = useTranslation();
@@ -233,9 +233,10 @@ export function Files() {
         ⚠️★ 这一句走的是 `<Notice>`，而 `Notice` 对**字符串子节点**会 `em()`
         （`components/Form.tsx` 里那句 `typeof children === 'string' ? em(children)`）
         ⇒ 它里面的 `**` 会变成粗体，**不是**字面星号。这一条值里的标记去掉是照控制器的
-        carry-in（值就是纯文本），**不是**因为这里会印星号 —— 会印星号的是
-        `files.autoHint` 那一处渲染点（裸 `<p>`）。两条理由不同，
-        完整的那一段写在 `packages/shared/src/i18n/zh-CN.ts` 的 `files` 那一节。
+        carry-in（值就是纯文本）—— ⚠️★ 当年会印字面星号的是 v1 面板里那处裸 `<p>`
+        （`files.autoHint`），而那一处随 T6 连面板一起删了（`files.autoHint` 今天
+        没有渲染点）。两条理由不同，完整的那一段写在 `packages/shared/src/i18n/zh-CN.ts`
+        的 `files` 那一节。
       */}
       {desktop ? null : (
         <div className="files__browser">

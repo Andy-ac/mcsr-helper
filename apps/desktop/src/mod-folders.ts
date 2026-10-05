@@ -19,12 +19,17 @@
  *     ⚠️ 两道闸分住两处（不是一处）：`installRelease` 管"这一个目标位置能不能动"（Ruling 47/48），
  *     而"这一**行**该不该装"由**各个入口自己**过 `assertUpdatable`（见那里为什么不许挪进 `installRelease`）。
  *   · **判断一条都不在这里**：`planCatalogRows` / `planFolderView` / `missingMods` /
- *     `attributeLegacyBindings` / `migrateState` / `channelUrl` / `originFileNameOf`
+ *     `migrateState` / `channelUrl` / `originFileNameOf`
+ *     ⚠️★ T6 之后 `attributeLegacyBindings`（v1 绑定归属那一条）**不再被本模块调用** ——
+ *     它连同 `catalogBindings` 一起退役了（D8 / 裁决 B；那个函数本身仍在 `@mcsr/shared` 里）
  *     全部来自 `@mcsr/shared`（T1 / Plan 1）——那里才有能红的断言钉着
  *     （`services/api/src/mod-folders-shared.test.ts`），而 `apps/desktop` **没有测试运行器**。
  *   · **I/O 也不在这里**：`readJarMeta` / `sha512OfFile` / `downloadTo` /
  *     `installDownloadedFile` / `assertNotBusy` / `readStateFile` / `writeStateFile` /
- *     `fetchVersions` / `pickDirectory` / `pickOneJar` / `notify`
+ *     `fetchVersions` / `pickDirectory` / `notify`
+ *     ⚠️★ `pickOneJar`（弹 `.jar` 对话框）T6 之后没人用了（它唯一的调用方是第一部分那条
+ *     `bindCatalogRow`）⇒ 已从 import 里删掉；那一半能力随第一部分下线（`file-updates.ts`
+ *     里那个函数还在，v1 自己也不用它）
  *     全部**复用** `./file-updates`（Task 3 抽出来的那一批）。
  *     复制一份的下场与本仓踩过的每一次都同型：两份迟早漂，而漂的那一份在动用户的文件。
  *
@@ -33,11 +38,14 @@
  * ===========================================================================
  * 渲染进程加载的是**远程网页**。所以这一层每一个 handler 的入参只有
  * **id / 游戏版本字符串 / 标签数组 / 布尔**，**永远没有路径、没有 URL**：
- *   · 选目录 / 选 `.jar` 只能由主进程弹**自己的原生对话框**（`pickDirectory` / `pickOneJar`）；
+ *   · 选目录由主进程弹**自己的原生对话框**（`pickDirectory`）—— ⚠️ T6 之后本模块
+ *     **不再有**"选一个 `.jar`"这条入口（第一部分那一行是它唯一的用处）；
  *   · `channel` 只是 `'origin'` 或 `{ mirrorId }`，而那个 `mirrorId` **必须在目录的
  *     `mirrors[]` 里查得到**（查不到 ⇒ 抛）—— 地址是主进程用 `channelUrl` 拼的。
- * ⇒ "写到哪里、从哪儿取"都不是页面说了算。`requireFolder` / `requireRowId` /
- *   `requireChannel` / `requireGameVersion` / `requireTags` 是这一条的落地点。
+ * ⇒ "写到哪里、从哪儿取"都不是页面说了算。`requireFolder` / `requirePairKey` /
+ *   `requireChannel` / `requireGameVersion` / `requireKnownTags` 是这一条的落地点
+ *   （⚠️ T6：`requireRowId` 随第一部分删了；`requireTags` 那一格的名字一直是
+ *   `requireKnownTags`，顺手改准）。
  *
  * ===========================================================================
  * 状态文件：**与 v1 共用同一份**（`userData/file-tracking.json`）

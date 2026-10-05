@@ -30,9 +30,9 @@
  * 各有各的理由（都不是"页面能自己算"的东西）：
  *   · `tagLabels`（`state.tags`）：`VersionModRow` 只带标签的 **key**（`tags: string[]`），
  *     而显示名两种语言都在状态里（`TagOptionView.labels`）⇒ 不喂下来，中文界面上会印
- *     `legal` / `ranked` 这种 key（旧底部清单与第一部分都是这么拿的，判据同一处：
- *     `tagLabelFor`，`FileUpdatesPanel.tsx` —— T5 把它导出并收窄成"收标签全集"，
- *     免得这里成为第三份抄写）。
+ *     `legal` / `ranked` 这种 key（旧底部清单与第一部分当年也是这么拿的 —— 那两处随 T6
+ *     删了；判据只有一处：`tagLabelFor`，今天住在 `components/ModFoldersData.tsx`。
+ *     T5 把它导出并收窄成"收标签全集"，免得这里成为第三份抄写）。
  *   · `busy`（`state.busy`）：`downloadMissing` 第一句就是 `assertNotBusy()`
  *     ⇒ 写盘期间那颗按钮点下去**必吃一句红字**（Ruling 47/48：会拒的一律不画/不放开）。
  *     这一页其余每一颗控件都是 `disabled={busy}`，这一段不是例外。
@@ -50,7 +50,7 @@
  * ⇒ 给它们画下载按钮，就是画一颗**注定被拒**的按钮（T8 那次 Critical 正是这件事：
  * 旧底部清单的 `manual` 行只给"打开原网页"）。那两行画的是**解释**：
  * `manual` 走 `files.hintManual`，其余走共享的 `VERDICT_HINTS`（不在这里另写一张表）。
- * ⚠️★ 判据**不是**第一部分的更新 allow-list（那是"给不给更新按钮"）：这里读的是投影里
+ * ⚠️★ 判据**不是** `isUpdatableRow()`（那是展开体里"给不给更新按钮"那条 allow-list）：这里读的是投影里
  *    **为下载准备**的两格（`releaseUrl` / `manual`）⇒ 它不是第四份 allow-list。
  *
  * ===========================================================================
@@ -71,7 +71,7 @@ import { Notice } from '@/components/Form';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
 import { tagLabelFor, VERDICT_HINTS } from '@/components/ModFoldersData';
 
-/** 「没有值的那一格」——与两张表、jar 列表里那个 `DASH` 是同一个字符。 */
+/** 「没有值的那一格」——与 jar 列表（`FolderJarList`）里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
 
 export interface VersionModListProps {
@@ -99,7 +99,7 @@ export interface VersionModListProps {
 export function VersionModList({ page, tagLabels, busy, onAction }: VersionModListProps) {
   const { t, i18n } = useTranslation();
   /**
-   * 标签显示名按**当前语言**取（与第一部分、旧底部清单同一条判据：`i18n.language`
+   * 标签显示名按**当前语言**取（与 `FolderJarList` 那一处同一条判据：`i18n.language`
    * 形如 `zh-CN` / `en`）。
    */
   const labelLang: 'zh' | 'en' = i18n.language?.startsWith('en') ? 'en' : 'zh';
@@ -142,7 +142,8 @@ export function VersionModList({ page, tagLabels, busy, onAction }: VersionModLi
                 ⚠️ 最后那一格**不是** `files.colActions`（用户明确要求取消"操作"列，spec §4）：
                   它装的是"这一行下没下 / 能不能下"，所以表头用既有的 `files.missingDownloadTo`
                   （"下载到" —— 与底部旧清单那一格同一个意思）。
-                ⚠️ 目标版本那一格的表头复用 `files.colLatest`（与第一部分同一个概念、同一句话）。
+                ⚠️ 目标版本那一格的表头复用 `files.colLatest`（与旧第一部分同一个概念、同一句话
+                —— 那个表在 T6 删了，词条与这一格的用法都留着）。
               */}
               <tr>
                 <th>{t('files.colMod')}</th>
@@ -232,7 +233,7 @@ function VersionModItem({
     >
       <td>
         <div className="filetable__filebox">
-          {/* ⚠️ mod 名是产品名，不翻译（与两张表里同一条）。 */}
+          {/* ⚠️ mod 名是产品名，不翻译（与 jar 列表同一条）。 */}
           <span>{row.name}</span>
           <span className="badges">
             {/* ⚠️ 纯展示的标签片（`.tagchip--static`：不吃 hover / pointer）。 */}

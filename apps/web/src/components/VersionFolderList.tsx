@@ -4,7 +4,7 @@
  * ===========================================================================
  * ⚠️★ 纯展示：给一份现成的 `page`（投影）+ `state`（选项表与忙碌位）就同步渲染完
  * ===========================================================================
- * 与 `ModFoldersPanel` / `FileUpdatesPanel` 同一条：不取数、不订阅、不跑 effect。
+ * 与 `ModDownloadPanel` / `VersionModList` 同一条：不取数、不订阅、不跑 effect。
  * 理由也在那两处（`renderToStaticMarkup` 不跑 effect ⇒ 取数写在这里的话
  * `apps/web/scripts/foldersrender.tsx` 只能看到「正在扫描…」那一屏，这一块里
  * 每一个断言都会变成空跑）。
@@ -16,15 +16,16 @@
  * ⚠️ 从 `state` 里另取的东西有两类 —— **都不是"这一版"的投影**：
  *   · **选项表与闸**（`state.gameVersions` / `state.mirrors` / `state.bulkChannel` /
  *     `state.busy`）：它们是整页共用的那份读数（主进程的 `prefs`）。⚠️ 那几个判据
- *     （版本选项表 / 通道选项表）**复用 `ModFoldersPanel` 里那几个已导出的函数**，
- *     不在这里重写第二份：
+ *     （版本选项表 / 通道选项表）**复用 `components/ModFoldersData.tsx` 里那几个函数**
+ *     （T6 之前它们住在 `ModFoldersPanel.tsx`），不在这里重写第二份：
  *       · `folderGameVersionOptions`（全集 = 目录的 107 版，且当前值必须可选）；
  *       · `channelOptions` / `channelKeyOf`（Ruling 23）。
  *   · **展开体里那一格主页**（T4）：`state.catalogRows` 组出 `homepageOf` 喂给
  *     `FolderJarList` —— 它是**纯展示联结**（没有任何判定依赖 homepage），
  *     理由写在下面那一行的注释里。
  * ⚠️★ 而"给不给「全部更新」"与"哪一版是过期的旧值"这两条也**各只有一处实现**：
- *    `canUpdateFolderAll()` / `staleGameVersion()`（`ModFoldersPanel.tsx`，两处调用点共用）。
+ *    `canUpdateFolderAll()` / `staleGameVersion()`（`components/ModFoldersData.tsx`；
+ *    T6 之后调用点只剩本文件 —— 旧那一版随组件删了）。
  *    ⚠️ 判修轮之前这两条在本文件里各抄了一份**逐字相同**的表达式 —— 那种抄写正是
  *    "同一个判断有两个会漂的版本"，而漂的表现是"少画一颗按钮 / 下拉里少一个 `disabled`"。
  *    ⚠️ `bulkChannelUsable`（Ruling 64 那条）**不在这一层**：它由 `ModDownloadPanel`
@@ -34,7 +35,7 @@
  * ===========================================================================
  * ⚠️★ 折叠是**受控**的（`expanded` 从外面来），不是 `<details>`
  * ===========================================================================
- * 与旧那一版（`ModFoldersPanel` 用原生 `<details>`）**刻意不同**，两个理由：
+ * 与旧那一版（`ModFoldersPanel`，T6 已删；它用原生 `<details>`）**刻意不同**，两个理由：
  *   · spec §8 的最后一行要求"每个可展开处：`▸/▾` + 展开/收起文案 + `aria-expanded`"
  *     —— 原生 `<details>` 的展开态**不在 DOM 里**（只有 `open` 属性，而且它是受控的：
  *     每次状态推送都会被重画），断言不到"值随展开变化"；
@@ -53,18 +54,19 @@
  * 「展开 / 收起」（`files.expand` / `files.collapse`）。
  *
  * ===========================================================================
- * ⚠️★ 旧组件（`ModFoldersPanel`）**还在**，一个提交周期内两套控件并存
+ * ⚠️★ 旧那一版（`ModFoldersPanel`）**已经删了**（T6）—— 这里记的是当年的差异
  * ===========================================================================
- * T3 只换**页面**（`routes/Files.tsx`），旧第二部分与它那十几组渲染断言一起留到 **T6**
+ * T3 当年只换**页面**（`routes/Files.tsx`），旧第二部分与它那十几组渲染断言一直留到 **T6**
  * （那一轮删文件 + 删断言，理由写在计划里：一次删净会让中间每一个提交的门禁变红）。
- * ⇒ 这里与 `ModFoldersPanel` 的差异**只有行标记与排版**（`<details>/<summary>` ⇒
+ * ⇒ 本文件与那个已删组件的差异**只有行标记与排版**（`<details>/<summary>` ⇒
  * `div/div` + 受控展开），控件本身与它们的判据逐条对齐：
  *   · 版本下拉（含"过期那一版照画但 `disabled`"，Ruling 64）；
  *   · 整夹自动更新开关（可访问名里带路径）；
  *   · 批量通道选择器（值只从状态读，Ruling 23）；
  *   · 「全部更新」（带 `batchTargets` 的数字）/「重扫这个文件夹」/「解除绑定」。
  * ⚠️ 那些**判据**（判断，不是排版）能复用的都复用了（见上面那一段）；
- *   复用了不的地方是 JSX 形状本身（两套行的 class 名不同，各断言各的）。
+ *   没复用成的地方是 JSX 形状本身（两套行的 class 名不同，各断言各的）——
+ *   而 T6 之后旧那一套已经不在了，形状只剩这一份。
  */
 import {
   batchTargets,
@@ -430,7 +432,7 @@ function FolderRow({
         ⚠️★ **"读到过、里面没有"也在这里**（判修轮补的）：Ruling 65 是**两支** ——
         "读不了"（`!hasReading`）与"读到过而一个都没有"（`hasReading && rows.length === 0`）。
         少了后半支，扫过但是空的文件夹展开后是一个**空白框**，而那正是 Ruling 65 要消灭的
-        那种"分不出没有与不知道"。⚠️ 判据与旧那一版（`ModFoldersPanel` 的 body）**逐字相同**：
+        那种"分不出没有与不知道"。⚠️ 判据与旧那一版（`ModFoldersPanel` 的 body，T6 已删）**逐字相同**：
         `pathExists && hasReading && rows.length === 0`（两个条件缺一不可 —— 扫描失败时
         `rows` 也是空的）。⚠️ 这一句说的是"没有**能识别**的 mod"，而 T4 的 jar 列表
         照旧会把**未识别**的那些文件名列出来（两者不互斥，见下面那一块的判据）。

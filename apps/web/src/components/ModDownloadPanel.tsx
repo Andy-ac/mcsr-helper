@@ -16,7 +16,7 @@
  *   它是 `useModFolders()` 的产物 ⇒ 由页面当 prop 传进来）。
  *   两个来源**只有一个渲染点**（下面那一格 `Notice`）：`localError ?? actionError`。
  *   ⚠️ 今天 `openFolder` 的 reject 在 `makeModFoldersHandlers()` 那一层就被接住了
- *   （见 `FileUpdatesPanel.tsx` 的 `openFolder`），所以**实际会显示的是 `actionError`**
+ *   （见 `ModFoldersData.tsx` 的 `openFolder`），所以**实际会显示的是 `actionError`**
  *   —— 那条路有断言（㉟ 把原话喂进 props，它必须出现在产物里）。
  *
  * ===========================================================================
@@ -167,8 +167,8 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
       {/*
         ★★ 一次动作失败的原话（**整页**一格，不是每个文件夹重复一遍）。
         ⚠️ 走 `<Notice kind="bad">`（`role="alert"`）：它说的是"刚才那一下没成"，
-        而且它的措辞与第一部分那一格**同一条词条**（`files.actionFailed`）——
-        同一个东西不该有两个说法。
+        而且它用的就是那一条词条（`files.actionFailed` —— 旧第一部分那一格也用它，
+        那个面板在 T6 删了）；同一个东西不该有两个说法。
       */}
       {notice === null ? null : (
         <Notice kind="bad">{t('files.actionFailed', { message: notice })}</Notice>
@@ -176,8 +176,8 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
       {/*
         ⚠️ `notices` **原样印出来**（迁移提示"已转为文件夹跟踪：…"、缺失清单被压住的说明、
         目录错误）：它们由主进程写好，这一层不重新措辞（§13.1 要求迁移提示看得见，
-        而它原来的渲染点在第一部分 —— 第一部分在 T3 从页面上消失了 ⇒ 渲染点搬到这里）。
-        代价与第一部分那一格同一条：那句话是**中文**写死的（已接受）。
+        而它原来的渲染点在第一部分 —— 那一块在 T3 从页面上消失、T6 连组件一起删了
+        ⇒ 渲染点搬到这里）。代价同一条（旧第一部分那一格也是）：那句话是**中文**写死的（已接受）。
       */}
       {state.notices.map((note) => (
         <Notice kind="info" key={note}>
@@ -192,15 +192,16 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
         `requireChannel` 对"目录里没有这条镜像"会抛）⇒ 用户看到的是"按钮怎么没了"。
         那句话就是唯一的答案，而它是**全局**的（`prefs.bulkChannel` 一份）：
         每个文件夹重复一遍是噪声（Ruling 64 的原话）。
-        ⚠️ 它原来的渲染点在旧第二部分（`ModFoldersPanel`）里，而那个组件在 T3 之后
-        **没有任何产品文件 import** 了 ⇒ 判修轮把渲染点补到这里（不重写判断，只补渲染点）。
+        ⚠️ 它原来的渲染点在旧第二部分（`ModFoldersPanel`）里；那个组件在 T6 连文件一起删了
+        ⇒ 这里是它**唯一**的渲染点（判修轮先把它补到这里，T6 之后它成了唯一一处；
+        不重写判断，只补渲染点）。
       */}
       {bulkChannelUsable(state) ? null : <Notice kind="bad">{t('files.channelStaleHint')}</Notice>}
 
       {/*
         ★★ 顶部并排区（spec §4）：版本下拉 + 「显示全部已绑定的文件夹」。
         ⚠️ 版本下拉**受控于状态**（主进程 `prefs`，Ruling 23）：这里没有第二份记忆。
-        ⚠️ 选项表用 `gameVersionOptions(state)`（与第一部分**同一个函数**）：
+        ⚠️ 选项表用 `gameVersionOptions(state)`（与文件夹那一行的版本下拉**同一个函数**）：
         目录换过之后当前那一版可能已经不在目录里，而 `<select value=X>` 里没有 X 时
         浏览器会**静默选中第一个** —— 那一屏就在撒谎。
         ⚠️ B（热门整合包）会往这一区再加一格，那时候**只加孩子**，不动这两个。

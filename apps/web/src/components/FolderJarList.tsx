@@ -9,14 +9,17 @@
  *   · `block.folder.rows` / `.unrecognized`（扫文件夹的读数，`planFolderView` 算的）；
  *   · 每行的 `verdict` / `manual` / `official`（`judgeRelease` + `resolveTarget` 算的）；
  *   · 「哪条镜像适用」= `mirrorsForUrl(mirrors, row.official.url)`（`mirrorsFor` 一份实现）。
- * ⚠️★ 徽章与解释**共用** `FileUpdateTable` 的 `VERDICT_BADGES` / `VERDICT_HINTS`
- *   （与旧第二部分 `ModFoldersPanel` 同一条理由：两处各写一张表的话，"同一个判定、
- *   两处说法不一致"只是时间问题 —— Ruling 14 的现场）。
- * ⚠️★ 触发更新的判据（`older` / `different-build` 且非 `manual`）与
- *   `ModFoldersPanel.FolderRow` **逐字相同** —— 它现在是这一条的**第三处**文本
- *   （前两处是 `ModCatalogTable` 与 `ModFoldersPanel`）。抽成一个共用函数要动
- *   `ModFoldersPanel.tsx`（不在 T4 的文件边界里、而且 T6 会删它）⇒ **记在报告里**，
- *   与 T3 判修轮抽出 `staleGameVersion` / `canUpdateFolderAll` 是同一条账。
+ * ⚠️★ 徽章与解释**共用** `VERDICT_BADGES` / `VERDICT_HINTS`（2026-10-04 T6 起它们住在
+ *   `components/ModFoldersData.tsx`；那两张表原来在 `FileUpdateTable.tsx`，随第一部分一起删了）。
+ *   理由与旧第二部分 `ModFoldersPanel` 逐字同一条：两处各写一张表的话，"同一个判定、
+ *   两处说法不一致"只是时间问题 —— Ruling 14 的现场。
+ * ⚠️★ 触发更新的判据（`older` / `different-build` 且非 `manual`）**只有一处实现**：
+ *   `isUpdatableRow(row)`（`components/ModFoldersData.tsx`，T6 抽出来的）。
+ *   T4 那一轮它在本文件里是**第三处**逐字抄写（前两处是 `ModCatalogTable` 与
+ *   `ModFoldersPanel`）；T6 把那两个文件删掉之后，这一处也收进了共用函数
+ *   ⇒ 今天**一处**都没有了，`FolderRow` 那一格的账已经闭合。
+ *   （T4 当时记的是"抽成共用函数要动不在文件边界里的 `ModFoldersPanel.tsx`"，
+ *   而 T6 正是那个边界被打开的一轮。）
  *
  * ===========================================================================
  * ⚠️★ homepage 是**页面**喂进来的：`VersionFolderBlock` / `ModFolderRowView` 都不带它
@@ -33,8 +36,9 @@
  * `.jar--unrecognized` 承载 —— 只靠那句话，这一行与别的行是**同一个颜色**
  * （自检㊱ 里那条"`styles.css` 里真的有这条规则、而且颜色是红石色"就是这件事的判据）。
  * ⚠️ `data-jar-unrecognized="true"` 是给自检的**机器读数**：类名以后再改名，那条读数还在。
- * ⚠️ 两类原因（读不出 `fabric.mod.json` / 清单外）**分开说**，复用旧第二部分那两条词条
- *   （它们是这两句话**唯一**的实现 —— 合成一句就把用户唯一能行动的线索删掉了）。
+ * ⚠️ 两类原因（读不出 `fabric.mod.json` / 清单外）**分开说**，那两条词条
+ *   （`files.folderUnrecognizedNoMeta` / `folderUnrecognizedNotInCatalog`）原来由旧第二部分渲染
+ *   ⇒ T6 之后**这里是它们唯一的渲染点**（合成一句就把用户唯一能行动的线索删掉了）。
  *
  * ===========================================================================
  * ⚠️ 展开体的**空态**不在这里
@@ -53,7 +57,7 @@ import { useTranslation } from 'react-i18next';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
 import { isUpdatableRow, VERDICT_BADGES, VERDICT_HINTS } from '@/components/ModFoldersData';
 
-/** 「没有值的那一格」——与两张表、旧第二部分里那个 `DASH` 是同一个字符。 */
+/** 「没有值的那一格」——与第三段那张表（`VersionModList`）里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
 
 /** 这张表的列数（未识别那一行要 `colSpan` 跨过去）。 */
@@ -127,9 +131,9 @@ export function FolderJarList({ block, homepageOf, mirrors, busy, onAction }: Fo
               <td className="jarrow__note" colSpan={JAR_COLUMNS - 1}>
                 <span className="badge badge--problem">{t('files.jarUnrecognized')}</span>
                 {/*
-                 * ★★ 两类原因**分开说**（spec §8）：这两条词条是旧第二部分的，
-                 *    而旧第二部分在 T6 会被删 ⇒ 渲染点必须在这里接上，否则
-                 *    "读不出 fabric.mod.json"与"清单外"这两个出路就一起消失了。
+                 * ★★ 两类原因**分开说**（spec §8）：这两条词条原来由旧第二部分渲染，
+                 *    而那个组件在 T6 已经连文件一起删了 ⇒ 今天这里是它们**唯一**的渲染点，
+                 *    否则"读不出 fabric.mod.json"与"清单外"这两个出路就一起消失了。
                  */}
                 {entry.reason === 'no-fabric-meta'
                   ? t('files.folderUnrecognizedNoMeta', { name: entry.fileName })
@@ -204,7 +208,7 @@ function JarRow({
     <tr className="jarrow" data-jar={row.modid} data-verdict={row.verdict.kind}>
       {/* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。 */}
       <td className="jarrow__file">{row.fileName}</td>
-      {/* ⚠️ mod 名是产品名，不翻译（与两张表里同一条）。 */}
+      {/* ⚠️ mod 名是产品名，不翻译（与第三段那张表同一条）。 */}
       <td>{row.name}</td>
       {/* ⚠️ 读不出来就是 `null` ⇒ `—`：**不许**填 0、也不许拿目标版本顶上"本地版本"。 */}
       <td className="jarrow__version">{row.localVersion ?? DASH}</td>
@@ -250,8 +254,8 @@ function JarRow({
       <td>
         {badge === null ? null : <span className={badge.className}>{t(badge.label)}</span>}
         {/*
-          ★ 各支欠的解释（spec §8）：文案表与第一部分 / 旧第二部分**共用一份**
-          （`VERDICT_HINTS`）。⚠️ `unknown-version` 的解释在文件夹头行（说一次），
+          ★ 各支欠的解释（spec §8）：文案表与第三段**共用一份**（`VERDICT_HINTS`，
+          住在 `components/ModFoldersData.tsx`）。⚠️ `unknown-version` 的解释在文件夹头行（说一次），
           不在这里逐行重复。
         */}
         {hint === undefined ? null : <span className="jarrow__hint">{t(hint)}</span>}
@@ -260,7 +264,7 @@ function JarRow({
       </td>
       <td>
         {/*
-          ★★ 两颗更新按钮各送**自己那条通道**（与第一部分 / 旧第二部分逐字相同）：
+          ★★ 两颗更新按钮各送**自己那条通道**（与第三段那条 `download-mod`「各送自己那一格」同一条纪律）：
             · 「更新（原始）」= `'origin'`（release 自己的地址）；
             · 「更新（镜像）」= `{ mirrorId }` —— **只送 id**，地址由主进程按目录里那条
               镜像的 `prefix` 拼（`Channel` 是 id、不是 URL）。
