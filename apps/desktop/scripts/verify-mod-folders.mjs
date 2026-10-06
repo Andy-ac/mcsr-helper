@@ -806,6 +806,13 @@ function buildWriteFixture() {
    */
   const hijackSlowGroup = (modids, mirrorId, pathName, chunkDelayMs) => {
     const suffix = mirrorId.replace('probe-', '');
+    /*
+     * ⚠️★ 这一份字节只按 `modids[0]` 造一次，**两条 release 共用它** ⇒ 这一趟跑完之后
+     *   **不要**拿那两个落盘文件的扫描读数当判据：两份文件的内部 modid 是同一个，会被读成
+     *   同一个 mod（"两个不同的 mod 各装各的"那类判据在这一组夹具上是假的）。
+     *   ⚠️ 这里**做不到**"两条各给一份自己的字节"：桩按**路径前缀**键控、一个前缀只有一份
+     *   字节（见头顶那一段），两条挤进同一趟时第二条必然 sha512 对不上。
+     */
     const shared = probeJar(modids[0], SERVED_JAR_VERSION);
     modCatalog.mirrors.push({
       id: mirrorId,
@@ -3783,11 +3790,10 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       JSON.stringify(mid.progress),
     );
     check(
-      '★ 字节是**字节级**的：收到的量在第一半的范围里、总长等于真字节数',
+      '★★ 字节是**字节级**的、而且这一读**确实发生在下载中途**（收到的量 > 0 且 < 总长）',
       typeof mid.progress?.received === 'number' &&
         mid.progress.received > 0 &&
-        mid.progress.received <= fx.slow.official.length &&
-        mid.progress.total === fx.slow.official.length,
+        mid.progress.received < mid.progress.total,
       JSON.stringify({ received: mid.progress?.received, total: mid.progress?.total, half: halfBytes }),
     );
     check('★ 相位是 download、项序 1/1', mid.progress?.phase === 'download' && mid.progress.itemIndex === 1 && mid.progress.itemCount === 1, JSON.stringify(mid.progress));
@@ -3844,7 +3850,20 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     const after = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
     clearInterval(poll);
     const indexes = [...new Set(seen.map((s) => s.item))].sort((a, b) => a - b);
-    check('★ 项序从 1 起（不会出现 0）', indexes[0] === 1, JSON.stringify(indexes));
+    /*
+     * ⚠️★ 判据**必须钉住尽头**（`max`），不能只判"第一项是 1"：把 `setRunItem` 的
+     *   `itemIndex += 1` 砍成 `= 1` 之后，读数是 `[1]` —— 第一项仍然是 1，只判 `indexes[0]`
+     *   的话那一刀照旧绿（"项序真的递增到最后一项"这件事一个字节都没被量到）。
+     * ⚠️ 也**不许**判 `JSON.stringify(indexes) === '[1,2]'`：某一项整个窗口被 25ms 的轮询漏掉时
+     *   读数是 `[2]`（正确实现），那样判会**假红**；`max` 只要求"走到过最后一项"。
+     * `batchRows` 就是那一组夹具"可批量的行数"（上面那条仪器自检已经钉住它是 2）——
+     * 与下面 `itemCount` 那条判据量的是同一个数，不要写死字面量。
+     */
+    check(
+      '★ 项序从 1 起、并且真的递增到最后一项（`max` = 目标数）',
+      indexes[0] === 1 && Math.max(...indexes) === batchRows,
+      JSON.stringify(indexes),
+    );
     check(
       '★★ `itemCount` 等于这一趟的目标数（= 可批量的行数），而不是文件夹里的行数',
       seen.length > 0 && seen.every((s) => s.count === 2),
@@ -3910,6 +3929,16 @@ if (PHASE === 'state-file') {
     cwd: repoRoot,
     env: { ...process.env, MCSR_VERIFY_REEXEC: '1' },
   });
+  /*
+   * ★ 子进程的退出码 **2** 与 **1** 是两件事：2 说的是"这一整套检查**没跑起来**"（夹具前提
+   *   不成立、`bail` 中途退出…），1 才是"某条判据不成立"。把它折成一条 `✗` 再让父相位用 1
+   *   收场，正好抹掉这个区别（§5.74 那一族：0 与"没跑"分不开）⇒ 这一支单独走，**不记判据**，
+   *   父相位自己也以 2 收场（子进程的 `bail` 已经把它那一行「判据没跑起来」印在上面了）。
+   *   ⚠️ 只动这一支：0 / 1 的语义一字不改。
+   */
+  if (writeChild.status === 2) {
+    bail('写相位**没跑起来**（退出码 2）—— 原因见上面子进程那一行「判据没跑起来」');
+  }
   check(
     '（子进程）写相位的全部判据成立',
     writeChild.status === 0,

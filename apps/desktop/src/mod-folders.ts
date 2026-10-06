@@ -76,7 +76,7 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
-import type { DownloadProgress } from '@mcsr/shared/downloadProgress';
+import type { ByteSample, DownloadProgress } from '@mcsr/shared/downloadProgress';
 import {
   buildIndex,
   type ModCatalog,
@@ -255,7 +255,14 @@ function beginRun(input: {
     received: 0,
     total: 0,
   };
-  refreshProgress();
+  /*
+   * ★ 起手这一幕**故意不推帧**（`progress = null`，而不是 `refreshProgress()`）：契约写的是
+   *   项序**1 起**，而这一刻 `itemIndex` 还是 0、`modid` / `fileName` 还是空串 ⇒ 推出去的那一帧
+   *   就是"0/2 + 空文件名"，页面会闪一下（它同时是"项序从 1 起"那条判据的一个假红窗口）。
+   *   ⚠️ "这一趟已经起手"由 `busy` 那一格体现 —— 两条外壳紧接着的 `rebuild()` 会把它推出去；
+   *   真正的第一帧由 `setRunItem` 产生，那时项序已经是 1。
+   */
+  progress = null;
 }
 
 /** 换一项：项序 +1、字节归零、相位回到 `download`。 */
@@ -280,7 +287,7 @@ function notePhase(phase: DownloadProgress['phase']): void {
 }
 
 /** 字节（**每一个 chunk 一次**，不在这里 `rebuild()` —— 见 `progress` 那一格的分工）。 */
-function noteBytes(sample: { received: number; total: number }): void {
+function noteBytes(sample: ByteSample): void {
   if (activeRun === null) return;
   activeRun.received = sample.received;
   activeRun.total = sample.total;

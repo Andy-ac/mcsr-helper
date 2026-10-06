@@ -41,6 +41,7 @@ import {
 import { open } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { FILE_UPDATES_CHANNELS } from '@mcsr/shared/desktop';
+import type { ByteSample } from '@mcsr/shared/downloadProgress';
 import { parseFabricModJson } from '@mcsr/shared/fabricMeta';
 import {
   compareLocalToLatest,
@@ -1479,7 +1480,7 @@ export async function downloadTo(opts: {
    * ⚠️ 与 `onProgress` **并存**、互不影响：v1 只传 `onProgress`（它那一条路径的语义
    *    与 150 ms 节流一字不动），新模块只传 `onBytes`。
    */
-  onBytes?: (sample: { received: number; total: number }) => void;
+  onBytes?: (sample: ByteSample) => void;
   /**
    * ★ 子项目 C：取消令牌。中断这一次 HTTP 请求（`fetch` 原生支持）。
    *
