@@ -42,7 +42,8 @@
     "./tracking": "./src/tracking.ts",
     "./modCatalog": "./src/modCatalog.ts",
     "./modFolders": "./src/modFolders.ts",
-    "./fabricMeta": "./src/fabricMeta.ts"
+    "./fabricMeta": "./src/fabricMeta.ts",
+    "./downloadProgress": "./src/downloadProgress.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
