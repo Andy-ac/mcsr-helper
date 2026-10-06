@@ -9,9 +9,10 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十三条 IPC 的注册**（14 个契约成员里 `onStatus` 只推、不 handle；
+ *   · **十四条 IPC 的注册**（C 的 T4 之后契约是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
- *     `updateCatalogRow`，契约 17 → 14，裁决 B）；
+ *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
+ *     T4 加 `cancelDownload`（16）—— 后两条**都没有**加 handler 之外的注册面）；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
  *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 三个入口共用
  *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
@@ -76,6 +77,8 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
+import type { ByteSample, DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
+import { shouldPush } from '@mcsr/shared/downloadProgress';
 import {
   buildIndex,
   type ModCatalog,
@@ -185,6 +188,217 @@ function pushNotice(text: string): void {
 let busy = false;
 let lastRun: ModFoldersState['lastRun'] = null;
 
+/**
+ * ★ 子项目 C：**这一趟**的运行上下文。
+ *
+ * ⚠️★ 为什么可以是一个模块级变量：本模块的写盘**本来就是串行的**
+ *    （`writeRun` / `bulkRun` 起手都拿 `busy` 挡住第二次），所以"同时只有一趟"不是假设、
+ *    是那两条外壳已经保证的事实。把上下文做成参数会要改 `installRelease` 的签名，
+ *    而它是"两个写入口共用"的那一段 —— 少动它一个字节就少一分风险。
+ * ⚠️ 它**不落盘**：`lastRun` 那样"上一趟到底怎么了"的读数才需要跨启动留存，
+ *    而进度是"此刻"的事（进程重启后没有正在跑的趟）。
+ */
+interface RunContext {
+  run: DownloadProgress['run'];
+  folderId: string;
+  controller: AbortController;
+  runStartedAt: number;
+  itemIndex: number;
+  itemCount: number;
+  phase: DownloadProgress['phase'];
+  cancelling: boolean;
+  modid: string;
+  fileName: string;
+  received: number;
+  total: number;
+}
+
+let activeRun: RunContext | null = null;
+
+/** 这一刻该推给页面的进度（没有在跑 ⇒ `null`）。**唯一**构造它的地方。 */
+let progress: DownloadProgress | null = null;
+
+function refreshProgress(): void {
+  progress =
+    activeRun === null
+      ? null
+      : {
+          run: activeRun.run,
+          phase: activeRun.phase,
+          folderId: activeRun.folderId,
+          modid: activeRun.modid,
+          fileName: activeRun.fileName,
+          received: activeRun.received,
+          total: activeRun.total,
+          itemIndex: activeRun.itemIndex,
+          itemCount: activeRun.itemCount,
+          runStartedAt: activeRun.runStartedAt,
+          cancelling: activeRun.cancelling,
+        };
+}
+
+/** 一趟起手。`itemCount` = 这一趟**打算开工的项数**（跳过的行不算）。 */
+function beginRun(input: {
+  run: DownloadProgress['run'];
+  folderId: string;
+  itemCount: number;
+}): void {
+  activeRun = {
+    run: input.run,
+    folderId: input.folderId,
+    controller: new AbortController(),
+    runStartedAt: Date.now(),
+    itemIndex: 0,
+    itemCount: input.itemCount,
+    phase: 'download',
+    cancelling: false,
+    modid: '',
+    fileName: '',
+    received: 0,
+    total: 0,
+  };
+  /*
+   * ★ 起手这一幕**故意不推帧**（`progress = null`，而不是 `refreshProgress()`）：契约写的是
+   *   项序**1 起**，而这一刻 `itemIndex` 还是 0、`modid` / `fileName` 还是空串 ⇒ 推出去的那一帧
+   *   就是"0/2 + 空文件名"，页面会闪一下（它同时是"项序从 1 起"那条判据的一个假红窗口）。
+   *   ⚠️ "这一趟已经起手"由 `busy` 那一格体现 —— 两条外壳紧接着的 `rebuild()` 会把它推出去；
+   *   真正的第一帧由 `setRunItem` 产生，那时项序已经是 1。
+   */
+  progress = null;
+  /*
+   * ★ C/S3：节流的"上一次样本"也**归零**（理由与 `endRun` 里那一句相同：两趟之间比差没意义）。
+   *    ⚠️ 这一句**不是**"起手推一帧"—— 它在 `progress = null` 之后、而且不调 `pushProgress`：
+   *    起手仍然一帧都不推（上面那一段）。
+   */
+  lastPush = null;
+}
+
+/** 换一项：项序 +1、字节归零、相位回到 `download`。 */
+function setRunItem(input: { modid: string; fileName: string }): void {
+  if (activeRun === null) return;
+  activeRun.itemIndex += 1;
+  activeRun.modid = input.modid;
+  activeRun.fileName = input.fileName;
+  activeRun.received = 0;
+  activeRun.total = 0;
+  activeRun.phase = 'download';
+  refreshProgress();
+  // ★ C/S3：**换项必须立刻让页面看到**（D3：换项那一帧不受 100 ms 下限约束）
+  pushProgress(true);
+  rebuild();
+}
+
+/** 相位（写盘那一段没有字节 —— 那不是网络流量）。 */
+function notePhase(phase: DownloadProgress['phase']): void {
+  if (activeRun === null) return;
+  activeRun.phase = phase;
+  refreshProgress();
+  // ★ C/S3：**换相位必须立刻让页面看到**（同 `setRunItem`：这是 D3 的 `force` 那一支）
+  pushProgress(true);
+  rebuild();
+}
+
+/** 字节（**每一个 chunk 一次**，不在这里 `rebuild()` —— 见 `progress` 那一格的分工）。 */
+function noteBytes(sample: ByteSample): void {
+  if (activeRun === null) return;
+  activeRun.received = sample.received;
+  activeRun.total = sample.total;
+  refreshProgress();
+  // ★ C/S3：**高频**那一条载体（真正的节流在 `pushProgress` 里，这里只交读数）
+  pushProgress();
+}
+
+/** 一趟收尾：**清干净**（界面靠这一次 `rebuild()` 知道"没有在跑了"）。 */
+function endRun(): void {
+  activeRun = null;
+  refreshProgress();
+  /*
+   * ⚠️★ 把节流的"上一次样本"也清掉：不清的话，**下一趟**的第一帧会拿上一趟最后一次读数
+   *    与"上一趟的时刻"比 —— 那两件事属于两趟，比出来的差没有意义（D3 的窗口是"这一趟"的）。
+   */
+  lastPush = null;
+}
+
+/**
+ * ★ 子项目 C：停掉正在跑的那一趟（D4）。
+ *
+ * ⚠️★ **写盘阶段一律拒**，理由**不是**"中断两次 `rename` 之间那个窗口会留下半成品"，
+ *    而是 **D4 那条明文：不许回 `{ok:true}` 却其实停不下来**。写盘这一趟会**照常装完**
+ *    并把它记进 `updated`（用户以为停了、其实没停）；而 `cancelling` 这个标志还会让
+ *    **批量里剩下的项**停下 ⇒ 用户"点了一个不该点的按钮，却拿到了半趟的副作用"。
+ * ⚠️★ 上面那半句（"会留下半成品"）**今天不可复现**，写在这里免得下一个人拿它当理由：
+ *    `installDownloadedFile` 通体只有两次 `renameSync`、**没有 `await`、也不消费 `signal`**，
+ *    而 `notePhase('install')` 是在调它**之前**同步推出来的 ⇒ 那个窗口里 `abort()` 对文件
+ *    **没有任何作用**（写盘那一段今天全同步）。⇒ "盘上没坏"是**必然**，不是运气。
+ *    **假如**将来那一段变成异步、或者开始消费 signal，那半句立刻变成实打实的原因
+ *    （那时它才是"拒绝"的第一条理由）。
+ *    界面那一侧同时把按钮置灰并写明"正在写入，稍候"。
+ * ⚠️ 幂等：已经在取消中 ⇒ 再点一次仍然 `{ok:true}`（页面可能连点两下）。
+ *    ⚠️★ 这一支与"写盘阶段拒"的**先后顺序是承重的**（见函数体里那一段）。
+ * ⚠️★ "谁来 abort"只在这里：`installRelease` 早就在 `downloadTo` 上传了
+ *    `signal: activeRun?.controller.signal`（T2），所以这里 `abort()` 就是**中断这一趟
+ *    HTTP 请求**的那一下。⛔ `abort()` 之后的事情都有主：`downloadTo` 抛 ⇒
+ *    `installRelease` 的 `catch` 删掉 `.part` 再抛 ⇒ 两条外壳的 `catch` 按
+ *    `activeRun.cancelling` 决定"记进 `cancelled` 且**不** reject"（取消不是失败）。
+ * ⚠️★ **"正在取消"那一帧要上高频通道**（I1，最终修复波）：页面渲染用的一帧来自
+ *    `progressOf(state, live)`，而它**推送优先于状态**（`live ?? state.progress`）。
+ *    只 `rebuild()` 的话这一格到不了页面：那一刻 `live` 里还是取消**之前**那一帧
+ *    （`cancelling: false`），而 `abort()` 之后没有新的字节帧（`noteBytes` 不再被调）⇒
+ *    页面读到的 `view.cancelling` 恒为 `false` ⇒ 按钮文案永远不变、也不会进入"不可再点"
+ *    的形态（spec §4 明写的行为没落地）。
+ *    ⇒ 照 `notePhase` 的写法补一次 `pushProgress(true)`：`cancelling` 是"换相位"那一类
+ *    **必须立刻让页面看到**的东西，不受 D3 的 100 ms 下限约束。
+ * ⚠️ 而"这一项会照常装完"（写盘相位拒）**只走** `rebuild()`：那一支不改任何一格，
+ *    没有高频帧要发。
+ * ⚠️ `rebuild()` 与 `pushProgress(true)` 都在 `abort()` **之前**：页面靠它们把按钮变成
+ *    「正在取消…」，而 `abort()` 之后这一趟马上就开始收尾了（页面随即读到 `progress: null`）。
+ *    ⚠️ 两条通道读的是**同一个** `progress` 变量（`pushProgress` 自己调 `refreshProgress()`）
+ *    ⇒ 它们不可能互相矛盾，只是新鲜度不同。
+ */
+function cancelDownload(): { ok: true } | { ok: false; reason: string } {
+  if (activeRun === null) return { ok: false, reason: '没有在跑' };
+  /*
+   * ⚠️★ **这两支的先后顺序是承重的**：`cancelling` 必须排在"写盘阶段拒"**之前** ——
+   *    取消被受理之后那一项会走到写盘相位，用户再点一次时事实是"**这一趟正在被取消**"
+   *    ⇒ 幂等地回 `{ok:true}`。反过来排的话他拿到的是"正在写入，这一趟不能取消"，
+   *    而那句话对一趟**正在被取消**的运行是假话（听起来像"你的取消被撤回了"）。
+   * ⚠️★ 写盘相位拒对**新的**取消请求（`cancelling === false`）**照常生效** —— 别删它：
+   *    它守的是 D4 那条明文（不许回 `{ok:true}` 却其实停不下来），理由写在函数头。
+   */
+  if (activeRun.cancelling) return { ok: true };
+  if (activeRun.phase === 'install') {
+    return {
+      ok: false,
+      reason: '正在写入，这一趟不能取消（写盘已经开始，取消也停不下来，这一趟会照常装完）',
+    };
+  }
+  activeRun.cancelling = true;
+  refreshProgress();
+  /*
+   * ★★ I1：`cancelling: true` 这一帧**两条通道都要发**。`pushProgress(true)` 就是
+   *    "换相位"那一类（force ⇒ 不吃节流），载荷里带着 `cancelling: true`
+   *    （`pushProgress` 读的就是 `refreshProgress()` 刚算出来的同一个 `progress`）。
+   */
+  pushProgress(true);
+  rebuild(); // ★ 页面据此把按钮变成「正在取消…」
+  activeRun.controller.abort();
+  return { ok: true };
+}
+
+/**
+ * 这一趟是否已被要求取消（**现读**模块级的 `activeRun`）。
+ *
+ * ⚠️★ 为什么要一个函数、而不在调用处直接写 `activeRun?.cancelling === true`：
+ *    `tsc` 会**跨 `await` 保留窄化** —— 循环顶上那次 `if (... === true) break;` 之后，
+ *    它把 `activeRun.cancelling` 窄成 `false | undefined`，于是 `try` 的 `catch` 里
+ *    同一个表达式被判成"两个类型没有重叠"（**TS2367**，实测）。而那一刻的事实正好相反：
+ *    取消是在 `await installFolderRow(...)` **期间**到的（D4 的现场就是它）⇒
+ *    窄化在这里是**假话**。函数调用是窄化过不去的边界，读数因此是现读的、类型检查也认。
+ */
+function isCancelling(): boolean {
+  return activeRun?.cancelling === true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -228,6 +442,37 @@ function broadcast(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(MOD_FOLDERS_CHANNELS.onStatus, current);
+  }
+}
+
+/**
+ * ★ 子项目 C：**高频**那一条载体（D3 节流）。整份状态一步都不推 —— 它只发这一帧。
+ *
+ * ⚠️ 节流判据住在共享内核（`shouldPush`，T1 的纯函数 + 单测）：这里只负责
+ *    "盖时间戳、问一句、发出去"，不重新实现一遍阈值（两个地方各写一个数字迟早会漂）。
+ * ⚠️★ 与 `broadcast()` 的分工：这一条**没有对应的 `rebuild()`** —— `noteBytes` 每个 chunk
+ *    都调它，而"整份状态"那一份（`onStatus`）只在换项/换相位/收尾时推（`rebuild` 的调用点）。
+ *    ⚠️ 载荷是 `refreshProgress()` 刚算出来的**同一个** `progress`（与 `buildState()` 读的是
+ *    同一个变量）⇒ 两条载体不是两份真相。
+ * ⚠️ `force`：换项与换相位必须**立刻**让页面看到（D3："换项/换相位不受 100 ms 约束"）。
+ */
+let lastPush: TimedSample | null = null;
+
+function pushProgress(force = false): void {
+  if (activeRun === null) return;
+  const next: TimedSample = {
+    at: Date.now(),
+    received: activeRun.received,
+    total: activeRun.total,
+  };
+  if (!shouldPush({ last: lastPush, next, force })) return;
+  lastPush = next;
+  refreshProgress();
+  const frame = progress;
+  if (frame === null) return;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(MOD_FOLDERS_CHANNELS.onProgress, frame);
   }
 }
 
@@ -346,6 +591,7 @@ function placeholderState(): ModFoldersState {
     missingStatus: 'catalog-unavailable',
     notices: [],
     busy: false,
+    progress: null,
     lastRun: null,
   };
 }
@@ -501,6 +747,7 @@ function buildState(): ModFoldersState {
       (note): note is string => note !== null,
     ),
     busy,
+    progress,
     lastRun,
   };
 }
@@ -995,8 +1242,12 @@ function stalePartsOf(targetDir: string, targetName: string): string[] {
  *
  * ⚠️★ **`.part` 是调用方的**（Ruling 30）：`installDownloadedFile` 一个字节都不碰它 ⇒
  *    下面那个 `catch` 负责删。"下载失败 / 校验没过 / 就位失败"三条路都落在同一个 `catch` 里。
- * ⚠️ **不传 `onProgress`**：`ModFoldersState` 里没有承载进度的字段（T1 的契约没有它）。
- *    传一个什么都不做的回调只是装饰；要进度条得先给契约加一格，那时这里才接得上。
+ * ⚠️★ **`onProgress` 与 `onBytes` 分工**（2026-10-06 就地改准；上一版这句写的是"不传 `onProgress`…
+ *    要进度条得先给契约加一格"）：契约那一格已经加好了（`ModFoldersState.progress`）⇒ 新模块
+ *    现在**走 `onBytes` + `noteBytes`**（每一个 chunk 一次，交出去的只有字节读数），
+ *    而 v1 那一条路**仍然只用 `onProgress`**（它那份 150 ms 节流与 0–100 的语义一字不动）。
+ *    ⚠️ 这里**依然不传 `onProgress`**：`onBytes` 与它并存、各供各的载体 —— 两个都传等于
+ *    同一条路径上有两份进度读数（一份 0–100、一份字节数），迟早会漂。
  */
 async function installRelease(opts: {
   targetDir: string;
@@ -1103,7 +1354,10 @@ async function installRelease(opts: {
       partPath,
       expectedSha512: release.sha512,
       expectedSize: release.size,
+      onBytes: (sample) => noteBytes(sample),
+      signal: activeRun?.controller.signal,
     });
+    notePhase('install'); // ★ C：写盘阶段**没有字节**（界面显示"正在写入…"，且取消按钮置灰）
     movedOld = (await installDownloadedFile({ partPath, targetPath })).movedOld;
   } catch (error) {
     // Ruling 30：`.part` 由**调用方**删（`installDownloadedFile` 不碰它）
@@ -1152,28 +1406,72 @@ async function installRelease(opts: {
  * ⚠️★ **空转不许冒充"已更新"**（(e)，2026-10-03 复审）：幂等那一支一个字节都没写 ⇒
  *    `work()` 返回一句"为什么没动"的原因，那一趟就记进 `lastRun.skipped` 而**不是** `updated`
  *    （写进 `updated` 会让界面说"已更新 1 项"，而盘上什么都没变）。`work()` 返回 `null` = 真的更新了。
+ * ⚠️★ M6（最终修复波）：`beginRun(...)` 与起手那句 `rebuild()` 都**在 `try` 里面** ——
+ *    `rebuild()` 自己抛（`buildState()` 理论可抛）时，收尾分支才盖得住它。放在 `try`
+ *    之外的话，那一次抛出会留下 `busy === true` + `activeRun !== null` ⇒ **此后所有写盘
+ *    一律被拒到重启为止**，而界面上还挂着一条永不收尾的进度行。
+ *    挪进来之后走的是**失败那一支**：`busy = false` ⇒ `endRun()`（`activeRun` 清空、
+ *    `progress` 变 `null`）⇒ `lastRun` 记一条 `failed`（`reason` 就是那次构建错误）⇒
+ *    `rebuild()` 再试一次 ⇒ 原样 `throw`（IPC reject，页面看得见）。三格都归位。
  */
 async function writeRun(
-  modid: string,
+  input: { run: 'update-mod' | 'download-missing'; folderId: string; modid: string },
   work: () => Promise<string | null>,
 ): Promise<ModFoldersState> {
+  const { modid } = input;
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
-  rebuild();
   let skipped: string | null = null;
   try {
+    /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
+    beginRun({ run: input.run, folderId: input.folderId, itemCount: 1 });
+    rebuild();
     skipped = await work();
   } catch (error) {
     busy = false;
-    lastRun = { updated: [], skipped: [], failed: [{ modid, reason: messageOf(error) }] };
+    /*
+     * ★ D4：取消**不是失败** ⇒ 不抛（IPC 不 reject，页面不弹错），真相在
+     *    `lastRun.cancelled` 里，界面据此说"已取消"。
+     * ⚠️★ 顺序是承重的：`cancelling` 必须**在 `endRun()` 之前**读 —— `endRun()` 会把
+     *    `activeRun` 清成 `null`，反过来写的话这个判断恒为 false（取消会被记成一次失败，
+     *    而 IPC 还会 reject ⇒ 页面弹出"更新失败"，与 D4 明写的那句话相反）。
+     */
+    const cancelled = activeRun?.cancelling === true;
+    endRun();
+    if (cancelled) {
+      lastRun = { updated: [], skipped: [], failed: [], cancelled: [{ modid, reason: '已取消' }] };
+      rebuild();
+      return modFoldersState();
+    }
+    lastRun = {
+      updated: [],
+      skipped: [],
+      failed: [{ modid, reason: messageOf(error) }],
+      cancelled: [],
+    };
     rebuild();
     throw error;
   }
   busy = false;
+  endRun();
+  /*
+   * ⚠️★ **"abort 到晚了"这一个窗口（单行）**：取消在**下载相位**被受理，而 `abort()`
+   *    落地时这一趟正好已经下完 ⇒ 走到的是**成功**这一支，`updated` 就是实情
+   *    （文件真的装好了）。代价是**取消这个动作在读数里没有痕迹**：`lastRun` 里既没有
+   *    `cancelled`、也没有 notice，页面从"正在取消…"直接跳到"已更新"。
+   * ⚠️★ **单行这一支不补 notice**（刻意）：批量那条有，是因为它那一刻**真有"剩下的项"**
+   *    要说清（`updateFolderAll` 的 `work()` 末尾那两种措辞）；而单行的 `itemCount` 恒为 1
+   *    ⇒ 没有"剩下的项"这件事可说，一条"已取消：这一项正好下完了"只是把 `updated` 那两句
+   *    话说第二遍 —— 更要紧的是它会与"取消**不是**失败、也不是没做完"这条语义打架
+   *    （用户要的"停"已经实现了）。这里**如实写出代价**：取消动作在读数里没有痕迹
+   *    （`updated` 是实话，而"点过取消"这件事一处都没记），**不为它造判据**
+   *    —— 理由：那个窗口构造不出确定性夹具（要恰好卡在最后一次 `rename` 与
+   *    `downloadTo` 返回之间）。
+   */
   lastRun =
     skipped === null
-      ? { updated: [modid], skipped: [], failed: [] }
-      : { updated: [], skipped: [{ modid, reason: skipped }], failed: [] };
+      ? { updated: [modid], skipped: [], failed: [], cancelled: [] }
+      : { updated: [], skipped: [{ modid, reason: skipped }], failed: [], cancelled: [] };
   rebuild();
   return modFoldersState();
 }
@@ -1309,6 +1607,12 @@ async function installFolderRow(opts: {
    */
   const mainPath = join(entry.path, row.fileName);
   const oldCopies = [mainPath, ...row.oldCopies.map((name) => join(entry.path, name))];
+  /*
+   * ★ C/S2：**项的身份只有调用方知道** —— `installRelease` 收的是 `{targetDir, release,
+   *   channel}`，"这是第几项、下的是哪一个"不在它的入参里（也不该在：那会让两个写入口
+   *   共用那一段再多一个必须传对的东西）。
+   */
+  setRunItem({ modid: row.modid, fileName: row.fileName });
   const outcome = await installRelease({
     targetDir: entry.path,
     release,
@@ -1391,24 +1695,42 @@ function skipReasonOf(row: ModFolderRowView): string {
  * ⚠️ 整批起手就抛（文件夹不是目录 / 没有扫描读数 / 目录没拉到）时**不写 `failed`**：
  *    `failed[].modid` 是**行**的标识，而这时候**一行都没跑到** ⇒ 编一个假 modid 进去
  *    会让页面显示一条不存在的行。⇒ 记一条 notice（页面看得见）+ 原样抛（IPC 会 reject）。
+ * ⚠️★ M6（最终修复波）：`beginRun(...)` 与起手那句 `rebuild()` 都**在 `try` 里面**
+ *    （与 `writeRun` 同一条理由，见那一段）：放在外面时 `rebuild()` 抛会留下
+ *    `busy === true` + `activeRun !== null` ⇒ 写盘全被拒到重启。挪进来之后走失败那一支：
+ *    `busy = false` ⇒ `endRun()`（`activeRun` 清空、`progress` 变 `null`）⇒
+ *    `lastRun` 记空桶 + 一条 notice（`reason` 是那次构建错误）⇒ `rebuild()` 再试 ⇒
+ *    原样 `throw`。三格都归位。
  */
 type LastRun = NonNullable<ModFoldersState['lastRun']>;
 
-async function bulkRun(work: () => Promise<LastRun>): Promise<ModFoldersState> {
+async function bulkRun(input: {
+  folderId: string;
+  itemCount: number;
+  work: () => Promise<LastRun>;
+}): Promise<ModFoldersState> {
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
-  rebuild();
   let run: LastRun;
   try {
-    run = await work();
+    /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
+    beginRun({ run: 'update-folder-all', folderId: input.folderId, itemCount: input.itemCount });
+    rebuild();
+    run = await input.work();
   } catch (error) {
     busy = false;
-    lastRun = { updated: [], skipped: [], failed: [] };
+    endRun();
+    /*
+     * ⚠️ 整批的取消**不**走这一支：它由循环自己收尾（`updateFolderAll` 的 `work()` 里
+     *    那个 `break` + `cancelled` 桶），所以到这里的一律是**真失败** ⇒ `cancelled: []`。
+     */
+    lastRun = { updated: [], skipped: [], failed: [], cancelled: [] };
     pushNotice(`整夹更新没能跑完：${messageOf(error)}`);
     rebuild();
     throw error;
   }
   busy = false;
+  endRun();
   lastRun = run;
   rebuild();
   return modFoldersState();
@@ -1471,7 +1793,7 @@ export async function updateMod(
    *    那道闸的拒绝在整夹更新里必须落成**一条 `failed`**（一条失败不许中断整批），
    *    所以它只能住在"被 try 包住的那一段"里。单行这一侧的效果不变（外面没有别人接它）。
    */
-  return writeRun(key.modid, async () => {
+  return writeRun({ run: 'update-mod', folderId: id, modid: key.modid }, async () => {
     const why = await installFolderRow({ entry, row, channel: chan, what: key.key });
     // spec §7.3 第 9 步：重扫该文件夹（**强制**，不吃缓存：目录刚刚被我们改过）
     await queueScan(id, entry.path, { onlyIfMissing: false });
@@ -1529,34 +1851,66 @@ export async function updateFolderAll(
   const view = folderView(id, entry);
   const what = (modid: string): string => `${modid}|${view.gameVersion ?? '?'}`;
 
-  return bulkRun(async () => {
-    const updated: string[] = [];
-    const skipped: { modid: string; reason: string }[] = [];
-    const failed: { modid: string; reason: string }[] = [];
-    // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
-    await yieldToEventLoop();
-    for (const row of view.rows) {
-      if (row.batchable) {
-        try {
-          const why = await installFolderRow({ entry, row, channel: chan, what: what(row.modid) });
-          if (why === null) updated.push(row.modid);
-          else skipped.push({ modid: row.modid, reason: why });
-        } catch (error) {
-          // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
-          failed.push({ modid: row.modid, reason: messageOf(error) });
+  return bulkRun({
+    folderId: id,
+    itemCount: view.rows.filter((row) => row.batchable).length,
+    work: async () => {
+      const updated: string[] = [];
+      const skipped: { modid: string; reason: string }[] = [];
+      const failed: { modid: string; reason: string }[] = [];
+      const cancelled: { modid: string; reason: string }[] = [];
+      // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
+      await yieldToEventLoop();
+      for (const row of view.rows) {
+        // ★ D4：取消之后**剩下的项不再开工**（在每一项之前判，而不是等它自己抛）
+        if (isCancelling()) break;
+        if (row.batchable) {
+          try {
+            const why = await installFolderRow({
+              entry,
+              row,
+              channel: chan,
+              what: what(row.modid),
+            });
+            if (why === null) updated.push(row.modid);
+            else skipped.push({ modid: row.modid, reason: why });
+          } catch (error) {
+            if (isCancelling()) {
+              // ★ 当前这一项是被我们打断的那一项 ⇒ 记进 `cancelled`，然后停
+              cancelled.push({ modid: row.modid, reason: '已取消' });
+              break;
+            }
+            // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
+            failed.push({ modid: row.modid, reason: messageOf(error) });
+          }
+        } else {
+          skipped.push({ modid: row.modid, reason: skipReasonOf(row) });
         }
-      } else {
-        skipped.push({ modid: row.modid, reason: skipReasonOf(row) });
+        /*
+         * ★ 每条之间让出一次事件循环（spec §7.4 的字面）。放在**每一条之后**（跳过的那条也算）：
+         *    跳过的行不 await 任何东西，而一个真实的文件夹里跳过的往往占多数 ⇒ 让出点更多，
+         *    页面在整批期间更不会看起来卡住。
+         */
+        await yieldToEventLoop();
       }
       /*
-       * ★ 每条之间让出一次事件循环（spec §7.4 的字面）。放在**每一条之后**（跳过的那条也算）：
-       *    跳过的行不 await 任何东西，而一个真实的文件夹里跳过的往往占多数 ⇒ 让出点更多，
-       *    页面在整批期间更不会看起来卡住。
+       * ⚠️★ 两种"没有开工的项"要如实说，而且**不许**编一个假 modid 进 `cancelled`
+       *    （那一格是**行**的标识，编一个会让页面显示一条不存在的行 —— `bulkRun` 那条
+       *    "整批起手就抛时不写 failed" 的注释是同一族纪律）：
+       *      · 取消发生在换项之间 ⇒ `cancelled` 空着 + 一条 notice；
+       *      · 当前那一项正好下完了（abort 到晚了）⇒ 它进了 `updated` ⇒ 也补一条 notice。
+       *    ⚠️ 这一条**只在这里**（不写进 `bulkRun` 的 catch）：走到那个 catch 的都是真失败。
        */
-      await yieldToEventLoop();
-    }
-    if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
-    return { updated, skipped, failed };
+      if (isCancelling() && cancelled.length === 0) {
+        pushNotice(
+          updated.length > 0
+            ? '已取消：这一项正好下完了（它已装好），后面的项没有开始'
+            : '已取消：还没有开始任何一项',
+        );
+      }
+      if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
+      return { updated, skipped, failed, cancelled };
+    },
   });
 }
 
@@ -1666,7 +2020,15 @@ export async function downloadMissing(
   }
   assertNotManual(row.manual, what, '下载');
 
-  return writeRun(modid, async () => {
+  return writeRun({ run: 'download-missing', folderId: id, modid }, async () => {
+    /*
+     * ★ C/S2：**项的身份**在这里落定（`installFolderRow` 那条路是同一个意思）。
+     * ⚠️ 文件名取的是 `originFileNameOf(release.url)` —— 也就是**这一趟要落盘的那个名字**
+     *    （`installRelease` 用同一个函数推 `targetPath`）。brief 的示例写的是
+     *    `row.fileName`，而这一支手上那个 `row` 是 `CatalogRowView`（**没有** `fileName`：
+     *    目录行没有本地文件）⇒ 按 brief 自己那句"取能取到的那个；取不到就用 modid"。
+     */
+    setRunItem({ modid, fileName: originFileNameOf(release.url) ?? modid });
     const outcome = await installRelease({
       targetDir: entry.path,
       release,
@@ -1690,7 +2052,8 @@ export async function downloadMissing(
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十三条 `ipcMain.handle`（第 14 条 `onStatus` 是**推**给页面的：主进程只 `send`）。
+ * 注册十四条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
+ * 主进程只 `send`，没有 handler 可注册）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
  *    写错一个字母**类型检查看不见**，而失败形态是静默的（`invoke` reject / `on` 永不触发）。
@@ -1764,10 +2127,15 @@ function registerIpc(): void {
     (_event, modid: unknown, gameVersion: unknown, folderId: unknown, channel: unknown) =>
       downloadMissing(modid, gameVersion, folderId, channel),
   );
+  /*
+   * ★ C 的 T4：取消。**入参一个都没有**（与上面每一条同一条纪律：渲染进程递不进任何东西）
+   *    —— 它的作用范围就是"主进程自己记着的那一趟"。
+   */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.cancelDownload, () => cancelDownload());
 }
 
 /**
- * 初始化：**接手 v1 那份状态对象** → 注册十三条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个

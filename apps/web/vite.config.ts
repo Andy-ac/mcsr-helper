@@ -135,6 +135,27 @@ export default defineConfig({
       '@mcsr/shared/review': resolvePath('../../packages/shared/src/review.ts'),
       '@mcsr/shared/modCatalog': resolvePath('../../packages/shared/src/modCatalog.ts'),
       '@mcsr/shared/modFolders': resolvePath('../../packages/shared/src/modFolders.ts'),
+      /*
+       * ⚠️★ 这一条是「下载进度」（子项目 C，2026-10-06 T5）加的 —— 上面那五段注释说的坑
+       *    **又一次**发生了（现数：前面六次是 `resources` / `live` / `ranked` /
+       *    `seedPicker` / `tracking` / `fileUpdates`，这一次是**第七次**），
+       *    而这一次是在**写界面之前**补上的（T1 只改了
+       *    `packages/shared/package.json` 的 `exports` 与 `src/downloadProgress.ts`，
+       *    而 T5 的文件清单里**没有本文件** ⇒ 少了这一条，整个 `/files` 页在浏览器里
+       *    一个字节都加载不出来）。
+       *
+       *    `apps/web/src/components/DownloadProgressLine.tsx` 引的是**值**
+       *    （`progressLineOf`）⇒ 它一定会过 alias 表。
+       *    ⚠️★ 而两端门禁一个都不会响：`pnpm -w check` 的 typecheck 走 `exports`
+       *    （moduleResolution: bundler），渲染自检（`scripts/*render.tsx`）由 tsx 直接跑、
+       *    **根本不经过 Vite**（只经过 `exports`）⇒ 只有 `vite build` / dev server 看得见。
+       *    `scripts/check-shared-aliases.mjs` 是这一条的防线（它查的正是
+       *    "有自己的一条"与"排在裸包名之上"；T5 这一轮它报的是 17 个子路径）。
+       *
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       */
+      '@mcsr/shared/downloadProgress': resolvePath('../../packages/shared/src/downloadProgress.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

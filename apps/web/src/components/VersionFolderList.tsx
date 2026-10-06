@@ -76,6 +76,7 @@ import {
   type VersionPage,
 } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
+import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { FolderJarList } from '@/components/FolderJarList';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
 import {
@@ -83,6 +84,7 @@ import {
   channelKeyOf,
   channelOptions,
   folderGameVersionOptions,
+  type PageProgress,
   staleGameVersion,
 } from '@/components/ModFoldersData';
 
@@ -138,6 +140,16 @@ export interface VersionFolderListProps {
   onToggle: (folderId: string) => void;
   /** 动作层（`ModDownloadPanel` 包过 try/catch 的那一个）。 */
   onAction: ModPageActionHandler;
+  /**
+   * ★ C 的 T5：**此刻**该显示的那条进度（`progressOf(state, live)` 的产物；没在跑就是 `null`）。
+   *
+   * ⚠️★ 这一层拿它做**一件事**：按 `folderId` 认领，然后画在**那个文件夹块**上
+   *    （spec §4 的第二档："文件夹块上的汇总行"）。⚠️ 判据是 `folderId` 而不是"当前
+   *    正在跑的那一趟"—— 一趟批量只属于一个文件夹，而页面上同时画着好几个。
+   * ⚠️ 它同时往下喂给 `FolderJarList`（展开体里那一行的**行内**进度是同一份载荷的第三档）——
+   *    "哪一行该画"由那一层按 `modid` 判（它才知道自己那一行是谁）。
+   */
+  progress: PageProgress | null;
 }
 
 /**
@@ -151,6 +163,7 @@ export function VersionFolderList({
   expanded,
   onToggle,
   onAction,
+  progress,
 }: VersionFolderListProps) {
   const { t } = useTranslation();
   const expandedSet = new Set(expanded);
@@ -235,6 +248,7 @@ export function VersionFolderList({
           isExpanded={expandedSet.has(block.folder.folderId)}
           onToggle={onToggle}
           onAction={onAction}
+          progress={progress}
         />
       ))}
     </section>
@@ -249,6 +263,7 @@ function FolderRow({
   isExpanded,
   onToggle,
   onAction,
+  progress,
 }: {
   state: ModFoldersState;
   block: VersionFolderBlock;
@@ -257,10 +272,20 @@ function FolderRow({
   isExpanded: boolean;
   onToggle: (folderId: string) => void;
   onAction: ModPageActionHandler;
+  /** ★ C 的 T5：整页那份进度载荷（见 `VersionFolderListProps.progress`）。 */
+  progress: PageProgress | null;
 }) {
   const { t } = useTranslation();
   const folder = block.folder;
   const busy = state.busy;
+  /**
+   * ★★ C 的 T5：**这一趟跑的是不是这个文件夹**（是 ⇒ 拿到那份载荷，否则 `null`）。
+   *
+   * ⚠️★ 判据是 `folderId`：一趟批量只属于一个文件夹，而页面上同时画着好几个
+   *    （自检㊶ 那条"画在**那个文件夹的行里**"咬的正是这件事 —— 画到面板顶上、
+   *    或画在别的文件夹里，它都红）。
+   */
+  const line = progress !== null && progress.frame.folderId === folder.folderId ? progress : null;
   /** 这个文件夹里**真的会进批量**的行数（那颗按钮上的数字）。 */
   const targets = batchTargets(folder.rows);
   const versions = folderGameVersionOptions(state, folder);
@@ -449,6 +474,38 @@ function FolderRow({
       </div>
 
       {/*
+        ★★ C 的 T5：**批量那一趟的汇总行**（spec §4 的第二档）。
+
+        ⚠️★ 它在 `.folderrow` 里、`folderrow__body` **外面**（也就是**永远画得出来**，
+        折叠着也画）——三条理由，逐条都对应一种坏法：
+          · **product**：批量是从**这一行的头行**发起的（那一颗「全部更新」就在头行），
+            用户完全可能在折叠状态下发起它；画进展开体的话，那一刻界面上
+            **既没有进度、也没有取消按钮**（D4 要的那颗按钮在折叠时就够不着了）；
+          · **判据**：自检㊶ 那条容器层面的断言（"那一行画在**那个文件夹的行里**"）
+            用 `expanded: []` 渲染这一层 —— 画进 `folderrow__body`（只在展开时渲染）时
+            它在**正确的实现**上也会红；
+          · **位置**：它紧跟在头行后面 ⇒ 仍然是"jar 列表**上面**"（spec §4 那句）。
+        ⚠️ 只在 `itemCount > 1` 时画**这一行汇总**：单行下载那一档没有"整趟的第几项"可说，
+        那一档由**行内**的 `DownloadProgressLine` 说（见 `FolderJarList` / `VersionModList`）。
+        ⚠️★ **批量时两处并存的两句话，不是同一条重复**（spec §4 说的是文件夹块上"**另加一行**"）：
+        这一行是**汇总档**（`variant="summary"`）：先印"**整趟**的第几项 / 共几项"
+        （`itemIndex` / `itemCount` 来自帧），**再**印这一项自己的字节行
+        （spec §4 第 2 档自己的例子 `12.4/27.1 MB · 46%` 里就有字节）；
+        行内那一行（`FolderJarList` / `VersionModList`，`variant` 默认 `inline`）印的是
+        "**这一项自己**的字节 / 速度 / ETA"，而且**批量时也照印**、只是**不**印序号。
+        主语不同 ⇒ 缺任何一边，用户就少一样读数（"还要等几项"与"这一项还要多久"）。
+        ⚠️ 取消那一颗**不新增 prop**：这一层本来就有 `onAction`（`ModPageAction` 的处理函数）
+        ⇒ `cancel-download` 那个新成员直接复用它（这也是"取消只有一个入口"的保证）。
+      */}
+      {line !== null && line.frame.itemCount > 1 ? (
+        <DownloadProgressLine
+          progress={line}
+          onCancel={() => void onAction({ kind: 'cancel-download' })}
+          variant="summary"
+        />
+      ) : null}
+
+      {/*
         ★★ 展开体（T4 起里面是 `FolderJarList`：那一夹的全部 jar，含未识别标红的行）。
         ⚠️★ 折叠时**整块不渲染**（不是"渲染了但藏起来"）：这一页可能有十几个文件夹、
         每个几十行 —— 藏起来等于把它们全留在 DOM 里。⚠️ T4 之前"折叠态没有 jar 行"
@@ -498,6 +555,7 @@ function FolderRow({
               mirrors={state.mirrors}
               busy={busy}
               onAction={onAction}
+              progress={progress}
             />
           )}
         </div>

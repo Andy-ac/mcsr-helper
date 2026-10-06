@@ -928,6 +928,12 @@ function stateWith(over: Partial<ModFoldersState> = {}): ModFoldersState {
     missingStatus: 'ok',
     notices: [],
     busy: false,
+    /*
+     * ★ 子项目 C（T2）：契约多了这一格（"正在跑的那一趟"）。这一份夹具不构造跑起来的趟
+     *   ⇒ `null`（与 `busy: false` 同一个意思）。**它是必填的**，所以这一行不是可选的补充：
+     *   漏了它整个套件在 `tsc` 那一步就红（这正是"必填"该有的形状）。
+     */
+    progress: null,
     lastRun: null,
     ...over,
   };

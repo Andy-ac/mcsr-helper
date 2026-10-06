@@ -70,9 +70,10 @@
 import type { ModFoldersState, VersionModRow, VersionPage } from '@mcsr/shared/modFolders';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { Notice } from '@/components/Form';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
-import { tagLabelFor, VERDICT_HINTS } from '@/components/ModFoldersData';
+import { type PageProgress, tagLabelFor, VERDICT_HINTS } from '@/components/ModFoldersData';
 
 /** 「没有值的那一格」——与 jar 列表（`FolderJarList`）里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
@@ -89,6 +90,15 @@ export interface VersionModListProps {
   busy: boolean;
   /** 动作层（只有 `ModDownloadPanel.run()` 那一处接线）。 */
   onAction: ModPageActionHandler;
+  /**
+   * ★ C 的 T5：整页那份进度载荷（`progressOf(state, live)` 的产物）。
+   *
+   * ⚠️★ 这一层按 `modid` + `folderId` 认领（见 `VersionModItem`）：第三段的每一行是
+   *    **目录行**，它可能与某个文件夹里正在下载的那一项**同名**，所以不能只比 `modid`。
+   *    ⚠️ 而"下到哪个文件夹"这一刻由用户在下拉里选（`VersionModItem` 的界面态）——
+   *    这是**有意的**：进度行说的是"这一行此刻正在下它"，而用户看到的正是这一行。
+   */
+  progress: PageProgress | null;
 }
 
 /**
@@ -99,7 +109,7 @@ export interface VersionModListProps {
  *   · 目录可用但这一版一条都没有 ⇒ 一句"没有可列的 mod"（空表与"没渲染"分不开）；
  *   · 否则 ⇒ 表。
  */
-export function VersionModList({ page, tagLabels, busy, onAction }: VersionModListProps) {
+export function VersionModList({ page, tagLabels, busy, onAction, progress }: VersionModListProps) {
   const { t, i18n } = useTranslation();
   /**
    * 标签显示名按**当前语言**取（与 `FolderJarList` 那一处同一条判据：`i18n.language`
@@ -166,6 +176,7 @@ export function VersionModList({ page, tagLabels, busy, onAction }: VersionModLi
                   labelLang={labelLang}
                   busy={busy}
                   onAction={onAction}
+                  progress={progress}
                 />
               ))}
             </tbody>
@@ -185,6 +196,7 @@ function VersionModItem({
   labelLang,
   busy,
   onAction,
+  progress,
 }: {
   row: VersionModRow;
   /** `page.version` —— 主进程要的那一格（拿它跟目标文件夹的有效版本对一遍）。 */
@@ -195,6 +207,8 @@ function VersionModItem({
   labelLang: 'zh' | 'en';
   busy: boolean;
   onAction: ModPageActionHandler;
+  /** ★ C 的 T5：整页那份进度载荷（见 `VersionModListProps.progress`）。 */
+  progress: PageProgress | null;
 }) {
   const { t } = useTranslation();
   /**
@@ -245,6 +259,24 @@ function VersionModItem({
     row.presentIn.length === 0
       ? t('files.noFolderForDownload', { version })
       : t('files.alreadyInFolder', { folder: pathOf.get(firstPresent) ?? firstPresent });
+  /**
+   * ★★ C 的 T5：**这一行就是正在下的那一项吗**（是 ⇒ 那份载荷，否则 `null`）。
+   *
+   * ⚠️★ 与 `FolderJarList` 那一处**逐条同一个判据**（两个条件缺一不可）：
+   *    `modid` 说"是哪一项"，`folderId` 说"下到哪个文件夹"——
+   *    只比 `modid` 的话，`f1` 里正在下 `sodium` 时，**另一个**文件夹里那一行
+   *    （如果它也在这一版的目标表里）会一起显示同一条进度。
+   * ⚠️★ **代价（认，行为不改）**：这里的 `folderId` 是**用户当下选中**的那一个（上面
+   *    `chosen` 那一支每次渲染现算的），不是"这一趟发起时用的那个" —— 于是下载正在跑的
+   *    时候用户改了这个下拉，这一行就**不再命中** ⇒ 它的进度与取消入口当场消失。
+   *    语义上"这一行此刻在下它"确实由下拉定义（下拉决定下到哪个文件夹），所以判据
+   *    跟着它走是对的；而"改下拉会丢掉这一行的进度入口"这一步**没有**断言
+   *    （静态渲染不跑事件、也改不了 `useState`）—— 记在这里，不让它变成一条隐式行为。
+   */
+  const line =
+    progress !== null && progress.frame.folderId === folderId && progress.frame.modid === row.modid
+      ? progress
+      : null;
 
   return (
     <tr
@@ -290,6 +322,20 @@ function VersionModItem({
         )}
       </td>
       <td>
+        {/*
+          ★★ C 的 T5：**行内**那一条进度（spec §4 的第一档），紧跟在那颗「下载」旁边。
+          ⚠️★ 它在"已下载 / 不能下 / 能下"**三支之外**（不是某一支的孩子）：
+          进度说的是"这一行此刻正在下它"，而那一刻这一行**还没有**变成「已下载」
+          （写盘与判定之间有窗口），也不该因为它当时不可下就看不见 —— 一趟在跑的下载
+          必须**永远**看得见它的取消按钮（D4）。
+          ⚠️ 命中时**才**画（`line !== null`）：同一份载荷在页面上只该有一条那样的行。
+        */}
+        {line === null ? null : (
+          <DownloadProgressLine
+            progress={line}
+            onCancel={() => void onAction({ kind: 'cancel-download' })}
+          />
+        )}
         {downloaded ? (
           /*
            * ★★★ 「已下载」（spec §9.9 / D5）：它**替换**下载按钮，不是与它并列

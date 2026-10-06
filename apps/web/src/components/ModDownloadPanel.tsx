@@ -47,7 +47,12 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { Notice } from '@/components/Form';
-import { bulkChannelUsable, gameVersionOptions, reasonOf } from '@/components/ModFoldersData';
+import {
+  bulkChannelUsable,
+  gameVersionOptions,
+  type PageProgress,
+  reasonOf,
+} from '@/components/ModFoldersData';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
 
@@ -118,7 +123,18 @@ export type ModPageAction =
       folderId: string;
       channel: Channel;
     }
-  | { kind: 'set-catalog-version'; version: string };
+  | { kind: 'set-catalog-version'; version: string }
+  /*
+   * ★ C 的 T5：停掉正在跑的那一趟下载（spec §4 / D4）。
+   *
+   * ⚠️★ **一个成员、没有入参** —— 作用范围就是"当前这一趟"（哪一趟由主进程那一格说了算，
+   *    页面不告诉它）。⚠️ 这也正是它不复用 `update-mod` / `download-mod` 的原因：
+   *    那两条是"**发起**一次写盘"，这一条是"**停掉**正在跑的那一趟"，两者连入参都不同。
+   * ⚠️ 接线在 `routes/Files.tsx` 的 `makeModPageAction`（那个 `never` 守卫会逼着加）——
+   *    上游是 `DownloadProgressLine` 那颗 `data-action="cancel-download"` 按钮
+   *    （四处下载共用同一条线：文件夹行的批量汇总行、jar 行、第三段那一行）。
+   */
+  | { kind: 'cancel-download' };
 
 /**
  * 动作层往下传的形状。
@@ -137,9 +153,26 @@ export interface ModDownloadPanelProps {
    * ⚠️ 它是**可选**的，只是为了自检里那条"不传就没有提示"的对照能编译。
    */
   actionError?: string | null;
+  /**
+   * ★ C 的 T5：**此刻**该显示的那条进度（`useModFolders()` 的 `progress`，
+   * 就是 `progressOf(state, live)` 的产物）。
+   *
+   * ⚠️★ **不是可选的**（与 `state` / `onAction` 同一条纪律，理由照 T4 判修轮那条：
+   * 可选 prop 会让"页面忘了喂"变成**静默降级** —— 而这里静默降级的表现是
+   * "下载在跑、界面上一条进度都没有"，一种最难查的坏）。
+   * ⚠️ 这一层**只转发**它（给 `VersionFolderList` / `VersionModList` 各一份）：
+   *    "哪一行该画进度"由各自的组件按 `folderId` / `modid` 判，
+   *    "什么时候一条都不画"由 `progressOf` 判（**一处**）。
+   */
+  progress: PageProgress | null;
 }
 
-export function ModDownloadPanel({ state, onAction, actionError = null }: ModDownloadPanelProps) {
+export function ModDownloadPanel({
+  state,
+  onAction,
+  actionError = null,
+  progress,
+}: ModDownloadPanelProps) {
   const { t } = useTranslation();
   /** 展开态（文件夹 id）—— 界面状态，喂给投影、不进持久化（spec §5.2）。 */
   const [expanded, setExpanded] = useState<readonly string[]>([]);
@@ -254,12 +287,45 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
       */}
       {showAll ? <AllFoldersView groups={groupFoldersByVersion(state)} onAction={run} /> : null}
 
+      {/*
+        ★★ C 的 T5：**上一趟的汇总**（`state.lastRun`）—— 一次批量写盘之后，
+        用户需要一句"刚才那一趟到底做了什么"的总账。
+        ⚠️★ `files.lastRunSummary` 这条词条今天**只有这一个渲染点**（它在本次改动之前
+        是一条**死键**：T6 把旧第二部分删掉之后没有任何地方印它）—— 所以它同时是
+        "那段能力还在"的读数（判据见自检㊶：那份产物里必须有这句话）。
+        ⚠️★ `cancelled` **单独一格**（D4）：取消不是失败，并进 `failed` 会让界面说
+        "更新失败"，而事实是"按你说的停了"；逐条那一句（`files.lastRunCancelled`）
+        与 `files.lastRunSkipped` 是两条**不同**的读数（一个是"我跳过了"、一个是"你叫停的"）。
+        ⚠️ 逐条只印这两类：`updated` 逐条印是噪声（用户刚看着它们一条条完成）。
+      */}
+      {state.lastRun === null ? null : (
+        <p className="moddownload__lastrun" data-last-run="yes">
+          {t('files.lastRunSummary', {
+            ok: state.lastRun.updated.length,
+            skipped: state.lastRun.skipped.length,
+            failed: state.lastRun.failed.length,
+            cancelled: state.lastRun.cancelled.length,
+          })}
+          {state.lastRun.skipped.map((entry) => (
+            <span key={`s-${entry.modid}`} className="moddownload__lastrun-item">
+              {t('files.lastRunSkipped', { modid: entry.modid, reason: entry.reason })}
+            </span>
+          ))}
+          {state.lastRun.cancelled.map((entry) => (
+            <span key={`c-${entry.modid}`} className="moddownload__lastrun-item">
+              {t('files.lastRunCancelled', { modid: entry.modid })}
+            </span>
+          ))}
+        </p>
+      )}
+
       <VersionFolderList
         state={state}
         page={page}
         expanded={expanded}
         onToggle={toggle}
         onAction={run}
+        progress={progress}
       />
 
       {/*
@@ -269,7 +335,13 @@ export function ModDownloadPanel({ state, onAction, actionError = null }: ModDow
         共用的读数）—— 自检㊴ 的三条打在**这一处的产物**上（T4 判修轮的教训：
         自检自己喂的 prop 证明不了页面真的喂了它）。
       */}
-      <VersionModList page={page} tagLabels={state.tags} busy={state.busy} onAction={run} />
+      <VersionModList
+        page={page}
+        tagLabels={state.tags}
+        busy={state.busy}
+        onAction={run}
+        progress={progress}
+      />
     </section>
   );
 }

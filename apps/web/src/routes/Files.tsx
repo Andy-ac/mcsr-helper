@@ -196,6 +196,16 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);
         break;
+      case 'cancel-download':
+        /*
+         * ★ C 的 T5：停掉正在跑的那一趟。⚠️ 没有入参 —— 作用范围是"当前这一趟"
+         *   （哪一趟由主进程那一格说了算，页面递不进任何东西）。
+         * ⚠️ 它走的是 `cancelDownload`（返回值**不是** `ModFoldersState`）⇒ 在
+         *   `makeModFoldersHandlers()` 那一层就接住了两件事：主进程那句 `{ok:false, reason}`
+         *   与通道自己的 reject —— 两条都落到 `actionError`，面板上那句 `Notice` 印出来。
+         */
+        await handlers.cancelDownload();
+        break;
       default: {
         /*
          * ★★ 穷尽性守卫：走到这里说明 `ModPageAction` 多了一个没人处理的成员 ——
@@ -289,6 +299,7 @@ export function Files() {
                 state={mods.state}
                 onAction={makeModPageAction(mods.handlers)}
                 actionError={mods.actionError}
+                progress={mods.progress}
               />
             )}
           </div>
