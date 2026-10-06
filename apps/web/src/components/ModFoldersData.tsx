@@ -46,6 +46,12 @@
 
 import { type DesktopBridge, desktopBridge } from '@mcsr/shared/desktop';
 import {
+  type DownloadProgress,
+  progressKeyOf,
+  type TimedSample,
+  withSample,
+} from '@mcsr/shared/downloadProgress';
+import {
   batchTargets,
   type Channel,
   type FolderVerdict,
@@ -89,6 +95,7 @@ type ModFoldersAction<K extends keyof DesktopBridge['modFolders']> = (
  *    `setBulkChannel` / `updateMod` / `updateFolderAll` / `downloadMissing` / `openFolder`）。
  *    删掉的三条是第一部分的绑定（`bindCatalogRow` / `unbindCatalogRow` / `updateCatalogRow`，
  *    裁决 B：契约 17 → 14）—— 第一部分整个下线了，它们没有入口了。
+ *    ⚠️★ **C 的 T5 起是十三条**（加 `cancelDownload`，现数：上面十二条 + 它）。
  *    ⚠️ 加一条动作时这句话要一起改（与 `package.json` 里那句"十三个渲染门禁"同一条纪律：
  *    手抄的数字一定会过期，所以它旁边写着怎么现数）。
  * ⚠️ `setTagFilter` **留着**（D2：标签只显示、不筛选，但为删一个字段动契约不划算）——
@@ -126,6 +133,20 @@ export interface ModFoldersHandlers {
    * ⚠️ 入参只有 id：路径由主进程从自己的状态里取（渲染进程影响不了"打开哪个目录"）。
    */
   openFolder: ModFoldersAction<'openFolder'>;
+  /* ---- C 的 T5：停掉正在跑的那一趟 ---- */
+  /**
+   * ★★ 停掉正在跑的那一趟下载（子项目 C，spec §4 / D4）。
+   *
+   * ⚠️★ 与 `openFolder` 是**同一条形状**、不是同一条通道：`cancelDownload()` 的返回值是
+   *    `{ok:true} | {ok:false; reason}`（**不是**整份 `ModFoldersState`）⇒ 它同样**不走
+   *    `run()`**，接 reject 与接那句 `reason` 的地方都写在下面的实现里。
+   * ⚠️ 入参一个都没有：作用范围是"当前这一趟"（哪一趟由主进程那一格说了算，
+   *    渲染进程**递不进任何东西** —— 与本节其余通道同一条纪律）。
+   * ⚠️ 主进程的语义（契约里写着）：没有在跑 ⇒ `{ok:false, reason:'没有在跑'}`；
+   *    写盘相位 ⇒ `{ok:false, reason:'正在写入…'}`（**不许**回 `{ok:true}` 而其实停不下来）；
+   *    已经在取消中 ⇒ no-op `{ok:true}`。
+   */
+  cancelDownload: ModFoldersAction<'cancelDownload'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +253,23 @@ function makeModFoldersHandlers(
         fail(reasonOf(error));
       }
     },
+    /*
+     * ★★ C 的 T5：与上面 `openFolder` **逐字同一条形状**（理由也同一条）——
+     *    它的返回值不是 `ModFoldersState` ⇒ 不走 `run()`；而两条路都要接住：
+     *      · 主进程**拒**（`{ok:false, reason}`：没有在跑 / 写盘相位 / 已经在取消）⇒
+     *        `fail(reason)`（"点了没反应"与"点了被拒"对用户是两件事，
+     *        而那句 `reason` 正是主进程写好的说法）；
+     *      · 通道自己抛（IPC 那层理论上会）⇒ 与本节其余动作同一个 `reasonOf`。
+     */
+    cancelDownload: async (): Promise<void> => {
+      fail(null);
+      try {
+        const result = await api.cancelDownload();
+        if (!result.ok) fail(result.reason);
+      } catch (error) {
+        fail(reasonOf(error));
+      }
+    },
   };
 }
 
@@ -257,7 +295,51 @@ export type ModFoldersData =
       state: ModFoldersState;
       handlers: ModFoldersHandlers;
       actionError: string | null;
+      /**
+       * ★ C 的 T5：**此刻**该显示的那条进度（`progressOf(state, live)` 的产物）。
+       * ⚠️ 它是**推导出来的**、不是第二份真相：状态里那一格说"没有在跑"时它恒为 `null`。
+       */
+      progress: PageProgress | null;
     };
+
+// ---------------------------------------------------------------------------
+// C 的 T5：页面侧的进度（帧 + 样本窗口）—— 两条通道在这里合成一条
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 为什么这件事必须有**一个**落点（两条通道各来一半）：
+ *   · `ModFoldersState.progress`（低频，随 `onStatus` 整份状态推）是**这一趟的收尾读数**：
+ *     起手 / 换项 / 换相位 / 收尾各推一次，切 tab 回来也读得到；
+ *   · `onProgress`（高频，D3 节流）只带字节 —— 但整份状态里没有"最近几秒的样本"，
+ *     而那正是速度与 ETA 唯一的输入。
+ *   ⇒ 合成的规则写在 `progressOf` 里（**一处**），两处各写一份的话，"收尾之后还挂着一条
+ *     进度"这种坏法只会在一处被拦住。
+ */
+
+/** ★ C 的 T5：页面侧的进度载荷（**一帧** + 这一项攒下来的样本窗口）。 */
+export interface PageProgress {
+  frame: DownloadProgress;
+  samples: readonly TimedSample[];
+}
+
+/**
+ * ★★ C 的 T5：**此刻**该显示的那条进度（spec §4 / D6）。
+ *
+ * ⚠️★ 规则只有两条，而第一条是硬的：**状态说"没有在跑" ⇒ 一律 `null`**。
+ *    `ModFoldersState.progress` 是那一趟的**收尾读数**（一趟结束时变回 `null`）——
+ *    没有这一条的话，晚到的一帧会让界面上永远挂着一条"正在下载"，
+ *    而那正是 D6 要消灭的"停在最后一帧"（自检㊶ 有一条专门咬它）。
+ * ⚠️ 第二条：推送有就用推送（它的字节是最新的、样本窗口也在这里）；没有就用状态里那一帧
+ *    （切 tab 回来、或高频那一帧还没来）。两者读的是主进程里**同一个变量**
+ *    ⇒ 不可能互相矛盾，只是新鲜度不同。
+ * ⚠️★ 状态里那一帧**不带样本**（`samples: []`）：样本窗口只许从 `onProgress` 收。
+ *    换项那一拍会经**两条通道各到一次**同一帧（`rebuild()` 带着 `state.progress` 推一遍，
+ *    `pushProgress(true)` 又推一遍），从两条都收就会往窗口里注入**重复样本**
+ *    —— 速度会在那一拍跳一下（"新增字节为 0"被算成一次 0 速度）。
+ */
+export function progressOf(state: ModFoldersState, live: PageProgress | null): PageProgress | null {
+  if (state.progress === null) return null;
+  return live ?? { frame: state.progress, samples: [] };
+}
 
 /**
  * 取数（**只有桌面壳里、而且 `modFolders` 真的在**才会跑）。
@@ -272,6 +354,11 @@ export type ModFoldersData =
 export function useModFolders(): ModFoldersData {
   const [load, setLoad] = useState<ModFoldersLoad>(NO_MOD_FOLDERS_LOAD);
   const [actionError, setActionError] = useState<string | null>(null);
+  /**
+   * ★ C 的 T5：高频那一条通道攒下来的东西（**帧 + 样本窗口**）。
+   * ⚠️★ 它只从 `onProgress` 收（理由写在 `progressOf` 那一段）。
+   */
+  const [live, setLive] = useState<PageProgress | null>(null);
 
   /*
    * ⚠️ `desktopBridge()` 每次读拿到的是同一个对象（preload 在页面脚本之前注入），
@@ -292,6 +379,30 @@ export function useModFolders(): ModFoldersData {
     // 浏览器 / 老客户端：这一栏根本不存在（那一支只画"需要桌面版 0.0.5"）。
     if (api === null) return;
     const unsubscribe = api.onStatus(accept);
+    /*
+     * ★★ C 的 T5：高频那条通道（D3 已经节流到 ≥100 ms / ≥64 KB）。
+     *
+     * ⚠️★ 样本窗口的重开判据是 `progressKeyOf`（`folderId|modid|itemIndex`）：
+     *    换项之后键变了 ⇒ 窗口清空重来。**必须**这样：速度是"这一项"的速度，
+     *    把上一项的字节留在窗口里，换项后的第一个速度会是**负数**或一个荒唐的大数，
+     *    而界面照旧把它印出来（T1 那段注释写着这件事）。
+     * ⚠️★ 订阅**在 `getState()` 之前**（与 `onStatus` 同一个 effect、同一条理由）：
+     *    反过来的话，起手那一帧会落在订阅之前 ⇒ 那一段时间的字节没有任何人收到。
+     */
+    const unsubscribeProgress = api.onProgress((frame) => {
+      setLive((prev) => {
+        const at = Date.now();
+        const sameItem = prev !== null && progressKeyOf(prev.frame) === progressKeyOf(frame);
+        return {
+          frame,
+          samples: withSample(sameItem ? prev.samples : [], {
+            at,
+            received: frame.received,
+            total: frame.total,
+          }),
+        };
+      });
+    });
     void api.getState().then(
       (initial) => {
         // ⚠️ 已经有数据 ⇒ 丢掉这一份（推送与首拉谁先到是不保证的；不要用更旧的盖回去）。
@@ -305,7 +416,10 @@ export function useModFolders(): ModFoldersData {
         setLoad((prev) => reduceModFoldersLoad(prev, { kind: 'failure', reason: reasonOf(error) }));
       },
     );
-    return unsubscribe;
+    return () => {
+      unsubscribeProgress();
+      unsubscribe();
+    };
   }, [api, accept]);
 
   if (api === null) return { status: 'unavailable' };
@@ -317,7 +431,13 @@ export function useModFolders(): ModFoldersData {
      *    `handlers` 的构造挪走"这种改动变成一次运行期崩溃（点了没反应那一种）。
      */
     if (handlers === null) return { status: 'loading' };
-    return { status: 'ready', state: load.state, handlers, actionError };
+    return {
+      status: 'ready',
+      state: load.state,
+      handlers,
+      actionError,
+      progress: progressOf(load.state, live),
+    };
   }
   return { status: 'loading' };
 }

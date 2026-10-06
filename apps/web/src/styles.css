@@ -10039,6 +10039,90 @@ html[data-theme='light'] {
   font-family: var(--font-mono);
 }
 
+/* ==================================================================
+   mod 下载页重构（C）· Task 5：四处下载共用的进度行 + 一趟的汇总行
+
+   ★ 这一批类名属于 `DownloadProgressLine`（进度行，四处下载共用）、
+     `VersionFolderList`（文件夹块上的批量汇总行）与 `ModDownloadPanel`
+     （一趟的汇总行）。它们的渲染点跨四个组件，而**样式只有这一份**。
+
+   ⚠️★ 与上面几节同一条纪律：组件里出现的每一个类名在这里**都必须有规则**
+     （样式是全局的、没有 CSS Modules，而"渲染了一个不存在的类名"全仓没有门禁
+     发现得了，`docs/pending.md §5.70`）。本批登记的类名逐个列在下面：
+       `.dlprogress` / `.dlprogress__text` / `.dlprogress__file` /
+       `.dlprogress__cancel` / `.dlprogress__note` /
+       `.moddownload__lastrun` / `.moddownload__lastrun-item`。
+     ⚠️ 复用已有类的（`.ghostbtn`）不再写第二遍。
+
+   ⚠️ 整块写在文件**末尾**：本仓的约定是**每个任务只往末尾追加自己那一块**
+     （`.sidebar__block--files` 与 `.filetable` 那两段写着同一条理由）。
+     级联上也一样 —— 这些规则特异性都是单类，只设排版与颜色，不会盖掉别的块。
+   ================================================================== */
+
+/* 那一条进度行（四处共用：文件夹块的批量汇总行 / jar 行 / 第三段那一行）。
+   ⚠️ 它是一条**状态行**，不是散文 ⇒ 像素字体族里那一档小字（与 `.modtabs__tab` 同族）。 */
+.dlprogress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 4px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* 进度那几个数（`12.4 MB / 27.1 MB · 46% · …`）。
+   ⚠️ 等宽：这几个数**每 100 ms 就换一次**，比例字体下整行会左右抖
+      （与 `.jarrow__version` / `.filetable__version` 同一条理由）。 */
+.dlprogress__text {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+/* 单行下载那一支的文件名（批量与写盘那两支的名字在句子里，见 `DownloadProgressLine`）。
+   ⚠️ 与 `.folderrow__path` 同一条：磁盘上的内容 ⇒ 等宽、可断行。 */
+.dlprogress__file {
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  word-break: break-all;
+}
+
+/* 取消那一颗。⚠️ 它同时带 `.ghostbtn`（复用现成的那一套外观）——
+   这一条只登记这一格在**状态行里**的定位（不出现在长按钮那一排的间距里）。 */
+.dlprogress__cancel {
+  flex: none;
+}
+
+/* 写盘相位那句"为什么按钮点不动"。
+   ⚠️★ 置灰而不说话等于一个坏按钮（spec §8 那一族）：这一格就是那句解释，
+     所以它必须**看得见**（不是 `display: none`，也不是靠 `title` 藏起来）。 */
+.dlprogress__note {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+/* 一趟的汇总行（`state.lastRun` 非空时画在面板顶部并排区下面）。
+   ⚠️ 与 `.dlprogress` 分开一条：它是**过去**那一趟的读数（不走时间、不会变），
+   与"正在跑"的那一条在视觉上要分得开。 */
+.moddownload__lastrun {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 8px 0 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* 汇总行里逐条印的那几句（`lastRunSkipped` / `lastRunCancelled`）。
+   ⚠️ 逐条比总数弱一档（总数是标题、这几句是明细），但**不许**灰到看不清：
+   它们是用户唯一能知道"哪几个 mod 没被碰"的地方（spec §7.4）。 */
+.moddownload__lastrun-item {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 
 
 

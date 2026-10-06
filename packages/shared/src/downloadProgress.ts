@@ -200,7 +200,18 @@ export function progressLineOf(input: {
   return {
     fileName: progress.fileName,
     received: installing ? DASH : formatBytes(progress.received),
-    total: installing ? DASH : formatBytes(progress.total),
+    /*
+     * ⚠️★ T5（显示路径的拥有者收拾 T1 评审记下的那条账）：**总长未知**（`total <= 0`）时
+     *    这一格与 `percent` **同口径**给 `DASH`。
+     *
+     * 修之前 `formatBytes(0)` 印的是 `'0 B'` ⇒ 同一个"算不出来"的帧会同时给出
+     * `total = '0 B'` 与 `percent = '—'`（两句互相矛盾的话），而 `rateOf` 刚刚才为
+     * 同一件事把 ETA 收成 `null`（那段注释里写着"与 `formatPercent` 同一口径"）——
+     * `total` 那一格是这条口径上漏掉的一处。
+     * ⚠️ `formatBytes` **不改**：它只是"把字节数印成人话"，`0` 在那里是**真的 0**；
+     *    "总长未知"是**这一格**的判断（与 `formatPercent` / `rateOf` 的判断同一处口径）。
+     */
+    total: installing || !(progress.total > 0) ? DASH : formatBytes(progress.total),
     percent: installing ? DASH : formatPercent(progress.received, progress.total),
     rate: formatRate(rate.bytesPerSecond),
     eta: formatEta(rate.etaMs),

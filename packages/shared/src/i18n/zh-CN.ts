@@ -3953,8 +3953,12 @@ export const zhCN = {
      *    写成"刚才"就是把一句不成立的结论挂在界面上。
      * ⚠️ `skipped` 要**逐条**印（`lastRunSkipped`）：只印一个数字的话，用户不知道
      *    自己哪几个 mod 没被碰 —— 而"跳过了几条及原因"是 spec §7.4 明写的要求。
+     * ⚠️★ 子项目 C（D4）：**取消单独一格** `{{cancelled}}` —— 取消不是失败，
+     *    把它并进 `{{failed}}` 会让界面说"更新失败"，而事实是"按你说的停了"
+     *    （逐条那一句由 `lastRunCancelled` 说；`lastRunSkipped` 与它是两条不同的读数）。
      */
-    lastRunSummary: '上一次运行：已更新 {{ok}} 个，跳过 {{skipped}} 个，失败 {{failed}} 个',
+    lastRunSummary:
+      '上一次运行：已更新 {{ok}} 个，跳过 {{skipped}} 个，失败 {{failed}} 个，取消 {{cancelled}} 个',
     lastRunSkipped: '跳过 {{modid}}：{{reason}}',
     /*
      * ★ 与 `stateError` 是两条：这一条说的是**新通道**（`modFolders.getState()`）拿不到，
@@ -4316,6 +4320,28 @@ export const zhCN = {
      *    ⚠️ 与本节其余词条同一条：值里不许出现 `⇒`（U+21D2）与 `▾`（U+25BE）。
      */
     alreadyInFolder: '这个 mod 已经在 {{folder}} 里了 —— 展开那个文件夹就能看到它，不再重复下载。',
+    /*
+     * ===================================================================
+     * C（下载进度与取消）· Task 5：四处下载共用那一条进度行
+     * ===================================================================
+     * ⚠️ 与本节其余部分**同一条前缀纪律**：一律 `files.`（裸 key 扫描器只认 `files.`
+     *    与 `common.`）；值里**不许出现** `⇒`（U+21D2）与 `▾`（U+25BE）
+     *    —— 两者都不在自托管像素字体的子集里（`check-font-coverage.mjs` 扫的就是这里）。
+     * ⚠️★ 取消那一颗按钮**复用现成的 `common.cancel`**（两种语言都有）：同义词的第二条
+     *    词条只会让同一次点击在两种语言下长得不一样（本节其余成对的词条都写着这条纪律）。
+     */
+    /** ★ 子项目 C：下载进度的那一行（`{{done}}` / `{{total}}` 已经是"12.4 MB"这种成句）。 */
+    progressLine: '{{done}} / {{total}} · {{percent}} · {{rate}} · 剩 {{eta}}',
+    /** ★ 批量时文件夹块上那一行：第几项 / 共几项 / 正在下哪一个。 */
+    progressBatch: '第 {{index}}/{{count}} 项 · {{name}}',
+    /** ★ 正在写盘（没有字节 —— 那不是网络流量）。 */
+    progressInstall: '正在写入 {{name}}…',
+    /** ★ 已经点过取消、正在等它停下来。 */
+    progressCancelling: '正在取消…',
+    /** ★ 写盘阶段按钮置灰时那句解释（置灰而不说话等于一个坏按钮）。 */
+    progressCancelBlocked: '正在写入，稍候…',
+    /** ★ 上一趟被取消的那几项（`lastRun.cancelled`）。 */
+    lastRunCancelled: '已取消 {{modid}}',
   },
 };
 

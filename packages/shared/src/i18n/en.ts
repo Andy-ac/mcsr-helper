@@ -4380,8 +4380,13 @@ export const en: TranslationSchema = {
      * ⚠️ `skipped` must be printed **per row** (`lastRunSkipped`): a bare count leaves the
      *    user unable to tell which of their mods was left alone — and "how many were
      *    skipped and why" is what spec §7.4 asks for.
+     * ⚠️★ Sub-project C (D4): the **cancelled** count is its own slot - a cancel is not a
+     *    failure, and folding it into `{{failed}}` would make the UI say "update failed"
+     *    when the truth is "stopped because you asked". The per-row sentence is
+     *    `lastRunCancelled`; it and `lastRunSkipped` are two different readings.
      */
-    lastRunSummary: 'Last run: {{ok}} updated, {{skipped}} skipped, {{failed}} failed',
+    lastRunSummary:
+      'Last run: {{ok}} updated, {{skipped}} skipped, {{failed}} failed, {{cancelled}} cancelled',
     lastRunSkipped: 'Skipped {{modid}}: {{reason}}',
     /*
      * ★ A separate key from `stateError`: this one is about the **new** channel
@@ -4767,5 +4772,27 @@ export const en: TranslationSchema = {
      */
     alreadyInFolder:
       'This mod is already in {{folder}} - expand that folder to see it; there is nothing to download.',
+    /*
+     * ===================================================================
+     * C (download progress and cancel) - Task 5: the one progress line all four
+     * download sites share
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2) or
+     * down-triangle (U+25BE) in these values (neither is in the self-hosted pixel subsets).
+     * ⚠️★ The cancel button **reuses the existing `common.cancel`** (present in both
+     * languages): a second synonym would make the same click read differently per language.
+     */
+    /** ★ Sub-project C: the progress line (`{{done}}` / `{{total}}` are already "12.4 MB"). */
+    progressLine: '{{done}} / {{total}} · {{percent}} · {{rate}} · {{eta}} left',
+    /** ★ The per-folder batch line: which item out of how many, and which file. */
+    progressBatch: 'Item {{index}}/{{count}} · {{name}}',
+    /** ★ Writing to disk (no bytes - this is not network traffic). */
+    progressInstall: 'Writing {{name}}…',
+    /** ★ Cancel was requested; waiting for the run to stop. */
+    progressCancelling: 'Cancelling…',
+    /** ★ Why the button is greyed out while writing (a silent disabled button is a broken one). */
+    progressCancelBlocked: 'Writing - please wait…',
+    /** ★ The items the previous run had cancelled (`lastRun.cancelled`). */
+    lastRunCancelled: 'Cancelled {{modid}}',
   },
 };

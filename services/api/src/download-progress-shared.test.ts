@@ -271,6 +271,34 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
     assert.equal(none.eta, '—');
   });
 
+  it('★★ 总长未知（`total <= 0`）⇒ `total` 与 `percent` 同口径给 `—`（T1 评审的欠账，T5 收拾）', () => {
+    /*
+     * ⚠️★ 修之前 `total` 那一格印的是 `formatBytes(0)` = `'0 B'`，而同一帧的 `percent`
+     *    已经是 `—` ⇒ 一个号称"算不出来"的帧同时给出两句互相矛盾的话（`rateOf` 那段
+     *    注释里"与 `formatPercent` 同一口径"这条纪律当时漏了这一格）。
+     */
+    const view = progressLineOf({
+      progress: {
+        run: 'update-mod',
+        phase: 'download',
+        folderId: 'f1',
+        modid: 'sodium',
+        fileName: 'sodium.jar',
+        received: 3_000_000,
+        total: 0,
+        itemIndex: 1,
+        itemCount: 1,
+        runStartedAt: 0,
+        cancelling: false,
+      },
+      samples: [],
+      now: 10_000,
+    });
+    assert.equal(view.total, '—', '总长未知 ⇒ 这一格与 `percent` 同口径（不是 `0 B`）');
+    assert.equal(view.received, '2.9 MB', '已下多少**照常**（它不需要总长）');
+    assert.equal(view.percent, '—', '总长未知 ⇒ 百分比也是 `—`（两条一起才说明它们同口径）');
+  });
+
   it('★★ 写盘相位：视图模型**没有**字节也没有 ETA（界面才不会照旧印它们）', () => {
     const view = progressLineOf({
       progress: {

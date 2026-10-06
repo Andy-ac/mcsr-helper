@@ -64,12 +64,13 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh **14** 组、en **15** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；现读的清单见文件末尾那条探针）。
+ * zh **15** 组、en **16** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；现读的清单见文件末尾那条探针）。
  * ⚠️ 组号是**顺序**，不是历史编号 —— 现读的清单见文件末尾那条探针上面那一段。
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
+import type { DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
 import { en, zhCN } from '@mcsr/shared/i18n';
 import { type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
@@ -88,11 +89,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
 import { MemoryRouter } from 'react-router';
 import { AllFoldersView } from '@/components/AllFoldersView';
+import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { FolderJarList } from '@/components/FolderJarList';
 import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import {
   ModCatalogScanning,
   NO_MOD_FOLDERS_LOAD,
+  progressOf,
   RAW_KEY_RE,
   rawKeysIn,
   reduceModFoldersLoad,
@@ -900,6 +903,7 @@ const realModsHtml = keep(
       tagLabels: realPageState.tags,
       busy: realPageState.busy,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1022,7 +1026,9 @@ const skeletonState = stateOf([ROW_GITHUB], {
   folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f1b' })],
 });
 const skeletonHtml = keep(
-  html(React.createElement(ModDownloadPanel, { state: skeletonState, onAction: noop })),
+  html(
+    React.createElement(ModDownloadPanel, { state: skeletonState, onAction: noop, progress: null }),
+  ),
 );
 assert.ok(
   skeletonHtml.includes('data-folder-id="f1"') && skeletonHtml.includes('data-folder-id="f1b"'),
@@ -1068,6 +1074,7 @@ const collapsedListHtml = keep(
       expanded: [],
       onToggle: noop,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1079,6 +1086,7 @@ const expandedListHtml = keep(
       expanded: ['f1'],
       onToggle: noop,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1169,7 +1177,13 @@ const staleChannelState = stateOf([ROW_GITHUB], {
   bulkChannel: { mirrorId: 'gh-proxy-GONE' },
 });
 const staleChannelPanelHtml = keep(
-  html(React.createElement(ModDownloadPanel, { state: staleChannelState, onAction: noop })),
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: staleChannelState,
+      onAction: noop,
+      progress: null,
+    }),
+  ),
 );
 assert.ok(
   textOf(staleChannelPanelHtml).includes(textOf(resolved('files.channelStaleHint'))),
@@ -1198,6 +1212,7 @@ const newEmptyReadHtml = keep(
       expanded: ['f-empty'],
       onToggle: noop,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1221,6 +1236,7 @@ const newNoReadingHtml = keep(
       expanded: ['f-noreading'],
       onToggle: noop,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1236,7 +1252,9 @@ assert.equal(
 /* —— 空态（spec §8 第一行）：这个版本下一个文件夹都没绑 —— */
 const noFolderState = stateOf([ROW_GITHUB], { folders: [] });
 const noFolderPanelHtml = keep(
-  html(React.createElement(ModDownloadPanel, { state: noFolderState, onAction: noop })),
+  html(
+    React.createElement(ModDownloadPanel, { state: noFolderState, onAction: noop, progress: null }),
+  ),
 );
 assert.ok(
   textOf(noFolderPanelHtml).includes(textOf(resolved('files.folderNoneVersion'))),
@@ -1265,6 +1283,7 @@ const oneFolderPanelHtml = keep(
     React.createElement(ModDownloadPanel, {
       state: stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })] }),
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1284,6 +1303,7 @@ const noticePanelHtml = keep(
     React.createElement(ModDownloadPanel, {
       state: stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })], notices: [NOTE] }),
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1347,6 +1367,7 @@ const failedPanelHtml = keep(
       state: skeletonState,
       onAction: noop,
       actionError: 'BOOM-1',
+      progress: null,
     }),
   ),
 );
@@ -1467,6 +1488,7 @@ function jarListHtmlOf(state: ModFoldersState, folderId: string): string {
         mirrors: state.mirrors,
         busy: state.busy,
         onAction: noop,
+        progress: null,
       }),
     ),
   );
@@ -1779,6 +1801,7 @@ const busyListHtml = keep(
       expanded: ['f1'],
       onToggle: noop,
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -1918,6 +1941,7 @@ function modListHtmlOf(state: ModFoldersState, expanded: readonly string[]): str
         tagLabels: state.tags,
         busy: state.busy,
         onAction: noop,
+        progress: null,
       }),
     ),
   );
@@ -2273,7 +2297,9 @@ assert.deepEqual(
     '（否则下面"不忙时那颗按钮可用"会变成一条恒禁用的空跑）',
 );
 const panelModHtml = keep(
-  html(React.createElement(ModDownloadPanel, { state: panelModState, onAction: noop })),
+  html(
+    React.createElement(ModDownloadPanel, { state: panelModState, onAction: noop, progress: null }),
+  ),
 );
 assert.ok(
   panelModHtml.includes('data-modid="sodium"'),
@@ -2306,6 +2332,7 @@ const busyPanelModHtml = keep(
     React.createElement(ModDownloadPanel, {
       state: { ...panelModState, busy: true },
       onAction: noop,
+      progress: null,
     }),
   ),
 );
@@ -2519,6 +2546,278 @@ assert.deepEqual(
 ok('㊵ 清理：页面那一棵树不再引用四个已删组件，那五个文件也不在树里（扫描面含 VersionModList）');
 
 // ---------------------------------------------------------------------------
+// ㊶ 下载进度与取消（子项目 C）：行内 / 批量 / 写盘相位 / 取消（spec §4、§6.8–6.11）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组直接渲染 `DownloadProgressLine`（纯 props 组件）并**写死 `now`** ——
+ *    速度与 ETA 是"按时间算出来的"，不写死时钟的话这一组会在慢机器上偶发地红
+ *    （样本落到 3 秒窗口之外 ⇒ 显示 `—`）。夹具的 `at` 与 `now` 因此必须成对给出。
+ * ⚠️★ `apps/web/scripts/**` **不在任何 tsconfig 里**（`tsc` 不看它、`tsx` 只剥类型）
+ *    ⇒ 夹具写错在门禁上是无声的：下面每一条都带"夹具自钉"。
+ *
+ * ⚠️★★ 本组对简报有**三处机械改准**（简报那三条判据与这个脚本的**导出面**对不上；
+ *     逐条的现场、原始读数与替代措辞写在 `task-5-report.md` §④ 里）：
+ *   ① 简报写 `textOf(产物).includes(t(key, vars))`，而 `textOf` 把**空白全压掉**
+ *      （`decode(markup.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, '')`），`t()` 返回的
+ *      那句**带空格** ⇒ 那三条在任何实现下都不可能绿。本仓既有的写法是**两边过同一个
+ *      口径**（㉝ 那三条：`textOf(x).includes(textOf(resolved(key, vars)))`）⇒ 这里用
+ *      `labelOf`（它就是 `textOf(resolved(...))`）。**判据的内容（哪几个数、哪句话）一字未改**。
+ *   ② 同理那条正则：对着 `textOf` 的产物要写**没有空格**的那一份
+ *      （`/11\.8MB\/25\.8MB·46%·.*\/s·/`）—— 它要的三个数（字节 / 百分比 / 速度）一字未改。
+ *   ③ 容器那条把 `第 3/48 项` **写死成中文** ⇒ `--en` 那一遍必红（英文词条是
+ *      `Item {{index}}/{{count}}`）。这里按**当前语言**取那句，窗口口径（那个 1200 字符）
+ *      与简报**逐字同一条**。
+ */
+const progressSample = (received: number, at: number): TimedSample => ({
+  at,
+  received,
+  total: 27_100_000,
+});
+const progressFrameOf = (over: Partial<DownloadProgress> = {}): DownloadProgress => ({
+  run: 'update-mod',
+  phase: 'download',
+  folderId: 'f1',
+  modid: 'sodium',
+  fileName: 'sodium-2.5.1+1.16.1.jar',
+  received: 12_400_000,
+  total: 27_100_000,
+  itemIndex: 1,
+  itemCount: 1,
+  runStartedAt: 0,
+  cancelling: false,
+  ...over,
+});
+const NOW = 10_000;
+const inlineHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: {
+        frame: progressFrameOf(),
+        samples: [progressSample(11_400_000, NOW - 1000), progressSample(12_400_000, NOW)],
+      },
+      onCancel: noop,
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(inlineHtml).includes('sodium-2.5.1+1.16.1.jar'),
+  '★ 行内那一条印出**文件名**（用户要知道正在下哪一个）',
+);
+assert.match(
+  textOf(inlineHtml),
+  /11\.8MB\/25\.8MB·46%·.*\/s·/,
+  '★★ 行内显示含**字节 / 百分比 / 速度**（`12.4 MB / 27.1 MB · 46%`）—— ' +
+    '三个数都要在，只画进度条的话这一条红',
+);
+assert.equal(
+  textOf(inlineHtml).includes('—'),
+  false,
+  '★ 反面：样本够（两个、间隔 1 秒）时**不许**出现"算不出来"那个符号',
+);
+const noSampleHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: { frame: progressFrameOf(), samples: [] },
+      onCancel: noop,
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(noSampleHtml).includes('—'),
+  '★★ 样本不足 ⇒ 速度与 ETA 显示 `—`（**不猜**：D2）—— 实现里写 `?? 0` 的会红',
+);
+assert.equal(
+  textOf(noSampleHtml).includes('0 B/s'),
+  false,
+  '★ 反面：那一格**不许**退成 `0 B/s`（"还没量出来"与"真的 0"是两句话）',
+);
+assert.ok(
+  textOf(noSampleHtml).includes(
+    labelOf('files.progressLine', {
+      done: '11.8 MB',
+      total: '25.8 MB',
+      percent: '46%',
+      rate: '—',
+      eta: '—',
+    }),
+  ),
+  '★ 而**百分比仍然算得出来**（它只用帧里的两个数，不需要样本 —— 把百分比也一起置成 `—` 是实现走过头）',
+);
+const batchHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: {
+        frame: progressFrameOf({ run: 'update-folder-all', itemIndex: 3, itemCount: 48 }),
+        samples: [],
+      },
+      onCancel: noop,
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(batchHtml).includes(
+    labelOf('files.progressBatch', { index: 3, count: 48, name: progressFrameOf().fileName }),
+  ),
+  '★★ 批量时印「第 3/48 项 · <文件名>」（spec §4 的第二档；`itemIndex/itemCount` 来自帧）',
+);
+/* —— 容器层面：批量那一行真的画在**这个文件夹块**上（不是画在面板顶上） —— */
+/*
+ * ⚠️★ 夹具是**两个**同版本的文件夹（`f1` / `f2`，进度那一趟属于 `f1`）：只有一个的话
+ *    "画在**别的**文件夹里"那一半**无从断言**（`folderRowSpanOf` 的窗口会一直开到产物末尾）。
+ */
+const batchListState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f2' })],
+});
+const batchListHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: batchListState,
+      page: planVersionPage(batchListState, []),
+      expanded: [],
+      onToggle: noop,
+      onAction: noop,
+      progress: {
+        frame: progressFrameOf({ run: 'update-folder-all', itemIndex: 3, itemCount: 48 }),
+        samples: [],
+      },
+    }),
+  ),
+);
+/*
+ * ★★ 那一行画在**那个文件夹的行里**（spec §4 第二档）。
+ *
+ * ⚠️★★ 这里对简报有一处**判据机制**的改准（现场读数在报告 §④）：
+ *    简报写的是"`data-folder-id="f1"` 之后 **1200** 个字符之内"。那个数**不是语言稳定的**：
+ *    同一份产物里那一句的偏移是 **zh ≈1196 / en ≈1305**（它的长短取决于词条长度、
+ *    下拉里有几个选项、以及「全部更新」那颗按钮上有没有数字）⇒ 那条断言在 --en 那一遍
+ *    会在**正确**的实现上报红（本机实测就是这个读数，见报告）。
+ *    ⇒ 改用本文件**已有的** `folderRowSpanOf()`（它切的正是"这一行那一段"：
+ *    从 `data-folder-id="X"` 到**下一个** `data-folder-id=` 为止）—— 判据的**意思**
+ *    （"画在这一行里、不画在面板顶上、也不画在别的文件夹里"）一字未改，而且**更严**：
+ *    下面那条反面断言把"画在别的文件夹里"这一半也真的钉住了（简报只在说明文字里提到它）。
+ */
+const batchCopy = resolved('files.progressBatch', {
+  index: 3,
+  count: 48,
+  name: progressFrameOf().fileName,
+});
+const batchRow = folderRowSpanOf(batchListHtml, 'f1');
+assert.ok(
+  batchRow.includes(batchCopy),
+  '★★ 那一行画在**那个文件夹的行里**（spec §4 第二档："文件夹块上的汇总行"）—— ' +
+    '画到面板顶上，这一条就红',
+);
+assert.equal(
+  folderRowSpanOf(batchListHtml, 'f2').includes(batchCopy),
+  false,
+  '★★ 反面：**别的**文件夹那一行里一个字节都不许有它（"这一趟的进度只属于它自己那个文件夹"）',
+);
+const installHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: { frame: progressFrameOf({ phase: 'install' }), samples: [] },
+      onCancel: noop,
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(installHtml).includes(
+    labelOf('files.progressInstall', { name: progressFrameOf().fileName }),
+  ),
+  '★ 写盘相位印「正在写入 …」（不是字节：那不是网络流量 —— D7）',
+);
+assert.equal(
+  textOf(installHtml).includes('MB'),
+  false,
+  '★★ 而写盘相位**没有**字节也没有 ETA（同一份帧、只换相位 —— 只写"有那句写入文案"的话，' +
+    '一个"照旧印字节"的实现照样绿）',
+);
+assert.deepEqual(
+  buttonsIn(installHtml).map((button) => button.disabled),
+  [true],
+  '★★ 写盘相位：取消按钮 **disabled**（D4：那一刻中断会留下半成品）',
+);
+assert.ok(
+  textOf(installHtml).includes(labelOf('files.progressCancelBlocked')),
+  '★ 而且写明为什么不能点（置灰而不说话等于一个坏按钮）',
+);
+const cancellingHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: { frame: progressFrameOf({ cancelling: true }), samples: [] },
+      onCancel: noop,
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(cancellingHtml).includes(labelOf('files.progressCancelling')),
+  '★★ `cancelling: true` ⇒ 按钮文案变「正在取消…」（用户点过之后要有回应）',
+);
+assert.deepEqual(
+  buttonsIn(cancellingHtml).map((button) => button.disabled),
+  [true],
+  '★ 而且不可再点（连点两次不该发两次请求）',
+);
+/*
+ * ★★ 一趟的汇总行（`files.lastRunSummary` + `files.lastRunCancelled`）。
+ *
+ * ⚠️★ 为什么要在这里加一条：`files.lastRunSummary` 在本次改动**之前没有任何渲染点**
+ *    （一条死键 —— T6 把旧第二部分删掉之后就没有了），而 D4 要的是"取消**单独说**"。
+ *    ⇒ 判据打在**面板的产物**上（不是打在某个组件上）：这两句话是页面级别的读数。
+ * ★ 能红的刀：把面板里那一格 `<p className="moddownload__lastrun">` 删掉 ⇒ 红。
+ */
+const lastRunState = stateOf([ROW_GITHUB], {
+  folders: [folder({ folderId: 'f1' })],
+  lastRun: {
+    updated: ['sodium'],
+    skipped: [{ modid: 'lithium', reason: 'up-to-date' }],
+    failed: [],
+    cancelled: [{ modid: 'optifine', reason: 'cancelled' }],
+  },
+});
+const lastRunHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, { state: lastRunState, onAction: noop, progress: null }),
+  ),
+);
+assert.ok(
+  textOf(lastRunHtml).includes(
+    labelOf('files.lastRunSummary', { ok: 1, skipped: 1, failed: 0, cancelled: 1 }),
+  ),
+  '★★ 上一趟的汇总印出来，而且**取消单独一格**（D4：并进 `failed` 会让界面说"更新失败"，' +
+    '而事实是"按你说的停了"）',
+);
+assert.ok(
+  textOf(lastRunHtml).includes(
+    labelOf('files.lastRunSkipped', { modid: 'lithium', reason: 'up-to-date' }),
+  ) && textOf(lastRunHtml).includes(labelOf('files.lastRunCancelled', { modid: 'optifine' })),
+  '★★ 而两类**逐条**分开印（`lastRunSkipped` / `lastRunCancelled` 是两条不同的读数）',
+);
+/* —— 收尾读数：状态说"没有在跑" ⇒ 页面上一条都不许剩（D6 的那条"不会停在最后一帧"） —— */
+assert.equal(
+  progressOf(
+    { ...stateOf([ROW_GITHUB]), progress: null },
+    { frame: progressFrameOf(), samples: [] },
+  ),
+  null,
+  '★★ 状态里 `progress: null`（收尾）⇒ 页面**一律**不显示进度（推送晚到的那一帧不许复活它）',
+);
+assert.equal(
+  progressOf({ ...stateOf([ROW_GITHUB]), progress: progressFrameOf() }, null)?.frame.modid,
+  'sodium',
+  '★ 反面：状态说在跑、而推送还没来过（切 tab 回来）⇒ 那一帧要能用（D6：进度住主进程）',
+);
+ok(
+  '㊶ 下载进度与取消：行内（字节/百分比/速度/ETA）、样本不足显示 —、批量「第 N/M 项」（行内与**那个文件夹块上**两档）、' +
+    '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明、`cancelling` 变「正在取消…」、收尾之后一律不显示',
+);
+
+// ---------------------------------------------------------------------------
 // ⑬ 裸 key 泄漏（用共用的那个**具名**扫描器）—— **写在所有渲染组之后**
 // ---------------------------------------------------------------------------
 /*
@@ -2609,8 +2908,11 @@ if (LANG === 'en') {
  *    ⇒ 40 → **14/15 这个数里已经含它**（现读：zh 14 组、en 15 组）。
  *    ⚠️ 顺带：⑬ 那一组从"①–⑫ 之后"**挪到了所有渲染组之后**（理由写在它自己那一段：
  *    在原位置时 `samples` 是空的，那条扫描在空串上恒真）。**组数不变**。
+ *    ⚠️ C（下载进度与取消）的 T5 再加 ㊶ 一组（四处共用的进度行 / 批量汇总行 /
+ *    一趟的汇总行 / 写盘相位与取消）⇒ 14 → **15**、15 → **16**（现读：zh 15 组、
+ *    en 16 组 —— en 比 zh 多的那一个仍然是 ㉛，别抹平）。
  */
-const expectedGroups = LANG === 'en' ? 15 : 14;
+const expectedGroups = LANG === 'en' ? 16 : 15;
 assert.equal(
   pass,
   expectedGroups,

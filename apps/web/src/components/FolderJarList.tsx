@@ -55,8 +55,14 @@ import {
   type VersionFolderBlock,
 } from '@mcsr/shared/modFolders';
 import { useTranslation } from 'react-i18next';
+import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import type { ModPageActionHandler } from '@/components/ModDownloadPanel';
-import { isUpdatableRow, VERDICT_BADGES, VERDICT_HINTS } from '@/components/ModFoldersData';
+import {
+  isUpdatableRow,
+  type PageProgress,
+  VERDICT_BADGES,
+  VERDICT_HINTS,
+} from '@/components/ModFoldersData';
 
 /** 「没有值的那一格」——与第三段那张表（`VersionModList`）里那个 `DASH` 是同一个字符。 */
 const DASH = '—';
@@ -82,9 +88,24 @@ export interface FolderJarListProps {
   busy: boolean;
   /** 动作层（只有 `ModDownloadPanel.run()` 那一处接线）。 */
   onAction: ModPageActionHandler;
+  /**
+   * ★ C 的 T5：整页那份进度载荷（页面喂下来的**同一份**）。
+   *
+   * ⚠️★ 这一层按 `modid` + `folderId` **认领**它自己那一行（见 `JarRow`）：
+   *    "哪一行该画进度"只有这一层知道（它才知道这一行是哪个 mod）。
+   *    ⚠️ 与 `busy` 一样是**传下来**的、不是自己去状态里翻的（同一份载荷往下走一条线）。
+   */
+  progress: PageProgress | null;
 }
 
-export function FolderJarList({ block, homepageOf, mirrors, busy, onAction }: FolderJarListProps) {
+export function FolderJarList({
+  block,
+  homepageOf,
+  mirrors,
+  busy,
+  onAction,
+  progress,
+}: FolderJarListProps) {
   const { t } = useTranslation();
   const folder = block.folder;
 
@@ -112,6 +133,7 @@ export function FolderJarList({ block, homepageOf, mirrors, busy, onAction }: Fo
               mirrors={mirrors}
               busy={busy}
               onAction={onAction}
+              progress={progress}
             />
           ))}
           {folder.unrecognized.map((entry) => (
@@ -162,6 +184,7 @@ function JarRow({
   mirrors,
   busy,
   onAction,
+  progress,
 }: {
   row: ModFolderRowView;
   folder: ModFolderView;
@@ -169,6 +192,8 @@ function JarRow({
   mirrors: readonly ModMirror[];
   busy: boolean;
   onAction: ModPageActionHandler;
+  /** ★ C 的 T5：整页那份进度载荷（见 `FolderJarListProps.progress`）。 */
+  progress: PageProgress | null;
 }) {
   const { t } = useTranslation();
   const badge = VERDICT_BADGES[row.verdict.kind];
@@ -204,6 +229,22 @@ function JarRow({
   const showUpdate = isUpdatableRow(row);
   /** 目录里这个 mod 的主页（查不到就是 `null` ⇒ 印 `—`）。 */
   const homepage = homepageOf.get(row.modid) ?? null;
+  /**
+   * ★★ C 的 T5：**这一行就是正在下的那一项吗**（是 ⇒ 那份载荷，否则 `null`）。
+   *
+   * ⚠️★ **两个条件缺一不可**：
+   *   · `modid` —— 这一行是哪个 mod（同一个文件夹里几十行，只有一行在动）；
+   *   · `folderId` —— 同一趟的载荷可能属于**另一个**文件夹，而那个文件夹里可能
+   *     恰好也有同名的一行（`sodium` 在好几个实例里都有）⇒ 只比 modid 会让
+   *     **两个文件夹里的同一个 mod 同时**显示同一条进度。
+   * ⚠️ 与 `busy` 不同：这一格是"这一行此刻在干什么"，不是整页的读数。
+   */
+  const line =
+    progress !== null &&
+    progress.frame.folderId === folder.folderId &&
+    progress.frame.modid === row.modid
+      ? progress
+      : null;
 
   return (
     <tr className="jarrow" data-jar={row.modid} data-verdict={row.verdict.kind}>
@@ -273,6 +314,19 @@ function JarRow({
           没有它时用户仍有原始那一颗（D5 的降级）。
           ⚠️ `busy` **不是**"只禁用镜像那一颗"：写盘期间两颗一起按住（与头行同一条）。
         */}
+        {/*
+          ★★ C 的 T5：**行内**那一条进度（spec §4 的第一档："四处下载共用一条进度行"）。
+          ⚠️★ 它与上面那两颗按钮**并列**（不是替换）：这一行是"你正在更新它"，
+          而那两颗是"再更新一次"—— 更新在跑时它们本来就被 `busy` 按住了
+          （`state.busy` 在写盘期间为真），所以两样同时出现不会给出两个可点的入口。
+          ⚠️ 命中时**才**画（`line !== null`）：同一份载荷在页面上只该有一条那样的行。
+        */}
+        {line === null ? null : (
+          <DownloadProgressLine
+            progress={line}
+            onCancel={() => void onAction({ kind: 'cancel-download' })}
+          />
+        )}
         {showUpdate ? (
           <div className="jarrow__actions">
             <button
