@@ -4018,7 +4018,8 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    *    几十毫秒内就收尾了，80 ms 之后点取消读到的是 `{"ok":false,"reason":"没有在跑"}`。
    *    这与 ㉗ 撞到的是**同一条**（:2506 那段写着全文）⇒ 三组的夹具都改回 `placeJar`
    *    （= `fixture.local`：同 modid、内部版本更低 ⇒ 判成 `older` ⇒ 真的走下载）。
-   *    ⚠️ 逐字照抄那一版的完整读数（`234 ✓…`）记在报告里。
+   *    ⚠️ 逐字照抄那一版的**完整**读数见报告 §2.3（`297 ✓ / 10 ✗`）—— 它不在这个文件里
+   *    （那是"改成 `placeJar` 之前"的一次现场），这里只留指针。
    */
   await section('㉘（C/S4）下载中途取消：请求被中断、没有 .part、`cancelled` 有它而 `failed` 没有', async () => {
     const dirCancel = join(workRoot, 'cancel');
@@ -4031,6 +4032,13 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       mirrorId: fx.slow.mirrorId,
     });
     await new Promise((r) => setTimeout(r, 80)); // 卡在桩的暂停里 ⇒ 确实"正在下载"
+    /*
+     * ★★ 夹具自钉（㉘b 有 `batchRows === 2` 的 `bail`、㉘c 有"那一帧必须出现过"，
+     *    ㉘ 原先只有 `chunkDelayMs 400` vs `sleep 80` 这个**没被断言**的时序前提）：
+     *    取消**之前**必须先量到"真的有一个请求在飞"，否则下面那些读数可能来自
+     *    "这一趟早就收尾了"（那时点取消读到的是"没有在跑"，而几条判据照样能绿）。
+     */
+    check('★★ 取消那一刻真的有一个请求在飞（夹具自钉：不然这一节什么都没测）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
     const cancelRes = await invoke(MOD_CH.cancelDownload);
     check('★ 取消被受理（`{ok:true}`）', cancelRes?.ok === true, JSON.stringify(cancelRes));
     const state = await run; // ★ 取消**不** reject：它不是失败（D4）
@@ -4073,7 +4081,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     await new Promise((r) => setTimeout(r, 80));
     await invoke(MOD_CH.cancelDownload);
     const state = await run;
-    check('★★ 请求数只涨了 1（第二项没有开工）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
+    check('★★ 第二项没有**发出**请求（请求数只涨 1）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
     check('★★ `cancelled` 里是**第一项**', state.lastRun?.cancelled?.[0]?.modid === fx.slow.modid, JSON.stringify(state.lastRun));
     check('★ `failed` 是空的（取消不是失败）', (state.lastRun?.failed ?? []).length === 0, JSON.stringify(state.lastRun));
     check('★ busy 回到 false、progress 清空', state.busy === false && state.progress === null, JSON.stringify({ busy: state.busy, progress: state.progress }));
@@ -4120,6 +4128,49 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
   await section('㉘d（C/S4）没有在跑时点取消：`{ok:false}` + "没有在跑"（幂等，界面不动）', async () => {
     const idle = await invoke(MOD_CH.cancelDownload);
     check('★ 没有在跑 ⇒ `{ok:false}` + "没有在跑"（幂等，界面不动）', idle?.ok === false && idle.reason.includes('没有在跑'), JSON.stringify(idle));
+  });
+
+  /*
+   * =========================================================================
+   * ㉙（子项目 C / S4）整夹更新**起手就取消**：一项都不许开工
+   * =========================================================================
+   * ★★ 为什么必须有这一节（评审 Important 1）：㉘b 那条"请求数只涨 1"**证不了
+   *    "第二项没有开工"** —— 两项都被放行时，第二项的 `fetch` 建在**已 abort 的
+   *    signal** 上、瞬间失败、**一个请求都不发**，计数照样绿（上一轮那把诊断刀④b 的
+   *    实测现场：`failed` 里两个 modid 都在，而"请求数只涨 1"仍然 ✓）。
+   *    而 `updateFolderAll` 循环顶上那句 `if (isCancelling()) break;` 在**当时的夹具**
+   *    里是冗余的（当前项的 `catch` 自己就会 break）⇒ 那道承重墙当时**没有任何门禁**。
+   *    ⇒ 这一节把"剩下的项不许开工"钉在**桶**上（四个桶全空），而不是请求数上。
+   * ★★ 为什么这样能**确定地**落在"第一项之前"：`bulkRun` 的 `work()` 顶上就有一个
+   *    `await yieldToEventLoop()`（v1 `updateAll` 的同款让出点），而它是 `setImmediate`
+   *    ⇒ 上面那一行 `invoke` 返回之后、第一项开工之前，我们**在同一个同步块里**点取消
+   *    就必然落在窗口里（不用 sleep 猜时机）。
+   * ⚠️★ 夹具用 `placeJar`（= `fixture.local`，判成 `older` ⇒ 真的会去下载），**不是**
+   *    `fixture.official`：后者与 `release.sha512` 逐字节相同 ⇒ 两行都不 batchable、
+   *    这一节量的就变成"幂等跳过"而不是"开工下载"（`placeJar` 头顶那段写着全文）。
+   *    ⇒ 见报告"修复轮 1"那一节。
+   */
+  await section('㉙（C/S4）整夹更新**起手就取消**：一项都不许开工', async () => {
+    const dir = join(workRoot, 'cancel-before-first');
+    mkdirSync(dir, { recursive: true });
+    placeJar(dir, fx.slow);
+    placeJar(dir, fx.other);
+    const id = await prepare(dir);
+    const beforeReqs = c2Reqs();
+    const run = invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
+    const cancelRes = invoke(MOD_CH.cancelDownload);
+    const state = await run;
+    check('★ 取消被受理', cancelRes?.ok === true, JSON.stringify(cancelRes));
+    check(
+      '★★ 一项都没开工（四个桶全空）—— 判据是**桶**、不是请求数（第二项"瞬间失败"也满足"没发请求"）',
+      state.lastRun.updated.length === 0 &&
+        state.lastRun.skipped.length === 0 &&
+        state.lastRun.failed.length === 0 &&
+        state.lastRun.cancelled.length === 0,
+      JSON.stringify(state.lastRun),
+    );
+    check('★ 一个下载请求都没发', c2Reqs() === beforeReqs, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
+    check('★ `busy` 回到 false、`progress` 清空', state.busy === false && state.progress === null, JSON.stringify({ busy: state.busy, progress: state.progress }));
   });
 
   server.close();

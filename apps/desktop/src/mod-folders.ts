@@ -322,10 +322,19 @@ function endRun(): void {
 /**
  * ★ 子项目 C：停掉正在跑的那一趟（D4）。
  *
- * ⚠️★ **写盘阶段一律拒**：那一刻两次 `rename` 之间中断会留下"目标位置什么都没有"
- *    （`installDownloadedFile` 的契约就是"要么换好、要么一个字节都没动"）⇒
- *    代价远大于收益。界面那一侧同时把按钮置灰并写明"正在写入，稍候"。
+ * ⚠️★ **写盘阶段一律拒**，理由**不是**"中断两次 `rename` 之间那个窗口会留下半成品"，
+ *    而是 **D4 那条明文：不许回 `{ok:true}` 却其实停不下来**。写盘这一趟会**照常装完**
+ *    并把它记进 `updated`（用户以为停了、其实没停）；而 `cancelling` 这个标志还会让
+ *    **批量里剩下的项**停下 ⇒ 用户"点了一个不该点的按钮，却拿到了半趟的副作用"。
+ * ⚠️★ 上面那半句（"会留下半成品"）**今天不可复现**，写在这里免得下一个人拿它当理由：
+ *    `installDownloadedFile` 通体只有两次 `renameSync`、**没有 `await`、也不消费 `signal`**，
+ *    而 `notePhase('install')` 是在调它**之前**同步推出来的 ⇒ 那个窗口里 `abort()` 对文件
+ *    **没有任何作用**（写盘那一段今天全同步）。⇒ "盘上没坏"是**必然**，不是运气。
+ *    **假如**将来那一段变成异步、或者开始消费 signal，那半句立刻变成实打实的原因
+ *    （那时它才是"拒绝"的第一条理由）。
+ *    界面那一侧同时把按钮置灰并写明"正在写入，稍候"。
  * ⚠️ 幂等：已经在取消中 ⇒ 再点一次仍然 `{ok:true}`（页面可能连点两下）。
+ *    ⚠️★ 这一支与"写盘阶段拒"的**先后顺序是承重的**（见函数体里那一段）。
  * ⚠️★ "谁来 abort"只在这里：`installRelease` 早就在 `downloadTo` 上传了
  *    `signal: activeRun?.controller.signal`（T2），所以这里 `abort()` 就是**中断这一趟
  *    HTTP 请求**的那一下。⛔ `abort()` 之后的事情都有主：`downloadTo` 抛 ⇒
@@ -336,10 +345,21 @@ function endRun(): void {
  */
 function cancelDownload(): { ok: true } | { ok: false; reason: string } {
   if (activeRun === null) return { ok: false, reason: '没有在跑' };
-  if (activeRun.phase === 'install') {
-    return { ok: false, reason: '正在写入，这一趟不能取消（中断写入会留下半成品）' };
-  }
+  /*
+   * ⚠️★ **这两支的先后顺序是承重的**：`cancelling` 必须排在"写盘阶段拒"**之前** ——
+   *    取消被受理之后那一项会走到写盘相位，用户再点一次时事实是"**这一趟正在被取消**"
+   *    ⇒ 幂等地回 `{ok:true}`。反过来排的话他拿到的是"正在写入，这一趟不能取消"，
+   *    而那句话对一趟**正在被取消**的运行是假话（听起来像"你的取消被撤回了"）。
+   * ⚠️★ 写盘相位拒对**新的**取消请求（`cancelling === false`）**照常生效** —— 别删它：
+   *    它守的是 D4 那条明文（不许回 `{ok:true}` 却其实停不下来），理由写在函数头。
+   */
   if (activeRun.cancelling) return { ok: true };
+  if (activeRun.phase === 'install') {
+    return {
+      ok: false,
+      reason: '正在写入，这一趟不能取消（写盘已经开始，取消也停不下来，这一趟会照常装完）',
+    };
+  }
   activeRun.cancelling = true;
   refreshProgress();
   rebuild(); // ★ 页面据此把按钮变成「正在取消…」
@@ -1408,6 +1428,19 @@ async function writeRun(
   }
   busy = false;
   endRun();
+  /*
+   * ⚠️★ **"abort 到晚了"这一个窗口（单行）**：取消在**下载相位**被受理，而 `abort()`
+   *    落地时这一趟正好已经下完 ⇒ 走到的是**成功**这一支，`updated` 就是实情
+   *    （文件真的装好了）。代价是**取消这个动作在读数里没有痕迹**：`lastRun` 里既没有
+   *    `cancelled`、也没有 notice，页面从"正在取消…"直接跳到"已更新"。
+   * ⚠️★ **单行这一支不补 notice**（刻意）：批量那条有，是因为它那一刻**真有"剩下的项"**
+   *    要说清（`updateFolderAll` 的 `work()` 末尾那两种措辞）；而单行的 `itemCount` 恒为 1
+   *    ⇒ 没有"剩下的项"这件事可说，一条"已取消：这一项正好下完了"只是把 `updated` 那两句
+   *    话说第二遍 —— 更要紧的是它会与"取消**不是**失败、也不是没做完"这条语义打架
+   *    （用户要的"停"已经实现了）。评审判定这**不是行为错**（`updated` 是实话），
+   *    只是"取消动作在读数里没有痕迹"⇒ 如实写在这里，**不为它造判据**
+   *    （那个窗口构造不出确定性夹具：要恰好卡在最后一次 `rename` 与 `downloadTo` 返回之间）。
+   */
   lastRun =
     skipped === null
       ? { updated: [modid], skipped: [], failed: [], cancelled: [] }
