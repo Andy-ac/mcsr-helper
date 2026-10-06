@@ -189,10 +189,14 @@ const bridge: DesktopBridge = {
    *    "页面唯一的数据来源"的一部分，本期**有意接受**（文件头那一段写着这条决定）。
    *
    * ⚠️★ 主进程那一半（`ipcMain.handle` 的注册）**早就在了**（Task 4 落地、现在住
-   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **15 条**通道里
-   *    **13 条**是真注册的 handler（现数：`ipcMain.handle` 那 13 条），余下 **2 条**
+   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **16 条**通道里
+   *    **14 条**是真注册的 handler（现数：`ipcMain.handle` 那 14 条），余下 **2 条**
    *    （`onStatus` 与 C 的 T3 加的 `onProgress`）是**推**给页面的（主进程只 `send`，
-   *    没有 handler 可注册）—— 所以"15 条通道 / 13 个 handler"不是少了两条。
+   *    没有 handler 可注册）—— 所以"16 条通道 / 14 个 handler"不是少了两条。
+   *    ⚠️★ 这两个数**随手抄的会过期**：现数口径是"`MOD_FOLDERS_CHANNELS` 有几个键"
+   *    与"`mod-folders.ts` 里 `ipcMain.handle(...)` 有几条"。C 的 T4 加 `cancelDownload`
+   *    时这半句没跟着改（写的是 15 / 13），最终修复波（I2）逐条现数改准成 16 / 14
+   *    —— 同族的 `mod-folders.ts` 与 `shared/desktop.ts` 那两处当时已经改过。
    *    ⚠️ 这条注释原来写的是"主进程那一半是 Task 4 的、今天还不存在 ⇒ 这几条 invoke 一律
    *    reject" —— 那是**转发先落地、行为随后**那个中间态的一句话，Task 4 之后就成了假话
    *    （T2 复审的 Minor ③ 记的正是它，最终修复波改准）。

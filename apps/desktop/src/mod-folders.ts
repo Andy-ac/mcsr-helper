@@ -340,8 +340,20 @@ function endRun(): void {
  *    HTTP 请求**的那一下。⛔ `abort()` 之后的事情都有主：`downloadTo` 抛 ⇒
  *    `installRelease` 的 `catch` 删掉 `.part` 再抛 ⇒ 两条外壳的 `catch` 按
  *    `activeRun.cancelling` 决定"记进 `cancelled` 且**不** reject"（取消不是失败）。
- * ⚠️ `rebuild()` 在 `abort()` **之前**：页面靠这一帧把按钮变成「正在取消…」
- *    （`progress.cancelling` 那一格），而 `abort()` 之后这一趟马上就开始收尾了。
+ * ⚠️★ **"正在取消"那一帧要上高频通道**（I1，最终修复波）：页面渲染用的一帧来自
+ *    `progressOf(state, live)`，而它**推送优先于状态**（`live ?? state.progress`）。
+ *    只 `rebuild()` 的话这一格到不了页面：那一刻 `live` 里还是取消**之前**那一帧
+ *    （`cancelling: false`），而 `abort()` 之后没有新的字节帧（`noteBytes` 不再被调）⇒
+ *    页面读到的 `view.cancelling` 恒为 `false` ⇒ 按钮文案永远不变、也不会进入"不可再点"
+ *    的形态（spec §4 明写的行为没落地）。
+ *    ⇒ 照 `notePhase` 的写法补一次 `pushProgress(true)`：`cancelling` 是"换相位"那一类
+ *    **必须立刻让页面看到**的东西，不受 D3 的 100 ms 下限约束。
+ * ⚠️ 而"这一项会照常装完"（写盘相位拒）**只走** `rebuild()`：那一支不改任何一格，
+ *    没有高频帧要发。
+ * ⚠️ `rebuild()` 与 `pushProgress(true)` 都在 `abort()` **之前**：页面靠它们把按钮变成
+ *    「正在取消…」，而 `abort()` 之后这一趟马上就开始收尾了（页面随即读到 `progress: null`）。
+ *    ⚠️ 两条通道读的是**同一个** `progress` 变量（`pushProgress` 自己调 `refreshProgress()`）
+ *    ⇒ 它们不可能互相矛盾，只是新鲜度不同。
  */
 function cancelDownload(): { ok: true } | { ok: false; reason: string } {
   if (activeRun === null) return { ok: false, reason: '没有在跑' };
@@ -362,6 +374,12 @@ function cancelDownload(): { ok: true } | { ok: false; reason: string } {
   }
   activeRun.cancelling = true;
   refreshProgress();
+  /*
+   * ★★ I1：`cancelling: true` 这一帧**两条通道都要发**。`pushProgress(true)` 就是
+   *    "换相位"那一类（force ⇒ 不吃节流），载荷里带着 `cancelling: true`
+   *    （`pushProgress` 读的就是 `refreshProgress()` 刚算出来的同一个 `progress`）。
+   */
+  pushProgress(true);
   rebuild(); // ★ 页面据此把按钮变成「正在取消…」
   activeRun.controller.abort();
   return { ok: true };
@@ -1388,6 +1406,13 @@ async function installRelease(opts: {
  * ⚠️★ **空转不许冒充"已更新"**（(e)，2026-10-03 复审）：幂等那一支一个字节都没写 ⇒
  *    `work()` 返回一句"为什么没动"的原因，那一趟就记进 `lastRun.skipped` 而**不是** `updated`
  *    （写进 `updated` 会让界面说"已更新 1 项"，而盘上什么都没变）。`work()` 返回 `null` = 真的更新了。
+ * ⚠️★ M6（最终修复波）：`beginRun(...)` 与起手那句 `rebuild()` 都**在 `try` 里面** ——
+ *    `rebuild()` 自己抛（`buildState()` 理论可抛）时，收尾分支才盖得住它。放在 `try`
+ *    之外的话，那一次抛出会留下 `busy === true` + `activeRun !== null` ⇒ **此后所有写盘
+ *    一律被拒到重启为止**，而界面上还挂着一条永不收尾的进度行。
+ *    挪进来之后走的是**失败那一支**：`busy = false` ⇒ `endRun()`（`activeRun` 清空、
+ *    `progress` 变 `null`）⇒ `lastRun` 记一条 `failed`（`reason` 就是那次构建错误）⇒
+ *    `rebuild()` 再试一次 ⇒ 原样 `throw`（IPC reject，页面看得见）。三格都归位。
  */
 async function writeRun(
   input: { run: 'update-mod' | 'download-missing'; folderId: string; modid: string },
@@ -1396,10 +1421,11 @@ async function writeRun(
   const { modid } = input;
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
-  beginRun({ run: input.run, folderId: input.folderId, itemCount: 1 });
-  rebuild();
   let skipped: string | null = null;
   try {
+    /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
+    beginRun({ run: input.run, folderId: input.folderId, itemCount: 1 });
+    rebuild();
     skipped = await work();
   } catch (error) {
     busy = false;
@@ -1437,9 +1463,10 @@ async function writeRun(
    *    要说清（`updateFolderAll` 的 `work()` 末尾那两种措辞）；而单行的 `itemCount` 恒为 1
    *    ⇒ 没有"剩下的项"这件事可说，一条"已取消：这一项正好下完了"只是把 `updated` 那两句
    *    话说第二遍 —— 更要紧的是它会与"取消**不是**失败、也不是没做完"这条语义打架
-   *    （用户要的"停"已经实现了）。评审判定这**不是行为错**（`updated` 是实话），
-   *    只是"取消动作在读数里没有痕迹"⇒ 如实写在这里，**不为它造判据**
-   *    （那个窗口构造不出确定性夹具：要恰好卡在最后一次 `rename` 与 `downloadTo` 返回之间）。
+   *    （用户要的"停"已经实现了）。这里**如实写出代价**：取消动作在读数里没有痕迹
+   *    （`updated` 是实话，而"点过取消"这件事一处都没记），**不为它造判据**
+   *    —— 理由：那个窗口构造不出确定性夹具（要恰好卡在最后一次 `rename` 与
+   *    `downloadTo` 返回之间）。
    */
   lastRun =
     skipped === null
@@ -1668,6 +1695,12 @@ function skipReasonOf(row: ModFolderRowView): string {
  * ⚠️ 整批起手就抛（文件夹不是目录 / 没有扫描读数 / 目录没拉到）时**不写 `failed`**：
  *    `failed[].modid` 是**行**的标识，而这时候**一行都没跑到** ⇒ 编一个假 modid 进去
  *    会让页面显示一条不存在的行。⇒ 记一条 notice（页面看得见）+ 原样抛（IPC 会 reject）。
+ * ⚠️★ M6（最终修复波）：`beginRun(...)` 与起手那句 `rebuild()` 都**在 `try` 里面**
+ *    （与 `writeRun` 同一条理由，见那一段）：放在外面时 `rebuild()` 抛会留下
+ *    `busy === true` + `activeRun !== null` ⇒ 写盘全被拒到重启。挪进来之后走失败那一支：
+ *    `busy = false` ⇒ `endRun()`（`activeRun` 清空、`progress` 变 `null`）⇒
+ *    `lastRun` 记空桶 + 一条 notice（`reason` 是那次构建错误）⇒ `rebuild()` 再试 ⇒
+ *    原样 `throw`。三格都归位。
  */
 type LastRun = NonNullable<ModFoldersState['lastRun']>;
 
@@ -1678,10 +1711,11 @@ async function bulkRun(input: {
 }): Promise<ModFoldersState> {
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
-  beginRun({ run: 'update-folder-all', folderId: input.folderId, itemCount: input.itemCount });
-  rebuild();
   let run: LastRun;
   try {
+    /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
+    beginRun({ run: 'update-folder-all', folderId: input.folderId, itemCount: input.itemCount });
+    rebuild();
     run = await input.work();
   } catch (error) {
     busy = false;

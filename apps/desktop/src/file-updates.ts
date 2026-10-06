@@ -1485,7 +1485,12 @@ export async function downloadTo(opts: {
    * ★ 子项目 C：取消令牌。中断这一次 HTTP 请求（`fetch` 原生支持）。
    *
    * ⚠️ 它**只管这一趟请求**：`.part` 由**调用方**删（Ruling 30），
-   *    而"写盘阶段不许取消"是调用方的判断（那一刻中断会留下半成品）。
+   *    而"写盘阶段一律拒"是调用方的判断 —— 守的是 **D4 那条明文：不许回 `{ok:true}`
+   *    却其实停不下来**（写盘那一趟会照常装完并报 `updated`，用户以为停了其实没停）。
+   *    ⚠️★ 而"那一刻中断会留下半成品"**今天不可复现**：写盘那一段
+   *    （`installDownloadedFile`）通体两次 `renameSync`、**没有 `await`、也不消费 signal**
+   *    ⇒ 那个窗口里 `abort()` 对文件**没有任何作用**。**假如**将来它变成异步、或者开始
+   *    消费 signal，那半句立刻变成实打实的原因。
    */
   signal?: AbortSignal;
 }): Promise<void> {

@@ -3081,6 +3081,45 @@ assert.ok(
   textOf(installHtml).includes(labelOf('files.progressCancelBlocked')),
   '★ 而且写明为什么不能点（置灰而不说话等于一个坏按钮）',
 );
+/*
+ * ★★ 便宜判据 1（最终修复波）：`!view.installing` 这个分支也要有牙齿。
+ *
+ * ⚠️★ 上面那条只证明"写盘相位印了那句写入文案" —— 它**碰不到** `batchSentence` 里那个
+ *    `!view.installing`：写盘那一帧（`progressFrameOf({ phase: 'install' })`）的
+ *    `itemCount` 是 1 ⇒ 就算把 `!view.installing` 整个删掉，`itemCount > 1` 也已经是 `false`
+ *    ⇒ 序号句照样不出现。⇒ 这一条把**另外两个条件都置真**（汇总档 + `itemCount: 48`），
+ *    只留写盘相位挡着它。能红的刀：把 `batchSentence` 里的 `!view.installing` 删掉 ⇒ 这一条红。
+ */
+const installSummaryHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: {
+        frame: progressFrameOf({
+          phase: 'install',
+          run: 'update-folder-all',
+          itemIndex: 3,
+          itemCount: 48,
+        }),
+        samples: [],
+      },
+      onCancel: noop,
+      variant: 'summary',
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(installSummaryHtml).includes(
+    labelOf('files.progressInstall', { name: progressFrameOf().fileName }),
+  ),
+  '★ 汇总档 + 批量（`itemCount: 48`）+ 写盘相位 ⇒ 照旧印「正在写入 …」',
+);
+assert.equal(
+  textOf(installSummaryHtml).includes(batchLabel),
+  false,
+  '★★ 反面：写盘相位**不印**批量序号句（"整趟的第几项"那一刻不是用户要的读数）—— ' +
+    '把 `batchSentence` 里那个 `!view.installing` 删掉，这一条就红（上一条碰不到它）',
+);
 const cancellingHtml = keep(
   html(
     React.createElement(DownloadProgressLine, {
@@ -3148,11 +3187,36 @@ assert.equal(
   'sodium',
   '★ 反面：状态说在跑、而推送还没来过（切 tab 回来）⇒ 那一帧要能用（D6：进度住主进程）',
 );
+/*
+ * ★★★ C1（最终修复波）：**旧桌面壳**那一档 —— `progress` 这一格**根本不在**。
+ *
+ * ⚠️★ 现场：0.0.5–0.0.7 的壳**有** `modFolders`（⇒ 这一页走 `ready` 那一支）但推来的状态里
+ *    没有子项目 C 才加的这一格 ⇒ `state.progress` 是 `undefined`。修之前第一条判据写的是
+ *    `=== null`（不成立）⇒ 返回 `{ frame: undefined }` ⇒ `FolderJarList` / `VersionModList` /
+ *    `VersionFolderList` 里那句 `progress.frame.folderId` 当场 TypeError，而全仓没有
+ *    error boundary ⇒ React 卸载整棵树 = **`/files` 整页白屏**（第一道洞在订阅那一句：
+ *    旧壳没有 `onProgress`，同步抛，由 `subscribeProgress` 的能力检测兜住 ——
+ *    那一半是 effect 里的接线，静态渲染看不见，见脚本末尾的覆盖边界）。
+ * ⚠️★ 判据的形状是**把那一格从夹具对象里删掉**（不是设成 `null`）：设成 `null` 是另一条
+ *    （上面那条"收尾"）已经钉住的立面，而这里要的正是"字段缺失"。
+ * ★ 能红的刀（最终修复波实测）：把 `progressOf` 第一条判据改回 `state.progress === null`
+ *    ⇒ 这一条红（还原后的 `sha256` 记在 `final-fix-report.md` 里）。
+ */
+const legacyShellState: Record<string, unknown> = { ...stateOf([ROW_GITHUB]) };
+delete legacyShellState.progress;
+assert.equal(
+  progressOf(legacyShellState as unknown as ModFoldersState, null),
+  null,
+  '★★★ 旧壳（状态里**没有** `progress` 这一格）：与 `progress: null` 同义 ⇒ 一条进度都不显示 —— ' +
+    '判据写 `=== null` 的实现会在这里返回 `{ frame: undefined }`，页面随即 TypeError = 整页白屏',
+);
 ok(
   '㊶ 下载进度与取消：行内档（**批量帧也印**字节/百分比/速度/ETA、不印序号）、样本不足显示 —、' +
     '汇总档（文件夹块上）「第 N/M 项」+ **同一条字节行**、三个渲染点的接线（两个行内站点各一正一反 + ' +
     '面板把载荷转发给两个站点，且两处各自印什么分开断）、取消按钮的身份（`common.cancel` + `data-action`）、' +
-    '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明、`cancelling` 变「正在取消…」、收尾之后一律不显示',
+    '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明**且不印序号句**（`itemCount: 48` 的汇总档）、' +
+    '`cancelling` 变「正在取消…」、收尾之后一律不显示、' +
+    '**旧壳缺 `progress` 这一格 ⇒ 与 `null` 同义、一条都不显示**（C1）',
 );
 
 // ---------------------------------------------------------------------------

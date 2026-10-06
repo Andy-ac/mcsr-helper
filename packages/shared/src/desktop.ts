@@ -415,17 +415,15 @@ export function desktopBridge(): DesktopBridge | null {
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
  *    其余都是方法名的逐字 kebab（`openFolder` ⇒ `-open-folder`、C 的 T4 加的
  *    `cancelDownload` ⇒ `-cancel-download` 都在其中；⚠️ 后一条是**请求**、不是推送 ——
- *    它落在这一组只是因为名字逐字 kebab，与"推送"那两处无关）：
- *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准；
- *    T6 删掉那三条之后：14 个成员 − 4 个非纯 kebab = **10**；
- *    ⚠️★ C 的 T3 加 `onProgress` 之后：**15 个成员 − 5 个非纯 kebab = 10** ——
- *    逐字 kebab 的仍然是十个（新加的那一条**不**在这一组里），所以上面那个数字没变，
- *    变的是"非纯 kebab"那一侧的 4 → 5。两个数一起改过，别只改一个。
- *    ⚠️★ C 的 T4 加 `cancelDownload` 之后：**16 个成员 − 5 个非纯 kebab = 11** ——
- *    这一条**是**逐字 kebab（`-cancel-download`），所以"非纯 kebab"仍是 5，
- *    变的是逐字 kebab 那一侧的 10 → 11（两个数与上面那句一起改，别只改一个）。
- *    ⚠️ **上面那句"其余十个都是逐字 kebab"与这里那一句是同一个活数字的两种说法**：
- *    加一条逐字 kebab 的通道时两处都要跟着走（§5.15：同一对象出现两个活数字就是缺陷信号）。
+ *    它落在这一组只是因为名字逐字 kebab，与"推送"那两处无关）。
+ *    ★★ **逐字 kebab 的条数只写在这一处**：**16 个成员 − 5 个非纯 kebab = 11**
+ *    （上面那句不再复述这个数字 —— §5.15：同一个活数字出现两种说法就是缺陷信号，
+ *    加一条逐字 kebab 的通道时**只改这一行**）。
+ *    ⚠️★ 下面这几句交代这个数的**来历**，它们**都不是活数字**（不要照它们现数）：
+ *    这一格原先写死过一个比实际小的数（A 的 S2 逐条现数改准过）；T6 删掉那三条之后
+ *    是"成员数 − 非纯 kebab 数"；C 的 T3 加 `onProgress` **只动"非纯 kebab"那一侧**
+ *    （它**不**在这一组里），逐字 kebab 那一侧没动；而 C 的 T4 加的 `cancelDownload`
+ *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是上面那个 11。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时

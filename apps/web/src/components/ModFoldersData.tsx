@@ -260,9 +260,19 @@ function makeModFoldersHandlers(
      *        `fail(reason)`（"点了没反应"与"点了被拒"对用户是两件事，
      *        而那句 `reason` 正是主进程写好的说法）；
      *      · 通道自己抛（IPC 那层理论上会）⇒ 与本节其余动作同一个 `reasonOf`。
+     * ⚠️★ C1：**先做能力检测**（与 `subscribeProgress` 同一道判据、同一条理由）——
+     *    旧桌面壳（0.0.5–0.0.7）里这一格是 `undefined`，直接调就是
+     *    `undefined is not a function`。⚠️ 这一支今天**够不到**（旧壳里 `state.progress`
+     *    也不在 ⇒ `progressOf` 给 `null` ⇒ 取消按钮**根本不画**，见 `DownloadProgressLine`
+     *    的三个调用点：命中非空的那一份载荷才画那一行），留着是因为它只有三行，
+     *    而"一颗能点的按钮调到一个不存在的函数"是白屏级别的坏法。
      */
     cancelDownload: async (): Promise<void> => {
       fail(null);
+      if (typeof capabilitiesOf(api).cancelDownload !== 'function') {
+        fail('这个桌面版没有「取消下载」这一条通道（升级桌面版之后可用）');
+        return;
+      }
       try {
         const result = await api.cancelDownload();
         if (!result.ok) fail(result.reason);
@@ -328,6 +338,15 @@ export interface PageProgress {
  *    `ModFoldersState.progress` 是那一趟的**收尾读数**（一趟结束时变回 `null`）——
  *    没有这一条的话，晚到的一帧会让界面上永远挂着一条"正在下载"，
  *    而那正是 D6 要消灭的"停在最后一帧"（自检㊶ 有一条专门咬它）。
+ * ⚠️★★ C1（最终修复波）：第一条判据读的是**缺失与 `null` 同义**（`!state.progress`），
+ *    不是 `=== null` —— **旧桌面壳推来的状态里根本没有这一格**（这一格是子项目 C 才加的，
+ *    0.0.5–0.0.7 的壳有 `modFolders` 但只有 14 格）⇒ 那时 `state.progress` 是 `undefined`，
+ *    而 `=== null` 判据不成立 ⇒ 函数返回 `{ frame: undefined }` ⇒ 调用方
+ *    （`FolderJarList` / `VersionModList` / `VersionFolderList` 里那句
+ *    `progress.frame.folderId`）当场 TypeError = **`/files` 整页白屏**。
+ *    接缝上还有第二道洞（旧壳没有 `onProgress`，见 `subscribeProgress`），两道一起堵。
+ *    ⚠️ 这一条**无论旧壳在不在都更对**：契约那一格是 `DownloadProgress | null`，
+ *    而"缺字段"与"这一格是 `null`"在语义上是同一句话（"这一趟没有在跑 / 没有读数"）。
  * ⚠️ 第二条：推送有就用推送（它的字节是最新的、样本窗口也在这里）；没有就用状态里那一帧
  *    （切 tab 回来、或高频那一帧还没来）。两者读的是主进程里**同一个变量**
  *    ⇒ 不可能互相矛盾，只是新鲜度不同。
@@ -337,8 +356,55 @@ export interface PageProgress {
  *    —— 速度会在那一拍跳一下（"新增字节为 0"被算成一次 0 速度）。
  */
 export function progressOf(state: ModFoldersState, live: PageProgress | null): PageProgress | null {
-  if (state.progress === null) return null;
+  /*
+   * ⚠️★ 写成 `!state.progress`（而不是 `=== null`）：**缺失字段与 `null` 同义** ——
+   *    旧桌面壳（0.0.5–0.0.7）推来的状态里连这一格都没有，`=== null` 会漏过 `undefined`
+   *    （理由与现场写在函数头那一段）。⛔ 别改回 `=== null`：自检 ㊶ 有一条专门咬
+   *    "把这一格从夹具里**删掉**"（不是设成 `null`）的立面。
+   */
+  if (!state.progress) return null;
   return live ?? { frame: state.progress, samples: [] };
+}
+
+/**
+ * ★★ C1（最终修复波）：子项目 C 那两条通道的**能力检测**（旧桌面壳 + 新网页那一档）。
+ *
+ * ⚠️★★ 为什么判据是"这一格在不在、是不是函数"，**不是**版本号比较：
+ *    · 版本号会漂（`0.0.5`–`0.0.7` 的壳**有** `modFolders`，所以 `useModFolders` 走
+ *      `ready` 那一支），而**能力不会**；
+ *    · 现场：旧壳里 `api.onProgress` 是 `undefined`，而订阅那一句在 `useEffect` 里是
+ *      **同步**调用 ⇒ 当场 TypeError。`apps/web` 全仓**没有 error boundary**（现读）
+ *      ⇒ React 卸载整棵树 = `/files` **整页白屏**（C1 的第一道洞）。
+ *    · 同族：`cancelDownload` 在旧壳里也不在 ⇒ 点下去是 `undefined is not a function`。
+ * ⚠️★ 两格的类型在契约里是**必需**的（`DesktopBridge['modFolders']` 是这一版才有的形状）
+ *    —— 所以这里不能用 `?:` 去改契约（那会让 `MOD_FOLDERS_CHANNELS` 那条 `satisfies`
+ *    咬不住"契约加了方法却忘了加通道"）⇒ 放宽只发生在**这一层**的读数上。
+ */
+type ProgressCapabilities = {
+  onProgress?: (callback: (progress: DownloadProgress) => void) => () => void;
+  cancelDownload?: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+};
+
+/** 把契约形状读成"这两格**可能不在**"的形状（结构上是同一种对象，不需要断言）。 */
+function capabilitiesOf(api: DesktopBridge['modFolders']): ProgressCapabilities {
+  return api;
+}
+
+/**
+ * 订阅高频那一条通道（**旧壳里没有它 ⇒ 退化成 no-op 退订函数**）。
+ *
+ * ⚠️★ 没有这一道判据的现场写在 `capabilitiesOf` 那一段：同步 `TypeError` + 没有 error
+ *    boundary = 整页白屏。而"退化成 no-op"是**正确**的降级：旧壳里
+ *    `state.progress` 也不在（`progressOf` 的第一条判据兜住）⇒ 这一页一条进度都不画，
+ *    其余部分照常可用。
+ */
+function subscribeProgress(
+  api: DesktopBridge['modFolders'],
+  onFrame: (frame: DownloadProgress) => void,
+): () => void {
+  const { onProgress } = capabilitiesOf(api);
+  if (typeof onProgress !== 'function') return () => undefined;
+  return onProgress(onFrame);
 }
 
 /**
@@ -350,6 +416,9 @@ export function progressOf(state: ModFoldersState, live: PageProgress | null): P
  * ⚠️★ 判据是 `desktopBridge()?.modFolders` 在不在，**不是** `desktopBridge()` 在不在：
  *    0.0.4 的壳有 `mcsr` 但**没有** `modFolders`（`shared/desktop.ts` 的契约是 0.0.5 才有的）
  *    ⇒ 那种客户端在这一页上**只有一句"需要桌面版 0.0.5"**。
+ * ⚠️★ 而 `modFolders` 在**不等于**这一版的两条新通道在（C1）：0.0.5–0.0.7 的壳有
+ *    `modFolders`（只有 14 格）⇒ 订阅走 `subscribeProgress` 的能力检测、
+ *    取消走 `makeModFoldersHandlers` 里那一道同样的判据，两条都不许直接调。
  */
 export function useModFolders(): ModFoldersData {
   const [load, setLoad] = useState<ModFoldersLoad>(NO_MOD_FOLDERS_LOAD);
@@ -396,8 +465,11 @@ export function useModFolders(): ModFoldersData {
      *    不会重开，上一趟最后那个样本与新一趟第一帧一起进 `rateOf` ⇒ 速度印成 `0 B/s`。
      * ⚠️★ 订阅**在 `getState()` 之前**（与 `onStatus` 同一个 effect、同一条理由）：
      *    反过来的话，起手那一帧会落在订阅之前 ⇒ 那一段时间的字节没有任何人收到。
+     * ⚠️★★ C1：走 `subscribeProgress`（**有 `onProgress` 才订阅，没有就给 no-op 退订**）——
+     *    旧壳里直接调 `api.onProgress(...)` 会在这一行同步抛，而全仓没有 error boundary
+     *    ⇒ 整页白屏（现场写在 `capabilitiesOf` 那一段）。⛔ 别改回 `api.onProgress(...)`。
      */
-    const unsubscribeProgress = api.onProgress((frame) => {
+    const unsubscribeProgress = subscribeProgress(api, (frame) => {
       setLive((prev) => {
         const at = Date.now();
         const sameItem = prev !== null && progressKeyOf(prev.frame) === progressKeyOf(frame);

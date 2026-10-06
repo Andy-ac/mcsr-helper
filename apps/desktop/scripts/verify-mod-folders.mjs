@@ -1950,10 +1950,10 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
    *    （⑧ 里探针自己调过 `setCatalogGameVersion`）⇒ `bindFolder` 里那次
    *    `adoptFolderGameVersion()` **不会**因为预置的 1.8.9 而改 `prefs`，
    *    前面每一条判据读到的 `gameVersion` 因此不受影响。
-   * ★ 刀（读数在报告里）：把 `bindFolder` 里 `gameVersion: preset` 改回 `gameVersion: null`
-   *    ⇒ 第 1、2 条红（第 3、4 条照旧绿 —— 它们测的是别的两件事）。
-   * ★ 另一把（读数在报告里）：把 `presetFolderVersion` 的 `undefined`/`null` 那一支也
-   *    收成一个默认版本 ⇒ 第 4 条红。
+   * ★ 刀（现场读数见本分支的逐任务评审包）：把 `bindFolder` 里 `gameVersion: preset` 改回
+   *    `gameVersion: null` ⇒ 第 1、2 条红（第 3、4 条照旧绿 —— 它们测的是别的两件事）。
+   * ★ 另一把（现场读数见本分支的逐任务评审包）：把 `presetFolderVersion` 的
+   *    `undefined`/`null` 那一支也收成一个默认版本 ⇒ 第 4 条红。
    */
   await section('⑤b（G2 / spec D3）添加文件夹时把版本**预置**成当时看着的那一版（仍可改）', async () => {
     const presetDir = join(workRoot, 'H-preset');
@@ -3068,7 +3068,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    *   · `manual`：这一行的 `manual` 的确是 `true`（那条 release 的 `download` 是 `manual`）。
    * ⚠️ 而"目标文件逐字节不变"这一句**单独是恒真的**（什么都没干当然没变）⇒
    *   它必须与"一个请求都没发"和**拒的原文**配对，才是在证"闸在动盘之前拦住了"。
-   *   （"闸真的会红"由报告里那把刀给：去掉拒绝 ⇒ 这一整段红。）
+   *   （"闸真的会红"那把刀的现场读数见本分支的逐任务评审包：去掉拒绝 ⇒ 这一整段红。）
    */
   await section('⑲（★ Ruling 47）`newer` / `manual` 的行：拒绝、一个请求都不发、盘上没动', async () => {
     const dirNewer = join(workRoot, 'mods-newer');
@@ -3794,7 +3794,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
   // ㉖（子项目 C / S2）字节级进度：**慢桩** + 中途读状态
   // =========================================================================
   /*
-   * ⚠️★ 编号与位置（与 brief 的示例不一致，报告里写明了）：brief 说"紧接在 ⑫ 那一组之后加
+   * ⚠️★ 编号与位置（与 brief 的示例不一致，本分支的逐任务评审包里写明了）：brief 说"紧接在 ⑫ 那一组之后加
    *    一组"，并按 ⑬ 举了例。本树里 ⑬ 已经被"路径穿越被拒"占用，⑬–㉕ 也都在用 ⇒
    *    按 brief 自己那条procedure（"看下一个空号"）取到的下一个空号是 **㉖**。
    *    而㉖ 接在 ㉕ 之后，编号才继续跟着**执行顺序**走（这是本文件自己的风格）。
@@ -3864,7 +3864,9 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    * =========================================================================
    * ⚠️★ 第三行（`newer` 那份 jar）是**为了这条判据才放的**：`itemCount` 的判据是
    *    "= 可批量的行数，**而不是**文件夹里的行数" ⇒ 文件夹里**必须有不批量的行**，
-   *    否则 `count === 2` 在"3 行全可批量"与"只数可批量的"两种实现下都成立（§5.32 ①）。
+   *    否则"夹具里有一行不可批量"这件事在"3 行全可批量"与"只数可批量的"两种实现下
+   *    都无所谓（§5.32 ①）。⚠️ 那个数**不写在这里**：它就是下面那条仪器自检现测的
+   *    `batchRows`（同一个数只留一处活读数）。
    */
   await section('㉖b（C/S3）整夹更新：itemIndex 从 1 递增、itemCount 等于这一趟的目标数', async () => {
     const dirBatch = join(workRoot, 'progress-batch');
@@ -3925,12 +3927,12 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    * =========================================================================
    * ㉗（子项目 C / S3）onProgress 推送：帧真的到了、而且被**节流**过
    * =========================================================================
-   * ⚠️★ 编号（与 brief 不一致，报告里写明了）：brief 举例写的是 **⑭**，而本树里
+   * ⚠️★ 编号（与 brief 不一致，本分支的逐任务评审包里写明了）：brief 举例写的是 **⑭**，而本树里
    *    ⑭ 已被"目标被占住"那一组占用（现读全部 `await section(` 的编号：① ② ③ ⑤ ⑤b ⑥
    *    ⑧ ⑨ ⑩ ⑫ ⑬ ⑭ ⑮ ⑯ ⑯b ⑱ ⑲ ⑳ ㉑ ㉒ ㉓ ㉔ ㉕ ㉖ ㉖b）⇒ 按本文件自己的风格
    *    （编号跟着**执行顺序**走）取续号 **㉗**，接在 ㉖b 之后。
    * ⚠️★ 夹具这一行**没有**照 brief 逐字（`copyFileSync(fx.slow.official, …)`）：那一版真的
-   *    跑过一次，读数是"下载请求 **0**"（见报告）—— `official` 就是桩要回的那一份、
+   *    跑过一次，读数是"下载请求 **0**"（现场读数见本分支的逐任务评审包）—— `official` 就是桩要回的那一份、
    *    它的 sha512 正是 `release.sha512` ⇒ 走 `installRelease` 的**幂等**那一支
    *    （`placeJar` 头顶那一段：:2506-2519 写着同一条）。那一版里"帧数 0"与"通道还没加"
    *    长得一模一样（§5.79：红点会长得像产品缺陷）⇒ 换成 `placeJar`（= `fixture.local`，
@@ -3962,7 +3964,11 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     );
     check(
       '★ 帧里的身份对得上（folderId / modid / fileName）',
-      frames.every((f) => f.folderId === id && f.modid === fx.slow.modid && f.fileName === fx.slow.targetName),
+      /* ⚠️★ 最终修复波：`frames.length >= 2` 不可省 —— `[].every(...)` **恒真**（§5.32 ①），
+         而这一条正是"看着像在测"的那一类（同组上面那条 `收到进度帧` 已经有同一个下限）。
+         加上它之后，"一帧都没收到"就落在这一条上，而不是静默地绿。 */
+      frames.length >= 2 &&
+        frames.every((f) => f.folderId === id && f.modid === fx.slow.modid && f.fileName === fx.slow.targetName),
       JSON.stringify(frames[0]),
     );
     /*
@@ -3983,7 +3989,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
      *    ⇒ 修法（最小改动，判据的**意图一字不改**：量的仍然是"D3 的 100 ms 下限真的是下限"）：
      *    **只把 `download` 相位的那几帧拿来比间隔** —— 受节流管辖的正是它们；
      *    `force` 帧（换项/换相位）按设计**不受**这个下限约束，把它们算进来等于要求
-     *    "force 不许 force"。⚠️ 报告里给了替代措辞。
+     *    "force 不许 force"。⚠️ 替代措辞见本分支的逐任务评审包。
      *    ⚠️★ 另外补了 `gaps.length >= 1`：`[].every(...)` **恒真**（§5.32 ①）——
      *    一个"只推 force 帧、一个字节帧都不推"的实现会得到 `gaps = []` 而**绿着**，
      *    而那正是这一条要抓的东西。这一处是**收紧**（只能让绿的变红，不会让红的变绿）。
@@ -4018,7 +4024,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    *    几十毫秒内就收尾了，80 ms 之后点取消读到的是 `{"ok":false,"reason":"没有在跑"}`。
    *    这与 ㉗ 撞到的是**同一条**（:2506 那段写着全文）⇒ 三组的夹具都改回 `placeJar`
    *    （= `fixture.local`：同 modid、内部版本更低 ⇒ 判成 `older` ⇒ 真的走下载）。
-   *    ⚠️ 逐字照抄那一版的**完整**读数见报告 §2.3（`297 ✓ / 10 ✗`）—— 它不在这个文件里
+   *    ⚠️ 逐字照抄那一版的**完整**读数见本分支的逐任务评审包（`297 ✓ / 10 ✗`）—— 它不在这个文件里
    *    （那是"改成 `placeJar` 之前"的一次现场），这里只留指针。
    */
   await section('㉘（C/S4）下载中途取消：请求被中断、没有 .part、`cancelled` 有它而 `failed` 没有', async () => {
@@ -4059,7 +4065,13 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     check('★ 取消之后**没有**再多发请求（这一趟真的停了）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}（前缀 /mirror-${fx.slow.mirrorId.replace('probe-', '')}/）`);
   });
 
-  await section('㉘b（C/S4）整夹更新中途取消：当前项记进 `cancelled`、后续项**一个都没开工**', async () => {
+  /*
+   * ⚠️★ 最终修复波：这一节的小节标题原先写"后续项**一个都没开工**"，而它下面那条量的是
+   *    "第二项没有**发出请求**" —— 两件事**不是**同一件（评审 Important 1 那一段写着现场：
+   *    第二项的 `fetch` 建在已 abort 的 signal 上时"瞬间失败、一个请求都不发"，计数照样绿）。
+   *    ⇒ 标题改准成"第二项没有发出请求"；"没开工"由 ㉙ 的**四个桶全空**量。
+   */
+  await section('㉘b（C/S4）整夹更新中途取消：当前项记进 `cancelled`、第二项没有发出请求', async () => {
     /* 同 ㉖b 的夹具（两行可批量），慢桩 */
     const dirBatchCancel = join(workRoot, 'cancel-batch');
     mkdirSync(dirBatchCancel, { recursive: true });
@@ -4068,7 +4080,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     const id = await prepare(dirBatchCancel);
     /*
      * ⚠️★ 仪器自检（照 ㉖b 那一句）：这一夹**必须恰好有 2 行可批量** —— 少一行的话
-     *    "第二项没有开工"量的就是夹具缺陷（§5.79：红点会长得像产品缺陷）。
+     *    "第二项没有发出请求"量的就是夹具缺陷（§5.79：红点会长得像产品缺陷）。
      */
     const batchRows = (await invoke(MOD_CH.getState)).folders
       .find((folder) => folder.folderId === id)
@@ -4148,7 +4160,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    * ⚠️★ 夹具用 `placeJar`（= `fixture.local`，判成 `older` ⇒ 真的会去下载），**不是**
    *    `fixture.official`：后者与 `release.sha512` 逐字节相同 ⇒ 两行都不 batchable、
    *    这一节量的就变成"幂等跳过"而不是"开工下载"（`placeJar` 头顶那段写着全文）。
-   *    ⇒ 见报告"修复轮 1"那一节。
+   *    ⇒ 见本分支的逐任务评审包"修复轮 1"那一节。
    */
   await section('㉙（C/S4）整夹更新**起手就取消**：一项都不许开工', async () => {
     const dir = join(workRoot, 'cancel-before-first');
