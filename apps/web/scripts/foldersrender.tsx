@@ -95,6 +95,7 @@ import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import {
   ModCatalogScanning,
   NO_MOD_FOLDERS_LOAD,
+  type PageProgress,
   progressOf,
   RAW_KEY_RE,
   rawKeysIn,
@@ -1475,8 +1476,16 @@ assert.ok(
  *    ⇒ 页面那一侧的证据是**同一组里 ⑥ 那三条**，它们打在 **`VersionFolderList` 的产物**上
  *    （⚠️★ 2026-10-04 T6 顺手改准的那句话：原稿写的是"**这一组**一条都不会红" ——
  *    而 ⑥ 就在这一组里，它**会**红：那句话比事实强，正是 AGENTS §5.24 记的那种"散文字数"）。
+ *
+ * ⚠️★★ T5 修复轮 1（评审 Important 1）：**`progress` 从外面喂进来**（默认 `null`）——
+ *    修之前这个 helper 写死 `progress: null` ⇒ "页面把进度传下来"这件事在组件级**无从断言**。
+ *    下面㊶ 里用它跑一正一反（命中 / 把 `modid` 换成别的）。
  */
-function jarListHtmlOf(state: ModFoldersState, folderId: string): string {
+function jarListHtmlOf(
+  state: ModFoldersState,
+  folderId: string,
+  progress: PageProgress | null = null,
+): string {
   const page = planVersionPage(state, [folderId]);
   const block = page.folders.find((candidate) => candidate.folder.folderId === folderId);
   assert.ok(block, `夹具自钉：\`${folderId}\` 在投影里（不在的话下面每一条断言都是空跑）`);
@@ -1488,7 +1497,7 @@ function jarListHtmlOf(state: ModFoldersState, folderId: string): string {
         mirrors: state.mirrors,
         busy: state.busy,
         onAction: noop,
-        progress: null,
+        progress,
       }),
     ),
   );
@@ -1932,8 +1941,14 @@ function modRowOf(markup: string, modid: string): string {
 /**
  * 渲染第三段（`VersionModList` 是纯 props 组件 ⇒ 喂 `page` + 三格就同步画完）。
  * ⚠️ `tagLabels` / `busy` 照**页面**那一处调用点喂（下一组会证明页面真的喂了）。
+ * ⚠️★★ T5 修复轮 1（评审 Important 1）：**`progress` 从外面喂进来**（默认 `null`）——
+ *    理由与 `jarListHtmlOf` 那一处逐字同一条（写死 `null` 时"转发真的到了这里"无法断言）。
  */
-function modListHtmlOf(state: ModFoldersState, expanded: readonly string[]): string {
+function modListHtmlOf(
+  state: ModFoldersState,
+  expanded: readonly string[],
+  progress: PageProgress | null = null,
+): string {
   return keep(
     html(
       React.createElement(VersionModList, {
@@ -1941,7 +1956,7 @@ function modListHtmlOf(state: ModFoldersState, expanded: readonly string[]): str
         tagLabels: state.tags,
         busy: state.busy,
         onAction: noop,
-        progress: null,
+        progress,
       }),
     ),
   );
@@ -2553,7 +2568,13 @@ ok('㊵ 清理：页面那一棵树不再引用四个已删组件，那五个文
  *    速度与 ETA 是"按时间算出来的"，不写死时钟的话这一组会在慢机器上偶发地红
  *    （样本落到 3 秒窗口之外 ⇒ 显示 `—`）。夹具的 `at` 与 `now` 因此必须成对给出。
  * ⚠️★ `apps/web/scripts/**` **不在任何 tsconfig 里**（`tsc` 不看它、`tsx` 只剥类型）
- *    ⇒ 夹具写错在门禁上是无声的：下面每一条都带"夹具自钉"。
+ *    ⇒ 夹具写错在门禁上是无声的：本组靠**两样**兜住 ——
+ *      ① 缺键由 `resolved()` 自带断言（i18next 缺键时原样返回 key ⇒ 正面断言会退化成
+ *         key 比 key、反面断言直接静默变绿）；
+ *      ② 定位 helper（`folderRowSpanOf` / `jarRowOf` / `modRowOf` / `folderBodyOf`）找不到
+ *         那个对象就当场红。⚠️★ T5 修复轮 1（评审 Minor）订正：原稿那句"**下面每一条都带
+ *         '夹具自钉'**"是**假话** —— 本组里带"夹具自钉"字样的断言一条都没有（不会因此空跑，
+ *         理由就是上面那两样；评审核过同一条）。
  *
  * ⚠️★★ 本组对简报有**三处机械改准**（简报那三条判据与这个脚本的**导出面**对不上；
  *     逐条的现场、原始读数与替代措辞写在 `task-5-report.md` §④ 里）：
@@ -2565,8 +2586,10 @@ ok('㊵ 清理：页面那一棵树不再引用四个已删组件，那五个文
  *   ② 同理那条正则：对着 `textOf` 的产物要写**没有空格**的那一份
  *      （`/11\.8MB\/25\.8MB·46%·.*\/s·/`）—— 它要的三个数（字节 / 百分比 / 速度）一字未改。
  *   ③ 容器那条把 `第 3/48 项` **写死成中文** ⇒ `--en` 那一遍必红（英文词条是
- *      `Item {{index}}/{{count}}`）。这里按**当前语言**取那句，窗口口径（那个 1200 字符）
- *      与简报**逐字同一条**。
+ *      `Item {{index}}/{{count}}`）。这里按**当前语言**取那句。⚠️★ T5 修复轮 1 订正：
+ *      简报那个"1200 字符窗口"**也已经不用了**（它不是语言稳定的：实测 zh 偏移 1138 /
+ *      en 1252）⇒ 窗口改成 `folderRowSpanOf()` 那一行的边界，理由与真读数写在下面那条断言上
+ *      （原稿在这里写"窗口口径与简报逐字同一条"，那句话在 D5 之后就错了）。
  */
 const progressSample = (received: number, at: number): TimedSample => ({
   at,
@@ -2607,13 +2630,28 @@ assert.ok(
 assert.match(
   textOf(inlineHtml),
   /11\.8MB\/25\.8MB·46%·.*\/s·/,
-  '★★ 行内显示含**字节 / 百分比 / 速度**（`12.4 MB / 27.1 MB · 46%`）—— ' +
+  '★★ 行内显示含**字节 / 百分比 / 速度**（这一份夹具实测是 `11.8 MB / 25.8 MB · 46% · 976.6 KB/s`）—— ' +
     '三个数都要在，只画进度条的话这一条红',
 );
 assert.equal(
   textOf(inlineHtml).includes('—'),
   false,
   '★ 反面：样本够（两个、间隔 1 秒）时**不许**出现"算不出来"那个符号',
+);
+/*
+ * ★★ T5 修复轮 1（评审 Important 1 的第 3 点）：那颗取消按钮的**身份**。
+ *
+ * ⚠️★ 全仓这条线今天只有**编译期**证据（`Files.tsx` 的 `never` 穷尽性守卫）⇒ 没人钉过
+ *    "按钮真的画出来了、而且文案就是 `common.cancel`"。这一条钉的是**产物**那一半
+ *    （⭐ 它**不**证"点它会调到 `handlers.cancelDownload`" —— 静态渲染不跑事件处理器，
+ *    那条边界写在脚本末尾）。
+ * ⚠️ 两边过同一个口径（`labelsIn` 归一化后的文案 vs `labelOf`）。
+ */
+assert.ok(
+  labelsIn(inlineHtml).includes(labelOf('common.cancel')) &&
+    inlineHtml.includes('data-action="cancel-download"'),
+  '★★ 取消那颗按钮的身份：文案是 `common.cancel`、机器读数是 `data-action="cancel-download"`' +
+    '（缺任何一半这条就红 —— 它钉的是"那个入口真的画出来了"）',
 );
 const noSampleHtml = keep(
   html(
@@ -2689,11 +2727,13 @@ const batchListHtml = keep(
 /*
  * ★★ 那一行画在**那个文件夹的行里**（spec §4 第二档）。
  *
- * ⚠️★★ 这里对简报有一处**判据机制**的改准（现场读数在报告 §④）：
+ * ⚠️★★ 这里对简报有一处**判据机制**的改准（现场读数在报告 §④ D5）：
  *    简报写的是"`data-folder-id="f1"` 之后 **1200** 个字符之内"。那个数**不是语言稳定的**：
- *    同一份产物里那一句的偏移是 **zh ≈1196 / en ≈1305**（它的长短取决于词条长度、
- *    下拉里有几个选项、以及「全部更新」那颗按钮上有没有数字）⇒ 那条断言在 --en 那一遍
- *    会在**正确**的实现上报红（本机实测就是这个读数，见报告）。
+ *    同一份产物里那一句的偏移实测是 **zh 1138 / en 1252**（T5 报告 §④ D5 的现场读数；
+ *    它随词条长度、下拉里有几个选项、以及「全部更新」那颗按钮上有没有数字而变）⇒ 那条断言
+ *    在 --en 那一遍会在**正确**的实现上报红（en 的 1252 > 1200）。
+ *    ⚠️★ T5 修复轮 1（评审 Minor）：原稿在这一段写的是 `zh ≈1196 / en ≈1305` —— 那两个数
+ *    与报告里的真读数**对不上**（报告 D5 逐字写的是 1138 / 1252），这里就地改准。
  *    ⇒ 改用本文件**已有的** `folderRowSpanOf()`（它切的正是"这一行那一段"：
  *    从 `data-folder-id="X"` 到**下一个** `data-folder-id=` 为止）—— 判据的**意思**
  *    （"画在这一行里、不画在面板顶上、也不画在别的文件夹里"）一字未改，而且**更严**：
@@ -2715,6 +2755,180 @@ assert.equal(
   false,
   '★★ 反面：**别的**文件夹那一行里一个字节都不许有它（"这一趟的进度只属于它自己那个文件夹"）',
 );
+
+/*
+ * ===========================================================================
+ * ★★ 页面那份 `progress` 真的走到了**三个渲染点**吗（T5 修复轮 1 / 评审 Important 1）
+ * ===========================================================================
+ * ⚠️★ 修之前：这一组里 `ModDownloadPanel` / `FolderJarList` / `VersionModList` 的夹具
+ *    传的全是 `progress: null`，非空的只有 `DownloadProgressLine` 自己与**自喂**给
+ *    `VersionFolderList` 的那一处 ⇒ 把面板那两处转发、或两个行内站点整段删掉，
+ *    **两条门禁全绿、㊶ 全绿**，而界面上是"下载在跑、进度一条都不见"。
+ * ⇒ 下面分三层补，每一层钉的是**不同的一环**（缺哪一环就有一种"整段删掉还全绿"的坏法）：
+ *    ① 两个**行内**站点（`FolderJarList` / `VersionModList`）各自一正一反 —— 组件级、
+ *       自检自己喂 prop ⇒ 证"组件收到非空载荷会画、不匹配就不画"（一正一反防"无条件画"）；
+ *    ② **面板**那一层传非空载荷 ⇒ 断言 `VersionFolderList` 与 `VersionModList` **两个站点**
+ *       都出现了那一行（"两处转发都没被写成 `progress={null}`"的唯一判据）；
+ *    ③ `VersionFolderList` → **展开体里那一行**（`FolderJarList`）—— 面板那一层**做不到**
+ *       这一环：`ModDownloadPanel` 的 `expanded` 是它自己的 `useState([])`，静态渲染展开不了
+ *       ⇒ 这一环只能打在这一层（自喂），而"面板真的把载荷交给了 `VersionFolderList`"
+ *       由 ② 的文件夹块那一行兜着。
+ * ⚠️★ 只加在 `VersionFolderList` 自喂那一层**不算**（`folderBodyOf` 那段 doc 注释里记着
+ *    T4 判修轮的同一条裁定：自检自己喂的 prop 证明不了页面真的喂了它 —— 所以 ② 必须存在）。
+ */
+
+/** 单行那一句（这份帧 ⇒ 这几个数；`samples: []` ⇒ 速度与 ETA 都是 `—`）。 */
+const lineCopy = labelOf('files.progressLine', {
+  done: '11.8 MB',
+  total: '25.8 MB',
+  percent: '46%',
+  rate: '—',
+  eta: '—',
+});
+/** 非空载荷（帧只换指认那一格；样本为空 ⇒ 内容与时钟无关）。 */
+const linePayloadOf = (over: Partial<DownloadProgress>): PageProgress => ({
+  frame: progressFrameOf(over),
+  samples: [],
+});
+
+/* —— ① `FolderJarList`（展开体里那一行）：一正一反 —— */
+/*
+ * ⚠️ 夹具 `jarState` 的 `f-jars` 里有 `sodium` 那一行（见 ㊱ 那一组）；
+ *    帧的 `folderId` / `modid` 都指它 ⇒ 命中；两个反面各换掉**一个**格子。
+ */
+const jarLineHtml = jarListHtmlOf(
+  jarState,
+  'f-jars',
+  linePayloadOf({ folderId: 'f-jars', modid: 'sodium' }),
+);
+const jarLineRow = jarRowOf(jarLineHtml, 'sodium');
+assert.ok(
+  textOf(jarLineRow).includes(lineCopy) && jarLineRow.includes('data-action="cancel-download"'),
+  '★★★ `FolderJarList` 拿到非空 `progress` ⇒ **命中那一行**画出行内进度（那句字节/百分比 + 取消按钮）' +
+    '—— 把这一块整段删掉，这条就红',
+);
+const jarOtherModHtml = jarListHtmlOf(
+  jarState,
+  'f-jars',
+  linePayloadOf({ folderId: 'f-jars', modid: 'lithium' }),
+);
+const jarOtherFolderHtml = jarListHtmlOf(
+  jarState,
+  'f-jars',
+  linePayloadOf({ folderId: 'f-elsewhere', modid: 'sodium' }),
+);
+assert.ok(
+  ![jarOtherModHtml, jarOtherFolderHtml].some(
+    (markup) =>
+      textOf(markup).includes(lineCopy) || markup.includes('data-action="cancel-download"'),
+  ),
+  '★★ 反面（两半）：换 `modid`（`lithium` —— 这一夹里没有它）与换 `folderId`（`f-elsewhere`' +
+    ' —— 这一行不是它）都**一句都不画**（"无条件画"与"只比 modid"的实现都会红）',
+);
+
+/* —— ① `VersionModList`（第三段那一行）：一正一反 —— */
+/*
+ * ⚠️★ 第三段的命中判据里 `folderId` 是**用户选中的目标**（`VersionModList` 那一段写着理由）
+ *    ⇒ 夹具 `modListState` 里 `sodium` **已经在 `f1` 里**（那条自钉在 ㊳）、目标只剩 `f2`：
+ *    帧必须用 `f2` 才命中（用 `f1` 就是下面那条反面 —— 也正因为它不是恒真的，判据才咬得住）。
+ */
+const modLineHtml = modListHtmlOf(
+  modListState,
+  [],
+  linePayloadOf({ folderId: 'f2', modid: 'sodium' }),
+);
+const modLineRow = modRowOf(modLineHtml, 'sodium');
+assert.ok(
+  textOf(modLineRow).includes(lineCopy) && modLineRow.includes('data-action="cancel-download"'),
+  '★★★ `VersionModList` 拿到非空 `progress` ⇒ **命中那一行**画出行内进度（那句字节/百分比 + 取消按钮）',
+);
+const modOtherModHtml = modListHtmlOf(
+  modListState,
+  [],
+  linePayloadOf({ folderId: 'f2', modid: 'nobody' }),
+);
+const modOtherFolderHtml = modListHtmlOf(
+  modListState,
+  [],
+  linePayloadOf({ folderId: 'f1', modid: 'sodium' }),
+);
+assert.ok(
+  ![modOtherModHtml, modOtherFolderHtml].some(
+    (markup) =>
+      textOf(markup).includes(lineCopy) || markup.includes('data-action="cancel-download"'),
+  ),
+  '★★ 反面（两半）：换 `modid`（`nobody` —— 这一版里没有它）与换 `folderId`（`f1` —— ' +
+    '`sodium` 的目标是 `f2`）都**一句都不画**（"无条件画"与"只比 modid"的实现都会红）',
+);
+
+/* —— ② 面板那一层：两处转发都没被写成 `progress={null}` —— */
+/*
+ * ⚠️ 夹具的**两个文件夹都空** ⇒ `sodium` 的目标 = `f1`（第一个合法的）⇒ 同一份非空载荷
+ *    同时落在两个站点上：`VersionFolderList` 的**批量汇总行**（`folderId === 'f1'` 且
+ *    `itemCount > 1`）与 `VersionModList` 的**行内**（那一行选中的目标就是 `f1`）。
+ */
+const panelLineState = stateOf([modRowFixture('sodium', 'Sodium Prime')], {
+  tags: [MOD_TAG],
+  folders: [folder({ folderId: 'f1', rows: [] }), folder({ folderId: 'f2', rows: [] })],
+});
+const panelLineHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: panelLineState,
+      onAction: noop,
+      progress: linePayloadOf({
+        run: 'update-folder-all',
+        folderId: 'f1',
+        itemIndex: 3,
+        itemCount: 48,
+      }),
+    }),
+  ),
+);
+assert.ok(
+  folderRowSpanOf(panelLineHtml, 'f1').includes(batchCopy) &&
+    modRowOf(panelLineHtml, 'sodium').includes(batchCopy),
+  '★★★ 面板把 `progress` **转发给了两个站点**：文件夹块上那一行（`VersionFolderList`）与' +
+    '第三段那一行（`VersionModList`）都出现了「第 3/48 项 · <文件名>」—— ' +
+    '任何一处被写成 `progress={null}` 这条就红（修之前**没有任何**一条判据咬这件事）',
+);
+assert.equal(
+  countOf(panelLineHtml, 'data-action="cancel-download"'),
+  2,
+  '★ 而且两个站点各带一颗取消按钮（同一份载荷画了两条**各有取消入口**的行 —— 不是复写同一处）',
+);
+
+/* —— ③ `VersionFolderList` → 展开体里的 `FolderJarList`（面板那一层做不到这一环，见上） —— */
+const chainListState = stateOf([ROW_GITHUB], {
+  folders: [
+    folder({ folderId: 'f1', rows: [folderRow({ modid: 'sodium' })] }),
+    folder({ folderId: 'f2', rows: [] }),
+  ],
+});
+const chainListHtml = keep(
+  html(
+    React.createElement(VersionFolderList, {
+      state: chainListState,
+      page: planVersionPage(chainListState, ['f1']),
+      expanded: ['f1'],
+      onToggle: noop,
+      onAction: noop,
+      progress: linePayloadOf({ folderId: 'f1', modid: 'sodium' }),
+    }),
+  ),
+);
+assert.ok(
+  textOf(jarRowOf(chainListHtml, 'sodium')).includes(lineCopy) &&
+    jarRowOf(chainListHtml, 'sodium').includes('data-action="cancel-download"'),
+  '★★ `VersionFolderList` 把 `progress` 也交给了展开体里的 `FolderJarList`（命中那一行画出来了）' +
+    '—— 这条链的最后一段（前两段由 ② 的两个站点兜着）',
+);
+assert.equal(
+  countOf(chainListHtml, 'data-action="cancel-download"'),
+  1,
+  '★ 单行帧（`itemCount: 1`）下**只有行内那一条**：文件夹块上那条汇总行只在批量时画' +
+    '（恒画汇总行的实现这条就红 —— spec §4 的两档）',
+);
 const installHtml = keep(
   html(
     React.createElement(DownloadProgressLine, {
@@ -2734,7 +2948,10 @@ assert.equal(
   textOf(installHtml).includes('MB'),
   false,
   '★★ 而写盘相位**没有**字节也没有 ETA（同一份帧、只换相位 —— 只写"有那句写入文案"的话，' +
-    '一个"照旧印字节"的实现照样绿）',
+    '一个"照旧印字节"的实现照样绿）。' +
+    '⚠️ T5 修复轮 1 核实：这一条的条件只咬"字节"那一半（`MB`）—— "也没有 ETA"那一半由' +
+    '`services/api/src/download-progress-shared.test.ts` 的写盘相位那条（`view.received/total/rate/eta` 四格全是 `—`）钉着，' +
+    '在这里**无法**再分一次（同一份 `samples: []` 下任何实现的 ETA 格都是 `—`）',
 );
 assert.deepEqual(
   buttonsIn(installHtml).map((button) => button.disabled),
@@ -2814,6 +3031,7 @@ assert.equal(
 );
 ok(
   '㊶ 下载进度与取消：行内（字节/百分比/速度/ETA）、样本不足显示 —、批量「第 N/M 项」（行内与**那个文件夹块上**两档）、' +
+    '三个渲染点的接线（两个行内站点各一正一反 + 面板把载荷转发给两个站点）、取消按钮的身份（`common.cancel` + `data-action`）、' +
     '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明、`cancelling` 变「正在取消…」、收尾之后一律不显示',
 );
 

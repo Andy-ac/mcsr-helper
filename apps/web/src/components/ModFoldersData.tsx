@@ -357,6 +357,11 @@ export function useModFolders(): ModFoldersData {
   /**
    * ★ C 的 T5：高频那一条通道攒下来的东西（**帧 + 样本窗口**）。
    * ⚠️★ 它只从 `onProgress` 收（理由写在 `progressOf` 那一段）。
+   * ⚠️★ 它**只被 `onProgress` 覆盖、从不主动清空**：一趟结束时这里仍躺着最后一帧，
+   *    而"界面上一条都不许剩"由 `progressOf` 的第一条兜住（状态说没在跑 ⇒ 一律 `null`）
+   *    —— 那一格是那一趟的收尾读数，它先变空 ⇒ 这份陈货画不出来。**不留独立判据**：
+   *    可达的坏路径只有一条（下一趟与上一趟同键 ⇒ 窗口不重开），而那一条已经由
+   *    `progressKeyOf` 里的 `runStartedAt` 收掉（T5 评审 Important 2）。
    */
   const [live, setLive] = useState<PageProgress | null>(null);
 
@@ -382,10 +387,13 @@ export function useModFolders(): ModFoldersData {
     /*
      * ★★ C 的 T5：高频那条通道（D3 已经节流到 ≥100 ms / ≥64 KB）。
      *
-     * ⚠️★ 样本窗口的重开判据是 `progressKeyOf`（`folderId|modid|itemIndex`）：
-     *    换项之后键变了 ⇒ 窗口清空重来。**必须**这样：速度是"这一项"的速度，
+     * ⚠️★ 样本窗口的重开判据是 `progressKeyOf`（`folderId|modid|itemIndex|runStartedAt`）：
+     *    换项、**或换一趟**之后键变了 ⇒ 窗口清空重来。**必须**这样：速度是"这一项"的速度，
      *    把上一项的字节留在窗口里，换项后的第一个速度会是**负数**或一个荒唐的大数，
      *    而界面照旧把它印出来（T1 那段注释写着这件事）。
+     *    ⚠️★ **换一趟同理（T5 评审 Important 2）**：同一个 mod 在 3 秒内被重下一次
+     *    （取消后立刻重试）时，前三个格子全一样 —— 没有 `runStartedAt` 那一格的话窗口
+     *    不会重开，上一趟最后那个样本与新一趟第一帧一起进 `rateOf` ⇒ 速度印成 `0 B/s`。
      * ⚠️★ 订阅**在 `getState()` 之前**（与 `onStatus` 同一个 effect、同一条理由）：
      *    反过来的话，起手那一帧会落在订阅之前 ⇒ 那一段时间的字节没有任何人收到。
      */

@@ -485,9 +485,12 @@ function FolderRow({
             用 `expanded: []` 渲染这一层 —— 画进 `folderrow__body`（只在展开时渲染）时
             它在**正确的实现**上也会红；
           · **位置**：它紧跟在头行后面 ⇒ 仍然是"jar 列表**上面**"（spec §4 那句）。
-        ⚠️ 只在 `itemCount > 1` 时画（单行下载那一档由**行内**的 `DownloadProgressLine`
-        说，见 `FolderJarList` / `VersionModList`）：批量与单行是同一份载荷的两种排版，
-        两处都画就是同屏两条一样的进度。
+        ⚠️ 只在 `itemCount > 1` 时画**这一行汇总**：单行下载那一档没有"整趟的第几项"可说，
+        那一档由**行内**的 `DownloadProgressLine` 说（见 `FolderJarList` / `VersionModList`）。
+        ⚠️★ **批量时两处并存的两句话，不是同一条重复**（spec §4 说的是文件夹块上"**另加一行**"）：
+        这一行说的是"**整趟**的第几项 / 共几项"（`itemIndex` / `itemCount` 来自帧），
+        行内那一行说的是"**这一项自己**的字节 / 速度 / ETA"（`received` / `total` 来自同一帧）。
+        主语不同 ⇒ 缺任何一边，用户就少一样读数（"还要等几项"与"这一项还要多久"）。
         ⚠️ 取消那一颗**不新增 prop**：这一层本来就有 `onAction`（`ModPageAction` 的处理函数）
         ⇒ `cancel-download` 那个新成员直接复用它（这也是"取消只有一个入口"的保证）。
       */}

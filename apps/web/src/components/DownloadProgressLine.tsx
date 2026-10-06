@@ -51,15 +51,6 @@ import {
 } from '@mcsr/shared/downloadProgress';
 import { useTranslation } from 'react-i18next';
 
-/**
- * 这一条正在说的是哪一项（`folderId|modid` 那种身份）。
- * ⚠️ 容器拿它把**行**与进度对起来（同一时刻只有一趟在跑，但那趟可能属于任何一个文件夹）。
- */
-export interface ProgressIdentity {
-  folderId: string;
-  modid: string;
-}
-
 export function DownloadProgressLine({
   progress,
   onCancel,

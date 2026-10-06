@@ -153,14 +153,20 @@ export function withSample(
 }
 
 /**
- * 一个进度帧属于"哪一项"。**换项 ⇒ 键变** ⇒ 页面的样本窗口据此重开。
+ * 一个进度帧属于"哪一项"的**哪一趟**。**换项、或换一趟 ⇒ 键变** ⇒ 页面的样本窗口据此重开。
  *
  * ⚠️★ 为什么需要它：速度是"这一项"的速度。把上一项的字节留在窗口里，
  *    换项后的第一个速度会是**负数**（或一个荒唐的大数），而界面照旧把它印出来。
- *    `itemIndex` 在批量里换项时一定会变，`modid` 兜住"同一项被重下"那种情形。
+ *    `itemIndex` 在批量里换项时一定会变。
+ * ⚠️★ **`runStartedAt` 那一格不是装饰（T5 评审 Important 2 就地改准）**：原来只写
+ *    `folderId|modid|itemIndex`，于是**同一个 mod 在 3 秒内被重下一次**（用户嫌慢按了取消、
+ *    随即再点更新；或失败后马上重试）时三个格子**全都一样** ⇒ 窗口不重开 ⇒ 上一趟最后一个样本
+ *    `(t0, R1)` 与新一趟第一帧 `received: 0` 一起进 `rateOf` ⇒ `moved < 0` ⇒ 速度印成 **`0 B/s`**
+ *    （而百分比是新的、还在涨）—— 正是 D2 与"不许退成 `0 B/s`"那条判据要禁止的读数。
+ *    每趟唯一的 `runStartedAt` 已经在**每一帧**里（主进程每趟 `Date.now()` 盖一次）⇒ 用它。
  */
 export function progressKeyOf(frame: DownloadProgress): string {
-  return `${frame.folderId}|${frame.modid}|${String(frame.itemIndex)}`;
+  return `${frame.folderId}|${frame.modid}|${String(frame.itemIndex)}|${String(frame.runStartedAt)}`;
 }
 
 /** 进度行的**视图模型**：判断在这里，组件只排版（T5 的 `DownloadProgressLine` 消费它）。 */

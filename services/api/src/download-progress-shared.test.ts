@@ -232,6 +232,15 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
       progressKeyOf(frame({ modid: 'lithium' })),
       '换 mod ⇒ 键必须变',
     );
+    /*
+     * ⚠️★ T5 评审（Important 2）就地补上：**换一趟也必须变** —— 同一个 mod 在 3 秒内被重下一次
+     *    （取消后立刻重试）时，前三个格子全都一样 ⇒ 旧样本留在窗口里 ⇒ 界面印 `0 B/s`。
+     */
+    assert.notEqual(
+      progressKeyOf(frame({})),
+      progressKeyOf(frame({ runStartedAt: 1 })),
+      '换一趟（runStartedAt 变了）⇒ 键必须变，否则重试同一个 mod 会印出 `0 B/s`',
+    );
   });
 
   it('★★ 视图模型：样本够 ⇒ 三个数都算出来；样本不足 ⇒ 速度与 ETA 都是 `—`（百分比来自帧本身）', () => {
