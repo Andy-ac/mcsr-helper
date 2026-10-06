@@ -319,6 +319,8 @@ function stateOf(rows: CatalogRowView[], extra: Partial<ModFoldersState> = {}): 
     missingStatus: 'ok',
     notices: [],
     busy: false,
+    /* ★ 子项目 C（S2）：契约多了这一格（正在跑的那一趟）。这一份自检不画进度 ⇒ `null`。 */
+    progress: null,
     lastRun: null,
     ...extra,
   };

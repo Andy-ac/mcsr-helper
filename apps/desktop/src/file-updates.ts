@@ -1472,10 +1472,28 @@ export async function downloadTo(opts: {
   expectedSize: number;
   /** 进度（0–100；算不出总长时是 `null`）。v1 用它推 `current.progress`。 */
   onProgress?: (percent: number | null) => void;
+  /**
+   * ★ 子项目 C：**每一个 chunk 一次**的字节读数（**不在这里节流** —— 节流是上报方的事，
+   *    因为"多久推一帧"是界面的事，而这里只管"把真读数交出去"）。
+   *
+   * ⚠️ 与 `onProgress` **并存**、互不影响：v1 只传 `onProgress`（它那一条路径的语义
+   *    与 150 ms 节流一字不动），新模块只传 `onBytes`。
+   */
+  onBytes?: (sample: { received: number; total: number }) => void;
+  /**
+   * ★ 子项目 C：取消令牌。中断这一次 HTTP 请求（`fetch` 原生支持）。
+   *
+   * ⚠️ 它**只管这一趟请求**：`.part` 由**调用方**删（Ruling 30），
+   *    而"写盘阶段不许取消"是调用方的判断（那一刻中断会留下半成品）。
+   */
+  signal?: AbortSignal;
 }): Promise<void> {
   const d = deps;
   if (!d) throw new Error('模块还没初始化');
-  const res = await fetch(opts.url, { headers: { 'user-agent': d.userAgent } });
+  const res = await fetch(opts.url, {
+    headers: { 'user-agent': d.userAgent },
+    signal: opts.signal,
+  });
   if (!res.ok) throw new Error(`下载失败：上游 HTTP ${String(res.status)}`);
   if (!res.body) throw new Error('下载失败：上游没有给响应体');
 
@@ -1496,6 +1514,7 @@ export async function downloadTo(opts: {
       hash.update(value);
       await handle.write(value);
       bytes += value.byteLength;
+      opts.onBytes?.({ received: bytes, total });
       const now = Date.now();
       // 150ms 一次：27 MB 会切成几千个 chunk，每个都推一次等于把 IPC 灌满
       if (now - lastReportAt >= 150) {

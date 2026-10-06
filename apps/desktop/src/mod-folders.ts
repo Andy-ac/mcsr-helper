@@ -76,6 +76,7 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
+import type { DownloadProgress } from '@mcsr/shared/downloadProgress';
 import {
   buildIndex,
   type ModCatalog,
@@ -184,6 +185,113 @@ function pushNotice(text: string): void {
  */
 let busy = false;
 let lastRun: ModFoldersState['lastRun'] = null;
+
+/**
+ * ★ 子项目 C：**这一趟**的运行上下文。
+ *
+ * ⚠️★ 为什么可以是一个模块级变量：本模块的写盘**本来就是串行的**
+ *    （`writeRun` / `bulkRun` 起手都拿 `busy` 挡住第二次），所以"同时只有一趟"不是假设、
+ *    是那两条外壳已经保证的事实。把上下文做成参数会要改 `installRelease` 的签名，
+ *    而它是"两个写入口共用"的那一段 —— 少动它一个字节就少一分风险。
+ * ⚠️ 它**不落盘**：`lastRun` 那样"上一趟到底怎么了"的读数才需要跨启动留存，
+ *    而进度是"此刻"的事（进程重启后没有正在跑的趟）。
+ */
+interface RunContext {
+  run: DownloadProgress['run'];
+  folderId: string;
+  controller: AbortController;
+  runStartedAt: number;
+  itemIndex: number;
+  itemCount: number;
+  phase: DownloadProgress['phase'];
+  cancelling: boolean;
+  modid: string;
+  fileName: string;
+  received: number;
+  total: number;
+}
+
+let activeRun: RunContext | null = null;
+
+/** 这一刻该推给页面的进度（没有在跑 ⇒ `null`）。**唯一**构造它的地方。 */
+let progress: DownloadProgress | null = null;
+
+function refreshProgress(): void {
+  progress =
+    activeRun === null
+      ? null
+      : {
+          run: activeRun.run,
+          phase: activeRun.phase,
+          folderId: activeRun.folderId,
+          modid: activeRun.modid,
+          fileName: activeRun.fileName,
+          received: activeRun.received,
+          total: activeRun.total,
+          itemIndex: activeRun.itemIndex,
+          itemCount: activeRun.itemCount,
+          runStartedAt: activeRun.runStartedAt,
+          cancelling: activeRun.cancelling,
+        };
+}
+
+/** 一趟起手。`itemCount` = 这一趟**打算开工的项数**（跳过的行不算）。 */
+function beginRun(input: {
+  run: DownloadProgress['run'];
+  folderId: string;
+  itemCount: number;
+}): void {
+  activeRun = {
+    run: input.run,
+    folderId: input.folderId,
+    controller: new AbortController(),
+    runStartedAt: Date.now(),
+    itemIndex: 0,
+    itemCount: input.itemCount,
+    phase: 'download',
+    cancelling: false,
+    modid: '',
+    fileName: '',
+    received: 0,
+    total: 0,
+  };
+  refreshProgress();
+}
+
+/** 换一项：项序 +1、字节归零、相位回到 `download`。 */
+function setRunItem(input: { modid: string; fileName: string }): void {
+  if (activeRun === null) return;
+  activeRun.itemIndex += 1;
+  activeRun.modid = input.modid;
+  activeRun.fileName = input.fileName;
+  activeRun.received = 0;
+  activeRun.total = 0;
+  activeRun.phase = 'download';
+  refreshProgress();
+  rebuild();
+}
+
+/** 相位（写盘那一段没有字节 —— 那不是网络流量）。 */
+function notePhase(phase: DownloadProgress['phase']): void {
+  if (activeRun === null) return;
+  activeRun.phase = phase;
+  refreshProgress();
+  rebuild();
+}
+
+/** 字节（**每一个 chunk 一次**，不在这里 `rebuild()` —— 见 `progress` 那一格的分工）。 */
+function noteBytes(sample: { received: number; total: number }): void {
+  if (activeRun === null) return;
+  activeRun.received = sample.received;
+  activeRun.total = sample.total;
+  refreshProgress();
+}
+
+/** 一趟收尾：**清干净**（界面靠这一次 `rebuild()` 知道"没有在跑了"）。 */
+function endRun(): void {
+  activeRun = null;
+  refreshProgress();
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -346,6 +454,7 @@ function placeholderState(): ModFoldersState {
     missingStatus: 'catalog-unavailable',
     notices: [],
     busy: false,
+    progress: null,
     lastRun: null,
   };
 }
@@ -501,6 +610,7 @@ function buildState(): ModFoldersState {
       (note): note is string => note !== null,
     ),
     busy,
+    progress,
     lastRun,
   };
 }
@@ -995,8 +1105,12 @@ function stalePartsOf(targetDir: string, targetName: string): string[] {
  *
  * ⚠️★ **`.part` 是调用方的**（Ruling 30）：`installDownloadedFile` 一个字节都不碰它 ⇒
  *    下面那个 `catch` 负责删。"下载失败 / 校验没过 / 就位失败"三条路都落在同一个 `catch` 里。
- * ⚠️ **不传 `onProgress`**：`ModFoldersState` 里没有承载进度的字段（T1 的契约没有它）。
- *    传一个什么都不做的回调只是装饰；要进度条得先给契约加一格，那时这里才接得上。
+ * ⚠️★ **`onProgress` 与 `onBytes` 分工**（2026-10-06 就地改准；上一版这句写的是"不传 `onProgress`…
+ *    要进度条得先给契约加一格"）：契约那一格已经加好了（`ModFoldersState.progress`）⇒ 新模块
+ *    现在**走 `onBytes` + `noteBytes`**（每一个 chunk 一次，交出去的只有字节读数），
+ *    而 v1 那一条路**仍然只用 `onProgress`**（它那份 150 ms 节流与 0–100 的语义一字不动）。
+ *    ⚠️ 这里**依然不传 `onProgress`**：`onBytes` 与它并存、各供各的载体 —— 两个都传等于
+ *    同一条路径上有两份进度读数（一份 0–100、一份字节数），迟早会漂。
  */
 async function installRelease(opts: {
   targetDir: string;
@@ -1103,7 +1217,10 @@ async function installRelease(opts: {
       partPath,
       expectedSha512: release.sha512,
       expectedSize: release.size,
+      onBytes: (sample) => noteBytes(sample),
+      signal: activeRun?.controller.signal,
     });
+    notePhase('install'); // ★ C：写盘阶段**没有字节**（界面显示"正在写入…"，且取消按钮置灰）
     movedOld = (await installDownloadedFile({ partPath, targetPath })).movedOld;
   } catch (error) {
     // Ruling 30：`.part` 由**调用方**删（`installDownloadedFile` 不碰它）
@@ -1154,22 +1271,26 @@ async function installRelease(opts: {
  *    （写进 `updated` 会让界面说"已更新 1 项"，而盘上什么都没变）。`work()` 返回 `null` = 真的更新了。
  */
 async function writeRun(
-  modid: string,
+  input: { run: 'update-mod' | 'download-missing'; folderId: string; modid: string },
   work: () => Promise<string | null>,
 ): Promise<ModFoldersState> {
+  const { modid } = input;
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
+  beginRun({ run: input.run, folderId: input.folderId, itemCount: 1 });
   rebuild();
   let skipped: string | null = null;
   try {
     skipped = await work();
   } catch (error) {
     busy = false;
+    endRun();
     lastRun = { updated: [], skipped: [], failed: [{ modid, reason: messageOf(error) }] };
     rebuild();
     throw error;
   }
   busy = false;
+  endRun();
   lastRun =
     skipped === null
       ? { updated: [modid], skipped: [], failed: [] }
@@ -1309,6 +1430,12 @@ async function installFolderRow(opts: {
    */
   const mainPath = join(entry.path, row.fileName);
   const oldCopies = [mainPath, ...row.oldCopies.map((name) => join(entry.path, name))];
+  /*
+   * ★ C/S2：**项的身份只有调用方知道** —— `installRelease` 收的是 `{targetDir, release,
+   *   channel}`，"这是第几项、下的是哪一个"不在它的入参里（也不该在：那会让两个写入口
+   *   共用那一段再多一个必须传对的东西）。
+   */
+  setRunItem({ modid: row.modid, fileName: row.fileName });
   const outcome = await installRelease({
     targetDir: entry.path,
     release,
@@ -1394,21 +1521,28 @@ function skipReasonOf(row: ModFolderRowView): string {
  */
 type LastRun = NonNullable<ModFoldersState['lastRun']>;
 
-async function bulkRun(work: () => Promise<LastRun>): Promise<ModFoldersState> {
+async function bulkRun(input: {
+  folderId: string;
+  itemCount: number;
+  work: () => Promise<LastRun>;
+}): Promise<ModFoldersState> {
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
+  beginRun({ run: 'update-folder-all', folderId: input.folderId, itemCount: input.itemCount });
   rebuild();
   let run: LastRun;
   try {
-    run = await work();
+    run = await input.work();
   } catch (error) {
     busy = false;
+    endRun();
     lastRun = { updated: [], skipped: [], failed: [] };
     pushNotice(`整夹更新没能跑完：${messageOf(error)}`);
     rebuild();
     throw error;
   }
   busy = false;
+  endRun();
   lastRun = run;
   rebuild();
   return modFoldersState();
@@ -1471,7 +1605,7 @@ export async function updateMod(
    *    那道闸的拒绝在整夹更新里必须落成**一条 `failed`**（一条失败不许中断整批），
    *    所以它只能住在"被 try 包住的那一段"里。单行这一侧的效果不变（外面没有别人接它）。
    */
-  return writeRun(key.modid, async () => {
+  return writeRun({ run: 'update-mod', folderId: id, modid: key.modid }, async () => {
     const why = await installFolderRow({ entry, row, channel: chan, what: key.key });
     // spec §7.3 第 9 步：重扫该文件夹（**强制**，不吃缓存：目录刚刚被我们改过）
     await queueScan(id, entry.path, { onlyIfMissing: false });
@@ -1529,34 +1663,43 @@ export async function updateFolderAll(
   const view = folderView(id, entry);
   const what = (modid: string): string => `${modid}|${view.gameVersion ?? '?'}`;
 
-  return bulkRun(async () => {
-    const updated: string[] = [];
-    const skipped: { modid: string; reason: string }[] = [];
-    const failed: { modid: string; reason: string }[] = [];
-    // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
-    await yieldToEventLoop();
-    for (const row of view.rows) {
-      if (row.batchable) {
-        try {
-          const why = await installFolderRow({ entry, row, channel: chan, what: what(row.modid) });
-          if (why === null) updated.push(row.modid);
-          else skipped.push({ modid: row.modid, reason: why });
-        } catch (error) {
-          // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
-          failed.push({ modid: row.modid, reason: messageOf(error) });
-        }
-      } else {
-        skipped.push({ modid: row.modid, reason: skipReasonOf(row) });
-      }
-      /*
-       * ★ 每条之间让出一次事件循环（spec §7.4 的字面）。放在**每一条之后**（跳过的那条也算）：
-       *    跳过的行不 await 任何东西，而一个真实的文件夹里跳过的往往占多数 ⇒ 让出点更多，
-       *    页面在整批期间更不会看起来卡住。
-       */
+  return bulkRun({
+    folderId: id,
+    itemCount: view.rows.filter((row) => row.batchable).length,
+    work: async () => {
+      const updated: string[] = [];
+      const skipped: { modid: string; reason: string }[] = [];
+      const failed: { modid: string; reason: string }[] = [];
+      // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
       await yieldToEventLoop();
-    }
-    if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
-    return { updated, skipped, failed };
+      for (const row of view.rows) {
+        if (row.batchable) {
+          try {
+            const why = await installFolderRow({
+              entry,
+              row,
+              channel: chan,
+              what: what(row.modid),
+            });
+            if (why === null) updated.push(row.modid);
+            else skipped.push({ modid: row.modid, reason: why });
+          } catch (error) {
+            // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
+            failed.push({ modid: row.modid, reason: messageOf(error) });
+          }
+        } else {
+          skipped.push({ modid: row.modid, reason: skipReasonOf(row) });
+        }
+        /*
+         * ★ 每条之间让出一次事件循环（spec §7.4 的字面）。放在**每一条之后**（跳过的那条也算）：
+         *    跳过的行不 await 任何东西，而一个真实的文件夹里跳过的往往占多数 ⇒ 让出点更多，
+         *    页面在整批期间更不会看起来卡住。
+         */
+        await yieldToEventLoop();
+      }
+      if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
+      return { updated, skipped, failed };
+    },
   });
 }
 
@@ -1666,7 +1809,15 @@ export async function downloadMissing(
   }
   assertNotManual(row.manual, what, '下载');
 
-  return writeRun(modid, async () => {
+  return writeRun({ run: 'download-missing', folderId: id, modid }, async () => {
+    /*
+     * ★ C/S2：**项的身份**在这里落定（`installFolderRow` 那条路是同一个意思）。
+     * ⚠️ 文件名取的是 `originFileNameOf(release.url)` —— 也就是**这一趟要落盘的那个名字**
+     *    （`installRelease` 用同一个函数推 `targetPath`）。brief 的示例写的是
+     *    `row.fileName`，而这一支手上那个 `row` 是 `CatalogRowView`（**没有** `fileName`：
+     *    目录行没有本地文件）⇒ 按 brief 自己那句"取能取到的那个；取不到就用 modid"。
+     */
+    setRunItem({ modid, fileName: originFileNameOf(release.url) ?? modid });
     const outcome = await installRelease({
       targetDir: entry.path,
       release,

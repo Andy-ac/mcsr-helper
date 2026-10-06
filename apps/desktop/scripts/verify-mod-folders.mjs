@@ -516,9 +516,50 @@ const MOD_BUSY = writeMods[2] ?? '';
 const MOD_TRAV = writeMods[3] ?? '';
 const MOD_MANUAL = writeMods[4] ?? '';
 
+/**
+ * ★ C/S2（子项目 C）慢桩夹具用的 modid —— **1.16.1 下唯一候选、版本主体能安全排序、
+ *   `download === 'auto'`、且没被上面六个夹具占用**的那些。
+ *
+ * ⚠️★ 为什么必须**可排序**（不能随便挑两个）：批量那一组（㉖b）要的判据是
+ *    "`itemCount` = 这一趟的目标数 = 2"，而"进批量"的判据是 `older`；`older` 要求
+ *    **两边主体都能排序**（`isSortableBody`，见 `compareLocalToRelease`）——
+ *    主体里有非数字段的 release 判出来是 `different-build`（要人点一下、**不进批量**）。
+ *    实测（2026-10-06 现读 `content/mod-catalog.json`）：brief 举例的 `lithium|1.16.1`
+ *    版本是 `1.0+backport-0.6.7+1.16.1` ⇒ **不排序** ⇒ 拿它当第二个夹具时 `itemCount`
+ *    会是 **1**，那条判据就会红在一处**夹具缺陷**上（§5.79 那一族：红点长得像产品缺陷）。
+ *    ⇒ 这里按判据本身筛，不按名字挑（brief 自己给了出口："other 用哪个 modid 以现读为准"）。
+ * ⚠️★ 为什么不用 `writeMods[0..4]` 那几个：`hijack` 是**就地改** `modCatalog.releases`
+ *    （url / sha512 / size）⇒ 再劫持同一个 modid 一次，会把前面几组夹具的地址与字节一起改掉。
+ * ⚠️ 为什么还要 `download === 'auto'`：`manual` 的行连更新按钮都不该有（`assertNotManual`
+ *    会当场拒）—— 那种 mod 进这一组夹具只会得到一条与进度无关的红。
+ */
+const progressPool = writeMods.slice(5).filter((modid) => {
+  const release = modCatalog.releases.find(
+    (candidate) => candidate.modid === modid && candidate.targetVersions.includes('1.16.1'),
+  );
+  return (
+    release !== undefined && sortableBodyOf(release.version) && release.download === 'auto'
+  );
+});
+if (WRITE && progressPool.length < 2) {
+  bail(
+    `构造不出 C/S2 的慢桩夹具：要 2 个"可排序、未被占用、download=auto"的 modid，只找到 ${String(progressPool.length)} 个`,
+  );
+}
+
 /** 夹具 jar 里写的**内部版本号**（故意与目录里 release 的版本字符串不同：见写相位 ⑰ 的刀）。 */
 const FIXTURE_JAR_VERSION = '1.0.0';
 const SERVED_JAR_VERSION = '9.9.9';
+/**
+ * ★ C/S2 那两个夹具 jar 里写的内部版本号：**必须严格低于目录里那一条的版本主体**
+ *   （正文里那两行才会判成 `older` ⇒ 可批量）。
+ *
+ * ⚠️★ 不能用上面那个 `FIXTURE_JAR_VERSION = '1.0.0'`：目录里真有比 1.0.0 旧的 release
+ *    （实例：`phosphor|1.16.1` 是 `0.7.2`）⇒ 那样的行判出来是 `newer`（本地更新），
+ *    而 `newer` **不进批量**、写盘时还会被 `assertUpdatable` 当场拒。
+ *    这是**现读目录**得到的结论，不是猜的。
+ */
+const PROGRESS_LOCAL_JAR_VERSION = '0.0.1';
 
 /** 一个**真 zip**（产品的 `readJarMeta` 读得动）。`extra=true` ⇒ 字节与"官方那一份"不同。 */
 function probeJar(modid, version, extra = false) {
@@ -740,6 +781,61 @@ function buildWriteFixture() {
   trav.url = 'https://github.com/x/..%2F..%2Fevil.jar';
   trav.sha512 = sha512OfBuffer(probeJar(MOD_TRAV, SERVED_JAR_VERSION));
   trav.size = 1;
+
+  /*
+   * =========================================================================
+   * ★ C/S2（子项目 C）：**慢桩**那两条夹具
+   * =========================================================================
+   * ⚠️★ 为什么**单开一条镜像**（`probe-c2slow`，前缀 `/mirror-c2slow/`），而不复用
+   *    写相位已有的那条 `/mirror-slow/`（brief 举例写的正是 `probe-slow`）：
+   *      · ⑮ 里那条判据是**绝对**计数 `slowReqs() === 1`（"慢的那条路径只被请求了 1 次"），
+   *        而新夹具每跑一次就往 `/mirror-slow/` 上再记一笔 ⇒ 那一条会红在一件与它无关的事上；
+   *      · 桩是按**路径前缀**键控的（`downloads` 一个前缀一份字节），而 `/mirror-slow/`
+   *        那份字节的 sha512 是 `good` 那一条 release 的 ⇒ 两条夹具挤进同一个前缀，
+   *        谁都得下到别人的字节（第二条一定 sha512 对不上）。
+   *    ⇒ 新夹具自带镜像与字节，⑮ 的读数一字不变。
+   * ⚠️★ 为什么两条 release **共享同一组字节**：`updateFolderAll` 只收**一个**通道，
+   *    而桩按前缀键控 ⇒ 这一趟里两条行取到的一定是同一份字节。各给一份各自的字节
+   *    （照 `hijack` 那样）时，第二条必然 sha512 对不上 —— 那是夹具的错，不是产品的错。
+   * ⚠️★ 为什么每条 fixture 额外带一份 `local` 字节：`official` 是**桩要回的那一份**，
+   *    而 `release.sha512` 就是它的 sha512 ⇒ 把 `official` 按目标名写进目录 = "这个文件
+   *    已经是这一份"（`judgeRelease` 判 `same`、`installRelease` 走**幂等**那一支）
+   *    ⇒ **一个请求都不会发**，"慢下载中途读到字节"这条判据永远量不到东西。
+   *    `local` 是同 modid、内部版本更低、字节不同的那一份 ⇒ 判成 `older` ⇒ 真的走下载
+   *    （`placeJar` 落盘时用的是它，理由写在那个助手头顶）。
+   */
+  const hijackSlowGroup = (modids, mirrorId, pathName, chunkDelayMs) => {
+    const suffix = mirrorId.replace('probe-', '');
+    const shared = probeJar(modids[0], SERVED_JAR_VERSION);
+    modCatalog.mirrors.push({
+      id: mirrorId,
+      label: `探针桩（${mirrorId}）`,
+      prefix: `${siteOrigin}/mirror-${suffix}/`,
+      hosts: [host],
+    });
+    const made = modids.map((modid, index) => {
+      const release = modCatalog.releases.find(
+        (candidate) => candidate.modid === modid && candidate.targetVersions.includes('1.16.1'),
+      );
+      if (release === undefined) bail(`夹具前提不成立：${modid} 在 1.16.1 下没有 release`);
+      const name = `${pathName}-${String(index + 1)}.jar`;
+      release.url = `${siteOrigin}/origin/${name}`;
+      release.sha512 = sha512OfBuffer(shared);
+      release.size = shared.length;
+      return {
+        modid,
+        release,
+        targetName: name,
+        official: shared,
+        served: shared,
+        local: probeJar(modid, PROGRESS_LOCAL_JAR_VERSION),
+        mirrorId,
+      };
+    });
+    downloads.set(`/mirror-${suffix}/`, { bytes: shared, chunkDelayMs });
+    return made;
+  };
+  const [slow, other] = hijackSlowGroup(progressPool.slice(0, 2), 'probe-c2slow', 'c2-slow', 400);
   return {
     bad,
     good,
@@ -747,6 +843,8 @@ function buildWriteFixture() {
     newer,
     manual,
     trav: { modid: MOD_TRAV, release: trav, mirrorId: 'probe-trav' },
+    slow,
+    other,
   };
 }
 const writeFixture = buildWriteFixture();
@@ -759,6 +857,9 @@ if (WRITE) {
     `  Ruling 47 的夹具：newer=${writeFixture.newer.modid}（release ${writeFixture.newer.release.version}）；manual=${writeFixture.manual.modid}（download 改成 manual）`,
   );
   console.log(`  穿越那一条：${writeFixture.trav.modid} → ${writeFixture.trav.release.url}`);
+  console.log(
+    `  C/S2 的慢桩夹具（${writeFixture.slow.mirrorId}，chunkDelayMs=400）：${[writeFixture.slow, writeFixture.other].map((entry) => `${entry.modid}→${entry.targetName}（本地 ${String(entry.local.length)}B / 桩回 ${String(entry.served.length)}B）`).join('；')}`,
+  );
 }
 
 /**
@@ -2395,6 +2496,20 @@ async function writePhase() {
   const reqsOf = (prefix) => downloadLog.filter((entry) => entry.prefix === prefix).length;
   const goodReqs = () => reqsOf('/mirror-good/');
   const slowReqs = () => reqsOf('/mirror-slow/');
+  /**
+   * 把夹具字节落到某个目录里（`probeJar()` 返回的是**字节**，而 `copyFileSync` 的 src 要
+   * **路径** ⇒ 只能是 `writeFileSync(join(dir, name), bytes)`）。
+   *
+   * ⚠️★ 落的是 `fixture.local`，**不是** `fixture.official`（brief 那一行写的是后者）：
+   *    `official` 正是桩要回的那一份，而 `release.sha512 = sha512OfBuffer(official)`
+   *    ⇒ 把它按目标名写进目录 = "这个文件已经是这一份" ⇒ `judgeRelease` 判 `same`、
+   *    `installRelease` 走**幂等**那一支（`alreadyCurrent`）⇒ **一个请求都不会发**，
+   *    "慢下载中途读到字节"这条判据永远量不到东西（§5.32 ①：夹具一空，判据就恒真）。
+   *    `local` 是同 modid、内部版本更低、字节不同的那一份 ⇒ 判成 `older` ⇒ 真下载。
+   */
+  const placeJar = (dir, fixture) => {
+    writeFileSync(join(dir, fixture.targetName), fixture.local);
+  };
   const noPartsOrOlds = (dir) =>
     !readdirSync(dir).some((name) => name.includes('.part') || name.endsWith('.old'));
   /*
@@ -3622,6 +3737,120 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       (await invoke(MOD_CH.getState)).busy === false,
       '',
     );
+  });
+
+  // =========================================================================
+  // ㉖（子项目 C / S2）字节级进度：**慢桩** + 中途读状态
+  // =========================================================================
+  /*
+   * ⚠️★ 编号与位置（与 brief 的示例不一致，报告里写明了）：brief 说"紧接在 ⑫ 那一组之后加
+   *    一组"，并按 ⑬ 举了例。本树里 ⑬ 已经被"路径穿越被拒"占用，⑬–㉕ 也都在用 ⇒
+   *    按 brief 自己那条procedure（"看下一个空号"）取到的下一个空号是 **㉖**。
+   *    而㉖ 接在 ㉕ 之后，编号才继续跟着**执行顺序**走（这是本文件自己的风格）。
+   * ⚠️★ 慢桩为什么要单独一条镜像：见 `hijackSlowGroup` 头顶那一段（⑮ 有一条**绝对**计数）。
+   * ★ 为什么必须是"慢桩"（`chunkDelayMs`）：`installRelease` 的进度读数只在**下载中途**
+   *   非空，一次瞬间完成的下载什么都测不到（夹具一快，这条判据就变成恒真 —— §5.32 ①）。
+   *   桩的行为（`downloads` 里那条 `chunkDelayMs`）在写相位之外是空的 ⇒ 主相位一个字都不变。
+   */
+  await section('㉖（C/S2）慢下载中途：进度在状态里、字节单调', async () => {
+    const dirProgress = join(workRoot, 'progress');
+    mkdirSync(dirProgress, { recursive: true });
+    placeJar(dirProgress, fx.slow);
+    const id = await prepare(dirProgress);
+    const halfBytes = Math.ceil(fx.slow.official.length / 2);
+    /*
+     * ★ "字节单调"这一条**必须有仪器**：它只写在标题里的话就是一句没人验的话
+     *   （§5.32 ③：读数看着有、其实什么都没测）⇒ 整趟下载期间按 20ms 轮询状态，
+     *   把每一次非空的 `received` 记下来，最后判它不回退。**不订阅推送**（那是 T3 的事）。
+     */
+    const samples = [];
+    const poll = setInterval(() => {
+      void invoke(MOD_CH.getState).then((state) => {
+        if (state.progress) samples.push(state.progress.received);
+      });
+    }, 20);
+    const run = invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
+      mirrorId: fx.slow.mirrorId,
+    });
+    await new Promise((r) => setTimeout(r, 60)); // 第一半已经在写、正卡在桩的暂停里
+    const mid = await invoke(MOD_CH.getState);
+    check('★ 下载中途 busy 是 true', mid.busy === true, String(mid.busy));
+    check(
+      '★★ 进度在**状态**里（不是只在推送里）：folderId / modid / 文件名叫得出来',
+      mid.progress?.folderId === id &&
+        mid.progress?.modid === fx.slow.modid &&
+        mid.progress?.fileName === fx.slow.targetName,
+      JSON.stringify(mid.progress),
+    );
+    check(
+      '★ 字节是**字节级**的：收到的量在第一半的范围里、总长等于真字节数',
+      typeof mid.progress?.received === 'number' &&
+        mid.progress.received > 0 &&
+        mid.progress.received <= fx.slow.official.length &&
+        mid.progress.total === fx.slow.official.length,
+      JSON.stringify({ received: mid.progress?.received, total: mid.progress?.total, half: halfBytes }),
+    );
+    check('★ 相位是 download、项序 1/1', mid.progress?.phase === 'download' && mid.progress.itemIndex === 1 && mid.progress.itemCount === 1, JSON.stringify(mid.progress));
+    const after = await run;
+    clearInterval(poll);
+    check(
+      '★ 字节单调：整趟下载期间收到的量**一次都没有回过退**（至少两个读数）',
+      samples.length >= 2 &&
+        samples.every((value, index) => index === 0 || value >= samples[index - 1]),
+      JSON.stringify(samples),
+    );
+    check(
+      '★★ 收尾之后**清干净**（界面不会永远停在最后一帧 —— spec §3 那句"必须有一条结束的读数"）',
+      after.progress === null && after.busy === false,
+      JSON.stringify({ progress: after.progress, busy: after.busy }),
+    );
+    check('★ 这一趟真的装好了（不然上面那些读数可能来自一次失败的下载）', existsSync(join(dirProgress, fx.slow.targetName)), listing(dirProgress));
+  });
+
+  /*
+   * =========================================================================
+   * ㉖b（子项目 C / S3）整夹更新：项序
+   * =========================================================================
+   * ⚠️★ 第三行（`newer` 那份 jar）是**为了这条判据才放的**：`itemCount` 的判据是
+   *    "= 可批量的行数，**而不是**文件夹里的行数" ⇒ 文件夹里**必须有不批量的行**，
+   *    否则 `count === 2` 在"3 行全可批量"与"只数可批量的"两种实现下都成立（§5.32 ①）。
+   */
+  await section('㉖b（C/S3）整夹更新：itemIndex 从 1 递增、itemCount 等于这一趟的目标数', async () => {
+    const dirBatch = join(workRoot, 'progress-batch');
+    mkdirSync(dirBatch, { recursive: true });
+    // 两个可批量的行（夹具里那两份 jar 比目录里的旧 ⇒ `older` ⇒ batchable）
+    placeJar(dirBatch, fx.slow);
+    placeJar(dirBatch, fx.other);
+    // 第三个**不可批量**的行（本地 99.0.0 > 目录那一条 ⇒ `newer` ⇒ 不进批量、也不发请求）
+    writeFileSync(join(dirBatch, 'newer-99.jar'), probeJar(fx.newer.modid, '99.0.0', true));
+    const id = await prepare(dirBatch);
+    /*
+     * ⚠️★ 仪器自检：这一夹**必须恰好有 2 行可批量**。少一行的话下面那两条判据量的就是
+     *    夹具缺陷（§5.79：红点会长得像产品缺陷）⇒ 夹具前提不成立时按退出码 2 结束。
+     */
+    const batchRows = (await invoke(MOD_CH.getState)).folders
+      .find((folder) => folder.folderId === id)
+      ?.rows.filter((row) => row.batchable).length;
+    if (batchRows !== 2) {
+      bail(`夹具前提不成立：这一夹可批量的行是 ${String(batchRows)} 个（这一组判据要 2 个）`);
+    }
+    const seen = [];
+    // ⚠️ 不在这一相位订阅推送（那是 T3 的事）：这里靠**轮询状态**取项序
+    const poll = setInterval(() => {
+      void invoke(MOD_CH.getState).then((state) => {
+        if (state.progress) seen.push({ item: state.progress.itemIndex, count: state.progress.itemCount });
+      });
+    }, 25);
+    const after = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
+    clearInterval(poll);
+    const indexes = [...new Set(seen.map((s) => s.item))].sort((a, b) => a - b);
+    check('★ 项序从 1 起（不会出现 0）', indexes[0] === 1, JSON.stringify(indexes));
+    check(
+      '★★ `itemCount` 等于这一趟的目标数（= 可批量的行数），而不是文件夹里的行数',
+      seen.length > 0 && seen.every((s) => s.count === 2),
+      JSON.stringify(seen.slice(0, 6)),
+    );
+    check('★ 收尾之后 progress 是 null', after.progress === null, JSON.stringify(after.progress));
   });
 
   server.close();

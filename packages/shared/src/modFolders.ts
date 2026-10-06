@@ -41,6 +41,7 @@
  *   在这里重写一次，就等于让"要不要自动替换用户文件"这件事有两个会漂的版本。
  */
 
+import type { DownloadProgress } from './downloadProgress';
 import { compareLocalVersions } from './fileUpdates';
 import type {
   ModCatalog,
@@ -862,6 +863,19 @@ export interface ModFoldersState {
   /** 例：迁移时"已转为文件夹跟踪：<mod 名>"、"这条绑定读不出来，保留原样"。 */
   notices: readonly string[];
   busy: boolean;
+  /**
+   * ★ 子项目 C：**正在跑的那一趟**（没有在跑就是 `null`）。
+   *
+   * ⚠️★ 这一格与 `onProgress` 推送**不是两份真相**：它们读的是主进程里**同一个变量**，
+   *    只是**载体不同、频率不同** ——
+   *      · 这一格随既有的 `onStatus` 整份状态推（**低频**：起手 / 换项 / 换相位 / 收尾），
+   *        所以切 tab、折叠再展开之后，页面**立刻**知道"有一趟在跑、跑到第几项"；
+   *      · 字节那一格的高频更新走 `onProgress`（D3 节流到 ≥100 ms / ≥64 KB），
+   *        因为整份状态里有 folders / catalogRows，10 Hz 推它是浪费。
+   * ⚠️ 一趟结束时它必须变回 `null`（`writeRun` / `bulkRun` 的收尾）—— 这就是 spec §3
+   *    要的那条"结束的读数"：界面不会停在最后一帧。
+   */
+  progress: DownloadProgress | null;
   lastRun: {
     updated: readonly string[];
     skipped: readonly { modid: string; reason: string }[];
