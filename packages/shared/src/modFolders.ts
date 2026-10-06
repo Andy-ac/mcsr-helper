@@ -880,6 +880,13 @@ export interface ModFoldersState {
     updated: readonly string[];
     skipped: readonly { modid: string; reason: string }[];
     failed: readonly { modid: string; reason: string }[];
+    /**
+     * ★ 子项目 C：被**取消**掉的项（D4）。
+     *
+     * ⚠️★ 单独一个桶是刻意的：取消**不是失败**（用户自己按的按钮），
+     *    记进 `failed` 会让界面说"更新失败"，而事实是"按你说的停了"。
+     */
+    cancelled: readonly { modid: string; reason: string }[];
   } | null;
 }
 

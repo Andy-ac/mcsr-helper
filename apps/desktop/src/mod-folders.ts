@@ -9,9 +9,10 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十三条 IPC 的注册**（T3 之后契约是 15 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
+ *   · **十四条 IPC 的注册**（C 的 T4 之后契约是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
- *     `updateCatalogRow`，契约 17 → 14，裁决 B）；
+ *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
+ *     T4 加 `cancelDownload`（16）—— 后两条**都没有**加 handler 之外的注册面）；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
  *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 三个入口共用
  *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
@@ -316,6 +317,48 @@ function endRun(): void {
    *    与"上一趟的时刻"比 —— 那两件事属于两趟，比出来的差没有意义（D3 的窗口是"这一趟"的）。
    */
   lastPush = null;
+}
+
+/**
+ * ★ 子项目 C：停掉正在跑的那一趟（D4）。
+ *
+ * ⚠️★ **写盘阶段一律拒**：那一刻两次 `rename` 之间中断会留下"目标位置什么都没有"
+ *    （`installDownloadedFile` 的契约就是"要么换好、要么一个字节都没动"）⇒
+ *    代价远大于收益。界面那一侧同时把按钮置灰并写明"正在写入，稍候"。
+ * ⚠️ 幂等：已经在取消中 ⇒ 再点一次仍然 `{ok:true}`（页面可能连点两下）。
+ * ⚠️★ "谁来 abort"只在这里：`installRelease` 早就在 `downloadTo` 上传了
+ *    `signal: activeRun?.controller.signal`（T2），所以这里 `abort()` 就是**中断这一趟
+ *    HTTP 请求**的那一下。⛔ `abort()` 之后的事情都有主：`downloadTo` 抛 ⇒
+ *    `installRelease` 的 `catch` 删掉 `.part` 再抛 ⇒ 两条外壳的 `catch` 按
+ *    `activeRun.cancelling` 决定"记进 `cancelled` 且**不** reject"（取消不是失败）。
+ * ⚠️ `rebuild()` 在 `abort()` **之前**：页面靠这一帧把按钮变成「正在取消…」
+ *    （`progress.cancelling` 那一格），而 `abort()` 之后这一趟马上就开始收尾了。
+ */
+function cancelDownload(): { ok: true } | { ok: false; reason: string } {
+  if (activeRun === null) return { ok: false, reason: '没有在跑' };
+  if (activeRun.phase === 'install') {
+    return { ok: false, reason: '正在写入，这一趟不能取消（中断写入会留下半成品）' };
+  }
+  if (activeRun.cancelling) return { ok: true };
+  activeRun.cancelling = true;
+  refreshProgress();
+  rebuild(); // ★ 页面据此把按钮变成「正在取消…」
+  activeRun.controller.abort();
+  return { ok: true };
+}
+
+/**
+ * 这一趟是否已被要求取消（**现读**模块级的 `activeRun`）。
+ *
+ * ⚠️★ 为什么要一个函数、而不在调用处直接写 `activeRun?.cancelling === true`：
+ *    `tsc` 会**跨 `await` 保留窄化** —— 循环顶上那次 `if (... === true) break;` 之后，
+ *    它把 `activeRun.cancelling` 窄成 `false | undefined`，于是 `try` 的 `catch` 里
+ *    同一个表达式被判成"两个类型没有重叠"（**TS2367**，实测）。而那一刻的事实正好相反：
+ *    取消是在 `await installFolderRow(...)` **期间**到的（D4 的现场就是它）⇒
+ *    窄化在这里是**假话**。函数调用是窄化过不去的边界，读数因此是现读的、类型检查也认。
+ */
+function isCancelling(): boolean {
+  return activeRun?.cancelling === true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1340,8 +1383,26 @@ async function writeRun(
     skipped = await work();
   } catch (error) {
     busy = false;
+    /*
+     * ★ D4：取消**不是失败** ⇒ 不抛（IPC 不 reject，页面不弹错），真相在
+     *    `lastRun.cancelled` 里，界面据此说"已取消"。
+     * ⚠️★ 顺序是承重的：`cancelling` 必须**在 `endRun()` 之前**读 —— `endRun()` 会把
+     *    `activeRun` 清成 `null`，反过来写的话这个判断恒为 false（取消会被记成一次失败，
+     *    而 IPC 还会 reject ⇒ 页面弹出"更新失败"，与 D4 明写的那句话相反）。
+     */
+    const cancelled = activeRun?.cancelling === true;
     endRun();
-    lastRun = { updated: [], skipped: [], failed: [{ modid, reason: messageOf(error) }] };
+    if (cancelled) {
+      lastRun = { updated: [], skipped: [], failed: [], cancelled: [{ modid, reason: '已取消' }] };
+      rebuild();
+      return modFoldersState();
+    }
+    lastRun = {
+      updated: [],
+      skipped: [],
+      failed: [{ modid, reason: messageOf(error) }],
+      cancelled: [],
+    };
     rebuild();
     throw error;
   }
@@ -1349,8 +1410,8 @@ async function writeRun(
   endRun();
   lastRun =
     skipped === null
-      ? { updated: [modid], skipped: [], failed: [] }
-      : { updated: [], skipped: [{ modid, reason: skipped }], failed: [] };
+      ? { updated: [modid], skipped: [], failed: [], cancelled: [] }
+      : { updated: [], skipped: [{ modid, reason: skipped }], failed: [], cancelled: [] };
   rebuild();
   return modFoldersState();
 }
@@ -1592,7 +1653,11 @@ async function bulkRun(input: {
   } catch (error) {
     busy = false;
     endRun();
-    lastRun = { updated: [], skipped: [], failed: [] };
+    /*
+     * ⚠️ 整批的取消**不**走这一支：它由循环自己收尾（`updateFolderAll` 的 `work()` 里
+     *    那个 `break` + `cancelled` 桶），所以到这里的一律是**真失败** ⇒ `cancelled: []`。
+     */
+    lastRun = { updated: [], skipped: [], failed: [], cancelled: [] };
     pushNotice(`整夹更新没能跑完：${messageOf(error)}`);
     rebuild();
     throw error;
@@ -1726,9 +1791,12 @@ export async function updateFolderAll(
       const updated: string[] = [];
       const skipped: { modid: string; reason: string }[] = [];
       const failed: { modid: string; reason: string }[] = [];
+      const cancelled: { modid: string; reason: string }[] = [];
       // v1 `updateAll` 的起手也放一次（批量与上一条指令之间也让页面喘一口）
       await yieldToEventLoop();
       for (const row of view.rows) {
+        // ★ D4：取消之后**剩下的项不再开工**（在每一项之前判，而不是等它自己抛）
+        if (isCancelling()) break;
         if (row.batchable) {
           try {
             const why = await installFolderRow({
@@ -1740,6 +1808,11 @@ export async function updateFolderAll(
             if (why === null) updated.push(row.modid);
             else skipped.push({ modid: row.modid, reason: why });
           } catch (error) {
+            if (isCancelling()) {
+              // ★ 当前这一项是被我们打断的那一项 ⇒ 记进 `cancelled`，然后停
+              cancelled.push({ modid: row.modid, reason: '已取消' });
+              break;
+            }
             // ★ 一条失败**不中断**整批（spec §7.4）：记下来，继续下一条
             failed.push({ modid: row.modid, reason: messageOf(error) });
           }
@@ -1753,8 +1826,23 @@ export async function updateFolderAll(
          */
         await yieldToEventLoop();
       }
+      /*
+       * ⚠️★ 两种"没有开工的项"要如实说，而且**不许**编一个假 modid 进 `cancelled`
+       *    （那一格是**行**的标识，编一个会让页面显示一条不存在的行 —— `bulkRun` 那条
+       *    "整批起手就抛时不写 failed" 的注释是同一族纪律）：
+       *      · 取消发生在换项之间 ⇒ `cancelled` 空着 + 一条 notice；
+       *      · 当前那一项正好下完了（abort 到晚了）⇒ 它进了 `updated` ⇒ 也补一条 notice。
+       *    ⚠️ 这一条**只在这里**（不写进 `bulkRun` 的 catch）：走到那个 catch 的都是真失败。
+       */
+      if (isCancelling() && cancelled.length === 0) {
+        pushNotice(
+          updated.length > 0
+            ? '已取消：这一项正好下完了（它已装好），后面的项没有开始'
+            : '已取消：还没有开始任何一项',
+        );
+      }
       if (updated.length > 0) await queueScan(id, entry.path, { onlyIfMissing: false });
-      return { updated, skipped, failed };
+      return { updated, skipped, failed, cancelled };
     },
   });
 }
@@ -1897,7 +1985,7 @@ export async function downloadMissing(
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十三条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
+ * 注册十四条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
  * 主进程只 `send`，没有 handler 可注册）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
@@ -1972,10 +2060,15 @@ function registerIpc(): void {
     (_event, modid: unknown, gameVersion: unknown, folderId: unknown, channel: unknown) =>
       downloadMissing(modid, gameVersion, folderId, channel),
   );
+  /*
+   * ★ C 的 T4：取消。**入参一个都没有**（与上面每一条同一条纪律：渲染进程递不进任何东西）
+   *    —— 它的作用范围就是"主进程自己记着的那一趟"。
+   */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.cancelDownload, () => cancelDownload());
 }
 
 /**
- * 初始化：**接手 v1 那份状态对象** → 注册十三条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个

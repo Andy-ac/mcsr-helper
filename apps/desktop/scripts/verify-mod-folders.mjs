@@ -296,9 +296,10 @@ console.log(
  * 通道名在两个产物里的出现次数（ASCII 锚点 ⇒ 与编码无关，§5.92 的教训只针对中文）。
  * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"；
  *    **A 的 S2** 加了 `openFolder` 之后是 17 个成员；**A 的 T6** 删掉那三条（裁决 B）
- *    之后是 **14** 个成员；**C 的 T3** 加了 `onProgress` 之后是 **15** 个）：**15** 个通道名
+ *    之后是 **14** 个成员；**C 的 T3** 加了 `onProgress` 之后是 **15** 个；
+ *    **C 的 T4** 加了 `cancelDownload` 之后是 **16** 个）：**16** 个通道名
  *    进 `main.cjs`（两条推送的串也在里面 —— 它们是主进程 `send` 出去的），
- *    其中 `ipcMain.handle` 只有 **13** 条 —— 余下 2 条（`onStatus` / `onProgress`）只**推**（`send`）。
+ *    其中 `ipcMain.handle` 只有 **14** 条 —— 余下 2 条（`onStatus` / `onProgress`）只**推**（`send`）。
  * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 13/14：
  *    手抄的数字会在"通道表加了/删了一条"时变成一句**看起来还在的假话**（§5.32 ④）。
  */
@@ -341,6 +342,21 @@ const openCalls = [];
 let openQueue = [];
 let messageResponses = [];
 
+/**
+ * ★★ (C/S4) `webContents.send` 的**可替换**那一层 —— 让探针能在"某一帧到达的**同一瞬间**"做事。
+ *
+ * ⚠️★ 为什么需要它（㉘c 要证"**写盘相位**点取消会被拒"）：写盘那一段只有两次 `rename`
+ *    那么长（几毫秒）⇒ 用 sleep 去猜时机是测不准的（"大概在附近"不是判据）。而
+ *    `phase:'install'` 那一帧是主进程**同步**在两次 rename **之前**推出来的 ⇒ 在收到
+ *    那一帧的同一瞬间点取消，落点就是**确定的**。
+ * ⚠️ 它必须是**模块级**的：`BrowserWindow` 是模块级那个桩类造的，它看不见相位里的局部变量。
+ *    默认实现 = 原来那一句（`pushes.push`）⇒ 主相位与写相位其它组读 `pushes` 的行为
+ *    **逐字不变**；写相位在 ㉘c 之前把它换成"带取消动作"的那一版。
+ */
+let onPageSend = (channel, payload) => {
+  pushes.push({ channel, payload, at: Date.now() });
+};
+
 const app = {
   // ⚠️ 固定 false：打包态会让启动那一路去载 electron-updater（它在 `initUpdater` 里被
   //    `isPackaged` 挡着，这里不想把它拉进来）。代价：这一支**证不了**打包态的启动流程
@@ -368,7 +384,7 @@ class BrowserWindow {
        *    这里盖的是**桩收到 send 的那一刻**（接收侧时钟），不是主进程发出去的时刻：
        *    判据问的是"两帧之间**真的**隔了那么久"，而接收侧读数正是能回答它的那个。
        */
-      send: (channel, payload) => pushes.push({ channel, payload, at: Date.now() }),
+      send: (channel, payload) => onPageSend(channel, payload),
       on: () => {},
       setWindowOpenHandler: () => {},
     };
@@ -910,7 +926,7 @@ function loadArtifact() {
 }
 
 /*
- * 等 13 条 invoke 通道注册好（15 个成员里 `onStatus` 与 `onProgress` 是**推送**、没有 handler）。
+ * 等 14 条 invoke 通道注册好（16 个成员里 `onStatus` 与 `onProgress` 是**推送**、没有 handler）。
  *
  * ⚠️★ `PUSH_CHANNELS` 是**现读**出来的（`Object.values(MOD_CH)` 里那两条推送），不是手抄的
  *    两个键名：漏一条的表现是这里**永远等不到**（240 × 25ms）⇒ `waitForHandlers()` 给 false
@@ -919,7 +935,7 @@ function loadArtifact() {
  */
 const PUSH_CHANNELS = [MOD_CH.onStatus, MOD_CH.onProgress].filter((name) => name !== undefined);
 
-/** 等 13 条 invoke 通道注册好（两条推送不算）。 */
+/** 等 14 条 invoke 通道注册好（两条推送不算）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
   for (let i = 0; i < 240; i += 1) {
@@ -1066,11 +1082,11 @@ async function mainPhase() {
   const registered = await waitForHandlers();
 
   // =========================================================================
-  await section('① 十三条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
+  await section('① invoke 通道都注册了（红的形态：一条都没有）', async () => {
     const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
     const missing = expected.filter((name) => !handlers.has(name));
     check(
-      `ipcMain.handle 注册了 13 条 mcsr:modfolders-*（15 个成员里 onStatus / onProgress 是推送、不算）`,
+      `ipcMain.handle 注册了 ${String(expected.length)} 条 mcsr:modfolders-*（${String(MOD_CH_COUNT)} 个成员里 ${String(PUSH_CHANNELS.length)} 条是推送、不算）`,
       registered && missing.length === 0,
       missing.length === 0
         ? `handlers 共 ${String(handlers.size)} 条`
@@ -2490,7 +2506,7 @@ async function writePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  if (!registered) bail('十三条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+  if (!registered) bail('十四条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
 
   /** 绑一个夹具目录（走原生的目录对话框桩）。 */
   const bindAt = async (dir) => {
@@ -2520,6 +2536,17 @@ async function writePhase() {
   const reqsOf = (prefix) => downloadLog.filter((entry) => entry.prefix === prefix).length;
   const goodReqs = () => reqsOf('/mirror-good/');
   const slowReqs = () => reqsOf('/mirror-slow/');
+  /**
+   * ★★ (C/S4) 取消那一组用的**那一条镜像**的前缀 —— **现算**，不是手抄 `/mirror-slow/`。
+   *
+   * ⚠️★ brief 里那两行写的是 `reqsOf('/mirror-slow/')`，而 `fx.slow` / `fx.other` 走的是
+   *    `probe-c2slow`（前缀 `/mirror-c2slow/`，见 `hijackSlowGroup` 头顶那一段）⇒
+   *    **逐字照抄**那一版跑出来的读数是 `请求数 1 → 1`（那一趟真的发了请求，只是发在
+   *    另一个前缀上）⇒ 判据**永远红**，而红的原因与产品无关（§5.79：红点会长得像产品缺陷）。
+   *    ⇒ 分母从 `fx.slow.mirrorId` 现算（`hijack` 的命名规则就是 `probe-<suffix>` ⇒
+   *    `<suffix>` 就是路径那一段）：镜像 id 一改，这一条跟着走。
+   */
+  const c2Reqs = () => reqsOf(`/mirror-${fx.slow.mirrorId.replace('probe-', '')}/`);
   /**
    * 把夹具字节落到某个目录里（`probeJar()` 返回的是**字节**，而 `copyFileSync` 的 src 要
    * **路径** ⇒ 只能是 `writeFileSync(join(dir, name), bytes)`）。
@@ -3973,6 +4000,126 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       gaps.length >= 1 && gaps.every((gap) => gap >= 100),
       JSON.stringify({ gaps, phases: frames.map((f) => f.phase) }),
     );
+  });
+
+  /*
+   * =========================================================================
+   * ㉘（子项目 C / S4）取消：契约的第十六条通道
+   * =========================================================================
+   * ⚠️★ 编号（brief 读法①）：brief 写的是 ⑮ / ⑮b / ⑮c，而 ⑮ 在本文件里**早就被占用**
+   *    （"入口守卫"那一组），T2/T3 已经用掉 ㉖ / ㉖b / ㉗ ⇒ 按"下一个空号"取
+   *    **㉘ / ㉘b / ㉘c**（(d) 那一小段取 ㉘d）。现读全部 `await section(` 的编号确认过没有重号。
+   * ⚠️★ 夹具的字节（brief 读法②）：`probeJar()` 返回**字节**而 `copyFileSync` 的 src 要
+   *    **路径** ⇒ brief 那几行 `copyFileSync(fx.X.official, join(dir, fx.X.targetName))`
+   *    一律落成 `writeFileSync(join(dir, fx.X.targetName), fx.X.official)`。
+   * ⚠️★★ 而"落 `fixture.official`"这件事在这两条夹具上**量不到任何东西**（实测读数见下）：
+   *    `official` 正是桩要回的那一份，它的 sha512 就是 `release.sha512` ⇒ `installRelease`
+   *    走**幂等**那一支（`[mod-folders] 目标已经是这一份（一个请求都不发）`）⇒ 那一趟
+   *    几十毫秒内就收尾了，80 ms 之后点取消读到的是 `{"ok":false,"reason":"没有在跑"}`。
+   *    这与 ㉗ 撞到的是**同一条**（:2506 那段写着全文）⇒ 三组的夹具都改回 `placeJar`
+   *    （= `fixture.local`：同 modid、内部版本更低 ⇒ 判成 `older` ⇒ 真的走下载）。
+   *    ⚠️ 逐字照抄那一版的完整读数（`234 ✓…`）记在报告里。
+   */
+  await section('㉘（C/S4）下载中途取消：请求被中断、没有 .part、`cancelled` 有它而 `failed` 没有', async () => {
+    const dirCancel = join(workRoot, 'cancel');
+    mkdirSync(dirCancel, { recursive: true });
+    placeJar(dirCancel, fx.slow);
+    const id = await prepare(dirCancel);
+    const beforeReqs = c2Reqs();
+    const beforeListing = listing(dirCancel);
+    const run = invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
+      mirrorId: fx.slow.mirrorId,
+    });
+    await new Promise((r) => setTimeout(r, 80)); // 卡在桩的暂停里 ⇒ 确实"正在下载"
+    const cancelRes = await invoke(MOD_CH.cancelDownload);
+    check('★ 取消被受理（`{ok:true}`）', cancelRes?.ok === true, JSON.stringify(cancelRes));
+    const state = await run; // ★ 取消**不** reject：它不是失败（D4）
+    check(
+      '★★ `lastRun.cancelled` 记着这一条',
+      state.lastRun?.cancelled?.some((entry) => entry.modid === fx.slow.modid) === true,
+      JSON.stringify(state.lastRun),
+    );
+    check(
+      '★★ 而且**没有**被记成失败（"取消"与"失败"是两句话）',
+      (state.lastRun?.failed ?? []).length === 0,
+      JSON.stringify(state.lastRun),
+    );
+    check('★ 目标目录里没有 `.part` 残留（Ruling 30：删 `.part` 是调用方的活）', noPartsOrOlds(dirCancel), listing(dirCancel));
+    check('★ 目标文件没有被写坏（那一趟什么都没落盘）', !existsSync(join(dirCancel, fx.slow.targetName)) || listing(dirCancel) === beforeListing, listing(dirCancel));
+    check('★ busy 回到 false（按钮要能再点）', state.busy === false, String(state.busy));
+    check('★ 收尾之后 progress 是 null', state.progress === null, JSON.stringify(state.progress));
+    check('★ 取消之后**没有**再多发请求（这一趟真的停了）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}（前缀 /mirror-${fx.slow.mirrorId.replace('probe-', '')}/）`);
+  });
+
+  await section('㉘b（C/S4）整夹更新中途取消：当前项记进 `cancelled`、后续项**一个都没开工**', async () => {
+    /* 同 ㉖b 的夹具（两行可批量），慢桩 */
+    const dirBatchCancel = join(workRoot, 'cancel-batch');
+    mkdirSync(dirBatchCancel, { recursive: true });
+    placeJar(dirBatchCancel, fx.slow);
+    placeJar(dirBatchCancel, fx.other);
+    const id = await prepare(dirBatchCancel);
+    /*
+     * ⚠️★ 仪器自检（照 ㉖b 那一句）：这一夹**必须恰好有 2 行可批量** —— 少一行的话
+     *    "第二项没有开工"量的就是夹具缺陷（§5.79：红点会长得像产品缺陷）。
+     */
+    const batchRows = (await invoke(MOD_CH.getState)).folders
+      .find((folder) => folder.folderId === id)
+      ?.rows.filter((row) => row.batchable).length;
+    if (batchRows !== 2) {
+      bail(`夹具前提不成立：这一夹可批量的行是 ${String(batchRows)} 个（这一组判据要 2 个）`);
+    }
+    const beforeReqs = c2Reqs();
+    const run = invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
+    await new Promise((r) => setTimeout(r, 80));
+    await invoke(MOD_CH.cancelDownload);
+    const state = await run;
+    check('★★ 请求数只涨了 1（第二项没有开工）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
+    check('★★ `cancelled` 里是**第一项**', state.lastRun?.cancelled?.[0]?.modid === fx.slow.modid, JSON.stringify(state.lastRun));
+    check('★ `failed` 是空的（取消不是失败）', (state.lastRun?.failed ?? []).length === 0, JSON.stringify(state.lastRun));
+    check('★ busy 回到 false、progress 清空', state.busy === false && state.progress === null, JSON.stringify({ busy: state.busy, progress: state.progress }));
+  });
+
+  /*
+   * ★★ (c) 的仪器：`phase:'install'` 那一帧是主进程**同步**在两次 rename 之前推出来的
+   *    ⇒ 桩在这一刻调 `cancelDownload`，那一刻就**真的**在写盘窗口里（不是"大概在附近"，
+   *    不需要 sleep 猜时机）。`pushes.push` 照旧（㉗ 那一组读的就是它）。
+   */
+  let installCancelResult = null;
+  onPageSend = (channel, payload) => {
+    pushes.push({ channel, payload, at: Date.now() });
+    if (channel === MOD_CH.onProgress && payload?.phase === 'install' && installCancelResult === null) {
+      installCancelResult = invoke(MOD_CH.cancelDownload);
+    }
+  };
+
+  await section('㉘c（C/S4）写盘相位点取消：**拒绝**，而那一项照常装好', async () => {
+    const dirInstall = join(workRoot, 'cancel-install');
+    mkdirSync(dirInstall, { recursive: true });
+    placeJar(dirInstall, fx.slow);
+    const id = await prepare(dirInstall);
+    installCancelResult = null;
+    const state = await invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
+      mirrorId: fx.slow.mirrorId,
+    });
+    const refused = await installCancelResult;
+    check('★★ 桩真的在写盘相位点了取消（否则下面两条什么都没测）', installCancelResult !== null, '夹具自钉：那一帧必须出现过');
+    check('★★ 写盘阶段取消被**拒**', refused?.ok === false, JSON.stringify(refused));
+    check(
+      '★ 拒绝的理由说清了"正在写入"（不是"没有在跑"那句）',
+      typeof refused?.reason === 'string' && refused.reason.includes('写入'),
+      refused?.reason ?? '（没有理由）',
+    );
+    check(
+      '★★ 那一项**照常装好**（没有半成品）',
+      existsSync(join(dirInstall, fx.slow.targetName)) && state.lastRun?.updated?.length === 1 && state.lastRun.cancelled.length === 0,
+      JSON.stringify({ listing: listing(dirInstall), lastRun: state.lastRun }),
+    );
+    check('★ 没有 `.part` / `.old` 残留', noPartsOrOlds(dirInstall), listing(dirInstall));
+  });
+
+  await section('㉘d（C/S4）没有在跑时点取消：`{ok:false}` + "没有在跑"（幂等，界面不动）', async () => {
+    const idle = await invoke(MOD_CH.cancelDownload);
+    check('★ 没有在跑 ⇒ `{ok:false}` + "没有在跑"（幂等，界面不动）', idle?.ok === false && idle.reason.includes('没有在跑'), JSON.stringify(idle));
   });
 
   server.close();

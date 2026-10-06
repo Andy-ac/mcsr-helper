@@ -213,6 +213,15 @@ export interface DesktopBridge {
      */
     onProgress(callback: (progress: DownloadProgress) => void): () => void;
     /**
+     * ★ 子项目 C：请求停掉**正在跑的那一趟**。
+     *
+     * ⚠️★ 入参**一个都没有**（与其它通道同一条纪律：渲染进程递不进任何东西）。
+     *    作用范围是"当前这一趟"：单行下载就停它，批量就停整趟（剩下的项不再开工）。
+     * ⚠️ 幂等：没有在跑 ⇒ `{ ok: false, reason: '没有在跑' }`；
+     *    **写盘阶段一律拒**（中断两次 rename 之间那个窗口会留下半成品 —— D4）。
+     */
+    cancelDownload(): Promise<{ ok: true } | { ok: false; reason: string }>;
+    /**
      * 弹**原生**目录对话框，建一个"文件夹实体"。路径只能由主进程弹自己的对话框去选
      * （渲染进程永远递不进路径）。
      *
@@ -375,7 +384,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十五条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十六条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -400,12 +409,19 @@ export function desktopBridge(): DesktopBridge | null {
  *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
  *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
- *    其余**十个**都是方法名的逐字 kebab（新加的 `openFolder` ⇒ `-open-folder` 也在其中；
+ *    其余都是方法名的逐字 kebab（`openFolder` ⇒ `-open-folder`、C 的 T4 加的
+ *    `cancelDownload` ⇒ `-cancel-download` 都在其中；⚠️ 后一条是**请求**、不是推送 ——
+ *    它落在这一组只是因为名字逐字 kebab，与"推送"那两处无关）：
  *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准；
  *    T6 删掉那三条之后：14 个成员 − 4 个非纯 kebab = **10**；
  *    ⚠️★ C 的 T3 加 `onProgress` 之后：**15 个成员 − 5 个非纯 kebab = 10** ——
  *    逐字 kebab 的仍然是十个（新加的那一条**不**在这一组里），所以上面那个数字没变，
- *    变的是"非纯 kebab"那一侧的 4 → 5。两个数一起改过，别只改一个）。
+ *    变的是"非纯 kebab"那一侧的 4 → 5。两个数一起改过，别只改一个。
+ *    ⚠️★ C 的 T4 加 `cancelDownload` 之后：**16 个成员 − 5 个非纯 kebab = 11** ——
+ *    这一条**是**逐字 kebab（`-cancel-download`），所以"非纯 kebab"仍是 5，
+ *    变的是逐字 kebab 那一侧的 10 → 11（两个数与上面那句一起改，别只改一个）。
+ *    ⚠️ **上面那句"其余十个都是逐字 kebab"与这里那一句是同一个活数字的两种说法**：
+ *    加一条逐字 kebab 的通道时两处都要跟着走（§5.15：同一对象出现两个活数字就是缺陷信号）。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -418,6 +434,11 @@ export const MOD_FOLDERS_CHANNELS = {
   onStatus: 'mcsr:modfolders-status',
   /** ★ 子项目 C：进度推送。与 `onStatus` 一样，**同一个串**用于订阅与取消订阅。 */
   onProgress: 'mcsr:modfolders-progress',
+  /**
+   * ★ 子项目 C（T4）：停掉正在跑的那一趟。⚠️ 它是**请求**（页面 `invoke` 它），不是推送
+   * —— 与上面两条不同，它有 handler。
+   */
+  cancelDownload: 'mcsr:modfolders-cancel-download',
   bindFolder: 'mcsr:modfolders-bind-folder',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
   /**

@@ -699,6 +699,14 @@ function shellStub(withModFolders: boolean) {
              *   立刻红（这正是它存在的理由）。
              */
             onProgress: () => () => undefined,
+            /*
+             * ★ C 的 T4：取消（**请求**通道，不是推送 —— 所以它照 `openFolder` 那种
+             *   "返回一个 Promise 形状与契约一致的对象"的格子写）。
+             *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
+             *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+             *   立刻红（这正是它存在的理由）。
+             */
+            cancelDownload: async () => ({ ok: true }) as const,
             bindFolder: async () => ({}),
             unbindFolder: async () => ({}),
             /*

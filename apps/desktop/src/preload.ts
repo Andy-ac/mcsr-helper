@@ -222,6 +222,18 @@ const bridge: DesktopBridge = {
         ipcRenderer.off(MOD_FOLDERS_CHANNELS.onProgress, listener);
       };
     },
+    /*
+     * ★ C 的 T4：**请求**停掉正在跑的那一趟（与上面两条推送不同 —— 它是一条 invoke，
+     *   有 handler）。⚠️ 入参一个都没有（与这一组其它通道同一条纪律）。
+     */
+    cancelDownload(): Promise<{ ok: true } | { ok: false; reason: string }> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.cancelDownload) as Promise<
+        | {
+            ok: true;
+          }
+        | { ok: false; reason: string }
+      >;
+    },
     bindFolder(gameVersion?: string | null): Promise<ModFoldersState> {
       /*
        * ★★ G2（最终修复波 / spec D3）：入参是**当时看着的那一版**（页面把
