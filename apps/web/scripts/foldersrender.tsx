@@ -2683,7 +2683,84 @@ assert.ok(
   ),
   '★ 而**百分比仍然算得出来**（它只用帧里的两个数，不需要样本 —— 把百分比也一起置成 `—` 是实现走过头）',
 );
+/** 单行那一句（这份帧 ⇒ 这几个数；`samples: []` ⇒ 速度与 ETA 都是 `—`）。 */
+const lineCopy = labelOf('files.progressLine', {
+  done: '11.8 MB',
+  total: '25.8 MB',
+  percent: '46%',
+  rate: '—',
+  eta: '—',
+});
+/** 批量那一句「第 3/48 项 · <文件名>」（`itemIndex` / `itemCount` 来自帧，名字也在里面）。 */
+const batchCopy = resolved('files.progressBatch', {
+  index: 3,
+  count: 48,
+  name: progressFrameOf().fileName,
+});
+/**
+ * 同一个句子的**归一化**形式（`textOf` 那套口径，空白全压掉）。
+ *
+ * ⚠️★ 两个变量都要有，而且要**用对**：`batchCopy` 是**原样**（带空格），只能比
+ *    `产物片段.includes(...)`（`folderRowSpanOf` 那一类）；`batchLabel` 是压过的，
+ *    只能比 `textOf(产物).includes(...)`。⚠️ 拿"带空格的那一份"去比 `textOf` 的产物
+ *    是一条**恒假**的断言（永远绿、什么都没测 —— `docs/pending.md §5.32①`）；
+ *    反过来（压过的去比原样产物）会在**正确的**实现上报红（修复轮 2 真的踩了一次，记在报告里）。
+ */
+const batchLabel = textOf(batchCopy);
 const batchHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: {
+        frame: progressFrameOf({ run: 'update-folder-all', itemIndex: 3, itemCount: 48 }),
+        samples: [],
+      },
+      onCancel: noop,
+      /* ★★ 汇总档：`VersionFolderList` 的文件夹块那一处就是这么传的（见 ① 那一组的接线断言）。 */
+      variant: 'summary',
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(batchHtml).includes(
+    labelOf('files.progressBatch', { index: 3, count: 48, name: progressFrameOf().fileName }),
+  ),
+  '★★ 汇总档（批量）印「第 3/48 项 · <文件名>」（spec §4 的第二档；`itemIndex/itemCount` 来自帧）',
+);
+/*
+ * ★★★ T5 修复轮 2（复审"范围外观察"里那条 spec 缺口）：**汇总档那一行里也要有字节**。
+ *
+ * ⚠️★ 修之前 `DownloadProgressLine` 写的是"`itemCount > 1` ⇒ 一律印批量文案"，于是
+ *    批量时**四处都不印字节**（连"正在下的那一行"也不印），而 spec §4：
+ *      第 1 档要求**正在下的那一行**显示 字节 / 百分比 / 速度 / ETA；
+ *      第 2 档说的是在文件夹块上**另加**一行「第 3/48 项 · <文件名> …」，
+ *      而它自己的例子（`12.4/27.1 MB · 46%`）里**也有字节**。
+ *    ⇒ 今天用户在**最常走的那条路**（48 个 mod 的整夹「全部更新」）上看不到任何字节读数。
+ * ⚠️ 这份夹具的样本是空的 ⇒ 速度 / ETA 是 `—`（`lineCopy` 里那两个格子就是 `—`）
+ *    —— 字节与百分比仍然照印（它们只来自帧）。
+ * ★ 能红的刀：把实现改回"`variant === 'summary' && itemCount > 1` ⇒ 只印序号句" ⇒ 这一条红。
+ */
+assert.ok(
+  textOf(batchHtml).includes(lineCopy),
+  '★★★ 汇总档**同一行里还有字节行**（`files.progressLine`：字节 / 百分比 / 速度 / ETA 四格都要在）' +
+    '—— spec §4 第 2 档说的是"另加一行"、它自己的例子 `12.4/27.1 MB · 46%` 里就有字节；' +
+    '把实现写回"批量只印序号句"，这一条就红',
+);
+
+/*
+ * ★★★ 同一个**批量帧**、换成**行内档**（不传 `variant` ⇒ 默认 `'inline'`）：
+ *      **字节行在、序号句不在**（spec §4 第 1 档："正在下的那一行"显示 字节 / 百分比 / 速度 / ETA）。
+ *
+ * ⚠️★ 这一条是复审那条 spec 缺口的**正面刀**：修之前行内档在 `itemCount > 1` 时只印序号句 ⇒
+ *    用户在整夹「全部更新」那一趟上，连"正在下的这一项"的字节都看不到（`FolderJarList` /
+ *    `VersionModList` 两处都是这样）。⚠️ 两个站点的**接线**由下面 ① 那两条断言钉着，这一条钉的是
+ *    **组件在批量帧下画什么**（自喂 prop —— 那一层能证的事，见下面那一段的三层说明）。
+ * ★ 能红的刀：把实现改回"**行内档**上 `itemCount > 1` ⇒ 只印序号句" ⇒ **这一条**红
+ *    （修复轮 2 实测：红的就是这一条；逐字读数记在报告 §三）。
+ *    ⚠️ 如果**连汇总档一起**改回"`itemCount > 1` ⇒ 只印序号句、不分档"，**先**红的会是上面
+ *    汇总档那条字节断言 —— 两把刀红的点不同，别把后者当成"这一条也验过了"。
+ */
+const batchInlineHtml = keep(
   html(
     React.createElement(DownloadProgressLine, {
       progress: {
@@ -2696,11 +2773,17 @@ const batchHtml = keep(
   ),
 );
 assert.ok(
-  textOf(batchHtml).includes(
-    labelOf('files.progressBatch', { index: 3, count: 48, name: progressFrameOf().fileName }),
-  ),
-  '★★ 批量时印「第 3/48 项 · <文件名>」（spec §4 的第二档；`itemIndex/itemCount` 来自帧）',
+  textOf(batchInlineHtml).includes(lineCopy),
+  '★★★ 行内档（不传 `variant`）拿到**批量**那一帧时**照样**印字节行（`files.progressLine`）—— ' +
+    '行内那一行说的是"这一项自己"的字节 / 速度 / ETA，与"整趟的第几项"是两件事（spec §4 第 1 档）',
 );
+assert.equal(
+  textOf(batchInlineHtml).includes(batchLabel),
+  false,
+  '★★ 反面：行内档**不印**序号句（「第 N/M 项 · <文件名>」是**汇总档**的事）—— ' +
+    '两档不分（行内也印序号）时这条红',
+);
+
 /* —— 容器层面：批量那一行真的画在**这个文件夹块**上（不是画在面板顶上） —— */
 /*
  * ⚠️★ 夹具是**两个**同版本的文件夹（`f1` / `f2`，进度那一趟属于 `f1`）：只有一个的话
@@ -2738,12 +2821,9 @@ const batchListHtml = keep(
  *    从 `data-folder-id="X"` 到**下一个** `data-folder-id=` 为止）—— 判据的**意思**
  *    （"画在这一行里、不画在面板顶上、也不画在别的文件夹里"）一字未改，而且**更严**：
  *    下面那条反面断言把"画在别的文件夹里"这一半也真的钉住了（简报只在说明文字里提到它）。
+ * ⚠️★ T5 修复轮 2：`batchCopy` 的定义挪到上面（`lineCopy` 旁边）—— 新增的那条**行内档**
+ *    断言要用它断"**不**印序号句"，两处各写一份会漂。
  */
-const batchCopy = resolved('files.progressBatch', {
-  index: 3,
-  count: 48,
-  name: progressFrameOf().fileName,
-});
 const batchRow = folderRowSpanOf(batchListHtml, 'f1');
 assert.ok(
   batchRow.includes(batchCopy),
@@ -2767,8 +2847,13 @@ assert.equal(
  * ⇒ 下面分三层补，每一层钉的是**不同的一环**（缺哪一环就有一种"整段删掉还全绿"的坏法）：
  *    ① 两个**行内**站点（`FolderJarList` / `VersionModList`）各自一正一反 —— 组件级、
  *       自检自己喂 prop ⇒ 证"组件收到非空载荷会画、不匹配就不画"（一正一反防"无条件画"）；
+ *       ⚠️★ T5 修复轮 2：这两处的载荷换成**批量帧**（`itemCount: 48`）⇒ 断的是
+ *       **字节行**（`lineCopy`）在、而**序号句**（`batchCopy`）**不在** ——
+ *       行内档说的是"这一项自己"（spec §4 第 1 档），不是"整趟的第几项"；
  *    ② **面板**那一层传非空载荷 ⇒ 断言 `VersionFolderList` 与 `VersionModList` **两个站点**
- *       都出现了那一行（"两处转发都没被写成 `progress={null}`"的唯一判据）；
+ *       都出现了那一行（"两处转发都没被写成 `progress={null}`"的唯一判据），
+ *       而**两处各自印什么**（汇总站点含序号句 + 字节行；行内站点含字节行、**不含**序号句）
+ *       也在这里分开断（T5 修复轮 2 改准：原来两处断的是同一句序号句）；
  *    ③ `VersionFolderList` → **展开体里那一行**（`FolderJarList`）—— 面板那一层**做不到**
  *       这一环：`ModDownloadPanel` 的 `expanded` 是它自己的 `useState([])`，静态渲染展开不了
  *       ⇒ 这一环只能打在这一层（自喂），而"面板真的把载荷交给了 `VersionFolderList`"
@@ -2777,14 +2862,6 @@ assert.equal(
  *    T4 判修轮的同一条裁定：自检自己喂的 prop 证明不了页面真的喂了它 —— 所以 ② 必须存在）。
  */
 
-/** 单行那一句（这份帧 ⇒ 这几个数；`samples: []` ⇒ 速度与 ETA 都是 `—`）。 */
-const lineCopy = labelOf('files.progressLine', {
-  done: '11.8 MB',
-  total: '25.8 MB',
-  percent: '46%',
-  rate: '—',
-  eta: '—',
-});
 /** 非空载荷（帧只换指认那一格；样本为空 ⇒ 内容与时钟无关）。 */
 const linePayloadOf = (over: Partial<DownloadProgress>): PageProgress => ({
   frame: progressFrameOf(over),
@@ -2795,17 +2872,31 @@ const linePayloadOf = (over: Partial<DownloadProgress>): PageProgress => ({
 /*
  * ⚠️ 夹具 `jarState` 的 `f-jars` 里有 `sodium` 那一行（见 ㊱ 那一组）；
  *    帧的 `folderId` / `modid` 都指它 ⇒ 命中；两个反面各换掉**一个**格子。
+ * ⚠️★ T5 修复轮 2：载荷换成**批量帧**（`itemCount: 48`）—— 行内档在批量时**也**要印字节行、
+ *    而**不**印序号句（spec §4 第 1 档说的是**正在下的那一行**，见文件头"两档"那一段）。
  */
 const jarLineHtml = jarListHtmlOf(
   jarState,
   'f-jars',
-  linePayloadOf({ folderId: 'f-jars', modid: 'sodium' }),
+  linePayloadOf({
+    folderId: 'f-jars',
+    modid: 'sodium',
+    run: 'update-folder-all',
+    itemIndex: 3,
+    itemCount: 48,
+  }),
 );
 const jarLineRow = jarRowOf(jarLineHtml, 'sodium');
 assert.ok(
   textOf(jarLineRow).includes(lineCopy) && jarLineRow.includes('data-action="cancel-download"'),
-  '★★★ `FolderJarList` 拿到非空 `progress` ⇒ **命中那一行**画出行内进度（那句字节/百分比 + 取消按钮）' +
+  '★★★ `FolderJarList` 拿到非空 `progress` ⇒ **命中那一行**画出行内档（**字节行** `files.progressLine` + 取消按钮）' +
     '—— 把这一块整段删掉，这条就红',
+);
+assert.equal(
+  textOf(jarLineRow).includes(batchLabel),
+  false,
+  '★★ 反面：行内档**不印**「第 N/M 项」（那是文件夹块上**汇总档**的事）—— ' +
+    '实现写回"批量 ⇒ 行内也印序号句"这条就红（spec §4 两档分得开）',
 );
 const jarOtherModHtml = jarListHtmlOf(
   jarState,
@@ -2831,16 +2922,29 @@ assert.ok(
  * ⚠️★ 第三段的命中判据里 `folderId` 是**用户选中的目标**（`VersionModList` 那一段写着理由）
  *    ⇒ 夹具 `modListState` 里 `sodium` **已经在 `f1` 里**（那条自钉在 ㊳）、目标只剩 `f2`：
  *    帧必须用 `f2` 才命中（用 `f1` 就是下面那条反面 —— 也正因为它不是恒真的，判据才咬得住）。
+ * ⚠️★ T5 修复轮 2：同上，载荷换成**批量帧** ⇒ 断的是字节行在、序号句不在。
  */
 const modLineHtml = modListHtmlOf(
   modListState,
   [],
-  linePayloadOf({ folderId: 'f2', modid: 'sodium' }),
+  linePayloadOf({
+    folderId: 'f2',
+    modid: 'sodium',
+    run: 'update-folder-all',
+    itemIndex: 3,
+    itemCount: 48,
+  }),
 );
 const modLineRow = modRowOf(modLineHtml, 'sodium');
 assert.ok(
   textOf(modLineRow).includes(lineCopy) && modLineRow.includes('data-action="cancel-download"'),
-  '★★★ `VersionModList` 拿到非空 `progress` ⇒ **命中那一行**画出行内进度（那句字节/百分比 + 取消按钮）',
+  '★★★ `VersionModList` 拿到非空 `progress` ⇒ **命中那一行**画出行内档（**字节行** + 取消按钮）' +
+    '—— 批量帧下**照样**有字节（spec §4 第 1 档）',
+);
+assert.equal(
+  textOf(modLineRow).includes(batchLabel),
+  false,
+  '★★ 反面：行内档**不印**「第 N/M 项」（那是文件夹块上**汇总档**的事）',
 );
 const modOtherModHtml = modListHtmlOf(
   modListState,
@@ -2885,12 +2989,27 @@ const panelLineHtml = keep(
     }),
   ),
 );
+/*
+ * ⚠️★ T5 修复轮 2 改准：**两处各自印什么**（原来两处断的是同一句序号句 —— 那样一来
+ *    "行内站点少印字节行"这件事在这一层上**咬不住**，而它正是复审咬的那条缺口）：
+ *      · **汇总站点**（`VersionFolderList` 的文件夹块，`variant="summary"`）⇒ 含序号句；
+ *      · **行内站点**（`VersionModList` 第三段那一行）⇒ 含**字节行**、**不含**序号句。
+ */
 assert.ok(
-  folderRowSpanOf(panelLineHtml, 'f1').includes(batchCopy) &&
-    modRowOf(panelLineHtml, 'sodium').includes(batchCopy),
-  '★★★ 面板把 `progress` **转发给了两个站点**：文件夹块上那一行（`VersionFolderList`）与' +
-    '第三段那一行（`VersionModList`）都出现了「第 3/48 项 · <文件名>」—— ' +
-    '任何一处被写成 `progress={null}` 这条就红（修之前**没有任何**一条判据咬这件事）',
+  folderRowSpanOf(panelLineHtml, 'f1').includes(batchCopy),
+  '★★★ 面板把 `progress` 转发给了**汇总站点**（`VersionFolderList` 的文件夹块）：' +
+    '那儿出现了「第 3/48 项 · <文件名>」—— 这一处被写成 `progress={null}` 这条就红',
+);
+const panelInlineRow = modRowOf(panelLineHtml, 'sodium');
+assert.ok(
+  textOf(panelInlineRow).includes(lineCopy),
+  '★★★ 而**行内站点**（`VersionModList` 第三段那一行）印的是**字节行**（批量帧也不许只剩序号句）' +
+    '—— 这一处被写成 `progress={null}`、或行内档跟着批量退化成"只印序号句"，这条就红',
+);
+assert.equal(
+  panelInlineRow.includes(batchCopy),
+  false,
+  '★★ 反面：行内站点**不含**序号句（两档分得开：行内说"这一项自己"，汇总说"整趟的第几项"）',
 );
 assert.equal(
   countOf(panelLineHtml, 'data-action="cancel-download"'),
@@ -3030,8 +3149,9 @@ assert.equal(
   '★ 反面：状态说在跑、而推送还没来过（切 tab 回来）⇒ 那一帧要能用（D6：进度住主进程）',
 );
 ok(
-  '㊶ 下载进度与取消：行内（字节/百分比/速度/ETA）、样本不足显示 —、批量「第 N/M 项」（行内与**那个文件夹块上**两档）、' +
-    '三个渲染点的接线（两个行内站点各一正一反 + 面板把载荷转发给两个站点）、取消按钮的身份（`common.cancel` + `data-action`）、' +
+  '㊶ 下载进度与取消：行内档（**批量帧也印**字节/百分比/速度/ETA、不印序号）、样本不足显示 —、' +
+    '汇总档（文件夹块上）「第 N/M 项」+ **同一条字节行**、三个渲染点的接线（两个行内站点各一正一反 + ' +
+    '面板把载荷转发给两个站点，且两处各自印什么分开断）、取消按钮的身份（`common.cancel` + `data-action`）、' +
     '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明、`cancelling` 变「正在取消…」、收尾之后一律不显示',
 );
 

@@ -27,13 +27,24 @@
  *     连点两次不该发两次请求（用户点过之后也要有回应 —— 一个不动的按钮会被读成"没生效"）。
  *
  * ===========================================================================
- * ⚠️★ 文件名那一格：三种相位各印一次，但**位置不同**（不是三条不同的规则）
+ * ⚠️★★ 两档：行内档印"文件名 + 字节行"，汇总档印"第 N/M 项"**再**字节行（spec §4）
  * ===========================================================================
- * "用户要知道正在下哪一个"对三种相位都成立，而三种相位的**主语长度**不同：
- *   · 批量（`itemCount > 1`）⇒ `files.progressBatch` 自带 `{{name}}`；
- *   · 写盘 ⇒ `files.progressInstall` 自带 `{{name}}`；
- *   · 单行下载 ⇒ `files.progressLine` 只有四个数（那两个词条里没有名字），
- *     所以名字由这一层补一格 `dlprogress__file` 印在旁边。
+ * `variant` 说这一格画在**哪一档**上（默认 `'inline'`）：
+ *   · `'inline'`（`FolderJarList` / `VersionModList`）：**永远**印
+ *     `<文件名> + <字节行>`（`files.progressLine`），**不**印序号 ——
+ *     ⚠️★ **哪怕这一趟是批量的**：行内那一行说的是**这一项自己**的字节 / 速度 / ETA；
+ *   · `'summary'`（`VersionFolderList` 的文件夹块）：批量时**先**印
+ *     `files.progressBatch`（"第 N/M 项 · <文件名>"，`{{name}}` 自带），**再**印字节行。
+ *     ⚠️★★ 那两句话**都要印**：spec §4 第 2 档说的是在文件夹块上"**另加一行**"，
+ *     而它自己的例子（`12.4/27.1 MB · 46%`）里**也有字节** ⇒ 只印序号句的话，
+ *     用户在最常走的那条路（48 个 mod 的整夹「全部更新」）上**一个字节读数都看不到**
+ *     （T5 复审第二轮咬的正是这条缺口，判据在 `foldersrender.tsx` ㊶）。
+ *   · 写盘相位（`installing`）**两档一样**：只有 `files.progressInstall`（`{{name}}` 自带）
+ *     —— 没有字节、没有 ETA，也没有序号句（那一刻"整趟的第几项"不是用户要的读数）。
+ * ⚠️★ 于是"文件名那一格"（`dlprogress__file`）**只在名字不在句子里的时候补**：
+ *    `'inline'` 档补（`files.progressLine` 的形状里没有名字）；写盘相位**不**补
+ *    （名字在 `files.progressInstall` 里）；`'summary'` 批量档**不**补
+ *    （名字已经在 `files.progressBatch` 那一句里）。
  * ⚠️ 换句话说：**词条的形状**决定这一格的排版，而不是"哪个相位更重要"。
  *
  * ===========================================================================
@@ -54,12 +65,15 @@ import { useTranslation } from 'react-i18next';
 export function DownloadProgressLine({
   progress,
   onCancel,
+  variant = 'inline',
   now = Date.now(),
 }: {
   /** 这一帧 + 页面自己攒的样本窗口（`PageProgress`；样本**只从 `onProgress` 收**）。 */
   progress: { frame: DownloadProgress; samples: readonly TimedSample[] };
   /** 停掉当前这一趟（`ModPageAction` 的 `cancel-download`；取消**不**由页面决定范围）。 */
   onCancel: () => void;
+  /** ★★ 这一格画在**哪一档**上（两档各印什么见文件头；默认 `'inline'` = 行内那一行）。 */
+  variant?: 'inline' | 'summary';
   /** ⚠️ 自检写死的那口钟；产品不传（见文件头）。 */
   now?: number;
 }) {
@@ -67,32 +81,42 @@ export function DownloadProgressLine({
   const view = progressLineOf({ progress: progress.frame, samples: progress.samples, now });
   /** ★ D4：写盘相位一律不给取消（那一刻中断会留下半成品）。 */
   const blocked = view.installing;
+  /**
+   * ★★ 那一句"整趟的第几项"（`files.progressBatch`）。
+   *
+   * ⚠️ 三个条件缺一不可：**汇总档** + **批量**（`itemCount > 1`）+ **不在写盘相位**。
+   *    行内档**永远**是 `null` —— 行内那一行说的是"这一项自己"，不是"整趟的第几项"；
+   *    而它**不**因为是批量就少印字节行（见文件头那一段）。
+   */
+  const batchSentence =
+    variant === 'summary' && !view.installing && view.itemCount > 1
+      ? t('files.progressBatch', {
+          index: view.itemIndex,
+          count: view.itemCount,
+          name: view.fileName,
+        })
+      : null;
   return (
     <p className="dlprogress" data-progress-modid={progress.frame.modid}>
-      <span className="dlprogress__text">
-        {view.itemCount > 1
-          ? t('files.progressBatch', {
-              index: view.itemIndex,
-              count: view.itemCount,
-              name: view.fileName,
-            })
-          : view.installing
-            ? t('files.progressInstall', { name: view.fileName })
-            : t('files.progressLine', {
-                done: view.received,
-                total: view.total,
-                percent: view.percent,
-                rate: view.rate,
-                eta: view.eta,
-              })}
-      </span>
       {/*
-       * ★ 单行下载那一支的名字（那两个词条里没有 `{{name}}`，见文件头那一段）。
-       * ⚠️ 只在**那一条**上补：批量与写盘的名字已经在句子里面了，再印一遍就是同屏两次。
+       * ★ 名字那一格：**只在名字不在句子里**的时候补（见文件头）——
+       * 行内档（单项下载与"批量里的那一项"两档）都在这里补；汇总档批量与写盘的名字在句子里。
        */}
-      {view.itemCount > 1 || view.installing ? null : (
+      {view.installing || batchSentence !== null ? null : (
         <span className="dlprogress__file">{view.fileName}</span>
       )}
+      <span className="dlprogress__text">
+        {batchSentence === null ? null : `${batchSentence} `}
+        {view.installing
+          ? t('files.progressInstall', { name: view.fileName })
+          : t('files.progressLine', {
+              done: view.received,
+              total: view.total,
+              percent: view.percent,
+              rate: view.rate,
+              eta: view.eta,
+            })}
+      </span>
       <button
         type="button"
         className="ghostbtn dlprogress__cancel"

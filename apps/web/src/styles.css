@@ -10079,7 +10079,8 @@ html[data-theme='light'] {
   color: var(--fg);
 }
 
-/* 单行下载那一支的文件名（批量与写盘那两支的名字在句子里，见 `DownloadProgressLine`）。
+/* **行内档**那一格的文件名（汇总档与写盘相位的名字在句子里，见 `DownloadProgressLine`
+   的 `variant`）—— 行内档两档（单项下载 / 批量里的那一项）都靠它印名字。
    ⚠️ 与 `.folderrow__path` 同一条：磁盘上的内容 ⇒ 等宽、可断行。 */
 .dlprogress__file {
   font-family: var(--font-mono);

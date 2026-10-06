@@ -488,8 +488,11 @@ function FolderRow({
         ⚠️ 只在 `itemCount > 1` 时画**这一行汇总**：单行下载那一档没有"整趟的第几项"可说，
         那一档由**行内**的 `DownloadProgressLine` 说（见 `FolderJarList` / `VersionModList`）。
         ⚠️★ **批量时两处并存的两句话，不是同一条重复**（spec §4 说的是文件夹块上"**另加一行**"）：
-        这一行说的是"**整趟**的第几项 / 共几项"（`itemIndex` / `itemCount` 来自帧），
-        行内那一行说的是"**这一项自己**的字节 / 速度 / ETA"（`received` / `total` 来自同一帧）。
+        这一行是**汇总档**（`variant="summary"`）：先印"**整趟**的第几项 / 共几项"
+        （`itemIndex` / `itemCount` 来自帧），**再**印这一项自己的字节行
+        （spec §4 第 2 档自己的例子 `12.4/27.1 MB · 46%` 里就有字节）；
+        行内那一行（`FolderJarList` / `VersionModList`，`variant` 默认 `inline`）印的是
+        "**这一项自己**的字节 / 速度 / ETA"，而且**批量时也照印**、只是**不**印序号。
         主语不同 ⇒ 缺任何一边，用户就少一样读数（"还要等几项"与"这一项还要多久"）。
         ⚠️ 取消那一颗**不新增 prop**：这一层本来就有 `onAction`（`ModPageAction` 的处理函数）
         ⇒ `cancel-download` 那个新成员直接复用它（这也是"取消只有一个入口"的保证）。
@@ -498,6 +501,7 @@ function FolderRow({
         <DownloadProgressLine
           progress={line}
           onCancel={() => void onAction({ kind: 'cancel-download' })}
+          variant="summary"
         />
       ) : null}
 
