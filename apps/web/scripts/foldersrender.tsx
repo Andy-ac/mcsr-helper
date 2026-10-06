@@ -692,6 +692,13 @@ function shellStub(withModFolders: boolean) {
           modFolders: {
             getState: async () => ({}),
             onStatus: () => () => undefined,
+            /*
+             * ★ C 的 T3：第二条推送（进度帧）。照 `onStatus` 那一格写（形状与它一致）。
+             *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
+             *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+             *   立刻红（这正是它存在的理由）。
+             */
+            onProgress: () => () => undefined,
             bindFolder: async () => ({}),
             unbindFolder: async () => ({}),
             /*

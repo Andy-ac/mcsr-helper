@@ -18,6 +18,7 @@
  * ⇒ 契约留在这里、`preload.ts` 只做逐方法的转发，是为了让"主进程实现了什么"
  *   与"页面能调到什么"在类型层面**必须**一致，而不是靠两处人眼对齐。
  */
+import type { DownloadProgress } from './downloadProgress';
 import type { FileUpdatesState } from './fileUpdates';
 import type { Channel, ModFoldersState } from './modFolders';
 
@@ -202,6 +203,16 @@ export interface DesktopBridge {
     /** 状态推送。**同一个串同时用于订阅与取消订阅**（散开写就会漏改一处）。 */
     onStatus(callback: (state: ModFoldersState) => void): () => void;
     /**
+     * ★ 子项目 C：进度推送（与 `onStatus` 同一条纪律 —— **同一个串**用于订阅与取消订阅）。
+     *
+     * ⚠️★ 为什么另开一条，而不是把字节塞进 `onStatus`：`ModFoldersState` 里有
+     *    `folders` / `catalogRows`，10 Hz 推整份状态是浪费；而"这一趟在干什么"那一格
+     *    （`ModFoldersState.progress`）走 `onStatus` 的低频广播就够了。
+     *    两者读的是主进程里**同一个**变量 ⇒ 不是两份真相。
+     * ⚠️ 载荷里**不带**绝对路径、不带 URL、不带 channel id（D8）。
+     */
+    onProgress(callback: (progress: DownloadProgress) => void): () => void;
+    /**
      * 弹**原生**目录对话框，建一个"文件夹实体"。路径只能由主进程弹自己的对话框去选
      * （渲染进程永远递不进路径）。
      *
@@ -364,7 +375,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十四条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十五条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -382,15 +393,19 @@ export function desktopBridge(): DesktopBridge | null {
  *    对齐判据**：少写一条 / 多写一条都当场编译失败。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
- * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**四处不是纯 kebab**
- *    （照 v1 的缩写习惯，四个都列在这里，免得下一个人按规则推出来对不上）：
+ * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**五处不是纯 kebab**
+ *    （照 v1 的缩写习惯，五个都列在这里，免得下一个人按规则推出来对不上）：
  *      · `onStatus` ⇒ `-status`（去掉 `on`，与 v1 的 `mcsr:fileupdates-status` 同型）
+ *      · `onProgress` ⇒ `-progress`（**同型**：去掉 `on` —— C 的 T3 加的**第二条推送**）
  *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
  *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
  *    其余**十个**都是方法名的逐字 kebab（新加的 `openFolder` ⇒ `-open-folder` 也在其中；
  *    这一格原先写"十一个"，而 16 个成员里逐字 kebab 的是 12 个 —— A 的 S2 顺手改准；
- *    T6 删掉那三条之后：14 个成员 − 4 个非纯 kebab = **10**）。
+ *    T6 删掉那三条之后：14 个成员 − 4 个非纯 kebab = **10**；
+ *    ⚠️★ C 的 T3 加 `onProgress` 之后：**15 个成员 − 5 个非纯 kebab = 10** ——
+ *    逐字 kebab 的仍然是十个（新加的那一条**不**在这一组里），所以上面那个数字没变，
+ *    变的是"非纯 kebab"那一侧的 4 → 5。两个数一起改过，别只改一个）。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -401,6 +416,8 @@ export const MOD_FOLDERS_CHANNELS = {
   getState: 'mcsr:modfolders-get-state',
   /** 状态推送。**同一个串同时用于订阅与取消订阅**（与 v1 同一条纪律）。 */
   onStatus: 'mcsr:modfolders-status',
+  /** ★ 子项目 C：进度推送。与 `onStatus` 一样，**同一个串**用于订阅与取消订阅。 */
+  onProgress: 'mcsr:modfolders-progress',
   bindFolder: 'mcsr:modfolders-bind-folder',
   unbindFolder: 'mcsr:modfolders-unbind-folder',
   /**

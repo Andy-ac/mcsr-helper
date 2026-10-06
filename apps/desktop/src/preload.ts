@@ -4,6 +4,7 @@ import {
   MOD_FOLDERS_CHANNELS,
   type UpdateStatus,
 } from '@mcsr/shared/desktop';
+import type { DownloadProgress } from '@mcsr/shared/downloadProgress';
 import type { FileUpdatesState } from '@mcsr/shared/fileUpdates';
 import type { Channel, ModFoldersState } from '@mcsr/shared/modFolders';
 import { contextBridge, ipcRenderer } from 'electron';
@@ -188,10 +189,10 @@ const bridge: DesktopBridge = {
    *    "页面唯一的数据来源"的一部分，本期**有意接受**（文件头那一段写着这条决定）。
    *
    * ⚠️★ 主进程那一半（`ipcMain.handle` 的注册）**早就在了**（Task 4 落地、现在住
-   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **14 条**通道里
-   *    **13 条**是真注册的 handler（现数：`ipcMain.handle` 那 13 条），第 14 条
-   *    `onStatus` 是**推**给页面的（主进程只 `send`，没有 handler 可注册）——
-   *    所以"14 条通道 / 13 个 handler"不是少了一条。
+   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **15 条**通道里
+   *    **13 条**是真注册的 handler（现数：`ipcMain.handle` 那 13 条），余下 **2 条**
+   *    （`onStatus` 与 C 的 T3 加的 `onProgress`）是**推**给页面的（主进程只 `send`，
+   *    没有 handler 可注册）—— 所以"15 条通道 / 13 个 handler"不是少了两条。
    *    ⚠️ 这条注释原来写的是"主进程那一半是 Task 4 的、今天还不存在 ⇒ 这几条 invoke 一律
    *    reject" —— 那是**转发先落地、行为随后**那个中间态的一句话，Task 4 之后就成了假话
    *    （T2 复审的 Minor ③ 记的正是它，最终修复波改准）。
@@ -207,6 +208,18 @@ const bridge: DesktopBridge = {
       ipcRenderer.on(MOD_FOLDERS_CHANNELS.onStatus, listener);
       return () => {
         ipcRenderer.off(MOD_FOLDERS_CHANNELS.onStatus, listener);
+      };
+    },
+    /*
+     * ★ C 的 T3：**高频**那一条推送（与 `onStatus` 逐字同型 —— 同一个串订阅/退订）。
+     *   ⚠️ 它推的不是整份状态，而是**一帧** `DownloadProgress`（`@mcsr/shared/downloadProgress`）：
+     *   10 Hz 推 `ModFoldersState`（含 `folders` / `catalogRows`）是浪费，而这一帧只有 11 格。
+     */
+    onProgress(callback: (progress: DownloadProgress) => void): () => void {
+      const listener = (_event: unknown, progress: DownloadProgress): void => callback(progress);
+      ipcRenderer.on(MOD_FOLDERS_CHANNELS.onProgress, listener);
+      return () => {
+        ipcRenderer.off(MOD_FOLDERS_CHANNELS.onProgress, listener);
       };
     },
     bindFolder(gameVersion?: string | null): Promise<ModFoldersState> {

@@ -40,6 +40,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -296,8 +297,9 @@ console.log(
  * 通道名在两个产物里的出现次数（ASCII 锚点 ⇒ 与编码无关，§5.92 的教训只针对中文）。
  * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"；
  *    **A 的 S2** 加了 `openFolder` 之后是 17 个成员；**A 的 T6** 删掉那三条（裁决 B）
- *    之后是 **14** 个成员）：**14** 个通道名进 `main.cjs`，
- *    其中 `ipcMain.handle` 只有 **13** 条 —— 第 14 个是 `onStatus`，它只**推**（`send`）。
+ *    之后是 **14** 个成员；**C 的 T3** 加了 `onProgress` 之后是 **15** 个）：**15** 个通道名
+ *    进 `main.cjs`（两条推送的串也在里面 —— 它们是主进程 `send` 出去的），
+ *    其中 `ipcMain.handle` 只有 **13** 条 —— 余下 2 条（`onStatus` / `onProgress`）只**推**（`send`）。
  * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 13/14：
  *    手抄的数字会在"通道表加了/删了一条"时变成一句**看起来还在的假话**（§5.32 ④）。
  */
@@ -361,7 +363,13 @@ class BrowserWindow {
   constructor(options) {
     this.options = options;
     this.webContents = {
-      send: (channel, payload) => pushes.push({ channel, payload }),
+      /*
+       * ⚠️★ 子项目 C / S3：`at` 是 **㉗** 那条"相邻两帧 ≥ 100 ms"（D3 的节流下限）要的
+       *    —— 推送里没有时间戳时那条判据**量不到东西**（只能量到"有两帧"）。
+       *    这里盖的是**桩收到 send 的那一刻**（接收侧时钟），不是主进程发出去的时刻：
+       *    判据问的是"两帧之间**真的**隔了那么久"，而接收侧读数正是能回答它的那个。
+       */
+      send: (channel, payload) => pushes.push({ channel, payload, at: Date.now() }),
       on: () => {},
       setWindowOpenHandler: () => {},
     };
@@ -902,9 +910,19 @@ function loadArtifact() {
   require(MAIN_CJS);
 }
 
-/** 等 13 条 invoke 通道注册好（14 个成员里 `onStatus` 是推送、没有 handler）。 */
+/*
+ * 等 13 条 invoke 通道注册好（15 个成员里 `onStatus` 与 `onProgress` 是**推送**、没有 handler）。
+ *
+ * ⚠️★ `PUSH_CHANNELS` 是**现读**出来的（`Object.values(MOD_CH)` 里那两条推送），不是手抄的
+ *    两个键名：漏一条的表现是这里**永远等不到**（240 × 25ms）⇒ `waitForHandlers()` 给 false
+ *    ⇒ 两处 `bail`（退出码 2，看起来像"这条检查没跑起来"）。C 的 T3 加 `onProgress` 时撞到的
+ *    正是这一条（只加契约、不改这里 ⇒ 整个写相位以 2 收场）。
+ */
+const PUSH_CHANNELS = [MOD_CH.onStatus, MOD_CH.onProgress].filter((name) => name !== undefined);
+
+/** 等 13 条 invoke 通道注册好（两条推送不算）。 */
 async function waitForHandlers() {
-  const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
+  const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
   for (let i = 0; i < 240; i += 1) {
     if (expected.every((name) => handlers.has(name))) return true;
     await new Promise((r) => setTimeout(r, 25));
@@ -1050,10 +1068,10 @@ async function mainPhase() {
 
   // =========================================================================
   await section('① 十三条 invoke 通道都注册了（红的形态：一条都没有）', async () => {
-    const expected = Object.values(MOD_CH).filter((name) => name !== MOD_CH.onStatus);
+    const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
     const missing = expected.filter((name) => !handlers.has(name));
     check(
-      `ipcMain.handle 注册了 13 条 mcsr:modfolders-*（14 个成员里 onStatus 是推送、不算）`,
+      `ipcMain.handle 注册了 13 条 mcsr:modfolders-*（15 个成员里 onStatus / onProgress 是推送、不算）`,
       registered && missing.length === 0,
       missing.length === 0
         ? `handlers 共 ${String(handlers.size)} 条`
@@ -3875,6 +3893,87 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       JSON.stringify(seen.slice(0, 6)),
     );
     check('★ 收尾之后 progress 是 null', after.progress === null, JSON.stringify(after.progress));
+  });
+
+  /*
+   * =========================================================================
+   * ㉗（子项目 C / S3）onProgress 推送：帧真的到了、而且被**节流**过
+   * =========================================================================
+   * ⚠️★ 编号（与 brief 不一致，报告里写明了）：brief 举例写的是 **⑭**，而本树里
+   *    ⑭ 已被"目标被占住"那一组占用（现读全部 `await section(` 的编号：① ② ③ ⑤ ⑤b ⑥
+   *    ⑧ ⑨ ⑩ ⑫ ⑬ ⑭ ⑮ ⑯ ⑯b ⑱ ⑲ ⑳ ㉑ ㉒ ㉓ ㉔ ㉕ ㉖ ㉖b）⇒ 按本文件自己的风格
+   *    （编号跟着**执行顺序**走）取续号 **㉗**，接在 ㉖b 之后。
+   * ⚠️★ 夹具这一行**没有**照 brief 逐字（`copyFileSync(fx.slow.official, …)`）：那一版真的
+   *    跑过一次，读数是"下载请求 **0**"（见报告）—— `official` 就是桩要回的那一份、
+   *    它的 sha512 正是 `release.sha512` ⇒ 走 `installRelease` 的**幂等**那一支
+   *    （`placeJar` 头顶那一段：:2506-2519 写着同一条）。那一版里"帧数 0"与"通道还没加"
+   *    长得一模一样（§5.79：红点会长得像产品缺陷）⇒ 换成 `placeJar`（= `fixture.local`，
+   *    判成 `older` ⇒ 真的走下载）。
+   */
+  await section('㉗（C/S3）onProgress 推送：帧真的到了、且被**节流**过', async () => {
+    const dirPush = join(workRoot, 'progress-push');
+    mkdirSync(dirPush, { recursive: true });
+    placeJar(dirPush, fx.slow);
+    const id = await prepare(dirPush);
+    const before = pushes.length;
+    const beforeReqs = downloadLog.length;
+    await invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
+      mirrorId: fx.slow.mirrorId,
+    });
+    console.log(
+      `  夹具自检：桩上收到的下载请求 ${String(beforeReqs)} → ${String(downloadLog.length)}（0 = 走了幂等那一支，这一组什么都量不到）`,
+    );
+    const frames = pushes
+      .slice(before)
+      .filter((entry) => entry.channel === MOD_CH.onProgress)
+      .map((entry) => entry.payload);
+    check('★★ 收到进度帧（通道名逐字来自共享常量）', frames.length >= 2, `帧数 ${String(frames.length)}`);
+    check(
+      '★ 帧的字节单调不减，且最后一帧 `received === total`',
+      frames.every((f, i) => i === 0 || f.received >= frames[i - 1].received) &&
+        frames[frames.length - 1]?.received === fx.slow.official.length,
+      JSON.stringify(frames.map((f) => f.received)),
+    );
+    check(
+      '★ 帧里的身份对得上（folderId / modid / fileName）',
+      frames.every((f) => f.folderId === id && f.modid === fx.slow.modid && f.fileName === fx.slow.targetName),
+      JSON.stringify(frames[0]),
+    );
+    /*
+     * ★★ 节流本身：桩把那 400 ms 切成两块（先一半、停一下、再一半），
+     *    所以"没节流"的实现会收到**每个 chunk 一帧**（本机 st 上可能只有两帧，
+     *    所以这条判据的**分母**要现读：用 `downloadLog` 那一趟的 `chunk` 数拿不到 ⇒
+     *    改成"帧数 ≤ 一个按 100 ms 上限算出来的数"）。⚠️ 探针里若拿不到块数，
+     *    改用下面这条**恒定成立**的判据：帧数 ≥ 2 **且** 相邻两帧的时间差 ≥ 100 ms。
+     *
+     * =====================================================================
+     * ⚠️★ 上面那一段（brief 原文）里"**恒定成立**"是**错的** —— 实测读数摆在这里
+     *    （T3 照 brief 逐字跑了一次，实现已经是对的）：
+     *      `✗ ★★ 相邻两帧之间至少 100 ms —— [443,1]`、`帧数 3`、`字节 [0,166,166]`
+     *    第三帧是 **`notePhase('install')` 那一帧**，而它按 brief 自己的 Step 5 是
+     *    `pushProgress(true)`（D3 的 `force`："换项与换相位**必须**立刻让页面看到"）
+     *    ⇒ 它**必然**紧跟在最后一帧下载帧后面（实测 1 ms）⇒ 那一帧进了 `gaps` 之后，
+     *    这一条在**正确实现**上永远是红的。
+     *    ⇒ 修法（最小改动，判据的**意图一字不改**：量的仍然是"D3 的 100 ms 下限真的是下限"）：
+     *    **只把 `download` 相位的那几帧拿来比间隔** —— 受节流管辖的正是它们；
+     *    `force` 帧（换项/换相位）按设计**不受**这个下限约束，把它们算进来等于要求
+     *    "force 不许 force"。⚠️ 报告里给了替代措辞。
+     *    ⚠️★ 另外补了 `gaps.length >= 1`：`[].every(...)` **恒真**（§5.32 ①）——
+     *    一个"只推 force 帧、一个字节帧都不推"的实现会得到 `gaps = []` 而**绿着**，
+     *    而那正是这一条要抓的东西。这一处是**收紧**（只能让绿的变红，不会让红的变绿）。
+     */
+    const downloadStamps = pushes
+      .slice(before)
+      .filter(
+        (entry) => entry.channel === MOD_CH.onProgress && entry.payload.phase === 'download',
+      )
+      .map((entry) => entry.at);
+    const gaps = downloadStamps.slice(1).map((at, i) => at - downloadStamps[i]);
+    check(
+      '★★ 相邻两帧之间**至少** 100 ms（D3 的下限真的是下限）',
+      gaps.length >= 1 && gaps.every((gap) => gap >= 100),
+      JSON.stringify({ gaps, phases: frames.map((f) => f.phase) }),
+    );
   });
 
   server.close();

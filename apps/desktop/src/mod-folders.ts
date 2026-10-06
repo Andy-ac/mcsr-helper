@@ -9,7 +9,7 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十三条 IPC 的注册**（14 个契约成员里 `onStatus` 只推、不 handle；
+ *   · **十三条 IPC 的注册**（T3 之后契约是 15 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
  *     `updateCatalogRow`，契约 17 → 14，裁决 B）；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
@@ -76,7 +76,8 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
-import type { ByteSample, DownloadProgress } from '@mcsr/shared/downloadProgress';
+import type { ByteSample, DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
+import { shouldPush } from '@mcsr/shared/downloadProgress';
 import {
   buildIndex,
   type ModCatalog,
@@ -263,6 +264,12 @@ function beginRun(input: {
    *   真正的第一帧由 `setRunItem` 产生，那时项序已经是 1。
    */
   progress = null;
+  /*
+   * ★ C/S3：节流的"上一次样本"也**归零**（理由与 `endRun` 里那一句相同：两趟之间比差没意义）。
+   *    ⚠️ 这一句**不是**"起手推一帧"—— 它在 `progress = null` 之后、而且不调 `pushProgress`：
+   *    起手仍然一帧都不推（上面那一段）。
+   */
+  lastPush = null;
 }
 
 /** 换一项：项序 +1、字节归零、相位回到 `download`。 */
@@ -275,6 +282,8 @@ function setRunItem(input: { modid: string; fileName: string }): void {
   activeRun.total = 0;
   activeRun.phase = 'download';
   refreshProgress();
+  // ★ C/S3：**换项必须立刻让页面看到**（D3：换项那一帧不受 100 ms 下限约束）
+  pushProgress(true);
   rebuild();
 }
 
@@ -283,6 +292,8 @@ function notePhase(phase: DownloadProgress['phase']): void {
   if (activeRun === null) return;
   activeRun.phase = phase;
   refreshProgress();
+  // ★ C/S3：**换相位必须立刻让页面看到**（同 `setRunItem`：这是 D3 的 `force` 那一支）
+  pushProgress(true);
   rebuild();
 }
 
@@ -292,12 +303,19 @@ function noteBytes(sample: ByteSample): void {
   activeRun.received = sample.received;
   activeRun.total = sample.total;
   refreshProgress();
+  // ★ C/S3：**高频**那一条载体（真正的节流在 `pushProgress` 里，这里只交读数）
+  pushProgress();
 }
 
 /** 一趟收尾：**清干净**（界面靠这一次 `rebuild()` 知道"没有在跑了"）。 */
 function endRun(): void {
   activeRun = null;
   refreshProgress();
+  /*
+   * ⚠️★ 把节流的"上一次样本"也清掉：不清的话，**下一趟**的第一帧会拿上一趟最后一次读数
+   *    与"上一趟的时刻"比 —— 那两件事属于两趟，比出来的差没有意义（D3 的窗口是"这一趟"的）。
+   */
+  lastPush = null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -343,6 +361,37 @@ function broadcast(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(MOD_FOLDERS_CHANNELS.onStatus, current);
+  }
+}
+
+/**
+ * ★ 子项目 C：**高频**那一条载体（D3 节流）。整份状态一步都不推 —— 它只发这一帧。
+ *
+ * ⚠️ 节流判据住在共享内核（`shouldPush`，T1 的纯函数 + 单测）：这里只负责
+ *    "盖时间戳、问一句、发出去"，不重新实现一遍阈值（两个地方各写一个数字迟早会漂）。
+ * ⚠️★ 与 `broadcast()` 的分工：这一条**没有对应的 `rebuild()`** —— `noteBytes` 每个 chunk
+ *    都调它，而"整份状态"那一份（`onStatus`）只在换项/换相位/收尾时推（`rebuild` 的调用点）。
+ *    ⚠️ 载荷是 `refreshProgress()` 刚算出来的**同一个** `progress`（与 `buildState()` 读的是
+ *    同一个变量）⇒ 两条载体不是两份真相。
+ * ⚠️ `force`：换项与换相位必须**立刻**让页面看到（D3："换项/换相位不受 100 ms 约束"）。
+ */
+let lastPush: TimedSample | null = null;
+
+function pushProgress(force = false): void {
+  if (activeRun === null) return;
+  const next: TimedSample = {
+    at: Date.now(),
+    received: activeRun.received,
+    total: activeRun.total,
+  };
+  if (!shouldPush({ last: lastPush, next, force })) return;
+  lastPush = next;
+  refreshProgress();
+  const frame = progress;
+  if (frame === null) return;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(MOD_FOLDERS_CHANNELS.onProgress, frame);
   }
 }
 
@@ -1848,7 +1897,8 @@ export async function downloadMissing(
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十三条 `ipcMain.handle`（第 14 条 `onStatus` 是**推**给页面的：主进程只 `send`）。
+ * 注册十三条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
+ * 主进程只 `send`，没有 handler 可注册）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
  *    写错一个字母**类型检查看不见**，而失败形态是静默的（`invoke` reject / `on` 永不触发）。
