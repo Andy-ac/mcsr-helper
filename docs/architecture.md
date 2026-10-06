@@ -373,7 +373,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 
 | 层 | 在哪里 | 是什么 |
 |---|---|---|
-| 契约 | `packages/shared/src/desktop.ts` | `DesktopBridge` 的形状 + 两组通道名常量：v1 的 `FILE_UPDATES_CHANNELS` **9 条**、v2 的 `MOD_FOLDERS_CHANNELS` **16 条**（键名与方法名逐一对应，由 `satisfies` 兜住）；`desktopBridge()` 是"我在不在桌面壳里"的唯一入口 —— 浏览器里 `window.mcsr` **不存在** |
+| 契约 | `packages/shared/src/desktop.ts` | `DesktopBridge` 的形状 + 两组通道名常量：v1 的 `FILE_UPDATES_CHANNELS` **9 条**、v2 的 `MOD_FOLDERS_CHANNELS` **16 条**（键名与方法名逐一对应，由 `satisfies` 兜住）—— ⚠️ 那个 **16** 是 **C 收口时（2026-10-06）现数**的读数，来处是 `C 起：14 + onProgress + cancelDownload`（A 的 T6 之后是 14，C 的 T3 加推送 `onProgress`、T4 加请求 `cancelDownload`）；加/删通道时**现数一遍再改这一格**，别把它当常量抄走；`desktopBridge()` 是"我在不在桌面壳里"的唯一入口 —— 浏览器里 `window.mcsr` **不存在** |
 | 纯逻辑（**不做 I/O**） | `packages/shared/src/fileUpdates.ts`（v1）、`packages/shared/src/modFolders.ts`（v2） | 状态文件的形状与迁移（`StateFileV2` / `migrateState`）、两个 planner 组装出的视图、目录的解析/展开/版本比较/文件名与镜像规则、批量与缺失清单的谓词 |
 | 主进程（唯一的 I/O 层） | `apps/desktop/src/preload.ts` 暴露 `window.mcsr`，实现在 `apps/desktop/src/file-updates.ts`（v1）与 `apps/desktop/src/mod-folders.ts`（v2），另有只读件 `mod-folder-scan.ts` / `mod-folder-catalog.ts` | 原生文件对话框、读 jar 头、下载与写盘、把状态推给页面 |
 

@@ -4045,7 +4045,35 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
      *    "这一趟早就收尾了"（那时点取消读到的是"没有在跑"，而几条判据照样能绿）。
      */
     check('★★ 取消那一刻真的有一个请求在飞（夹具自钉：不然这一节什么都没测）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
+    /*
+     * =====================================================================
+     * ★★ I1 的那把锁（**收口时补**，2026-10-06）：取消**受理**那一刻，
+     *    `cancelling: true` 那一帧必须上**高频**通道（`onProgress`）。
+     * =====================================================================
+     * ⚠️★ 为什么需要它：I1 那条修复（`cancelDownload` 里补的 `pushProgress(true)`）原先
+     *    **没有任何门禁** —— 删掉那一行，`cancelling: true` 到不了页面
+     *    （`progressOf` 是"推送优先于状态"，那一刻 `live` 里还是取消**之前**那一帧），
+     *    按钮永远不变「正在取消…」，而**同节已有的判据一条都不会红** ⇒ 静默退回原 bug。
+     *
+     * ★★ 为什么这条是**确定**的（不是"大概能抓到"）：
+     *   ① `cancelling = true` 全模块**只有一处赋值**（`mod-folders.ts` 的 `cancelDownload`：
+     *      `activeRun.cancelling = true`）⇒ 带 `cancelling:true` 的帧只可能来自这一次取消；
+     *   ② 那一帧**只能**由 `pushProgress(true)` 发出：`refreshProgress()` 造出它之后，
+     *      `rebuild()` 走的是 `onStatus`（被下面这个 channel 过滤掉），而 `pushProgress`
+     *      才走 `MOD_CH.onProgress`；
+     *   ③ 那个 `pushProgress(true)` 在 handler **返回之前同步**发生（`abort()` 之前，全同步）
+     *      ⇒ `await invoke(...)` 返回时，这一帧**一定**已经在 `pushes` 里了；
+     *   ④ "取消真的被受理了"这个前提已经被同节两条判据钉住（上面那条"有一个请求在飞" +
+     *      下面那条 `{ok:true}`）⇒ 不会出现"取消根本没被受理、所以本来就没有这一帧"的假红。
+     *    ⚠️ 快照取在 `invoke` **之前**、断言在它**之后**：slice 里因此只含取消那一刻之后的帧。
+     */
+    const beforeCancel = pushes.length;
     const cancelRes = await invoke(MOD_CH.cancelDownload);
+    check(
+      '★★ 取消受理那一刻有一帧 `cancelling:true` 上了**高频**通道（I1：删掉 `cancelDownload` 里那句 `pushProgress(true)` 就红）',
+      pushes.slice(beforeCancel).some((entry) => entry.channel === MOD_CH.onProgress && entry.payload?.cancelling === true),
+      JSON.stringify(pushes.slice(beforeCancel).map((entry) => ({ ch: entry.channel, cancelling: entry.payload?.cancelling, phase: entry.payload?.phase }))),
+    );
     check('★ 取消被受理（`{ok:true}`）', cancelRes?.ok === true, JSON.stringify(cancelRes));
     const state = await run; // ★ 取消**不** reject：它不是失败（D4）
     check(
