@@ -3793,7 +3793,8 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       '★★ 字节是**字节级**的、而且这一读**确实发生在下载中途**（收到的量 > 0 且 < 总长）',
       typeof mid.progress?.received === 'number' &&
         mid.progress.received > 0 &&
-        mid.progress.received < mid.progress.total,
+        mid.progress.received < fx.slow.official.length &&
+        mid.progress.total === fx.slow.official.length,
       JSON.stringify({ received: mid.progress?.received, total: mid.progress?.total, half: halfBytes }),
     );
     check('★ 相位是 download、项序 1/1', mid.progress?.phase === 'download' && mid.progress.itemIndex === 1 && mid.progress.itemCount === 1, JSON.stringify(mid.progress));
@@ -3854,10 +3855,14 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
      * ⚠️★ 判据**必须钉住尽头**（`max`），不能只判"第一项是 1"：把 `setRunItem` 的
      *   `itemIndex += 1` 砍成 `= 1` 之后，读数是 `[1]` —— 第一项仍然是 1，只判 `indexes[0]`
      *   的话那一刀照旧绿（"项序真的递增到最后一项"这件事一个字节都没被量到）。
-     * ⚠️ 也**不许**判 `JSON.stringify(indexes) === '[1,2]'`：某一项整个窗口被 25ms 的轮询漏掉时
-     *   读数是 `[2]`（正确实现），那样判会**假红**；`max` 只要求"走到过最后一项"。
-     * `batchRows` 就是那一组夹具"可批量的行数"（上面那条仪器自检已经钉住它是 2）——
-     * 与下面 `itemCount` 那条判据量的是同一个数，不要写死字面量。
+     * ★ 两个半边各管一件事：`indexes[0] === 1` 管**"从 1 起、读数里不出现 0"**；
+     *   `Math.max(...indexes) === batchRows` 管**"真的走到了最后一项"**。
+     * ★ `batchRows` 是**同一夹现测**出来的（上面那条仪器自检把它钉在这一夹的目标数上），
+     *   不是写死的字面量 —— 与下面 `itemCount` 那条判据量的是同一个数。
+     * ⚠️★ 说清这条判据**量不到**什么（别把它写强）：在这一夹（`batchRows === 2`）里，两个半边
+     *   合起来**恰好等价于**"集合就是 `[1,2]`" ⇒ 某一项整个窗口被 25ms 的轮询漏掉时读数是 `[2]`
+     *   （正确实现），这条判据**仍然会红**。这一夹每项 ≥400ms 的慢桩让那种漏读在实践中几乎不会
+     *   发生，但**不许**因此写成"`max` 把那个假红窗口消掉了"—— 它没有消掉，只是窗口极小。
      */
     check(
       '★ 项序从 1 起、并且真的递增到最后一项（`max` = 目标数）',
@@ -3866,7 +3871,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     );
     check(
       '★★ `itemCount` 等于这一趟的目标数（= 可批量的行数），而不是文件夹里的行数',
-      seen.length > 0 && seen.every((s) => s.count === 2),
+      seen.length > 0 && seen.every((s) => s.count === batchRows),
       JSON.stringify(seen.slice(0, 6)),
     );
     check('★ 收尾之后 progress 是 null', after.progress === null, JSON.stringify(after.progress));
@@ -3937,7 +3942,17 @@ if (PHASE === 'state-file') {
    *   ⚠️ 只动这一支：0 / 1 的语义一字不改。
    */
   if (writeChild.status === 2) {
-    bail('写相位**没跑起来**（退出码 2）—— 原因见上面子进程那一行「判据没跑起来」');
+    /*
+     * ⚠️★ 这一支**不能**走 `bail`：`bail` 立刻 `process.exit(2)`，会跳过末尾那段的收尾
+     *   （打印临时目录 + `rmSync` + `server.close()`）⇒ `%TEMP%` 里会静默留下一份本次的
+     *   临时目录，**连路径都不打印**。所以照末尾那段**就地**写那三句，退出码仍然是 2。
+     */
+    console.error('\n✗ 写相位**没跑起来**（退出码 2）—— 原因见上面子进程那一行「判据没跑起来」');
+    console.error('  （退出码 2 = 这条检查没跑成，**不等于**判据通过）');
+    console.log(`\n  临时目录：${result.workRoot}${KEEP ? '（--keep：保留）' : ''}`);
+    server.close();
+    if (!KEEP && result.workRoot) rmSync(result.workRoot, { recursive: true, force: true });
+    process.exit(2);
   }
   check(
     '（子进程）写相位的全部判据成立',
