@@ -94,6 +94,14 @@ export function rateOf(input: { samples: readonly TimedSample[]; now: number; to
   const moved = last.received - first.received;
   if (moved <= 0) return { bytesPerSecond: 0, etaMs: null };
   const bytesPerSecond = (moved / elapsed) * 1000;
+  /*
+   * ⚠️★ T1 评审（Important 1）：**总长未知（`total = 0`）不是"已经下完"**。
+   *    同一个模块里 `formatPercent` 把 `total = 0` 当"未知"（给 `—`），而这里若照
+   *    `remaining <= 0 ? 0` 走，界面会同时印出 `total = '0 B'`、`percent = '—'` 与 `ETA = '0s'`
+   *    —— 一个号称"算不出来"的帧却给了"不用等了"的读数（与 D2 的"不猜"直接冲突）。
+   *    ⇒ 与 `formatPercent` 同一口径：总长未知 ⇒ ETA 给 `null`（速度不需要 `total`，保留）。
+   */
+  if (!(input.total > 0)) return { bytesPerSecond, etaMs: null };
   const remaining = input.total - last.received;
   return {
     bytesPerSecond,
@@ -106,7 +114,7 @@ const DASH = '—';
 
 export function formatBytes(n: number | null): string {
   if (n === null || !Number.isFinite(n) || n < 0) return DASH;
-  if (n < 1024) return `${String(n)} B`;
+  if (n < 1024) return `${String(Math.round(n))} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;

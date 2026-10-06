@@ -140,6 +140,20 @@ describe('★ 速度与 ETA（D2：最近 3 秒的滚动窗口；样本不足给
     });
     assert.equal(rate.etaMs, 0);
   });
+
+  it('★★ 总长未知（`total = 0`）⇒ ETA 是 `null`，**不是** 0（T1 评审 Important 1 补的判据）', () => {
+    const rate = rateOf({
+      samples: [
+        { at: 0, received: 0, total: 0 },
+        { at: 1000, received: 1_000_000, total: 0 },
+      ],
+      now: 1000,
+      total: 0,
+    });
+    assert.equal(rate.bytesPerSecond, 1_000_000, '速度不需要总长 ⇒ 照常算出来');
+    assert.equal(rate.etaMs, null, '总长未知与"已经下完"是两件事：前者 `—`、后者 `0s`');
+    assert.notEqual(rate.etaMs, 0);
+  });
 });
 
 describe('★ 人话格式化（"样本不足"与"真的是 0"必须分得开）', () => {
@@ -147,12 +161,17 @@ describe('★ 人话格式化（"样本不足"与"真的是 0"必须分得开）
     assert.equal(formatBytes(null), '—');
     assert.equal(formatRate(null), '—');
     assert.equal(formatEta(null), '—');
+    assert.equal(formatBytes(Number.POSITIVE_INFINITY), '—');
+    assert.equal(formatRate(Number.NaN), '—');
+    assert.equal(formatEta(Number.POSITIVE_INFINITY), '—');
     assert.notEqual(formatBytes(null), formatBytes(0));
   });
 
   it('★ 字节/速度/ETA 的三种量级', () => {
     assert.equal(formatBytes(0), '0 B');
+    assert.equal(formatBytes(1024), '1.0 KB');
     assert.equal(formatBytes(27_100_000), '25.8 MB');
+    assert.equal(formatBytes(2_147_483_648), '2.00 GB');
     assert.equal(formatRate(3_100_000), '3.0 MB/s');
     assert.equal(formatEta(5000), '5s');
     assert.equal(formatEta(65_000), '1m05s');
@@ -215,7 +234,7 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
     );
   });
 
-  it('★★ 视图模型：样本够 ⇒ 三个数都算出来；样本不足 ⇒ 三个都是 `—`', () => {
+  it('★★ 视图模型：样本够 ⇒ 三个数都算出来；样本不足 ⇒ 速度与 ETA 都是 `—`（百分比来自帧本身）', () => {
     const progress: DownloadProgress = {
       run: 'update-mod',
       phase: 'download',
@@ -273,6 +292,7 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
     assert.equal(view.installing, true);
     assert.equal(view.received, '—');
     assert.equal(view.total, '—');
+    assert.equal(view.rate, '—');
     assert.equal(view.eta, '—');
   });
 });
