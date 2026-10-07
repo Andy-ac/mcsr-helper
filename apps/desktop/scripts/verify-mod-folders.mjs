@@ -989,6 +989,22 @@ function buildWriteFixture() {
     packs.cancel.id,
     packBody(packs.cancel.id, '探针整合包（取消）', packs.cancel.items.map((entry) => entry.modid)),
   );
+  /*
+   * ★ 修轮 1（评审的唯一 Important）：`installRelease` 的**幂等**那一支（`alreadyCurrent`）的夹具。
+   * ⚠️★ 它复用 `packs.skip.already` 那一份 mod 夹具（**不新造 modid**）：`packPool`
+   *    （`progressPool.slice(2, 9)`）现在**刚好 7 个**（上面那条 `bail` 的条件正是 7）⇒
+   *    再要一个就得收紧夹具前提（目录里现读得到的候选就那么多）。复用是安全的：那一份
+   *    只被 `hijack` 过一次（release 的 url / sha512 只改了一次），而 ㉟ 的判据
+   *    **一个下载请求都不该发** ⇒ 两边不会互相搅动。
+   */
+  packs.current = {
+    id: 'probe-pack-current',
+    already: packs.skip.already,
+  };
+  modpacks.set(
+    packs.current.id,
+    packBody(packs.current.id, '探针整合包（已经是这一份）', [packs.current.already.modid]),
+  );
   return {
     bad,
     good,
@@ -1029,11 +1045,12 @@ if (WRITE) {
     return `${pack.id}[${entries.map(packEntryText).join(', ')}]`;
   };
   console.log(
-    `  整合包夹具（四条端点，走 origin 通道）：${[
+    `  整合包夹具（五条端点，走 origin 通道）：${[
       writeFixture.packs.progress,
       writeFixture.packs.skip,
       writeFixture.packs.fail,
       writeFixture.packs.cancel,
+      writeFixture.packs.current,
     ]
       .map(packSummaryOf)
       .join('；')}`,
@@ -4423,8 +4440,11 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    *      （T4 的读数：`通道 17 条` / `main.cjs 17/17` / `ipcMain.handle 15 条`）。
    *      再写一条"等于 17"就是把**一个现读的数字抄死**（§5.32 ①/④）。
    *    · **断言 9–13** 落成下面五节 **㉚ ㉛ ㉜ ㉝ ㉞**（㉙ 已被"起手就取消"占用）。
-   * ⚠️★ 四条夹具走 `origin` 通道、每个 mod 一份自己的字节：理由写在 `buildWriteFixture`
-   *    那一段的注释里（一趟只收一个通道 + 桩按前缀键控）。
+   *    · ★ **修轮 1** 补的那一条（`installRelease` 的幂等那一支）在更下面的 **㉟** ——
+   *      它与 ㉛ **不是同一条路**（那一段头顶写着两条路的区别与夹具的构造方式）。
+   * ⚠️★ 四条包夹具走 `origin` 通道、每个 mod 一份自己的字节：理由写在 `buildWriteFixture`
+   *    那一段的注释里（一趟只收一个通道 + 桩按前缀键控）；㉟ 那一条复用其中一份 mod 夹具
+   *    （**不新造 modid**，理由写在夹具那一段的注释里）。
    * ⚠️★ "一个请求都不发"一律用**探针既有的请求计数读数**（`downloadLog`，C 时代那种
    *    `请求数 7 → 7`），不写"看起来没发" —— 而 `downloadLog` 只记**下载**那一段
    *    （`/api/modpacks/…` 那条端点走的是另一个计数 `modpackRequests`）。
@@ -4700,6 +4720,90 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       '',
     );
   });
+
+  /*
+   * =========================================================================
+   * ㉟（修轮 1 / 评审的唯一 Important）`installRelease` 的**幂等**那一支：目标已经是这一份
+   * =========================================================================
+   * ⚠️★ 编号：㉚–㉞ 是 brief 的断言 9–13（T5 已落地）⇒ 这个新支取**下一个空号 ㉟**
+   *    （现读 `await section(` 的编号确认过没有重号）。
+   * ⚠️★★ 这一支与 ㉛ **不是同一条路**（两条各要一条判据，别混）：
+   *    · ㉛ = `already-in-folder`：**预扫**的扫描读数里已经认出了这个 modid ⇒ 那一项
+   *      **根本不进 `plan.items`**，`installRelease` 一次都没被调用（"文件夹里有它"）；
+   *    · ㉟ = `already-current`：预扫**没看见**它、那一项真的进了 `items`、`installRelease`
+   *      **被调用了**，而它的幂等闸读到"目标位置的 sha512 与这一条 release 逐字节相同"
+   *      ⇒ **不下载、不写盘**、直接返回 `{ alreadyCurrent: true }`。
+   *      这是实际会撞上的那一条（用户在两次扫描之间自己把 jar 放了进去 / 上一趟的残影）。
+   * ⚠️★ 夹具的**唯一**构造方式（现读 `installRelease` 的 ③ 与 `packPlanFor` 的两条判据）：
+   *      "目标已在位（sha512 一致）"要的是盘上那份字节与 `release.sha512` 逐字节相同；而这样
+   *      一份 jar 的内部 `fabric.mod.json.id` 就是那个 modid ⇒ 它要是**扫描时就**在目录里，
+   *      扫描读数会认出它 ⇒ 那一项会被 `packPlanFor` 判成 `already-in-folder`（= ㉛ 那条路，
+   *      **走不到**幂等那一支）。⇒ **先把文件夹扫一遍（`prepare`），随后才把那一份字节放进
+   *      目标位置**："盘上有、缓存的读数里没有" ⇒ 只有幂等那一支接得住它
+   *      （下面第一条"夹具自钉"量的就是这个前提，它红了就是夹具坏了，不是产品坏了）。
+   */
+  await section(
+    '㉟（修轮 1）目标"已经是这一份" ⇒ 只进 `skipped`（**不进** `updated`）、一个请求都不发',
+    async () => {
+      const dir = join(workRoot, 'pack-current');
+      mkdirSync(dir, { recursive: true });
+      /* 诱饵：`prepare()` 要求这个文件夹至少有一行（`rows.length !== 0`）。 */
+      packDecoy(dir);
+      const id = await prepare(dir);
+      const already = fxPack.current.already;
+      const targetPath = join(dir, already.targetName);
+      /*
+       * ★★ 落的是 `official`（= 目录里写的那个 sha512 对应的字节）—— 幂等闸要的正是它。
+       *    （`local` 是同 modid、内部版本更低、字节不同的那一份 ⇒ 那会真的去下载。）
+       */
+      writeFileSync(targetPath, already.official);
+      const beforeReqs = packReqs();
+      const rowsNow = folderByPath(await invoke(MOD_CH.getState), dir)?.rows ?? [];
+      check(
+        '★★ 夹具自钉：目标那一份**已经在盘上**、而**缓存的扫描读数里没有这个 modid**（⇒ 只有幂等那一支接得住它）',
+        existsSync(targetPath) && !rowsNow.some((row) => row.modid === already.modid),
+        `${listing(dir)}；rows=${JSON.stringify(rowsNow.map((row) => row.modid))}`,
+      );
+      const state = await invoke(MOD_CH.downloadPack, fxPack.current.id, '1.16.1', id, 'origin');
+      const skipped = state.lastRun?.skipped ?? [];
+      const updated = state.lastRun?.updated ?? [];
+      console.log(
+        `  夹具自检：这一夹文件夹里有 ${listing(dir)}；这一趟的 lastRun ${JSON.stringify(state.lastRun)}`,
+      );
+      check(
+        '★★ 那一项在 `lastRun.skipped` 里，而且说的正是**幂等**那一支（不是 ㉛ 的"文件夹里已经有它"）',
+        skipped.some(
+          (entry) => entry.modid === already.modid && entry.reason.includes('已经是这一份'),
+        ),
+        JSON.stringify(skipped),
+      );
+      /*
+       * ★★ 这一条就是评审那条 Important 的判据：两个桶**互斥**。它坏掉的样子是 `updated`
+       *    里也有它 ⇒ 页面那句汇总行（`lastRunSummary`："已更新 {{ok}} 个，跳过 {{skipped}} 个"）
+       *    把一次**一个字节都没写**的空转念成"已更新 1 个，跳过 1 个"。
+       */
+      check(
+        '★★ 同一项**不在** `updated` 里（`updated` 与 `skipped` 互斥 —— 两处都记就是"已更新 1 / 跳过 1"的空转）',
+        !updated.includes(already.modid),
+        JSON.stringify(state.lastRun),
+      );
+      check(
+        '★ `updated` 整个是空的（这一趟真的一个字节都没写）',
+        updated.length === 0,
+        JSON.stringify(updated),
+      );
+      check(
+        '★★ **一个下载请求都不发**（请求计数读数 —— 它同时证"这一趟走的是幂等那一支，不是真的下了"）',
+        packReqs() === beforeReqs,
+        `请求数 ${String(beforeReqs)} → ${String(packReqs())}`,
+      );
+      check(
+        '★ 目标那一份的字节一个字节都没变（sha512 仍是夹具那一份）',
+        sha512Of(targetPath) === sha512OfBuffer(already.official),
+        `${sha512Of(targetPath).slice(0, 16)}…`,
+      );
+    },
+  );
 
   server.close();
   return { workRoot: parentRoot, ok: failures === 0 };

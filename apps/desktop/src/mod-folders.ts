@@ -1707,6 +1707,22 @@ function skipReasonOf(row: ModFolderRowView): string {
  */
 type LastRun = NonNullable<ModFoldersState['lastRun']>;
 
+/** `bulkRun` 只跑这两趟（`DownloadProgress['run']` 另外两个值走 `writeRun` 的单行那条路）。 */
+type BulkRunKind = 'update-folder-all' | 'download-pack';
+
+/**
+ * ★ 修轮 1（评审的 Minor 2）：这一趟**叫什么名字**。失败那一支的 `notice` 是**页面直接渲染**的
+ *    一句话（`ModDownloadPanel` 把 `state.notices` 原样印出来）⇒ 名字必须按这一趟取。
+ *    ⚠️ 原先那一行写死"整夹更新没能跑完"：整包下载走到那里（只有 `beginRun` / `rebuild` 抛才可能）
+ *    会说错名字。
+ * ⚠️ 类型是 `Record<BulkRunKind, string>`：`bulkRun` 将来多一趟时这里**当场编译失败**
+ *    （与 `SKIP_TEXT` 同一招），不会静默退回"整夹更新"。
+ */
+const BULK_RUN_LABEL: Record<BulkRunKind, string> = {
+  'update-folder-all': '整夹更新',
+  'download-pack': '整包下载',
+};
+
 async function bulkRun(input: {
   /**
    * ★ B2 加的（默认保持既有那一条的语义）：这一趟的**类型**。
@@ -1715,7 +1731,7 @@ async function bulkRun(input: {
    * ⚠️★ 默认值那半句是判据：既有那两个调用方（整夹更新 / 缺失清单的批量）**一个都不许改**
    *    ⇒ 默认值必须是 `'update-folder-all'`（改了会让 C 那两趟的进度帧类型变掉）。
    */
-  run?: 'update-folder-all' | 'download-pack';
+  run?: BulkRunKind;
   folderId: string;
   itemCount: number;
   work: () => Promise<LastRun>;
@@ -1723,10 +1739,12 @@ async function bulkRun(input: {
   if (busy) throw new Error('正在更新中（一次只写一个文件）—— 等它跑完再试');
   busy = true;
   let run: LastRun;
+  /* ★ 这一趟的类型定一次、用在三处：`beginRun` 的帧、失败那一支的 notice 的名字（修轮 1）。 */
+  const kind: BulkRunKind = input.run ?? 'update-folder-all';
   try {
     /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
     beginRun({
-      run: input.run ?? 'update-folder-all',
+      run: kind,
       folderId: input.folderId,
       itemCount: input.itemCount,
     });
@@ -1740,7 +1758,7 @@ async function bulkRun(input: {
      *    那个 `break` + `cancelled` 桶），所以到这里的一律是**真失败** ⇒ `cancelled: []`。
      */
     lastRun = { updated: [], skipped: [], failed: [], cancelled: [] };
-    pushNotice(`整夹更新没能跑完：${messageOf(error)}`);
+    pushNotice(`${BULK_RUN_LABEL[kind]}没能跑完：${messageOf(error)}`);
     rebuild();
     throw error;
   }
@@ -2063,20 +2081,32 @@ export async function downloadMissing(
 }
 
 /**
- * ★ B2：`packPlanFor` 的**五种**跳过原因各说一句话（`lastRun.skipped` 里那一格）。
+ * ★ B2：`lastRun.skipped[].reason` 的**逐支文案**。⚠️ 这些字符串是**页面直接渲染**的
+ *    （`ModDownloadPanel` 的 `lastRunSummary` 数条数、`lastRunSkipped` 印"跳过 <modid>：<reason>"）
+ *    ⇒ 里边**不许**写实现细节（那是给读日志的人看的，不是给用户看的）。
  *
- * ⚠️ 文案与 `downloadMissing` / `updateFolderAll` 那几句**同一口径**：
- *    "已经装了"那一句与 `downloadMissing` 的"这个文件已经是这一份（没有下载、没有写盘）"
- *    是同一条纪律（空转不许冒充"已更新"），加上"这个文件夹里已经有…了"那句的消息头。
- * ⚠️ 类型是 `Record<PackSkipReason, string>`（不是 `Partial`）：判定加一支跳过原因时，
+ * ⚠️ 键集 = `packPlanFor` 那五种 `PackSkipReason`（**预扫**就能判的）
+ *    **∪** `'already-current'`（**逐项循环里**才知道的那一支：`installRelease` 的幂等 ——
+ *    它**不是**一个 `PackSkipReason`，预扫看不见它：见 §修轮 1）。
+ * ⚠️ 类型是 `Record<SkipTextKey, string>`（不是 `Partial`）：判定加一支跳过原因时，
  *    这里**当场编译失败**，必须显式表态 —— 与 `INSTALLABLE` 那张正向列同一招。
+ * ★ 修轮 1（评审的 Minor 1）：`already-in-folder` 原先**一稿两用**（`alreadyCurrent` 也念它）
+ *    ⇒ 一处字符串担了两件事，代价是实的：
+ *      · 丢了 brief 给 `alreadyCurrent` 钉的那一句（"这个文件已经是这一份（没有下载、没有写盘）"，
+ *        与 `downloadMissing` 那一句**逐字同形**）；
+ *      · 而那一稿里的"（一个请求都不发）"是**实现细节**，却印在页面上。
+ *    ⇒ 两条各说各的："文件夹里**有它**"（预扫就知道，与"这一趟要不要开工"有关）
+ *    vs "目标**已经是这一份**"（逐项才发现，与"这一趟有没有写盘"有关）。
  */
-const SKIP_TEXT: Record<PackSkipReason, string> = {
-  'already-in-folder': '这个文件夹里已经有它了（一个请求都不发）',
+type SkipTextKey = PackSkipReason | 'already-current';
+const SKIP_TEXT: Record<SkipTextKey, string> = {
+  'already-in-folder': '这个文件夹里已经有它了',
   'not-in-catalog': '目录里没有这个 modid',
   'no-release': '这个版本下没有它的 release',
   ambiguous: '候选多于一条（要去目录里先明确选一个）',
   manual: '它只给原网页、没有可直接下的字节',
+  // ★ brief 给 `alreadyCurrent` 钉的就是这一句（与 `downloadMissing` 那个返回值逐字同形）
+  'already-current': '这个文件已经是这一份（没有下载、没有写盘）',
 };
 
 /**
@@ -2195,10 +2225,19 @@ export async function downloadPack(
             oldCopies: [],
           });
           any = true;
-          updated.push(item.modid);
+          /*
+           * ★★ 修轮 1（评审的唯一 Important）：**空转不许冒充"已更新"**（(e)，本文件
+           *    `writeRun` 那一节 :1409–1411 钉的就是这条纪律）。
+           *    `installRelease` 的幂等那一支**一个字节都没写、一个请求都没发** ⇒ 只进
+           *    `skipped`。⚠️ 两个桶**互斥**：原先这里在 `if` **外面**先 push 了 `updated`
+           *    ⇒ 同一项同时进两个桶，页面那句汇总行（`lastRunSummary`："已更新 {{ok}} 个，
+           *    跳过 {{skipped}} 个"）会把一次空转念成"已更新 1 个，跳过 1 个" ✗。
+           *    另两个入口（`updateFolderAll` / `downloadMissing`）都是互斥的，这里是唯一一处例外。
+           */
           if (outcome.alreadyCurrent) {
-            // ★ 空转不许冒充"已更新"（(e)）：一个字节都没写 ⇒ 进 `skipped` 并说清为什么
-            skipped.push({ modid: item.modid, reason: SKIP_TEXT['already-in-folder'] });
+            skipped.push({ modid: item.modid, reason: SKIP_TEXT['already-current'] });
+          } else {
+            updated.push(item.modid);
           }
         } catch (error) {
           /*
