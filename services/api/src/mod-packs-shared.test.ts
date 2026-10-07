@@ -143,6 +143,24 @@ describe('★ B2 纯判断：packPlanFor / packDownloadableIn', () => {
     assert.equal(packDownloadableIn(args), packPlanFor(args).items.length);
   });
 
+  it('⑧ 目录里没有这个 modid ⇒ 原因是 not-in-catalog（与 no-release 是两种不同的原因）', () => {
+    const index = indexOf({
+      mods: ['ok'],
+      releases: [{ modid: 'ok', version: '1.0', url: 'https://x/ok.jar' }],
+    });
+    const plan = packPlanFor({
+      modids: ['ghost', 'ok'],
+      gameVersion: '1.16.1',
+      folder: FOLDER_EMPTY,
+      index,
+    });
+    assert.deepEqual(plan.skipped, [{ modid: 'ghost', reason: 'not-in-catalog' }]);
+    assert.deepEqual(
+      plan.items.map((i) => i.modid),
+      ['ok'],
+    );
+  });
+
   it('⑦ packInputSchema：modids 去重、空数组/65 个/空标题/超长各自不通过', () => {
     const ok = packInputSchema.safeParse({
       title: '平衡包',
@@ -152,6 +170,22 @@ describe('★ B2 纯判断：packPlanFor / packDownloadableIn', () => {
     });
     assert.equal(ok.success, true);
     assert.deepEqual(ok.success ? ok.data.modids : null, ['a', 'b'], '存进去的必须是去重后的');
+    /* ★ 通过侧：**恰好**落在边界上必须通过 —— 这里用**字面量 64 / 80 / 400**是有意的，
+       换成 `MAX_PACK_MODS` 之类的常量，把上限改成 63 这条仍然绿 ⇒ 边界就没被钉住。 */
+    const atLimit = (over: { title?: string; description?: string; count?: number }) =>
+      packInputSchema.safeParse({
+        title: over.title ?? 'x',
+        description: over.description ?? '',
+        gameVersion: '1.16.1',
+        modids: Array.from({ length: over.count ?? 1 }, (_, i) => `m${String(i)}`),
+      });
+    assert.equal(atLimit({ count: 64 }).success, true, '恰好 64 个互不相同的 modid 必须通过');
+    assert.equal(atLimit({ title: 'x'.repeat(80) }).success, true, '恰好 80 个字符的标题必须通过');
+    assert.equal(
+      atLimit({ description: 'y'.repeat(400) }).success,
+      true,
+      '恰好 400 个字符的简介必须通过',
+    );
     for (const bad of [
       { title: '', description: '', gameVersion: '1.16.1', modids: ['a'] },
       { title: 'x', description: '', gameVersion: '1.16.1', modids: [] },

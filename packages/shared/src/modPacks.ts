@@ -14,6 +14,8 @@ export const packInputSchema = z.object({
   title: z.string().min(1).max(80),
   description: z.string().max(400).default(''),
   gameVersion: z.string().min(1),
+  /* ⚠️ `.max(MAX_PACK_MODS)` 卡的是**原始条目数**，不是去重之后的 —— 64 条里带重复项的输入
+     仍然会通过 schema（落库/向下传的是下面 `transform` 去重保序之后的那一份）。语义有意如此。 */
   modids: z
     .array(z.string().min(1))
     .min(1)
@@ -41,6 +43,10 @@ function candidatesOf(index: ModIndex, modid: string, gameVersion: string): ModR
   return [...releasesFor(index, modid, gameVersion)];
 }
 
+/**
+ * ⚠️ **前置条件**：`input.modids` 应当是已经过 `packInputSchema` 的（**去重保序已经在 schema 那一层做过**）。
+ *    本函数自己**不**给入参去重 —— 传进重复的 modid 就会得到重复的 `items`（`packDownloadableIn` 也会多算）。
+ */
 export function packPlanFor(input: {
   modids: readonly string[];
   gameVersion: string;
