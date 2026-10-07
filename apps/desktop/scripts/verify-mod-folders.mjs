@@ -4070,7 +4070,7 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     // ⚠️ 不在这一相位订阅推送（那是 T3 的事）：这里靠**轮询状态**取项序
     const poll = setInterval(() => {
       void invoke(MOD_CH.getState).then((state) => {
-        if (state.progress) seen.push({ item: state.progress.itemIndex, count: state.progress.itemCount });
+        if (state.progress) seen.push({ item: state.progress.itemIndex, count: state.progress.itemCount, run: state.progress.run });
       });
     }, 25);
     const after = await invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
@@ -4098,6 +4098,21 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       '★★ `itemCount` 等于这一趟的目标数（= 可批量的行数），而不是文件夹里的行数',
       seen.length > 0 && seen.every((s) => s.count === batchRows),
       JSON.stringify(seen.slice(0, 6)),
+    );
+    /*
+     * ★★ B2 / T5 补的一条（brief 的 Step 8 那把刀①假设**已经**有一条这样的判据，
+     *    而现读整份探针**没有**：`grep 'update-folder-all'` 在本次改动之前只命中契约表那一行
+     *    —— 于是"`bulkRun` 的 `run` 默认值"这半句**一把刀都拔不动**）。
+     *    `bulkRun` 现在有 `run?: …` 入参、默认 `'update-folder-all'`，而**既有两个调用方
+     *    一个字都不许改** ⇒ 整夹更新这一趟的进度帧必须仍然报 `'update-folder-all'`。
+     *    坏了会怎么红：把默认值改成 `'download-pack'`（或把 `beginRun` 那一行写死成别的），
+     *    这一条当场红 —— 而页面那句汇总行会把整夹更新念成"整合包下载"。
+     */
+    const runs = [...new Set(seen.map((s) => s.run))];
+    check(
+      '★★ 整夹更新的进度帧报的仍是 `update-folder-all`（`bulkRun` 的 `run` 默认值那半句：既有调用方一个都不许变）',
+      runs.length === 1 && runs[0] === 'update-folder-all',
+      JSON.stringify(runs),
     );
     check('★ 收尾之后 progress 是 null', after.progress === null, JSON.stringify(after.progress));
   });
