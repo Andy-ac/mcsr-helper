@@ -9,7 +9,7 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十五条 IPC 的注册**（C 的 T4 之后契约是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
+ *   · **十五条 IPC 的注册**（**今天契约 17 个成员**；来处：C 的 T4 之后是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
  *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
  *     T4 加 `cancelDownload`（16）、**B2 的 T4** 加 `downloadPack`（17）—— 后三条**都没有**加 handler 之外的注册面）；

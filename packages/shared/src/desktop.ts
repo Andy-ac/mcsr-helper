@@ -437,8 +437,8 @@ export function desktopBridge(): DesktopBridge | null {
  *    这一格原先写死过一个比实际小的数（A 的 S2 逐条现数改准过）；T6 删掉那三条之后
  *    是"成员数 − 非纯 kebab 数"；C 的 T3 加 `onProgress` **只动"非纯 kebab"那一侧**
  *    （它**不**在这一组里），逐字 kebab 那一侧没动；而 C 的 T4 加的 `cancelDownload`
- *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是上面那个 11；**B2 的 T4** 加的 `downloadPack`
- * （`-download-pack`）**也是逐字 kebab** ⇒ 那一侧再 +1，就是上面那个 **12**。
+ *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是 **11**；**B2 的 T4** 加的 `downloadPack`
+ *    （`-download-pack`）**也是逐字 kebab** ⇒ 那一侧再 +1，就是上面那个 **12**。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
