@@ -1077,6 +1077,51 @@ export function fetchModPacks(
   );
 }
 
+/**
+ * ★ B2：四条写端点（建 / 改 / 删要 `pack.manage`，热门要 `pack.feature`）。
+ *
+ * ⚠️★ **`updateModPack` 是「全量替换」**：服务端收的是 `packInputSchema` 的**完整**入参
+ *    ⇒ 表单每次都要发**四个字段**。少发 `description` 会被服务端的 `.default('')`
+ *    变成**空简介**，而且**不报错**（T3 的评审判 Minor 时专门点名过这一条）。
+ *
+ * ⚠️ 这四条与 `putModTags` 同形：`sendJson` 负责鉴权、错误分类与 abort 语义。
+ *    返回形状照 `services/api/src/routes/modpacks.ts` 现读：建/改/热门回 `{ ok, pack }`、
+ *    删回 `{ ok, id }`。错误面是 `invalid_input`（+ `issues`，或 + `reason:'unknown_mod'` 与 `modids`）、
+ *    `not_found`、`forbidden` —— 页面直接读 `ApiError.code` / `.issues`，**不新增错误码**。
+ */
+export function createModPack(input: {
+  title: string;
+  description: string;
+  gameVersion: string;
+  modids: string[];
+}): Promise<{ ok: true; pack: ModPackWire }> {
+  return sendJson('POST', '/api/modpacks', input);
+}
+
+/** ★ B2：改一条包 —— ⚠️ **四个字段都要发**（见上：这是全量替换，不是偏更新）。 */
+export function updateModPack(
+  id: string,
+  input: { title: string; description: string; gameVersion: string; modids: string[] },
+): Promise<{ ok: true; pack: ModPackWire }> {
+  return sendJson('PATCH', `/api/modpacks/${encodeURIComponent(id)}`, input);
+}
+
+/** ★ B2：删一条包（`pack.manage`）。 */
+export function deleteModPack(id: string): Promise<{ ok: true; id: string }> {
+  return sendJson('DELETE', `/api/modpacks/${encodeURIComponent(id)}`);
+}
+
+/**
+ * ★ B2：设/取消热门推荐位。
+ *
+ * ⚠️ 它挂在 **`/api/admin/modpacks/:id/hot`**（不是 `PATCH /api/modpacks/:id`）——
+ *    因为它要的是 `pack.feature`（**只给 admin/owner**）；塞进那条改包端点的话，
+ *    它的权限就变成 `pack.manage`，reviewer 也能设热门了。
+ */
+export function setModPackHot(id: string, hot: boolean): Promise<{ ok: true; pack: ModPackWire }> {
+  return sendJson('PATCH', `/api/admin/modpacks/${encodeURIComponent(id)}/hot`, { hot });
+}
+
 /** B1：整行替换一个 mod 的人工标签。 */
 export function putModTags(modid: string, tags: string[]): Promise<{ ok: true; tags: string[] }> {
   return sendJson('PUT', `/api/mod-tags/${encodeURIComponent(modid)}`, { tags });
