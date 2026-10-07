@@ -60,7 +60,7 @@ mcsr-helper/
 |---|---|---|---|
 | `apps/web` | `@mcsr/web` | 全部界面。`src/routes/` 是路由页，`src/components/` 是组件，`src/lib/api.ts` 是同源 API 客户端，`src/lib/rankedDirect.ts` 是**浏览器直连上游**那一层（见 §3.3）。字体自托管，不引外链 | `@mcsr/shared`、`@mcsr/ui` |
 | `apps/desktop` | `@mcsr/desktop` | Electron 主进程、preload、`electron-updater` 自动更新、NSIS 安装包 | `@mcsr/shared` |
-| `services/api` | `@mcsr/api` | HTTP API（`src/routes/` **19** 个路由模块 —— 2026-10-07 现数：`(Get-ChildItem services/api/src/routes/*.ts).Count`）+ 数据层（`src/db/`，含迁移）+ 采集适配器（`src/tracking/`）+ 鉴权（`src/auth/`）+ 发信（`src/email/`）+ 5 个 CLI 入口（`admin-cli.ts` / `import.ts` / `track.ts` / `ranked-streams.ts` / `live-status.ts`） | `@mcsr/shared` |
+| `services/api` | `@mcsr/api` | HTTP API（`src/routes/` **20** 个路由模块 —— 2026-10-07 现数：`(Get-ChildItem services/api/src/routes/*.ts).Count`；B2 加 `routes/modpacks.ts` 之后是 20）+ 数据层（`src/db/`，含迁移）+ 采集适配器（`src/tracking/`）+ 鉴权（`src/auth/`）+ 发信（`src/email/`）+ 5 个 CLI 入口（`admin-cli.ts` / `import.ts` / `track.ts` / `ranked-streams.ts` / `live-status.ts`） | `@mcsr/shared` |
 | `packages/shared` | `@mcsr/shared` | 前后端**共享的那份契约**：类型、常量、zod schema、`i18n/zh-CN.ts` 与 `i18n/en.ts`、权限矩阵（`src/permissions.ts`）、Ranked 与种子的纯逻辑。**以 TypeScript 源码形式被引用**（靠 `exports` 暴露子路径），所以**没有构建步骤** | 只有 `zod` |
 | `packages/ui` | `@mcsr/ui` | 两个共享组件 + barrel | `@mcsr/shared` |
 
@@ -107,12 +107,12 @@ Hono 应用，`src/index.ts` 里挂全局中间件链，顺序是：
 5. **`sameOriginOnly`（CSRF 第二层）**：只对会改状态的方法生效；带了 `Origin` 就必须同源
 6. **`loadUser`**：读 `mcsr_session` cookie → 查未过期会话 → 挂到上下文。**它不拦截请求**
 
-端点规模与访问模型：**共 96 个端点** —— `src/routes/` 里 **95** 个 handler
+端点规模与访问模型：**共 102 个端点** —— `src/routes/` 里 **101** 个 handler
 （口径：`Route\.(get|post|put|patch|delete)\(` 的出现次数）
 + `src/index.ts` 内联 **1** 个（口径：`app\.(get|post|put|patch|delete)\(`）。
 ⚠️ **这一格的口径是 2026-10-07 现数时补写的**：原来那句「88 + 2」与上面**两个**口径都对不上
 （既有漂移，不是某一期弄脏的）⇒ 现数时把口径一并写在这里，别只换数字（换数字会掩盖"两个口径都不对"这件事）。
-其中 **34 个匿名可读、56 个要登录或要有某项能力**。能力（capability）矩阵在
+其中 **36 个匿名可读、60 个要登录或要有某项能力**（B2 的六条：两条公开读进了匿名那一档、四条写端点进了要能力那一档）。能力（capability）矩阵在
 `packages/shared/src/permissions.ts`：
 
 | 角色 | 能力 |
@@ -162,7 +162,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 
 一个 SQLite 文件（默认 `services/api/data/mcsr.db`，生产由 `DB_PATH` 指定）。
 **库由 API 进程在启动时创建并迁移**：`src/db/index.ts` 调 `src/db/migrate.ts`，
-迁移脚本在 `src/db/migrations/`（编号递增，目前到 `024_*` —— 2026-10-07 现数：`services/api/src/db/migrations/*.ts` 共 **24** 个），已跑的记录写在 `_migrations` 表里。
+迁移脚本在 `src/db/migrations/`（编号递增，目前到 `025_*` —— 2026-10-07 现数：`services/api/src/db/migrations/*.ts` 共 **25** 个；B2 的 `025_modpacks.ts` 是这一格最后一次 +1），已跑的记录写在 `_migrations` 表里。
 ⇒ **"重启 API"就等于"应用迁移"**，部署脚本不需要单独跑迁移。
 
 19 张表，按职责分五组：
