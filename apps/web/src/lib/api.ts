@@ -44,6 +44,15 @@ import type {
   UserLiveLinkInput,
   UserLiveLinkPatch,
 } from '@mcsr/shared/live';
+/*
+ * ★ B1（`/admin/mods`）：`parseModCatalogWire` 是本文件里**第二处**从 shared 取**值**
+ *   （第一处是下面 `@mcsr/shared/tracking` 的 `buildTrackedVideoQuery`）。
+ *   ⚠️ 为什么读过一遍这件事必须住在**这里**（而不是页面里）：鉴权、错误码与
+ *   "形状不对就抛"这三件事只有这一层知道；页面拿到的是一个 `ModCatalog` 或一个
+ *   `ApiError`，它不需要知道线上那份是宽松 schema。桌面端那条路也是这么做的
+ *   （`apps/desktop/src/mod-folder-catalog.ts` 收线上那一份、走 `parseModCatalogWire`）。
+ */
+import { type ModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
 import type { UserRole } from '@mcsr/shared/permissions';
 import type { RankedStatusResponse } from '@mcsr/shared/ranked';
 import type {
@@ -71,6 +80,10 @@ import type {
  *    由 `buildTrackedVideoQuery` 拼（第 9 条，2026-09-19），而它必须与
  *    `TrackedVideoQuerySchema` 的键集合成对 —— 那件事只有住在 shared 才**能被断言**
  *    （`apps/web` 没有测试运行器）。理由与代价写在那个函数的注释上。
+ *    ⚠️★ 2026-10-07（B1 / Task 6）：这句话**不再逐字成立** —— 上面
+ *      `@mcsr/shared/modCatalog` 的 `parseModCatalogWire` 是第二处值导入
+ *      （它的理由写在那一段注释里）。留这句话是因为它解释的是**本处**为什么是值导入；
+ *      判据（"从 shared 取值的 import 必须能被门禁咬到"）没有变。
  * ⚠️ 走子路径 `@mcsr/shared/tracking`（与 `lib/trackedQuery.ts` 同一处 alias）：
  *    vite 的 alias 表与 `scripts/check-shared-aliases.mjs` 按子路径对账。
  */
@@ -977,6 +990,69 @@ export function changeUserRole(
   reason: string,
 ): Promise<{ ok: true; role: UserRole; previousRole?: UserRole }> {
   return sendJson('PATCH', `/api/admin/users/${encodeURIComponent(id)}/role`, { role, reason });
+}
+
+// ---------------------------------------------------------------------------
+// mod 标签（B1 / `/admin/mods`）—— 读公开，写要 `catalog.editTags`（reviewer 及以上）
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /api/mod-tags` 的响应：**只有 DB 那一层**。
+ *
+ * ⚠️★ `assignments` 里**不含**"回落值"：文件来的出厂标签（目录顶层 `manualTags`）
+ *    不在里面（那正是 spec §5 断言 9 钉住的事）。界面要能分开三件事：
+ *      · 管理员设过 ⇒ 在这个 map 里（**空数组也算设过**：他清空了它）；
+ *      · 从没设过 ⇒ 不在这里，取值回落到目录的出厂值；
+ *      · 上游自动的 ⇒ 两条路都没有，它是 `目录.mods[].tags` 减掉人工层之后剩下的那些。
+ *    把"从没设过"与"设成了空"混起来的话，界面上"管理员清空了"会显示成"没改过"。
+ */
+export interface ModTagsResponse {
+  labels: { tag: string; zh: string; en: string }[];
+  assignments: Record<string, string[]>;
+}
+
+/** B1：读人工标签层（公开读，服务端 `no-store`）。 */
+export function fetchModTags(signal?: AbortSignal): Promise<ModTagsResponse> {
+  return request<ModTagsResponse>('/api/mod-tags', signal);
+}
+
+/**
+ * ★ B1：读一次 mod 目录（`/api/mod-catalog`，公开、约 425 KB、`no-cache` + ETag）。
+ *
+ * ⚠️★ 为什么管理页要自己取：`/files` 那一页的目录是**桌面端推状态**来的，
+ *    **浏览器里没有**（现读：`apps/web/src` 里对 `/api/mod-catalog` 的引用只有
+ *    `FolderJarList.tsx` 从共享模块 import 类型与 `releaseKey`）⇒ 管理页不能假设有目录。
+ * ⚠️ 用 `parseModCatalogWire` 过一遍（桌面端那条路也是这么做的：它收**线上**那一份、
+ *    忽略未知字段、不跑跨字段检查）—— 形状不对时**抛**，让页面的 `error` 那一支去说。
+ *    ⚠️ 这里**不能**退化成 `request<ModCatalog>`：那样类型是在撒谎，形状不对时页面会
+ *    在渲染到 `mods` 的那一刻抛 `TypeError`，报错看起来像"页面写错了"。
+ */
+export async function fetchModCatalog(signal?: AbortSignal): Promise<ModCatalog> {
+  const raw = await request<unknown>('/api/mod-catalog', signal);
+  const parsed = parseModCatalogWire(raw);
+  if (!parsed.ok) {
+    throw new Error(`目录不合契约：${parsed.problems.slice(0, 3).join('；')}`);
+  }
+  return parsed.catalog;
+}
+
+/** B1：整行替换一个 mod 的人工标签。 */
+export function putModTags(modid: string, tags: string[]): Promise<{ ok: true; tags: string[] }> {
+  return sendJson('PUT', `/api/mod-tags/${encodeURIComponent(modid)}`, { tags });
+}
+
+/** B1：新建 / 改名一个标签的显示名。 */
+export function putTagLabel(
+  tag: string,
+  zh: string,
+  en: string,
+): Promise<{ ok: true; tag: string }> {
+  return sendJson('PUT', `/api/mod-tags/labels/${encodeURIComponent(tag)}`, { zh, en });
+}
+
+/** B1：删掉一个没人用的标签显示名（还有人用时服务端回 409 `tag_in_use`）。 */
+export function deleteTagLabel(tag: string): Promise<{ ok: true; tag: string }> {
+  return sendJson('DELETE', `/api/mod-tags/labels/${encodeURIComponent(tag)}`);
 }
 
 // ---------------------------------------------------------------------------
