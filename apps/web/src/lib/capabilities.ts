@@ -104,22 +104,24 @@ const TYPE_KEYS: Record<string, string> = {
    * `content.*`（需求②）—— 跨类型的一个"类型"：`content.author` 管的是
    * "直接写线上行"这个动作，而不是某一种内容，所以它的类型名是 content 而不是
    * resource/calendar/video 里的任何一个。
-   * ⚠️ 不加这一行不会报错，只会让「我的」页面把**类型**显示成英文 `content`
-   *    （而旁边的项都是中文）—— 看起来像界面没做完。
+   * ⚠️ 漏了这一行**会红**（`apps/web/scripts/roleguide.tsx` 逐个能力断言类型 key 非空，
+   *    而旧的那句"不会报错、只会显示成英文"在 2026-09-15 起就不成立了 —— 见下面 `ACTION_KEYS` 那段。
+   * ⚠️ 显示名那一半仍然是真的：真漏了它，界面上会印英文 `content`（但那时门禁已经先红了）。
    */
   content: 'auth.capTypeContent',
   /*
    * `share.*`（实时分享的治理，2026-09-15）—— 这里要说清它**不是** `shares.*`
    * 那一节的文案：`shares.*` 是页面上给用户看的句子（房间号、种子、看板），
    * 而这一行只是账号页能力清单里**类型那一半**的名字。
-   * ⚠️ 不加这一行的后果与上面 `content` 完全一样：账号页会把**类型**显示成英文
-   *    `share`，而旁边的项都是中文。
+   * ⚠️ 不加这一行的后果与上面 `content` 完全一样：**门禁先红**
+   *    （`roleguide.tsx` 逐个能力断言类型 key 非空）。
    */
   share: 'auth.capTypeShare',
   /*
    * `catalog.*`（B1：mod 目录的标签）—— 与 `content` 那一行同一个道理：
    * 它管的是"目录这份数据"上的动作，不是某一种内容。
-   * ⚠️ 不加这一行不会报错，只会让账号页把**类型**显示成英文 `catalog`。
+   * ⚠️ 漏了这一行**会红**（`apps/web/scripts/roleguide.tsx` 逐个能力断言类型 key 非空，
+   2026-09-15 起如此；B1 的 T1 就是被它拦下的），不是"只会显示成英文"。
    */
   catalog: 'auth.capTypeCatalog',
 };
