@@ -1033,6 +1033,57 @@ export const en: TranslationSchema = {
       'Saving replaces this mod\u2019s whole manual tag set; a change someone else just made will be overwritten.',
     empty: 'The catalog has no mods yet.',
     deleteConfirm: 'Delete this tag? It must not be used by any mod.',
+
+    /*
+     * ★ Second half: mod packs (B2 / Task 7). List + form + the hot switch.
+     *
+     * ⚠️ The wording has to say three things, or an admin will think the page is
+     *    broken or that their edit was merged:
+     *   1. saving **replaces the whole pack** (all four fields are sent every time);
+     *   2. only an admin / owner can feature a pack — a reviewer reaches this page
+     *      but never sees that switch;
+     *   3. renaming or changing the version does **not** touch the already-checked
+     *      mods (see `packModsChosen`).
+     */
+    packsSection: 'Mod packs',
+    packsHint:
+      'A pack = title + description + one game version + a set of mods; users install it from the files page by version.',
+    packsOverwriteHint:
+      'Saving replaces all four fields of this pack; a change someone else just made will be overwritten.',
+    packEmpty: 'No mod packs yet.',
+    packColTitle: 'Title',
+    packColVersion: 'Game version',
+    packColMods: 'Mods',
+    packColHot: 'Featured',
+    packEdit: 'Edit',
+    packDelete: 'Delete',
+    packHot: 'Featured',
+    packHotHint:
+      'Featured packs show up as chips at the top of the files page; only admins and owners can set this.',
+    packNew: 'New mod pack',
+    packFormEdit: 'Edit mod pack',
+    packFieldTitle: 'Title',
+    packFieldDescription: 'Description',
+    packFieldVersion: 'Game version',
+    packFieldMods: 'Mods in this pack',
+    packTitlePlaceholder: 'For example: 1.16.1 ranked essentials',
+    packDescriptionPlaceholder: 'One line on what this pack is for (users can see it).',
+    packModsFilterPlaceholder: 'Search mods',
+    packModsEmpty: 'The catalog has no mods for this version.',
+    packModsChosen: '{{n}} selected',
+    packSave: 'Save',
+    packCancel: 'Cancel',
+    packSaveConfirm:
+      'Saving replaces the whole pack (title / description / version / mod list). Continue?',
+    packDeleteConfirm: 'Delete this mod pack? This cannot be undone.',
+    packSaved: 'Saved',
+    packDeleted: 'Deleted',
+    packForbidden: 'You do not have permission to manage mod packs.',
+    packErrUnknownMod: 'Some modids are not in the catalog \u2014 refresh the page and try again.',
+    packErrInvalid: 'Invalid input: the title is 1\u201380 characters, mods are 1\u201364.',
+    packErrNotFound: 'This mod pack is gone (someone else may have deleted it). Refresh and retry.',
+    packErrCatalog: 'The server cannot read the mod catalog, so it cannot save right now.',
+    packErrFailed: 'The action failed. Please try again.',
   },
   /**
    * Personal marks: favorite / note / rating.

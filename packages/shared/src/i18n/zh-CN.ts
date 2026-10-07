@@ -1021,6 +1021,50 @@ export const zhCN = {
     overwriteHint: '保存会整行替换这一个 mod 的人工标签；另一个人刚改过的话会被覆盖。',
     empty: '这个目录里还没有 mod。',
     deleteConfirm: '删掉这个标签？它必须没有任何 mod 在用。',
+
+    /*
+     * ★ 下半：整合包（B2 / Task 7）。列表 + 表单 + 热门开关。
+     *
+     * ⚠️ 措辞要说清三件事，否则管理员会以为界面坏了或以为自己的改动被合并了：
+     *   ① 保存是**整包替换**（四个字段一起发），少一格就把那一格清掉；
+     *   ② 热门**只有管理员 / 所有者**能设 —— reviewer 进得来这一页、看不到那个开关；
+     *   ③ 改名与改版本**不会**动已经勾上的 mod（勾选项在别处看得见，见 `packModsChosen`）。
+     */
+    packsSection: '整合包',
+    packsHint: '一个整合包 = 标题 + 简介 + 一个游戏版本 + 一组 mod；用户在文件页按版本安装它。',
+    packsOverwriteHint: '保存会整包替换这四个字段；另一个人刚改过的话会被覆盖。',
+    packEmpty: '还没有整合包。',
+    packColTitle: '标题',
+    packColVersion: '游戏版本',
+    packColMods: 'mod 数',
+    packColHot: '热门',
+    packEdit: '编辑',
+    packDelete: '删除',
+    packHot: '热门推荐',
+    packHotHint: '热门包会出现在文件页顶部的小卡里；只有管理员与所有者能设。',
+    packNew: '新建整合包',
+    packFormEdit: '编辑整合包',
+    packFieldTitle: '标题',
+    packFieldDescription: '简介',
+    packFieldVersion: '游戏版本',
+    packFieldMods: '这个包里的 mod',
+    packTitlePlaceholder: '例如：1.16.1 排位常用',
+    packDescriptionPlaceholder: '一句话说明这个包是干什么的（用户能看到）。',
+    packModsFilterPlaceholder: '搜索 mod',
+    packModsEmpty: '这个版本在目录里没有 mod。',
+    packModsChosen: '已选 {{n}} 个',
+    packSave: '保存',
+    packCancel: '取消',
+    packSaveConfirm: '保存是整包替换（标题 / 简介 / 版本 / mod 清单）。继续？',
+    packDeleteConfirm: '删掉这个整合包？这个动作不可撤销。',
+    packSaved: '已保存',
+    packDeleted: '已删除',
+    packForbidden: '你没有管理整合包的权限。',
+    packErrUnknownMod: '有 modid 不在目录里 —— 刷新页面后重试。',
+    packErrInvalid: '填写不合法：标题 1–80 字，mod 至少一个、最多 64 个。',
+    packErrNotFound: '这个整合包已经不在了（可能被另一个人删掉），刷新后再试。',
+    packErrCatalog: '服务端读不出 mod 目录，暂时存不了。',
+    packErrFailed: '操作失败，请重试。',
   },
   /**
    * 个人标记：收藏 / 备注 / 评分。

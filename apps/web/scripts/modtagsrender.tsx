@@ -29,6 +29,9 @@
  *   ⑥ ★★ 容器那三个纯函数（`manualTagsOf` / `automaticTagsOf` / `isDirty`）——
  *      拆成两半之后，**这是它们唯一的判据**。
  *
+ * ⚠️★ **⑦ 是预埋的空位**（T7b 留的落点，T8 往里加断言）：下半「整合包」那一节。
+ *    详见下面 ⑦ 那段注释；**它现在一条断言都没有**（所以 `expectedItems` 仍然是 7）。
+ *
  * ===========================================================================
  * ⚠️ 这个脚本**证不了**什么（边界，别高估它）
  * ===========================================================================
@@ -373,6 +376,32 @@ assert.equal(
 assert.equal(isDirty({ draft: ['a'], server: ['a', 'b'] }), true, '少一个 ⇒ 改过');
 assert.equal(isDirty({ draft: ['a', 'b'], server: ['a'] }), true, '多一个 ⇒ 改过');
 ok('★ 纯函数：出厂值回落 / DB 赢 / draft 赢 / 自动层 / 改过的四档');
+
+// ---------------------------------------------------------------------------
+// ⑦ ★★ 整合包那一节 —— **T8 的落点**（T7b 只留位置，这里一条断言都没有）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一格是**预埋的空位**，不要在这里写"占位断言"（那只会多一条恒真的读数）。
+ *    T8 要往这里加三样，按现读的接口：
+ *      · **三个纯函数**（`import { packFormFrom, packFormDirty, packVersionOptions }
+ *        from '@/lib/modPackEdits'`）：容器那半边在 `renderToStaticMarkup` 下渲染不出来
+ *        （effect 不跑）⇒ 拆成两半之后，**这三个函数是那半边唯一的判据**。
+ *        三把刀的落点：`packFormFrom` 少拷一格 / 不复制 `modids`（就地改到服务端那份）；
+ *        `packFormDirty` 改成"点过没有"或漏掉某一格；`packVersionOptions` 改成自己遍历 mods。
+ *      · **纯视图**（`import { AdminModPacksView } from '@/routes/AdminMods'`）：
+ *        props 契约现读那个文件里的 `AdminModPacksViewProps`。可用的钩子：
+ *        `data-pack-admin-row="{id}"`（列表行）、`data-pack-mod="{modid}"`（可勾的 mod）、
+ *        `data-pack-chosen="{n}"`（已选个数）、`data-action="save-pack"`（带 `data-dirty`）、
+ *        `data-action="delete-pack"` / `data-action="edit-pack"` / `data-action="new-pack"` /
+ *        `data-action="cancel-pack"` / `data-action="toggle-pack-hot"`（带 `data-pack-hot="{id}"`）。
+ *      · **源码级守卫**："热门开关只在 `useCan('pack.feature')` 为真时渲染"住在**容器**
+ *        （`AdminMods`）里，断言按 ⓪ 那个手法读 `AdminMods.tsx` 的源码（剥注释之后）——
+ *        它的刀是"把那个开关从 `canFeature ? … : null` 里拿出去"。
+ * ⚠️★ 加断言时**同批**把文件末尾的 `expectedItems` 从 7 改成实际组数（现数，别估）：
+ *    那个探针防的正是"某一组被整块摘掉之后脚本照样绿、照样打印通过 N 项"。
+ * ⚠️ 两遍语言（zh / en）都跑这个脚本，且这一个脚本里**没有** `if (LANG === 'en')` 那一支。
+ */
+console.log(`【${LANG}】⑦ 整合包那一节（T8 的落点；本次运行没有断言）`);
 
 // ---------------------------------------------------------------------------
 // 项数探针（手抄的，理由见文件头）
