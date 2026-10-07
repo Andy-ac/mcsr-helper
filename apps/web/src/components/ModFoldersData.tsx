@@ -147,6 +147,17 @@ export interface ModFoldersHandlers {
    *    已经在取消中 ⇒ no-op `{ok:true}`。
    */
   cancelDownload: ModFoldersAction<'cancelDownload'>;
+  /* ---- B2 的 T5：整包下载 ---- */
+  /**
+   * ★★ B2（Task 6 接线）：把**整合包**里的 mod 逐个装进这个文件夹。
+   *
+   * ⚠️★ 四个入参**全是 id / 字符串**：包的内容以**服务端**为准（主进程拿 `packId`
+   *    自己去取，spec D5），渲染进程递不进 mod 列表、路径或 URL。
+   * ⚠️ 通道固定 `'origin'`（`VersionModList` 那一段同一条纪律与同一个代价）：
+   *    这一节只发 release 自己的地址，不走 `state.bulkChannel`（那个选择器的作用域是
+   *    「全部更新」，混起来会得到"界面显示 origin、实际按镜像下载"）。
+   */
+  downloadPack: ModFoldersAction<'downloadPack'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +243,15 @@ function makeModFoldersHandlers(
       run(() => api.updateFolderAll(folderId, channel)),
     downloadMissing: (modid: string, gameVersion: string, folderId: string, channel: Channel) =>
       run(() => api.downloadMissing(modid, gameVersion, folderId, channel)),
+    /*
+     * ★★ B2（Task 6 接线）：整包下载。⚠️ 与 `downloadMissing` **逐字同一条形状**
+     *    （返回值是整份 `ModFoldersState` ⇒ 走上面那个 `run`，状态由它落到界面上）。
+     * ⚠️ 入参**原样**转过去：`gameVersion` 就是页面当时看着的那一版（主进程拿它跟
+     *    目标文件夹的有效版本、以及**包自己的** `gameVersion` 各对一遍 —— 那是这条
+     *    通道里最贵的一格：不一致会往一个别的游戏版本的目录里装 jar）。
+     */
+    downloadPack: (packId: string, gameVersion: string, folderId: string, channel: Channel) =>
+      run(() => api.downloadPack(packId, gameVersion, folderId, channel)),
     /*
      * ★★ `openFolder` 是唯一一条**不改状态**的通道（返回值是"这一次的结果"）
      *    ⇒ 它不能用上面那个 `run`（那个签名收的是 `() => Promise<ModFoldersState>`）。

@@ -61,6 +61,15 @@ const CAP_DESC: Record<string, string> = {
    *    所以它同样由 `apps/web/scripts/roleguide.tsx` 第 ⑦ 条守着。
    */
   'catalog.editTags': 'auth.capDescCatalogEditTags',
+  /*
+   * ★ `pack.*`（B2：整合包）—— 两条各一行。
+   * ⚠️ `pack.feature` 只给 admin / owner（见 `permissions.ts` 的 `MATRIX`），
+   *    而这一页会逐角色渲染能力清单 ⇒ 它出现在 admin / owner 那两栏里，
+   *    所以下面第 ⑦ 条断言（每个能力都要有 desc）能覆盖到它。
+   *    缺这一行的症状与缺上面那一行**完全相同**（安静地退回短标签）。
+   */
+  'pack.manage': 'auth.capDescPackManage',
+  'pack.feature': 'auth.capDescPackFeature',
   'user.moderate': 'auth.capDescUserModerate',
   'audit.read': 'auth.capDescAuditRead',
 };

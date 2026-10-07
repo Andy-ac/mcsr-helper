@@ -124,6 +124,17 @@ const TYPE_KEYS: Record<string, string> = {
    2026-09-15 起如此；B1 的 T1 就是被它拦下的），不是"只会显示成英文"。
    */
   catalog: 'auth.capTypeCatalog',
+  /*
+   * `pack.*`（B2：整合包）—— 与 `content` / `catalog` 那两行同一个道理：
+   * 它管的是"整合包这份数据"上的动作，不是某一种内容。
+   * ⚠️ 漏了这一行**会红**（`apps/web/scripts/roleguide.tsx` 逐个能力断言类型 key 非空），
+   * 不是"只会显示成英文"。
+   * ★ 动作那一半**不用加**：`pack.manage` 落到既有的 `ACTION_KEYS.manage`、
+   *   `pack.feature` 落到既有的 `ACTION_KEYS.feature`（两个动作名都不是新的，
+   *   也都没有被 `CAP_OVERRIDES` 消歧 ⇒ 不构成"撞名"）。
+   *   ⚠️ 往那两张表里各加一条**同名的**键只会是 TS 的重复键错误（TS1117）。
+   */
+  pack: 'auth.capTypePack',
 };
 
 /**

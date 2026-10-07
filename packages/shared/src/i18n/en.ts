@@ -534,6 +534,14 @@ export const en: TranslationSchema = {
      *    `content` above: it is an action on the catalog data, not a content type.
      */
     capTypeCatalog: 'mod tags',
+    /*
+     * ★ The type half of `pack.*` (B2: modpacks) — same reasoning as `content` /
+     *    `catalog` above: actions on the modpack data, not a content type.
+     * ⚠️ The action half needs **no** new entry: `pack.manage` reuses
+     *    `capActionManage` and `pack.feature` reuses `capActionFeature` — neither
+     *    action name is new, and neither collides (`CAP_OVERRIDES` is untouched).
+     */
+    capTypePack: 'Modpacks',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
@@ -607,6 +615,14 @@ export const en: TranslationSchema = {
      */
     capDescCatalogEditTags:
       'Edit a mod\u2019s tags (automatic tags come from upstream and cannot be removed; manual tags can be added or removed).',
+    /*
+     * ★ The two full descriptions for `pack.*` (B2: modpacks).
+     * ⚠️ Neither carries `**` emphasis, so neither needs a `DYNAMIC_KEYS` entry in
+     *    `services/api/src/i18n-keys.test.ts` (that whitelist only covers marked keys).
+     */
+    capDescPackManage:
+      'Create, edit and delete modpacks (title, summary, one game version, a list of modids).',
+    capDescPackFeature: 'Put a modpack on the featured row, or take it off.',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors
@@ -1017,6 +1033,57 @@ export const en: TranslationSchema = {
       'Saving replaces this mod\u2019s whole manual tag set; a change someone else just made will be overwritten.',
     empty: 'The catalog has no mods yet.',
     deleteConfirm: 'Delete this tag? It must not be used by any mod.',
+
+    /*
+     * ★ Second half: mod packs (B2 / Task 7). List + form + the hot switch.
+     *
+     * ⚠️ The wording has to say three things, or an admin will think the page is
+     *    broken or that their edit was merged:
+     *   1. saving **replaces the whole pack** (all four fields are sent every time);
+     *   2. only an admin / owner can feature a pack — a reviewer reaches this page
+     *      but never sees that switch;
+     *   3. renaming or changing the version does **not** touch the already-checked
+     *      mods (see `packModsChosen`).
+     */
+    packsSection: 'Mod packs',
+    packsHint:
+      'A pack = title + description + one game version + a set of mods; users install it from the files page by version.',
+    packsOverwriteHint:
+      'Saving replaces all four fields of this pack; a change someone else just made will be overwritten.',
+    packEmpty: 'No mod packs yet.',
+    packColTitle: 'Title',
+    packColVersion: 'Game version',
+    packColMods: 'Mods',
+    packColHot: 'Featured',
+    packEdit: 'Edit',
+    packDelete: 'Delete',
+    packHot: 'Featured',
+    packHotHint:
+      'Featured packs show up as chips at the top of the files page; only admins and owners can set this.',
+    packNew: 'New mod pack',
+    packFormEdit: 'Edit mod pack',
+    packFieldTitle: 'Title',
+    packFieldDescription: 'Description',
+    packFieldVersion: 'Game version',
+    packFieldMods: 'Mods in this pack',
+    packTitlePlaceholder: 'For example: 1.16.1 ranked essentials',
+    packDescriptionPlaceholder: 'One line on what this pack is for (users can see it).',
+    packModsFilterPlaceholder: 'Search mods',
+    packModsEmpty: 'The catalog has no mods for this version.',
+    packModsChosen: '{{n}} selected',
+    packSave: 'Save',
+    packCancel: 'Cancel',
+    packSaveConfirm:
+      'Saving replaces the whole pack (title / description / version / mod list). Continue?',
+    packDeleteConfirm: 'Delete this mod pack? This cannot be undone.',
+    packSaved: 'Saved',
+    packDeleted: 'Deleted',
+    packForbidden: 'You do not have permission to manage mod packs.',
+    packErrUnknownMod: 'Some modids are not in the catalog \u2014 refresh the page and try again.',
+    packErrInvalid: 'Invalid input: the title is 1\u201380 characters, mods are 1\u201364.',
+    packErrNotFound: 'This mod pack is gone (someone else may have deleted it). Refresh and retry.',
+    packErrCatalog: 'The server cannot read the mod catalog, so it cannot save right now.',
+    packErrFailed: 'The action failed. Please try again.',
   },
   /**
    * Personal marks: favorite / note / rating.
@@ -4862,5 +4929,40 @@ export const en: TranslationSchema = {
     progressCancelBlocked: 'Writing - please wait…',
     /** ★ The items the previous run had cancelled (`lastRun.cancelled`). */
     lastRunCancelled: 'Cancelled {{modid}}',
+    /*
+     * ===================================================================
+     * B2 (mod packs) - Task 6: the two places on `/files` (top chip + "Mod packs")
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2) or
+     * down-triangle (U+25BE) in these values (neither is in the self-hosted pixel subsets).
+     * ⚠️★ The two counted entries (`packsTitle` / `packsModCount`) must carry the **same**
+     * placeholder set in both dictionaries (`i18n-keys.test.ts` bites otherwise).
+     */
+    /** ★ The section title (`{{count}}` = how many packs this version has). */
+    packsTitle: 'Mod packs ({{count}})',
+    /*
+     * ★ The hot-chip label (`{{title}}` = the pack title).
+     * ⚠️ The star lives **in this entry**, not in the component: it is part of how a hot pack
+     * is named, and each language gets to choose its own mark.
+     */
+    packsChip: '★ {{title}}',
+    /** ★ How many modids one pack holds (**the number the server computed**, not one counted here). */
+    packsModCount: '{{count}} mods',
+    /*
+     * ★★ The "download the whole pack" button.
+     * ⚠️ It means "install the ones this folder does not have yet, one by one" (the ones
+     * already there are skipped by the main process and land in `lastRun.skipped`) - the
+     * wording does not promise a full re-install.
+     */
+    packsDownload: 'Download pack',
+    /** ★ The **empty state** for "this version has no pack at all" (vs "not loaded yet", which draws nothing). */
+    packsEmpty: 'This version has no mod packs yet.',
+    /** ★ Nothing to download for this pack (every item is already in that folder) - shown by the disabled button. */
+    packsNothingToDo: 'Every mod in this pack is already in this folder.',
+    /** ★ No folder can be a target (same rule as the section-three `noFolderForDownload`). */
+    packsNoFolder:
+      'There is no folder to download into - bind a mods folder for this version whose path still exists first.',
+    /** ★ Accessible name of the target picker (every row looks alike, so screen readers need the pack title). */
+    packsFolderLabel: 'Download "{{title}}" into',
   },
 };

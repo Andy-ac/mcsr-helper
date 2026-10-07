@@ -23,6 +23,7 @@ import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
 import { modCatalogRoute } from './routes/modCatalog';
 import { moderationRoute } from './routes/moderation';
+import { adminModPacksRoute, modPacksRoute } from './routes/modpacks';
 import { modTagsRoute } from './routes/modTags';
 import { rankedRoute } from './routes/ranked';
 import { resourcesRoute } from './routes/resources';
@@ -168,6 +169,17 @@ app.route('/api/mod-catalog', modCatalogRoute);
  * ⚠️ 挂载点写全、route 文件里用相对路径（'/'）—— 与上面两条逐字同形。
  */
 app.route('/api/mod-tags', modTagsRoute);
+/*
+ * B2：整合包。两条挂载点都写全、route 文件里用相对路径（'/'），与上面两条逐字同形。
+ *
+ * ⚠️★ **两条**挂载是刻意的，不是漏合并成一条：写（`pack.manage`，reviewer 及以上）
+ *    与"设热门"（`pack.feature`，**只给管理员**）是两条不同的能力 ——
+ *    热门那条挂在 `/api/admin/modpacks/:id/hot` 上，好让"谁能设热门"在读路由表时一眼可见
+ *    （塞进 `PATCH /api/modpacks/:id` 的话它的权限就变成 `pack.manage`，
+ *    于是 reviewer 也能设热门）。
+ */
+app.route('/api/modpacks', modPacksRoute);
+app.route('/api/admin/modpacks', adminModPacksRoute);
 /*
  * ② 直编（`content.author`；硬删走 shared 的谓词 `canHardDelete`）。
  *

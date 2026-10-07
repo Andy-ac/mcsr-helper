@@ -156,6 +156,23 @@ export default defineConfig({
        *    下面那行裸包名 `'@mcsr/shared'` **之上**。
        */
       '@mcsr/shared/downloadProgress': resolvePath('../../packages/shared/src/downloadProgress.ts'),
+      /*
+       * ⚠️★ 这一条是「整合包」（子项目 B2，2026-10-07 T1）加的 —— 上面那五段注释说的坑
+       *    **第八次**（现数：`resources` / `live` / `ranked` / `seedPicker` / `tracking` /
+       *    `fileUpdates` / `downloadProgress`，这一次是 `modPacks`），
+       *    而它**与 `packages/shared/package.json` 的 `exports` 是同批加的**
+       *    （漏一处就出现 `Failed to resolve import "@mcsr/shared/modPacks"`，
+       *    而症状看起来像"用的人写错了 import"）。
+       *
+       *    本任务（T1）只**登记**，页面上还一个字节都不引它 —— T5 的 `/files` 页会引
+       *    `packDownloadableIn` / `packPlanFor`（都是**值**）⇒ 那一天必须已经有这一条。
+       *    ⚠️ 而两端门禁一个都不会响：`pnpm -w check` 的 typecheck 走 `exports`
+       *    （moduleResolution: bundler），渲染自检由 tsx 直接跑、**根本不经过 Vite**。
+       *
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       */
+      '@mcsr/shared/modPacks': resolvePath('../../packages/shared/src/modPacks.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

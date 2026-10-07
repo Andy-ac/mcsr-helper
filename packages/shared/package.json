@@ -43,7 +43,8 @@
     "./modCatalog": "./src/modCatalog.ts",
     "./modFolders": "./src/modFolders.ts",
     "./fabricMeta": "./src/fabricMeta.ts",
-    "./downloadProgress": "./src/downloadProgress.ts"
+    "./downloadProgress": "./src/downloadProgress.ts",
+    "./modPacks": "./src/modPacks.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

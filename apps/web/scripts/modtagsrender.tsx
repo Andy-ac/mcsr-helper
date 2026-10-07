@@ -29,6 +29,9 @@
  *   ⑥ ★★ 容器那三个纯函数（`manualTagsOf` / `automaticTagsOf` / `isDirty`）——
  *      拆成两半之后，**这是它们唯一的判据**。
  *
+ * ⚠️★ **⑦ 已经加好了**（T8）：下半「整合包」那一节 —— **14 条**（`expectedItems` 7 → **21**）。
+ *    详见下面 ⑦ 那段注释；**它已经加好了 14 条**（所以 `expectedItems` 是 **21**）。
+ *
  * ===========================================================================
  * ⚠️ 这个脚本**证不了**什么（边界，别高估它）
  * ===========================================================================
@@ -57,9 +60,15 @@ import i18n from 'i18next';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
-
+import type { ModPackWire } from '@/lib/api';
+import { type PackFormSource, packFormDirty, packFormFrom } from '@/lib/modPackEdits';
 import { automaticTagsOf, isDirty, manualTagsOf } from '@/lib/modTagEdits';
-import { AdminModsView, type AdminModsViewProps } from '@/routes/AdminMods';
+import {
+  AdminModPacksView,
+  type AdminModPacksViewProps,
+  AdminModsView,
+  type AdminModsViewProps,
+} from '@/routes/AdminMods';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -375,6 +384,185 @@ assert.equal(isDirty({ draft: ['a', 'b'], server: ['a'] }), true, '多一个 ⇒
 ok('★ 纯函数：出厂值回落 / DB 赢 / draft 赢 / 自动层 / 改过的四档');
 
 // ---------------------------------------------------------------------------
+// ⑦ ★★ 整合包那一节 —— **T8 已加满**（14 条：三个纯函数 / 纯视图 / 容器接线的两条源码守卫）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一格是**预埋的空位**，不要在这里写"占位断言"（那只会多一条恒真的读数）。
+ *    T8 要往这里加三样，按现读的接口：
+ *      · **三个纯函数**（`import { packFormFrom, packFormDirty, packVersionOptions }
+ *        from '@/lib/modPackEdits'`）：容器那半边在 `renderToStaticMarkup` 下渲染不出来
+ *        （effect 不跑）⇒ 拆成两半之后，**这三个函数是那半边唯一的判据**。
+ *        三把刀的落点：`packFormFrom` 少拷一格 / 不复制 `modids`（就地改到服务端那份）；
+ *        `packFormDirty` 改成"点过没有"或漏掉某一格；`packVersionOptions` 改成自己遍历 mods。
+ *      · **纯视图**（`import { AdminModPacksView } from '@/routes/AdminMods'`）：
+ *        props 契约现读那个文件里的 `AdminModPacksViewProps`。可用的钩子：
+ *        `data-pack-admin-row="{id}"`（列表行）、`data-pack-mod="{modid}"`（可勾的 mod）、
+ *        `data-pack-chosen="{n}"`（已选个数）、`data-action="save-pack"`（带 `data-dirty`）、
+ *        `data-action="delete-pack"` / `data-action="edit-pack"` / `data-action="new-pack"` /
+ *        `data-action="cancel-pack"` / `data-action="toggle-pack-hot"`（带 `data-pack-hot="{id}"`）。
+ *      · **源码级守卫**："热门开关只在 `useCan('pack.feature')` 为真时渲染"住在**容器**
+ *        （`AdminMods`）里，断言按 ⓪ 那个手法读 `AdminMods.tsx` 的源码（剥注释之后）——
+ *        它的刀是"把那个开关从 `canFeature ? … : null` 里拿出去"。
+ * ⚠️★ 那一格是**手抄的**：改这一组就要**同批**把文件末尾的 `expectedItems` 现数改对（现在是 **21** = 7 + ⑦ 的 14）：
+ *    那个探针防的正是"某一组被整块摘掉之后脚本照样绿、照样打印通过 N 项"。
+ * ⚠️ 两遍语言（zh / en）都跑这个脚本，且这一个脚本里**没有** `if (LANG === 'en')` 那一支。
+ */
+console.log(`【${LANG}】⑦ 整合包那一节（三个纯函数 + 纯视图 + 热门开关的源码级守卫）`);
+
+// -- ⑦a 三个纯函数（与 ⑥ 同形：容器那半边在 renderToStaticMarkup 下渲染不出来，这三个是它唯一的判据）
+{
+  const server: PackFormSource = {
+    title: '示例包',
+    description: '一句简介',
+    gameVersion: '1.16.1',
+    modids: ['alpha', 'beta'],
+  };
+  const form = packFormFrom(server);
+  assert.deepEqual(
+    form,
+    {
+      title: server.title,
+      description: server.description,
+      gameVersion: server.gameVersion,
+      modids: ['alpha', 'beta'],
+    },
+    '⑦a1 packFormFrom 逐格拷贝四格',
+  );
+  ok('⑦a1 `packFormFrom` 逐格拷四格');
+  assert.notStrictEqual(
+    form.modids,
+    server.modids,
+    '⑦a2 —— modids 必须是**新数组**（否则表单里改它会就地改到服务端那份）',
+  );
+  ok('⑦a2 `modids` 复制成新数组（不是同一个引用）');
+
+  assert.equal(packFormDirty(form, server), false, '⑦a3 表单与服务器一致 ⇒ 不脏（保存键该禁用）');
+  ok('⑦a3 表单与服务器一致 ⇒ `packFormDirty` 为 false');
+  assert.equal(packFormDirty({ ...form, title: '改一个字' }, server), true, '⑦a4 改一格 ⇒ 脏');
+  ok('⑦a4 改一格 ⇒ `packFormDirty` 为 true');
+  assert.equal(
+    packFormDirty({ ...form, modids: ['beta', 'alpha'] }, server),
+    false,
+    '⑦a5 modids 顺序不是改动（先排序再比）',
+  );
+  ok('⑦a5 `modids` 只换顺序 ⇒ 不算脏');
+}
+
+// -- ⑦b 纯视图（下半那一节：T8 直接渲染它，不走面板）
+{
+  const packs: ModPackWire[] = [
+    {
+      id: 'p-hot',
+      title: '热门包',
+      description: 'D1',
+      gameVersion: '1.16.1',
+      modids: ['alpha'],
+      hot: true,
+      modCount: 1,
+    },
+    {
+      id: 'p-cold',
+      title: '普通包',
+      description: 'D2',
+      gameVersion: '1.16.1',
+      modids: ['beta'],
+      hot: false,
+      modCount: 1,
+    },
+  ];
+  const server: PackFormSource = {
+    title: '热门包',
+    description: 'D1',
+    gameVersion: '1.16.1',
+    modids: ['alpha'],
+  };
+  const props: AdminModPacksViewProps = {
+    packs,
+    canFeature: true,
+    isNew: false,
+    form: packFormFrom(server),
+    server,
+    versionOptions: ['1.16.1'],
+    mods: [
+      { modid: 'alpha', name: 'Alpha' },
+      { modid: 'beta', name: 'Beta' },
+    ],
+    modFilter: '',
+    onModFilter: () => {},
+    onNew: () => {},
+    onEdit: () => {},
+    onCancel: () => {},
+    onForm: () => {},
+    onSave: () => {},
+    onDelete: () => {},
+    onToggleHot: () => {},
+    busy: null,
+    error: null,
+    okMessage: null,
+  };
+  const html = renderToStaticMarkup(<AdminModPacksView {...props} />);
+  for (const pack of packs) {
+    assert.ok(html.includes(`data-pack-admin-row="${pack.id}"`), `⑦b 列表行 ${pack.id} 在场`);
+  }
+  ok('⑦b1 两条包各有一个 `data-pack-admin-row`');
+  for (const action of ['new-pack', 'save-pack', 'delete-pack']) {
+    assert.ok(html.includes(`data-action="${action}"`), `⑦b 这一节要有 data-action="${action}"`);
+  }
+  ok('⑦b2 新建 / 保存 / 删除三个动作在场');
+  assert.ok(
+    /data-action="save-pack"[^>]*data-dirty="(yes|no)"/.test(html) ||
+      /data-dirty="(yes|no)"[^>]*data-action="save-pack"/.test(html),
+    '⑦b3 保存键要带 data-dirty（与 packFormDirty 同一表达式）',
+  );
+  ok('⑦b3 保存键带 `data-dirty`');
+  assert.ok(
+    html.includes('data-pack-mod="alpha"') && html.includes('data-pack-mod="beta"'),
+    '⑦b4 可勾的 mod 逐条在场',
+  );
+  assert.ok(/data-pack-chosen="\d+"/.test(html), '⑦b5 已选个数要有 data-pack-chosen');
+  ok('⑦b4/b5 可勾 mod 与 `data-pack-chosen` 都在场');
+
+  assert.ok(html.includes('data-action="toggle-pack-hot"'), '⑦b6 canFeature 为真 ⇒ 热门开关渲染');
+  ok('⑦b6 `canFeature: true` ⇒ 热门开关在场');
+  const htmlNoFeature = renderToStaticMarkup(<AdminModPacksView {...props} canFeature={false} />);
+  assert.ok(
+    !htmlNoFeature.includes('data-action="toggle-pack-hot"'),
+    '⑦b7 canFeature 为假 ⇒ 热门开关**不**渲染（两次渲染对照）',
+  );
+  ok('⑦b7 `canFeature: false` ⇒ 热门开关**不**渲染（对照 ✓）');
+
+  const htmlNoForm = renderToStaticMarkup(<AdminModPacksView {...props} form={null} />);
+  assert.ok(!htmlNoForm.includes('data-action="save-pack"'), '⑦b8 form 为 null ⇒ 不画表单');
+  ok('⑦b8 `form: null` ⇒ 不画表单');
+}
+
+// -- ⑦c 源码级守卫（照 ⓪ 的手法读 `AdminMods.tsx` 的源码 —— 这一条 renderToStaticMarkup 证不了）
+/*
+ * ⚠️★ **T8 评审纠正过一次**（agent `594ecf38`）：原来那条正则
+ *    `/canFeature\s*\?[\s\S]{0,600}?data-action="toggle-pack-hot"/` 在同一份文件里**先命中了纯视图自己**
+ *    那一支（`ModPacksSection` 不是，是 `AdminModPacksView` 里的三元门）⇒ 它与 ⑦b7（渲染层）验的是**同一件事** ✗，
+ *    而**容器那一侧的接线一条都盖不到** ✗ —— 把 `canFeature={canFeature}` 改成 `{true}`（刀 D）、
+ *    或把 `useCan('pack.feature')` 改成恒真（刀 E），原来两条**全绿** ⇒ spec §5:119 的
+ *    "reviewer 看得见这一页、但看不到那个开关"这条前端门可以**静默失效** ✗。
+ *    ⇒ 现在守的是**容器专用的两件事**：取能力的来源（`useCan('pack.feature')`）与把值传进 prop（`canFeature={canFeature}`）。
+ */
+{
+  const adminSrc = withoutComments(
+    readFileSync(new URL('../src/routes/AdminMods.tsx', import.meta.url), 'utf8'),
+  );
+  assert.ok(
+    adminSrc.includes("useCan('pack.feature')"),
+    '⑦c1 容器必须**真的从 `useCan` 取**那条能力（刀：改成恒真 ⇒ 这里红）',
+  );
+  ok("⑦c1 容器从 `useCan('pack.feature')` 取能力（源码级）");
+  assert.ok(
+    adminSrc.includes('canFeature={canFeature}'),
+    '⑦c2 容器必须把**取到的那个值**传进 prop（刀：写成 `canFeature={true}` ⇒ 这里红）',
+  );
+  ok('⑦c2 容器把取到的值传进 `canFeature={canFeature}`（源码级）');
+}
+
+// ---------------------------------------------------------------------------
 // 项数探针（手抄的，理由见文件头）
 // ---------------------------------------------------------------------------
 /*
@@ -383,7 +571,7 @@ ok('★ 纯函数：出厂值回落 / DB 赢 / draft 赢 / 自动层 / 改过的
  * ⚠️ zh 与 en 是**同一个数**：这个脚本**没有** `if (LANG === 'en')` 那一支
  *    （`foldersrender` 的㉛ 零汉字扫描才需要那个差 1）。
  */
-const expectedItems = 7;
+const expectedItems = 21;
 assert.equal(
   pass,
   expectedItems,

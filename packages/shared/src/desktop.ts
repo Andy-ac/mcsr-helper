@@ -312,6 +312,20 @@ export interface DesktopBridge {
      *    （一个陈旧的值会让第三段「该版本**全部** mod」不再是全量，而用户无处可清）。
      */
     setTagFilter(tags: readonly string[]): Promise<ModFoldersState>;
+    /**
+     * ★ B2：把**整合包**里的 mod 逐个装进这个文件夹。
+     *
+     * ⚠️ 四个入参**全是 id / 字符串**：不收 mod 列表、不收路径、不收 URL
+     *    （包的内容以**服务端**为准 —— 主进程拿 `packId` 自己去取，见 B2 spec D5）。
+     * ⚠️ 进度与取消**复用 C 那一套**（`onProgress` / `cancelDownload`）：这一趟的
+     *    `run` 是 `'download-pack'`（C 早就把它留在类型里了）。
+     */
+    readonly downloadPack: (
+      packId: string,
+      gameVersion: string,
+      folderId: string,
+      channel: Channel,
+    ) => Promise<ModFoldersState>;
   };
 }
 
@@ -388,7 +402,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十六条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**十七条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -416,14 +430,15 @@ export function desktopBridge(): DesktopBridge | null {
  *    其余都是方法名的逐字 kebab（`openFolder` ⇒ `-open-folder`、C 的 T4 加的
  *    `cancelDownload` ⇒ `-cancel-download` 都在其中；⚠️ 后一条是**请求**、不是推送 ——
  *    它落在这一组只是因为名字逐字 kebab，与"推送"那两处无关）。
- *    ★★ **逐字 kebab 的条数只写在这一处**：**16 个成员 − 5 个非纯 kebab = 11**
+ *    ★★ **逐字 kebab 的条数只写在这一处**：**17 个成员 − 5 个非纯 kebab = 12**
  *    （上面那句不再复述这个数字 —— §5.15：同一个活数字出现两种说法就是缺陷信号，
  *    加一条逐字 kebab 的通道时**只改这一行**）。
  *    ⚠️★ 下面这几句交代这个数的**来历**，它们**都不是活数字**（不要照它们现数）：
  *    这一格原先写死过一个比实际小的数（A 的 S2 逐条现数改准过）；T6 删掉那三条之后
  *    是"成员数 − 非纯 kebab 数"；C 的 T3 加 `onProgress` **只动"非纯 kebab"那一侧**
  *    （它**不**在这一组里），逐字 kebab 那一侧没动；而 C 的 T4 加的 `cancelDownload`
- *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是上面那个 11。
+ *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是 **11**；**B2 的 T4** 加的 `downloadPack`
+ *    （`-download-pack`）**也是逐字 kebab** ⇒ 那一侧再 +1，就是上面那个 **12**。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -457,4 +472,5 @@ export const MOD_FOLDERS_CHANNELS = {
   downloadMissing: 'mcsr:modfolders-download-missing',
   setCatalogGameVersion: 'mcsr:modfolders-set-catalog-version',
   setTagFilter: 'mcsr:modfolders-set-tag-filter',
+  downloadPack: 'mcsr:modfolders-download-pack',
 } as const satisfies Record<keyof DesktopBridge['modFolders'], string>;

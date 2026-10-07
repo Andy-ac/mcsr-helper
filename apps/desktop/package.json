@@ -1,6 +1,6 @@
 {
   "name": "@mcsr/desktop",
-  "version": "0.0.9",
+  "version": "0.1.0",
   "private": true,
   "description": "MCSR Helper desktop shell — an Electron wrapper around the web build, with auto-update (electron-updater) and NSIS packaging.",
   "license": "MIT",

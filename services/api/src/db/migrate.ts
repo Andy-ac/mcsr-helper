@@ -40,6 +40,7 @@ import { m021TrackedVideoVisibility } from './migrations/021_tracked_video_visib
 import { m022TrackedCreatorCooldown } from './migrations/022_tracked_creator_cooldown';
 import { m023LiveStatus } from './migrations/023_live_status';
 import { m024ModTags } from './migrations/024_mod_tags';
+import { m025ModPacks } from './migrations/025_modpacks';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -197,6 +198,7 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    */
   { name: '023_live_status', sql: m023LiveStatus },
   { name: '024_mod_tags', sql: m024ModTags },
+  { name: '025_modpacks', sql: m025ModPacks },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
