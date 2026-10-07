@@ -325,15 +325,18 @@ describe('★ B2 审计：四条各一条，pack.update 只记变了的那几格
      * 原来这里是"建完之后先 `DELETE FROM audit_log`、再从改/删/热门三条断言"——
      * 于是 `routes/modpacks.ts` 里 `POST /` 那条 `writeAudit({ action: 'pack.create' })`
      * **整条删掉也全绿**，而这一节的标题写着"建/改/删/热门各一条"。
-     * ⇒ 现在按 action 过滤着现读一次：写漏 / 写错 entity_id 都会在这里红。
-     *   （`makeUser` 自己会写 register + login 两条 ⇒ 不能直接断整个表，见下面那句清理。）
+     * ⇒ 现在按 `entity_id` 现读一次：写漏 / 写错 entity_id 都会在这里红。
+     *   （`makeUser` 自己会写 register + login 两条，而且**本文件不清理 `audit_log`** ——
+     *     `beforeEach` 只删 `modpacks` / `users` ⇒ 前面几条 it 建的包会留下自己的 `pack.create`
+     *     行（实测这一条 it 跑之前已经有 8 条）。所以判据必须锚在**这一次返回的那个 id** 上，
+     *     不能写成"表里恰好一条 pack.create"。见下面那句清理。）
      */
     const createdAudit = getDb()
       .prepare(
-        "SELECT action, entity_type, entity_id FROM audit_log WHERE action = 'pack.create' ORDER BY created_at, rowid",
+        "SELECT action, entity_type, entity_id FROM audit_log WHERE action = 'pack.create' AND entity_id = ? ORDER BY created_at, rowid",
       )
-      .all() as unknown as { action: string; entity_type: string; entity_id: string | null }[];
-    assert.equal(createdAudit.length, 1, '建包必须写**一条** pack.create 审计');
+      .all(id) as unknown as { action: string; entity_type: string; entity_id: string | null }[];
+    assert.equal(createdAudit.length, 1, '建包必须写**一条** pack.create 审计（这条 id 的）');
     assert.equal(createdAudit[0]?.entity_type, 'modpack');
     assert.equal(createdAudit[0]?.entity_id, id, 'pack.create 的 entity_id 必须是返回的那个 id');
     /*
