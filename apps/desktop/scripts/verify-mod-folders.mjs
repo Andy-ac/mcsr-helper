@@ -1017,7 +1017,17 @@ if (WRITE) {
   /*
    * ★ B2 / Task 5：整合包那四份夹具也打印出来（§5.79：每个读数都要说清"我看了哪个对象"）。
    *   目标名 + 桩要回的字节长度都在 ⇒ 一个空结果一眼能看出是夹具没建起来还是产品没做工。
+   * ⚠️ 四份夹具的**形状不一样**（`progress`/`cancel` 是 `items[]`、`skip` 是 `already`、
+   *    `fail` 是 `good`+`bad`）⇒ 打印这一句要按各自那几格取；第一版写成
+   *    `pack.items ?? [pack.already]` 时 `fail` 那一份取到 `[undefined]` ⇒ 这一句自己抛
+   *   （子进程以 1 收场，而**一条判据都没跑**：§5.74 那一族，红点长得像"写相位哪条判据没过"）。
    */
+  const packEntryText = (entry) =>
+    `${entry.modid}→${entry.targetName}（桩回 ${String(entry.served.length)}B）`;
+  const packSummaryOf = (pack) => {
+    const entries = pack.items ?? [pack.already ?? pack.good, pack.bad].filter(Boolean);
+    return `${pack.id}[${entries.map(packEntryText).join(', ')}]`;
+  };
   console.log(
     `  整合包夹具（四条端点，走 origin 通道）：${[
       writeFixture.packs.progress,
@@ -1025,7 +1035,7 @@ if (WRITE) {
       writeFixture.packs.fail,
       writeFixture.packs.cancel,
     ]
-      .map((pack) => `${pack.id}[${(pack.items ?? [pack.already]).map((entry) => `${entry.modid}→${entry.targetName}`).join(', ')}]`)
+      .map(packSummaryOf)
       .join('；')}`,
   );
 }
@@ -4517,7 +4527,9 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     );
     check(
       '★★ 第一个仍然在 `updated` 里（失败**不中断整包**）',
-      (state?.lastRun?.updated ?? []).some((entry) => entry.modid === pack.good.modid),
+      /* ⚠️ `updated` 是 **modid 的字符串数组**（`ModFoldersState['lastRun']` 那条契约）
+         ⇒ 判据是 `includes`，不是 `.some((entry) => entry.modid === …)`（后者恒 false）。 */
+      (state?.lastRun?.updated ?? []).includes(pack.good.modid),
       JSON.stringify(state?.lastRun ?? null),
     );
     check(
