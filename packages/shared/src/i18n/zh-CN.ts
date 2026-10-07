@@ -534,6 +534,14 @@ export const zhCN = {
      *    它管的是"目录这份数据"上的动作，不是某一种内容。
      */
     capTypeCatalog: 'mod 标签',
+    /*
+     * ★ `pack.*`（B2：整合包）的类型那一半 —— 与 `content` / `catalog` 同理：
+     *    它管的是"整合包这份数据"上的动作，不是某一种内容。
+     * ⚠️ 动作那一半**不用加词条**：`pack.manage` 用既有的 `capActionManage`（维护）、
+     *    `pack.feature` 用既有的 `capActionFeature`（设置精选 / 官方）——
+     *    两个动作名都不是新的，也没有和谁撞名（`CAP_OVERRIDES` 不用动）。
+     */
+    capTypePack: '整合包',
     capActionSubmit: '提交',
     capActionEditOwn: '修改自己提交的',
     capActionEditAny: '改已上架的条目',
@@ -604,6 +612,14 @@ export const zhCN = {
      *    （那张白名单只管带 `**` 的词条；上面那条 `capDescShareModerate` 才要）。
      */
     capDescCatalogEditTags: '改 mod 的标签（自动标签来自上游，改不动；人工标签可以增删）。',
+    /*
+     * ★ `pack.*`（B2：整合包）的两条完整说明。
+     * ⚠️ 两条都**没有** `**` 强调 ⇒ **不需要**登记进
+     *    `services/api/src/i18n-keys.test.ts` 的 `DYNAMIC_KEYS`
+     *    （那张白名单只管带 `**` 的词条，同上）。
+     */
+    capDescPackManage: '建 / 改 / 删整合包（标题、简介、一个游戏版本、一组 modid）。',
+    capDescPackFeature: '把整合包放上热门推荐位，或者撤下来。',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误

@@ -534,6 +534,14 @@ export const en: TranslationSchema = {
      *    `content` above: it is an action on the catalog data, not a content type.
      */
     capTypeCatalog: 'mod tags',
+    /*
+     * ★ The type half of `pack.*` (B2: modpacks) — same reasoning as `content` /
+     *    `catalog` above: actions on the modpack data, not a content type.
+     * ⚠️ The action half needs **no** new entry: `pack.manage` reuses
+     *    `capActionManage` and `pack.feature` reuses `capActionFeature` — neither
+     *    action name is new, and neither collides (`CAP_OVERRIDES` is untouched).
+     */
+    capTypePack: 'Modpacks',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
@@ -607,6 +615,14 @@ export const en: TranslationSchema = {
      */
     capDescCatalogEditTags:
       'Edit a mod\u2019s tags (automatic tags come from upstream and cannot be removed; manual tags can be added or removed).',
+    /*
+     * ★ The two full descriptions for `pack.*` (B2: modpacks).
+     * ⚠️ Neither carries `**` emphasis, so neither needs a `DYNAMIC_KEYS` entry in
+     *    `services/api/src/i18n-keys.test.ts` (that whitelist only covers marked keys).
+     */
+    capDescPackManage:
+      'Create, edit and delete modpacks (title, summary, one game version, a list of modids).',
+    capDescPackFeature: 'Put a modpack on the featured row, or take it off.',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors

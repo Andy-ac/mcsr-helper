@@ -137,6 +137,35 @@ export const CAPABILITIES = [
    */
   'catalog.editTags',
 
+  // ---- 整合包（B2）----
+  /**
+   * 建 / 改 / 删一个**整合包**（标题 + 简介 + 一个游戏版本 + 一组 modid）。
+   *
+   * ⚠️ 它只动"我们写的这一层"：包住在 `modpacks` 表里（迁移 025），
+   *    **不碰** `content/**` —— 那两份文件每次部署都会被同步回去，
+   *    服务端写它们等于把改动交给下一次部署静默抹掉。这一点有渲染之外的一条硬判据守着
+   *    （`modpacks-routes.test.ts` 里那两份文件的 sha256）。
+   * ⚠️ 给 reviewer 及以上（见 `REVIEWER_CAPS`）：这是内容编辑的活，与审核同一档。
+   * ⚠️ **不进** `REQUIRES_VERIFIED` —— 与 `resource.review` / `catalog.editTags`
+   *    同一条理由：这个身份是管理员**已经核实过**才授予的，再加一道邮箱验证
+   *    只会在换邮箱、邮件投递出问题时把一个能干活的人挡在门外。
+   */
+  'pack.manage',
+
+  /**
+   * 决定一个整合包**上不上热门推荐位**。
+   *
+   * ⚠️ **只给 admin / owner**（见下面 `MATRIX` 那两行）。理由与 `resource.feature`
+   *    逐字同一句：推荐位是一个**品味判断**，而且是一个**可以单独收回**的决定 ——
+   *    能建包的人（reviewer 及以上）不等于能决定"哪个包该被摆到最前面"。
+   * ⚠️⚠️ 所以它**既不进** `REVIEWER_CAPS`、**也不进** `EDITOR_CAPS`：
+   *    `EDITOR_CAPS` 会被展开给 editor，把这一行加在那一层等于 **editor 也能设热门**
+   *    （一次看起来完全合理的编辑，而用户的口径是只给管理员）。
+   *    加在 `admin` / `owner` 那两行上才是"只给管理员"的唯一定义点。
+   * ⚠️ **不进** `REQUIRES_VERIFIED` —— 同 `pack.manage`。
+   */
+  'pack.feature',
+
   /**
    * **直接写"线上那一行"** —— 增（新建即上架）、改（任何条目，含未上架的草稿）、
    * 删（真删）三种动作都归它。绕过审核快照，但**不绕过审计**。
@@ -265,6 +294,8 @@ const REVIEWER_CAPS: readonly Capability[] = [
   'calendar.review',
   'seed.review',
   'catalog.editTags',
+  // 整合包：建 / 改 / 删（B2）。⚠️ `pack.feature` **不在**这里 —— 它只给 admin/owner。
+  'pack.manage',
   'audit.read',
 ];
 
@@ -317,7 +348,7 @@ const MATRIX: Record<UserRole, readonly Capability[]> = {
   // 通配符会让"新增一个能力"默认就对所有管理员开放，
   // 而那意味着每次加能力都要重新想一遍"该不该给管理员"。展开写，
   // 新增能力时会**编译报错**，逼你显式决定。
-  admin: [...EDITOR_CAPS, 'user.moderate'],
+  admin: [...EDITOR_CAPS, 'user.moderate', 'pack.feature'],
 
   /*
    * owner 的**能力**和管理员完全一样 —— 多出来的那一份是**等级**，不是能力。
@@ -340,7 +371,7 @@ const MATRIX: Record<UserRole, readonly Capability[]> = {
    * ⇒ 这条不变量**原样成立**：owner 的能力与 admin 完全相同，
    *    多出来的那一份是**等级**、不是能力。
    */
-  owner: [...EDITOR_CAPS, 'user.moderate'],
+  owner: [...EDITOR_CAPS, 'user.moderate', 'pack.feature'],
 };
 
 /**
