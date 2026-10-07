@@ -733,6 +733,9 @@ function shellStub(withModFolders: boolean) {
             downloadMissing: async () => ({}),
             setCatalogGameVersion: async () => ({}),
             setTagFilter: async () => ({}),
+            downloadPack: async () => {
+              throw new Error('桩：这一格的存在只是为了让"桩与契约逐条对账"那条断言看得见它');
+            },
           },
         }
       : {}),

@@ -2052,7 +2052,7 @@ export async function downloadMissing(
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十四条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
+ * 注册十五条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
  * 主进程只 `send`，没有 handler 可注册）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
@@ -2100,6 +2100,14 @@ function registerIpc(): void {
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.setTagFilter, (_event, tags: unknown) => setTagFilter(tags));
   /*
+   * ⚠️★ 这一条**本任务只注册、不实现**（行为在 Task 5）：契约先立起来，
+   *    这样"契约对不对"（17 条通道、asar 里三条命中、桩逐条对账）与"这一趟跑得对不对"
+   *    是**两次可以分别否决的评审**。⇒ 它会抛，而且这句抛错的文案要写清"还没实现"。
+   */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.downloadPack, () => {
+    throw new Error('downloadPack 还没实现（Task 5 才落行为）');
+  });
+  /*
    * ★ Task 5：两条写盘通道。入参一律 `unknown`（与上面十条同一条纪律 —— 校验在函数体里）。
    *    ⚠️ 这两条**收 `releaseKey`**（只有它们收）：页面把它自己渲染那一行的 key 带回来，
    *    主进程按它在目录里查 —— 这是"页面能指定下载哪一个"的唯一入口。
@@ -2135,7 +2143,7 @@ function registerIpc(): void {
 }
 
 /**
- * 初始化：**接手 v1 那份状态对象** → 注册十四条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册十五条 IPC → 后台抓目录 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个

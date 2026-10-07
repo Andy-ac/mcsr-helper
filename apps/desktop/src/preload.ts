@@ -323,6 +323,20 @@ const bridge: DesktopBridge = {
         channel,
       ) as Promise<ModFoldersState>;
     },
+    downloadPack(
+      packId: string,
+      gameVersion: string,
+      folderId: string,
+      channel: Channel,
+    ): Promise<ModFoldersState> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.downloadPack,
+        packId,
+        gameVersion,
+        folderId,
+        channel,
+      ) as Promise<ModFoldersState>;
+    },
     setCatalogGameVersion(gameVersion: string): Promise<ModFoldersState> {
       return ipcRenderer.invoke(
         MOD_FOLDERS_CHANNELS.setCatalogGameVersion,
