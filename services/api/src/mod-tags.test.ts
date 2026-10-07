@@ -416,23 +416,36 @@ describe('★ B1 写端：审计', () => {
   });
 });
 
-describe('★ B1 写端：`content/**` 一个字节都没动（spec §5 断言 3）', () => {
+/*
+ * ★★ spec §5 断言 3 的**时间窗**：指纹在**本文件顶部**取一次（不是在那条 `it` 开头取）。
+ *
+ * ⚠️ 为什么窗口要这么大：这个文件在跑到那条断言之前已经调了 **7 次**写端点
+ *    （权限枚举里的 3 次 200、32 个标签那次、去重那条、审计那两条… 一共 8 次，那条 `it` 自己只占 1 次）。
+ *    若把 `before` 取在那条 `it` 的开头，一个**幂等**的写（只有第一次改字节、之后字节不变，
+ *    例如"首次把文件规范化重写一遍"）会把改动落在窗口**之前** ⇒ 断言**照样绿**。
+ *    T5 的评审者用变异体实测过这个形状：端点写了 8 次、断言仍绿（`write-same-bytes`），
+ *    而"每次改字节"那一版（`write-different-bytes`）当场红。⇒ 窗口取在文件顶部才咬得住幂等写。
+ *
+ * ⚠️ 判据的边界（如实写）：它盯的是 spec §5 断言 3 **点名的那两份**文件，
+ *    不是整个 `content/`（那里还有 5 个文件）。标题不再写 `content/**`，免得说得比做的宽。
+ */
+const CONTENT_FILES = ['content/mod-catalog.json', 'content/mod-overrides.json'].map((rel) =>
+  join(ROOT, rel),
+);
+const contentFingerprint = (): string[] =>
+  CONTENT_FILES.map((file) => createHash('sha256').update(readFileSync(file)).digest('hex'));
+const CONTENT_BEFORE = contentFingerprint();
+
+describe('★ B1 写端：那两份 `content/*.json` 一个字节都没动（spec §5 断言 3）', () => {
   /*
    * ★★ 这是"可编辑数据住 DB"那条决策**唯一的硬判据**（B1 spec §2 D1 / §5 断言 3）：
    *    三条写操作跑完之后，仓库里那两份文件必须逐字节相同。
    *    ⚠️ 为什么非断言不可：`deploy/deploy.sh` 每次部署都会同步那几份 `content/*.json`
    *       ⇒ 服务端若写了它们，线上改的东西会被下一次部署**静默抹掉**；
    *       而"没写"这件事在别处**看不见**（没有报错、没有日志、行为也全对）。
+   *    ⚠️ 指纹的**时间窗**在文件顶部（见上面那段注释）—— 取在这条 `it` 开头会漏掉幂等写。
    */
   it('三条写操作跑完之后，两份文件的 sha256 与开始时相同', async () => {
-    const files = ['content/mod-catalog.json', 'content/mod-overrides.json'].map((rel) =>
-      join(ROOT, rel),
-    );
-    const fingerprint = (): string[] =>
-      files.map((file) => createHash('sha256').update(readFileSync(file)).digest('hex'));
-
-    const before = fingerprint();
-
     const cookie = await makeUser('admin');
     await call('PUT', '/api/mod-tags/labels/probe-tag', {
       json: { zh: '探针', en: 'Probe' },
@@ -443,9 +456,9 @@ describe('★ B1 写端：`content/**` 一个字节都没动（spec §5 断言 3
     await call('DELETE', '/api/mod-tags/labels/probe-tag', { cookie });
 
     assert.deepEqual(
-      fingerprint(),
-      before,
-      '写操作不许碰 `content/**` 下的任何文件（那是"住 DB"的硬判据）',
+      contentFingerprint(),
+      CONTENT_BEFORE,
+      '写操作不许碰 `content/mod-catalog.json` 与 `content/mod-overrides.json`（那是"住 DB"的硬判据）',
     );
   });
 });

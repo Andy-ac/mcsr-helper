@@ -41,7 +41,8 @@ export const modTagsRoute = new Hono<{ Variables: AuthVariables }>();
  * resources / shares / tracking / videos 那八处逐字相同）。
  *
  * ⚠️ 它是一份**私有副本**，不是一个共享模块：本仓的惯例就是"每个用到的路由文件抄一份"
- * （现读 `grep -rn "function formatIssues" services/api/src` 有八处，`../format` 不存在）。
+ * （现读 `git grep -n "function formatIssues" -- services/api/src` ⇒ **9 份函数**（含本文件）
+ * 加本行注释自己那一次命中 = 10 行；`../format` **不存在**）。
  */
 function formatIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }) {
   return error.issues.map((i) => ({
