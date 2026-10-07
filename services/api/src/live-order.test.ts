@@ -462,11 +462,11 @@ describe('★ 搜索用的纯函数（filterLiveChannels）', () => {
   });
 });
 
-describe('★ 迁移登记（024）', () => {
-  it('024_mod_tags 在登记表里，而且是**最后一条**', () => {
+describe('★ 迁移登记（025）', () => {
+  it('025_modpacks 在登记表里，而且是**最后一条**', () => {
     assert.equal(
       MIGRATION_NAMES.at(-1),
-      '024_mod_tags',
+      '025_modpacks',
       '不登记 = 不跑，症状是"代码看着对、库里没有那两张表"（020/021 两轮都踩过）',
     );
   });
