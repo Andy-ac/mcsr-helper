@@ -2728,6 +2728,25 @@ async function writePhase() {
     if (typeof value !== 'object' || value === null) return `typeof ${typeof value}`;
     return `拿到了 ${String(Object.keys(value).length)} 个字段的对象`;
   };
+  /**
+   * ★★ 一个**确定**的等待：轮询 `pred()` 直到成立（或到上限）；返回值就是最后一次的判定。
+   *
+   * ⚠️★ 为什么需要它（B2/T5 实测，2026-10-07）：C 时代那几节写的是"`sleep 80` 之后取消"，
+   *    而机器一忙（同一台机器上并行跑别的门禁时）那个 80 ms 会**猜空** ⇒ 读数长成
+   *    `请求数 19 → 19`（看起来像"取消失效"）或 `received: 0`（看起来像"进度不是字节级的"）
+   *    —— 两条都**长得像产品缺陷**（§5.79）。而桩的行为让这件事可以做成确定的：
+   *    `chunkDelayMs = 400` ⇒ 请求**一到达** `downloadLog` 就涨，而响应体还要 400 ms 才收尾
+   *    ⇒ "计数一涨就动作"必然落在"下载中途"。
+   * ⚠️ 上限只防"这件事根本没发生"：到点仍不成立时**判据照旧红**（并说清是哪一种），
+   *    这个助手**不吞**任何失败、也不改任何判据的语义。
+   */
+  const waitUntil = async (pred, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!pred() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return pred();
+  };
 
   // =========================================================================
   // ⑫ = brief ⑤：sha512 对不上 ⇒ 不落盘
@@ -3971,8 +3990,20 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     const run = invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
       mirrorId: fx.slow.mirrorId,
     });
-    await new Promise((r) => setTimeout(r, 60)); // 第一半已经在写、正卡在桩的暂停里
-    const mid = await invoke(MOD_CH.getState);
+    /*
+     * ★★ 读"下载中途"那一帧**不靠固定 60 ms 猜**（现场：并行跑别的门禁时第一块约 140 ms
+     *    才到，于是这一读拿到 `received: 0` ⇒ 这条红在一处**与产品无关**的时序上，而同一节的
+     *    "字节单调"读数里明明写着 `[0,…,0,83,…,166]`）⇒ 改成**等到第一块真的到了**再读。
+     *    ⚠️ 判据一个字都没放松：仍然要求 `0 < received < total`，而桩在首块之后还压着
+     *    400 ms（`chunkDelayMs`）⇒ 这一读必然落在"下载中途"（一个"只在收尾推一帧"的实现
+     *    会给 `received === total` ⇒ 这一条照旧红）。上限只防"这一趟根本没在下"。
+     */
+    let mid = await invoke(MOD_CH.getState);
+    const untilFirstBytes = Date.now() + 5_000;
+    while (!(mid.progress && mid.progress.received > 0) && Date.now() < untilFirstBytes) {
+      await new Promise((r) => setTimeout(r, 10));
+      mid = await invoke(MOD_CH.getState);
+    }
     check('★ 下载中途 busy 是 true', mid.busy === true, String(mid.busy));
     check(
       '★★ 进度在**状态**里（不是只在推送里）：folderId / modid / 文件名叫得出来',
@@ -4185,7 +4216,11 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     const run = invoke(MOD_CH.updateMod, id, fx.slow.modid, `${fx.slow.modid}|1.16.1`, {
       mirrorId: fx.slow.mirrorId,
     });
-    await new Promise((r) => setTimeout(r, 80)); // 卡在桩的暂停里 ⇒ 确实"正在下载"
+    /*
+     * ★★ 等到桩上**真的**记下这个请求再取消（`waitUntil` 头顶那段写着为什么不用
+     *    `sleep 80`：负载一高它就猜空，读数长成 `请求数 19 → 19`，看起来像"取消失效"）。
+     */
+    await waitUntil(() => c2Reqs() === beforeReqs + 1);
     /*
      * ★★ 夹具自钉（㉘b 有 `batchRows === 2` 的 `bail`、㉘c 有"那一帧必须出现过"，
      *    ㉘ 原先只有 `chunkDelayMs 400` vs `sleep 80` 这个**没被断言**的时序前提）：
@@ -4266,7 +4301,8 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
     }
     const beforeReqs = c2Reqs();
     const run = invoke(MOD_CH.updateFolderAll, id, { mirrorId: fx.slow.mirrorId });
-    await new Promise((r) => setTimeout(r, 80));
+    /* ★★ 同 ㉘：等到第一项**真的**在飞再取消（`waitUntil` 头顶那段写着为什么不用 `sleep 80`）。 */
+    await waitUntil(() => c2Reqs() === beforeReqs + 1);
     await invoke(MOD_CH.cancelDownload);
     const state = await run;
     check('★★ 第二项没有**发出**请求（请求数只涨 1）', c2Reqs() === beforeReqs + 1, `请求数 ${String(beforeReqs)} → ${String(c2Reqs())}`);
@@ -4563,7 +4599,13 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
         threw = error;
       },
     );
-    await new Promise((r) => setTimeout(r, 80)); // 卡在桩的暂停里 ⇒ 确实"正在下载"
+    /*
+     * ★★ 夹具自钉 —— **等到桩上真的记下第一个请求**再取消（`waitUntil` 头顶那段写着
+     *   为什么不用 `sleep` 猜：负载一高就猜空，读数长成 `请求数 X → X`，
+     *   而那个红点长得像"取消失效"）。判据是**确定**的：桩在响应体写完之前就记请求，
+     *   而 `chunkDelayMs = 400` ⇒ 计数一涨就点取消，落点必然在"下载中途"。
+     */
+    await waitUntil(() => packReqs() === beforeReqs + 1);
     check(
       '★★ 取消那一刻真的有一个请求在飞（夹具自钉：不然这一节什么都测不到）',
       packReqs() === beforeReqs + 1,
