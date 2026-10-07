@@ -4,9 +4,14 @@
  * ⚠️ 环境变量必须在任何 import 之前设好（照 `moderation.test.ts` 的样板）。
  */
 /*
- * ⚠️ 本文件有两条期望值**硬钉在 `content/mod-catalog.json` 的当前内容**上
- *    （`mcsrranked` 的生效标签、以及 `tagLabels.ranked` 的显示名）。
+ * ⚠️ 本文件有期望值**硬钉在 `content/mod-catalog.json` 的当前内容**上：
+ *    `mcsrranked` 的生效标签 `['extra','ranked']`（`ranked` 来自文件的 `manualTags`、
+ *    `extra` 来自文件的自动标签），以及"清空 DB 之后 `ranked` 消失、`extra` 还在"那一条。
  *    这是 spec §5 断言 4/4b 故意要的耦合（"文件那份手写输入仍是出厂值"必须有判据）。
+ * ⚠️ 另一条**不**属于这个耦合：`★ DB 的显示名覆盖文件里的同名键` 的期望值来自它自己
+ *    写进 DB 的值，不读文件那个键（少并/多并文件的 `tagLabels.ranked` 都不改它的真假）。
+ *    ⚠️ 但文件里的 `tagLabels.ranked` 仍然承重：合并**之前**跑的那道严格校验要求
+ *    "每个用到的标签都有显示名" ⇒ 真把它从文件里删掉，本文件多数断言会因为 500 而红。
  *    ⇒ 红的时候先现读那两份东西，再判断是**数据变了**还是**代码坏了**：
  *      node -e "const c=require('./content/mod-catalog.json');console.log(c.manualTags, c.mods.find(m=>m.modid==='mcsrranked').tags, c.tagLabels.ranked)"
  *      node -e "const o=require('./content/mod-overrides.json');console.log(o.tags)"
