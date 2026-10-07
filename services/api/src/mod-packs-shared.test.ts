@@ -143,7 +143,7 @@ describe('★ B2 纯判断：packPlanFor / packDownloadableIn', () => {
     assert.equal(packDownloadableIn(args), packPlanFor(args).items.length);
   });
 
-  it('⑧ 目录里没有这个 modid ⇒ 原因是 not-in-catalog（与 no-release 是两种不同的原因）', () => {
+  it('⑦ 目录里没有这个 modid ⇒ 原因是 not-in-catalog（与 no-release 是两种不同的原因）', () => {
     const index = indexOf({
       mods: ['ok'],
       releases: [{ modid: 'ok', version: '1.0', url: 'https://x/ok.jar' }],
@@ -161,7 +161,7 @@ describe('★ B2 纯判断：packPlanFor / packDownloadableIn', () => {
     );
   });
 
-  it('⑦ packInputSchema：modids 去重、空数组/65 个/空标题/超长各自不通过', () => {
+  it('⑧ packInputSchema：modids 去重、边界（恰好 64/80/400）**通过**，空数组/65 个/空标题/超长各自不通过', () => {
     const ok = packInputSchema.safeParse({
       title: '平衡包',
       description: '',
