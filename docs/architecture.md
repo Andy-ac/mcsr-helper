@@ -60,7 +60,7 @@ mcsr-helper/
 |---|---|---|---|
 | `apps/web` | `@mcsr/web` | 全部界面。`src/routes/` 是路由页，`src/components/` 是组件，`src/lib/api.ts` 是同源 API 客户端，`src/lib/rankedDirect.ts` 是**浏览器直连上游**那一层（见 §3.3）。字体自托管，不引外链 | `@mcsr/shared`、`@mcsr/ui` |
 | `apps/desktop` | `@mcsr/desktop` | Electron 主进程、preload、`electron-updater` 自动更新、NSIS 安装包 | `@mcsr/shared` |
-| `services/api` | `@mcsr/api` | HTTP API（`src/routes/` 16 个路由模块）+ 数据层（`src/db/`，含迁移）+ 采集适配器（`src/tracking/`）+ 鉴权（`src/auth/`）+ 发信（`src/email/`）+ 5 个 CLI 入口（`admin-cli.ts` / `import.ts` / `track.ts` / `ranked-streams.ts` / `live-status.ts`） | `@mcsr/shared` |
+| `services/api` | `@mcsr/api` | HTTP API（`src/routes/` **19** 个路由模块 —— 2026-10-07 现数：`(Get-ChildItem services/api/src/routes/*.ts).Count`）+ 数据层（`src/db/`，含迁移）+ 采集适配器（`src/tracking/`）+ 鉴权（`src/auth/`）+ 发信（`src/email/`）+ 5 个 CLI 入口（`admin-cli.ts` / `import.ts` / `track.ts` / `ranked-streams.ts` / `live-status.ts`） | `@mcsr/shared` |
 | `packages/shared` | `@mcsr/shared` | 前后端**共享的那份契约**：类型、常量、zod schema、`i18n/zh-CN.ts` 与 `i18n/en.ts`、权限矩阵（`src/permissions.ts`）、Ranked 与种子的纯逻辑。**以 TypeScript 源码形式被引用**（靠 `exports` 暴露子路径），所以**没有构建步骤** | 只有 `zod` |
 | `packages/ui` | `@mcsr/ui` | 两个共享组件 + barrel | `@mcsr/shared` |
 
@@ -107,7 +107,11 @@ Hono 应用，`src/index.ts` 里挂全局中间件链，顺序是：
 5. **`sameOriginOnly`（CSRF 第二层）**：只对会改状态的方法生效；带了 `Origin` 就必须同源
 6. **`loadUser`**：读 `mcsr_session` cookie → 查未过期会话 → 挂到上下文。**它不拦截请求**
 
-端点规模与访问模型：**共 90 个端点**（`src/routes/` 里 88 个 + `src/index.ts` 内联 2 个），
+端点规模与访问模型：**共 96 个端点** —— `src/routes/` 里 **95** 个 handler
+（口径：`Route\.(get|post|put|patch|delete)\(` 的出现次数）
++ `src/index.ts` 内联 **1** 个（口径：`app\.(get|post|put|patch|delete)\(`）。
+⚠️ **这一格的口径是 2026-10-07 现数时补写的**：原来那句「88 + 2」与上面**两个**口径都对不上
+（既有漂移，不是某一期弄脏的）⇒ 现数时把口径一并写在这里，别只换数字（换数字会掩盖"两个口径都不对"这件事）。
 其中 **34 个匿名可读、56 个要登录或要有某项能力**。能力（capability）矩阵在
 `packages/shared/src/permissions.ts`：
 
@@ -158,7 +162,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 
 一个 SQLite 文件（默认 `services/api/data/mcsr.db`，生产由 `DB_PATH` 指定）。
 **库由 API 进程在启动时创建并迁移**：`src/db/index.ts` 调 `src/db/migrate.ts`，
-迁移脚本在 `src/db/migrations/`（编号递增，目前到 `023_*`），已跑的记录写在 `_migrations` 表里。
+迁移脚本在 `src/db/migrations/`（编号递增，目前到 `024_*` —— 2026-10-07 现数：`services/api/src/db/migrations/*.ts` 共 **24** 个），已跑的记录写在 `_migrations` 表里。
 ⇒ **"重启 API"就等于"应用迁移"**，部署脚本不需要单独跑迁移。
 
 19 张表，按职责分五组：
@@ -304,7 +308,7 @@ CSP 与这个决定是同一个决定的两次表达：`deploy/Caddyfile` 的 `c
 | `UPLOAD_DIR` | 上传图片根目录 | 默认 `./data/uploads`；**必须**落在单元的 `ReadWritePaths` 之内，否则写不进去 |
 | `MCSR_RELEASES_DIR` | 读 `latest.yml` 的位置 | 没有它 ⇒ `/api/desktop/release` 404，首页不显示下载入口（这是正常状态，不是错误） |
 | `MCSR_CONTENT_DIR` | 内容文件目录：`file-catalog.json`（桌面端「本地文件」那一栏的条目来源）与 `mod-catalog.json`（`GET /api/mod-catalog` 的条目来源）**两份都从它下面读** | 默认 `/srv/mcsr-helper/content`；**只在本地开发/测试时**指到别处（`file-catalog.test.ts` / `mod-catalog.test.ts` 就是靠它造坏目录）。对应那份文件不在 / 内容不合法 ⇒ 那条端点 **500**（不是空目录 —— 空目录的表现是"界面上什么都没有"，没人会去查原因） |
-| `content/mod-catalog.json` | mc.sr 的 mod 目录（`GET /api/mod-catalog` 的条目来源） | schema 2 / 70 个 mod / 555 条 release；**由 `services/api/scripts/build-mod-catalog.mjs` 从 `content/upstream/` 的快照 + `content/mod-overrides.json` 生成**，手改它之后跑 `pnpm -F @mcsr/api catalog:check` 会判红，而**「目录漂了」这件事门禁会抓**：`pnpm -w check` 里跑着 `services/api/src/mod-catalog-build.test.ts` 那条**等价**断言 —— 用同一份已提交快照 + `content/mod-overrides.json` 就地重建、再与仓库里这份**逐字节**比较（⚠️ 等价、但不是同一条：`catalog:check` 那个 CLI **没有**被门禁调用，仓库也没有 CI ⇒ CLI 仍然得手动跑，只是它不再是唯一会红的判据）；文件不在 / 内容不合法 ⇒ **500**（不是空目录）。⚠️ 仓库里这一份与 `content/upstream/` 被 `biome.json` 的 `files.includes` **排除在格式化之外**（`!**/mod-catalog.json`、`!**/upstream`）：它们是**机器产物 / 上游快照，字节由来源决定**（生成物要能重新生成后逐字节相等，快照要能逐字节等于上游响应），所以格式化检查对它们不成立；手写的那几份（`content/resources.json`、`content/file-catalog.json`、`content/mod-overrides.json`）**仍然被检查** |
+| `content/mod-catalog.json` | mc.sr 的 mod 目录（`GET /api/mod-catalog` 的条目来源） | schema 2 / **71** 个 mod / 555 条 release（2026-10-07 现数：`mods.length` / `releases.length`；⚠️ 这个 **70→71** 是**既有漂移**，不是 B1 弄脏的 —— B1 不加 mod）；**由 `services/api/scripts/build-mod-catalog.mjs` 从 `content/upstream/` 的快照 + `content/mod-overrides.json` 生成**，手改它之后跑 `pnpm -F @mcsr/api catalog:check` 会判红，而**「目录漂了」这件事门禁会抓**：`pnpm -w check` 里跑着 `services/api/src/mod-catalog-build.test.ts` 那条**等价**断言 —— 用同一份已提交快照 + `content/mod-overrides.json` 就地重建、再与仓库里这份**逐字节**比较（⚠️ 等价、但不是同一条：`catalog:check` 那个 CLI **没有**被门禁调用，仓库也没有 CI ⇒ CLI 仍然得手动跑，只是它不再是唯一会红的判据）；文件不在 / 内容不合法 ⇒ **500**（不是空目录）。⚠️ 仓库里这一份与 `content/upstream/` 被 `biome.json` 的 `files.includes` **排除在格式化之外**（`!**/mod-catalog.json`、`!**/upstream`）：它们是**机器产物 / 上游快照，字节由来源决定**（生成物要能重新生成后逐字节相等，快照要能逐字节等于上游响应），所以格式化检查对它们不成立；手写的那几份（`content/resources.json`、`content/file-catalog.json`、`content/mod-overrides.json`）**仍然被检查** |
 | `MCSR_PUBLIC_ORIGIN` | 邮件里验证/重置链接的绝对前缀 | 错了 ⇒ 链接指向错误的主机；而 cookie 是 host-only，用户会"看起来没登录" |
 | `MCSR_MAIL_DRIVER` | `resend` / `file` / `console` | **默认 `console`**：邮件只打进 journald。见第 8 节第 1 条 |
 | `MCSR_MAIL_FROM` / `MCSR_MAIL_FROM_NAME` / `MCSR_MAIL_DIR` | 发信人地址/显示名/`file` 驱动的输出目录 | 用 `resend` 而 `MCSR_MAIL_FROM` 未设 ⇒ 启动时告警，且 `@localhost` 发信人会被拒或进垃圾箱 |
