@@ -37,6 +37,14 @@
  * 而"哪几个文件夹是展开的"是用户此刻的选择（spec §5.2：**不进持久化状态**）。
  * 「显示全部已绑定的文件夹」同理：它只是一次点击的产物。
  */
+/*
+ * ★ B2 / Task 6：网页这一侧**自己**建目录索引。
+ * ⚠️★ 桌面端那条路用的是 `catalogIndexOf()`（`apps/desktop/src/mod-folder-catalog.ts`），
+ *    而**网页里没有那个函数**（它住在主进程）⇒ 这一层必须 `buildIndex(catalog)` 建一份。
+ *    代价与理由写在 spec §15；判据（"页面与主进程读同一个 `packDownloadableIn`"）不变。
+ * ⚠️ 走子路径 `@mcsr/shared/modCatalog`（与 `lib/api.ts` 的 `fetchModCatalog` 同一处 alias）。
+ */
+import { buildIndex } from '@mcsr/shared/modCatalog';
 import {
   type Channel,
   groupFoldersByVersion,
@@ -53,8 +61,11 @@ import {
   type PageProgress,
   reasonOf,
 } from '@/components/ModFoldersData';
+import { ModPacksSection } from '@/components/ModPacksSection';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
+import { fetchModCatalog, fetchModPacks, type ModPackWire } from '@/lib/api';
+import { useReview } from '@/lib/useReview';
 
 /**
  * 这一页能发的**全部**动作（页面把它翻成 `ModFoldersHandlers` 上的某一条通道）。
@@ -125,6 +136,24 @@ export type ModPageAction =
     }
   | { kind: 'set-catalog-version'; version: string }
   /*
+   * ★ B2 / Task 6：把**整合包**里的 mod 逐个装进这个文件夹（主进程 `downloadPack`）。
+   *
+   * ⚠️★ 为什么 `kind` 是**新的**、不复用 `'download-mod'`：两者是**两条不同的写盘路径**
+   *    （`downloadMissing` 收一个 modid、`downloadPack` 收一个包 id 并由主进程自己去取
+   *    包的定义 —— 见 spec D5），闸也不同（前者看"这个 modid 在不在目录里"，
+   *    后者还要看"这个文件夹的游戏版本与包的游戏版本是否一致"）。
+   * ⚠️ 三个入参**全是 id / 字符串**：包的内容以**服务端**为准（主进程按 `packId` 自己取），
+   *    渲染进程**递不进** mod 列表、路径或 URL。
+   * ⚠️ 这一格的接线在 `routes/Files.tsx` 的 `makeModPageAction` 里（那个 `never` 守卫
+   *    会逼着加）。
+   */
+  | {
+      kind: 'download-pack';
+      packId: string;
+      gameVersion: string;
+      folderId: string;
+    }
+  /*
    * ★ C 的 T5：停掉正在跑的那一趟下载（spec §4 / D4）。
    *
    * ⚠️★ **一个成员、没有入参** —— 作用范围就是"当前这一趟"（哪一趟由主进程那一格说了算，
@@ -165,6 +194,20 @@ export interface ModDownloadPanelProps {
    *    "什么时候一条都不画"由 `progressOf` 判（**一处**）。
    */
   progress: PageProgress | null;
+  /**
+   * ★ B2 / Task 6：这个版本的整合包清单（`GET /api/modpacks?gameVersion=`）。
+   *
+   * ⚠️★ **可选**，而且只有**一个**含义（理由与 `state` / `onAction` 那两格同一条，
+   *    但方向相反）：`undefined` = "取数由这一层自己做"（产品里就是这样，见下面
+   *    `useReview` 那两行），数组 = "已经有读数了"（**空数组就是"真的没有"** ——
+   *    那一档画空态 `data-pack-empty="yes"`）。
+   * ⚠️★ 为什么取数住在**这一层**而不是 `routes/Files.tsx` 的容器里：本任务的
+   *    **文件边界**只有三个路径（`lib/api.ts` / 本文件 / 两本 i18n）⇒ 页面那一层
+   *    递不进东西来。⚠️ 代价（认，如实记在 `task-6-report.md` 里）：一个**纯展示**的
+   *    组件自此多了一次取数 —— 渲染自检那条"这一层不跑 effect"的性质因此只在
+   *    **传了 `packs` 时**成立（T8 就是这么渲染它的）。
+   */
+  packs?: readonly ModPackWire[];
 }
 
 export function ModDownloadPanel({
@@ -172,6 +215,7 @@ export function ModDownloadPanel({
   onAction,
   actionError = null,
   progress,
+  packs,
 }: ModDownloadPanelProps) {
   const { t } = useTranslation();
   /** 展开态（文件夹 id）—— 界面状态，喂给投影、不进持久化（spec §5.2）。 */
@@ -180,6 +224,32 @@ export function ModDownloadPanel({
   const [showAll, setShowAll] = useState(false);
   /** 上面 `run()` 接住的那句原话（与 `actionError` 共用一个渲染点）。 */
   const [localError, setLocalError] = useState<string | null>(null);
+  /**
+   * ★ B2：**此刻选中的那一条包**（顶部小卡与下面那一行看的是同一个值）。
+   * ⚠️ 它是**界面态**、不进持久化（与 `expanded` / `showAll` 同一条，spec §5.2）。
+   */
+  const [selectedPackId, setSelectedPackId] = useState<string | null>(null);
+
+  /**
+   * ★ B2：整合包清单。⚠️ `packs` 由外面喂了就用它（自检/将来上提到容器）；
+   * 没喂才自己取 —— 判据是 `undefined`（**不是** `packs.length === 0`：那会把
+   * "真的没有"也变成一次多余的请求）。
+   * ⚠️ 依赖是 `[state.gameVersion]`：换版本必须重取（包是按版本问的）。
+   */
+  const fetchedPacks = useReview((signal) => fetchModPacks(state.gameVersion, signal), [
+    state.gameVersion,
+  ]);
+  /**
+   * ★ B2：目录（约 425 KB、带 ETag）——**只为建一次索引**。
+   * ⚠️★ 它与 `packs` 是**两条独立**的取数：一条失败不该让另一条不画
+   *    （索引拿不到时"可下 N 项"会算成 0 ⇒ 按钮禁用 + 一句说明，是**可见**的降级，
+   *    不是静默的坏）。
+   * ⚠️ 依赖写 `[]`：目录在这一次会话里只取一次（`buildIndex` 的展开是
+   *    O(release × 游戏版本)，每次渲染重建是 O(n)，spec §15）。
+   */
+  const catalog = useReview((signal) => fetchModCatalog(signal), []);
+  const catalogIndex = catalog.state.status === 'ok' ? buildIndex(catalog.state.data) : null;
+  const packList = packs ?? (fetchedPacks.state.status === 'ok' ? fetchedPacks.state.data.items : null);
 
   /*
    * ★★ 投影**只有一处**：这一版要画什么全由 `planVersionPage()` 算好（T1），
@@ -279,6 +349,26 @@ export function ModDownloadPanel({
         >
           {t('files.allBoundFolders')}
         </button>
+        {/*
+          ★★ B2（Task 6）：热门整合包的**小卡**（spec D8）—— 这一区的**第三个孩子**。
+          ⚠️★ 上面那两个控件**一个字节都没动**（结构与类名都是既有的）：版本下拉受控于
+          主进程 `prefs`、"显示全部"有自己的语义，动它们的等价物会静默改掉既有行为。
+          ⚠️ 取数还没回来（`packList === null`）时**一个孩子都不加**：那与"这个版本
+          没有热门包"是两件事，而小卡这一格只画"有的"（空的那一支不需要占位）。
+        */}
+        {packList === null || catalogIndex === null ? null : (
+          <ModPacksSection
+            chipsOnly
+            packs={packList}
+            catalogIndex={catalogIndex}
+            folders={page.folders}
+            selectedPackId={selectedPackId}
+            onSelectPack={setSelectedPackId}
+            onAction={run}
+            progress={progress}
+            busy={state.busy}
+          />
+        )}
       </div>
 
       {/*
@@ -342,6 +432,31 @@ export function ModDownloadPanel({
         onAction={run}
         progress={progress}
       />
+
+      {/*
+        ★★ B2（Task 6）：「整合包」一节（spec D8）—— 在第三段**之下**。
+        ⚠️★ 必须在**同一条滚动轴上**（它就是这个 `<section>` 的孩子、排在
+        `VersionModList` 后面）：否则上面那颗小卡的"滚到那一行"没有意义
+        （滚到一个不可见的地方 = 点了没反应）。
+        ⚠️★ 空态分两支：`packList === null`（取数还没回来 / 取数失败）⇒ **一个字都不画**
+        ——"还没加载"与"这个版本没有整合包"必须分得开（Ruling 65 的同一条纪律）；
+        空数组 ⇒ 走 `ModPacksSection` 的空态（`data-pack-empty="yes"`）。
+        ⚠️ 索引（`catalogIndex`）拿不到时也走"不画"那一支：这一节的核心读数
+        （"可下 N 项"）离了它算不出来，而画一颗恒禁用的按钮就是**在撒谎**
+        （它看起来像"这一包没东西可下"）。
+      */}
+      {packList === null || catalogIndex === null ? null : (
+        <ModPacksSection
+          packs={packList}
+          catalogIndex={catalogIndex}
+          folders={page.folders}
+          selectedPackId={selectedPackId}
+          onSelectPack={setSelectedPackId}
+          onAction={run}
+          progress={progress}
+          busy={state.busy}
+        />
+      )}
     </section>
   );
 }

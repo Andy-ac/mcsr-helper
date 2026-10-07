@@ -196,6 +196,15 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);
         break;
+      case 'download-pack':
+        /*
+         * ★ B2 / Task 6：整包下载。⚠️ 通道固定 `'origin'`（与 `download-mod` 同一条
+         *   纪律与同一个代价：这一节只发 release 自己的地址，不读 `state.bulkChannel`）。
+         * ⚠️ 三个入参逐格原样转过去：`gameVersion` 是包自己的那一版（主进程拿它跟目标
+         *   文件夹的有效版本对一遍 —— 不一致会往一个别的游戏版本的目录里装 jar）。
+         */
+        await handlers.downloadPack(action.packId, action.gameVersion, action.folderId, 'origin');
+        break;
       case 'cancel-download':
         /*
          * ★ C 的 T5：停掉正在跑的那一趟。⚠️ 没有入参 —— 作用范围是"当前这一趟"

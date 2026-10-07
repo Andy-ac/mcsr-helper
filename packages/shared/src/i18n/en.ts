@@ -4878,5 +4878,34 @@ export const en: TranslationSchema = {
     progressCancelBlocked: 'Writing - please wait…',
     /** ★ The items the previous run had cancelled (`lastRun.cancelled`). */
     lastRunCancelled: 'Cancelled {{modid}}',
+    /*
+     * ===================================================================
+     * B2 (mod packs) - Task 6: the two places on `/files` (top chip + "Mod packs")
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2) or
+     * down-triangle (U+25BE) in these values (neither is in the self-hosted pixel subsets).
+     * ⚠️★ The two counted entries (`packsTitle` / `packsModCount`) must carry the **same**
+     * placeholder set in both dictionaries (`i18n-keys.test.ts` bites otherwise).
+     */
+    /** ★ The section title (`{{count}}` = how many packs this version has). */
+    packsTitle: 'Mod packs ({{count}})',
+    /** ★ How many modids one pack holds (**the number the server computed**, not one counted here). */
+    packsModCount: '{{count}} mods',
+    /*
+     * ★★ The "download the whole pack" button.
+     * ⚠️ It means "install the ones this folder does not have yet, one by one" (the ones
+     * already there are skipped by the main process and land in `lastRun.skipped`) - the
+     * wording does not promise a full re-install.
+     */
+    packsDownload: 'Download pack',
+    /** ★ The **empty state** for "this version has no pack at all" (vs "not loaded yet", which draws nothing). */
+    packsEmpty: 'This version has no mod packs yet.',
+    /** ★ Nothing to download for this pack (every item is already in that folder) - shown by the disabled button. */
+    packsNothingToDo: 'Every mod in this pack is already in this folder.',
+    /** ★ No folder can be a target (same rule as the section-three `noFolderForDownload`). */
+    packsNoFolder:
+      'There is no folder to download into - bind a mods folder for this version whose path still exists first.',
+    /** ★ Accessible name of the target picker (every row looks alike, so screen readers need the pack title). */
+    packsFolderLabel: 'Download "{{title}}" into',
   },
 };

@@ -1036,6 +1036,47 @@ export async function fetchModCatalog(signal?: AbortSignal): Promise<ModCatalog>
   return parsed.catalog;
 }
 
+/**
+ * ★ B2：一条整合包**下发到页面的**形状（`GET /api/modpacks` 的 `items[]`）。
+ *
+ * ⚠️★ 这里**只列页面真的要用的键**，写成"七个键一个不多"是错的：
+ *    服务端 `routes/modpacks.ts` 的 `toWire` 是 `{ ...pack, modCount }`，而 `pack` 来自
+ *    数据层那条 SELECT（`services/api/src/modpacks.ts` 的 `COLUMNS`）⇒ 响应里**还有
+ *    `createdAt` / `updatedAt`**（T3 的评审专门点名过这一条）。
+ *    把这里写成"键集合必须相等"的断言（或写 `.strict()`）会在**正确**的服务端上红。
+ *    ⇒ `request()` 不做形状校验（与全站约三十条 GET 同一条），多出来的键一律忽略。
+ */
+export interface ModPackWire {
+  id: string;
+  title: string;
+  description: string;
+  gameVersion: string;
+  modids: string[];
+  hot: boolean;
+  /**
+   * 包里 modid 的**条数**。⚠️ 它由服务端算（`pack.modids.length`），页面**不要**自己数：
+   *    那是同一件事的第二份真相（`modids` 是内容、`modCount` 是它的读数）。
+   */
+  modCount: number;
+}
+
+/**
+ * ★ B2：读某个版本的整合包清单（`GET /api/modpacks?gameVersion=`，公开读、`no-store`）。
+ *
+ * 与 `fetchModTags` 那一族逐字同形：`request()` 负责鉴权、错误分类与 abort 语义，
+ * 这一层只拼查询串。⚠️ `gameVersion` 必须 `encodeURIComponent`（版本号里有点号，
+ * 而点号在查询串里合法 —— 这一条是为将来那种带 `+` 的版本号留的同一把尺）。
+ */
+export function fetchModPacks(
+  gameVersion: string,
+  signal?: AbortSignal,
+): Promise<{ items: ModPackWire[]; total: number }> {
+  return request<{ items: ModPackWire[]; total: number }>(
+    `/api/modpacks?gameVersion=${encodeURIComponent(gameVersion)}`,
+    signal,
+  );
+}
+
 /** B1：整行替换一个 mod 的人工标签。 */
 export function putModTags(modid: string, tags: string[]): Promise<{ ok: true; tags: string[] }> {
   return sendJson('PUT', `/api/mod-tags/${encodeURIComponent(modid)}`, { tags });
