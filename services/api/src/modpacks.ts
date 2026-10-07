@@ -79,7 +79,13 @@ export function listModPacks(input: { gameVersion?: string }): ModPack[] {
             `SELECT ${COLUMNS} FROM modpacks WHERE game_version = ? ORDER BY created_at, rowid`,
           )
           .all(input.gameVersion) as unknown as Row[]);
-  /* ⚠️ `ORDER BY created_at, rowid`：同一毫秒建的包顺序不该未定义（B1 的审计那条踩过） */
+  /*
+   * ⚠️ `ORDER BY created_at, rowid`：同一毫秒建的包顺序**意图上**不该未定义（B1 的审计那条踩过）。
+   * ⚠️★ 如实记（修轮 2 在 `.cache/` 副本上实测）：这两处 `, rowid` 拿掉（两处一起、或只拿不带 `WHERE`
+   *    那处）之后，`services/api/src/modpacks.test.ts` **一条都不红** ⇒ 目前**没有任何断言咬住这个平局键**。
+   *    它是 depth-in-defense 的兜底（万一 SQLite 换了查询计划、平局顺序真的散了，它还在），
+   *    **不要**把它当成"有一把能红的刀"（上一轮正是这么写成假读数的）。
+   */
   return rows.map(toPack).filter((p): p is ModPack => p !== null);
 }
 

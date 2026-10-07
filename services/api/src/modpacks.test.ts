@@ -101,8 +101,12 @@ describe('★ B2 数据层：modpacks 表', () => {
    *    ⚠️ 上面那条（brief 给的夹具）里 `a`(NOW+1) / `b`(NOW+2) 的**标题顺序恰好与
    *       created_at 顺序一致** ⇒ 把 `ORDER BY created_at, rowid` 改成 `ORDER BY title`
    *       切进去**照样绿** —— 也就是说那条断言证明不了"顺序来自 created_at"。
-   *       本仓纪律：一条在该红时不红的断言比没有断言更坏 ⇒ 这一条是专门给那把刀准备的靶子
-   *       （读数：`order-by-title` ⇒ 本文件里红的正是这一条）。
+   *       本仓纪律：一条在该红时不红的断言比没有断言更坏 ⇒ 这一条是专门给那把刀准备的靶子。
+   *    ⚠️★ **措辞修正（修轮 2）**：上一轮这里写着"读数：`order-by-title` ⇒ 本文件里红的正是这一条"
+   *       —— **那句话不成立**：`modpacks.ts` 里**两句 SELECT 的 `ORDER BY` 是同一个顺序意图**，
+   *       那把反刀（两处一起改成 `ORDER BY title`）实测会**同时点红三条**：这一条 + 下面两条
+   *       "同一毫秒"的（`WHERE` 分支与无 `WHERE` 分支）⇒ 任何"只有这一条红"的说法都不成立。
+   *       实测读数见 `.superpowers/sdd/2026-10-07-modpacks/task-2-report.md` 的"修轮 2"一节。
    */
   it('★ 标题顺序与 created_at 顺序**相反**时，仍然按 created_at 升序（不是按标题）', () => {
     const earlier = createModPack({
@@ -132,13 +136,16 @@ describe('★ B2 数据层：modpacks 表', () => {
    * ★ `ORDER BY created_at, rowid` 里的第二个键：同一毫秒建的两个包，顺序不该未定义。
    *    它钉的是一条**可观察的性质**（同一毫秒建的两个包按建的时候的顺序读回来），值得留着。
    *
-   *    ⚠️ **但这条夹具咬不动 `rowid` 那个平局键**（如实写明，别把它说成"少了 rowid 会红"）：
-   *       它走的是 `WHERE game_version = ?` 的**索引路径**，而 `idx_modpacks_game_version`
-   *       是 `(game_version, created_at)` ⇒ 索引键尾就是 rowid ⇒ 把 `, rowid` 拿掉之后
-   *       顺序**照样**是插入序。读数：`order-by-created-only`（两条 SELECT 一起拿掉 `, rowid`）
-   *       ⇒ 这一条**仍然绿**；真正会红的是下面那条走**无 WHERE 分支**的用例。
-   *    ⚠️ 所以本文件里"平局键"这件事的靶子是**下一条**，不是这一条 —— 两条一起留着，
-   *       是因为它们钉的分支不同（一条 WHERE、一条无 WHERE，见 `modpacks.ts` 里那两句 SELECT）。
+   *    ⚠️★ **如实写（修轮 2 实测）：这个平局键 `rowid` 在现有一切夹具下都不可观测。**
+   *       把 `, rowid` 拿掉 —— 只拿无 `WHERE` 那句（`order-by-created-only-nowhere`）、
+   *       或两句一起拿（`order-by-created-only`）—— 本文件**都是一条都不红**（`fail 0` / `EXIT 0`）：
+   *       这一条走的是 `WHERE game_version = ?` 的**索引路径**，而 `idx_modpacks_game_version`
+   *       是 `(game_version, created_at)` ⇒ 索引键尾就是 rowid ⇒ 顺序照样是插入序。
+   *    ⇒ **所以 `modpacks.ts` 里那两处 `, rowid` 是"没被任何断言咬住的兜底"**
+   *       （depth-in-defense：万一 SQLite 换了查询计划、平局顺序真的散了，它还在），
+   *       **不要**把它写成"有一把能红的刀" —— 那正是修轮 2 要修的假读数。
+   *    ⚠️ 这一条与下面那条钉的是**两个分支**（一条带 `WHERE`、一条不带，见 `modpacks.ts` 里
+   *       那两句 SELECT）⇒ 两条一起留着是因为**分支不同**，不是因为哪一条能咬住 `rowid`。
    */
   it('★ 同一毫秒建的两个包：顺序就是**建的时候的顺序**（`created_at, rowid`）', () => {
     const first = createModPack({
@@ -166,12 +173,13 @@ describe('★ B2 数据层：modpacks 表', () => {
 
   /*
    * ★ 同一毫秒 + **不带 `WHERE`** 的那条分支（`listModPacks({})`，`modpacks.ts` 里第一句 SELECT）。
-   *    这是本文件里**唯一真的能咬住平局键 `rowid`** 的靶子：不带 `WHERE` 时
-   *    `idx_modpacks_game_version`（`(game_version, created_at)`）的**前缀对不上** ⇒ 用不上它，
-   *    SQLite 只能排一棵临时 B 树 ⇒ 拿掉 `, rowid` 之后平局顺序就不再是插入序。
-   *    读数：`order-by-created-only-nowhere`（只把无 WHERE 那句的 `, rowid` 拿掉）⇒ 只有这一条红。
+   *    ⚠️★ **修轮 2 修正（这里原来是假的）**：上一轮这段写着"这是本文件里**唯一真的能咬住平局键
+   *       `rowid`** 的靶子……读数：`order-by-created-only-nowhere`（只把无 WHERE 那句的 `, rowid`
+   *       拿掉）⇒ 只有这一条红" —— 与提交逐字节相同的副本上实测：**一条都不红**（`fail 0` /
+   *       `EXIT 0`）；两句一起拿掉也**一条都不红**。⇒ 那句读数是没跑过就写下的。
+   *    ⇒ 这条用例钉的是"这条分支**也**按插入序读回来"这个可观察性质；它**咬不动** `rowid`。
    *    ⚠️ 标题故意与插入顺序**反着给**（先插 `zzz`、后插 `aaa`）：万一平局顺序是"按标题"，
-   *       这一条也会红。
+   *       这一条也会红（`order-by-title` 那把反刀确实会点红它，与上面两条一起）。
    */
   it('★ 同一毫秒 + 不带 `gameVersion` 时（无 WHERE 那条分支）：顺序仍是**建的时候的顺序**', () => {
     const first = createModPack({
@@ -259,6 +267,45 @@ describe('★ B2 数据层：modpacks 表', () => {
     assert.ok(
       warnings.some((line) => line.includes('modids') && line.includes('not-array')),
       `坏掉的那一格必须留一行日志（否则"哪个包坏了"就没有现场了）；截到的日志：${JSON.stringify(warnings)}`,
+    );
+  });
+
+  /*
+   * ★★ **② 那一支（成员级过滤）的靶子** —— 到上一轮为止，`modpacks.ts` 文件头用的那个例子
+   *    （`["ok", 1, null, ""]` ⇒ `["ok"]`）在**本文件里一条断言都没有**（先例文件有：
+   *    `mod-tags.test.ts` 的 `insert.run('partly-bad', '["ok",1,null,""]', …)` 那条，逐字同形）。
+   *    它钉的是与 ① **相反**的处置：**那条仍然在**，只是 `modids` 短了。
+   *    为什么必须有：把 `parseModids` 里的 `filter` 拿掉（`parsed as string[]`）行不少一条；
+   *    照文件头"有杂质就整条丢掉"改成 `return null` 也一样 —— 两种错都没有别的靶子。
+   *    读数（副本上实测）：`drop-member-filter` 那一刀 ⇒ 红的**正是这一条**。
+   */
+  it('★ 合法 JSON 且是数组、但成员有杂质（`["ok",1,null,""]`）⇒ **这条仍在**，只是 modids 短了', () => {
+    getDb()
+      .prepare(
+        'INSERT INTO modpacks (id, title, description, game_version, modids, hot, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?)',
+      )
+      .run('partly-bad', 'x', '', '1.16.1', '["ok",1,null,""]', NOW, NOW);
+
+    const pack = readModPack('partly-bad');
+    assert.notEqual(
+      pack,
+      null,
+      '成员不合格 ≠ 这一格坏了：这条**仍然存在**（两种坏的处置有意不同，见 `modpacks.ts` 文件头 ②）',
+    );
+    assert.deepEqual(
+      pack?.modids,
+      ['ok'],
+      '非字符串 / 空串成员被静默丢掉，可读的照用（不是整条丢掉、也不是原样带杂质读出来）',
+    );
+    assert.equal(
+      listModPacks({}).some((p) => p.id === 'partly-bad'),
+      true,
+      '它仍然出现在列表里（`modids` 短了，不是整条没了）',
+    );
+    assert.deepEqual(
+      listModPacks({ gameVersion: '1.16.1' }).find((p) => p.id === 'partly-bad')?.modids,
+      ['ok'],
+      '带 `WHERE` 的那条分支同一处置',
     );
   });
 
@@ -367,6 +414,53 @@ describe('★ B2 数据层：modpacks 表', () => {
       (db.prepare('SELECT count(*) AS n FROM modpacks').get() as unknown as { n: number }).n,
       0,
       '上面两条插入都被拒了 ⇒ 库里必须一行都没有（"抛了"不等于"没写进去"）',
+    );
+  });
+
+  /*
+   * ★ 迁移 025 的**外键动作**（修轮 2 补）—— 上面那次失败的插入只证明了"外键**在**"
+   *    （`created_by` 指向一个不存在的用户会被拒），证明不了**删用户时怎么处置**。
+   *    `ON DELETE SET NULL` 是这一列的**另一半语义**：删掉一个人不该把包一起删掉（与 024 同形状）。
+   *    ⚠️ 少了它 ⇒ 外键动作退回默认的 `NO ACTION` ⇒ 删用户会被外键拒/报错，而"外键在不在"
+   *       那条断言**照样绿**（包还在、只是人删不掉）。
+   *    读数（副本上实测）：`fk-no-action` 那一刀（迁移里改成 `REFERENCES users (id)`）⇒ 这一条红。
+   */
+  it('★ 迁移 025：`created_by` 的外键动作是 `ON DELETE SET NULL`（删用户不删包）', () => {
+    const fks = getDb().prepare('PRAGMA foreign_key_list(modpacks)').all() as unknown as {
+      table: string;
+      from: string;
+      to: string;
+      on_delete: string;
+    }[];
+    const fk = fks.find((row) => row.from === 'created_by');
+    assert.deepEqual(
+      fk === undefined ? null : { table: fk.table, to: fk.to, on_delete: fk.on_delete },
+      { table: 'users', to: 'id', on_delete: 'SET NULL' },
+      '`created_by` 必须指向 `users(id)` **并且**是 `ON DELETE SET NULL`（`PRAGMA foreign_key_list` 现读）',
+    );
+  });
+
+  /*
+   * ★ 索引的**列与顺序**（修轮 2 补）—— 上面只数了"索引在不在"（`sqlite_master` 里查得到名字），
+   *    列换了、顺序反了它照样绿。而顺序**就是判据**：`listModPacks({gameVersion})` 是
+   *    `WHERE game_version = ? ORDER BY created_at` ⇒ 前导列必须是 `game_version`，
+   *    否则这个索引对那条查询**一点用都没有**（名字还在、查询退化成全表扫 + 排序）。
+   *    读数（副本上实测）：`index-cols-flipped` 那一刀（改成 `(created_at, game_version)`）⇒ 这一条红。
+   */
+  it('★ 迁移 025：索引的列与顺序是 `(game_version, created_at)`', () => {
+    const rows = getDb()
+      .prepare('PRAGMA index_info(idx_modpacks_game_version)')
+      .all() as unknown as {
+      seqno: number;
+      name: string;
+    }[];
+    assert.deepEqual(
+      rows
+        .slice()
+        .sort((a, b) => a.seqno - b.seqno)
+        .map((row) => row.name),
+      ['game_version', 'created_at'],
+      '索引列顺序必须与 `listModPacks({gameVersion})` 的 `WHERE` + `ORDER BY` 对得上',
     );
   });
 });
