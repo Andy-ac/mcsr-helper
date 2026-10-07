@@ -522,6 +522,11 @@ export const zhCN = {
      *    现在有守卫盯着（`check:roleguide` 的 `capabilityLabelKeys` 那一条）。
      */
     capTypeShare: '分享',
+    /*
+     * ★ `catalog.*`（B1：mod 目录的标签）的类型那一半 —— 与 `content` 同理：
+     *    它管的是"目录这份数据"上的动作，不是某一种内容。
+     */
+    capTypeCatalog: 'mod 标签',
     capActionSubmit: '提交',
     capActionEditOwn: '修改自己提交的',
     capActionEditAny: '改已上架的条目',
@@ -546,6 +551,7 @@ export const zhCN = {
     capActionRead: '查看',
     capActionManage: '维护',
     capActionAuthor: '直接编辑内容',
+    capActionEditTags: '改标签',
     /**
      * ★ 每条能力的**完整说明**（角色说明页用），与上面 `capAction*` 的短标签不是一回事。
      *
@@ -584,6 +590,13 @@ export const zhCN = {
      *    （spec 裁决 11：管理动作是单向的）。界面上先说清楚，比让人点了才吃 403 好。
      */
     capDescShareModerate: '可以下架**任何人**正在展示的一条分享（但不能替别人恢复）。',
+    /*
+     * ★ `catalog.editTags` 的完整说明。
+     * ⚠️ 这条**没有** `**` 强调，所以它**不需要**登记进
+     *    `services/api/src/i18n-keys.test.ts` 的 `DYNAMIC_KEYS`
+     *    （那张白名单只管带 `**` 的词条；上面那条 `capDescShareModerate` 才要）。
+     */
+    capDescCatalogEditTags: '改 mod 的标签（自动标签来自上游，改不动；人工标签可以增删）。',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误

@@ -521,6 +521,11 @@ export const en: TranslationSchema = {
      *    asserts every CAPABILITIES entry has both keys.
      */
     capTypeShare: 'Sharing',
+    /*
+     * ★ The type half of `catalog.*` (B1: mod catalog tags) — same reasoning as
+     *    `content` above: it is an action on the catalog data, not a content type.
+     */
+    capTypeCatalog: 'mod tags',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
@@ -545,6 +550,7 @@ export const en: TranslationSchema = {
     capActionRead: 'View',
     capActionManage: 'Maintain',
     capActionAuthor: 'Edit content directly',
+    capActionEditTags: 'edit tags',
     /**
      * ★ Full description per capability (used by the role guide), as opposed to
      * the short `capAction*` labels above.
@@ -585,6 +591,14 @@ export const en: TranslationSchema = {
      */
     capDescShareModerate:
       'Take down **anyone**’s share that is on the board (but not put someone else’s back).',
+    /*
+     * ★ The full description for `catalog.editTags`.
+     * ⚠️ It carries **no** `**` emphasis, so it does **not** need a `DYNAMIC_KEYS`
+     *    entry in `services/api/src/i18n-keys.test.ts` (that whitelist only covers
+     *    marked keys — `capDescShareModerate` above is the one that needed it).
+     */
+    capDescCatalogEditTags:
+      'Edit a mod\u2019s tags (automatic tags come from upstream and cannot be removed; manual tags can be added or removed).',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors

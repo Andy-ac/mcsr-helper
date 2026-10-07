@@ -123,6 +123,20 @@ export const CAPABILITIES = [
    */
   'share.moderate',
 
+  // ---- mod 目录（B1）----
+  /**
+   * 改某个 mod 的**人工标签层**、新增标签、改标签显示名、删掉没人用的标签。
+   *
+   * ⚠️ 它只动"人工那一层"：生效标签 = 自动标签（上游 mc.sr 的 `list` / `traits` / `obsolete`）
+   *    ∪ 人工层 ⇒ 拿到这个能力的人**删不掉** `legal` / `extra` / `obsolete` 这类上游标签
+   *    （那是"上游说它是什么"，不是"我们想说它是什么"）。
+   * ⚠️ 给 reviewer 及以上（见 `REVIEWER_CAPS`）：这是内容编辑的活，与审核同一档。
+   * ⚠️ **不进** `REQUIRES_VERIFIED` —— 与 `resource.review` 同一条理由：
+   *    这个身份是管理员**已经核实过**才授予的，再加一道邮箱验证只会在换邮箱、
+   *    邮件投递出问题时把一个能干活的审核员挡在门外。
+   */
+  'catalog.editTags',
+
   /**
    * **直接写"线上那一行"** —— 增（新建即上架）、改（任何条目，含未上架的草稿）、
    * 删（真删）三种动作都归它。绕过审核快照，但**不绕过审计**。
@@ -250,6 +264,7 @@ const REVIEWER_CAPS: readonly Capability[] = [
   'resource.review',
   'calendar.review',
   'seed.review',
+  'catalog.editTags',
   'audit.read',
 ];
 

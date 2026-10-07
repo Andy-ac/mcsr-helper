@@ -116,6 +116,12 @@ const TYPE_KEYS: Record<string, string> = {
    *    `share`，而旁边的项都是中文。
    */
   share: 'auth.capTypeShare',
+  /*
+   * `catalog.*`（B1：mod 目录的标签）—— 与 `content` 那一行同一个道理：
+   * 它管的是"目录这份数据"上的动作，不是某一种内容。
+   * ⚠️ 不加这一行不会报错，只会让账号页把**类型**显示成英文 `catalog`。
+   */
+  catalog: 'auth.capTypeCatalog',
 };
 
 /**
@@ -160,6 +166,12 @@ const ACTION_KEYS: Record<string, string> = {
   editOwn: 'auth.capActionEditOwn',
   editAny: 'auth.capActionEditAny',
   editUnpublished: 'auth.capActionEditUnpublished',
+  /*
+   * `catalog.editTags`（B1：mod 目录的标签）—— `editTags` 是**新动作名**，
+   * 与既有的 `editOwn` / `editAny` / `editUnpublished` 都不同名
+   * ⇒ 走这张表就够了，**不用** `CAP_OVERRIDES`（那张表只处理动作名撞车）。
+   */
+  editTags: 'auth.capActionEditTags',
   review: 'auth.capActionReview',
   moderate: 'auth.capActionModerate',
   feature: 'auth.capActionFeature',

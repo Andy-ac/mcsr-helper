@@ -55,6 +55,12 @@ const CAP_DESC: Record<string, string> = {
    *    `apps/web/scripts/roleguide.tsx` 第 ⑦ 条守着。
    */
   'share.moderate': 'auth.capDescShareModerate',
+  /*
+   * ★ `catalog.editTags`（B1：mod 目录的标签）。
+   * ⚠️ 缺这一行与缺上面那一行**症状完全相同**（安静地退回短标签），
+   *    所以它同样由 `apps/web/scripts/roleguide.tsx` 第 ⑦ 条守着。
+   */
+  'catalog.editTags': 'auth.capDescCatalogEditTags',
   'user.moderate': 'auth.capDescUserModerate',
   'audit.read': 'auth.capDescAuditRead',
 };
