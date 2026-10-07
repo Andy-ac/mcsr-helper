@@ -136,12 +136,20 @@ describe('★ B2 权限：建改删要 pack.manage，热门要 pack.feature', ()
     }
   });
 
-  it('★ 设热门：reviewer 403、admin 200、owner 200（D2 那句"不复用 user.moderate"的判据）', async () => {
+  it('★ 设热门：reviewer 403、editor 403、admin 200、owner 200（D2 那句"不复用 user.moderate"的判据）', async () => {
     const admin = await makeUser('admin');
     const created = await call('POST', '/api/modpacks', { json: PACK, cookie: admin });
     const id = (created.body as { pack?: { id: string } }).pack?.id ?? '';
+    /*
+     * ⚠️★ `editor` 这一格是**必须**有的，它不是"多测一个角色"：
+     *    `pack.feature` 的陷阱正是"顺手加进 `EDITOR_CAPS`"（那一层同时喂给 editor / admin / owner）。
+     *    只测 reviewer / admin / owner 的话，把 `pack.feature` 加进 `EDITOR_CAPS` 会让**全部**断言
+     *    仍然绿：reviewer 不吃 `EDITOR_CAPS`（仍 403）、admin / owner 本来就该 200。
+     *    ⇒ 只有 editor（该 403 而 `EDITOR_CAPS` 会把它变成 200）能抓住那次改动。
+     */
     for (const [role, want] of [
       ['reviewer', 403],
+      ['editor', 403],
       ['admin', 200],
       ['owner', 200],
     ] as const) {
@@ -151,6 +159,20 @@ describe('★ B2 权限：建改删要 pack.manage，热门要 pack.feature', ()
         cookie,
       });
       assert.equal(res.status, want, `${role} 设热门`);
+    }
+    /*
+     * ★ 往返（hot 置 true 之后按 id 读回来）：只断 PATCH 的状态码证明不了"hot 真的落了盘"——
+     *   `setModPackHot` 写成空操作（或 `hot` 恒 0）时，四条状态码断言**全绿**。
+     *   而这条读端点正是**桌面主进程按 packId 取定义**要走的那条路。
+     *   （上面最后一次 200 是 owner 设的 ⇒ 库里此刻是 true。）
+     */
+    const roundTrip = await call('GET', `/api/modpacks/${id}`);
+    assert.equal(roundTrip.status, 200, '置热门之后按 id 必须读得回来');
+    const wire = roundTrip.body as { hot?: boolean; modCount?: number };
+    assert.equal(wire.hot, true, 'hot 必须读回来是 true（PATCH 回 200 而库里仍是 0 也照样绿）');
+    assert.equal(wire.modCount, PACK.modids.length, 'modCount 必须等于 modids.length');
+    for (const key of ['id', 'title', 'description', 'gameVersion', 'modids', 'hot', 'modCount']) {
+      assert.equal(key in roundTrip.body, true, `按 id 读回来的形状缺 ${key}`);
     }
   });
 
@@ -250,6 +272,46 @@ describe('★ B2 读：按版本过滤 + 保序 + hot 如实', () => {
   it('取一个不存在的包 ⇒ 404', async () => {
     assert.equal((await call('GET', '/api/modpacks/no-such-id')).status, 404);
   });
+
+  /*
+   * ★ `GET /api/modpacks/:id` 的 **200** 那一条（原来这个 describe 里只有 404）。
+   *
+   * 为什么必须有：这条端点是**桌面主进程按 packId 取包定义**要走的路
+   * （架构那一句"这个包里有哪些 mod 只有一处真相"就落在这里）——
+   * 只测 404 的话，把 handler 写成恒 `not_found`、或者 `toWire` 漏字段，
+   * 整套测试仍然全绿，而客户端拿到的是一个取不到的包。
+   */
+  it('★ 建包之后 `GET /:id` ⇒ 200 + 完整形状（桌面主进程按 packId 取定义走的就是这条）', async () => {
+    const cookie = await makeUser('admin');
+    const created = await call('POST', '/api/modpacks', { json: PACK, cookie });
+    assert.equal(created.status, 201);
+    const id = (created.body as { pack?: { id: string } }).pack?.id ?? '';
+    assert.notEqual(id, '', '建包必须回一个 id');
+
+    const res = await call('GET', `/api/modpacks/${id}`);
+    assert.equal(res.status, 200, '按 id 取定义必须回 200（不是 404）');
+    const wire = res.body as {
+      id?: string;
+      title?: string;
+      description?: string;
+      gameVersion?: string;
+      modids?: string[];
+      hot?: boolean;
+      modCount?: number;
+    };
+    assert.equal(wire.id, id);
+    assert.equal(wire.title, PACK.title);
+    assert.equal(wire.description, PACK.description);
+    assert.equal(wire.gameVersion, PACK.gameVersion);
+    assert.deepEqual(wire.modids, PACK.modids, 'modids 必须保序原样回来');
+    assert.equal(wire.hot, false, '刚建的包不是热门');
+    assert.equal(wire.modCount, PACK.modids.length);
+    /* ⚠️ 断"键在不在"而**不是**断键集合相等：实现里 `toWire` 是 `{...pack}` ⇒ 还带
+       `createdAt` / `updatedAt`（brief 那张形状表没列它们）。断相等会把一个**加法**判成红。 */
+    for (const key of ['id', 'title', 'description', 'gameVersion', 'modids', 'hot', 'modCount']) {
+      assert.equal(key in res.body, true, `按 id 读回来的形状缺 ${key}`);
+    }
+  });
 });
 
 describe('★ B2 审计：四条各一条，pack.update 只记变了的那几格', () => {
@@ -257,6 +319,23 @@ describe('★ B2 审计：四条各一条，pack.update 只记变了的那几格
     const cookie = await makeUser('admin');
     const created = await call('POST', '/api/modpacks', { json: PACK, cookie });
     const id = (created.body as { pack?: { id: string } }).pack?.id ?? '';
+    /*
+     * ★ **先断 create 那一条，再清表**（顺序是判据的一部分）。
+     *
+     * 原来这里是"建完之后先 `DELETE FROM audit_log`、再从改/删/热门三条断言"——
+     * 于是 `routes/modpacks.ts` 里 `POST /` 那条 `writeAudit({ action: 'pack.create' })`
+     * **整条删掉也全绿**，而这一节的标题写着"建/改/删/热门各一条"。
+     * ⇒ 现在按 action 过滤着现读一次：写漏 / 写错 entity_id 都会在这里红。
+     *   （`makeUser` 自己会写 register + login 两条 ⇒ 不能直接断整个表，见下面那句清理。）
+     */
+    const createdAudit = getDb()
+      .prepare(
+        "SELECT action, entity_type, entity_id FROM audit_log WHERE action = 'pack.create' ORDER BY created_at, rowid",
+      )
+      .all() as unknown as { action: string; entity_type: string; entity_id: string | null }[];
+    assert.equal(createdAudit.length, 1, '建包必须写**一条** pack.create 审计');
+    assert.equal(createdAudit[0]?.entity_type, 'modpack');
+    assert.equal(createdAudit[0]?.entity_id, id, 'pack.create 的 entity_id 必须是返回的那个 id');
     /*
      * ⚠️ `makeUser` 自己会写 `register` + `login` 两条审计 ⇒ 不清的话下面那条
      *    deepEqual 必红，而红的原因与"审计写得对不对"完全无关（假失败）。
