@@ -72,7 +72,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import type { DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
 import { en, zhCN } from '@mcsr/shared/i18n';
-import { type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
+import { buildIndex, type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
   groupFoldersByVersion,
@@ -101,6 +101,7 @@ import {
   rawKeysIn,
   reduceModFoldersLoad,
 } from '@/components/ModFoldersData';
+import { ModPacksSection } from '@/components/ModPacksSection';
 import { ToolsPanel } from '@/components/ToolsPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
@@ -3317,7 +3318,147 @@ if (LANG === 'en') {
  *    一趟的汇总行 / 写盘相位与取消）⇒ 14 → **15**、15 → **16**（现读：zh 15 组、
  *    en 16 组 —— en 比 zh 多的那一个仍然是 ㉛，别抹平）。
  */
-const expectedGroups = LANG === 'en' ? 16 : 15;
+// ---------------------------------------------------------------------------
+// ㊷ ★★ B2（整合包）：「整合包」那一节（spec 断言 14–16）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ **直接渲染 `ModPacksSection`**（不要走 `ModDownloadPanel`）：面板的取数在 effect 里，
+ * `renderToStaticMarkup` **不跑 effect** ⇒ 面板只会渲出"加载中…"，那一节**连小卡都不画**
+ * （控制器已现读确认：面板的 `catalogIndex` 恒 `null`，两道门都关着）。
+ * ⚠️ `catalogIndex` 要**传真索引**（`buildIndex(realCatalog)`）；T6 修轮把它放宽成 `ModIndex | null`，
+ * 传 `null` **不会编译错**、只会"整节不画" ⇒ 传 null 会让下面每一条都红得很怪。
+ * ⚠️ 六个 `data-*` 钩子是**冻结契约**（T6 的文件头逐字写着它）：`data-pack-chip` / `-row` /
+ * `-selected` / `-download` / `-folder` / `-empty`。
+ */
+const packsSectionIndex = buildIndex(realCatalog);
+const PACKS_SECTION_BASE = {
+  catalogIndex: packsSectionIndex,
+  folders: [] as readonly never[],
+  selectedPackId: null,
+  onSelectPack: () => {},
+  onAction: () => {},
+  progress: null,
+  busy: false,
+};
+const PACK_HOT = {
+  id: 'pack-hot',
+  title: '热门包',
+  description: 'D1',
+  gameVersion: '1.16.1',
+  modids: ['sodium'],
+  hot: true,
+  modCount: 1,
+};
+const PACK_COLD = { ...PACK_HOT, id: 'pack-cold', title: '冷门包', hot: false };
+
+{
+  const emptyHtml = keep(
+    html(React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [] })),
+  );
+  assert.ok(emptyHtml.includes('data-pack-empty="yes"'), '㊷a 没有整合包 ⇒ 那一句空态要在场');
+  assert.ok(!emptyHtml.includes('data-pack-row='), '㊷a 空态时不该有行');
+  ok('㊷a `packs: []` ⇒ `data-pack-empty="yes"`（且没有行）');
+}
+{
+  // ⚠️★ 小卡只在 `chipsOnly` 那一支里画（面板是**两个**实例：顶部的 `chipsOnly` + 整节不带）
+  const chipsTwoHtml = keep(
+    html(
+      React.createElement(ModPacksSection, {
+        ...PACKS_SECTION_BASE,
+        packs: [PACK_HOT, PACK_COLD],
+        chipsOnly: true,
+      }),
+    ),
+  );
+  assert.ok(chipsTwoHtml.includes('data-pack-chip="pack-hot"'), '㊷b 热门包要有 ★ 小卡');
+  assert.ok(
+    !chipsTwoHtml.includes('data-pack-chip="pack-cold"'),
+    '㊷b 冷门包**不该**有 ★ 小卡（小卡只挂热门）',
+  );
+  ok('㊷b ★ 小卡只挂热门包（冷门包没有小卡）');
+  const twoHtml = keep(
+    html(
+      React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [PACK_HOT, PACK_COLD] }),
+    ),
+  );
+  assert.ok(
+    twoHtml.includes('data-pack-row="pack-hot"') && twoHtml.includes('data-pack-row="pack-cold"'),
+    '㊷c 两条包各一行',
+  );
+  assert.ok(
+    twoHtml.includes('data-pack-folder="pack-hot"') &&
+      twoHtml.includes('data-pack-download="pack-hot"'),
+    '㊷c 行里要有目标文件夹下拉与下载按钮',
+  );
+  ok('㊷c 两条包各一行，且行里有 `data-pack-folder` 与 `data-pack-download`');
+  assert.ok(
+    /data-pack-chip="pack-hot"[^>]*aria-pressed="false"/.test(chipsTwoHtml) ||
+      /aria-pressed="false"[^>]*data-pack-chip="pack-hot"/.test(chipsTwoHtml),
+    '㊷d 没选中时小卡的 aria-pressed 是 false',
+  );
+  assert.ok(twoHtml.includes('data-pack-selected="no"'), '㊷d 没选中时那一行是 no');
+  ok(
+    '㊷d 未选中：小卡 `aria-pressed="false"`（顶部那一支）+ 行 `data-pack-selected="no"`（整节那一支）',
+  );
+}
+{
+  const selChipsHtml = keep(
+    html(
+      React.createElement(ModPacksSection, {
+        ...PACKS_SECTION_BASE,
+        packs: [PACK_HOT, PACK_COLD],
+        selectedPackId: 'pack-hot',
+        chipsOnly: true,
+      }),
+    ),
+  );
+  const selHtml = keep(
+    html(
+      React.createElement(ModPacksSection, {
+        ...PACKS_SECTION_BASE,
+        packs: [PACK_HOT, PACK_COLD],
+        selectedPackId: 'pack-hot',
+      }),
+    ),
+  );
+  assert.ok(/aria-pressed="true"/.test(selChipsHtml), '㊷e 选中热门包 ⇒ 小卡 aria-pressed 变 true');
+  assert.ok(
+    /data-pack-row="pack-hot"[^>]*data-pack-selected="yes"/.test(selHtml) ||
+      /data-pack-selected="yes"[^>]*data-pack-row="pack-hot"/.test(selHtml),
+    '㊷e 选中 ⇒ 那一行 data-pack-selected 变 yes',
+  );
+  ok('㊷e 选中热门包 ⇒ 小卡 `aria-pressed="true"` 与那一行 `data-pack-selected="yes"` **一起**变');
+}
+{
+  const noFolderHtml = keep(
+    html(React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [PACK_HOT] })),
+  );
+  const selectTag = /<select[^>]*data-pack-folder="pack-hot"[^>]*>/.exec(noFolderHtml)?.[0] ?? '';
+  assert.ok(
+    selectTag.includes('disabled'),
+    `㊷f 没有候选文件夹 ⇒ 下拉要 disabled（实际：${selectTag}）`,
+  );
+  const btnTag = /<button[^>]*data-pack-download="pack-hot"[^>]*>/.exec(noFolderHtml)?.[0] ?? '';
+  assert.ok(
+    btnTag.includes('disabled'),
+    `㊷f 没有候选文件夹 ⇒ 下载按钮要 disabled（实际：${btnTag}）`,
+  );
+  ok('㊷f 有包但**没有候选文件夹** ⇒ 下拉与下载按钮都 disabled（两条独立读数）');
+}
+{
+  const chipsHtml = keep(
+    html(
+      React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [], chipsOnly: true }),
+    ),
+  );
+  assert.ok(
+    !chipsHtml.includes('data-pack-empty="yes"'),
+    '㊷g `chipsOnly` 那一支**不**渲染空态（顶部那一格只画小卡）',
+  );
+  ok('㊷g `chipsOnly` 那一支不渲染空态（空态在整节里只出现一次）');
+}
+
+const expectedGroups = LANG === 'en' ? 23 : 22;
 assert.equal(
   pass,
   expectedGroups,
