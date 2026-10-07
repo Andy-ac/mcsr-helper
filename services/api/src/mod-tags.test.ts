@@ -4,7 +4,10 @@
  * ⚠️ 环境变量必须在任何 import 之前设好（照 `moderation.test.ts` 的样板）。
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { after, beforeEach, describe, it } from 'node:test';
+import { resetAll } from './auth/ratelimit';
 
 process.env.DB_PATH = ':memory:';
 process.env.NODE_ENV = 'test';
@@ -17,6 +20,17 @@ const { readTagLayer, setModTags, setTagLabel, deleteTagLabel } = await import('
 after(() => closeDb());
 beforeEach(() => {
   getDb().exec('DELETE FROM mod_tag_assignments; DELETE FROM mod_tag_labels;');
+  /*
+   * ⚠️★ 限流也要重置，否则下面写端那几条**红的原因不是被测代码**：
+   *   `POST /api/auth/register` 有"每 IP 每小时 5 次"的限流
+   *   （现读 `auth/ratelimit.ts` 的 `LIMITS.registerPerIp: { limit: 5, windowMs: HOUR }`，
+   *   由 `routes/auth.ts` 的 `hit('register|' + ip, …)` 施加）。
+   *   这个文件一共要造 **14 个用户**（`★ B1 写端：权限` 那条一次循环 4 个角色）
+   *   ⇒ 第 6 次起 register 返回 429、**用户根本没被建出来**，于是 `makeUser` 里的
+   *   `login` 拿到 401 `invalid_credentials` —— 症状长成"权限/密码不对"，
+   *   与真实原因（限流）在输出里分不开。样板与理由见 `moderation.test.ts` 的同一个 hook。
+   */
+  resetAll();
 });
 
 /*
@@ -199,5 +213,214 @@ describe('★ B1 合并：下发时把人工层并进目录', () => {
       headers: { origin: SITE.productionOrigin },
     });
     assert.equal(response.headers.get('cache-control'), 'no-store');
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * ★ 写端：三条写端点（`PUT /:modid` / `PUT /labels/:tag` / `DELETE /labels/:tag`）
+ * ---------------------------------------------------------------------- */
+
+describe('★ B1 写端：权限', () => {
+  it('user 三条都是 403；reviewer / editor / admin 都能改', async () => {
+    for (const [role, expected] of [
+      ['user', 403],
+      ['reviewer', 200],
+      ['editor', 200],
+      ['admin', 200],
+    ] as const) {
+      const cookie = await makeUser(role);
+      const res = await call('PUT', '/api/mod-tags/sodium', {
+        json: { tags: ['rsg-only'] },
+        cookie,
+      });
+      assert.equal(res.status, expected, `${role} 改标签应当是 ${String(expected)}`);
+    }
+  });
+
+  it('未登录 401，且**不带** capability 键（与 requireCapability 今天的形状一致）', async () => {
+    const res = await call('PUT', '/api/mod-tags/sodium', { json: { tags: [] } });
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error, 'unauthorized');
+    assert.equal('capability' in res.body, false);
+  });
+});
+
+describe('★ B1 写端：校验', () => {
+  it('改一个目录里没有的 modid ⇒ 404', async () => {
+    const cookie = await makeUser('reviewer');
+    const res = await call('PUT', '/api/mod-tags/no-such-mod', { json: { tags: [] }, cookie });
+    assert.equal(res.status, 404);
+  });
+
+  it('★ 存一个没有显示名的标签 ⇒ 400 且带 reason=unknown_tag（存不进去）', async () => {
+    const cookie = await makeUser('reviewer');
+    const res = await call('PUT', '/api/mod-tags/sodium', {
+      json: { tags: ['nobody-defined-this'] },
+      cookie,
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.reason, 'unknown_tag');
+    assert.deepEqual(res.body.tags, ['nobody-defined-this']);
+    assert.equal(readTagLayer().assignments.has('sodium'), false, '被拒的写不能留下痕迹');
+  });
+
+  it('33 个标签 ⇒ 400；32 个 ⇒ 200', async () => {
+    const cookie = await makeUser('reviewer');
+    setTagLabel({ tag: 'bulk', zh: '批量', en: 'Bulk', actorId: null, now: Date.now() });
+    const many = Array.from({ length: 32 }, () => 'bulk');
+    const ok32 = await call('PUT', '/api/mod-tags/sodium', { json: { tags: many }, cookie });
+    assert.equal(ok32.status, 200);
+    assert.equal((ok32.body.tags as string[]).length, 1, '重复的标签要去重');
+    const many33 = Array.from({ length: 33 }, (_, i) => `bulk-${String(i)}`);
+    const bad = await call('PUT', '/api/mod-tags/sodium', { json: { tags: many33 }, cookie });
+    assert.equal(bad.status, 400);
+  });
+
+  it('标签 key 形状不对 / 显示名为空 ⇒ 400 + issues', async () => {
+    const cookie = await makeUser('reviewer');
+    const badKey = await call('PUT', '/api/mod-tags/labels/Not_A_Key', {
+      json: { zh: '排位', en: 'Ranked' },
+      cookie,
+    });
+    assert.equal(badKey.status, 400);
+    const empty = await call('PUT', '/api/mod-tags/labels/ok-key', {
+      json: { zh: '', en: 'x' },
+      cookie,
+    });
+    assert.equal(empty.status, 400);
+    assert.ok(Array.isArray(empty.body.issues));
+  });
+
+  it('去重 + 代码单元序（存进去什么顺序，读出来是排好的）', async () => {
+    const cookie = await makeUser('reviewer');
+    setTagLabel({ tag: 'bbb', zh: '乙', en: 'B', actorId: null, now: Date.now() });
+    setTagLabel({ tag: 'aaa', zh: '甲', en: 'A', actorId: null, now: Date.now() });
+    const res = await call('PUT', '/api/mod-tags/sodium', {
+      json: { tags: ['bbb', 'aaa', 'bbb'] },
+      cookie,
+    });
+    assert.deepEqual(res.body.tags, ['aaa', 'bbb']);
+  });
+});
+
+describe('★ B1 写端：删标签那道闸', () => {
+  it('删一个没人用的 DB 标签 ⇒ 200，且真的没了', async () => {
+    const cookie = await makeUser('reviewer');
+    setTagLabel({ tag: 'lonely', zh: '孤立', en: 'Lonely', actorId: null, now: Date.now() });
+    const res = await call('DELETE', '/api/mod-tags/labels/lonely', { cookie });
+    assert.equal(res.status, 200);
+    assert.equal(readTagLayer().labels.has('lonely'), false);
+  });
+
+  it('★ 删一个还有人用的 ⇒ 409 tag_in_use，而且它**一个字都没被改**', async () => {
+    const cookie = await makeUser('reviewer');
+    setTagLabel({ tag: 'inuse', zh: '在用', en: 'In use', actorId: null, now: Date.now() });
+    setModTags({ modid: 'sodium', tags: ['inuse'], actorId: null, now: Date.now() });
+    const res = await call('DELETE', '/api/mod-tags/labels/inuse', { cookie });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, 'tag_in_use');
+    /*
+     * ⚠️ `by` 也要断言：不然那个输出字段就是**没人验的死字段**（写了、界面也没用它 ⇒
+     * 它坏了谁都不会知道）。它是"还有谁在用"的前几个 modid，值来自 `tagInUse()`。
+     */
+    assert.deepEqual(res.body.by, ['sodium']);
+    assert.deepEqual(readTagLayer().labels.get('inuse'), { zh: '在用', en: 'In use' });
+  });
+
+  it('删一个 DB 里没有的 ⇒ 404（文件里那些标签不归这条路管）', async () => {
+    const cookie = await makeUser('reviewer');
+    const res = await call('DELETE', '/api/mod-tags/labels/ranked', { cookie });
+    assert.equal(res.status, 404);
+  });
+});
+
+describe('★ B1 写端：审计', () => {
+  it('三次写入各留一条，且改名那条记了前后值', async () => {
+    const cookie = await makeUser('editor');
+    /*
+     * ⚠️★ `audit_log` 在这里**不是空的** —— `makeUser()` 自己会写两条
+     *    （现读 `routes/auth.ts`：`action: 'register'` 与 `action: 'login'`），
+     *    而这个文件的 `beforeEach` 只清那两张 mod_tag 表。
+     *    不清的话下面那条 `deepEqual(actions, …)` 必红，而红的原因与"审计写得对不对"
+     *    **完全无关**（假失败：人会因此学会无视这份输出）。
+     *    这一句是本仓的现成做法（`tracking-routes.test.ts` / `resource-tags.test.ts` /
+     *    `calendar-series-color.test.ts` 各一处 `DELETE FROM audit_log`）。
+     */
+    getDb().exec('DELETE FROM audit_log');
+    await call('PUT', '/api/mod-tags/labels/audit-tag', { json: { zh: '甲', en: 'A' }, cookie });
+    await call('PUT', '/api/mod-tags/labels/audit-tag', { json: { zh: '乙', en: 'B' }, cookie });
+    await call('PUT', '/api/mod-tags/sodium', { json: { tags: ['audit-tag'] }, cookie });
+    /*
+     * ⚠️★ 这一条**必须**有，否则最后那条 DELETE 是 409 `tag_in_use`（sodium 还在用它，
+     *    见上一节那道闸）⇒ `mod_tag_label.delete` 那一条**永远不会被写出来**，
+     *    而症状只是"少了一行"（看起来像审计漏写，其实是删除被拒了）。
+     *    "先把它从用它的 mod 上摘掉，再删"也正是界面要教用户做的那一步（D5）。
+     */
+    await call('PUT', '/api/mod-tags/sodium', { json: { tags: [] }, cookie });
+    await call('DELETE', '/api/mod-tags/labels/audit-tag', { cookie });
+
+    const rows = getDb()
+      /*
+       * ⚠️★ 排序要带 **`rowid`**：四条写入可能落在**同一毫秒**（`Date.now()` 相同），
+       *    而 SQL 只保证"按 created_at 有序" —— **平局时的先后是未定义的**。
+       *    只按 created_at 排的话，这条断言是靠"SQLite 恰好按插入顺序返回"过的
+       *    （小表全表扫确实如此，但那是实现细节，不是判据）。
+       *    `rowid` 在普通表里单调递增 ⇒ `created_at, rowid` 才是确定的顺序。
+       */
+      .prepare(
+        'SELECT action, entity_type, entity_id, reason FROM audit_log ORDER BY created_at, rowid',
+      )
+      .all() as unknown as {
+      action: string;
+      entity_type: string;
+      entity_id: string | null;
+      reason: string | null;
+    }[];
+    const actions = rows.map((row) => row.action);
+    assert.deepEqual(actions, [
+      'mod_tag_label.set',
+      'mod_tag_label.set',
+      'mod_tag.set',
+      // ↑ 挂上，↓ 摘掉 —— 两次都是真实的整行替换（空数组也会留下那一行）
+      'mod_tag.set',
+      'mod_tag_label.delete',
+    ]);
+    assert.match(String(rows[1]?.reason), /甲/, '改名那条要记下改之前是什么');
+    assert.match(String(rows[1]?.reason), /乙/, '也要记下改成了什么');
+    assert.equal(rows[2]?.entity_id, 'sodium');
+  });
+});
+
+describe('★ B1 写端：`content/**` 一个字节都没动（spec §5 断言 3）', () => {
+  /*
+   * ★★ 这是"可编辑数据住 DB"那条决策**唯一的硬判据**（B1 spec §2 D1 / §5 断言 3）：
+   *    三条写操作跑完之后，仓库里那两份文件必须逐字节相同。
+   *    ⚠️ 为什么非断言不可：`deploy/deploy.sh` 每次部署都会同步那几份 `content/*.json`
+   *       ⇒ 服务端若写了它们，线上改的东西会被下一次部署**静默抹掉**；
+   *       而"没写"这件事在别处**看不见**（没有报错、没有日志、行为也全对）。
+   */
+  it('三条写操作跑完之后，两份文件的 sha256 与开始时相同', async () => {
+    const files = ['content/mod-catalog.json', 'content/mod-overrides.json'].map((rel) =>
+      join(ROOT, rel),
+    );
+    const fingerprint = (): string[] =>
+      files.map((file) => createHash('sha256').update(readFileSync(file)).digest('hex'));
+
+    const before = fingerprint();
+
+    const cookie = await makeUser('admin');
+    await call('PUT', '/api/mod-tags/labels/probe-tag', {
+      json: { zh: '探针', en: 'Probe' },
+      cookie,
+    });
+    await call('PUT', '/api/mod-tags/sodium', { json: { tags: ['probe-tag'] }, cookie });
+    // ⚠️ 这一条会因为"还有人用"被 409 拒（见上一节）—— 与本断言无关：它只问文件动没动
+    await call('DELETE', '/api/mod-tags/labels/probe-tag', { cookie });
+
+    assert.deepEqual(
+      fingerprint(),
+      before,
+      '写操作不许碰 `content/**` 下的任何文件（那是"住 DB"的硬判据）',
+    );
   });
 });
