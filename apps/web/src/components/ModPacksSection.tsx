@@ -176,7 +176,6 @@ export function ModPacksSection({
           candidates={candidates}
           catalogIndex={catalogIndex}
           selected={selectedPackId === pack.id}
-          onSelectPack={onSelectPack}
           onAction={onAction}
           progress={progress}
           busy={busy}
