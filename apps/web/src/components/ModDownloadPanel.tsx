@@ -51,7 +51,7 @@ import {
   type ModFoldersState,
   planVersionPage,
 } from '@mcsr/shared/modFolders';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { Notice } from '@/components/Form';
@@ -198,14 +198,19 @@ export interface ModDownloadPanelProps {
    * ★ B2 / Task 6：这个版本的整合包清单（`GET /api/modpacks?gameVersion=`）。
    *
    * ⚠️★ **可选**，而且只有**一个**含义（理由与 `state` / `onAction` 那两格同一条，
-   *    但方向相反）：`undefined` = "取数由这一层自己做"（产品里就是这样，见下面
-   *    `useReview` 那两行），数组 = "已经有读数了"（**空数组就是"真的没有"** ——
-   *    那一档画空态 `data-pack-empty="yes"`）。
+   *    但方向相反）：`undefined` = "用这一层自己取回来的那一份"，数组 = "已经有读数了"
+   *    （**空数组就是"真的没有"** —— 那一档画空态 `data-pack-empty="yes"`）。
    * ⚠️★ 为什么取数住在**这一层**而不是 `routes/Files.tsx` 的容器里：本任务的
    *    **文件边界**只有三个路径（`lib/api.ts` / 本文件 / 两本 i18n）⇒ 页面那一层
    *    递不进东西来。⚠️ 代价（认，如实记在 `task-6-report.md` 里）：一个**纯展示**的
    *    组件自此多了一次取数 —— 渲染自检那条"这一层不跑 effect"的性质因此只在
-   *    **传了 `packs` 时**成立（T8 就是这么渲染它的）。
+   *    **传了 `packs` 时**成立。
+   * ⚠️★ **修轮如实更正**：今天**没有任何调用点**传这个 prop（唯一的调用点
+   *    `routes/Files.tsx` 不传它），而且**就算传了也渲不出**「整合包」那一节 ——
+   *    `catalogIndex` 是这一层自己取的、**不可注入**，行那一支的门始终关着。
+   *    ⇒ 它是一个**未启用的接缝**，不是"T8 就是这么渲染它的"。
+   *    ★ **T8 走的是另一条路：直接渲染 `ModPacksSection`**（那个组件由 props 驱动、
+   *    `catalogIndex` 可以喂夹具），与这一格无关。
    */
   packs?: readonly ModPackWire[];
 }
@@ -231,9 +236,11 @@ export function ModDownloadPanel({
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null);
 
   /**
-   * ★ B2：整合包清单。⚠️ `packs` 由外面喂了就用它（自检/将来上提到容器）；
-   * 没喂才自己取 —— 判据是 `undefined`（**不是** `packs.length === 0`：那会把
-   * "真的没有"也变成一次多余的请求）。
+   * ★ B2：整合包清单。⚠️★ **这一趟取数是无条件的**（`useReview` 每次都按
+   * `state.gameVersion` 发它，与传没传 `packs` 无关）：`packs` 只决定**用哪一份读数**
+   * —— 喂了就用喂进来的那份，这一趟的结果丢掉。
+   * ⚠️ 判据是 `undefined`（**不是** `packs.length === 0`：那会把"真的没有"也变成
+   * 一次多余的请求）。
    * ⚠️ 依赖是 `[state.gameVersion]`：换版本必须重取（包是按版本问的）。
    */
   const fetchedPacks = useReview(
@@ -245,11 +252,19 @@ export function ModDownloadPanel({
    * ⚠️★ 它与 `packs` 是**两条独立**的取数：一条失败不该让另一条不画
    *    （索引拿不到时"可下 N 项"会算成 0 ⇒ 按钮禁用 + 一句说明，是**可见**的降级，
    *    不是静默的坏）。
-   * ⚠️ 依赖写 `[]`：目录在这一次会话里只取一次（`buildIndex` 的展开是
-   *    O(release × 游戏版本)，每次渲染重建是 O(n)，spec §15）。
+   * ⚠️ 取数依赖写 `[]`：目录在这一次会话里**只取一次**。
+   * ⚠️★ 建索引**必须**走 `useMemo`（修轮补）：`buildIndex` 把 555 条 release 展开成
+   *    1761 个键（`modCatalog.ts` 里那句原话："**只做一次**…每次调用都重算是 O(n)"），
+   *    而这一层的重渲染是**常态**（进度帧推送，以及 `expanded` / `showAll` /
+   *    `selectedPackId` 任一变化）—— `apps/web` **没有接 React Compiler** ⇒ 不 memo
+   *    就是每次渲染重算一遍。依赖是 `catalog.state`：那一份读数换了才需要重建
+   *    （`[catalog.state.data]` 也行，但状态的形状才是"有没有读到"的判据）。
    */
   const catalog = useReview((signal) => fetchModCatalog(signal), []);
-  const catalogIndex = catalog.state.status === 'ok' ? buildIndex(catalog.state.data) : null;
+  const catalogIndex = useMemo(
+    () => (catalog.state.status === 'ok' ? buildIndex(catalog.state.data) : null),
+    [catalog.state],
+  );
   const packList =
     packs ?? (fetchedPacks.state.status === 'ok' ? fetchedPacks.state.data.items : null);
 
@@ -443,11 +458,16 @@ export function ModDownloadPanel({
         ⚠️★ 空态分两支：`packList === null`（取数还没回来 / 取数失败）⇒ **一个字都不画**
         ——"还没加载"与"这个版本没有整合包"必须分得开（Ruling 65 的同一条纪律）；
         空数组 ⇒ 走 `ModPacksSection` 的空态（`data-pack-empty="yes"`）。
-        ⚠️ 索引（`catalogIndex`）拿不到时也走"不画"那一支：这一节的核心读数
-        （"可下 N 项"）离了它算不出来，而画一颗恒禁用的按钮就是**在撒谎**
-        （它看起来像"这一包没东西可下"）。
+        ⚠️★ 这一道门**只**按 `packList` 判（修轮收窄）：空态**不需要**目录索引，而原先
+        那道 `|| catalogIndex === null` 把"这个版本还没有整合包"压在**一趟无关的取数**
+        后面 —— `/api/mod-catalog` 还在加载 / 失败了而 `/api/modpacks` 回了 `[]` 时，
+        spec 要求的空态**永远不出现**，与上面 `packList` / `catalog` 那两行自己写的
+        "两条独立取数：一条失败不该让另一条不画"**直接矛盾**。
+        ⚠️ 索引拿不到那一档改由 `ModPacksSection` 自己判（它拿不到索引时**不画行**：
+        "可下 N 项"离了索引算不出来，而画一颗恒禁用的按钮就是**在撒谎** —— 它看起来
+        像"这一包没东西可下"）；空态那一段不看索引，所以照画。
       */}
-      {packList === null || catalogIndex === null ? null : (
+      {packList === null ? null : (
         <ModPacksSection
           packs={packList}
           catalogIndex={catalogIndex}

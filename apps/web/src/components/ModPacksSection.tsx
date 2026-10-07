@@ -60,8 +60,17 @@ import type { ModPackWire } from '@/lib/api';
 export interface ModPacksSectionProps {
   /** 这个版本的整合包（空数组 = **真的没有**，不是"还没加载" —— 后者由面板不渲染这一节表达）。 */
   packs: readonly ModPackWire[];
-  /** ★ 网页侧自己建的目录索引（`buildIndex(catalog)`，面板只建一次）—— `packDownloadableIn` 的第二格。 */
-  catalogIndex: ModIndex;
+  /**
+   * ★ 网页侧自己建的目录索引（`buildIndex(catalog)`，面板只建一次）—— `packDownloadableIn` 的第二格。
+   *
+   * ⚠️★ `null` = 目录**还没回来 / 取失败**（这一格由面板喂，`ModIndex` 不是可选的"没有"
+   *    ——"没读到目录"与"目录里没有这一项"必须分得开）。那一档：
+   *      · `packs.length === 0`（空态）**不需要**索引 ⇒ 照画（spec 要求的
+   *        "这个版本还没有整合包"不许挂在**另一趟无关的取数**上）；
+   *      · 有包时**不画行**：核心读数"可下 N 项"离了索引算不出来，而画一颗恒禁用的
+   *        按钮就是**在撒谎**（它看起来像"这一包没东西可下"）。
+   */
+  catalogIndex: ModIndex | null;
   /** 这一版的文件夹块（`VersionPage.folders`）：目标下拉的候选从它里面筛。 */
   folders: readonly VersionFolderBlock[];
   /**
@@ -160,6 +169,13 @@ export function ModPacksSection({
   }
 
   /*
+   * ⚠️★ 索引拿不到 ⇒ **不画行**（空态那一段在上面已经返回了 —— 它不看索引）。
+   *    这一道判原先在面板那一层（与 `packList` 挤在同一道 `||` 里），修轮把它挪到
+   *    这里：那一挤把"这个版本还没有整合包"也一起压在了索引后面。
+   */
+  if (catalogIndex === null) return null;
+
+  /*
    * ★ 目标下拉的候选：**这一版里路径在、而且扫过一次**的文件夹。
    * ⚠️ 判据与 `planVersionPage` 里那条逐字相同（也是主进程 `downloadPack` 的两道前置闸）；
    *    顺序继承 `page.folders`（用户的绑定顺序）——再排一遍是第二份真相。
@@ -243,16 +259,26 @@ function PackRow({
   const disabled = downloadable === 0 || target === '' || busy;
   /**
    * ★ C 的 T5：**这一条包就是正在下的那一趟吗**（是 ⇒ 那份载荷，否则 `null`）。
-   * ⚠️ 判据是**两格**（与 `FolderJarList` / `VersionModList` 逐条同一个写法）：
-   *    `run` 说"这是整包那一趟"、`folderId` 说"下到哪个文件夹"——
-   *    只比 `folderId` 的话，"往同一个文件夹下某一个 mod"那一趟也会命中这一行。
+   * ⚠️ 判据是**三格**（`FolderJarList` / `VersionModList` 那两处只比前两格）：
+   *    `run` 说"这是整包那一趟"、`folderId` 说"下到哪个文件夹"、
+   *    `pack.modids.includes(frame.modid)` 说"**正在下的那一项属于这一包**"。
+   * ⚠️★ 第三格是**修轮补的收窄**：`target` 的初值对**每一行都是同一个**第一候选
+   *    （`candidates[0]`，见上面的 `chosen`）⇒ 只比前两格的话，页面里有 ≥2 个包时
+   *    **每一行都会画出同一条进度行 + 同一个取消按钮**（下 A 包，B、C… 的行也亮着）。
+   *    帧里**没有 `packId`**（`DownloadProgress` 只有 `modid`，见 `downloadProgress.ts`）
+   *    ⇒ 这一层判不准"哪**条包**在跑"，只能收到"这一**项**属于哪一条包"。
+   * ⚠️★ **残留（已知局限，不是"已解决"）**：两个包**共用一个 mod** 时，那两行仍然会
+   *    各画一条进度行（同一个 `modid` 同时属于两条包）。根治要么给帧加 `packId`
+   *    （那是 C/T2 的契约，本轮**不动**），要么由主进程推帧时带上包 id。
+   *    ⇒ 已如实上报，记进 `docs/pending.md` 由控制器裁决。
    * ⚠️ `frame.modid` 在一趟整包下载里是**当前那一项**（主进程 `setRunItem` 盖的），
    *    所以这里**不能**拿它比 `pack.id`。
    */
   const line =
     progress !== null &&
     progress.frame.run === 'download-pack' &&
-    progress.frame.folderId === target
+    progress.frame.folderId === target &&
+    pack.modids.includes(progress.frame.modid)
       ? progress
       : null;
 
@@ -296,12 +322,6 @@ function PackRow({
         aria-label={t('files.packsFolderLabel', { title: pack.title })}
         value={target}
         disabled={busy || available.length === 0}
-        /*
-         * ⚠️ `stopPropagation`：这个下拉在那一行**里面**，而那一行自己也 `onSelect`
-         *    （见上面那段）—— 不拦住的话"给这一条选个文件夹"会顺带把它选中一遍
-         *    （用户点了 B 那条的下拉，A 那条被选中）。
-         */
-        onClick={(event) => event.stopPropagation()}
         onChange={(event) => setChosen(event.target.value)}
       >
         {candidates.map((block) => (
@@ -332,8 +352,14 @@ function PackRow({
       >
         {t('files.packsDownload')}
       </button>
-      {downloadable === 0 ? (
-        /* ⚠️ 一颗禁用的按钮**必须说得出为什么**（会拒的一律不放开，同时给一句解释）。 */
+      {downloadable === 0 && available.length > 0 ? (
+        /*
+         * ⚠️ 一颗禁用的按钮**必须说得出为什么**（会拒的一律不放开，同时给一句解释）。
+         * ⚠️★ 还要 `available.length > 0`（修轮补）：两句可以**同时**成立，而那时
+         *    "都已经在这个文件夹里了"说的那个"这个文件夹"**并不存在**（一个候选都没有）
+         *    —— 那时唯一的出路是下面那一句"先绑一个文件夹"（Ruling 65：分不清"不知道"
+         *    与"没有"的读数不许当结论用）。
+         */
         <span className="filetable__err">{t('files.packsNothingToDo')}</span>
       ) : null}
       {available.length === 0 ? (
