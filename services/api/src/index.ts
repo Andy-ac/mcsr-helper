@@ -23,6 +23,7 @@ import { liveRoute } from './routes/live';
 import { marksRoute } from './routes/marks';
 import { modCatalogRoute } from './routes/modCatalog';
 import { moderationRoute } from './routes/moderation';
+import { modTagsRoute } from './routes/modTags';
 import { rankedRoute } from './routes/ranked';
 import { resourcesRoute } from './routes/resources';
 import { reviewRoute } from './routes/review';
@@ -162,6 +163,11 @@ app.route('/api/file-catalog', fileCatalogRoute);
  * 挂载点写全、route 文件里用相对路径（'/'），与上面那条逐字同形；两条端点响应体各自独立。
  */
 app.route('/api/mod-catalog', modCatalogRoute);
+/*
+ * B1：mod 标签的人工层（读公开；写要 `catalog.editTags`）。
+ * ⚠️ 挂载点写全、route 文件里用相对路径（'/'）—— 与上面两条逐字同形。
+ */
+app.route('/api/mod-tags', modTagsRoute);
 /*
  * ② 直编（`content.author`；硬删走 shared 的谓词 `canHardDelete`）。
  *

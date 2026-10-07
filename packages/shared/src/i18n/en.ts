@@ -103,6 +103,14 @@ export const en: TranslationSchema = {
     files: 'File updates',
     profile: 'Profile',
     admin: 'Admin',
+    /*
+     * ★ B1: the sidebar entry for `/admin/mods`. It sits **beside** `nav.admin`
+     *   (account management), but the predicate differs: that one needs
+     *   `user.moderate` (admin only), this one needs `catalog.editTags`
+     *   (reviewer and above) -- not the same group of people, so they cannot
+     *   share one string (a reviewer would see "Admin" pointing at mod tags).
+     */
+    adminMods: 'Mod tags',
     submit: 'Submit',
     review: 'Review',
     login: 'Log in',
@@ -521,6 +529,11 @@ export const en: TranslationSchema = {
      *    asserts every CAPABILITIES entry has both keys.
      */
     capTypeShare: 'Sharing',
+    /*
+     * ★ The type half of `catalog.*` (B1: mod catalog tags) — same reasoning as
+     *    `content` above: it is an action on the catalog data, not a content type.
+     */
+    capTypeCatalog: 'mod tags',
     capActionSubmit: 'Submit',
     capActionEditOwn: 'Edit your own',
     capActionEditAny: 'Edit published entries',
@@ -545,6 +558,7 @@ export const en: TranslationSchema = {
     capActionRead: 'View',
     capActionManage: 'Maintain',
     capActionAuthor: 'Edit content directly',
+    capActionEditTags: 'edit tags',
     /**
      * ★ Full description per capability (used by the role guide), as opposed to
      * the short `capAction*` labels above.
@@ -585,6 +599,14 @@ export const en: TranslationSchema = {
      */
     capDescShareModerate:
       'Take down **anyone**’s share that is on the board (but not put someone else’s back).',
+    /*
+     * ★ The full description for `catalog.editTags`.
+     * ⚠️ It carries **no** `**` emphasis, so it does **not** need a `DYNAMIC_KEYS`
+     *    entry in `services/api/src/i18n-keys.test.ts` (that whitelist only covers
+     *    marked keys — `capDescShareModerate` above is the one that needed it).
+     */
+    capDescCatalogEditTags:
+      'Edit a mod\u2019s tags (automatic tags come from upstream and cannot be removed; manual tags can be added or removed).',
     logoutAction: 'Sign out',
     loggingOut: 'Signing out…',
     // Errors
@@ -949,6 +971,52 @@ export const en: TranslationSchema = {
       'The last admin cannot be demoted — nobody would be able to change roles any more.',
     errReason: 'A reason is required.',
     errFailed: 'The action failed. Please try again.',
+  },
+  /**
+   * Mod tag management (reviewer and above). B1.
+   *
+   * ⚠️ The wording has to say two things, or an admin will think the UI is broken:
+   *   1. automatic tags (from mc.sr upstream) **cannot be removed** — they are
+   *      upstream saying what this mod is;
+   *   2. saving is a **whole-row replace**: when two people edit the same mod,
+   *      whoever saves last wins.
+   */
+  adminMods: {
+    title: 'mod tags',
+    subtitle:
+      'Changes take effect for everyone right away (web and desktop see them on the next catalog fetch).',
+    tagsSection: 'Tags',
+    tagsHint:
+      'Automatic tags come from upstream and cannot be removed; this manages the manual layer.',
+    colTag: 'Tag',
+    colZh: 'Chinese',
+    colEn: 'English',
+    colUsed: 'Used by',
+    newTag: 'New tag',
+    rename: 'Rename',
+    remove: 'Delete',
+    tagKeyPlaceholder: 'Tag name (lowercase letters, digits, hyphens)',
+    save: 'Save',
+    saving: 'Saving…',
+    saved: 'Saved',
+    modsSection: 'Mod tags',
+    modsHint: 'Automatic tags are read-only; the checkboxes are manual tags.',
+    autoTags: 'Automatic',
+    manualTags: 'Manual',
+    filterPlaceholder: 'Search mods',
+    unchanged: 'No changes',
+    changed: 'Unsaved changes',
+    forbidden: 'You do not have permission to edit mod tags.',
+    loadFailed: 'Failed to load. Please try again later.',
+    errUnknownTag: 'Some tags have no display name yet — create them under "Tags" first.',
+    errTagInUse: 'This tag is still used by some mods; remove it from them first.',
+    errTagKey: 'Tag names allow lowercase letters, digits and hyphens, 1\u201332 characters.',
+    errTooMany: 'A mod can hold at most 32 manual tags.',
+    errFailed: 'The action failed. Please try again.',
+    overwriteHint:
+      'Saving replaces this mod\u2019s whole manual tag set; a change someone else just made will be overwritten.',
+    empty: 'The catalog has no mods yet.',
+    deleteConfirm: 'Delete this tag? It must not be used by any mod.',
   },
   /**
    * Personal marks: favorite / note / rating.

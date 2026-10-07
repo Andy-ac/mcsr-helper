@@ -24,8 +24,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseModCatalog } from '@mcsr/shared/modCatalog';
+import { mergeModTagLayer, parseModCatalog } from '@mcsr/shared/modCatalog';
 import { Hono } from 'hono';
+import { readTagLayer } from '../mod-tags';
 
 export const modCatalogRoute = new Hono();
 
@@ -68,7 +69,18 @@ modCatalogRoute.get('/', (c) => {
    *    "内存里那份还是旧的"重新分叉 —— `fileCatalog.ts` 的文件头已经否掉过一次这种缓存。
    *    （v1 那句"文件几 KB"在这里不成立，所以代价写在明处，不靠那句话兜着。）
    */
-  const body = JSON.stringify(result.catalog);
+  /*
+   * ★ B1：把**人工标签层**（DB 两张表）合并进已解析的目录。
+   *
+   * ⚠️★ 位置是判据的一部分：必须在**严格校验之后**（校验的是仓库里那份配置，
+   *    不是合并后的结果）而在 **`JSON.stringify` 之前**（ETag 是按下面那串 `body` 算的
+   *    ⇒ 合并放在它之后会让 ETag 与正文不一致，304 会给出**错的内容**）。
+   * ⚠️ 合并那一侧**两样都要并**（`mods[].tags` 与顶层 `tagLabels`）：只并前者不会报错，
+   *    但下游每一处读显示名的地方都会退化成英文 key（见 spec §2 D3）。
+   * ⚠️ 它**不改文件**：`content/**` 一个字节都不动（这是"住 DB"这条决策唯一的硬判据）。
+   */
+  const merged = mergeModTagLayer({ catalog: result.catalog, layer: readTagLayer() });
+  const body = JSON.stringify(merged);
   const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
   /*
    * ⚠️★ 304 **必须**把 200 会带的那几个头再带一遍（RFC 7232 §4.1：

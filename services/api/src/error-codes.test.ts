@@ -172,6 +172,14 @@ const KNOWN_CODES: readonly string[] = [
   'catalog_unavailable',
   /** 文件在，但它不是一个 JSON（手改过 / 传输被截断） */
   'catalog_invalid_json',
+  // ---- mod 标签（B1）----
+  /**
+   * 删一个**还有人用**的标签。
+   *
+   * ⚠️ 它是独立的码而不是 `invalid_state`：界面上那句话与别的失败完全不同
+   *    （"这个标签还有人用"而不是"操作失败了"），而且它**要列出来是谁在用**。
+   */
+  'tag_in_use',
 ];
 
 /**
@@ -426,6 +434,12 @@ const INTENTIONALLY_GENERIC: Record<string, string> = {
     '界面显示「目录拉取失败：catalog_unavailable」—— 码是唯一指向"重跑部署"的线索',
   catalog_invalid_json:
     '界面显示「目录拉取失败：catalog_invalid_json」—— 与上面那条的下一步不同（查文件本身）',
+  /*
+   * B1：文案在这个栏目自己的词条里（`adminMods.errTagInUse`），不走通用映射。
+   * ⚠️ 它与 `at_limit` 同一条理由：那句话要说的是"先把它从这些 mod 上摘掉"，
+   *    通用兜底那句「出错了，请稍后再试。」会让管理员一直重试一个必然失败的删除。
+   */
+  tag_in_use: '界面用的是这个栏目自己的词条（adminMods.errTagInUse），不走通用映射',
 };
 
 function walk(dir: string, out: string[] = []): string[] {

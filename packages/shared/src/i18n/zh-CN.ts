@@ -92,6 +92,13 @@ export const zhCN = {
     files: '文件更新',
     profile: '我的',
     admin: '管理',
+    /*
+     * ★ B1：`/admin/mods` 的侧栏入口。它与 `nav.admin`（账号管理）**并列**，
+     *   而判据不同：账号管理要 `user.moderate`（只有 admin），
+     *   这一条要 `catalog.editTags`（reviewer 及以上）—— 两者**不是**同一批人
+     *   ⇒ 不能共用一条词条（共用的话，reviewer 会看到"管理"两个字指向标签页）。
+     */
+    adminMods: 'mod 标签',
     submit: '提交',
     review: '审核',
     login: '登录',
@@ -522,6 +529,11 @@ export const zhCN = {
      *    现在有守卫盯着（`check:roleguide` 的 `capabilityLabelKeys` 那一条）。
      */
     capTypeShare: '分享',
+    /*
+     * ★ `catalog.*`（B1：mod 目录的标签）的类型那一半 —— 与 `content` 同理：
+     *    它管的是"目录这份数据"上的动作，不是某一种内容。
+     */
+    capTypeCatalog: 'mod 标签',
     capActionSubmit: '提交',
     capActionEditOwn: '修改自己提交的',
     capActionEditAny: '改已上架的条目',
@@ -546,6 +558,7 @@ export const zhCN = {
     capActionRead: '查看',
     capActionManage: '维护',
     capActionAuthor: '直接编辑内容',
+    capActionEditTags: '改标签',
     /**
      * ★ 每条能力的**完整说明**（角色说明页用），与上面 `capAction*` 的短标签不是一回事。
      *
@@ -584,6 +597,13 @@ export const zhCN = {
      *    （spec 裁决 11：管理动作是单向的）。界面上先说清楚，比让人点了才吃 403 好。
      */
     capDescShareModerate: '可以下架**任何人**正在展示的一条分享（但不能替别人恢复）。',
+    /*
+     * ★ `catalog.editTags` 的完整说明。
+     * ⚠️ 这条**没有** `**` 强调，所以它**不需要**登记进
+     *    `services/api/src/i18n-keys.test.ts` 的 `DYNAMIC_KEYS`
+     *    （那张白名单只管带 `**` 的词条；上面那条 `capDescShareModerate` 才要）。
+     */
+    capDescCatalogEditTags: '改 mod 的标签（自动标签来自上游，改不动；人工标签可以增删）。',
     logoutAction: '退出登录',
     loggingOut: '退出中…',
     // 错误
@@ -944,6 +964,47 @@ export const zhCN = {
     errLastAdmin: '不能降级最后一个管理员，否则没人能再改角色了。',
     errReason: '必须填写改角色的理由。',
     errFailed: '操作失败，请重试。',
+  },
+  /**
+   * mod 标签管理（reviewer 及以上）。B1。
+   *
+   * ⚠️ 这里的措辞要说清两件事，否则管理员会以为界面坏了：
+   *   ① 自动标签（来自上游 mc.sr）**删不掉** —— 它们是"上游说这个 mod 是什么"；
+   *   ② 保存是**整行替换**：两个人同时改同一个 mod 时，后保存的赢。
+   */
+  adminMods: {
+    title: 'mod 标签管理',
+    subtitle: '改完立刻对所有人生效（网页与桌面端下次取目录时看到）。',
+    tagsSection: '标签',
+    tagsHint: '自动标签来自上游，删不掉；这里管的是人工那一层。',
+    colTag: '标签名',
+    colZh: '中文名',
+    colEn: '英文名',
+    colUsed: '用在几个 mod 上',
+    newTag: '新增标签',
+    rename: '改名',
+    remove: '删除',
+    tagKeyPlaceholder: '标签名（小写字母、数字、连字符）',
+    save: '保存',
+    saving: '保存中…',
+    saved: '已保存',
+    modsSection: 'mod 的标签',
+    modsHint: '自动标签是只读的；勾选的是人工标签。',
+    autoTags: '自动',
+    manualTags: '人工',
+    filterPlaceholder: '搜索 mod',
+    unchanged: '没改过',
+    changed: '有未保存的改动',
+    forbidden: '你没有改 mod 标签的权限。',
+    loadFailed: '加载失败，请稍后重试。',
+    errUnknownTag: '有标签还没有显示名 —— 先在「标签」里建它，再回来勾。',
+    errTagInUse: '这个标签还有 mod 在用，先把它们摘掉再删。',
+    errTagKey: '标签名只允许小写字母、数字和连字符，1–32 个字符。',
+    errTooMany: '一个 mod 最多 32 个人工标签。',
+    errFailed: '操作失败，请重试。',
+    overwriteHint: '保存会整行替换这一个 mod 的人工标签；另一个人刚改过的话会被覆盖。',
+    empty: '这个目录里还没有 mod。',
+    deleteConfirm: '删掉这个标签？它必须没有任何 mod 在用。',
   },
   /**
    * 个人标记：收藏 / 备注 / 评分。

@@ -51,6 +51,16 @@ const EditResourcePage = lazy(() =>
 const AdminUsersPage = lazy(() =>
   import('@/routes/AdminUsers').then((m) => ({ default: m.AdminUsers })),
 );
+/**
+ * ★ B1（Task 6）：`/admin/mods` —— mod 标签管理。
+ *
+ * ⚠️ 它与 `/admin/users` **不是同一批人**：账号管理要 `user.moderate`（只有 admin），
+ *    这一页要 `catalog.editTags`（reviewer 及以上）。两侧栏入口因此各判各的能力。
+ *    懒加载的理由与其它次级页面一样：它只有审核员以上会打开。
+ */
+const AdminModsPage = lazy(() =>
+  import('@/routes/AdminMods').then((m) => ({ default: m.AdminMods })),
+);
 const FavoritesPage = lazy(() =>
   import('@/routes/Favorites').then((m) => ({ default: m.Favorites })),
 );
@@ -232,6 +242,15 @@ export default function App() {
             element={
               <Suspense fallback={<p className="state">…</p>}>
                 <AdminUsersPage />
+              </Suspense>
+            }
+          />
+          {/* mod 标签管理：reviewer 及以上（catalog.editTags） */}
+          <Route
+            path="/admin/mods"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <AdminModsPage />
               </Suspense>
             }
           />

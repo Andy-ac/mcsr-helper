@@ -55,6 +55,11 @@
       "en": "Set seed only"
     }
   },
+  "manualTags": {
+    "mcsrranked": [
+      "ranked"
+    ]
+  },
   "mods": [
     {
       "modid": "anchiale",

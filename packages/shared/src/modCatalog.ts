@@ -209,6 +209,16 @@ function catalogShape<
     source: nested.source,
     mirrors: z.array(nested.mirror),
     tagLabels: z.record(z.string(), nested.tagLabel),
+    /*
+     * ★ B1：手写那一层人工标签（`content/mod-overrides.json` 的 `tags`）的**原样搬运**。
+     *    为什么必须搬进产物：服务端读不到那份文件（`deploy/README.md`：构建期输入、不上传），
+     *    而下发时要拿它当"出厂值"去替换（见 `mergeModTagLayer`）。
+     * ⚠️ **可选**：旧目录与夹具没有它 ⇒ 当作 `{}`（合并那边用 `?? {}`）。
+     * ⚠️ 它**照旧只写在这一处**（`catalogShape`）就同时进了 wire 与 strict 两套 —— 与
+     *    `tagLabels` 那一条**逐字同一条**先例；而它的值是"字符串数组"，没有嵌套对象
+     *    ⇒ 不存在文件头说的那种"未知键被静默剥掉"的风险，不必再拆成一对 schema。
+     */
+    manualTags: z.record(z.string(), z.array(z.string().min(1))).optional(),
     mods: z.array(nested.entry),
     releases: z.array(nested.release),
   };
@@ -483,6 +493,97 @@ export function modTagsOf(mod: ModEntry): readonly string[] {
  */
 export function tagLabelOf(catalog: ModCatalog, tag: string): ModTagLabel | null {
   return catalog.tagLabels[tag] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// ★ B1：人工标签层（管理员可编辑的那一半）
+// ---------------------------------------------------------------------------
+
+/** 一个 mod 最多能人工挂几个标签。 */
+export const MAX_TAGS_PER_MOD = 32;
+
+/** 标签 key 的形状：小写字母/数字开头，其余是小写字母、数字、连字符；总长 1..32。 */
+export const TAG_KEY_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** 显示名（两种语言各一条）的长度上限。 */
+export const MAX_TAG_LABEL_LEN = 40;
+
+/** 人工标签层的入参（`PUT /api/mod-tags/:modid`）。 */
+export const ModTagsInputSchema = z.object({
+  tags: z.array(z.string().trim().min(1)).max(MAX_TAGS_PER_MOD),
+});
+export type ModTagsInput = z.infer<typeof ModTagsInputSchema>;
+
+/** 标签显示名的入参（`PUT /api/mod-tags/labels/:tag`）。 */
+export const ModTagLabelInputSchema = z.object({
+  zh: z.string().trim().min(1).max(MAX_TAG_LABEL_LEN),
+  en: z.string().trim().min(1).max(MAX_TAG_LABEL_LEN),
+});
+export type ModTagLabelInput = z.infer<typeof ModTagLabelInputSchema>;
+
+/** DB 那两张表在这一层的投影。⚠️ `assignments` 里**只有 DB 里真有行**的 modid。 */
+export interface ModTagLayer {
+  assignments: ReadonlyMap<string, readonly string[]>;
+  labels: ReadonlyMap<string, ModTagLabel>;
+}
+
+/** 代码单元序 —— 与生成器 `modCatalogBuild.ts` 里那条**逐字相同**（排序漂了 `--check` 就有两个答案）。 */
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * 把人工标签层合并进一份目录（B1 spec §2 D2/D3）。**纯函数**：不碰 I/O、不碰时钟。
+ *
+ * 算法只有三行，而每一行都有理由：
+ * ```
+ * 人工(modid) = DB 里有行 ? DB 那一行 : 目录.manualTags[modid] ?? []
+ * 生效        = ((原 tags) − (目录.manualTags[modid] ?? [])) ∪ 人工(modid)
+ * ```
+ * ⚠️ 先**减掉出厂值**再并人工层，才叫"整行替换" —— 少了这一步，
+ *    管理员去掉一个文件来的标签（今天只有 `mcsrranked` 的 `ranked`）时它会**原地不动**，
+ *    而界面上那个复选框已经空了（**不会报错**，只是没生效）。
+ * ⚠️ 合并后的目录必须仍然满足"用到的每个标签都有显示名" ——
+ *    写入口保证存进来的标签有显示名（T5），所以 `tagLabels` 只要照并就行。
+ */
+export function mergeModTagLayer(input: { catalog: ModCatalog; layer: ModTagLayer }): ModCatalog {
+  const { catalog, layer } = input;
+  const manualOf = (modid: string): readonly string[] =>
+    layer.assignments.get(modid) ?? catalog.manualTags?.[modid] ?? [];
+
+  const mods = catalog.mods.map((mod) => {
+    const factory = catalog.manualTags?.[mod.modid] ?? [];
+    const manual = manualOf(mod.modid);
+    const automatic = mod.tags.filter((tag) => !factory.includes(tag));
+    const tags = [...new Set([...automatic, ...manual])].sort(byCodeUnit);
+    const same = tags.length === mod.tags.length && tags.every((tag, i) => tag === mod.tags[i]);
+    return same ? mod : { ...mod, tags };
+  });
+
+  const tagLabels: Record<string, ModTagLabel> = { ...catalog.tagLabels };
+  for (const [tag, label] of layer.labels) tagLabels[tag] = label;
+
+  return { ...catalog, mods, tagLabels };
+}
+
+/**
+ * 这个标签是不是还被"某一层"用着（B1 spec §2 D5 删标签那道闸）。**纯函数**。
+ *
+ * ⚠️ 两处都要看：目录里那条 mod 的生效 `tags`（含出厂值与自动值）**与** DB 的人工层
+ *    —— 只看其中一处的话，"删掉一个还有人用的标签"会放行，而它的后果是
+ *    那些 mod 的标签**静默消失**（界面上那个标签的显示名还在 `tagLabels` 里，没人用而已）。
+ */
+export function tagInUse(input: { tag: string; catalog: ModCatalog; layer: ModTagLayer }): {
+  used: boolean;
+  by: readonly string[];
+} {
+  const { tag, catalog, layer } = input;
+  const by: string[] = [];
+  for (const mod of catalog.mods) {
+    const manual = layer.assignments.get(mod.modid) ?? catalog.manualTags?.[mod.modid] ?? [];
+    if (mod.tags.includes(tag) || manual.includes(tag)) by.push(mod.modid);
+  }
+  return { used: by.length > 0, by };
 }
 
 /** 这个 URL 上有哪些**适用**的镜像（按 `hosts` 匹配）。不是 URL ⇒ 空数组。 */

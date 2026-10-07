@@ -42,6 +42,14 @@ export function Layout() {
   const auth = useAuth();
   // 账号管理入口：只有 admin 有 user.moderate
   const isAdmin = useCan('user.moderate');
+  /*
+   * ★ B1：mod 标签管理入口 —— 与账号管理**不是同一条判据**：
+   *   它要 `catalog.editTags`（reviewer 及以上，见 shared/permissions.ts），
+   *   而 admin 那一格要 `user.moderate`。两人群有交集但不相等
+   *   （reviewer 进得了这一页、进不了账号管理）⇒ 不能复用上面那个布尔量。
+   *   ⚠️ 与别处一样：这只决定**入口显不显示**，拦截在服务端（requireCapability）。
+   */
+  const canEditModTags = useCan('catalog.editTags');
 
   // 折叠状态存在 localStorage 里：这是"我的偏好"，刷新后应该保持。
   const [collapsed, setCollapsed] = useState(() => {
@@ -405,6 +413,25 @@ export function Layout() {
             >
               <span className="sidebar__block sidebar__block--admin" aria-hidden="true" />
               <span className="sidebar__label">{t('nav.admin')}</span>
+            </NavLink>
+          ) : null}
+
+          {/*
+            ★ B1：mod 标签管理（`/admin/mods`）。判据是 `catalog.editTags`
+            （reviewer 及以上），与上面那条 `user.moderate` **不是同一个集合**。
+            ⚠️ `data-action` 是渲染自检的钩子（`modtagsrender.tsx` 的 ⓪ 组按
+               "这条入口由**能力**门住"断言 —— 写死 role 的话它当场红）。
+          */}
+          {canEditModTags ? (
+            <NavLink
+              to="/admin/mods"
+              data-action="nav-admin-mods"
+              className={({ isActive }) => `sidebar__item${isActive ? ' is-active' : ''}`}
+              viewTransition
+              title={t('nav.adminMods')}
+            >
+              <span className="sidebar__block sidebar__block--admin" aria-hidden="true" />
+              <span className="sidebar__label">{t('nav.adminMods')}</span>
             </NavLink>
           ) : null}
 

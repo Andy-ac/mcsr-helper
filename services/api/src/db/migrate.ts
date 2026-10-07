@@ -39,6 +39,7 @@ import { m020TrackedVideos } from './migrations/020_tracked_videos';
 import { m021TrackedVideoVisibility } from './migrations/021_tracked_video_visibility';
 import { m022TrackedCreatorCooldown } from './migrations/022_tracked_creator_cooldown';
 import { m023LiveStatus } from './migrations/023_live_status';
+import { m024ModTags } from './migrations/024_mod_tags';
 
 /** 新增迁移时在这里按顺序追加。**已经发布的迁移不要改动**，加新的。 */
 const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boolean }> = [
@@ -195,6 +196,7 @@ const MIGRATIONS: ReadonlyArray<{ name: string; sql: string; noTransaction?: boo
    *    都留档）。读数、出处与理由写在 `023_live_status.ts` 的文件头第三节。
    */
   { name: '023_live_status', sql: m023LiveStatus },
+  { name: '024_mod_tags', sql: m024ModTags },
 ];
 
 export function runMigrations(db: DatabaseSync): string[] {
