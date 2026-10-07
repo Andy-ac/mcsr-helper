@@ -715,6 +715,19 @@ export function buildCatalog(input: BuildInput): ModCatalog {
     },
     mirrors: overrides.mirrors,
     tagLabels,
+    /*
+     * ★ B1：手写那一层人工标签搬进产物（服务端读不到 `content/mod-overrides.json` ——
+     *    构建期输入、不上传，而下发时要用它当"出厂值"，见 `mergeModTagLayer`）。
+     * ⚠️ 外层键**按代码单元序排**：与上面 `tagLabels` 那一格**逐字同一条**先例
+     *    （`Object.entries(...).sort(([a], [b]) => byCodeUnit(a, b))`）——
+     *    这样"输入文件里换一下键的顺序"不会让产物字节漂。
+     * ⚠️ 内层数组**原样**：它是手写列表的快照，顺序没有含义（生成器合并时会去重排序）。
+     * ⚠️ **插在 `tagLabels` 之后**：`catalogBytes` 是 `` `${JSON.stringify(catalog, null, 2)}\n` ``
+     *    ⇒ **键序 = 插入序**，所以 `--write` 的 diff 应当**只多这一格**。
+     */
+    manualTags: Object.fromEntries(
+      Object.entries(overrides.tags).sort(([a], [b]) => byCodeUnit(a, b)),
+    ),
     mods,
     releases,
   };
