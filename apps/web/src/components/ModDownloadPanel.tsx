@@ -249,9 +249,11 @@ export function ModDownloadPanel({
   );
   /**
    * ★ B2：目录（约 425 KB、带 ETag）——**只为建一次索引**。
-   * ⚠️★ 它与 `packs` 是**两条独立**的取数：一条失败不该让另一条不画
-   *    （索引拿不到时"可下 N 项"会算成 0 ⇒ 按钮禁用 + 一句说明，是**可见**的降级，
-   *    不是静默的坏）。
+   * ⚠️★ 它与 `packs` 是**两条独立**的取数：一条失败不该让另一条不画。
+   *    ⚠️ 修轮订正（原来这里写反了）：索引拿不到时**不再**"把可下 N 项算成 0"，
+   *    而是**不画行**（`ModPacksSection` 在空态之后 `if (catalogIndex === null) return null;`）；
+   *    而**热门 ★ 小卡**只按 `packList === null` 门（那一支在读到 `catalogIndex` 之前就返回）
+   *    ⇒ 目录在飞或**永久失败**时，清单到了就照样出小卡、出空态（spec D8 要的那两条）。
    * ⚠️ 取数依赖写 `[]`：目录在这一次会话里**只取一次**。
    * ⚠️★ 建索引**必须**走 `useMemo`（修轮补）：`buildIndex` 把 555 条 release 展开成
    *    1761 个键（`modCatalog.ts` 里那句原话："**只做一次**…每次调用都重算是 O(n)"），
@@ -373,7 +375,7 @@ export function ModDownloadPanel({
           ⚠️ 取数还没回来（`packList === null`）时**一个孩子都不加**：那与"这个版本
           没有热门包"是两件事，而小卡这一格只画"有的"（空的那一支不需要占位）。
         */}
-        {packList === null || catalogIndex === null ? null : (
+        {packList === null ? null : (
           <ModPacksSection
             chipsOnly
             packs={packList}
