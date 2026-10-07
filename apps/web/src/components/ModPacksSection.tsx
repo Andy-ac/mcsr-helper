@@ -254,7 +254,11 @@ function PackRow({
    *      · `downloadable === 0` ⇒ 这一趟一项都不会开工（"点了什么都没发生"）；
    *      · `target === ''`（没有候选文件夹）⇒ 主进程 `requireFolder` 先拒；
    *      · `busy` ⇒ `assertNotBusy()` 拒。
-   *    ⚠️ 自检 ⑯ 的刀就是把 `downloadable === 0` 这一格去掉（"没候选仍可点"必须红）。
+   *    ⚠️★ **T8 评审纠正过这一句**（agent `594ecf38`，用刀实测）：原来写"自检 ⑯ 的刀就是把 `downloadable === 0`
+   *      这一格去掉" —— **不对** ✗：去掉那一格之后 `target === ''`（每行初值是空串）仍然把它禁用 ⇒ ㊷f **照样绿**。
+   *      真正承重的是另外两条：
+   *        · ㊷f（`folders: []`）钉的是**下拉**那一半（`available.length === 0`）与"没候选时按钮也禁用"✓；
+   *        · ⚠️ `downloadable` 这一格**目前没有任何断言读它**（要钉它得造一个"有候选文件夹、但这一项已经都在里面"的夹具 ✗）。
    */
   const disabled = downloadable === 0 || target === '' || busy;
   /**

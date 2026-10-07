@@ -105,6 +105,7 @@ import { ModPacksSection } from '@/components/ModPacksSection';
 import { ToolsPanel } from '@/components/ToolsPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
+import { packVersionOptions } from '@/lib/modPackEdits';
 import { Files } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
@@ -3342,14 +3343,17 @@ const PACKS_SECTION_BASE = {
 };
 const PACK_HOT = {
   id: 'pack-hot',
-  title: '热门包',
-  description: 'D1',
+  title: 'A hot pack',
+  /* ⚠️ 描述与标题里**故意不放数字**：下面 ㊷i 用"印出 `7`"来钉 `modCount` ⇒ 别的地方出数字会稀释它 ✓ */
+  description: 'no digits here',
   gameVersion: '1.16.1',
   modids: ['sodium'],
   hot: true,
-  modCount: 1,
+  /* ⚠️★ 故意让 `modCount` **不等于** `modids.length`：它是**服务端算的读数**（`pack.modids.length`），
+   *    页面只许**照印**、不许自己数 —— 这条夹具让"自己数 modids"的实现当场红 ✓ */
+  modCount: 7,
 };
-const PACK_COLD = { ...PACK_HOT, id: 'pack-cold', title: '冷门包', hot: false };
+const PACK_COLD = { ...PACK_HOT, id: 'pack-cold', title: 'A cold pack', hot: false };
 
 {
   const emptyHtml = keep(
@@ -3421,7 +3425,11 @@ const PACK_COLD = { ...PACK_HOT, id: 'pack-cold', title: '冷门包', hot: false
       }),
     ),
   );
-  assert.ok(/aria-pressed="true"/.test(selChipsHtml), '㊷e 选中热门包 ⇒ 小卡 aria-pressed 变 true');
+  assert.ok(
+    /data-pack-chip="pack-hot"[^>]*aria-pressed="true"/.test(selChipsHtml) ||
+      /aria-pressed="true"[^>]*data-pack-chip="pack-hot"/.test(selChipsHtml),
+    '㊷e 选中热门包 ⇒ **那颗小卡**（`data-pack-chip="pack-hot"`）的 aria-pressed 变 true',
+  );
   assert.ok(
     /data-pack-row="pack-hot"[^>]*data-pack-selected="yes"/.test(selHtml) ||
       /data-pack-selected="yes"[^>]*data-pack-row="pack-hot"/.test(selHtml),
@@ -3458,7 +3466,124 @@ const PACK_COLD = { ...PACK_HOT, id: 'pack-cold', title: '冷门包', hot: false
   ok('㊷g `chipsOnly` 那一支不渲染空态（空态在整节里只出现一次）');
 }
 
-const expectedGroups = LANG === 'en' ? 23 : 22;
+/*
+ * ⚠️★ ㊷h–㊷l 是 **T8 评审**（agent `594ecf38`）抓出来的四条缺口补的（它用 22 把刀实测：
+ *    K13–K18 六把**全绿** ⇒ "按钮恒禁用、简介 / `modCount` / 标题全消失"整套门禁照样绿 ✗）：
+ *    · spec 14 的**内容**（标题 / 简介 / `modCount` / 下拉候选 / 按钮**可用**那一侧）此前**零判据**；
+ *    · spec 16 的**"说明"**此前零判据（原有两条读数其实都是"禁用"✗）；
+ *    · spec ⑮ 点名的刀（"只滚不选中"）**拔不动**（静态渲染不跑 handler ⇒ 只能源码级守卫）；
+ *    · `packVersionOptions` 此前**全仓零判据**。
+ *    ⇒ 下面五条各自都能被一把刀点红 ✓。
+ * ⚠️ 夹具标题是 ASCII（`A hot pack` / `A cold pack`）：原来用中文标题会让本组**顺序承重**
+ *    —— 一旦有人把 ㊷ 挪到 ㉛（零汉字扫描）之前，en 那一遍会红在那条扫描上，而不是红在本组的判据上 ✓。
+ */
+const FOLDER_CANDIDATE = {
+  folder: {
+    folderId: 'folder-1',
+    path: 'C:\\mc\\mods',
+    pathExists: true,
+    hasReading: true,
+    gameVersion: '1.16.1',
+    autoUpdate: false,
+    rows: [],
+    unrecognized: [],
+  },
+  recognizedModids: [] as readonly string[],
+};
+{
+  const withFolderHtml = keep(
+    html(
+      React.createElement(ModPacksSection, {
+        ...PACKS_SECTION_BASE,
+        packs: [PACK_HOT],
+        folders: [FOLDER_CANDIDATE] as never,
+      }),
+    ),
+  );
+  const btn = /<button[^>]*data-pack-download="pack-hot"[^>]*>/.exec(withFolderHtml)?.[0] ?? '';
+  assert.ok(
+    btn !== '' && !btn.includes('disabled'),
+    `㊷h 有候选文件夹 ⇒ 下载按钮**不该**禁用（实际：${btn}）`,
+  );
+  assert.ok(
+    /<option[^>]*value="[^"]*"/.test(withFolderHtml),
+    '㊷h 有候选文件夹 ⇒ 下拉要有 `<option>`（候选路径）',
+  );
+  ok('㊷h ★ 有候选文件夹 ⇒ 下载按钮**可用** + 下拉有 `<option>` 候选（spec 14 的"可用"那一侧）');
+}
+{
+  const rowHtml = keep(
+    html(
+      React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [PACK_HOT, PACK_COLD] }),
+    ),
+  );
+  assert.ok(rowHtml.includes('A hot pack'), '㊷i 行里要印出**标题**');
+  assert.ok(rowHtml.includes('no digits here'), '㊷i 行里要印出**简介**');
+  /* ★ 用 `7` 钉 `modCount`：夹具的标题/简介/版本里都没有 7 ⇒ 去掉"印 `modCount`"那一格 ⇒ 这里红 ✓。
+   *   同时它钉住"**照印服务端的数**、不自己数 `modids`"（夹具的 modCount=7 ≠ modids.length=1 ✓）。 */
+  assert.ok(
+    rowHtml.includes('7'),
+    '㊷i 行里要印出服务端给的 **`modCount`**（夹具是 7；自己数 `modids` 会印 1 ⇒ 红）',
+  );
+  ok(
+    '㊷i 行里印出标题 / 简介 / `modCount`（spec 14 的"画出什么"那三项；顺带钉住"不自己数 modids"）',
+  );
+}
+{
+  const noFolderHtml2 = keep(
+    html(React.createElement(ModPacksSection, { ...PACKS_SECTION_BASE, packs: [PACK_HOT] })),
+  );
+  const errCount = noFolderHtml2.split('filetable__err').length - 1;
+  assert.equal(
+    errCount,
+    1,
+    `㊷j 没有候选文件夹 ⇒ 恰好**一句说明**（实际命中 ${String(errCount)} 处）`,
+  );
+  const withFolderErrCount =
+    keep(
+      html(
+        React.createElement(ModPacksSection, {
+          ...PACKS_SECTION_BASE,
+          packs: [PACK_HOT],
+          folders: [FOLDER_CANDIDATE] as never,
+        }),
+      ),
+    ).split('filetable__err').length - 1;
+  assert.equal(
+    withFolderErrCount,
+    0,
+    `㊷j 有候选文件夹 ⇒ **不该**有那句说明（实际命中 ${String(withFolderErrCount)} 处）`,
+  );
+  ok('㊷j ★ 无候选 ⇒ 恰好一句说明；有候选 ⇒ 一句都没有（spec 16 的"说明"那半条）');
+}
+{
+  const sectionSrc = readFileSync(
+    new URL('../src/components/ModPacksSection.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.ok(
+    sectionSrc.includes('onSelectPack(pack.id)'),
+    '㊷k 小卡的 `onClick` 必须**真的选中**（`onSelectPack(pack.id)`；刀 = "只滚不选中"）',
+  );
+  assert.ok(
+    sectionSrc.includes('scrollIntoView('),
+    '㊷k 小卡的 `onClick` 必须**真的滚**（`scrollIntoView(`）',
+  );
+  ok('㊷k ★ 小卡 `onClick` 里"选中 + 滚"两件事都在（源码级：静态渲染证不了处理器）');
+}
+{
+  const versions = packVersionOptions(realCatalog);
+  assert.ok(
+    versions.includes('1.16.1'),
+    `㊷l \`packVersionOptions(真实目录)\` 必须含 1.16.1（实际前几个：${JSON.stringify(versions.slice(0, 4))}）`,
+  );
+  assert.deepEqual([...versions].sort(), versions, '㊷l 版本候选必须是**已排序**的');
+  ok(
+    `㊷l \`packVersionOptions(realCatalog)\`：含 1.16.1、已排序（共 ${String(versions.length)} 个版本）`,
+  );
+}
+
+const expectedGroups = LANG === 'en' ? 28 : 27;
 assert.equal(
   pass,
   expectedGroups,

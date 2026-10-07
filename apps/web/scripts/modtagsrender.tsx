@@ -29,8 +29,8 @@
  *   ⑥ ★★ 容器那三个纯函数（`manualTagsOf` / `automaticTagsOf` / `isDirty`）——
  *      拆成两半之后，**这是它们唯一的判据**。
  *
- * ⚠️★ **⑦ 是预埋的空位**（T7b 留的落点，T8 往里加断言）：下半「整合包」那一节。
- *    详见下面 ⑦ 那段注释；**它现在一条断言都没有**（所以 `expectedItems` 仍然是 7）。
+ * ⚠️★ **⑦ 已经加好了**（T8）：下半「整合包」那一节 —— **14 条**（`expectedItems` 7 → **21**）。
+ *    详见下面 ⑦ 那段注释；**它已经加好了 14 条**（所以 `expectedItems` 是 **21**）。
  *
  * ===========================================================================
  * ⚠️ 这个脚本**证不了**什么（边界，别高估它）
@@ -61,12 +61,7 @@ import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { I18nextProvider } from 'react-i18next';
 import type { ModPackWire } from '@/lib/api';
-import {
-  type PackForm,
-  type PackFormSource,
-  packFormDirty,
-  packFormFrom,
-} from '@/lib/modPackEdits';
+import { type PackFormSource, packFormDirty, packFormFrom } from '@/lib/modPackEdits';
 import { automaticTagsOf, isDirty, manualTagsOf } from '@/lib/modTagEdits';
 import {
   AdminModPacksView,
@@ -389,7 +384,7 @@ assert.equal(isDirty({ draft: ['a', 'b'], server: ['a'] }), true, '多一个 ⇒
 ok('★ 纯函数：出厂值回落 / DB 赢 / draft 赢 / 自动层 / 改过的四档');
 
 // ---------------------------------------------------------------------------
-// ⑦ ★★ 整合包那一节 —— **T8 的落点**（T7b 只留位置，这里一条断言都没有）
+// ⑦ ★★ 整合包那一节 —— **T8 已加满**（14 条：三个纯函数 / 纯视图 / 容器接线的两条源码守卫）
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 这一格是**预埋的空位**，不要在这里写"占位断言"（那只会多一条恒真的读数）。
@@ -408,7 +403,7 @@ ok('★ 纯函数：出厂值回落 / DB 赢 / draft 赢 / 自动层 / 改过的
  *      · **源码级守卫**："热门开关只在 `useCan('pack.feature')` 为真时渲染"住在**容器**
  *        （`AdminMods`）里，断言按 ⓪ 那个手法读 `AdminMods.tsx` 的源码（剥注释之后）——
  *        它的刀是"把那个开关从 `canFeature ? … : null` 里拿出去"。
- * ⚠️★ 加断言时**同批**把文件末尾的 `expectedItems` 从 7 改成实际组数（现数，别估）：
+ * ⚠️★ 那一格是**手抄的**：改这一组就要**同批**把文件末尾的 `expectedItems` 现数改对（现在是 **21** = 7 + ⑦ 的 14）：
  *    那个探针防的正是"某一组被整块摘掉之后脚本照样绿、照样打印通过 N 项"。
  * ⚠️ 两遍语言（zh / en）都跑这个脚本，且这一个脚本里**没有** `if (LANG === 'en')` 那一支。
  */
@@ -541,19 +536,30 @@ console.log(`【${LANG}】⑦ 整合包那一节（三个纯函数 + 纯视图 +
   ok('⑦b8 `form: null` ⇒ 不画表单');
 }
 
-// -- ⑦c 源码级守卫（照 ⓪ 的手法：剥注释之后读容器源码 —— 这一条 renderToStaticMarkup 证不了）
+// -- ⑦c 源码级守卫（照 ⓪ 的手法读 `AdminMods.tsx` 的源码 —— 这一条 renderToStaticMarkup 证不了）
+/*
+ * ⚠️★ **T8 评审纠正过一次**（agent `594ecf38`）：原来那条正则
+ *    `/canFeature\s*\?[\s\S]{0,600}?data-action="toggle-pack-hot"/` 在同一份文件里**先命中了纯视图自己**
+ *    那一支（`ModPacksSection` 不是，是 `AdminModPacksView` 里的三元门）⇒ 它与 ⑦b7（渲染层）验的是**同一件事** ✗，
+ *    而**容器那一侧的接线一条都盖不到** ✗ —— 把 `canFeature={canFeature}` 改成 `{true}`（刀 D）、
+ *    或把 `useCan('pack.feature')` 改成恒真（刀 E），原来两条**全绿** ⇒ spec §5:119 的
+ *    "reviewer 看得见这一页、但看不到那个开关"这条前端门可以**静默失效** ✗。
+ *    ⇒ 现在守的是**容器专用的两件事**：取能力的来源（`useCan('pack.feature')`）与把值传进 prop（`canFeature={canFeature}`）。
+ */
 {
   const adminSrc = withoutComments(
     readFileSync(new URL('../src/routes/AdminMods.tsx', import.meta.url), 'utf8'),
   );
   assert.ok(
-    /canFeature\s*\?[\s\S]{0,600}?data-action="toggle-pack-hot"/.test(adminSrc),
-    '⑦c1 热门开关必须在 `canFeature ? …` 那一支里（拿出去就红）',
+    adminSrc.includes("useCan('pack.feature')"),
+    '⑦c1 容器必须**真的从 `useCan` 取**那条能力（刀：改成恒真 ⇒ 这里红）',
   );
-  ok('⑦c1 热门开关住在 `canFeature ? …` 那一支里（源码级）');
-  const hits = adminSrc.split('data-action="toggle-pack-hot"').length - 1;
-  assert.equal(hits, 1, '⑦c2 热门开关在容器源码里**只出现一次**（不能在外面再挂一个）');
-  ok(`⑦c2 热门开关在容器里只出现 ${String(hits)} 次`);
+  ok("⑦c1 容器从 `useCan('pack.feature')` 取能力（源码级）");
+  assert.ok(
+    adminSrc.includes('canFeature={canFeature}'),
+    '⑦c2 容器必须把**取到的那个值**传进 prop（刀：写成 `canFeature={true}` ⇒ 这里红）',
+  );
+  ok('⑦c2 容器把取到的值传进 `canFeature={canFeature}`（源码级）');
 }
 
 // ---------------------------------------------------------------------------
