@@ -3,6 +3,14 @@
  *
  * ⚠️ 环境变量必须在任何 import 之前设好（照 `moderation.test.ts` 的样板）。
  */
+/*
+ * ⚠️ 本文件有两条期望值**硬钉在 `content/mod-catalog.json` 的当前内容**上
+ *    （`mcsrranked` 的生效标签、以及 `tagLabels.ranked` 的显示名）。
+ *    这是 spec §5 断言 4/4b 故意要的耦合（"文件那份手写输入仍是出厂值"必须有判据）。
+ *    ⇒ 红的时候先现读那两份东西，再判断是**数据变了**还是**代码坏了**：
+ *      node -e "const c=require('./content/mod-catalog.json');console.log(c.manualTags, c.mods.find(m=>m.modid==='mcsrranked').tags, c.tagLabels.ranked)"
+ *      node -e "const o=require('./content/mod-overrides.json');console.log(o.tags)"
+ */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -37,8 +45,12 @@ beforeEach(() => {
  * ⚠️★ 数据层把 `actorId` 原样写进 `updated_by`，而那一列是**外键**指向 `users`
  *    （且本仓的连接开着 `PRAGMA foreign_keys = ON`）⇒ 这里传 `null`（列可空，
  *    语义是"这一格没有认领的人"），**不要**传一个不存在的 id：那会当场
- *    `FOREIGN KEY constraint failed`，而症状看起来像"表建错了"
- *    （实测见 `.cache/probe-mod-tags-fk.mjs`）。
+ *    `FOREIGN KEY constraint failed`，而症状看起来像"表建错了"。
+ */
+/*
+ * ⚠️ 外键的判据**已提交**（见本文件末尾那条"传一个不存在的 actor id ⇒ 被外键拒"）。
+ *    本机的一次性探针 `.cache/probe-mod-tags-fk.mjs` 只是当初的现场，
+ *    **不可复跑**（`.cache/` 是 gitignore 的）。
  */
 const ACTOR: string | null = null;
 const NOW = 1_700_000_000_000;
@@ -81,14 +93,19 @@ describe('★ B1 数据层：人工标签', () => {
   });
 
   it('★ 坏掉的 JSON 当作没有（防御性解析，不抛）—— 一个坏格子不该让整条目录 500', () => {
-    getDb()
-      .prepare(
-        'INSERT INTO mod_tag_assignments (modid, tags, updated_by, updated_at) VALUES (?, ?, ?, ?)',
-      )
-      .run('broken', '{not json', ACTOR, NOW);
+    const insert = getDb().prepare(
+      'INSERT INTO mod_tag_assignments (modid, tags, updated_by, updated_at) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('broken', '{not json', ACTOR, NOW);
+    insert.run('not-array', '{"a":1}', ACTOR, NOW); // 合法 JSON 但不是数组 ⇒ 走 `!Array.isArray`
+    insert.run('null-json', 'null', ACTOR, NOW); // JSON null ⇒ 同一支
     const layer = readTagLayer();
     assert.equal(layer.assignments.has('broken'), false);
+    assert.equal(layer.assignments.has('not-array'), false);
+    assert.equal(layer.assignments.has('null-json'), false);
     assert.equal(layer.assignments.size, 0);
+    insert.run('partly-bad', '["ok",1,null,""]', ACTOR, NOW);
+    assert.deepEqual(readTagLayer().assignments.get('partly-bad'), ['ok']);
   });
 });
 
@@ -164,10 +181,13 @@ describe('★ B1 读端：GET /api/mod-tags 只有 DB 那一层', () => {
     assert.deepEqual(res.body.labels, []);
   });
 
-  it('★ 文件里那条出厂值（mcsrranked → ranked）**不出现在** assignments 里', async () => {
+  it('★ 出厂值不在这一层：DB 里有别的行时，键集合**恰好**是那一行', async () => {
+    setModTags({ modid: 'sodium', tags: ['rsg-only'], actorId: null, now: Date.now() });
     const res = await call('GET', '/api/mod-tags');
-    assert.equal((res.body.assignments as Record<string, string[]>).mcsrranked, undefined);
-    // 而它在生效标签里（下一步那条断言证明）
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(res.body.assignments as Record<string, string[]>), ['sodium']);
+    // ⚠️ 这一条**不能**靠前一条的 `deepEqual(assignments, {})` 兜着：那是"空"，
+    //    而这条问的是"有别的行时，出厂值有没有混进来"。
     assert.deepEqual((await tagsOf('mcsrranked')).includes('ranked'), true);
   });
 
@@ -202,7 +222,7 @@ describe('★ B1 合并：下发时把人工层并进目录', () => {
     assert.deepEqual(await labelOf('ranked'), { zh: '排位赛', en: 'Ranked play' });
   });
 
-  it('合并后的正文仍然是合法目录（严格校验通过）', async () => {
+  it('合并后的正文仍然是 schema 2（注意：严格校验判的是**文件**，不是这份合并结果）', async () => {
     const res = await call('GET', '/api/mod-catalog');
     assert.equal(res.status, 200);
     assert.equal(typeof (res.body as { schema?: number }).schema, 'number');
@@ -421,6 +441,27 @@ describe('★ B1 写端：`content/**` 一个字节都没动（spec §5 断言 3
       fingerprint(),
       before,
       '写操作不许碰 `content/**` 下的任何文件（那是"住 DB"的硬判据）',
+    );
+  });
+});
+
+describe('★ B1 数据层：外键真的在（T3 评审 M-1）', () => {
+  it('★ 传一个不存在的 actor id ⇒ 被外键拒（把 024 里那条 REFERENCES 删掉，这条就红）', () => {
+    /*
+     * ⚠️★ 为什么非有这一条：那 7 条数据层断言**全程传 `actorId: null`**
+     *   ⇒ 把 `024_mod_tags.ts` 里 `REFERENCES users (id) ON DELETE SET NULL` 整行删掉，
+     *   它们**照样全绿**。外键是 D1 的要求，而"要求没有刀"等于没有要求。
+     * ⚠️ 用**裸 SQL**（不经过数据层那四个函数）—— 量的是 **schema 本身**。
+     * ⚠️ 极性：`assert.throws` 在这里是**正向**判据（"必须被拒"），不是"容忍失败"。
+     */
+    assert.throws(
+      () =>
+        getDb()
+          .prepare(
+            'INSERT INTO mod_tag_assignments (modid, tags, updated_by, updated_at) VALUES (?, ?, ?, ?)',
+          )
+          .run('fk-probe', '[]', 'no-such-user', NOW),
+      /FOREIGN KEY constraint failed/,
     );
   });
 });
