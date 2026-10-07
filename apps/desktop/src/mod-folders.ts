@@ -9,12 +9,13 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十四条 IPC 的注册**（C 的 T4 之后契约是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
+ *   · **十五条 IPC 的注册**（C 的 T4 之后契约是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
  *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
- *     T4 加 `cancelDownload`（16）—— 后两条**都没有**加 handler 之外的注册面）；
+ *     T4 加 `cancelDownload`（16）、**B2 的 T4** 加 `downloadPack`（17）—— 后三条**都没有**加 handler 之外的注册面）；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
- *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing` —— 三个入口共用
+ *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing`、**B2 的整包下载** `downloadPack`
+ *     —— 四个入口共用
  *     `installRelease` 同一段写盘（spec §7.3 的那几步）。**这是整个特性里唯一会写用户磁盘的地方**。
  *     ⚠️ T6 之前是四个入口，第四个（`updateCatalogRow`）随第一部分一起删了。
  *     ⚠️ 两道闸分住两处（不是一处）：`installRelease` 管"这一个目标位置能不能动"（Ruling 47/48），
@@ -102,6 +103,7 @@ import {
   planFolderView,
   type TagOptionView,
 } from '@mcsr/shared/modFolders';
+import { type PackSkipReason, packPlanFor } from '@mcsr/shared/modPacks';
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import {
   assertNotBusy,
@@ -122,6 +124,7 @@ import {
   catalogIndexOf,
   catalogOf,
   catalogStatusOf,
+  fetchPack,
   initCatalog,
   queueLoadCatalog,
   upstreamLatestOf,
@@ -1705,6 +1708,14 @@ function skipReasonOf(row: ModFolderRowView): string {
 type LastRun = NonNullable<ModFoldersState['lastRun']>;
 
 async function bulkRun(input: {
+  /**
+   * ★ B2 加的（默认保持既有那一条的语义）：这一趟的**类型**。
+   * ⚠️ 为什么非加不可：原来那一行写死 `'update-folder-all'` ⇒ 整包下载的进度帧会报成"整夹更新"，
+   *    页面那句汇总行会**说错话**（不报错，只是说错）。
+   * ⚠️★ 默认值那半句是判据：既有那两个调用方（整夹更新 / 缺失清单的批量）**一个都不许改**
+   *    ⇒ 默认值必须是 `'update-folder-all'`（改了会让 C 那两趟的进度帧类型变掉）。
+   */
+  run?: 'update-folder-all' | 'download-pack';
   folderId: string;
   itemCount: number;
   work: () => Promise<LastRun>;
@@ -1714,7 +1725,11 @@ async function bulkRun(input: {
   let run: LastRun;
   try {
     /* ⚠️★ 这两句在 `try` 里（M6）：它们抛时下面那个 `catch` 必须接管（见函数头）。 */
-    beginRun({ run: 'update-folder-all', folderId: input.folderId, itemCount: input.itemCount });
+    beginRun({
+      run: input.run ?? 'update-folder-all',
+      folderId: input.folderId,
+      itemCount: input.itemCount,
+    });
     rebuild();
     run = await input.work();
   } catch (error) {
@@ -2047,6 +2062,168 @@ export async function downloadMissing(
   });
 }
 
+/**
+ * ★ B2：`packPlanFor` 的**五种**跳过原因各说一句话（`lastRun.skipped` 里那一格）。
+ *
+ * ⚠️ 文案与 `downloadMissing` / `updateFolderAll` 那几句**同一口径**：
+ *    "已经装了"那一句与 `downloadMissing` 的"这个文件已经是这一份（没有下载、没有写盘）"
+ *    是同一条纪律（空转不许冒充"已更新"），加上"这个文件夹里已经有…了"那句的消息头。
+ * ⚠️ 类型是 `Record<PackSkipReason, string>`（不是 `Partial`）：判定加一支跳过原因时，
+ *    这里**当场编译失败**，必须显式表态 —— 与 `INSTALLABLE` 那张正向列同一招。
+ */
+const SKIP_TEXT: Record<PackSkipReason, string> = {
+  'already-in-folder': '这个文件夹里已经有它了（一个请求都不发）',
+  'not-in-catalog': '目录里没有这个 modid',
+  'no-release': '这个版本下没有它的 release',
+  ambiguous: '候选多于一条（要去目录里先明确选一个）',
+  manual: '它只给原网页、没有可直接下的字节',
+};
+
+/**
+ * ★ B2：把整合包里的 mod 逐个装进这个文件夹（spec D5 / §7.6）。
+ *
+ * 三道闸与 `downloadMissing` **逐字同源**（它们回答的是同一件事，两处各写一遍必然漂）：
+ * ① 目标必须是目录；② 文件夹的有效游戏版本必须等于入参版本**且**等于包的 `game_version`
+ * （三者不一致 ⇒ 会把别的版本的 mod 装进这个目录）；③ 必须有扫描读数。
+ * ⚠️★ **包的内容以服务端为准**：主进程拿 `packId` 自己去 `GET /api/modpacks/<id>`
+ *    （IPC 只收 id 这条纪律才完整）—— 包不存在（404）⇒ 抛（IPC reject），
+ *    而且**一个下载请求都不发**（闸在逐项循环之前）。
+ * ⚠️ 预扫用的是**共享的纯函数** `packPlanFor` —— 与页面决定"能下几个"的是同一个函数。
+ * ⚠️★ 一条失败**不中断整包**（进 `failed` 继续）；取消在每一项之前判，
+ *    而**被取消那一项不记成失败**（D4"取消不是失败"）—— 与 `updateFolderAll` 那一段逐字同形。
+ */
+export async function downloadPack(
+  packId: unknown,
+  gameVersion: unknown,
+  folderId: unknown,
+  channel: unknown,
+): Promise<ModFoldersState> {
+  assertNotBusy();
+  const { folderId: id, entry } = requireFolder(folderId);
+  const chan = requireChannel(channel);
+  if (typeof packId !== 'string' || packId === '') {
+    throw new Error('非法参数：packId 必须是非空字符串');
+  }
+  const version = requireGameVersion(gameVersion, 'gameVersion');
+
+  /*
+   * ⚠️★ 包的定义**只有服务端那一处**（spec D5）：这里取回来的是"这个包里有哪些 modid、
+   *    它是哪个游戏版本的"。`fetchPack` 在 404 时给 `null` ⇒ 这一趟**在动盘之前**就结束。
+   */
+  const pack = await fetchPack(packId);
+  if (pack === null) throw new Error(`这个整合包不存在：${packId}`);
+
+  const known = catalogOf();
+  const index = catalogIndexOf();
+  if (known === null || index === null)
+    throw new Error('目录还没拉到（这条操作的入参要在目录里查得到）');
+  if (!isDirectory(entry.path)) {
+    throw new Error(`这个文件夹的路径现在不是目录（不给下载）：${entry.path}`);
+  }
+  const folderVersion = folderGameVersion(entry);
+  if (folderVersion === null) {
+    throw new Error(
+      `这个文件夹的游戏版本还不知道（${basename(entry.path)}）⇒ 不给下载（spec §8：先给它选一个游戏版本）`,
+    );
+  }
+  if (folderVersion !== version || pack.gameVersion !== version) {
+    throw new Error(
+      `要下的是 ${pack.gameVersion}（界面选的是 ${version}），而这个文件夹是 ${folderVersion} ⇒ 不给下载（那会装进一个别的游戏版本的目录）：${packId}`,
+    );
+  }
+  const reading = readingOf(id);
+  if (!reading.ok) {
+    throw new Error(
+      `这个文件夹还没有扫描读数（"没扫过"不等于"它里面没有"）⇒ 先点一次「重扫」：${basename(entry.path)}`,
+    );
+  }
+
+  const recognized = folderView(id, entry).rows.flatMap((row) =>
+    row.modid === null ? [] : [row.modid],
+  );
+  /*
+   * ★ 预扫是**纯函数**（与页面同一个实现）：
+   *    `already-in-folder` / `not-in-catalog` / `no-release` / `ambiguous` / `manual` 五种跳过原因
+   *    起手就进 `skipped` —— 它们是"这一趟不打算开工的项"，不算失败。
+   */
+  const plan = packPlanFor({
+    modids: pack.modids,
+    gameVersion: version,
+    folder: { recognizedModids: recognized },
+    index,
+  });
+
+  return bulkRun({
+    run: 'download-pack',
+    folderId: id,
+    itemCount: plan.items.length,
+    work: async () => {
+      /*
+       * ⚠️★ `updated` 是 **modid 的字符串数组**（`ModFoldersState['lastRun']` 那条契约，
+       *    与 `updateFolderAll` / `downloadMissing` 逐字一致）—— brief 那一段示例里写的是
+       *    `{ modid: string }[]`，那是**类型错的**（`tsc` TS2322 当场红，而页面那一侧也按
+       *    `string[]` 读）。这里按既有形状取。
+       */
+      const updated: string[] = [];
+      const skipped: { modid: string; reason: string }[] = plan.skipped.map((s) => ({
+        modid: s.modid,
+        reason: SKIP_TEXT[s.reason],
+      }));
+      const failed: { modid: string; reason: string }[] = [];
+      const cancelled: { modid: string; reason: string }[] = [];
+      let any = false;
+      for (const item of plan.items) {
+        // ★ D4：取消之后**剩下的项不再开工**（在每一项之前判，而不是等它自己抛）
+        if (isCancelling()) {
+          cancelled.push({ modid: item.modid, reason: '已取消' });
+          break;
+        }
+        setRunItem({
+          modid: item.modid,
+          fileName: originFileNameOf(item.release.url) ?? item.modid,
+        });
+        try {
+          const outcome = await installRelease({
+            targetDir: entry.path,
+            release: item.release,
+            channel: chan,
+            /*
+             * 旧副本 = **空**（与 `downloadMissing` 同一句）：包里的项是"这个文件夹里还没有"的
+             * 那一批（`already-in-folder` 起手就跳过了）⇒ 目标位置要是已经有一个文件，
+             * 那它就是我们没见过的 ⇒ 落给 `installRelease` 的闸去拒（Ruling 48 的同一族）。
+             */
+            oldCopies: [],
+          });
+          any = true;
+          updated.push(item.modid);
+          if (outcome.alreadyCurrent) {
+            // ★ 空转不许冒充"已更新"（(e)）：一个字节都没写 ⇒ 进 `skipped` 并说清为什么
+            skipped.push({ modid: item.modid, reason: SKIP_TEXT['already-in-folder'] });
+          }
+        } catch (error) {
+          /*
+           * ★★ D4：**取消不是失败** —— 被我们 abort 掉的那一项进 `cancelled` 然后停，
+           *    不记成 `failed`（与 `updateFolderAll` 逐字同形）。
+           * ⚠️★ 这一支是 brief 那段示例代码里**没有**的（它只写了"一条失败不中断整包"）；
+           *    照它逐字实现时，用户点取消会让那一项以"已中止"的名义进 `failed`，
+           *    而同一趟的其它项进 `cancelled` —— 同一个事件两句话，页面显示"失败 1 项"。
+           *    那与 D4 明写的"取消不是失败"以及 ㉘/㉘b 两条判据都相反
+           *    （`apps/desktop/scripts/verify-mod-folders.mjs` 的探针断言 12 钉的就是本支）。
+           */
+          if (isCancelling()) {
+            cancelled.push({ modid: item.modid, reason: '已取消' });
+            break;
+          }
+          /* ⚠️ 一条失败**不中断整包**：进 `failed` 继续（与 `downloadMissing` 的单条语义相反 —— 那是"点了一条"） */
+          failed.push({ modid: item.modid, reason: messageOf(error) });
+        }
+      }
+      if (any) await queueScan(id, entry.path, { onlyIfMissing: false });
+      return { updated, skipped, failed, cancelled };
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
@@ -2100,13 +2277,17 @@ function registerIpc(): void {
   );
   ipcMain.handle(MOD_FOLDERS_CHANNELS.setTagFilter, (_event, tags: unknown) => setTagFilter(tags));
   /*
-   * ⚠️★ 这一条**本任务只注册、不实现**（行为在 Task 5）：契约先立起来，
-   *    这样"契约对不对"（17 条通道、asar 里三条命中、桩逐条对账）与"这一趟跑得对不对"
-   *    是**两次可以分别否决的评审**。⇒ 它会抛，而且这句抛错的文案要写清"还没实现"。
+   * ★ B2 / T4 立的契约、T5 落的**行为**：整包下载。入参一律 `unknown`（与上面每一条同一条纪律），
+   *   顺序与 `downloadMissing` 一致（`packId, gameVersion, folderId, channel`），
+   *   与 `preload.ts` 那个包装器、`packages/shared/src/desktop.ts` 的契约三方逐字对齐。
+   *   ⚠️★ 这里**只留一条** `ipcMain.handle`（原来那条抛"还没实现"的桩已经删掉）：
+   *     同一个通道注册两次会让 Electron 直接抛 "second handler"（整个主进程起不来）。
    */
-  ipcMain.handle(MOD_FOLDERS_CHANNELS.downloadPack, () => {
-    throw new Error('downloadPack 还没实现（Task 5 才落行为）');
-  });
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.downloadPack,
+    (_event, packId: unknown, gameVersion: unknown, folderId: unknown, channel: unknown) =>
+      downloadPack(packId, gameVersion, folderId, channel),
+  );
   /*
    * ★ Task 5：两条写盘通道。入参一律 `unknown`（与上面十条同一条纪律 —— 校验在函数体里）。
    *    ⚠️ 这两条**收 `releaseKey`**（只有它们收）：页面把它自己渲染那一行的 key 带回来，

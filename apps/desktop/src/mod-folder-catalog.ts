@@ -217,6 +217,52 @@ export function queueLoadCatalog(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 取**一个**整合包（`/api/modpacks/<id>`，spec D5）
+// ---------------------------------------------------------------------------
+
+/**
+ * ★ B2：按 id 取一个整合包的定义（主进程自己去取 ⇒ IPC 只收 id 这条纪律才完整）。
+ *
+ * ⚠️ 与 `loadCatalog` **同形**：同一个 `deps.siteOrigin`、同一个 15 秒超时、同一套失败分类
+ *    （404 ⇒ `null`（"这个包不存在"是一个正常答案）、非 2xx / 坏 JSON / 不合契约 ⇒ 抛）。
+ * ⚠️ **不缓存**：包会改，而这一趟是用户按下去的（缓存住会让"我刚改的包"下不下来）。
+ * ⚠️★ 它**不**写目录那五格里的任何一格（那些格子的写者只有 `loadCatalog`）：一次"取一个包"
+ *    失败**不许**把目录状态改成 `unavailable` —— 那会让整个第一部分凭空消失。
+ */
+export async function fetchPack(
+  packId: string,
+): Promise<{ id: string; title: string; gameVersion: string; modids: string[] } | null> {
+  const d = requireDeps();
+  const url = new URL(`/api/modpacks/${encodeURIComponent(packId)}`, d.siteOrigin).toString();
+  const res = await fetch(url, {
+    headers: { 'user-agent': d.userAgent },
+    signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`取整合包失败：HTTP ${String(res.status)}`);
+  const body: unknown = await res.json().catch(() => {
+    throw new Error('取整合包失败：返回的不是 JSON');
+  });
+  const pack = body as { id?: unknown; title?: unknown; gameVersion?: unknown; modids?: unknown };
+  if (
+    typeof pack.id !== 'string' ||
+    typeof pack.title !== 'string' ||
+    typeof pack.gameVersion !== 'string'
+  ) {
+    throw new Error('取整合包失败：返回的形状不对');
+  }
+  if (!Array.isArray(pack.modids) || pack.modids.some((m) => typeof m !== 'string')) {
+    throw new Error('取整合包失败：modids 不是字符串数组');
+  }
+  return {
+    id: pack.id,
+    title: pack.title,
+    gameVersion: pack.gameVersion,
+    modids: pack.modids as string[],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 上游解析（spec §7.2 / D1）—— 抓不到就**不放进 map**
 // ---------------------------------------------------------------------------
 
