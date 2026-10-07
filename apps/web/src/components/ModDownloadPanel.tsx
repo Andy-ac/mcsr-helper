@@ -236,9 +236,10 @@ export function ModDownloadPanel({
    * "真的没有"也变成一次多余的请求）。
    * ⚠️ 依赖是 `[state.gameVersion]`：换版本必须重取（包是按版本问的）。
    */
-  const fetchedPacks = useReview((signal) => fetchModPacks(state.gameVersion, signal), [
-    state.gameVersion,
-  ]);
+  const fetchedPacks = useReview(
+    (signal) => fetchModPacks(state.gameVersion, signal),
+    [state.gameVersion],
+  );
   /**
    * ★ B2：目录（约 425 KB、带 ETag）——**只为建一次索引**。
    * ⚠️★ 它与 `packs` 是**两条独立**的取数：一条失败不该让另一条不画
@@ -249,7 +250,8 @@ export function ModDownloadPanel({
    */
   const catalog = useReview((signal) => fetchModCatalog(signal), []);
   const catalogIndex = catalog.state.status === 'ok' ? buildIndex(catalog.state.data) : null;
-  const packList = packs ?? (fetchedPacks.state.status === 'ok' ? fetchedPacks.state.data.items : null);
+  const packList =
+    packs ?? (fetchedPacks.state.status === 'ok' ? fetchedPacks.state.data.items : null);
 
   /*
    * ★★ 投影**只有一处**：这一版要画什么全由 `planVersionPage()` 算好（T1），

@@ -48,8 +48,8 @@
  *    一个字节都不动：只加孩子）⇒ 它由面板调这个组件时带 `chipsOnly` 渲染一次。
  */
 import type { ModIndex } from '@mcsr/shared/modCatalog';
-import { packDownloadableIn } from '@mcsr/shared/modPacks';
 import type { VersionFolderBlock } from '@mcsr/shared/modFolders';
+import { packDownloadableIn } from '@mcsr/shared/modPacks';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DownloadProgressLine } from '@/components/DownloadProgressLine';
@@ -136,6 +136,10 @@ export function ModPacksSection({
                   ?.scrollIntoView({ block: 'center' });
               }}
             >
+              {/*
+                ⚠️ 星号由**词条**决定（`files.packsChip` = `★ {{title}}`），不写死在这里：
+                那一颗记号是"这一条包是热门"的说法，两种语言各自决定怎么标它。
+              */}
               {t('files.packsChip', { title: pack.title })}
             </button>
           ))}
@@ -188,7 +192,6 @@ function PackRow({
   candidates,
   catalogIndex,
   selected,
-  onSelectPack,
   onAction,
   progress,
   busy,
@@ -197,7 +200,6 @@ function PackRow({
   candidates: readonly VersionFolderBlock[];
   catalogIndex: ModIndex;
   selected: boolean;
-  onSelectPack: (packId: string) => void;
   onAction: ModPageActionHandler;
   progress: PageProgress | null;
   busy: boolean;
@@ -249,7 +251,9 @@ function PackRow({
    *    所以这里**不能**拿它比 `pack.id`。
    */
   const line =
-    progress !== null && progress.frame.run === 'download-pack' && progress.frame.folderId === target
+    progress !== null &&
+    progress.frame.run === 'download-pack' &&
+    progress.frame.folderId === target
       ? progress
       : null;
 
@@ -259,10 +263,14 @@ function PackRow({
       /* ⚠️ 机器读数：自检 ⑮ 拿它与小卡的 `aria-pressed` 对读（"一起变"）。 */
       data-pack-selected={selected ? 'yes' : 'no'}
       /*
-       * ⚠️ 点行本身也**选中**它：小卡只对热门包存在，而"我此刻在看哪一条包"
-       *    对每一条都成立（否则冷门包永远没有选中态，那一格读数就只覆盖一半）。
+       * ⚠️★ 这一行**没有** `onClick`（而 `role="group"` 也不行：`biome` 的
+       *    `a11y/useSemanticElements` 会要求把它换成 `<fieldset>`）。
+       *    理由：这一行是一块**容器**（里面那个 `<select>` 与那颗按钮才是控件），
+       *    给它挂 `onClick` 会让"静态元素不许可交互"+"鼠标事件必须有键盘对应"两条一起红，
+       *    而补 `role="button"` + 键盘处理是**假**的可访问性 —— 它不是一个按钮。
+       *    ⇒ 选中那件事由顶部那颗**真的** `<button>`（小卡）负责；这一行只**读**
+       *    `data-pack-selected`（自检 ⑮ 断的就是那颗按钮与这一格一起变）。
        */
-      onClick={() => onSelectPack(pack.id)}
     >
       <span>
         {/* ⚠️ 星号是**这一条包是热门**的读数（与顶部那颗小卡同一条事实，不是装饰）。 */}

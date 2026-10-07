@@ -4889,6 +4889,12 @@ export const en: TranslationSchema = {
      */
     /** ★ The section title (`{{count}}` = how many packs this version has). */
     packsTitle: 'Mod packs ({{count}})',
+    /*
+     * ★ The hot-chip label (`{{title}}` = the pack title).
+     * ⚠️ The star lives **in this entry**, not in the component: it is part of how a hot pack
+     * is named, and each language gets to choose its own mark.
+     */
+    packsChip: '★ {{title}}',
     /** ★ How many modids one pack holds (**the number the server computed**, not one counted here). */
     packsModCount: '{{count}} mods',
     /*
