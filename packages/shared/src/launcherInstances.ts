@@ -180,7 +180,9 @@ function metaFromMmcPack(
     const mc = components.find((c) => c.uid === 'net.minecraft')?.version ?? null;
     const fabric = components.find((c) => c.uid === 'net.fabricmc.fabric-loader')?.version;
     const forge = components.find((c) => c.uid === 'net.minecraftforge')?.version;
-    /* ⚠️ 只认这两家**已核实**的 uid；quilt / liteloader / optifine 之类**不猜** ⇒ loader 留 null。 */
+    /* ⚠️ 只认这两家 uid（本机实测真机安装：fabric 那份 `mmc-pack.json` 写的是
+       `net.fabricmc.fabric-loader`、forge 那份写 `net.minecraftforge`）；quilt / liteloader /
+       optifine 之类**不猜** ⇒ loader 留 null。 */
     let loader: string | null = null;
     if (fabric !== undefined) loader = `fabric ${fabric}`;
     else if (forge !== undefined) loader = `forge ${forge}`;
@@ -190,7 +192,7 @@ function metaFromMmcPack(
   }
 }
 
-/** 版本 json（PCL / HMCL / 官方）→ 游戏版本；`inheritsFrom` 是最准的那条线索。 */
+/** 版本 json（PCL / HMCL / 官方）→ 游戏版本；`clientVersion` / `inheritsFrom` 是那两条线索。 */
 function metaFromVersionJson(
   fs: LauncherFs,
   instancePath: string,
@@ -204,12 +206,15 @@ function metaFromVersionJson(
       inheritsFrom?: string;
       clientVersion?: string;
     };
-    /* 顺序：`clientVersion`（少数启动器会写的显式游戏版本）⇒ `inheritsFrom`（PCL/HMCL 的
-       版本 json 指向原版那一版 ✓）⇒ `id`（`id` 里可能带着 loader 串，是最差的一条）。 */
+    /* 顺序：`clientVersion`（★ PCL2 就写在这里 —— 本机实测 `D:\PCL2\.minecraft\versions\*`
+       那 6 份 json **全部**只有 `clientVersion`、**0 份**有 `inheritsFrom`，而 `id` 形如
+       `1.16.1-Fabric 0.17.3` ⇒ 少了这一格就会把 loader 串当成版本 ✗）⇒ `inheritsFrom`
+       （别家启动器的版本 json 用它指向原版那一版）⇒ `id`（最差的一条）。 */
     const gameVersion = parsed.clientVersion ?? parsed.inheritsFrom ?? parsed.id ?? null;
     /* ⚠️★ loader 这一格**故意留空**：`id` 形如 `1.16.1-Fabric 0.17.3`，从字符串里切一顿
-       也能"切出来" —— 那正是本设计的"不猜"要挡的东西（Global Constraints）。PCL/HMCL 的
-       loader 只有两条可靠来路：读 `libraries`（未核实，留给后续）或用户手改（A12）。 */
+       也能"切出来" —— 那正是本设计的"不猜"要挡的东西（Global Constraints）。可靠来路是
+       `libraries`（本机实测里面有 `net.fabricmc:fabric-loader:0.17.3`，但那要另写一条判定
+       与夹具 ⇒ 不在本任务；v1 先留空，用户手改那边 A12 今天也没有 loader 的口）。 */
     return { gameVersion, loader: null };
   } catch {
     return { gameVersion: null, loader: null };

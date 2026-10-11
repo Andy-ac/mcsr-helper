@@ -297,4 +297,24 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
     assert.equal(savesOnly.needsConfirm, false, '手改过 ⇒ 不再待确认');
     assert.equal(one.needsConfirm, true, '`applyOverride` 是纯的：原对象不许被改');
   });
+
+  it('⑲ ★ 真机形状：PCL2 的版本 json **没有** `inheritsFrom`，版本在 `clientVersion` 上', () => {
+    /* 证据（2026-10-11 本机实测 `D:\PCL2\.minecraft\versions`）：那 6 份 `<名>.json`
+       **全部**带 `clientVersion`（= `1.16.1` / `1.20.1` …）、**0 份**带 `inheritsFrom`，
+       而 `id` 是 `1.16.1-Fabric 0.17.3` 这种带 loader 串的 ⇒ 少了 `clientVersion` 这一格，
+       版本那格就会变成 `id`（**错的**值，比留空更坏）。 */
+    const name = '1.16.1-Fabric 0.17.3';
+    const fs = fakeFs(
+      { 'D:\\PCL2\\.minecraft\\versions': [name] },
+      {
+        [`D:\\PCL2\\.minecraft\\versions\\${name}\\${name}.json`]: JSON.stringify({
+          id: name,
+          clientVersion: '1.16.1',
+        }),
+      },
+    );
+    const one = listInstances(fs, 'pcl2', 'D:\\PCL2')[0]!;
+    assert.equal(one.gameVersion, '1.16.1', '`clientVersion` 必须压过 `id`');
+    assert.equal(one.loader, null, 'loader 依旧留空（这三家的 loader 本任务不解析）');
+  });
 });
