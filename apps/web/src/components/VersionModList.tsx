@@ -99,6 +99,18 @@ export interface VersionModListProps {
    *    这是**有意的**：进度行说的是"这一行此刻正在下它"，而用户看到的正是这一行。
    */
   progress: PageProgress | null;
+  /**
+   * ★★ D1（T7）：**只读**（A3 / spec §4.3）—— `true` ⇒ 这一栏**一个下载入口都不画**。
+   *
+   * ⚠️★ 默认 `false` = 今天的行为（**一个含义**：不传就是可下载那一档）—— 与
+   *    `ModPacksSectionProps.readOnly` 同一条口径。
+   * ⚠️ 为什么"只读"不是"不画这一段"：spec §4.3 要的是"选了版本 ⇒ 该版本的 mod 清单
+   *    **立刻可见**，但**只能看**" ⇒ 清单 / 目标版本 / 主页链接三样照旧，去掉的是
+   *    **那一格动作**（下载按钮 / 目标选择器 / 那两句"为什么不能下"）。
+   *    ⚠️ 那两句说明也一起去掉：它们在只读那一层说的是"点了会怎样"，而那一层**没有**可点
+   *    的东西（留着它们等于给一个不存在的动作写解释）。
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -109,7 +121,14 @@ export interface VersionModListProps {
  *   · 目录可用但这一版一条都没有 ⇒ 一句"没有可列的 mod"（空表与"没渲染"分不开）；
  *   · 否则 ⇒ 表。
  */
-export function VersionModList({ page, tagLabels, busy, onAction, progress }: VersionModListProps) {
+export function VersionModList({
+  page,
+  tagLabels,
+  busy,
+  onAction,
+  progress,
+  readOnly = false,
+}: VersionModListProps) {
   const { t, i18n } = useTranslation();
   /**
    * 标签显示名按**当前语言**取（与 `FolderJarList` 那一处同一条判据：`i18n.language`
@@ -177,6 +196,7 @@ export function VersionModList({ page, tagLabels, busy, onAction, progress }: Ve
                   busy={busy}
                   onAction={onAction}
                   progress={progress}
+                  readOnly={readOnly}
                 />
               ))}
             </tbody>
@@ -197,6 +217,7 @@ function VersionModItem({
   busy,
   onAction,
   progress,
+  readOnly = false,
 }: {
   row: VersionModRow;
   /** `page.version` —— 主进程要的那一格（拿它跟目标文件夹的有效版本对一遍）。 */
@@ -209,6 +230,8 @@ function VersionModItem({
   onAction: ModPageActionHandler;
   /** ★ C 的 T5：整页那份进度载荷（见 `VersionModListProps.progress`）。 */
   progress: PageProgress | null;
+  /** ★ D1（T7）：只读那一层（见 `VersionModListProps.readOnly`）。 */
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   /**
@@ -340,11 +363,22 @@ function VersionModItem({
           /*
            * ★★★ 「已下载」（spec §9.9 / D5）：它**替换**下载按钮，不是与它并列
            *   （两颗一起画正是 spec §9 的刀 ⑨ 要咬的那种退化）。
+           * ⚠️★ D1（T7）：这一档**只读那一层照画** —— 它是"这一行现在什么状态"的读数
+           *   （不是动作），而只读那一层照样要看得出"这个 mod 已经装在那个实例里了"。
            */
           <span className="badge" data-state="downloaded">
             {t('files.alreadyDownloaded')}
           </span>
-        ) : !downloadable ? (
+        ) : readOnly ? /*
+         * ★★ D1（T7）：**只读**那一层 —— 这一格**什么都不画**。
+         *
+         * ⚠️★ 为什么连那两句解释也去掉：它们说的是"点了会怎样"（"先绑一个文件夹" /
+         *    "能装它的文件夹里已经有它了"），而这一层**没有**可点的东西 ——
+         *    给一个不存在的动作写解释，用户只会去找那颗不存在的按钮。
+         * ⚠️ 判据是"这一层一个下载钩子都没有"（自检 ㊿a 逐条数 `data-action="download-mod"`
+         *    与 `data-pack-download` 的**实际命中数**）⇒ 这一支必须是**空**的。
+         */
+        null : !downloadable ? (
           /* ★ 主进程必拒那两档：只给一句解释（不给按钮，见文件头）。 */
           <span className="filetable__err">{t(whyKey)}</span>
         ) : (

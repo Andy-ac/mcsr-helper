@@ -332,6 +332,14 @@ function JarRow({
             <button
               type="button"
               className="ghostbtn"
+              /*
+               * ★★ D1（T7）：这一格是**机器读数**（`data-action="update-mod"`）—— 它让
+               *    "哪一层能下载"这件事在**产物**上数得出来：版本层一个都不许有、
+               *    实例层至少一处（渲染自检 ㊿a / ㊿b 逐条数**实际命中数**）。
+               * ⚠️ 两颗按钮**各挂一次**（同一层的两个通道各一颗）：数的是"这一层有没有
+               *    这条下载路径"，不是"有几颗按钮"⇒ 两颗都挂才对得上那句话。
+               */
+              data-action="update-mod"
               disabled={busy}
               onClick={() =>
                 void onAction({
@@ -349,6 +357,8 @@ function JarRow({
               <button
                 type="button"
                 className="ghostbtn"
+                /* ⚠️ 与上面那颗同一个 `data-action`（同一条下载路径的另一条通道）。 */
+                data-action="update-mod"
                 disabled={busy}
                 onClick={() =>
                   void onAction({

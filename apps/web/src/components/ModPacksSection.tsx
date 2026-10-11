@@ -95,6 +95,19 @@ export interface ModPacksSectionProps {
    * ⚠️ 它也保证了小卡与行读的是**同一份** `packs`（一次取数、一处顺序）。
    */
   chipsOnly?: boolean;
+  /**
+   * ★★ D1（T7）：**只读**（A3）—— `true` ⇒ 那一行**不画**「装」按钮与目标下拉。
+   *
+   * ⚠️★ 默认 `false` = 今天的行为（**一个含义**：不传就是可下载那一档），与
+   *    `VersionModListProps.readOnly` 同一条口径。
+   * ⚠️★ 为什么只读那一层照样画这一节：spec §4.3 要的是"该版本的 mod **与整合包**清单
+   *    **可见**"；A6 的另一半是"包与各自版本照旧全列"。去掉的**只有**那两个控件
+   *    （"装进哪个实例" + 「装」）—— 而那两句说明（"都已经在这个文件夹里了" /
+   *    "一个能装的文件夹都没有"）也一起去掉：它们解释的是一个这一层没有的动作。
+   * ⚠️ 小卡（`chipsOnly`）不受它影响：小卡的动作是"选中 + 滚到那一行"（页面内导航），
+   *    不是下载 —— 只读那一层里点它照样有意义（它把下面那一行高亮出来）。
+   */
+  readOnly?: boolean;
 }
 
 export function ModPacksSection({
@@ -107,6 +120,7 @@ export function ModPacksSection({
   progress,
   busy,
   chipsOnly = false,
+  readOnly = false,
 }: ModPacksSectionProps) {
   const { t } = useTranslation();
 
@@ -195,6 +209,7 @@ export function ModPacksSection({
           onAction={onAction}
           progress={progress}
           busy={busy}
+          readOnly={readOnly}
         />
       ))}
     </section>
@@ -210,6 +225,7 @@ function PackRow({
   onAction,
   progress,
   busy,
+  readOnly = false,
 }: {
   pack: ModPackWire;
   candidates: readonly VersionFolderBlock[];
@@ -218,6 +234,8 @@ function PackRow({
   onAction: ModPageActionHandler;
   progress: PageProgress | null;
   busy: boolean;
+  /** ★ D1（T7）：只读那一层（见 `ModPacksSectionProps.readOnly`）。 */
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   /**
@@ -320,43 +338,60 @@ function PackRow({
           onCancel={() => void onAction({ kind: 'cancel-download' })}
         />
       )}
-      <select
-        className="filters__select"
-        data-pack-folder={pack.id}
-        aria-label={t('files.packsFolderLabel', { title: pack.title })}
-        value={target}
-        disabled={busy || available.length === 0}
-        onChange={(event) => setChosen(event.target.value)}
-      >
-        {candidates.map((block) => (
-          <option key={block.folder.folderId} value={block.folder.folderId}>
-            {/* ⚠️ 选项文字是**路径**（id 对用户没有意义），值仍是 id（主进程收的就是 id）。 */}
-            {block.folder.path}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        data-pack-download={pack.id}
-        disabled={disabled}
-        onClick={() => {
-          /*
-           * ⚠️ 没有目标时**什么都不发**：`target === ''` 那一档按钮已经禁用了，
-           *    这一句是给"禁用属性被别的东西绕过"留的兜底（发一条空 folderId 过去
-           *    只会换回主进程一句 `requireFolder` 的拒）。
-           */
-          if (target === '') return;
-          void onAction({
-            kind: 'download-pack',
-            packId: pack.id,
-            gameVersion: pack.gameVersion,
-            folderId: target,
-          });
-        }}
-      >
-        {t('files.packsDownload')}
-      </button>
-      {downloadable === 0 && available.length > 0 ? (
+      {/*
+        ★★ D1（T7）：**只读那一层**（`readOnly`）不画这两样 —— 「装进哪个实例」与「装」。
+        ⚠️★ 判据是自检 ㊿e 的两条（版本层 `data-pack-download` 命中 **0** 处、
+        实例层命中 1 处且目标下拉只剩当前这个实例）—— 而那两条必须**成对**读：
+        只写"版本层没有"的话，一个"永远不画那颗按钮"的实现照样绿。
+        ⚠️ 小卡（`chipsOnly`）在只读那一层照画：它的动作是页面内导航（选中 + 滚到那一行），
+        不是下载（见 `ModPacksSectionProps.readOnly`）。
+      */}
+      {readOnly ? null : (
+        <select
+          className="filters__select"
+          data-pack-folder={pack.id}
+          aria-label={t('files.packsFolderLabel', { title: pack.title })}
+          value={target}
+          disabled={busy || available.length === 0}
+          onChange={(event) => setChosen(event.target.value)}
+        >
+          {candidates.map((block) => (
+            <option key={block.folder.folderId} value={block.folder.folderId}>
+              {/* ⚠️ 选项文字是**路径**（id 对用户没有意义），值仍是 id（主进程收的就是 id）。 */}
+              {block.folder.path}
+            </option>
+          ))}
+        </select>
+      )}
+      {readOnly ? null : (
+        <button
+          type="button"
+          data-pack-download={pack.id}
+          disabled={disabled}
+          onClick={() => {
+            /*
+             * ⚠️ 没有目标时**什么都不发**：`target === ''` 那一档按钮已经禁用了，
+             *    这一句是给"禁用属性被别的东西绕过"留的兜底（发一条空 folderId 过去
+             *    只会换回主进程一句 `requireFolder` 的拒）。
+             */
+            if (target === '') return;
+            void onAction({
+              kind: 'download-pack',
+              packId: pack.id,
+              gameVersion: pack.gameVersion,
+              folderId: target,
+            });
+          }}
+        >
+          {t('files.packsDownload')}
+        </button>
+      )}
+      {/*
+        ⚠️★ 两句说明与那两个控件**同一档**（`readOnly` 时一起去掉）：它们解释的是
+        "那颗按钮为什么点不动"，而只读那一层**没有那颗按钮** —— 留着就是给一个
+        不存在的动作写解释（用户会去找它）。
+      */}
+      {!readOnly && downloadable === 0 && available.length > 0 ? (
         /*
          * ⚠️ 一颗禁用的按钮**必须说得出为什么**（会拒的一律不放开，同时给一句解释）。
          * ⚠️★ 还要 `available.length > 0`（修轮补）：两句可以**同时**成立，而那时
@@ -366,7 +401,7 @@ function PackRow({
          */
         <span className="filetable__err">{t('files.packsNothingToDo')}</span>
       ) : null}
-      {available.length === 0 ? (
+      {!readOnly && available.length === 0 ? (
         /*
          * ⚠️ 这一支与上面那句是**两件事**：这里说的是"一个能装的文件夹都没有"
          *    （出路 = 先绑一个），上面说的是"有文件夹，但这一包的项都已经在它里面了"。

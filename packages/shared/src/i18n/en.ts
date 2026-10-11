@@ -4218,6 +4218,15 @@ export const en: TranslationSchema = {
     colActions: 'Actions',
     bind: 'Choose file',
     rebind: 'Choose again',
+    /*
+     * ⚠️★ D1 (T7): this key is **withdrawn but kept** - its render points
+     * (`VersionFolderList`'s two "add a folder" buttons, `data-action="bind-folder"`)
+     * were removed from the UI in T7 (spec §7: those two channels stay in the contract
+     * but are no longer UI entry points). Nothing in `apps/web/src` calls
+     * `t('files.bindFolder')` any more. The key is **not deleted** because the live
+     * bundle is served by the server and two generations coexist for a while
+     * (deleting it makes that generation print the raw key).
+     */
     bindFolder: 'Choose mods folder',
     /*
      * ★ Not in the plan's table: **unbinding one item** (`unbind(itemId)` — the channel
@@ -4827,15 +4836,87 @@ export const en: TranslationSchema = {
      * ⚠️ One string, two render points (the top-row button and the section heading):
      * they are two ways of naming the same thing, and a second wording would turn
      * into two names for it.
+     * ★★ D1 (T7): the value changed from "Show all bound folders" to "Show all
+     * instances" (spec §4.5). The wording follows the **content**: that section is now
+     * a read-only per-instance list (launcher / instance name / version / `mods` /
+     * `saves` / scan state) and its data source is `state.instances` (`folders[]` has
+     * neither `saves` nor the launcher kind and instance name).
      */
-    allBoundFolders: 'Show all bound folders',
+    allBoundFolders: 'Show all instances',
     /*
-     * ★ The empty state of **one version** (spec §8's first row). It is deliberately
-     * not `folderNone` (that one mentions the missing list, which this page no longer
-     * renders), and it carries the only "add a folder" entry point on this page.
+     * ★ The empty state of **one version** (spec §8's first row).
+     * ⚠️★ D1 (T7): its **render point is gone** - it used to be printed inside
+     * `VersionFolderList`'s "no mods folder bound for this version" block, and the two
+     * "add a folder" buttons (with that empty state) were removed from the UI in T7
+     * (spec §7: those two channels **stay in the contract** but are **no longer UI
+     * entry points**). ⇒ **withdrawn, not deleted** (deleting a key makes an older
+     * bundle print the key itself, and the live bundle is served by the server).
      */
     folderNoneVersion:
       'No mods folder is bound for this version yet - bind one and the mods inside it are checked against the catalog.',
+    /*
+     * ===================================================================
+     * ★★ D1 (T7): the "version -> instance" two-layer UI (spec §4.3-§4.6 / A3-A8)
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2)
+     * or down-triangle (U+25BE) in these values (neither is in the self-hosted pixel
+     * font subsets).
+     */
+    /*
+     * ★ Display names of the five launchers (A5's read-only detail section needs the
+     * launcher kind, A7's binding page needs it too). They are product names, so the
+     * English and Chinese values are the same - still routed through i18n (same reason
+     * as `files.openFolder`: every string on screen comes from one place).
+     */
+    launcherKindMultimc: 'MultiMC',
+    launcherKindPrism: 'Prism',
+    launcherKindPcl2: 'PCL2',
+    launcherKindHmcl: 'HMCL',
+    launcherKindOfficial: 'Official launcher',
+    launcherKindMcsr: 'MCSR Launcher',
+    /** The version layer's hint (A3: "pick an instance to download") - the only answer to "why can't I download here". */
+    pickInstanceHint:
+      'Pick an instance to download - this layer is read-only, downloads happen inside the instance you pick.',
+    /** Instance layer: go back (to the version layer). */
+    backToVersions: 'Back to versions',
+    /** Instance layer's "which instance is this" heading (A19's "which instance" lands here). */
+    instanceHeadTitle: 'Downloading into: {{name}}',
+    /** One field of that heading (the `mods` directory). */
+    instanceHeadMods: 'mods: {{path}}',
+    /** One field of that heading (loader; when it cannot be read the field is not drawn at all). */
+    instanceHeadLoader: 'loader: {{loader}}',
+    /**
+     * ★ A8's third empty state: **this version has no tracked instance** - an explanation
+     * plus one "go tick one" entry point. It is a **different sentence** from the other
+     * two empty states (no launcher bound / bound but nothing ticked): merging them sends
+     * the user to the wrong place.
+     */
+    pickVersionEmpty:
+      'No tracked instance for this version yet - go tick a {{version}} instance and it shows up here.',
+    /** Not a single instance read (no launcher bound yet / nothing read yet) - **not** the same sentence as above. */
+    pickNoInstances:
+      'No instances read yet - open "Launcher binding" and bind a launcher, then tick its instances.',
+    /** That "go tick one / go bind one" entry point (the only button in the empty state). */
+    goLaunchers: 'Go to launcher binding',
+    /** The "enter" button on an instance card (version layer -> instance layer; spec §4.4's one layer, not a route). */
+    openInstance: 'Open this instance',
+    /** ★ A7's "needs confirm" badge (the value is already a display value: `needsConfirm && !confirmed`). */
+    instanceNeedsConfirm: 'Needs confirm',
+    /**
+     * ★ Field labels of the read-only detail section (A5 requires all six).
+     * ⚠️ `mods` / `saves` are **directory names** (facts on disk) and are not translated;
+     * only the labels in front of them are.
+     */
+    instanceFieldLauncher: 'Launcher',
+    instanceFieldVersion: 'Version',
+    instanceFieldMods: 'mods',
+    instanceFieldSaves: 'saves',
+    instanceFieldScan: 'Scan',
+    /** The three scan states (**not** "installed/missing": this says whether we have a reading at all). */
+    scanStatusScanned: 'Scanned',
+    scanStatusUnscanned: 'No scan yet',
+    /** ⚠️ An untracked instance has **no folder** and therefore no scan reading ⇒ this cell says "there is no such cell for this row". */
+    scanStatusUntracked: 'Not tracked',
     /** The heading of the version-grouped folder section (`{{version}}` is a version string). */
     versionFoldersTitle: 'Mod folders under {{version}}',
     /*

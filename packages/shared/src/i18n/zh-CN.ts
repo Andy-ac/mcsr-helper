@@ -3816,6 +3816,15 @@ export const zhCN = {
     colActions: '操作',
     bind: '选择文件',
     rebind: '重新选择',
+    /*
+     * ⚠️★ D1（T7）：这一条**停用但保留** —— 它的渲染点（`VersionFolderList` 里那两颗
+     *    「添加文件夹」，`data-action="bind-folder"`）随 T7 从 UI 上摘掉了（spec §7：
+     *    手工绑定那两条通道**保留在契约里**、但**不再是 UI 入口**）。
+     *    ⇒ 今天**没有任何组件**调 `t('files.bindFolder')`（现读 `apps/web/src`）。
+     *    ⚠️ 为什么**不删键**：线上 bundle 由服务端下发，两代页面会并存一段
+     *    （老 bundle + 新壳，或反过来）—— 删键会让那一代的界面把 key 原样印出来。
+     *    记一笔给收口：D1 之后再统一清死键（与 §5.112 那 45 条同一件事）。
+     */
     bindFolder: '选择 mods 目录',
     /*
      * ★ 计划表里没有的一条：**解开一条绑定**（`unbind(itemId)` —— T3 建的通道、T4 的实现）。
@@ -4356,15 +4365,79 @@ export const zhCN = {
     /*
      * ⚠️ 一条词条、两个渲染点（顶部那颗按钮与那一栏的标题）：它们是同一件事的两种说法，
      *    换个措辞就会变成两种叫法（`Videos.tsx` 那处 `tracked.title` 是同一条纪律）。
+     * ★★ D1（T7）：值从「显示全部已绑定的文件夹」改成「显示全部实例」（spec §4.5）。
+     *    措辞跟着**内容**走：那一栏现在是"一行一个实例"的只读明细（启动了哪个启动器 /
+     *    实例名 / 版本 / `mods` / `saves` / 扫描状态），而它的数据源已经是 `state.instances`
+     *    （`folders[]` 里既没有 `saves`、也没有启动器类型与实例名）。
      */
-    allBoundFolders: '显示全部已绑定的文件夹',
+    allBoundFolders: '显示全部实例',
     /*
-     * ★ **某一个版本**下的空态（spec §8 第一行）。它**刻意不是** `folderNone`：
-     *    那一条的措辞提到"下面的缺失清单"，而这一页不再渲染那一块了。
-     *    它同时是这一页**唯一**的"添加文件夹"入口。
+     * ★ **某一个版本**下的空态（spec §8 第一行）。
+     * ⚠️★ D1（T7）：**渲染点已经没有了** —— 它原来印在 `VersionFolderList` 那句
+     *    "这个版本下还没有绑定 mods 文件夹"里，而手工绑定那两颗「添加文件夹」
+     *    （连同那句空态）随 T7 从 UI 上摘掉了（spec §7：那两条通道**保留在契约里**、
+     *    但**不再是 UI 入口**）。⇒ 这个键**停用但保留**（删键会让老 bundle 的
+     *    `t()` 退回 key 本身，而线上 bundle 由服务端下发 —— 两代并存过一段）。
      */
     folderNoneVersion:
       '这个版本下还没有绑定 mods 文件夹 —— 绑定一个之后，里面的 mod 会按目录判定。',
+    /*
+     * ===================================================================
+     * ★★ D1（T7）：「版本 → 实例」两层界面（spec §4.3–§4.6 / A3–A8）
+     * ===================================================================
+     * ⚠️ 与本节其余部分同一条前缀纪律：一律 `files.`；值里**不许出现** `⇒`（U+21D2）
+     *    与 `▾`（U+25BE）—— 两者都不在自托管像素字体的子集里（`check-font-coverage.mjs`）。
+     */
+    /*
+     * ★ 五种启动器的**显示名**（A5 的只读明细那一栏要"启动器类型"，A7 的绑定页也要它）。
+     * ⚠️ 它们是**产品名**：两种语言里都一样（`MultiMC` / `Prism` / `PCL2` / `HMCL` /
+     *    `Official`）—— 仍然走词条，理由与 `files.openFolder` 那一族相同：
+     *    界面上的每一个字符串都从一个地方取（写死在组件里就没有"这里该显示什么"的落点）。
+     */
+    launcherKindMultimc: 'MultiMC',
+    launcherKindPrism: 'Prism',
+    launcherKindPcl2: 'PCL2',
+    launcherKindHmcl: 'HMCL',
+    launcherKindOfficial: '官方启动器',
+    launcherKindMcsr: 'MCSR Launcher',
+    /** 版本层那句提示（A3："选一个实例来下载"）—— 它是"为什么这里不能下"的唯一答案。 */
+    pickInstanceHint: '选一个实例来下载 —— 这一层只能看，下载发生在你选中的那个实例里。',
+    /** 实例层的返回（回版本层）。 */
+    backToVersions: '返回版本',
+    /** 实例层那条"这是哪个实例"的头（A19 的"哪个实例"就落在这里）。 */
+    instanceHeadTitle: '正在下载到：{{name}}',
+    /** 实例层那条头上的一格（`mods` 目录）。 */
+    instanceHeadMods: 'mods：{{path}}',
+    /** 实例层那条头上的一格（loader；读不出来就不画那一格，**不写"未知"以外的猜测**）。 */
+    instanceHeadLoader: 'loader：{{loader}}',
+    /**
+     * ★ A8 的第三种空态：**该版本没有任何被追踪实例** ⇒ 说明 + 一颗去勾选的入口。
+     * ⚠️ 它与另外两种空态（未绑定启动器 / 已绑未勾）是**三句不同的话**：说成一句会把
+     *    用户指去错的地方（"去绑启动器"与"去勾一个 1.16.1 的实例"是两件事）。
+     */
+    pickVersionEmpty: '这一版还没有被追踪的实例 —— 去勾一个 {{version}} 的实例，它才会出现在这里。',
+    /** 一格实例都没有（还没绑启动器 / 还没读到）—— 与上面那条**不是**同一句话。 */
+    pickNoInstances: '还没有读到任何实例 —— 先去「启动器绑定」里绑一个启动器并勾上实例。',
+    /** 那颗"去勾选/去绑定"的入口（空态里唯一的一颗）。 */
+    goLaunchers: '去启动器绑定',
+    /** 实例卡上那颗"进"（版本层 → 实例层；spec §4.4 说的一层，不是一条新路由）。 */
+    openInstance: '进入这个实例',
+    /** ★ A7 的"待确认"标（值已经是显示值：`needsConfirm && !confirmed`）。 */
+    instanceNeedsConfirm: '待确认',
+    /**
+     * ★ 只读明细那一栏里那几格的标签（A5 要求"六样"）。
+     * ⚠️ `mods` / `saves` 本身是**目录名**（磁盘上的事实），不翻译；这里翻的是它们前面的标签。
+     */
+    instanceFieldLauncher: '启动器',
+    instanceFieldVersion: '版本',
+    instanceFieldMods: 'mods',
+    instanceFieldSaves: 'saves',
+    instanceFieldScan: '扫描',
+    /** 扫描状态的三档（**不是**"已装/缺失"那一族：这里说的是"我们读到过没有"）。 */
+    scanStatusScanned: '已扫描',
+    scanStatusUnscanned: '还没有读数',
+    /** ⚠️ 未追踪的实例**没有 folder**、也就没有扫描读数 ⇒ 这一格是"这一行没有那一格"。 */
+    scanStatusUntracked: '未追踪',
     /** 按版本分组的文件夹区那个标题（`{{version}}` 是版本号）。 */
     versionFoldersTitle: '{{version}} 下的 mod 文件夹',
     /*

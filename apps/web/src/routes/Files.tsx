@@ -228,6 +228,18 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
       case 'set-catalog-version':
         await handlers.setCatalogGameVersion(action.version);
         break;
+      case 'open-instance':
+      case 'close-instance':
+        /*
+         * ★★ D1（T7）：这两条**不是通道**（spec §4.4：那两层是同一个路由里的页面状态）。
+         * ⚠️★ 它们仍然走这个联合，是为了让"哪个按钮属于哪一层"与其余动作共用**同一处**
+         *    接缝（面板里只有一个 `run()`）—— 而"进/出实例层"真正的落点是
+         *    `ModDownloadPanel` 的 `selectedInstance`（`useState`，不进持久化）。
+         * ⚠️ 所以这里**故意什么都不做**：真发一条 IPC 过去，主进程会回一句"不认识这个动作"。
+         *    ⚠️ 另一条真的动作与 `open-instance` 同批发生（版本不同时先 `set-catalog-version`），
+         *    那一条由面板在**调用这一处之前**发出去（它自己 `run()` 得动）。
+         */
+        break;
       case 'download-pack':
         /*
          * ★ B2 / Task 6：整包下载。⚠️ 通道固定 `'origin'`（与 `download-mod` 同一条
@@ -395,6 +407,13 @@ export function Files() {
                 onAction={makeModPageAction(mods.handlers)}
                 actionError={mods.actionError}
                 progress={mods.progress}
+                /*
+                 * ★★ D1（T7）：A8 那两种空态里那颗"去勾选 / 去绑定"的入口。
+                 * ⚠️★ tab 状态住在**这一层**（`useState`，见 T6 那一段），所以这个回调
+                 *    只能在这里造：`setTab('launchers')` —— 面板那一层递不进来第二份。
+                 * ⚠️ 它**必需**（不是可选）：忘了传是编译错，不是"那颗按钮静默不生效"。
+                 */
+                onGoToLaunchers={() => setTab('launchers')}
               />
             )}
           </div>

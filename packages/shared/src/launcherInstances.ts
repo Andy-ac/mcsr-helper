@@ -71,6 +71,32 @@ function isPerInstance(kind: LauncherKind): boolean {
   return kind === 'multimc' || kind === 'prism' || kind === 'mcsr';
 }
 
+/**
+ * ★ D1：把一个 `key` 拆回**它的两半**（`{kind, name}`）—— `instanceKeyOf` 的逆。
+ *
+ * ⚠️★ 为什么是**末段**当名字、不是"去掉第一段"：`instanceKeyOf` 拼的是
+ *    `${kind}:${相对根的路径}`（分隔符归一成 `/`），而实例名**就是**那条相对路径的
+ *    最后一段（`instances\<名>` / `versions\<名>` 那个 `<名>`）——
+ *    ⚠️ 用 `rel.slice(kind.length + 1)` 那一类写法会把 `instances/` 前缀也当成名字
+ *    （在"名称里带斜杠"这种形状上两种写法才分得出，而那时按末段取才是对的）。
+ * ⚠️★ **不抛**（与这个模块的其余部分同一条纪律）：坏 key（没有 `:`、空串、
+ *    `kind:` 后面什么都没有）照样给一个**形状合法**的结果，只是某一格是空串 ——
+ *    调用方是**界面**，为一格显示值崩掉整页是"点了没反应"那一类坏法。
+ *    ⚠️ 判据是"有没有那个冒号"，不是"`kind` 认不认识"：`kind` 在状态文件里可以是
+ *    任何一个字符串（`migrateState` 只保顶层形状）⇒ 在这里判它的合法性会把
+ *    "一格不认识的值"升级成一次异常。
+ * ⚠️ 末段为空（`'multimc:'` / `'multimc:instances/'`）⇒ 名字是空串（**不**回退成整个 key：
+ *    那样界面上会印出一条路径，而用户要的是"这个实例叫什么"）。
+ */
+export function instanceKeyParts(key: string): { kind: string; name: string } {
+  const at = key.indexOf(':');
+  if (at === -1) return { kind: key, name: '' };
+  const kind = key.slice(0, at);
+  const rel = key.slice(at + 1);
+  const cut = rel.lastIndexOf('/');
+  return { kind, name: cut === -1 ? rel : rel.slice(cut + 1) };
+}
+
 export function listInstances(
   fs: LauncherFs,
   kind: LauncherKind,

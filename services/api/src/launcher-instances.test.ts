@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   applyOverride,
   instanceKeyOf,
+  instanceKeyParts,
   type LauncherFs,
   listInstances,
   parseInstanceMeta,
@@ -613,5 +614,43 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
     assert.equal(list.length, 1, '枚举本身不许被这一次读失败带走');
     assert.equal(list[0]!.gameVersion, '1.16.1', '别的格照旧填上');
     assert.equal(list[0]!.loader, null, '读不动 ⇒ 这一格留空（不猜、也不抛）');
+  });
+
+  /*
+   * ★ D1（T7）：`instanceKeyParts` —— `instanceKeyOf` 的**逆**。
+   *
+   * ⚠️★ 编号说明（现读，不照抄派工文本）：派工文本写的是"加一条用例 **㉗**"，
+   *    而那个号**已经被 T12 的修复轮占用了**（`:471` 的"兜底**只**给三家"就是 ㉗）
+   *    ⇒ 按同一段文本里那条纪律"接着现读的最大号"，这里用 **㉜**（现读最大 = ㉛）。
+   * ⚠️ 判据三条各自压住一处：① 正常形状；② 名字取**末段**（`instances/` 不是名字的一部分）；
+   *    ③ 坏 key **不抛**（界面拿它当显示值 ⇒ 为一格显示值崩整页是"点了没反应"那一类坏法）。
+   */
+  it('㉜ ★ `instanceKeyParts`：`key` 拆成 `{kind, name}`（名字取**末段**；坏 key 不抛）', () => {
+    assert.deepEqual(
+      instanceKeyParts('multimc:instances/1.16.1 - Ranked#1'),
+      { kind: 'multimc', name: '1.16.1 - Ranked#1' },
+      '计划里那个例子逐字（`kind` 是冒号前那一半，名字是相对路径的最后一段）',
+    );
+    /* ★ 与 `instanceKeyOf` 真的**互为逆**（不是两条各写一份的规则）。 */
+    assert.deepEqual(
+      instanceKeyParts(instanceKeyOf('pcl2', 'D:\\PCL2', 'D:\\PCL2\\.minecraft\\versions\\v1')),
+      { kind: 'pcl2', name: 'v1' },
+      '名字取末段 ⇒ `instances` / `versions` 那两截不是名字的一部分',
+    );
+    assert.deepEqual(
+      instanceKeyParts('multimc:instances/a/b'),
+      { kind: 'multimc', name: 'b' },
+      '名称里带斜杠时取**最后**一段（去掉 `kind:` 那一截的写法在这里会给出 `instances/a/b`）',
+    );
+    assert.deepEqual(
+      instanceKeyParts('multimc:'),
+      { kind: 'multimc', name: '' },
+      '末段为空 ⇒ 名字是空串（**不**回退成整个 key：界面上会印出一条路径当名字）',
+    );
+    assert.deepEqual(
+      instanceKeyParts('nonsense'),
+      { kind: 'nonsense', name: '' },
+      '没有冒号 ⇒ 不抛、`kind` 原样带着（状态文件里 `kind` 可以是任何字符串）',
+    );
   });
 });

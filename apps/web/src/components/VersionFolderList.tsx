@@ -194,51 +194,21 @@ export function VersionFolderList({
         {t('files.versionFoldersTitle', { version: page.version })}
       </h3>
       {/*
-        ★★ G1（最终修复波）：**常驻的**「添加文件夹」入口。
-        ⚠️★ 修之前唯一的渲染点在下面那个 `page.folders.length === 0` 的支路里 ⇒
-        一个**已经有文件夹**的版本**没有任何添加入口**，而 spec §2.1 第 2 条的目标是
-        "一个版本下可以绑定**多个** mod 文件夹"（D3 也按这个前提写）⇒ 那半条目标在界面上
-        根本无法达成（用户只能先解绑再绑，而解绑会忘掉扫描读数）。
-        ⚠️ 它与空态里那一颗是**两颗按钮、同一个动作**：空态那一颗说的是"这一版还什么都没有，
-        从这一颗开始"，这一颗是"再添一个"。两者都发 `kind: 'bind-folder'` 并带上
-        **当前这一版**（G2 / D3：新文件夹的版本预置为它，仍可改）。
-        ⚠️ `disabled={state.busy}`：`bindFolder` 会建实体 + 立刻扫一次（改状态、读磁盘）。
+        ★★ D1（T7）：**这一块里那两颗「添加文件夹」已经摘掉**（spec §7）。
+        ⚠️★ 它们的语义在 D1 之后不成立了：手工绑定写的是 `folders[id]` —— 一份**派生结构**
+        （`deriveFolders` 从"被追踪的实例"生成它），⇒ 下一次对账就把手工那一条**抹掉**，
+        而用户看到的是"加了又没了"（本仓点名的那一类：**点了像成功、状态自己回来了**）。
+        ⇒ 新的入口只有一条：在「启动器绑定」里勾一个实例（`setInstanceTracked` ⇒ 对账派生）。
+        ⚠️★ 那两条**通道**仍在契约里（`bindFolder` / `ModPageAction` 的 `bind-folder` 成员），
+        只是**不再是 UI 入口** —— 老客户端与本页共用那个契约面（`makeModPageAction` 那一支
+        也照旧接在 `handlers.bindFolder` 上）。
+        ⚠️ 空态那一句（`files.folderNoneVersion`）同批摘掉：它说的是"这一版还没有文件夹，
+        从这一颗开始"，而没有那一颗时它就成了一句**没有出路**的话（那句词条**停用但保留**，
+        理由写在 `zh-CN.ts` 那一格旁边）。
+        ⚠️★ 判定"这一版一个文件夹都没有"这件事**仍然看得见**：`data-folder-count="0"`
+        就在这一块的根上（那一格是机器读数），而**人**看到的是上面那张实例卡列表里的
+        "这一版还没有被追踪的实例"（`files.pickVersionEmpty`，渲染点在 `InstancePicker`）。
       */}
-      <div className="folderlist__actions">
-        <button
-          type="button"
-          className="cta"
-          data-action="bind-folder"
-          data-bind-scope="section"
-          disabled={state.busy}
-          onClick={() => void onAction({ kind: 'bind-folder', version: page.version })}
-        >
-          {t('files.bindFolder')}
-        </button>
-      </div>
-      {/*
-        ★ 第一处空态（spec §8 第一行）：这个版本下**一个文件夹都没有**。
-        ⚠️★ 它同时是**这一期唯一的绑定入口**（`bindFolder` 弹原生目录对话框建实体）；
-        没有它的话，新页面在"一个都没绑"时是一条死路。
-      */}
-      {page.folders.length === 0 ? (
-        <div className="state state--empty">
-          <p>{t('files.folderNoneVersion')}</p>
-          <div className="filespanel__actions">
-            <button
-              type="button"
-              className="cta"
-              data-action="bind-folder"
-              data-bind-scope="empty"
-              /* ⚠️ 正在写盘时按住：`bindFolder` 会建实体 + 立刻扫一次（改状态、读磁盘）。 */
-              disabled={state.busy}
-              onClick={() => void onAction({ kind: 'bind-folder', version: page.version })}
-            >
-              {t('files.bindFolder')}
-            </button>
-          </div>
-        </div>
-      ) : null}
       {page.folders.map((block) => (
         <FolderRow
           key={block.folder.folderId}
@@ -432,6 +402,12 @@ function FolderRow({
           <button
             type="button"
             className="cta"
+            /*
+             * ★★ D1（T7）：机器读数（`data-action="update-folder-all"`）—— 它让"哪一层能下载"
+             *    在**产物**上数得出来（渲染自检 ㊿a：版本层 0 处；㊿b：实例层 ≥1 处）。
+             * ⚠️ 与 `FolderJarList` 那两颗的 `data-action="update-mod"` 是同一条纪律。
+             */
+            data-action="update-folder-all"
             disabled={busy}
             onClick={() =>
               void onAction({

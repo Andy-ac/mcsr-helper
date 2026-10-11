@@ -44,17 +44,13 @@
  *    代价与理由写在 spec §15；判据（"页面与主进程读同一个 `packDownloadableIn`"）不变。
  * ⚠️ 走子路径 `@mcsr/shared/modCatalog`（与 `lib/api.ts` 的 `fetchModCatalog` 同一处 alias）。
  */
-import { buildIndex } from '@mcsr/shared/modCatalog';
-import {
-  type Channel,
-  groupFoldersByVersion,
-  type ModFoldersState,
-  planVersionPage,
-} from '@mcsr/shared/modFolders';
+import { buildIndex, type ModIndex } from '@mcsr/shared/modCatalog';
+import { type Channel, type ModFoldersState, planVersionPage } from '@mcsr/shared/modFolders';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { Notice } from '@/components/Form';
+import { InstancePicker } from '@/components/InstancePicker';
 import {
   bulkChannelUsable,
   gameVersionOptions,
@@ -62,7 +58,7 @@ import {
   reasonOf,
 } from '@/components/ModFoldersData';
 import { ModPacksSection } from '@/components/ModPacksSection';
-import { VersionFolderList } from '@/components/VersionFolderList';
+import { VersionBadge, VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
 import { fetchModCatalog, fetchModPacks, type ModPackWire } from '@/lib/api';
 import { useReview } from '@/lib/useReview';
@@ -91,6 +87,13 @@ export type ModPageAction =
    * ⚠️ `version` 就是 `page.version`（= `state.gameVersion`），不是组件自己算的第二个版本。
    *    ⚠️ `null` 仍然允许，含义是"交回自动推断"（契约里那两格与 `setFolderGameVersion`
    *    同一条语义）—— 今天没有任何调用点发它（页面总是知道自己在看哪一版）。
+   *
+   * ★★ D1（T7）：**这个成员已经没有任何派发点**（现读 `apps/web/src`：两颗
+   *    「添加文件夹」随 T7 从 UI 上摘掉了 —— spec §7"那两条通道保留在契约里、
+   *    但不再是 UI 入口"）。⚠️ **形状照旧保留**：它是老客户端（0.1.1 / 0.2.0 的壳）
+   *    与本页共用的契约面，删掉它会让"老壳 + 新 bundle"那一代编译不过 / 行为分叉；
+   *    而 `makeModPageAction` 那一支**照旧接在 `handlers.bindFolder` 上**（那一条
+   *    由自检 ㊴ 的 G2 三条钉着：它们测的是**契约形状与接线**，不是渲染点）。
    */
   | { kind: 'bind-folder'; version: string | null }
   | { kind: 'rescan-folder'; folderId: string }
@@ -135,6 +138,17 @@ export type ModPageAction =
       channel: Channel;
     }
   | { kind: 'set-catalog-version'; version: string }
+  /*
+   * ★★ D1（T7）："版本 → 实例"那两层之间的两个动作（spec §4.4：**不新增路由**）。
+   *
+   * ⚠️★ 它们**都不是通道**（`makeModPageAction` 里那两支是**空操作**）：进/出实例层是
+   *    **页面状态**（`selectedInstance`），不是一条 IPC。加进这个联合是为了让"哪个按钮
+   *    属于哪一层"与其余动作走**同一处**接缝（面板里只有一个 `run()`）——
+   *    ⚠️ 另有**一条**真的动作与它们同批发生：`open-instance` 在版本**不同**时要先发
+   *    `set-catalog-version`（否则切过去看不见那个实例，见 `onOpenInstance` 那一段）。
+   */
+  | { kind: 'open-instance'; folderId: string; version: string }
+  | { kind: 'close-instance' }
   /*
    * ★ B2 / Task 6：把**整合包**里的 mod 逐个装进这个文件夹（主进程 `downloadPack`）。
    *
@@ -213,6 +227,44 @@ export interface ModDownloadPanelProps {
    *    `catalogIndex` 可以喂夹具），与这一格无关。
    */
   packs?: readonly ModPackWire[];
+  /**
+   * ★★ D1（T7）：那颗"去勾选 / 去绑定"的入口（A8 那两种空态的唯一出路）。
+   *
+   * ⚠️★ **必需**（不是可选）：可选 prop 会让"页面忘了喂"变成**静默降级** ——
+   *    而这里静默降级的表现是"空态里那颗按钮点了什么都不发生"（本仓点名的"哑按钮"那一类，
+   *    与 `state` / `onAction` / `progress` 那几格同一条纪律）。
+   * ⚠️ 它由 `routes/Files.tsx` 接上（`setTab('launchers')` —— tab 状态住在页面那一层，见 T6）。
+   */
+  onGoToLaunchers: () => void;
+  /**
+   * ★★ D1（T7）：**一进来就选中某个实例**（默认 `null` = 版本层）。
+   *
+   * ⚠️★ 它存在的理由**只有一个**：`renderToStaticMarkup` **不跑事件处理器**
+   *    （本仓 §5.73）⇒ 渲染自检永远点不动那张卡，而"实例层里到底画了什么"是本任务
+   *    最贵的那几条判据（A4 / A6 / A10）⇒ 自检用它**喂**初始态。
+   *    ⚠️ 与 `packs` / `catalogIndex` 那两格是同一条代价（"纯展示组件多了一个只为自检
+   *    存在的接缝"）—— 如实记在报告里，**别**把它说成"产品里也会用"。
+   *    ⚠️ 产品里它是 `undefined`（`routes/Files.tsx` 不传）⇒ 页面总是从版本层开始。
+   */
+  initialInstance?: string | null;
+  /**
+   * ★★ D1（T7）：自检喂的**初始展开态**（默认 `[]` = 全折叠，与产品一致）。
+   *
+   * ⚠️★ 与 `initialInstance` **同一条理由、同一条代价**：`expanded` 是这一层的 `useState`，
+   *    而静态渲染点不动那一颗"展开"（§5.73）⇒ "展开体里那一行的四个下载入口之一
+   *    （`data-action="update-mod"`）在实例层里画得出来吗"这件事**只能**靠自检喂它。
+   *    ⚠️ 产品里 `routes/Files.tsx` 不传 ⇒ 页面一律从"全折叠"开始（今天的行为，一字未改）。
+   */
+  initialExpanded?: readonly string[];
+  /**
+   * ★★ D1（T7）：自检喂的目录索引（与 `packs` **同一档**：`undefined` = 用自己取回来的那一份）。
+   *
+   * ⚠️★ 它同时解掉上面 `packs` 那一格记的那条局限（"就算传了 `packs` 也渲不出那一节"）：
+   *    `ModPacksSection` 的行那一支要求 `catalogIndex !== null`，而**只读那一层**照样要
+   *    "列全包与版本"（A6 的前半条）⇒ 没有这一格就没法在自检里证明"A3 只读但看得见"。
+   *    ⚠️ 产品里同样不传（取数住在这一层）。
+   */
+  catalogIndex?: ModIndex | null;
 }
 
 export function ModDownloadPanel({
@@ -221,14 +273,30 @@ export function ModDownloadPanel({
   actionError = null,
   progress,
   packs,
+  onGoToLaunchers,
+  initialInstance = null,
+  initialExpanded = [],
+  catalogIndex: injectedIndex,
 }: ModDownloadPanelProps) {
   const { t } = useTranslation();
-  /** 展开态（文件夹 id）—— 界面状态，喂给投影、不进持久化（spec §5.2）。 */
-  const [expanded, setExpanded] = useState<readonly string[]>([]);
-  /** 「显示全部已绑定的文件夹」是否摊开。 */
+  /**
+   * 展开态（文件夹 id）—— 界面状态，喂给投影、不进持久化（spec §5.2）。
+   * ⚠️ 初值来自 `initialExpanded`（**只为自检存在**，见那一格）：产品里不传 ⇒ `[]`。
+   */
+  const [expanded, setExpanded] = useState<readonly string[]>(initialExpanded);
+  /** 「显示全部实例」是否摊开。 */
   const [showAll, setShowAll] = useState(false);
   /** 上面 `run()` 接住的那句原话（与 `actionError` 共用一个渲染点）。 */
   const [localError, setLocalError] = useState<string | null>(null);
+  /**
+   * ★★ D1（T7）：**此刻选中了哪个实例**（`null` = 版本层；非空 = 实例层）。
+   *
+   * ⚠️★ 它是**界面状态、不进持久化**（与 `expanded` / `showAll` / `selectedPackId` 同一条，
+   *    spec §5.2）—— 刷新页面回到版本层是**对的**（spec §4.4 明写"不新增路由"：
+   *    这一层不是一条 URL，也就没有"把某个实例的界面存进书签"这回事）。
+   * ⚠️ 值是 `folderId`（= `instance.key`，spec §7）：收窄 `page.folders` 用的就是它。
+   */
+  const [selectedInstance, setSelectedInstance] = useState<string | null>(initialInstance);
   /**
    * ★ B2：**此刻选中的那一条包**（顶部小卡与下面那一行看的是同一个值）。
    * ⚠️ 它是**界面态**、不进持久化（与 `expanded` / `showAll` 同一条，spec §5.2）。
@@ -263,18 +331,52 @@ export function ModDownloadPanel({
    *    （`[catalog.state.data]` 也行，但状态的形状才是"有没有读到"的判据）。
    */
   const catalog = useReview((signal) => fetchModCatalog(signal), []);
-  const catalogIndex = useMemo(
+  const fetchedIndex = useMemo(
     () => (catalog.state.status === 'ok' ? buildIndex(catalog.state.data) : null),
     [catalog.state],
   );
+  /** ★ D1（T7）：自检喂了就用喂的（见 `catalogIndex` 那一格；产品里不传）。 */
+  const catalogIndex = injectedIndex === undefined ? fetchedIndex : injectedIndex;
   const packList =
     packs ?? (fetchedPacks.state.status === 'ok' ? fetchedPacks.state.data.items : null);
 
   /*
    * ★★ 投影**只有一处**：这一版要画什么全由 `planVersionPage()` 算好（T1），
    *    这一层与下面的组件都不再判断"哪个文件夹属于这一版 / 哪个 mod 已下载"。
+   * ⚠️★ 而**两层用的是同一份投影**（T7）：实例层不是"另一套组件"，是这一份收窄到
+   *    那一个 folder（`scopedPage`）。扫描 / 判定 / 整夹更新 / 缺失清单**一行判据都不改**
+   *    —— A10 的"行为与今天逐字相同"就落在这一点上（换掉的只是"这一屏给几个 folder"）。
    */
   const page = planVersionPage(state, expanded);
+  /**
+   * ★★ D1（T7）：下面要画的那一份（实例层时只有那一个 folder）。
+   *
+   * ⚠️★ 收窄判据是 `folderId === selectedInstance`，而 `folderId` **就是** `instance.key`
+   *    （`deriveFolders` 用 `instance.key` 当 key，spec §7）⇒ 与实例卡上那一格是同一个字符串。
+   * ⚠️ 必须 `useMemo`：这一层的重渲染是**常态**（进度帧推送 + 四个 `useState`），
+   *    而 `planVersionPage` 的产物要给下面几个组件当 prop（每帧新建一个对象 = 每帧
+   *    让整棵子树重渲染）—— 与 `buildIndex` 那一格同一条理由（`apps/web` 没接 React Compiler）。
+   * ⚠️ `selectedInstance === null`（版本层）时**原样返回 `page`**（不 filter 一遍：
+   *    那会给出一个内容相同、引用不同的新对象，等于让上面那条 memo 白做）。
+   */
+  const scopedPage = useMemo(
+    () =>
+      selectedInstance === null
+        ? page
+        : {
+            ...page,
+            folders: page.folders.filter((item) => item.folder.folderId === selectedInstance),
+          },
+    [page, selectedInstance],
+  );
+  /**
+   * ★★ D1（T7）：这一版**被追踪的实例**那份候选**不在这里算** —— 那条判据只有一处，
+   *    住在 `InstancePicker` 里（`tracked === true ∧ gameVersion === 这一版`）。
+   *    ⚠️ 这一层第一版在这里也算过一份（写完发现没人读它）⇒ 删掉：同一格判据两处实现，
+   *    漂起来的表现是"卡上画了它、点进去却是空白"（或反过来，一条实例画不出来）。
+   */
+  /** 实例层那条头要显示的那一个实例（`null` = 没选中 / 那个 id 不在这一版里）。 */
+  const selected = state.instances.find((instance) => instance.key === selectedInstance) ?? null;
   const notice = localError ?? actionError;
 
   /**
@@ -294,6 +396,26 @@ export function ModDownloadPanel({
     setExpanded((prev) =>
       prev.includes(folderId) ? prev.filter((id) => id !== folderId) : [...prev, folderId],
     );
+  };
+
+  /**
+   * ★★ D1（T7）：从"显示全部实例"那一栏点进某个实例（A5）。
+   *
+   * ⚠️★ **两条状态必须按顺序一起改**，缺第一条就是"点了没反应"里最像"功能没做"的那种：
+   *      · 那个实例的版本**不是**现在看着的这一版时，先 `set-catalog-version` ——
+   *        `planVersionPage` 是按 `state.gameVersion` 筛 folders 的，只切 `selectedInstance`
+   *        的话切过去是**一屏空白**（spec §4.4 那条"点行 ⇒ 跳进 A4 的界面"落不了地）；
+   *      · 再选中它。
+   * ⚠️ 顺序不能反：`setSelectedInstance` 只写界面态，而版本那一条要走 `run()`（一次 IPC）
+   *    —— 反过来的话会先画一帧"实例层里什么都没有"。
+   * ⚠️ 版本**相同**时不发那条动作：一次多余的 IPC 会让主进程写一遍同样的 `prefs`
+   *    （而它是**持久化**的一份，写它是要落盘的）。
+   */
+  const onOpenInstance = (folderId: string, version: string): void => {
+    if (version !== page.version) {
+      void run({ kind: 'set-catalog-version', version });
+    }
+    setSelectedInstance(folderId);
   };
 
   return (
@@ -374,13 +496,17 @@ export function ModDownloadPanel({
           主进程 `prefs`、"显示全部"有自己的语义，动它们的等价物会静默改掉既有行为。
           ⚠️ 取数还没回来（`packList === null`）时**一个孩子都不加**：那与"这个版本
           没有热门包"是两件事，而小卡这一格只画"有的"（空的那一支不需要占位）。
+          ★★ D1（T7）：**只在实例层画**。小卡的动作是"选中那条包 + 滚到它那一行"，
+          而那一行住在实例层的「整合包」一节里 ⇒ 版本层里点它**滚不到任何地方**
+          （"点了没反应"那一类坏法）。⚠️ 顺序也顺：版本层没选实例，那一节本来就没有
+          可下的目标（A3）。
         */}
-        {packList === null ? null : (
+        {packList === null || selectedInstance === null ? null : (
           <ModPacksSection
             chipsOnly
             packs={packList}
             catalogIndex={catalogIndex}
-            folders={page.folders}
+            folders={scopedPage.folders}
             selectedPackId={selectedPackId}
             onSelectPack={setSelectedPackId}
             onAction={run}
@@ -391,10 +517,21 @@ export function ModDownloadPanel({
       </div>
 
       {/*
-        ★★ 跨版本那一栏（spec §9.11）在**版本区上方**（计划里的字面）：点开时它先出现，
-        下面才是"这一版"的文件夹与（T5 的）mod 列表。
+        ★★ 跨版本那一栏（spec §9.11 / A5）：点开时它先出现，下面才是"这一版"的东西。
+        ★ D1（T7）：数据源换成 `state.instances`（那一栏的六样里有三样 `folders[]` 没有），
+        并且**两层都画得出来**（它在顶部那一区，不属于任何一层）——
+        它的行点了会**跳进实例层**（`onOpenInstance`，版本不同时先换版本）。
       */}
-      {showAll ? <AllFoldersView groups={groupFoldersByVersion(state)} onAction={run} /> : null}
+      {showAll ? (
+        <AllFoldersView
+          instances={state.instances}
+          gameVersion={state.gameVersion}
+          folders={state.folders}
+          onAction={run}
+          onOpenInstance={onOpenInstance}
+          onGoToLaunchers={onGoToLaunchers}
+        />
+      ) : null}
 
       {/*
         ★★ C 的 T5：**上一趟的汇总**（`state.lastRun`）—— 一次批量写盘之后，
@@ -428,58 +565,156 @@ export function ModDownloadPanel({
         </p>
       )}
 
-      <VersionFolderList
-        state={state}
-        page={page}
-        expanded={expanded}
-        onToggle={toggle}
-        onAction={run}
-        progress={progress}
-      />
-
       {/*
-        ★★ 第三段（spec §4）：该版本目录里的**全部** mod（不是旧页面那栏"缺失的"）。
-        ⚠️ 顺序是 spec §4 那张图：文件夹区在下、第三段在最下。
-        ⚠️ 三格都从**这一层**喂（`page` 与上面那份**同一份**；`tagLabels` / `busy` 是整页
-        共用的读数）—— 自检㊴ 的三条打在**这一处的产物**上（T4 判修轮的教训：
-        自检自己喂的 prop 证明不了页面真的喂了它）。
+        ★★ D1（T7）：**两层在这里分岔**（spec §4.3 / §4.4）。
+        ⚠️★ 分岔**只动"这一屏给几个 folder"**：上面那句 `page` / 下面那三块**一个都没换**
+        （实例层用 `scopedPage`，版本层用 `page`）—— A10 的"扫描 / 判定 / 整夹更新 /
+        缺失清单行为与今天逐字相同"就是靠这一点成立的（不是靠"又测了一遍"）。
       */}
-      <VersionModList
-        page={page}
-        tagLabels={state.tags}
-        busy={state.busy}
-        onAction={run}
-        progress={progress}
-      />
-
-      {/*
-        ★★ B2（Task 6）：「整合包」一节（spec D8）—— 在第三段**之下**。
-        ⚠️★ 必须在**同一条滚动轴上**（它就是这个 `<section>` 的孩子、排在
-        `VersionModList` 后面）：否则上面那颗小卡的"滚到那一行"没有意义
-        （滚到一个不可见的地方 = 点了没反应）。
-        ⚠️★ 空态分两支：`packList === null`（取数还没回来 / 取数失败）⇒ **一个字都不画**
-        ——"还没加载"与"这个版本没有整合包"必须分得开（Ruling 65 的同一条纪律）；
-        空数组 ⇒ 走 `ModPacksSection` 的空态（`data-pack-empty="yes"`）。
-        ⚠️★ 这一道门**只**按 `packList` 判（修轮收窄）：空态**不需要**目录索引，而原先
-        那道 `|| catalogIndex === null` 把"这个版本还没有整合包"压在**一趟无关的取数**
-        后面 —— `/api/mod-catalog` 还在加载 / 失败了而 `/api/modpacks` 回了 `[]` 时，
-        spec 要求的空态**永远不出现**，与上面 `packList` / `catalog` 那两行自己写的
-        "两条独立取数：一条失败不该让另一条不画"**直接矛盾**。
-        ⚠️ 索引拿不到那一档改由 `ModPacksSection` 自己判（它拿不到索引时**不画行**：
-        "可下 N 项"离了索引算不出来，而画一颗恒禁用的按钮就是**在撒谎** —— 它看起来
-        像"这一包没东西可下"）；空态那一段不看索引，所以照画。
-      */}
-      {packList === null ? null : (
-        <ModPacksSection
-          packs={packList}
-          catalogIndex={catalogIndex}
-          folders={page.folders}
-          selectedPackId={selectedPackId}
-          onSelectPack={setSelectedPackId}
-          onAction={run}
-          progress={progress}
-          busy={state.busy}
-        />
+      {selectedInstance === null ? (
+        /*
+         * ---- 版本层（**只能看**：A3）----
+         * ⚠️★ 这一支里**不许**出现 `VersionFolderList`（那一整块带整夹控件 ——
+         * 「全部更新」/ 自动更新开关 / 批量通道 / 版本手改 / 重扫 / 取消追踪），
+         * 也**不许**出现四个下载钩子里的任何一个（自检 ㊿a 逐条数实际命中数）。
+         */
+        <>
+          <InstancePicker
+            instances={state.instances}
+            gameVersion={page.version}
+            selected={selectedInstance}
+            onSelect={(folderId) => {
+              /*
+               * ⚠️ 版本层里的卡**只画这一版**的实例（`gameVersion === page.version`）
+               * ⇒ 这里不需要换目录版本（`onOpenInstance` 那一支才需要）。
+               */
+              setSelectedInstance(folderId);
+            }}
+            onGoToLaunchers={onGoToLaunchers}
+          />
+          {/*
+            ★★ 第三段（spec §4）：该版本目录里的**全部** mod。
+            ⚠️ 版本层里它是**只读**的（`readOnly`）：清单 / 目标版本 / 主页链接照旧，
+            下载按钮与目标选择器一个都不画（A3 的判据就是"不含"）。
+          */}
+          <VersionModList
+            page={page}
+            tagLabels={state.tags}
+            busy={state.busy}
+            onAction={run}
+            progress={progress}
+            readOnly
+          />
+          {/*
+            ★★ B2（Task 6）：「整合包」一节 —— 版本层里也**列全**（A6 的前半条），
+            但只读（`readOnly`：不画「装」与目标下拉）。空态那两支的门照旧（见下）。
+          */}
+          {packList === null ? null : (
+            <ModPacksSection
+              packs={packList}
+              catalogIndex={catalogIndex}
+              folders={page.folders}
+              selectedPackId={selectedPackId}
+              onSelectPack={setSelectedPackId}
+              onAction={run}
+              progress={progress}
+              busy={state.busy}
+              readOnly
+            />
+          )}
+        </>
+      ) : (
+        /*
+         * ---- 实例层（**只有这一层能下载**：A4）----
+         * ⚠️★ 这一支里的四块用的都是 `scopedPage`（收窄到当前这一个实例）：
+         *    判定 / 整夹更新 / 缺失清单都读同一份投影 ⇒ 行为与今天逐字相同（A10）。
+         */
+        <>
+          {/*
+            ★ A19 的"哪个实例"就落在这一条头上：实例名 + `modsDir` + 版本 + loader。
+            ⚠️ loader 读不出来那一格**不画**（少一格，不是印一个"未知"）：`InstanceView.loader`
+            的 `null` 含义是"读不出来"（spec §6 的"不猜"），印成字会看起来像读到了。
+            ⚠️ 返回走 `close-instance`（页面状态；不发 IPC）—— 它是这一层唯一的出口。
+          */}
+          <div className="instancehead" data-instance-head={selectedInstance}>
+            <button
+              type="button"
+              className="ghostbtn"
+              data-action="close-instance"
+              onClick={() => {
+                setSelectedInstance(null);
+              }}
+            >
+              {t('files.backToVersions')}
+            </button>
+            <h3 className="instancehead__title">
+              {t('files.instanceHeadTitle', { name: selected?.name ?? selectedInstance })}
+            </h3>
+            <span className="instancehead__path" title={selected?.modsDir}>
+              {t('files.instanceHeadMods', { path: selected?.modsDir ?? '' })}
+            </span>
+            <VersionBadge version={selected?.gameVersion ?? null} />
+            {selected?.loader == null ? null : (
+              <span className="instancehead__loader">
+                {t('files.instanceHeadLoader', { loader: selected.loader })}
+              </span>
+            )}
+          </div>
+          <VersionFolderList
+            state={state}
+            page={scopedPage}
+            expanded={expanded}
+            onToggle={toggle}
+            onAction={run}
+            progress={progress}
+          />
+          {/*
+            ★★ 第三段（spec §4）：该版本目录里的**全部** mod（不是旧页面那栏"缺失的"）。
+            ⚠️ 顺序是 spec §4 那张图：文件夹区在下、第三段在最下。
+            ⚠️ 三格都从**这一层**喂（`scopedPage` 与上面那份**同一份**；`tagLabels` / `busy`
+            是整页共用的读数）—— 自检㊴ 的三条打在**这一处的产物**上（T4 判修轮的教训：
+            自检自己喂的 prop 证明不了页面真的喂了它）。
+            ⚠️★ 这里**不传** `readOnly`（默认 `false` = 今天的行为）—— 这一层就是能下载的那一层。
+          */}
+          <VersionModList
+            page={scopedPage}
+            tagLabels={state.tags}
+            busy={state.busy}
+            onAction={run}
+            progress={progress}
+          />
+          {/*
+            ★★ B2（Task 6）：「整合包」一节（spec D8）—— 在第三段**之下**。
+            ⚠️★ 必须在**同一条滚动轴上**（它就是这个 `<section>` 的孩子、排在
+            `VersionModList` 后面）：否则上面那颗小卡的"滚到那一行"没有意义
+            （滚到一个不可见的地方 = 点了没反应）。
+            ⚠️★ 空态分两支：`packList === null`（取数还没回来 / 取数失败）⇒ **一个字都不画**
+            ——"还没加载"与"这个版本没有整合包"必须分得开（Ruling 65 的同一条纪律）；
+            空数组 ⇒ 走 `ModPacksSection` 的空态（`data-pack-empty="yes"`）。
+            ⚠️★ 这一道门**只**按 `packList` 判（修轮收窄）：空态**不需要**目录索引，而原先
+            那道 `|| catalogIndex === null` 把"这个版本还没有整合包"压在**一趟无关的取数**
+            后面 —— `/api/mod-catalog` 还在加载 / 失败了而 `/api/modpacks` 回了 `[]` 时，
+            spec 要求的空态**永远不出现**，与上面 `packList` / `catalog` 那两行自己写的
+            "两条独立取数：一条失败不该让另一条不画"**直接矛盾**。
+            ⚠️ 索引拿不到那一档改由 `ModPacksSection` 自己判（它拿不到索引时**不画行**：
+            "可下 N 项"离了索引算不出来，而画一颗恒禁用的按钮就是**在撒谎** —— 它看起来
+            像"这一包没东西可下"）；空态那一段不看索引，所以照画。
+            ★★ D1（T7 / A6）：`folders={scopedPage.folders}` ⇒ 目标下拉里只剩**当前这一个**
+            实例（"装进哪个实例"自然收成它 —— **不**为它另写一套包列表）。
+          */}
+          {packList === null ? null : (
+            <ModPacksSection
+              packs={packList}
+              catalogIndex={catalogIndex}
+              folders={scopedPage.folders}
+              selectedPackId={selectedPackId}
+              onSelectPack={setSelectedPackId}
+              onAction={run}
+              progress={progress}
+              busy={state.busy}
+            />
+          )}
+        </>
       )}
     </section>
   );

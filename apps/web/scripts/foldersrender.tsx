@@ -75,7 +75,7 @@ import { en, zhCN } from '@mcsr/shared/i18n';
 import { buildIndex, type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
-  groupFoldersByVersion,
+  type InstanceView,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
@@ -106,6 +106,7 @@ import { ModPacksSection } from '@/components/ModPacksSection';
 import { ToolsPanel } from '@/components/ToolsPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
+import type { ModPackWire } from '@/lib/api';
 import { packVersionOptions } from '@/lib/modPackEdits';
 import { Files, initialTabFor, ModTabs } from '@/routes/Files';
 
@@ -468,6 +469,42 @@ function folder(over: Partial<ModFolderView> & { folderId: string }): ModFolderV
   };
 }
 
+/** 一格实例夹具（`InstanceView` = `LauncherInstance` + `tracked` / `confirmed`）。 */
+function instanceView(over: Partial<InstanceView> & { key: string }): InstanceView {
+  return {
+    kind: 'multimc',
+    name: over.key,
+    instancePath: `D:\\instances\\${over.key}`,
+    gameVersion: '1.16.1',
+    loader: 'fabric 0.17.3',
+    modsDir: `D:\\instances\\${over.key}\\.minecraft\\mods`,
+    savesDir: `D:\\instances\\${over.key}\\.minecraft\\saves`,
+    needsConfirm: false,
+    tracked: true,
+    confirmed: false,
+    ...over,
+  };
+}
+/** 1.16.1 上被追踪的那一个（实例层的目标）。 */
+const INSTANCE_RANKED = instanceView({ key: `multimc:instances/1.16.1 - Ranked#1` });
+/** 另一个版本上被追踪的那一个（跨版本那一栏的第二个分组）。 */
+const INSTANCE_OLD = instanceView({
+  key: 'multimc:instances/1.8.9 - RSG',
+  name: '1.8.9 - RSG',
+  gameVersion: '1.8.9',
+  loader: null,
+});
+/** **没有被追踪**的那一个（没有 folder ⇒ 点不进实例层）。 */
+const INSTANCE_UNTRACKED = instanceView({
+  key: 'multimc:instances/1.16.5 - Vanilla',
+  name: '1.16.5 - Vanilla',
+  gameVersion: '1.16.5',
+  loader: null,
+  tracked: false,
+  /* ⚠️ 待确认是**显示值**（`needsConfirm && !confirmed`）：这一行两样都读得到。 */
+  needsConfirm: true,
+});
+
 // ---------------------------------------------------------------------------
 // 从产物里取元素的小工具（形状照已删的 `filesrender.tsx`；**别**在这里另写一份裸 key 正则）
 // ---------------------------------------------------------------------------
@@ -569,6 +606,16 @@ function buttonsIn(markup: string): ButtonShape[] {
 }
 
 const labelsIn = (markup: string): string[] => buttonsIn(markup).map((b) => b.label);
+
+/**
+ * 产物里某个字面量出现了几次。
+ *
+ * ⚠️★ 定义在这一段（而不是第一次用到它的那一组旁边）：脚本是**顺序执行**的，
+ *    而 T7 那一组（㉞ 的空态改写）在它原来的位置**之前**就要用它 ——
+ *    `const` 的 TDZ 会让那句 `countOf(...)` 抛 `ReferenceError`（症状长得像"脚本写错了"，
+ *    不像"少了一条断言"）。
+ */
+const countOf = (markup: string, needle: string): number => markup.split(needle).length - 1;
 
 /** 链接（`<a href=…>文字</a>`）—— 「打开原网页」是**链接**，不是按钮。 */
 function linksIn(markup: string): { href: string; label: string }[] {
@@ -1155,31 +1202,53 @@ ok(
  */
 const skeletonState = stateOf([ROW_GITHUB], {
   folders: [folder({ folderId: 'f1' }), folder({ folderId: 'f1b' })],
+  /*
+   * ⚠️★ D1（T7）：这个夹具现在**同时**是"版本层"的那一份（`selectedInstance === null`）
+   *    ⇒ 它需要一条**被追踪的实例**，否则版本层画的是 A8 的"一个实例都没读到"那一档，
+   *    而下面这几条量的东西（"这一版有哪些实例"/"一个下载入口都没有"）就成了空跑。
+   *    ⚠️ `INSTANCE_RANKED` 是 1.16.1 且 `tracked: true` ⇒ 版本层恰好一张卡。
+   */
+  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED],
 });
 const skeletonHtml = keep(
   html(
-    React.createElement(ModDownloadPanel, { state: skeletonState, onAction: noop, progress: null }),
+    React.createElement(ModDownloadPanel, {
+      state: skeletonState,
+      onAction: noop,
+      progress: null,
+      onGoToLaunchers: noop,
+    }),
   ),
 );
-assert.ok(
-  skeletonHtml.includes('data-folder-id="f1"') && skeletonHtml.includes('data-folder-id="f1b"'),
-  '★★ 该版本的文件夹**都**画出来了（两个同版本的 id 都在 —— 只画第一个的实现会红在这里）',
-);
 /*
- * ⚠️★ 这里原来有一条 `assert.equal(skeletonHtml.includes('data-jar="'), false)` ——
- *    它在 T4 之前**恒真**（`data-jar` 那时还不存在：§5.32① 那一类），T4 把它改成了
- *    **正反一对**、并且搬到 `collapsedListHtml` / `expandedListHtml` 那两个产物上
- *    （下面"折叠 / 展开两态"那一段）：折叠态没有 jar 行 **且** 展开态真的有一行。
+ * ★★ D1（T7）：这一条**换了量法**（原来是"该版本的两个文件夹都画出来了"）。
+ *
+ * 现场：那个渲染点（`VersionFolderList` 的两行）随 T7 搬进了**实例层** ——
+ * 版本层**不画**文件夹行（那一整块带整夹控件，spec §4.3/§4.4）。⇒ 拿版本层的产物去断
+ * "两个 id 都在"会在**正确**的实现上红。
+ * ⚠️★ 判据没有放宽，只是**分层**了：
+ *   · 这里 —— 版本层画的是**这一版的实例卡**（`data-instance-card`），
+ *     而"这一版有几个 folder"这件事由下面那个 `data-folder-count` 的读数兜着
+ *     （它在 `VersionFolderList` 的根上，折叠着也画得出来，见 `collapsedListHtml`）；
+ *   · 实例层那一份（`instanceLayerHtml`，㊿b）证的正是"收窄到那一个 folder"。
+ * ⚠️ 另一条独立读数：`data-folder-count="2"` 在 `collapsedListHtml` 上（下面那一组），
+ *    它是"这一版有两个 folder"的**机器读数**（不是"我数了数产物里有几个 id"）。
  */
-assert.match(
-  skeletonHtml,
-  /data-folder-id="f1"[\s\S]{0,400}?aria-expanded="false"/,
-  '★★ 折叠行带展开标识（spec §8 最后一行：▸/▾ + 文案 + `aria-expanded`）',
+assert.ok(
+  skeletonHtml.includes(`data-instance-card="${INSTANCE_RANKED.key}"`),
+  '★★ 版本层画的是**这一版被追踪的实例**那张卡（`data-instance-card` = `instance.key`）',
 );
 assert.match(
   skeletonHtml,
-  /data-folder-id="f1"[\s\S]{0,800}?data-action="open-folder"/,
-  '★ 每个文件夹行都有「打开文件夹」（spec §9.13 的按钮就在这一行里）',
+  /data-instance-card="[^"]+"[\s\S]{0,600}?data-action="open-instance"/,
+  '★★ 而卡上那颗「进入这个实例」在（没有它就没有"点进去"的那一步 —— A4 的入口）',
+);
+assert.equal(
+  skeletonHtml.includes(`data-instance-card="${INSTANCE_UNTRACKED.key}"`),
+  false,
+  '★★ 反面：**未追踪**的实例不画卡（它没有 folder ⇒ 点进去只会看到一屏空白）—— ' +
+    '⚠️ 夹具里那一条是 1.16.5，就算实现漏了 `tracked` 那一格也会被版本筛挡掉 ⇒ ' +
+    '这一条真正咬住的是**下面 ㊿d** 里"未追踪的行没有 `open-instance`"那一条',
 );
 assert.equal(
   textOf(skeletonHtml).includes(textOf(resolved('files.partOneTitle'))),
@@ -1259,8 +1328,24 @@ assert.ok(
  *    全部更新 / 重扫 / 解绑 / 版本手改**全都不见了也不会红**。
  *    ⚠️ 锚的是**产物里那颗按钮的文字与那两个下拉的内容**（不锚函数名、也不锚 class）：
  *    与 ⑱ 那一条对旧行是同一个口径。
+ * ★★ D1（T7）：这一行的渲染点现在在**实例层**（`VersionFolderList` 只在 `selectedInstance`
+ *    非空时画）⇒ 这一份产物用 `initialInstance: 'f1'`（**同一份夹具、同一个面板**，
+ *    只是进那一层）—— 判据一个字没动，换的是"在哪一层量它"。
+ *    ⚠️★ 两条断言因此必须**成对**存在：版本层里这一行**不在**（`skeletonHtml`，上面那组），
+ *    实例层里它在（这一条）。只写一边的话，"行永远不画"或"两层都画行"都能过。
  */
-const f1Row = folderRowSpanOf(skeletonHtml, 'f1');
+const folderRowPanelHtml = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: skeletonState,
+      onAction: noop,
+      progress: null,
+      onGoToLaunchers: noop,
+      initialInstance: 'f1',
+    }),
+  ),
+);
+const f1Row = folderRowSpanOf(folderRowPanelHtml, 'f1');
 assert.deepEqual(
   labelsIn(f1Row),
   [
@@ -1269,9 +1354,19 @@ assert.deepEqual(
     labelOf('files.folderUpdateAll', { count: 2 }),
     labelOf('files.folderRescan'),
     labelOf('files.unbind'),
+    /*
+     * ★★ D1（T7）：这一份产物是**实例层**，而实例层里第三段（`VersionModList` 的
+     *    「下载」那颗）就在这一行的**下面** —— `folderRowSpanOf` 切的是"这个
+     *    `data-folder-id` 到**下一个** `data-folder-id` 之间"，而这一块之后没有第二个
+     *    `data-folder-id` ⇒ 窗口一直开到产物末尾，把那一颗也带了进来。
+     *    ⚠️★ 这是 T7 之前**不存在**的一档（T7 之前版本层与实例层是同一层，
+     *    而那时这一行后面没有任何下载按钮）。⇒ 判据**不放宽**：那一颗照旧点名，
+     *    只是把它写成"这一段窗口的末尾多出来的那一颗"（少一颗/多一颗都会红）。
+     */
+    labelOf('files.downloadMod'),
   ],
   '★★ 那一行的控件**一颗都不许少**：展开 / 打开文件夹 / 全部更新（带 `batchTargets` 的数字）/ ' +
-    '重扫这个文件夹 / 解除绑定 —— 一条不许少、也不许多',
+    '重扫这个文件夹 / 解除绑定 —— 一条不许少、也不许多（外加窗口末尾那一颗第三段的「下载」，见上）',
 );
 assert.deepEqual(
   selectsIn(f1Row).map((select) => select.values),
@@ -1380,34 +1475,55 @@ assert.equal(
   false,
   '★★★ 反面：那一档**不许**印"里面没有能识别的 mod"—— 那是**编出来的结论**（Ruling 65 的判据）',
 );
-/* —— 空态（spec §8 第一行）：这个版本下一个文件夹都没绑 —— */
-const noFolderState = stateOf([ROW_GITHUB], { folders: [] });
+/*
+ * ===========================================================================
+ * ★★ D1（T7）：这一小段整体**换了量法**（原来量的是"手工绑定的入口"）
+ * ===========================================================================
+ * 现场：那两颗「添加文件夹」（`data-action="bind-folder"`，`data-bind-scope="section"` /
+ * `"empty"`）与那句"这一版还没有文件夹"的空态**随 T7 从 UI 上摘掉了**（spec §7：
+ * 手工绑定那两条通道**保留在契约里**、但**不再是 UI 入口**）—— 它们写的是派生结构
+ * （`deriveFolders` 从被追踪的实例生成 `folders`），⇒ 下一次对账就把手工那一条抹掉，
+ * 用户看到的是"加了又没了"。
+ * ⇒ 那两条"必在"断言**必须同批改成"不许在"**（留着的话页面会继续给一条那种路），
+ * 而"这一版一个被追踪的实例都没有"这件事**仍然要看得见** —— 它的渲染点搬到了
+ * `InstancePicker`（`files.pickVersionEmpty` + 那颗去勾选的入口，A8 的第三种空态）。
+ * ⚠️★ 判据**没有放松**：这里正反两条一起读（"`bind-folder` 一个都不在" +
+ * "第三那档空态与它的出口在"），而"实例层里那五个整夹控件照旧齐全"由下面那一组钉。
+ */
+const noFolderState = stateOf([ROW_GITHUB], { folders: [], instances: [INSTANCE_UNTRACKED] });
 const noFolderPanelHtml = keep(
   html(
-    React.createElement(ModDownloadPanel, { state: noFolderState, onAction: noop, progress: null }),
+    React.createElement(ModDownloadPanel, {
+      state: noFolderState,
+      onAction: noop,
+      progress: null,
+      onGoToLaunchers: noop,
+    }),
   ),
 );
-assert.ok(
-  textOf(noFolderPanelHtml).includes(textOf(resolved('files.folderNoneVersion'))),
-  '★ 空态：这个版本下没有文件夹要**说出来**（0 行 ⇒ 用户分不出"没有"与"没渲染"）',
+assert.equal(
+  countOf(noFolderPanelHtml, 'data-action="bind-folder"'),
+  0,
+  '★★ D1（T7）：手工绑定的入口**一个都不在**（两颗都不在了 —— spec §7）—— ' +
+    `实际命中 ${String(countOf(noFolderPanelHtml, 'data-action="bind-folder"'))} 处`,
 );
 assert.ok(
-  noFolderPanelHtml.includes('data-action="bind-folder"'),
-  '★ 而且空态里那一颗「添加文件夹」**在**（spec §8 第一行；⚠️★ G1 之前它是**唯一**的入口，' +
-    '所以这一条当时同时承担着"能不能加"与"至少有一条路"两件事 —— 现在它只管前者，' +
-    '下面那条管后者）',
+  textOf(noFolderPanelHtml).includes(
+    textOf(resolved('files.pickVersionEmpty', { version: '1.16.1' })),
+  ),
+  '★ 而"这一版没有被追踪的实例"要**说出来**（A8 的第三种空态：0 行 ⇒ 用户分不出"没有"与"没渲染"）',
+);
+assert.equal(
+  countOf(noFolderPanelHtml, 'data-action="go-launchers"'),
+  1,
+  '★ 而它恰好给**一颗**去勾选的入口（`data-action="go-launchers"`）—— ' +
+    `空态里给两颗是一步重复的点击（实际命中 ${String(countOf(noFolderPanelHtml, 'data-action="go-launchers"'))} 处）`,
 );
 /*
- * ★★ G1（最终修复波）：**已经有文件夹**的版本也必须有一个添加入口。
- *
- * 现场：修之前唯一的渲染点在 `page.folders.length === 0` 那一支里 ⇒ 一个版本只要绑过
- * 一个文件夹，就**再也没有**「添加文件夹」这条路，而 spec §2.1 第 2 条明写"一个版本下可以
- * 绑定**多个** mod 文件夹"（D3 也按这个前提写）⇒ 那半条目标在界面上根本无法达成
- * （用户只能先解绑再绑，而解绑会丢掉那个文件夹的扫描读数）。
- * ⚠️★ 判据用**有 1 个文件夹**的那一份面板（那一支里空态块**不渲染**）⇒ 产物里那颗
- *    `data-action="bind-folder"` 只可能来自**常驻的那一颗**，上面那条空态断言证不了它。
- * ★ 刀（读数在报告里）：把 `VersionFolderList` 里那个 `folderlist__actions` 那一块删掉
- *   ⇒ 这一条红（上面那条照旧绿）。
+ * ★★ 反面（同一条纪律的另一半）：**有**文件夹的那一份里，那两颗同样不在 ——
+ *    否则"空态没画"会被读成"整个入口都摘了"而其实常驻那一颗还在。
+ * ⚠️ 用 `state.folders` 里有一条、但**这一版没有任何被追踪实例**的夹具：
+ *    这一份面板的版本层照样不画任何 `bind-folder`（渲染点已经不在树里了）。
  */
 const oneFolderPanelHtml = keep(
   html(
@@ -1415,18 +1531,20 @@ const oneFolderPanelHtml = keep(
       state: stateOf([ROW_GITHUB], { folders: [folder({ folderId: 'f1' })] }),
       onAction: noop,
       progress: null,
+      onGoToLaunchers: noop,
     }),
   ),
 );
-assert.ok(
-  oneFolderPanelHtml.includes('data-folder-count="1"'),
-  '★ 对照（这一条钉的是**夹具**）：这一份面板真的画出了**1 个**文件夹（`data-folder-count="1"`）' +
-    '—— 否则下面那条"常驻入口在"会因为空态块也在渲染而变成空跑',
+assert.equal(
+  countOf(oneFolderPanelHtml, 'data-action="bind-folder"'),
+  0,
+  '★★ 反面加一条：**已经有文件夹**的那一档里它也不在（原来那一颗「常驻入口」同批摘掉）—— ' +
+    `实际命中 ${String(countOf(oneFolderPanelHtml, 'data-action="bind-folder"'))} 处`,
 );
 assert.ok(
-  oneFolderPanelHtml.includes('data-action="bind-folder"'),
-  '★★ G1：这一版**已经有文件夹**，而「添加文件夹」照样在（spec §2.1 第 2 条：一个版本可以绑多个）' +
-    '—— 修之前这一条是**空跑**：产物里一个 `bind-folder` 都没有',
+  textOf(oneFolderPanelHtml).includes(textOf(resolved('files.pickNoInstances'))),
+  '★ 对照（这一条钉的是**夹具**）：这一份里 `instances: []` ⇒ 版本层画的是**另一档**空态' +
+    '（"还没读到任何实例"）—— 与上面那份"这一版没有被追踪的"是**两句话**（Ruling 65 的同一条）',
 );
 /* —— 迁移提示（§13.1）：原来的渲染点在第一部分，而第一部分不在这一页上了 —— */
 const noticePanelHtml = keep(
@@ -1462,36 +1580,51 @@ ok(
  */
 const crossState = stateOf([], {
   folders: [
-    folder({ folderId: 'f1', gameVersion: '1.16.1' }),
-    folder({ folderId: 'f2', gameVersion: '1.8.9' }),
+    folder({ folderId: INSTANCE_RANKED.key, gameVersion: '1.16.1' }),
+    folder({ folderId: INSTANCE_OLD.key, gameVersion: '1.8.9' }),
   ],
+  instances: [INSTANCE_RANKED, INSTANCE_OLD],
 });
 const crossHtml = keep(
   html(
     React.createElement(AllFoldersView, {
-      groups: groupFoldersByVersion(crossState),
+      instances: crossState.instances,
+      gameVersion: crossState.gameVersion,
+      folders: crossState.folders,
       onAction: noop,
+      onOpenInstance: noop,
+      onGoToLaunchers: noop,
     }),
   ),
 );
 assert.ok(
-  crossHtml.includes('data-folder-id="f1"') && crossHtml.includes('data-folder-id="f2"'),
-  '★ 对照：两个版本的文件夹都在这一栏里（下面那条"含 f2"因此不是空跑）',
+  crossHtml.includes(`data-instance-row="${INSTANCE_RANKED.key}"`) &&
+    crossHtml.includes(`data-instance-row="${INSTANCE_OLD.key}"`),
+  '★ 对照：两个版本的实例都在这一栏里（下面那条"含另一个版本"因此不是空跑）',
 );
 assert.ok(
-  crossHtml.includes('data-folder-id="f2"'),
-  '★★ 「显示全部已绑定的文件夹」那一栏含**另一个版本**的文件夹（spec §9.11）',
+  crossHtml.includes(`data-instance-row="${INSTANCE_OLD.key}"`),
+  '★★ 「显示全部实例」那一栏含**另一个版本**的实例（spec §9.11）',
 );
 assert.ok(
   textOf(crossHtml).includes(textOf('1.8.9')),
   '★ 分组标题也印版本号（⚠️ 这一条**只**证"1.8.9 在产物里"—— 行内那一颗由下面那条锚住）',
 );
-assert.match(
-  crossHtml,
-  /data-folder-id="f2"[\s\S]{0,400}?1\.8\.9/,
-  '★★ 那个文件夹**自己那一行**要带版本标签（判修 5：不锚在行上的话，把行内那颗徽章删掉' +
-    '照样绿 —— 分组标题已经印了同一个版本号，所以原来那条断言的证据是"标题"而不是"这一行"）',
-);
+{
+  /*
+   * ⚠️★ 这一条用**下标夹逼**而不是正则：实例 key 里带 `#` / 空格 / 斜杠（`1.8.9 - RSG`
+   * 那一族），拼正则就得转义，而"转义写漏一个字符"的表现是**这条断言恒假或恒真**
+   * （两种都不会有人发现）。
+   */
+  const at = crossHtml.indexOf(`data-instance-row="${INSTANCE_OLD.key}"`);
+  const next = crossHtml.indexOf('data-instance-row="', at + 1);
+  const row = next === -1 ? crossHtml.slice(at) : crossHtml.slice(at, next);
+  assert.ok(
+    textOf(row).includes(textOf('1.8.9')),
+    '★★ 那个实例**自己那一行**要带版本标签（判修 5：不锚在行上的话，把行内那颗徽章删掉' +
+      '照样绿 —— 分组标题已经印了同一个版本号，所以原来那条断言的证据是"标题"而不是"这一行"）',
+  );
+}
 const failedPanelHtml = keep(
   html(
     React.createElement(ModDownloadPanel, {
@@ -1499,6 +1632,7 @@ const failedPanelHtml = keep(
       onAction: noop,
       actionError: 'BOOM-1',
       progress: null,
+      onGoToLaunchers: noop,
     }),
   ),
 );
@@ -2051,8 +2185,7 @@ ok(
  *    证明不了"页面真的喂了它"）。
  */
 
-/** 产物里某个字面量出现了几次（简报里那个 `countOf` 的一行版）。 */
-const countOf = (markup: string, needle: string): number => markup.split(needle).length - 1;
+/** 产物里某个字面量出现了几次（**定义在文件前面对工具那一段** —— 顺序执行的脚本里，谁先用到谁在前面）。 */
 
 /**
  * 第三段里的一行（`data-modid="<modid>"` 那一格）。找不到就当场红。
@@ -2430,6 +2563,15 @@ ok(
  *    在这一层证不了**（它由上一组按投影喂出来）；这一层证的是"页面真的把这三格喂下去了"。
  * ⚠️ 后四条是**接线守卫**（与 ⑯/㉖/㉗/㉟/㊲ 同一族）：产物里看不见事件处理器，
  *    这里钉"那条线在、而且只有一条"。
+ * ★★ D1（T7）：这一组的产物**都换成实例层**（`initialInstance: 'f1'`）。
+ *    现场：T7 把"能下载的那一层"与"只读的那一层"分开了，而这一组量的正是**下载那一层**
+ *    的四格 prop（`page` / `tagLabels` / `busy` / 那颗按钮）—— 版本层里那颗按钮
+ *    **按设计不存在**（A3）⇒ 拿版本层的产物去断它就是在**正确**的实现上报红。
+ *    ⚠️★ 判据一条没放宽：换的是"在哪一层量它"，而"版本层一个下载入口都没有"那一条
+ *    由 ㊿a 逐条数（四个钩子各自的**实际命中数**）。
+ *    ⚠️ 实例层里 `page` 换成 `scopedPage`（只有 `f1`）⇒ 目标选择器那一半从"两个候选"
+ *    变成"一个候选"（而 `VersionModList` 只在 **≥2** 个合法目标时才画那个下拉）
+ *    ⇒ 下面凡是量与"两个文件夹"有关的读数都改成了**实例层的那一个**。
  */
 const panelModState = stateOf([{ ...ROW_GITHUB, tags: [MOD_TAG.key] }], {
   tags: [MOD_TAG],
@@ -2441,9 +2583,34 @@ assert.deepEqual(
   '夹具自钉（B2）：这一版两个文件夹都是空的 ⇒ `sodium` 一个都不在、两个都能装' +
     '（否则下面"不忙时那颗按钮可用"会变成一条恒禁用的空跑）',
 );
+/**
+ * ★ 这一组的**实例层**夹具：把上面那份投影收窄到 `f1`（与面板里 `scopedPage` 逐字同一条算式）。
+ * ⚠️ 它只用来**摆**面板（`initialInstance` 才是真的收窄点）：夹具这一份是为了让
+ *    "目标表只剩 f1"这个前提在断言里读得出来（下面那条自钉）。
+ */
+const panelModScopedPage = planVersionPage(
+  { ...panelModState, folders: panelModState.folders.filter((item) => item.folderId === 'f1') },
+  [],
+);
+assert.deepEqual(
+  panelModScopedPage.mods.map((row) => [row.presentIn, row.downloadTargets]),
+  [[[], ['f1']]],
+  '夹具自钉（T7）：实例层里只剩 `f1` 一个候选 ⇒ 目标选择器（≥2 才画）在那一层**不出现**',
+);
+assert.equal(
+  panelModScopedPage.folders.length,
+  1,
+  '夹具自钉（T7）：实例层那一份投影**恰好一个** folder（收窄真的发生了）',
+);
 const panelModHtml = keep(
   html(
-    React.createElement(ModDownloadPanel, { state: panelModState, onAction: noop, progress: null }),
+    React.createElement(ModDownloadPanel, {
+      state: panelModState,
+      onAction: noop,
+      progress: null,
+      onGoToLaunchers: noop,
+      initialInstance: 'f1',
+    }),
   ),
 );
 assert.ok(
@@ -2478,6 +2645,8 @@ const busyPanelModHtml = keep(
       state: { ...panelModState, busy: true },
       onAction: noop,
       progress: null,
+      onGoToLaunchers: noop,
+      initialInstance: 'f1',
     }),
   ),
 );
@@ -2601,15 +2770,22 @@ assert.match(
   /bindFolder:\s*\(gameVersion\??: string \| null\)\s*=>\s*run\(\(\)\s*=>\s*api\.bindFolder\(gameVersion\)\)/,
   '★★ G2：动作层把那一格转发到契约（`api.bindFolder(gameVersion)` —— 与 `setFolderGameVersion` 同一条入参语义）',
 );
-assert.match(
-  versionFolderListCode,
-  /kind:\s*'bind-folder',\s*version:\s*page\.version/,
-  '★★ G2：页面发出的那一格是**投影里的版本**（`page.version` = `state.gameVersion`）—— ' +
-    '组件里不存第二份版本号（写死一个字符串会落进夹具的取值里 ⇒ 恰好绿）',
-);
+/*
+ * ★★ D1（T7）：**第四条（渲染点那一格）已经删掉了**，理由写在派工文本里那句：
+ *    "那个渲染点被摘掉了 ✗"。
+ *
+ * 现场：它原来断的是 `VersionFolderList.tsx` 里 `kind: 'bind-folder', version: page.version`
+ * 那一句（那两颗「添加文件夹」的 `onClick`）。T7 把那两颗连同那句空态从 UI 上摘掉
+ * （spec §7）⇒ 这一条在**正确**的实现上恒红。
+ * ⚠️★ **不是"放宽"，是"那一条判据的对象不存在了"**：G2 的另外三条（上面那三条）
+ * 测的是**契约形状与接线**（动作成员 / `Files.tsx` 的转发 / 动作层到 `api.bindFolder`），
+ * 而契约面照旧保留 ⇒ 它们一字不动、照旧有牙齿。
+ * ⚠️ 而"那条线**不再是 UI 入口**"这件事由**别的**判据钉着：㉞ 那两条
+ *    `countOf(…, 'data-action="bind-folder"') === 0`（空态那一档 + 有文件夹那一档）。
+ */
 ok(
   "㊴ 第三段的喂入与接线：页面产物里**有**那一行、那颗下载按钮、标签显示名来自 `state.tags`、`busy` 时它禁用（正反各一条）、唯一一处 `kind: 'download-mod'`（送 origin）、不重算投影、面板那一处调用点喂三格、`Files.tsx` 接到 `handlers.downloadMissing`、那条通道在动作层已有实现、" +
-    '而 G2 那条线（添加文件夹）在**三层**上都带着 `page.version`',
+    '而 G2 那条线（添加文件夹）在**契约形状与接线**那三层上一个字没变（T7 起它**不再是 UI 入口** ⇒ 原来第四条渲染点判据已删，理由在那一段注释里）',
 );
 
 // ---------------------------------------------------------------------------
@@ -3110,6 +3286,14 @@ const panelLineHtml = keep(
     React.createElement(ModDownloadPanel, {
       state: panelLineState,
       onAction: noop,
+      /*
+       * ★★ D1（T7）：这一份**必须是实例层**（`initialInstance: 'f1'`）—— 展开体与
+       * 「批量汇总行」都住在 `VersionFolderList` 里，而那一块随 T7 只在实例层画
+       * （版本层只画实例卡 + 只读的两节）。⚠️ 换个层量不改判据：
+       *   两处转发（汇总站点 / 行内站点）在这两层里是**同一段代码**。
+       */
+      initialInstance: 'f1',
+      onGoToLaunchers: noop,
       progress: linePayloadOf({
         run: 'update-folder-all',
         folderId: 'f1',
@@ -3449,6 +3633,11 @@ if (LANG === 'en') {
  *    **4 条** `ok()`（㊾a / ㊾b / ㊾c / ㊾e；原来的 15 组一个没删），所以现读是
  *    **zh 31 项 / en 32 项**（差 1 仍是 ㉛）。⚠️ 别照派工文本里那个"加 3 条"的算法抄：
  *    那个数当场就红了（`expectedGroups` 那条断言把 actual/expected 都印出来了）。
+ *    ⚠️★★ 2026-10-12（D1 的 **T7**）：再加 **㊿** 一组（"版本 → 实例"两层界面 / 只读明细 /
+ *    A6 的整合包目标）⇒ 16 → **17**。⚠️ 而它的 **`ok()` 是 5 条**（㊿a–㊿e）
+ *    ⇒ 项数 31 → **36**、32 → **37**（差 1 仍是 ㉛）。**两个数都要现数**，别推算。
+ *    ⚠️ 同一轮里 ㉞ / ㊱ / ㊴ / ㊶ 那几组**换了量法**（"文件夹行"的渲染点从版本层搬进了
+ *    实例层 ⇒ 那几条断言跟着换层），组数**没变**（它们各自仍然是一个 `ok()`）。
  */
 // ---------------------------------------------------------------------------
 // ㊷ ★★ B2（整合包）：「整合包」那一节（spec 断言 14–16）
@@ -3814,7 +4003,468 @@ console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门
   ok(`㊾e "需要桌面版 0.2.0"那句词条已经改准（${t('files.partTwoUnavailable').slice(0, 24)}）`);
 }
 
-const expectedGroups = LANG === 'en' ? 32 : 31;
+// ---------------------------------------------------------------------------
+// ㊿ ★★ D1（T7）：「版本 → 实例」两层界面（A3 / A4 / A5 / A6 / A8 / A10）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组量的是 spec §4.3–§4.6 那条**分层**：
+ *   · `selectedInstance === null` ⇒ **版本层**（只能看：实例卡 + 一句提示 + 只读的清单）；
+ *   · 选中某个实例 ⇒ **实例层**（同一批组件收窄到那一个实例 ⇒ 四个下载入口全在）。
+ * ⚠️★ A3 的判据是**"不含"**（版本层一个下载入口都没有），A4 的判据是"**只有**这一层有"
+ *    ⇒ 两条必须**成对**读：只写"版本层不含"的话，一个"永远不画下载按钮"的实现照样绿 ✓。
+ * ⚠️★ 夹具的实例名 / 路径全 ASCII（en 那一遍的零汉字扫描要过）。
+ * ⚠️★ "未追踪的实例**没有** `data-action="open-instance"`"这一支是**承重**的：
+ *    未追踪的实例没有 folder（`deriveFolders` 只派生被追踪的）⇒ 点进去是一屏空白
+ *    （"点了没反应"那一类坏法）—— 它给的是"去勾选"那颗（`data-action="go-launchers"`）。
+ */
+/**
+ * 版本层的状态：一个被追踪的实例 ⇒ 版本层画卡、实例层画它那一行。
+ *
+ * ⚠️★ 那一份 folder 的两格**必须各自配对**，否则 ㊿b 会在**正确**的实现上报红
+ *    （而红的原因与"分层"毫无关系）：
+ *      · `rows: [FROW_UPDATE]`（`sodium`，可批量）—— 「全部更新」那一颗闸（`batchTargets > 0`）
+ *        与展开体里那两颗「更新」（`data-action="update-mod"`）都要它；
+ *      · 而目录里**另有一条**这一版的 mod 不在那个 folder 里（`lithium`，见下面那一行
+ *        `ROW_LITHIUM`）—— `download-mod` 那一颗要求"这一版的 folder 里还没有它"
+ *        （`downloadTargets` 会把 `presentIn` 排掉）⇒ 没有它，那一颗画不出来。
+ *    ⇒ 两条各需要一个**不同**的 mod（一个在里面、一个不在），所以夹具里两个都备着。
+ */
+/*
+ * ★★ D1（T7）：「版本 → 实例」这一层要同时看得见"能下的"与"能更新的"两条路，
+ *    而第三段那一行的「下载」只在"这个 mod **不在**这一版的任何被追踪 folder 里"时画
+ *    （`planVersionPage` 的 `downloadTargets` 会把 `presentIn` 排掉 —— B2 那条）。
+ *    ⇒ 目录里再补一行**不在那个 folder 里**的 mod（`lithium`）。
+ *    ⚠️ 它只服务这一组（`rowId` / `name` 都写成这一组自己的），不进任何既有夹具。
+ */
+const ROW_LITHIUM: CatalogRowView = {
+  ...ROW_GITHUB,
+  rowId: 'lithium|1.16.1',
+  modid: 'lithium',
+  name: 'Lithium Prime',
+  tags: [],
+  tagLabels: [],
+  candidates: [SODIUM_OLD],
+  official: SODIUM_OLD,
+  verdict: { kind: 'older', release: SODIUM_OLD },
+  binding: null,
+};
+const twoLayerState = stateOf([ROW_GITHUB, ROW_LITHIUM], {
+  folders: [
+    folder({
+      folderId: INSTANCE_RANKED.key,
+      gameVersion: '1.16.1',
+      rows: [FROW_UPDATE],
+      unrecognized: [],
+    }),
+  ],
+  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED, INSTANCE_OLD],
+});
+
+/**
+ * ★★ ④（A5 的六样）那份明细**自己**的状态：**三档扫描状态在同一份产物里各有一行**。
+ *
+ * ⚠️★ 为什么不用上面那份 `twoLayerState`：它的 folder 里塞着 `FROW_UPDATE` 那一行
+ *    ⇒ 扫描状态那一格印的是「已扫描」，而这一组要钉的是**三档各说各的话**；而
+ *    "一个夹具服务两组判据"正是"改一处、另一组静默变松"的来源（本仓点名的坏味道）。
+ * ⚠️ 三行分别是：
+ *      · `INSTANCE_RANKED`（1.16.1，被追踪，folder **有**读数）⇒ `data-scan-state="scanned"`；
+ *      · `INSTANCE_OLD`（1.8.9，被追踪，folder **没有**读数）⇒ `"...unscanned"`；
+ *      · `INSTANCE_UNTRACKED`（1.16.5，**没被追踪** ⇒ **没有 folder**）⇒ `"...untracked"`。
+ */
+const allInstancesState = stateOf([ROW_GITHUB], {
+  folders: [
+    folder({ folderId: INSTANCE_RANKED.key, gameVersion: '1.16.1', rows: [], unrecognized: [] }),
+    folder({
+      folderId: INSTANCE_OLD.key,
+      gameVersion: '1.8.9',
+      hasReading: false,
+      rows: [],
+      unrecognized: [],
+    }),
+  ],
+  instances: [INSTANCE_RANKED, INSTANCE_OLD, INSTANCE_UNTRACKED],
+});
+assert.deepEqual(
+  planVersionPage(twoLayerState, []).mods.map((row) => row.modid),
+  ['sodium', 'lithium'],
+  '夹具自钉（T7）：这一版目录里恰好两条（`sodium` 在那个 folder 里、`lithium` 不在）—— ' +
+    '下面"下载那一颗画得出来、更新那两颗也画得出来"两条读数各靠其中一条',
+);
+/*
+ * ★★ A6 用的**整合包夹具**（定义在这一组开头：② 与 ⑤ 两处都要用它）。
+ * ⚠️★ `catalogIndex` 必须**传真索引**（`buildIndex` 出来的）：`ModPacksSection` 在
+ *    `catalogIndex === null` 时**不画行**（"可下 N 项"离了索引算不出来）⇒ 传 null 会让
+ *    "那一节在不在"这一类断言红得很怪。⚠️ 索引里那一条 release 的 modid 要与包里的
+ *    `modids` 对得上（`packDownloadableIn` 按 `(modid, 版本)` 查候选）。
+ */
+const panelPackIndex = buildIndex({
+  mods: [],
+  releases: [release('sodium', '0.1.3', GITHUB_URL), release('lithium', '0.1.2', CDN_URL)],
+  tagLabels: {},
+});
+const panelPack: ModPackWire = {
+  id: 'pack-a6',
+  title: 'Pack A6',
+  description: 'no digits here',
+  gameVersion: '1.16.1',
+  modids: ['sodium', 'lithium'],
+  hot: false,
+  modCount: 2,
+};
+/** 那一节里**目标实例下拉**那一段产物（正则字面量：`useRegexLiterals` 那条 lint 要求它）。 */
+const packSelectOf = (markup: string): string =>
+  /<select[^>]*data-pack-folder="pack-a6"[^>]*>[\s\S]{0,600}?<\/select>/.exec(markup)?.[0] ?? '';
+{
+  /* ---- ① 版本层（A3：清单看得见、**一个下载入口都没有**）---- */
+  const versionLayerHtml = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: twoLayerState,
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+        /* ⚠️ 包那一节的两格也喂上：A3 的另一半是"**看得见**但下不了"（两层的读数必须成对）。 */
+        packs: [panelPack],
+        catalogIndex: panelPackIndex,
+      }),
+    ),
+  );
+  const downloadHooks = [
+    'data-action="update-folder-all"',
+    'data-action="download-mod"',
+    'data-action="update-mod"',
+    'data-pack-download',
+  ] as const;
+  /*
+   * ⚠️ 逐条打印实际命中数（`assert.equal` 的第三个参数就是那句读数）：
+        "不含"这类断言最容易变成恒真 —— 数字印出来才看得出它真的数过。
+   */
+  for (const hook of downloadHooks) {
+    assert.equal(
+      countOf(versionLayerHtml, hook),
+      0,
+      `㊿a A3：版本层**不许**有下载入口（${hook} 实际命中 ${String(countOf(versionLayerHtml, hook))} 处）`,
+    );
+  }
+  assert.ok(
+    versionLayerHtml.includes(`data-instance-card="${INSTANCE_RANKED.key}"`),
+    '㊿a 版本层有实例卡（`data-instance-card="<folderId>"`）—— 没有它就没有"点进去"的入口',
+  );
+  assert.ok(
+    versionLayerHtml.includes('data-readonly-hint'),
+    '㊿a 版本层有那句提示（`data-readonly-hint`）—— "为什么这里不能下"的唯一答案',
+  );
+  assert.ok(
+    textOf(versionLayerHtml).includes(textOf(resolved('files.pickInstanceHint'))),
+    '㊿a 而那句提示印的是它自己那条词条（写死一句话会让"改词条"与"改代码"两处漂）',
+  );
+  /* ⚠️★ 卡上要印**实例名**（`instance.name`，不是 key 的尾段）：`folders[]` 里没有这一格。 */
+  assert.ok(
+    versionLayerHtml.includes(INSTANCE_RANKED.name),
+    '㊿a 卡上印的是 `state.instances[].name`（`folders[]` 里没有启动器类型与实例名）',
+  );
+  ok('㊿a A3：版本层有实例卡 + 只读提示，而四个下载钩子**一个都不在**（逐条实际命中数见上）');
+
+  /* ---- ② 实例层（A4：**只有**这一层能下载）---- */
+  const instanceLayerHtml = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: twoLayerState,
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+        /* ⚠️ 选中那一格由自检喂（产品里由点击写它 —— 静态渲染跑不了 handler）。 */
+        initialInstance: INSTANCE_RANKED.key,
+        /*
+         * ⚠️★ 展开态也由自检喂，理由与 `initialInstance` 同一条：`data-action="update-mod"`
+         *    那一颗住在**展开体**里（`FolderJarList`），而静态渲染点不动"展开"。
+         *    ⇒ 少了这一格，下面那条"四个钩子各至少一处"会因为"第三个钩子要展开才画"
+         *    而在**正确**的实现上报红（那是夹具的错，不是实现的）。
+         */
+        initialExpanded: [INSTANCE_RANKED.key],
+        /* ⚠️ 包那一节同样要喂（`data-pack-download` 是四个钩子里的第四个）。 */
+        packs: [panelPack],
+        catalogIndex: panelPackIndex,
+      }),
+    ),
+  );
+  /*
+   * ⚠️★ 四个钩子在这**一份**产物里就能全部命中（夹具同时备了"在 folder 里的 `sodium`"
+   *    与"不在的 `lithium`"，加上展开态 ⇒ 更新那两颗也画得出来）—— 四条读数各是一处
+   *    **独立**的入口，少任何一处都会在它自己那一行红。
+   */
+  for (const hook of downloadHooks) {
+    assert.ok(
+      countOf(instanceLayerHtml, hook) >= 1,
+      `㊿b A4：实例层必须有下载入口（${hook} 实际命中 ${String(countOf(instanceLayerHtml, hook))} 处）`,
+    );
+  }
+  /*
+   * ★★ 第四条钩子（「全部更新」）另用一份夹具补一条**独立**读数：上面那一份的 folder 是
+   *    `rows: []`（为了让 `download-mod` 画得出来，见夹具那一段）⇒ 那颗按钮的四条闸
+   *    过不了、它**本来就不该画**。⚠️ 这一条与上面那三条**不是**同一份产物：
+   *    它证明"实例层里那条批量路径也在"（而不是"恰好上面那份画了它"）。
+   *    ⚠️ 判据仍是"至少一处"，只是换了一份**该画它**的夹具 —— 两处各证一半。
+   */
+  const updatableInstanceHtml = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: stateOf([ROW_GITHUB], {
+          folders: [folder({ folderId: INSTANCE_RANKED.key, gameVersion: '1.16.1' })],
+          instances: [INSTANCE_RANKED],
+        }),
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+        initialInstance: INSTANCE_RANKED.key,
+      }),
+    ),
+  );
+  assert.ok(
+    countOf(updatableInstanceHtml, 'data-action="update-folder-all"') >= 1,
+    '㊿b A4：那一份**有可批量行**的实例层里「全部更新」在场（`canUpdateFolderAll` 四条闸全过）' +
+      `—— 实际命中 ${String(countOf(updatableInstanceHtml, 'data-action="update-folder-all"'))} 处`,
+  );
+  assert.ok(
+    instanceLayerHtml.includes(`data-folder-id="${INSTANCE_RANKED.key}"`),
+    '㊿b 实例层画的是**它自己那一行**（收窄后的 `scopedPage.folders`）',
+  );
+  assert.equal(
+    instanceLayerHtml.includes(`data-folder-id="${INSTANCE_OLD.key}"`),
+    false,
+    '㊿b 反面：**别的**实例那一行不许出现在这一层（收窄没做的话它就在）',
+  );
+  assert.equal(
+    versionLayerHtml.includes(`data-folder-id="${INSTANCE_RANKED.key}"`),
+    false,
+    '㊿b 反面：版本层**不画**文件夹行（那一整块带整夹控件 ⇒ 它是实例层的）',
+  );
+  ok('㊿b A4：实例层四个下载钩子各至少一处，而且只有它自己那一行（版本层不画行）');
+
+  /* ---- ③ 跨版本点行：先换目录版本、再选中（否则切过去是空白）---- */
+  const openInstanceRule =
+    /kind:\s*'set-catalog-version',\s*version\s*\}?[\s\S]{0,400}?setSelectedInstance\(/;
+  assert.match(
+    downloadPanelCode,
+    openInstanceRule,
+    '㊿c 点行必须**先**换目录版本（`set-catalog-version`）**再**选中那个实例 —— ' +
+      '版本不同时只切实例 ⇒ 切过去看不见它（`planVersionPage` 按 `state.gameVersion` 筛）',
+  );
+  const catalogActionCalls = countOf(downloadPanelCode, "kind: 'set-catalog-version'");
+  assert.equal(
+    catalogActionCalls,
+    3,
+    `㊿c 全文件恰好**三处**带这一格：① 联合成员的类型声明、② 顶部那个版本下拉的 onChange、` +
+      `③ 点行那一处 —— 实际命中 ${String(catalogActionCalls)} 处。` +
+      '⚠️★ 这个数**恰好**是判据：少到 2 ⇒ 有人把 ③ 摘掉了（点行不再换版本，"点了没反应"）；' +
+      '多到 4 ⇒ 多出第四条会改目录版本的路径（那一条要连**持久化的 prefs** 一起写）',
+  );
+  const versionGate = countOf(downloadPanelCode, 'if (version !== page.version)');
+  assert.equal(
+    versionGate,
+    1,
+    `㊿c 而"版本不同才换"那道闸只有**一条**（少了它 ⇒ 每次点行都多写一遍持久化的 prefs；` +
+      `多了它 ⇒ 两条会改目录版本的路径）—— 实际命中 ${String(versionGate)} 处`,
+  );
+  assert.ok(
+    downloadPanelCode.includes('folders.filter('),
+    '㊿c 实例层是**收窄**（`page.folders.filter(...)`），不是另写一套组件（A10：判定一行都不改）',
+  );
+  ok('㊿c 点行先换版本再选中，而"换目录版本"这个动作全文件恰好三处（类型声明 + 顶部下拉 + 点行）');
+
+  /* ---- ④ 只读明细「显示全部实例」（A5：六样都在 / 追踪与否分岔 / 不能下载）---- */
+  const allInstancesHtml = keep(
+    html(
+      React.createElement(AllFoldersView, {
+        instances: allInstancesState.instances,
+        gameVersion: allInstancesState.gameVersion,
+        /*
+         * ⚠️★ 这一格是"扫描状态"那**一样**的唯一来源（`ModFolderView.hasReading`）：
+         *    其余五样都从 `instances` 来。⚠️ 不喂它的话，被追踪的那两行都会印
+         *    "未追踪"（`readingOf` 查不到 ⇒ 判成"没有这一格"）—— 那不是这一栏的错，
+         *    是**自检漏喂了一格**（下面那条三档断言会当场红）。
+         */
+        folders: allInstancesState.folders,
+        onAction: noop,
+        onOpenInstance: noop,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  const rowOf = (key: string): string => {
+    const at = allInstancesHtml.indexOf(`data-instance-row="${key}"`);
+    assert.notEqual(at, -1, `㊿d 明细里找不到那一行：${key}`);
+    const next = allInstancesHtml.indexOf('data-instance-row="', at + 1);
+    return next === -1 ? allInstancesHtml.slice(at) : allInstancesHtml.slice(at, next);
+  };
+  const rankedRow = rowOf(INSTANCE_RANKED.key);
+  const untrackedRow = rowOf(INSTANCE_UNTRACKED.key);
+  const oldRow = rowOf(INSTANCE_OLD.key);
+  /* ⚠️★ 六样**都要在**（spec §4.5）：那一栏的数据源是 `state.instances` —— `folders[]`
+        里既没有 `saves`、也没有启动器类型与实例名 ⇒ 拿 folders 当数据源时这六条里有三条
+        根本画不出来（不是"画得不好"，是**没有那个数据**）。 */
+  const sixFacts: readonly (readonly [string, string])[] = [
+    ['启动器类型', t('files.launcherKindMultimc')],
+    ['实例名', INSTANCE_RANKED.name],
+    ['版本', INSTANCE_RANKED.gameVersion ?? ''],
+    ['mods 路径', INSTANCE_RANKED.modsDir],
+    ['saves 路径', INSTANCE_RANKED.savesDir],
+    ['扫描状态', t('files.scanStatusScanned')],
+  ];
+  for (const [what, value] of sixFacts) {
+    assert.ok(
+      textOf(rankedRow).includes(textOf(value)),
+      `㊿d A5：那一行缺了「${what}」（期望印出 ${value}）`,
+    );
+  }
+  /*
+   * ★★ 三档**各说各的话**（Ruling 65：分不清"不知道"与"没有"的读数不许当结论用）：
+   *    "没有这一格"（未追踪）与"有那一格但还没扫"是**两句话** —— 说成一句会让用户
+   *    以为"扫一下就有了"，而那个实例根本还没进被追踪集合。
+   *    ⚠️ 机器读数是 `data-scan-state`（短字面量），文案是词条 ⇒ 两条**独立**读数。
+   */
+  const scanStates: readonly (readonly [string, string, string])[] = [
+    ['scanned', t('files.scanStatusScanned'), rankedRow],
+    ['unscanned', t('files.scanStatusUnscanned'), oldRow],
+    ['untracked', t('files.scanStatusUntracked'), untrackedRow],
+  ];
+  for (const [state, label, row] of scanStates) {
+    assert.ok(
+      row.includes(`data-scan-state="${state}"`),
+      `㊿d 那一行的扫描状态必须是 ${state}（机器读数 data-scan-state）`,
+    );
+    assert.ok(textOf(row).includes(textOf(label)), `㊿d 而它印的是那一档自己的话（期望 ${label}）`);
+  }
+  assert.ok(
+    rankedRow.includes('data-action="open-instance"'),
+    '㊿d 被追踪的那一行**可以**点进实例层（`data-action="open-instance"`）',
+  );
+  assert.equal(
+    untrackedRow.includes('data-action="open-instance"'),
+    false,
+    '㊿d 反面：**未追踪**的那一行没有"点进去"（它没有 folder ⇒ 点进去是一屏空白）',
+  );
+  assert.ok(
+    untrackedRow.includes('data-action="go-launchers"'),
+    '㊿d 而它有一颗**去勾选**的（`data-action="go-launchers"`）—— 那才是它该做的事',
+  );
+  for (const hook of downloadHooks) {
+    assert.equal(
+      countOf(allInstancesHtml, hook),
+      0,
+      `㊿d A5：只读明细里**不能**下载（${hook} 实际命中 ${String(countOf(allInstancesHtml, hook))} 处）`,
+    );
+  }
+  /* ⚠️★ 只读**不等于**没有出口：打开文件夹是"找文件夹"这件事本身，不是下载 ✓。 */
+  assert.ok(
+    rankedRow.includes('data-action="open-folder"'),
+    '㊿d 「打开文件夹」照旧留着（它不是下载 —— 用户来这一栏就是为了找到那个目录）',
+  );
+  /* ★ 词条改名（spec §4.5）：一条词条两个渲染点（顶部那颗按钮 + 那一栏标题）。 */
+  assert.ok(
+    textOf(allInstancesHtml).includes(textOf(resolved('files.allBoundFolders'))),
+    '㊿d 那一栏的标题复用同一条词条（与顶部那颗按钮同一个说法）',
+  );
+  assert.equal(
+    t('files.allBoundFolders'),
+    LANG === 'en' ? 'Show all instances' : '显示全部实例',
+    `㊿d 而它已经改名为"显示全部实例"（实际：${t('files.allBoundFolders')}）`,
+  );
+  ok('㊿d A5：只读明细六样都在、追踪与否分岔（点进去 / 去勾选）、一个下载钩子都没有');
+
+  /* ---- ⑤ 空态（A8 的第三种）+ A6（整合包那一节收成当前这一个实例）---- */
+  const emptyInstanceState = stateOf([ROW_GITHUB], {
+    folders: [],
+    instances: [INSTANCE_UNTRACKED],
+  });
+  const emptyInstanceHtml = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: emptyInstanceState,
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  assert.ok(
+    textOf(emptyInstanceHtml).includes(
+      textOf(resolved('files.pickVersionEmpty', { version: '1.16.1' })),
+    ),
+    '㊿e A8 第三种空态：该版本没有任何被追踪实例 ⇒ 说明要在场（"没有"与"没渲染"分得开）',
+  );
+  assert.equal(
+    countOf(emptyInstanceHtml, 'data-action="go-launchers"'),
+    1,
+    '㊿e 而它恰好给**一颗**去勾选的入口（`data-action="go-launchers"`）—— ' +
+      `空态里给两颗是一步重复的点击（实际命中 ${String(countOf(emptyInstanceHtml, 'data-action="go-launchers"'))} 处）`,
+  );
+  /* A6：同一个面板 + 同一个包清单，两层各渲染一次 ⇒ 只有**实例层**有那颗 `data-pack-download`，
+        而且它绑定的目标就是**当前这一个**实例（下拉里只剩它一项）。
+     ⚠️ 夹具（`packState` / `panelPackIndex` / `panelPack`）里的目录索引与包**定义在这一组开头**：
+        ② 那一份产物（四个下载钩子的读数）也要用同一个包，两处各造一份就会漂。 */
+  const packState = stateOf([ROW_GITHUB], {
+    folders: [folder({ folderId: INSTANCE_RANKED.key, rows: [], unrecognized: [] })],
+    instances: [INSTANCE_RANKED],
+  });
+  const instanceLayerPacks = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: packState,
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+        packs: [panelPack],
+        catalogIndex: panelPackIndex,
+        initialInstance: INSTANCE_RANKED.key,
+      }),
+    ),
+  );
+  assert.equal(
+    countOf(instanceLayerPacks, 'data-pack-download="pack-a6"'),
+    1,
+    '㊿e A6：实例层里那一节在，而且那颗「装」按钮在场',
+  );
+  const packSelect = packSelectOf(instanceLayerPacks);
+  assert.notEqual(
+    packSelect,
+    '',
+    '㊿e A6：那一节的 `data-pack-folder` 下拉不在产物里（"目标收成一个"这条就没得量了）',
+  );
+  assert.equal(
+    countOf(packSelect, '<option'),
+    1,
+    `㊿e A6：目标下拉里只剩**当前这一个**实例（实际 ${String(countOf(packSelect, '<option'))} 项）`,
+  );
+  assert.ok(
+    packSelect.includes(`value="${INSTANCE_RANKED.key}"`),
+    `㊿e A6：而它绑定的目标 = 当前选中的那个实例（期望 value="${INSTANCE_RANKED.key}"）`,
+  );
+  const versionLayerPacks = keep(
+    html(
+      React.createElement(ModDownloadPanel, {
+        state: packState,
+        onAction: noop,
+        progress: null,
+        onGoToLaunchers: noop,
+        packs: [panelPack],
+        catalogIndex: panelPackIndex,
+      }),
+    ),
+  );
+  assert.ok(
+    versionLayerPacks.includes('data-pack-row="pack-a6"'),
+    '㊿e 版本层照旧**列全**那一节的包与版本（A6 的前半条：只读、但看得见）',
+  );
+  assert.equal(
+    countOf(versionLayerPacks, 'data-pack-download="pack-a6"'),
+    0,
+    '㊿e 而版本层里那颗「装」按钮**不在**（A3：下载只发生在实例层）',
+  );
+  ok('㊿e A8 第三种空态（说明 + 一颗去勾选）+ A6（实例层的目标收成当前这一个、版本层只列不装）');
+}
+
+const expectedGroups = LANG === 'en' ? 37 : 36;
 assert.equal(
   pass,
   expectedGroups,
