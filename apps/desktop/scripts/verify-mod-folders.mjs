@@ -41,6 +41,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -51,7 +52,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -170,10 +171,10 @@ const listing = (dir) =>
 if (PHASE === 'state-file' && !['a', 'b', 'c', 'd'].includes(CASE)) {
   bail(`--phase state-file 的 --case 只接受 a / b / c / d，收到「${CASE}」`);
 }
-if (PHASE === 'prefs' && !['d', 'e', 'f', 'g'].includes(CASE)) {
-  bail(`--phase prefs 的 --case 只接受 d / e / f / g，收到「${CASE}」`);
+if (PHASE === 'prefs' && !['d', 'e', 'f', 'g', 'h', 'i', 'j'].includes(CASE)) {
+  bail(`--phase prefs 的 --case 只接受 d / e / f / g / h / i / j，收到「${CASE}」`);
 }
-if (PHASE === 'prefs' && CASE === '') bail('--phase prefs 必须带 --case d|e|f|g');
+if (PHASE === 'prefs' && CASE === '') bail('--phase prefs 必须带 --case d|e|f|g|h|i|j');
 
 // ---------------------------------------------------------------------------
 // 前置：产物在不在、是不是这一版（照 `verify-file-updates.mjs` 的输入集守卫）
@@ -279,10 +280,34 @@ function channelsOf(constName) {
   const end = desktopSrc.indexOf('} as const satisfies', start);
   if (end < 0) bail(`${constName} 的形状变了（找不到 '} as const satisfies'）`);
   const block = desktopSrc.slice(start, end);
-  const names = [...block.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  /*
+   * ★★ 2026-10-11（D1 / T5）**收窄了"值"的判据** —— 这一处**咬过两次**（T4 亲自踩到）：
+   *    原来数的是**块里所有** `'…'`（`/'([^']+)'/g`）⇒ 那两个常量上面的**注释里**
+   *    只要出现一对半角单引号（例如解释某个键名时顺手打了个 `'`），就凭空多出一个"值"
+   *    ⇒ `键/值数量对不上（24 vs 26）` ⇒ **`bail`（退出码 2）**，而那句话长得像"探针坏了 /
+   *    这条检查没跑起来"，与真因（"我在注释里打了个引号"）隔着好几层（§5.74 那一族：
+   *    "没跑起来"必须与"没通过"分得开，而这里连"是注释的问题"都看不出来 ✗）。
+   *    ⇒ 判据收窄成"**只数通道串**"（`mcsr:` 开头）。⚠️ 收窄**没有削弱**这条守卫：
+   *      它要抓的是"少写 / 多写 / 拼错了一条通道" —— 那三种里任何一种都会让**通道串的数**
+   *      与**键的数**不等 ⇒ 照样 `bail`（下面那句一个字节没改）。
+   *      ⚠️ 拼错**前缀**（把 `mcsr:` 写成 `mcsr-`）时它数出来是 0 条 ⇒ 也走 `bail` ✓。
+   *    ★ 这条守卫**拔红过一次**（`.cache/t5-channels-guard.mjs`：把同一个 `slice` + 正则
+   *      搬进一个独立脚本，喂"删掉一条通道的值"的源码 ⇒ `bail`；喂"注释里多一对引号"的源码
+   *      ⇒ 旧判据红、新判据绿）—— 证据在 T5 的报告里。
+   *    ⚠️★★ **这一处连续写错两次**（现场，两个错法值得都留一句 —— 它们正是这个脚本要防的形状）：
+   *      · 第一版 `/'mcsr:[^']*'/g` **漏了捕获组** ⇒ `m[1]` 全是 `undefined` ⇒ 24 个通道的值
+   *        **全是空串**，而"数出 24 个"**照样成立** ⇒ 上半段一条判据都不红，红的是**下游**
+   *        （`命中 0/24`、`0 条是推送`、`缺 24 条：, , ,`）；
+   *      · 第二版补了捕获组 `/'mcsr:([^']*)'/g` ⇒ **把 `mcsr:` 前缀切掉了**
+   *        （值变成 `modfolders-get-state`）⇒ 通道名一个都对不上（`invoke` 会"没有注册这条通道"）。
+   *      ⇒ **正解是"数用收窄的正则、取值取整个匹配"**（`m[0].slice(1, -1)`）：两个错法的共同点
+   *        都是"**数量对**" —— 所以下面那条守卫**不只数个数**，它还把组出来的值逐一与源码里的
+   *        字面串对照（见 `.cache/t5-channels-guard.mjs` 的工况 ⑥，它第一版也漏了这一步 ⇒ 没抓到）。
+   */
+  const names = [...block.matchAll(/'mcsr:[^']*'/g)].map((m) => m[0].slice(1, -1));
   const keys = [...block.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]);
   if (names.length !== keys.length || names.length === 0) {
-    bail(`${constName} 的键/值数量对不上（${String(keys.length)} vs ${String(names.length)}）`);
+    bail(`${constName} 的键/值数量对不上（${String(keys.length)} 个键 vs ${String(names.length)} 条 mcsr: 通道串）`);
   }
   return Object.fromEntries(keys.map((k, i) => [k, names[i]]));
 }
@@ -582,6 +607,14 @@ if (WRITE && progressPool.length < 2) {
 /** 夹具 jar 里写的**内部版本号**（故意与目录里 release 的版本字符串不同：见写相位 ⑰ 的刀）。 */
 const FIXTURE_JAR_VERSION = '1.0.0';
 const SERVED_JAR_VERSION = '9.9.9';
+/**
+ * ★ Task 5：假 MultiMC 实例的 `mmc-pack.json` 里那个 fabric-loader 版本。
+ *
+ * ⚠️ 它**不是**"期望产物"那种会被产品改动推翻的常数：它是我**自己写进夹具**的那个串，
+ *    而断言问的是"读出来的 loader 是不是**我写进去**的那一份"（`fabric ${MMC_LOADER_VERSION}`）。
+ *    ⇒ 它红了只有两种可能：那一格没从 `mmc-pack.json` 读出来，或者读串了别的版本。
+ */
+const MMC_LOADER_VERSION = '0.15.11';
 /**
  * ★ C/S2 那两个夹具 jar 里写的内部版本号：**必须严格低于目录里那一条的版本主体**
  *   （正文里那两行才会判成 `older` ⇒ 可批量）。
@@ -1242,6 +1275,17 @@ async function mainPhase() {
         boundAt: 1,
       },
     },
+    /*
+     * ★★ D1 的两格**必须在**（2026-10-11 控制器裁定）：`migrateState()` 的"清 `folders`"
+     *    只对"**D1 之前**写的文件"生效，判据正是这两格**都不在**。
+     *    ⇒ 这一段夹具不加它们的话，它模拟的是"上一版写的文件"，那一格 `pre-folder`
+     *      会被**合法地清一次**（spec A16），而下面那一整族断言（判修 1 / Ruling 34）
+     *      问的是"一份 **post-D1** 文件里预置的 `pre-folder` 会不会污染缺失清单" ✓。
+     *    ⚠️ 它**不是**"把夹具凑绿"：这两格是 D1 之后我们这一版**真的会写**的东西
+     *      （`StateFileV2` 的必填成员），夹具照当前契约写才对得上它要测的那件事。
+     */
+    launchers: [],
+    instancePrefs: {},
     prefs: {
       bulkChannel: 'origin',
       catalogGameVersion: '1.16.1',
@@ -2182,6 +2226,598 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
     );
   });
 
+  // =========================================================================
+  /*
+   * ⚠️★★ **这一段必须先读的一句：`probeLaunchers` 看的是"这台机器"**。
+   *    本机实测（2026-10-11，现读）：`D:\MultiMC`（31 个实例）与 `D:\PCL2`（6 个）
+   *    **真的存在** ⇒ 它俩**会**出现在探测结果里，而且 `addLauncher('multimc', …)`
+   *    只要根**落在 `D:\MultiMC` 里面**就会把那 31 个实例一起枚举出来。
+   *    ⚠️ 这正是第一版夹具**红在 3 条"夹具缺陷"上**的原因（§5.79："如果它没跑，会长什么样"）：
+   *      · 我原来断言"探测结果里只有我造的那几个根" ⇒ 在有真启动器的机器上**必红**，
+   *        而在干净机器上恒真 —— 一条**与产品无关、只与这台机器有关**的判据 ✗；
+   *      · 同时把绑定的根放在 `<tmp>` 下 ⇒ 它**不在**任何盘符根里 ⇒ 上面那两条真根照旧被
+   *        `driveRoots()` 报出来（`probeLaunchers` 的候选表**含盘符根**，那是 **spec §6 要的行为**）。
+   *    ⇒ 处置**不是**"把夹具换成 D:\MultiMC"（那是拿真用户的实例当夹具），而是把它做成
+   *      **差分读数**：先量一份"这一台机器本来的探测结果"当**对照**，再量加了夹具之后的那一份，
+   *      断言**差集恰好是我造的那五个根**。这样它在"有真启动器"与"干净机器"两种情况下**都成立** ✓。
+   */
+  await section('★★ Task 5（D1）：四种假启动器 × 枚举 / 解析 / 勾选 / 派生 / 缺失清单照旧', async () => {
+    /*
+     * ★★ **对照读数必须取在"造夹具之前"**（这一条是踩出来的：第一版取在造完之后 ⇒ 差集恒空 ✗）：
+     *    `probeLaunchers` 的候选表**只认"常见位置"**，而①的夹具**必须落在其中一个位置**上
+     *    （否则它根本不进候选，①就永远不可能绿）。⇒ 那份夹具一造出来，它**就已经**在结果里了
+     *    ⇒ 对照若取在它之后，**差集是空的**（看不到"新加的那个根"）。
+     *    ⚠️ 顺序因此是：**先量对照 → 再造①那个候选槽的夹具 → 再量一份**。这一句就是那个顺序。
+     */
+    const beforeHits = await invoke(MOD_CH.probeLaunchers);
+    /*
+     * ---- 夹具：四种启动器 + 一个"兜底专用"的根（都在 `workRoot` 里）----------------
+     * ⚠️ 根**不**放在任何盘符根下（`<tmp>` 不是 `C:\`）⇒ 它们与"这台机器上那些真根"
+     *    在**路径上**天然分得开（`samePath` 一比就知道是哪一个）。
+     */
+    const mmcRoot = join(workRoot, 'MultiMC');
+    const mmcName = '1.16.1 - Ranked#1';
+    const mmcInstance = join(mmcRoot, 'instances', mmcName);
+    const mmcMods = join(mmcInstance, '.minecraft', 'mods');
+    mkdirSync(join(mmcInstance, '.minecraft', 'saves'), { recursive: true });
+    mkdirSync(mmcMods, { recursive: true });
+    writeFileSync(
+      join(mmcInstance, 'mmc-pack.json'),
+      JSON.stringify({
+        components: [
+          { uid: 'net.fabricmc.fabric-loader', version: MMC_LOADER_VERSION },
+          { uid: 'net.minecraft', version: '1.16.1' },
+        ],
+      }),
+    );
+
+    const pclRoot = join(workRoot, 'PCL2');
+    const pclIsoName = '1.16.1-Fabric 0.17.3';
+    const pclIsoInstance = join(pclRoot, '.minecraft', 'versions', pclIsoName);
+    const pclIsoMods = join(pclIsoInstance, 'mods');
+    mkdirSync(pclIsoMods, { recursive: true });
+    writeFileSync(
+      join(pclIsoInstance, `${pclIsoName}.json`),
+      JSON.stringify({ id: pclIsoName, clientVersion: '1.16.1' }),
+    );
+    const pclSharedName = '1.20.1-Fabric 0.16.13';
+    const pclSharedInstance = join(pclRoot, '.minecraft', 'versions', pclSharedName);
+    mkdirSync(pclSharedInstance, { recursive: true });
+    writeFileSync(
+      join(pclSharedInstance, `${pclSharedName}.json`),
+      JSON.stringify({ id: pclSharedName, clientVersion: '1.20.1' }),
+    );
+    const pclSharedMods = join(pclRoot, '.minecraft', 'mods');
+    mkdirSync(pclSharedMods, { recursive: true });
+
+    /*
+     * ⚠️★ `official` 的根**就是** `.minecraft` 那一层（spec §6 的表）⇒ 这个夹具用
+     *    `<tmp>\vanilla` 当那个根，`mods` 直接落在根下（不是 `<根>\.minecraft\mods`）。
+     *    `mkdirSync(pclSharedMods)` 与它**同形**（那是 PCL 的共享 mods），别把两者看成一个。
+     */
+    const officialRoot = join(workRoot, 'vanilla');
+    const officialInstance = join(officialRoot, 'versions', '1.16.1');
+    mkdirSync(officialInstance, { recursive: true });
+    writeFileSync(
+      join(officialInstance, '1.16.1.json'),
+      JSON.stringify({ id: '1.16.1', clientVersion: '1.16.1' }),
+    );
+    mkdirSync(join(officialRoot, 'mods'), { recursive: true });
+
+    /*
+     * ---- ④ 的夹具：**四处解析点都不存在**的那一个 -----------------------------------
+     * ⚠️★ 它必须是一个**别的启动器**的根：拿 PCL2 那家去造的话，`<根>\.minecraft\mods`
+     *    已经被共享那一条创建了 ⇒ 这个实例会被解析成"共享"（`needsConfirm: false`），
+     *    而那条断言会红在一处**夹具缺陷**上（§5.79 那一族）。
+     *    用 `hmcl`（与 PCL2 同规则、但根不同）⇒ 两处 `mods` / `saves` 一个都不在 ✓。
+     */
+    const bareRoot = join(workRoot, 'HMCL');
+    const bareName = '1.7.10-forge';
+    const bareInstance = join(bareRoot, '.minecraft', 'versions', bareName);
+    mkdirSync(bareInstance, { recursive: true });
+
+    /*
+     * ---- ⑧ 的夹具：**一个只给共享 `libraries\` 的根**（兜底那一支）------------------
+     * ⚠️★ 它**故意**不挂在上面四个根底下：`loaderFromSharedLibraries` 会试
+     *    `<根>\libraries` 与 `<根>\.minecraft\libraries` 两处 ⇒ 造在 `pcl2` 的根下
+     *    会让**所有** PCL2 实例都拿到这个 loader。
+     */
+    const fallbackRoot = join(workRoot, 'PCL2-fallback');
+    const FALLBACK_LOADER_VERSION = '0.99.0';
+    mkdirSync(
+      join(fallbackRoot, 'libraries', 'net', 'fabricmc', 'fabric-loader', FALLBACK_LOADER_VERSION),
+      { recursive: true },
+    );
+    const fbName = '1.16.1-Fabric 0.18.4';
+    const fbInstance = join(fallbackRoot, '.minecraft', 'versions', fbName);
+    mkdirSync(fbInstance, { recursive: true });
+    // ⚠️ 它自己那份 json **没有** `libraries` ⇒ `parseInstanceMeta` 那一半给 null ⇒ 才轮到兜底
+    writeFileSync(
+      join(fbInstance, `${fbName}.json`),
+      JSON.stringify({ id: fbName, clientVersion: '1.16.1' }),
+    );
+
+    /*
+     * ---- ⑤–⑦ 的 jar：**一个真的会被扫到的** mod（"照旧工作"要有东西可照）------------
+     * ⚠️★ 挑法与脚本头上那两处同一条：**1.16.1 下唯一候选**（缺失清单只列这种行）、
+     *    且避开 `antigone` / `trackedInPre` / `MCSRRANKED` 与写路径那六个夹具
+     *    （`writePool` 只有写相位才非空 ⇒ 这里不必再看它）。
+     */
+    const derivedModid =
+      oneRelease1161.find(
+        (modid) => ![ANTIGONE, trackedInPre, MCSRRANKED].includes(modid),
+      ) ?? '';
+    if (derivedModid === '') {
+      bail('构造不出 Task 5 的夹具：1.16.1 下找不到一个没被别的夹具占用的"唯一候选" mod');
+    }
+    makeJar(join(mmcMods, `${derivedModid}-1.16.1.jar`), { id: derivedModid, version: '1.0.0' });
+
+    const fixtureRoots = [
+      ['multimc', mmcRoot],
+      ['pcl2', pclRoot],
+      ['official', officialRoot],
+      ['hmcl', bareRoot],
+      ['pcl2', fallbackRoot],
+    ];
+    /*
+     * ★★ **T12 那条守卫的夹具**（控制器 2026-10-11 点名要的那一条）：MultiMC **根下也有**
+     *    共享 `libraries\`（本仓实测真机就是那样），而它的元数据（`mmc-pack.json`）**是权威的**
+     *    ⇒ 兜底**不许**对它生效。⚠️ 版本**故意**与 `mmc-pack.json` 里那个不同（`9.9.9`）：
+     *    少了那道 kind 守卫时，读数会从 `fabric ${MMC_LOADER_VERSION}` 变成 `fabric 9.9.9`
+     *    ⇒ 下面那条判据当场红 ✓。
+     *    ⚠️★ 它必须造在 **`treesBeforeText` 取指纹之前**：第一版把它放在指纹之后 ⇒
+     *       A13 那条判据量到的是"我自己刚造的那 5 个目录"（35 → 40 个条目），红在**夹具自己**身上 ✗。
+     */
+    mkdirSync(join(mmcRoot, 'libraries', 'net', 'fabricmc', 'fabric-loader', '9.9.9'), {
+      recursive: true,
+    });
+
+    const mmcKey = `multimc:${relative(mmcRoot, mmcInstance).split(sep).join('/')}`;
+    const fbKey = `pcl2:${relative(fallbackRoot, fbInstance).split(sep).join('/')}`;
+    const samePath = (a, b) => resolve(String(a)).toLowerCase() === resolve(String(b).toLowerCase());
+
+    /*
+     * ★★ **① 的夹具必须落在"常见位置"的候选表里** —— 这是第一版红掉的那两条的真正原因：
+     *    `probeLaunchersOnDisk()` 只扫 **spec §6 的常见位置**（各启动器默认目录、用户主目录、
+     *    盘符根下的同名目录 + MCSR 那三个）⇒ 我把夹具放在 `<tmp>` 下时，它们**根本不是候选**，
+     *    于是"五个根逐条命中"永远不可能成立（**与产品行为无关** ✗）。
+     *    ⚠️★ 而**不能**改成"用真机那些根"（`D:\MultiMC` 有 31 个真实例）—— 那是拿用户的实例当夹具 ✗。
+     *    ⇒ 做法：把那张候选表**照抄一份**（它是 spec §6 钉住的**行为**，不是实现细节），
+     *      运行期挑一个**盘上还不存在**的候选位置当夹具根，跑完删掉。
+     *      ⚠️ 抄一份的代价写在下面那条"（前置）"里：**先断言我挑的那个位置本来是空的** ——
+     *        抄错了 / 机器上真有它 ⇒ 那一条当场红，而不是让①变成一句假话（§5.79）。
+     *      ⚠️ 只挑**第一个**空的（`slice(0, 1)`）：多挑几个会把"差集"搞复杂，而①要的
+     *        "只报命中的、不报没造的"由下面那条"**负向**夹具"（造一个**解析不出实例**的根）量。
+     */
+    const home = homedir();
+    const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming');
+    const candidateSlots = [
+      ['multimc', join(home, 'MultiMC')],
+      ['prism', join(home, 'PrismLauncher')],
+      ['pcl2', join(home, 'PCL2')],
+      ['hmcl', join(home, 'HMCL')],
+      ['multimc', join(appData, 'MultiMC')],
+      ['prism', join(appData, 'PrismLauncher')],
+      ['official', join(appData, '.minecraft')],
+    ];
+    const freeSlots = candidateSlots.filter(([, path]) => !existsSync(path));
+    if (freeSlots.length === 0) {
+      bail(
+        'Task 5 的①那一组要一个"常见位置里还空着的槽"（spec §6 的候选表），而这一台机器上一个空的都没有',
+      );
+    }
+    const [probeKind, probeRoot] = freeSlots[0];
+    const probeName = '1.16.1-probe';
+    const probeInstance = join(
+      probeRoot,
+      probeKind === 'official'
+        ? join('versions', probeName)
+        : probeKind === 'multimc' || probeKind === 'prism'
+          ? join('instances', probeName)
+          : join('.minecraft', 'versions', probeName),
+    );
+    mkdirSync(probeInstance, { recursive: true });
+    /*
+     * ★★ **① 的负向夹具**：一个"**在候选表里、但列不出任何实例**"的常见位置 ——
+     *    spec §6 的官方默认目录 `%APPDATA%\.minecraft`（本机实测它**不存在**）。
+     *
+     * ⚠️★ 它为什么必须有：① 问的是"**只报命中的那几个根**"，而那是**两半**：
+     *    · 造了的根**要在** —— 上面那条"这几个根逐条命中"量的是这一半；
+     *    · 没造的 / 造了也列不出实例的根**不许在** —— 这一条量的是那一半。
+     *    少了这一条，一个"**把全部候选根都报出来**"的坏实现会完全通过①，
+     *    而那正是 spec §6 明确否掉的行为（"报了一个它其实不用的根"比"什么都没报"更坏：
+     *    用户会以为已经绑好了，之后所有判定都落在错的目录上）。
+     * ⚠️ 它必须**先确认那个位置真的不在**（`freeSlots` 里就有它）—— 否则这一条是
+     *    "拿一个本来就有实例的根去断言它不在"，判据与夹具自相矛盾。
+     * ⚠️ 用 `driveRoots()` 那两个盘符根下**不存在**的同名目录也行，但这里选 `%APPDATA%\.minecraft`：
+     *    它是"**人人几乎都有、而未必真在用**"那个反例的**原产地**，最贴近它对治的坏法。
+     */
+    const negativeRoot = join(appData, '.minecraft');
+    const negativeIsClean = !existsSync(negativeRoot);
+    console.log(`  ① 夹具用一个**本来空着**的常见位置：${probeKind}:${probeRoot}（跑完删掉）`);
+    console.log(
+      `  ① 负向夹具（候选表里、但列不出实例）：${negativeRoot} —— 本来${negativeIsClean ? '**不在**' : '**在**（这一条会跳过）'}`,
+    );
+
+    const isFixtureRoot = (hit) =>
+      fixtureRoots.some(([kind, root]) => hit.kind === kind && samePath(hit.rootPath, root)) ||
+      (hit.kind === probeKind && samePath(hit.rootPath, probeRoot));
+    const hitFor = (hits, kind, root) =>
+      hits.find((hit) => hit.kind === kind && samePath(hit.rootPath, root));
+    /** 这个根是不是"这一台机器上本来就有的"（= 不在我造的那几个里）。 */
+    const isForeignRoot = (hit) => !isFixtureRoot(hit);
+
+    /*
+     * ★★ **A13（只读纪律）**的仪器：把一棵树的 `相对路径 | 类型 | 大小 | mtimeMs` **排序后**
+     *    拼成一个指纹。
+     *
+     * ⚠️★ 它量的是**启动器 / 实例那几棵树** —— **不含**我们自己的状态文件（那一份住
+     *    `currentUserDataDir`，在另一个目录里）⇒ "本功能写自己的状态"**不会**被这条判据当成违规 ✓。
+     * ⚠️ mtimeMs 取整到毫秒：不同文件系统上它的精度不同，而"读一遍"与"写一遍"的差远大于
+     *    精度差 ⇒ 既够敏感、又不会因为精度抖动假红。
+     * ⚠️ 用 `lstatSync`（**不跟随**符号链接）：跟随的话，"往链接目标写"会被记成链接自己的读数。
+     */
+    const treeFingerprint = (root) => {
+      const rows = [];
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name);
+          const st = lstatSync(path);
+          rows.push(
+            `${relative(root, path).split(sep).join('/')}|${entry.isDirectory() ? 'd' : 'f'}|${String(st.size)}|${String(Math.trunc(st.mtimeMs))}`,
+          );
+          if (entry.isDirectory()) walk(path);
+        }
+      };
+      if (existsSync(root)) walk(root);
+      return rows.sort().join('\n');
+    };
+    const treeEntryCount = (text) => (text === '' ? 0 : text.split('\n').length);
+    /*
+     * ⚠️★ `probeRoot` **也在指纹里**：它是①那个"常见位置里的空槽"，而产品在枚举时
+     *    会**读**它（`listInstances` 要列它的实例）⇒ 它必须与另外五个根受同一条纪律管。
+     *    ⚠️ 这一段（含 `probeRoot` 的创建、以及 MMC 根下那份 `libraries\`）**必须排在
+     *    第一次 `invoke` 之前** —— 第一版把那份 `libraries\` 造在指纹之后，A13 当场红在
+     *    "我自己刚造的 5 个目录"上（35 → 40 个条目）✗。
+     */
+    const fixtureRootPaths = [...fixtureRoots.map(([, root]) => root), probeRoot];
+    const treesBeforeText = fixtureRootPaths.map((root) => treeFingerprint(root)).join('\n=====\n');
+    console.log(`  Task 5 夹具根：${workRoot}`);
+    console.log(`    MultiMC 实例：${mmcName}（mods 在实例内）`);
+    console.log(`    PCL2：${pclIsoName}（隔离）/ ${pclSharedName}（共享）`);
+    console.log(`    官方：${officialRoot}（一律共享根下的 mods）`);
+    console.log(`    ⑧ 兜底夹具：${fallbackRoot}（共享 libraries\\ 里有 ${FALLBACK_LOADER_VERSION}）`);
+    console.log(
+      `  A13 指纹（枚举 / 勾选 / 确认之前）：${String(fixtureRootPaths.reduce((n, root) => n + treeEntryCount(treeFingerprint(root)), 0))} 个条目，sha256 前 16 位 ${createHash('sha256').update(treesBeforeText).digest('hex').slice(0, 16)}`,
+    );
+
+    // ---- ① probeLaunchers：**差分**读数（对照取在本节开头 = 造夹具之前）-------------
+    /*
+     * ⚠️★ 差分而不是"只有我那几个根"：见这一节开头那一段（本机真的有 `D:\MultiMC` / `D:\PCL2`），
+     *    以及"对照必须取在造夹具之前"那一段（否则差集恒空）。
+     */
+    console.log(
+      `  对照（这一台机器**本来**就有的探测命中）：${beforeHits.length === 0 ? '（一个都没有）' : beforeHits.map((h) => `${h.kind}:${h.rootPath}`).join(' | ')}`,
+    );
+    const hits = await invoke(MOD_CH.probeLaunchers);
+    const added = hits.filter((hit) => hitFor(beforeHits, hit.kind, hit.rootPath) === undefined);
+    /*
+     * ⚠️★★ **为什么这里只断言"多了①那一个候选槽"，而不是"多了六个夹具根"**（第一版就是这么错的）：
+     *    `probeLaunchers` 的候选表是**固定**的（spec §6 的常见位置）⇒ 我那五个放在 `<tmp>` 下的
+     *    夹具根**永远不可能是候选** ⇒ 它们**一个都不会出现**在结果里。那不是缺陷，是**规则**：
+     *    探测只回答"**这台机器的常见位置上有什么**"，不回答"我刚才绑了什么"。
+     *    ⇒ ① 能且只能量两件事：**候选表里真的能列出实例的位置被报出来了**（这里就是那个槽），
+     *      以及**列不出实例的位置一个都没被报**（负向那一条）。
+     *    ⚠️ "这台机器本来就有的根照旧在"那一条是**对照**：一个"只报最近一次 `addLauncher`"
+     *      的坏实现会让"多了一个"看起来对，而它会把 `D:\MultiMC` 那些真根丢掉 ⇒ 那条红 ✓。
+     */
+    check(
+      '① `probeLaunchers`：**加了①那个候选槽的夹具之后**，结果里正好多出它这一个根（"这个根真的能列出实例"才报）',
+      hitFor(hits, probeKind, probeRoot) !== undefined &&
+        hitFor(beforeHits, probeKind, probeRoot) === undefined &&
+        added.length === 1 &&
+        samePath(added[0].rootPath, probeRoot),
+      `对照 ${String(beforeHits.length)} 个 → 现在 ${String(hits.length)} 个；新增 ${JSON.stringify(added.map((h) => `${h.kind}:${h.rootPath}`))}；候选槽 ${probeKind}:${probeRoot}`,
+    );
+    check(
+      '① 对照：机器上本来就有的那些根**照旧**在结果里（探测不是"只报我新加的那几个"）',
+      beforeHits.every((hit) => hitFor(hits, hit.kind, hit.rootPath) !== undefined),
+      `丢掉的是 ${JSON.stringify(beforeHits.filter((h) => hitFor(hits, h.kind, h.rootPath) === undefined).map((h) => `${h.kind}:${h.rootPath}`))}`,
+    );
+    check(
+      `① 而且**没有多出别的**根（候选表固定 ⇒ 只该多出那一个：${String(hits.length)} = ${String(beforeHits.length)} + 1）`,
+      hits.length === beforeHits.length + 1,
+      `${String(hits.length)} = ${String(beforeHits.length)} 个真根 + 1 个夹具槽`,
+    );
+    /*
+     * ★★ **①的"另一半点"：候选表里那些"列不出实例"的根不许被报出来。**
+     *    上面几条量的都是"造了的要在"；这一条量"没造的 / 造了也空的**不许在**"。
+     *    ⚠️ `negativeIsClean` 是这条判据的**前提**（那个位置本来真的不在）：它不成立时
+     *      报一条**显式**的跳过，而不是让判据变成一句恒真的假话（§5.32 ②/④）。
+     */
+    check(
+      `① ★ 负向：候选表里那个"列不出实例"的根（${negativeRoot}）**不许**出现在结果里 —— spec §6："报了一个它其实不用的根"比"什么都没报"更坏`,
+      negativeIsClean ? hitFor(hits, 'official', negativeRoot) === undefined : true,
+      negativeIsClean
+        ? `结果里 ${hitFor(hits, 'official', negativeRoot) === undefined ? '没有它 ✓' : '**有它** ✗'}`
+        : `（前提不成立：${negativeRoot} 本来就在盘上 ⇒ 这一条跳过，不算判据）`,
+    );
+    check(
+      '① 对照：这一台机器上"本来的根"里**没有一个**是这一组的夹具根（否则上面那条差分是同义反复）',
+      beforeHits.every(isForeignRoot),
+      beforeHits.filter((h) => !isForeignRoot(h)).map((h) => `${h.kind}:${h.rootPath}`).join(' | ') ||
+        '（一个都没有 ✓）',
+    );
+
+    // ---- ② listInstances：实例的**形状**逐条对（不拿"总数"当判据）-------------------
+    openQueue = [];
+    for (const [kind, root] of fixtureRoots) {
+      await invoke(MOD_CH.addLauncher, kind, root);
+    }
+    check(
+      '（前置）五条启动器绑定都进状态了（id = <类型>:<归一化根>）',
+      (await invoke(MOD_CH.getState)).launchers.length === 5,
+      JSON.stringify((await invoke(MOD_CH.getState)).launchers.map((l) => l.id)),
+    );
+    const views = await invoke(MOD_CH.listLauncherInstances);
+    /*
+     * ⚠️★ **不为"总数"写一个手抄的数字**：这一台机器上本来就有 `D:\MultiMC` / `D:\PCL2`
+     *    那些真根（它们不在我的绑定里 ⇒ **不该**出现在这里），而**别的**真根（若有人绑过）
+     *    会让总数变。判据改成**逐条**：我造的**每一条**都在，且形状逐格对；
+     *    外加一条"总数 = 我造的条数"——它成立的前提是"这一组只绑了自己造的根"，
+     *    而那一条由上面那条 `hits.length === before + 5` 与"没有别的绑定"两处兜住。
+     */
+    const byKey = (key) => (views ?? []).find((view) => view.key === key);
+    const expectedInstances = [
+      [mmcKey, mmcName, '1.16.1'],
+      [`pcl2:${relative(pclRoot, pclIsoInstance).split(sep).join('/')}`, pclIsoName, '1.16.1'],
+      [`pcl2:${relative(pclRoot, pclSharedInstance).split(sep).join('/')}`, pclSharedName, '1.20.1'],
+      [`official:${relative(officialRoot, officialInstance).split(sep).join('/')}`, '1.16.1', '1.16.1'],
+      [`hmcl:${relative(bareRoot, bareInstance).split(sep).join('/')}`, bareName, null],
+      [fbKey, fbName, '1.16.1'],
+    ];
+    check(
+      `② \`listInstances\` 枚举出**我造的这六条**（MultiMC / PCL2 两条 / 官方 / 裸 HMCL / 兜底那条；总数 ${String(expectedInstances.length)}）`,
+      Array.isArray(views) &&
+        views.length === expectedInstances.length &&
+        expectedInstances.every(([key]) => byKey(key) !== undefined),
+      `共 ${String(Array.isArray(views) ? views.length : '（不是数组）')} 条：${(views ?? []).map((v) => `${v.kind}/${v.name}`).join(' | ')}`,
+    );
+    check(
+      '② 名字逐条对（枚举的是**实例目录下的子目录名**，不是从版本号推出来的）',
+      expectedInstances.every(([key, name]) => byKey(key)?.name === name),
+      expectedInstances.map(([key, name]) => `${String(byKey(key)?.name)}${byKey(key)?.name === name ? '' : `≠${name}`}`).join(' | '),
+    );
+    check(
+      '② 游戏版本从**各自那份元数据**读出来（MultiMC=mmc-pack.json，其余=versions\\<名>\\<名>.json 的 clientVersion；裸 HMCL 那份 json 不存在 ⇒ null）',
+      expectedInstances.every(([key, , version]) => (byKey(key)?.gameVersion ?? null) === version),
+      expectedInstances.map(([key, , version]) => `${String(byKey(key)?.gameVersion)}（期望 ${String(version)}）`).join(' | '),
+    );
+
+    // ---- ③ modsDir / savesDir 逐家对 ----------------------------------------------
+    const mmcView = byKey(mmcKey);
+    const pclIsoView = byKey(expectedInstances[1][0]);
+    const pclSharedView = byKey(expectedInstances[2][0]);
+    const officialView = byKey(expectedInstances[3][0]);
+    const bareView = byKey(expectedInstances[4][0]);
+    const fbView = byKey(fbKey);
+    check(
+      '③ MultiMC ⇒ mods/saves 落在**实例内**的 .minecraft 下（天然隔离）',
+      mmcView !== undefined &&
+        samePath(mmcView.modsDir, mmcMods) &&
+        samePath(mmcView.savesDir, join(mmcInstance, '.minecraft', 'saves')),
+      `modsDir=${String(mmcView?.modsDir)}；期望 ${mmcMods}`,
+    );
+    check(
+      '③ PCL2 **隔离**那条 ⇒ mods 落在 versions\\<名> 里面（它自己那份 mods 存在）',
+      pclIsoView !== undefined && samePath(pclIsoView.modsDir, pclIsoMods),
+      `modsDir=${String(pclIsoView?.modsDir)}；期望 ${pclIsoMods}`,
+    );
+    check(
+      '③ PCL2 **共享**那条 ⇒ mods 落在 <根>\\.minecraft\\mods（它自己那份不存在）',
+      pclSharedView !== undefined && samePath(pclSharedView.modsDir, pclSharedMods),
+      `modsDir=${String(pclSharedView?.modsDir)}；期望 ${pclSharedMods}`,
+    );
+    check(
+      '③ 官方 ⇒ **一律共享**（mods 落在**根**下，不是 <根>\\.minecraft\\mods）',
+      officialView !== undefined && samePath(officialView.modsDir, join(officialRoot, 'mods')),
+      `modsDir=${String(officialView?.modsDir)}；期望 ${join(officialRoot, 'mods')}`,
+    );
+
+    // ---- ④ 四处解析点都不存在 ⇒ needsConfirm ---------------------------------------
+    check(
+      '④ 两处（实例自己那份 / 共享那份）**都不在** ⇒ needsConfirm === true（不静默按共享）',
+      bareView !== undefined &&
+        bareView.needsConfirm === true &&
+        samePath(bareView.modsDir, join(bareInstance, 'mods')),
+      `needsConfirm=${String(bareView?.needsConfirm)} modsDir=${String(bareView?.modsDir)}`,
+    );
+    check(
+      '④ 而它**旁边**那些（隔离的 / 共享的 / 官方那几条）全都是 false —— 这一格真的跟着条件走',
+      [mmcView, pclIsoView, pclSharedView, officialView].every((view) => view?.needsConfirm === false),
+      [mmcView, pclIsoView, pclSharedView, officialView]
+        .map((v) => `${String(v?.name)}=${String(v?.needsConfirm)}`)
+        .join(' | '),
+    );
+
+    // ---- ⑧ loader：兜底的**两半**都要有读数（真有 ⇒ 读得出；不该有 ⇒ 必须还是 null）---
+    check(
+      `⑧ 兜底：实例自己那份 json 没有 libraries、而共享 libraries\\ 里**恰好一个** fabric-loader ⇒ 报 fabric ${FALLBACK_LOADER_VERSION}`,
+      fbView?.loader === `fabric ${FALLBACK_LOADER_VERSION}`,
+      `loader=${String(fbView?.loader)}`,
+    );
+    check(
+      '⑧ 对照：没有共享 libraries\\ 的那几条 ⇒ loader 仍然是 null（兜底不是"总给一个值"）',
+      (officialView?.loader ?? null) === null && (pclSharedView?.loader ?? null) === null,
+      [officialView, pclSharedView].map((v) => `${String(v?.name)}=${String(v?.loader)}`).join(' | '),
+    );
+    /*
+     * ★★ **T12 那条守卫的读数**（控制器 2026-10-11 点名要的那一条）：上面那个
+     *    `9.9.9` 就在 MMC 根下的共享 `libraries\` 里 ⇒ 重新枚举一次，它的 loader
+     *    必须**仍然是元数据那一份**（没被兜底误报成 `fabric 9.9.9`）。
+     *    ⚠️★ 它**必须重新枚举**（不能复用上面那份 `views`）：`loader` 是枚举那一刻算出来的，
+     *       而现在盘上多了一份 `libraries\` ⇒ 复用旧读数的话，这一条量的是"加目录之前"的状态
+     *       （一条**恒真**的读数 —— §5.32 ①）。
+     */
+    const viewsAgain = await invoke(MOD_CH.listLauncherInstances);
+    const mmcAgain = (viewsAgain ?? []).find((view) => view.key === mmcKey);
+    check(
+      `★★ ⑧ 兜底的 kind 守卫：MultiMC 根下**也有**共享 libraries\\ ⇒ 它的 loader **仍然**是元数据那一份（fabric ${MMC_LOADER_VERSION}），没有被误报成 fabric 9.9.9`,
+      mmcAgain?.loader === `fabric ${MMC_LOADER_VERSION}`,
+      `loader=${String(mmcAgain?.loader)}（根下共享 libraries\\ 里是 9.9.9）`,
+    );
+
+    // ---- ⑤ 勾选 ⇒ 派生进 folders[] + 读数与普通文件夹一致 --------------------------
+    state = await invoke(MOD_CH.getState);
+    const missingBefore = state.missing ?? [];
+    check(
+      `⑤（前置）勾选**之前**：${derivedModid} 在缺失清单里（否则⑥那条"不见了"是空集上的恒真）`,
+      missingBefore.some((m) => m.modid === derivedModid),
+      `missing 共 ${String(missingBefore.length)} 条；含 ${derivedModid}=${String(missingBefore.some((m) => m.modid === derivedModid))}`,
+    );
+    await invoke(MOD_CH.setInstanceTracked, mmcKey, true);
+    state = await invoke(MOD_CH.getState);
+    const derived = state.folders.find((f) => f.folderId === mmcKey);
+    check(
+      '⑤ 勾选 ⇒ 它出现在派生的 folders[] 里，且 `folderId === instance.key`、`path === modsDir`',
+      derived !== undefined && samePath(derived.path, mmcMods),
+      derived === undefined
+        ? `（没有这个 folderId；现有：${state.folders.map((f) => f.folderId).join(', ')}）`
+        : `path=${derived.path}`,
+    );
+    check(
+      '⑤ 而且**读数的形状与普通文件夹一致**：pathExists === true 且 hasReading === true（不是"勾了但没有读数"）',
+      derived?.pathExists === true && derived?.hasReading === true,
+      `pathExists=${String(derived?.pathExists)} hasReading=${String(derived?.hasReading)}`,
+    );
+    check(
+      '⑤ 派生的那一格版本来自实例元数据（1.16.1），而 autoUpdate 是 true（否则下次启动不会扫它）',
+      derived?.gameVersion === '1.16.1' && derived?.autoUpdate === true,
+      `gameVersion=${String(derived?.gameVersion)} autoUpdate=${String(derived?.autoUpdate)}`,
+    );
+    /*
+     * ★ **A9 的"与普通文件夹一致"**那半句要有一条**对照**：拿上面 `bindFolder` 造出来的
+     *   手工绑定文件夹（`pre-folder`）与这条派生的比 —— 两边的读数形状必须**同类**。
+     *   ⚠️ 少了它，"派生出来的 folder 与手工绑的**长得不一样**"这种坏法没人喊。
+     */
+    const manualFolder = state.folders.find((f) => f.path && samePath(f.path, preDir));
+    check(
+      '⑤ 对照：同一份状态里那个**手工绑定**的文件夹读数形状与它同类（pathExists / hasReading 两格都在）',
+      manualFolder !== undefined &&
+        typeof manualFolder.pathExists === 'boolean' &&
+        typeof manualFolder.hasReading === 'boolean',
+      manualFolder === undefined
+        ? '（没有 pre-folder —— 夹具前提不成立）'
+        : `手工：pathExists=${String(manualFolder.pathExists)} hasReading=${String(manualFolder.hasReading)}`,
+    );
+
+    // ---- ⑥ ★★ 零功能损失（A10）：扫描 / 判定 / 缺失清单在派生 folder 上照旧 ---------
+    check(
+      `⑥ ★ A10：派生 folder 上**扫出了那一行**（${derivedModid}-1.16.1.jar 真的在它解析出的目录里）`,
+      derived?.rows?.length === 1 && derived.rows[0].modid === derivedModid,
+      `rows=${JSON.stringify((derived?.rows ?? []).map((r) => `${r.modid}@${String(r.localVersion)}`))}`,
+    );
+    check(
+      '⑥ ★ A10：判定与今天逐字相同 —— 这个文件夹里没有无法识别的行（`unrecognized` 空着）',
+      Array.isArray(derived?.unrecognized) && derived.unrecognized.length === 0,
+      JSON.stringify(derived?.unrecognized ?? null),
+    );
+    check(
+      `⑥ ★ A10：缺失清单跟着读数走 —— 已装进派生 folder 的 ${derivedModid} **从清单里消失**了`,
+      (state.missing ?? []).every((m) => m.modid !== derivedModid),
+      `missing 共 ${String((state.missing ?? []).length)} 条（勾选前 ${String(missingBefore.length)} 条）；含 ${derivedModid}=${String((state.missing ?? []).some((m) => m.modid === derivedModid))}`,
+    );
+    check(
+      '⑥ ★ A10：而清单**仍然是那一份**（条数只差这一条 ⇒ 少了的那条不是"整份清单被清空"）',
+      (state.missing ?? []).length === missingBefore.length - 1,
+      `${String(missingBefore.length)} → ${String((state.missing ?? []).length)}`,
+    );
+    check(
+      '⑥ ★ A10：清单每一行**仍然**带着 release 与 manual 两格（形状没有被派生这条路改掉）',
+      (state.missing ?? []).every(
+        (m) => m.release?.modid === m.modid && (m.release?.download === 'manual') === m.manual,
+      ),
+      JSON.stringify((state.missing ?? []).slice(0, 2).map((m) => m.modid)),
+    );
+
+    // ---- ⑦ 第七条通道 confirmInstance：标记消失 ----------------------------------
+    await invoke(MOD_CH.confirmInstance, fbKey);
+    state = await invoke(MOD_CH.getState);
+    const fbConfirmed = (state.instances ?? []).find((instance) => instance.key === fbKey);
+    check(
+      '⑦ `confirmInstance`：确认之后那一格的 `needsConfirm` 变 false（"用户看过并接受了这份解析结果"落下来了）',
+      fbConfirmed !== undefined && fbConfirmed.confirmed === true && fbConfirmed.needsConfirm === false,
+      `confirmed=${String(fbConfirmed?.confirmed)} needsConfirm=${String(fbConfirmed?.needsConfirm)}`,
+    );
+    const bareStill = (state.instances ?? []).find((instance) => instance.key === expectedInstances[4][0]);
+    check(
+      '⑦ 对照：**没有**被确认的那一条（解析同样是猜的）仍然是 true —— 这一格不是"确认一个全都清"',
+      bareStill?.needsConfirm === true,
+      `needsConfirm=${String(bareStill?.needsConfirm)}`,
+    );
+
+    // ---- ⑦ 取消勾选 ⇒ folder 消失 + 读数一并清 ------------------------------------
+    const missingAfterTrack = (await invoke(MOD_CH.getState)).missing ?? [];
+    await invoke(MOD_CH.setInstanceTracked, mmcKey, false);
+    state = await invoke(MOD_CH.getState);
+    check(
+      '⑦ 取消勾选 ⇒ `folders[]` 里它消失了（派生的那一格被回收）',
+      state.folders.every((f) => f.folderId !== mmcKey),
+      `folders = ${state.folders.map((f) => f.folderId).join(', ') || '（空）'}`,
+    );
+    check(
+      `⑦ 而且**读数一并清**：${derivedModid} 重新回到缺失清单里（旧读数没有被留在缓存里）`,
+      (state.missing ?? []).some((m) => m.modid === derivedModid),
+      `missing 共 ${String((state.missing ?? []).length)} 条（取消前 ${String(missingAfterTrack.length)} 条）`,
+    );
+
+    // ---- 收尾：把这五条绑定移掉（后面那一组从干净状态起步）--------------------------
+    for (const [, root] of fixtureRoots) {
+      const binding = state.launchers.find((entry) => samePath(entry.rootPath, root));
+      if (binding !== undefined) await invoke(MOD_CH.removeLauncher, binding.id);
+    }
+    check(
+      '（收尾）五条启动器绑定都移掉了（后面那一组从干净状态起步）',
+      (await invoke(MOD_CH.getState)).launchers.length === 0,
+      JSON.stringify((await invoke(MOD_CH.getState)).launchers.map((l) => l.id)),
+    );
+
+    /*
+     * ★★ **A13（只读纪律）**：上面那一整趟（枚举 / 勾选 / 取消勾选 / 确认）跑完之后，
+     *    启动器那几棵树必须**逐字节没被碰过** —— 大小、mtime、条目集合三样都在指纹里。
+     *
+     * ⚠️★ 它为什么必须有（这是一个**判据缺口**，由 T4 的收口报告点出来）：spec A13 是
+     *    D1 的一条硬约束（"除三种下载外，不改启动器/实例的任何文件" —— `instance.cfg` /
+     *    `mmc-pack.json` / `versions\<名>\<名>.json` 都不动），而在这个探针之前，仓库里
+     *    **没有任何判据**量过它（T4 那份量过指纹的探针**不在仓库里**）。
+     * ⚠️★ 它**能红**：在参照 worktree 里往"枚举那一趟"塞一次写入（`realFs.listDir()` 里
+     *    多写一个文件）⇒ 下面这条当场红（读数见 T5 的报告 / `.cache/t5-ref-*`）。
+     * ⚠️ 它**不是**"跑两遍指纹都一样"那种恒真：`treesBeforeText` 取在**夹具造完之后、
+     *    任何一次 `invoke` 之前** ⇒ 这一整段里产品若碰了那棵树，它一定落在这两个读数之间。
+     */
+    const treesAfterText = fixtureRootPaths.map((root) => treeFingerprint(root)).join('\n=====\n');
+    check(
+      '★★ A13：枚举 / 勾选 / 取消勾选 / 确认这一整趟**没有碰过**启动器那几棵树（大小 + mtime + 条目集合逐字节一致）',
+      treesAfterText === treesBeforeText,
+      treesAfterText === treesBeforeText
+        ? `两边都是 ${String(fixtureRootPaths.reduce((n, root) => n + treeEntryCount(treeFingerprint(root)), 0))} 个条目、sha256 前 16 位 ${createHash('sha256').update(treesAfterText).digest('hex').slice(0, 16)}`
+        : `指纹变了：${String(treeEntryCount(treesBeforeText))} → ${String(treeEntryCount(treesAfterText))} 个条目`,
+    );
+
+    /*
+     * ★ 收尾：把①那个"常见位置里的空槽"**删掉** —— 它住在**用户的真实目录**里
+     *   （`%USERPROFILE%\MultiMC` 那一族，不是 `<tmp>`）⇒ 留着它就是"往这台机器上
+     *   放了一个假启动器"（下一次跑探针时它会变成"本来就有的根"，§5.79 那一族的温床）。
+     *   ⚠️ 只删**我自己造的那一层**（`probeRoot`），不动它的任何祖先。
+     */
+    rmSync(probeRoot, { recursive: true, force: true });
+    check(
+      '（收尾）① 那个"常见位置里的空槽"删掉了（不留一个假启动器在这台机器上）',
+      !existsSync(probeRoot),
+      probeRoot,
+    );
+  });
+
   return { workRoot, ok: failures === 0 };
 }
 
@@ -2201,6 +2837,16 @@ async function stateFilePhase() {
     folders: {
       keepme: { path: join(workRoot, 'somewhere'), gameVersion: null, autoUpdate: true, boundAt: 5 },
     },
+    /*
+     * ★★ 2026-10-11（D1）：**D1 的两格补上** ⇒ 这一份是"**我们这一版自己写出来的**文件"。
+     *    `migrateState()` 的"清 `folders`"只对"D1 之前写的"生效，判据正是这两格**都不在**
+     *    ⇒ 少了它们，case c 那条"三格原样保留"会被**合法地**清一次（spec A16），
+     *      而它要测的是"post-D1 文件：坏类型被归一化、其余逐格照旧" ✓。
+     *    ⚠️ case b（`missing`，三格全缺）**故意不动** —— 它测的**正是**"D1 之前的文件"
+     *      被清空那一支（A16 的一次性迁移）。
+     */
+    launchers: [],
+    instancePrefs: {},
     prefs: { bulkChannel: { mirrorId: 'gh-proxy' }, catalogGameVersion: '1.8.9', tagFilter: ['legal'] },
   };
   /** case a：`stateVersion: 2` 但三格是**类型不对**的 ⇒ 必须走 v1 那条"备份 + 重建 + 告诉用户"。 */
@@ -2210,6 +2856,11 @@ async function stateFilePhase() {
     items: {},
     catalogBindings: {},
     folders: null,
+    // ⚠️ 这两格在 / 不在，都走不到这里：`folders: null` 由 `normalizeFolders` 判成**坏文件**
+    //    （Ruling 31），与迁移那条"清 folders"是两条独立的路 ⇒ 补上它是为了让这份夹具
+    //    是"一份 post-D1 文件、但其中一格类型不对"这个**真实**形态，而不是缺两格的旧文件。
+    launchers: [],
+    instancePrefs: {},
     prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
   };
   /** case b：`stateVersion: 2` 但三格**缺失** ⇒ 补默认（不是坏文件、不许备份）。 */
@@ -2240,6 +2891,10 @@ async function stateFilePhase() {
     folders: {
       keepme: { path: join(workRoot, 'somewhere'), gameVersion: null, autoUpdate: true, boundAt: 5 },
     },
+    // ★ 同上（本文件那个 `const good` 夹具）：case d 测的是"post-D1 文件里 catalogBindings 的旧数据被清掉、
+    //   而 **folders 与 prefs 逐格照旧**" ⇒ 这两格必须在，否则 `folders` 会被合法地清一次。
+    launchers: [],
+    instancePrefs: {},
     prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
   };
 
@@ -2386,6 +3041,21 @@ async function prefsPhase() {
   makeJar(join(instanceMods, 'present.jar'), { id: ANTIGONE, version: '2.0.0' });
 
   const prefsBase = { bulkChannel: 'origin', catalogGameVersion: '1.8.9', tagFilter: [] };
+  /*
+   * ★★ 2026-10-11（D1）：**这两格必须在**（与主相位那份播种状态同一条理由）。
+   *
+   * ⚠️★ 这一处是**判别实验**定下来的，不是猜的（现场读数在 T5 的报告里）：
+   *    少了它们，这份夹具就是"**D1 之前**写的文件" ⇒ `migrateState()` 会**合法地**
+   *    把 `folders` 清一次（spec A16）⇒ 那个 `f-auto` 文件夹没了 ⇒ 下面这一整段
+   *    （"文件夹推断出 1.16.1 ⇒ 采纳进 `catalogGameVersion`"）的**前置**就不成立
+   *    （等不到"目录 ok 且文件夹已扫"的推送）⇒ 4 条红**全落在夹具上**，
+   *    而它们看起来像"Ruling 37 坏了"（§5.79：红/空结果先问一句"如果它没跑，会长什么样"）。
+   *    ⚠️ 我一开始把它归因成"迁移没落盘"（候选 B），判别实验否掉了它：
+   *    `node .cache/t5-migration-trace.mjs <userData>` 的读数是
+   *    **启动之前** `launchers=undefined instancePrefs=undefined` → **启动之后**
+   *    `launchers=[] instancePrefs={} folders=[]`，而且盘上那份的 **mtime 真的动了**、
+   *    字节 280 ⇒ **第一次启动确实把这两格写下去了** ⇒ 是夹具过期（候选 A），不是真缺陷 ✓。
+   */
   const seed = {
     version: 1,
     stateVersion: 2,
@@ -2394,6 +3064,8 @@ async function prefsPhase() {
     folders: {
       'f-auto': { path: instanceMods, gameVersion: null, autoUpdate: true, boundAt: 1 },
     },
+    launchers: [],
+    instancePrefs: {},
     /*
      * case d：**用户选过**（`catalogGameVersionChosen: true`）⇒ 1.8.9 必须活下来；
      * case e：老文件**没有这一格** ⇒ 归一化补 `false`，下次启动仍会采纳一次（1.16.1）。
@@ -2407,16 +3079,83 @@ async function prefsPhase() {
           ? { ...prefsBase, catalogGameVersionChosen: false }
           : prefsBase,
   };
-  if (CASE === 'g') {
+  /*
+   * ⚠️★ case h / i 的夹具**只有 `folders` 那一族**（一份"D1 之前"的文件）⇒ 它**没有**
+   *    `f-auto` 那一格。下面那条"（对照）那个文件夹确实推断得出 1.16.1"因此对它们**不适用**
+   *    （少了它，那一条会在正确的实现上红，而那是一条**夹具缺陷**长得像产品缺陷的红）。
+   */
+  const HAS_FAUTO_FIXTURE = CASE !== 'h' && CASE !== 'i' && CASE !== 'j';
+
+  /*
+   * ★★ **Task 5（D1）/ spec A16：一次性迁移**的夹具 —— 一份"**D1 之前**写的 v2 文件"。
+   *
+   * 形状（三个判据，缺一个这条读数就失去分辨力）：
+   *   ① `folders` **非空** —— 一条**手工绑定**的 entry：`manual-migration-folder`
+   *      （⚠️★ 手工绑定的 id 在真实运行里是**路径的 sha1**，它**不是** `instance.key` 的形状；
+   *       对账（`reconcileFolders`）对"没有 pref"的 entry **原样保留** ⇒ 它是唯一能
+   *       **跨第二次启动**活下来的那种 entry。一条 `instance.key` 形状的 entry 活不下来：
+   *       没有 `launchers` 就枚举不出实例 ⇒ 对账**合法地**回收它 —— 那是 A9 的行为，不是缺陷）；
+   *   ② D1 那两格 `launchers` / `instancePrefs` **都不在**（控制器 2026-10-11 现读裁定的判据：
+   *      只有"两格都不在"才是"上一版写的文件" ⇒ 才该被清一次）；
+   *   ③ 那条 folder 的目录**真的在盘上**（`pathExists` 才是 true —— 一份路径不存在的
+   *      旧绑定说明不了"它被保留了"）。
+   */
+  const d1Root = join(workRoot, 'D1-migration');
+  const manualMods = join(d1Root, 'manual-mods');
+  mkdirSync(manualMods, { recursive: true });
+  makeJar(join(manualMods, 'migration.jar'), { id: ANTIGONE, version: '2.0.0' });
+  const migrationFolders = {
+    'manual-migration-folder': {
+      path: manualMods,
+      gameVersion: '1.16.1',
+      autoUpdate: true,
+      boundAt: 7,
+    },
+  };
+  const migrationSeed = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: migrationFolders,
+    prefs: prefsBase,
+  };
+  /*
+   * ⚠️★ 这份夹具的**字节**要留一份：case h 在两次启动之间要把它**原样写回去**
+   *    （理由见那里），而"原样"的判据就是**同一串字节** —— 重新拼一遍就成了另一份夹具（§5.44）。
+   */
+  const migrationBytes = JSON.stringify(migrationSeed, null, 2);
+  if (CASE === 'g' || CASE === 'i' || CASE === 'j') {
     /*
      * case g 是**真重启**：不预置任何东西，用 case f 留下的那份 `userData`（`--reuse-user-data`）。
      * ⚠️ 它是判修 1 的第二半：`setCatalogGameVersion` 写下去的那个值，必须在**下一次启动**
      *    之后还在（那时 `startUp` 会再跑一次 `adoptFolderGameVersion()`，而那个文件夹推断出
      *    1.16.1）。少了它，"置位只写在内存里"这种坏法照样绿。
+     * ★ case i 是**同一台机器上的第二次真重启**（Task 5 / spec A16 的"一次性迁移"）：
+     *    它跑在 case h 留下的那份文件上 —— 那时 D1 的两格**已经在文件里**了，
+     *    ⇒ `folders` 这一次**不许**再被清（那正是"每次读盘都清"这个缺陷的形状）。
      */
-    if (REUSE_USER_DATA === '') bail('--phase prefs --case g 必须带 --reuse-user-data <目录>');
-    console.log(`  复用 case f 留下的 userData（真重启）：${currentUserDataDir}`);
+    if (REUSE_USER_DATA === '') {
+      bail(`--phase prefs --case ${CASE} 必须带 --reuse-user-data <目录>`);
+    }
+    console.log(`  复用 ${CASE === 'i' ? 'case h' : 'case f'} 留下的 userData（真重启）：${currentUserDataDir}`);
     console.log(`  它盘上的 prefs：${JSON.stringify(readStateFileJson()?.prefs ?? null)}`);
+    console.log(
+      `  它盘上的 folders 键：${JSON.stringify(Object.keys(readStateFileJson()?.folders ?? {})).slice(0, 200)}`,
+    );
+    console.log(
+      `  它盘上有没有 D1 那两格：launchers=${String(Array.isArray(readStateFileJson()?.launchers))} instancePrefs=${String(typeof readStateFileJson()?.instancePrefs === 'object' && readStateFileJson()?.instancePrefs !== null)}`,
+    );
+  } else if (CASE === 'h') {
+    /*
+     * ★★ **Task 5 / spec A16：一次性迁移**的起点 —— 一份"**D1 之前**写的 v2 文件"：
+     *    `folders` 非空（旧的手工绑定 + 它的扫描读数）、而 D1 那两格**都不在**。
+     *    ⚠️ 判据是"这两格**都不在**"（控制器 2026-10-11 裁定）⇒ 这一份夹具必须**真的**没有它们。
+     *    ⚠️ 为什么 `folders` 要非空：空了的话"被清掉"与"本来就空"在数据上分不开（§5.38 那一族）。
+     *    ⚠️ 里面那个 jar 让"手工绑定那一格"是**活的**（有读数）—— 一份真的旧文件长这样。
+     */
+    writeFileSync(stateFile(), JSON.stringify(migrationSeed, null, 2), 'utf8');
+    console.log('  预置"**D1 之前**"的状态文件：folders 两个键（一个手工绑定 + 一个实例派生）、D1 两格都缺');
   } else {
     writeFileSync(stateFile(), JSON.stringify(seed, null, 2), 'utf8');
     console.log(
@@ -2446,7 +3185,36 @@ async function prefsPhase() {
   let pushed = null;
   for (let i = 0; i < 400; i += 1) {
     const last = pushes.filter((p) => p.channel === MOD_CH.onStatus).at(-1)?.payload ?? null;
-    if (last !== null && last.catalogStatus === 'ok' && last.folders.some((f) => f.rows.length > 0)) {
+    /*
+     * ⚠️★ 2026-10-11（Task 5）：这个"扫完了"的判据**换成了与夹具形状无关的读数**。
+     *    原来写的是 `last.folders.some((f) => f.rows.length > 0)`（"**至少有一个文件夹扫出了行**"）——
+     *    那是**旧夹具的产物**：case d / g / h / i 那几份夹具里，A16 的迁移会把 `folders` 清成空
+     *    ⇒ 那个条件**永远不可能成立** ⇒ 等待到点（400 × 25ms）⇒ 下游那一串断言全红，
+     *    而它们**看起来像 Ruling 37 / 迁移坏了**（实测那 7 条红全是这个形状 ✗ —— §5.79 那一族：
+     *    "这条检查没跑成"与"这条检查没过"必须分得开）。
+     *    ⇒ 改成"**这一份推送里的文件夹都扫完了**"：`f.hasReading === true || f.rows.length > 0`。
+     *      两种夹具都覆盖：
+     *        · 有文件夹（case d/e/f）：要求"扫过、有读数"（Ruling 65 那一格；空目录扫过也是 `true`）✓；
+     *        · 文件夹被迁移清空（case h/i）：`[].every(...)` 为真 ⇒ 只要求"目录 ok" ✓。
+     *      ⚠️ 它**没有变松**：`catalogStatus === 'ok'` 那一半一个字节没改；"有文件夹时必须已有读数"
+     *        这一半其实**更强**（旧写法只要求"有一行"）。
+     */
+    const scanDone = (last?.folders ?? []).every((f) => f.hasReading === true || f.rows.length > 0);
+    /*
+     * ⚠️★ **case h / i 还要多等一档"静默"**：它们的文件夹被 A16 迁移清空了 ⇒ 上面那个
+     *    `every` 对**空数组**恒真 ⇒ 它在**第一趟** `refreshInstances()` 的 rebuild 上就满足了，
+     *    而 `startUp` 后面还有 `adoptFolderGameVersion()` + 最后一趟 `rebuild()` —— 实测那样
+     *    读到的是 `catalogGameVersion: '1.8.9'`（**采纳还没发生**），于是那两条又红了 ✗。
+     *    ⇒ 判据加上"**最近 400ms 没有新的推送**"：`startUp` 的每一趟都会推一帧
+     *      （`refreshInstances()` 一次、最后 `rebuild()` 一次），而这一相位**不主动调
+     *      `getState`** ⇒ 帧停下来了就是它跑完了。只对 h / i 生效 ⇒ 其余 case 的时序**逐字不变**。
+     */
+    const quietLongEnough =
+      (CASE === 'h' || CASE === 'i') &&
+      last !== null &&
+      pushes.filter((p) => p.channel === MOD_CH.onStatus).length > 0 &&
+      Date.now() - (pushes.filter((p) => p.channel === MOD_CH.onStatus).at(-1)?.at ?? 0) > 400;
+    if (last !== null && last.catalogStatus === 'ok' && (scanDone || quietLongEnough)) {
       pushed = last;
       break;
     }
@@ -2531,7 +3299,7 @@ async function prefsPhase() {
       after?.prefs?.catalogGameVersionChosen === true,
       String(after?.prefs?.catalogGameVersionChosen),
     );
-  } else {
+  } else if (CASE === 'd' || CASE === 'e' || CASE === 'f') {
     check(
       '老文件（缺这一格 ⇒ 补 false）⇒ 采纳已绑定文件夹推断出的 1.16.1（Ruling 37 明确接受这一次）',
       state.gameVersion === '1.16.1',
@@ -2543,11 +3311,185 @@ async function prefsPhase() {
       JSON.stringify(after?.prefs ?? null),
     );
   }
-  check(
-    '（对照）那个文件夹确实推断得出 1.16.1（否则上面几条比的是"推断不出来"）',
-    state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion === '1.16.1',
-    String(state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion),
-  );
+  // ⚠️ case h / i / j 没有 `f-auto` 那一格（见上面 `HAS_FAUTO_FIXTURE` 的理由）⇒ 跳过这一条。
+  if (HAS_FAUTO_FIXTURE) {
+    check(
+      '（对照）那个文件夹确实推断得出 1.16.1（否则上面几条比的是"推断不出来"）',
+      state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion === '1.16.1',
+      String(state.folders.find((f) => f.folderId === 'f-auto')?.gameVersion),
+    );
+  }
+
+  // =========================================================================
+  /*
+   * ★★ **Task 5（D1）/ spec A16：一次性迁移**（case h，随后 case i 做第二次真重启）。
+   *
+   * 这一条钉的是 `migrateState()` 的**那一对分寸**（缺一半就会有一条坏法没人喊）：
+   *   · "**D1 之前**写的文件"（`launchers` / `instancePrefs` **两格都不在**）
+   *     ⇒ `folders` **清空**（spec A16：升级后旧的绑定与读数作废、从空态开始），
+   *       而那两格**补上空值**（我们这一版必须写它们，否则浅合并会把磁盘那份捡回来）；
+   *   · "**D1 之后**写的文件"（两格都在）
+   *     ⇒ `folders` **原样保留**（否则每次读盘都清一次 ⇒ 用户的实例派生绑定永远活不过一次加载）。
+   *
+   * ⚠️★ 为什么**两次启动**都要有（不是"清掉"一条就够）：
+   *    只测"清掉"的话，一个"**每次都清**"的坏实现会**完全通过**（那正是 2026-10-11 实测到的
+   *    那个缺陷的形状）⇒ 第二条（幂等）才是把"一次性"三个字钉住的那一半。
+   * ⚠️ case i 是**另起一个进程**（不是同一个进程里再跑一次函数）：它模拟的是"用户第二天又开了一次"，
+   *    而那一次读的是**盘上**那份字节 —— 只调函数会漏掉"写盘那一侧把两格写丢了"这种坏法。
+   */
+  /*
+   * ★★★ **Task 5（D1）/ spec A16：一次性迁移** —— **三个进程，零"重种夹具"**。
+   *
+   * 为什么是**三个**（这一版结构是踩出来的，前两版的错法都留在这里，别走回去）：
+   *   · 第一版：h 里"启动一次 ⇒ 清空"、然后**把那份 D1 之前的字节写回去**、再 spawn i 断言
+   *     "第二次启动不许再清" —— ✗ **写回去这一句根本不可能成立**：h 这个进程自己的
+   *     `startUp` 还在跑（`queueLoadCatalog` 是异步的），它的 `persist()` 会落在我的重写**之后**
+   *     （实测：重写后回读明明是 `folders=["manual-migration-folder"]`，进 i 却变成 `folders=[]`）。
+   *     那是**两个写者抢同一个文件**，不是产品缺陷（§5.27：别在活跃写入窗口里追归因）。
+   *   · 第二版：i 直接读**盘上那份（已经被 h 迁移过、folders 已空）** ⇒ 它测的是"在一份 folders
+   *     已经空了的 post-D1 文件上再启动一次"，**恰好把要测的东西绕过去了** ✗。
+   *   ⇒ 正解：**谁也不重种**。让文件按它自己的生命周期走：
+   *       h：种一份"D1 之前"的文件 → 启动 → 断言**迁移发生了**（清空 + 两格补上 + 别的格照旧）；
+   *       i：**同一个 userData** 再启动一次 → 断言**这份文件不再被清**（两格在、`folders` 稳定）；
+   *       j：**第三次**启动 → 断言那份文件**逐字节没变** ⇒ 这才是"**一次性**"这三个字的落点
+   *          （"每次读盘都清"那种坏实现会在 i 那一趟就把 `folders` 清掉，j 的字节比对当场红）。
+   */
+  if (CASE === 'h') {
+    /*
+     * ⚠️★ **前提必须读"我自己刚写下去的那份字节"（`migrationBytes`），不是 `readStateFileJson()`**：
+     *    后者拿的是**启动之后**那一份（迁移已经跑过、而且已经落盘）⇒ 用它当前提会读到
+     *    `folders=[]`、得到一条**必然红**的"（前置）"（第一版就是这么错的 ✗）。
+     */
+    const asWritten = JSON.parse(migrationBytes);
+    const onDisk = readStateFileJson();
+    check(
+      '（前置）这一趟的起点**真的是"D1 之前"的形状**：folders 非空、而 D1 那两格都不在',
+      Object.keys(asWritten?.folders ?? {}).length === 1 &&
+        asWritten?.launchers === undefined &&
+        asWritten?.instancePrefs === undefined,
+      `写入时的形状：folders=${JSON.stringify(Object.keys(asWritten?.folders ?? {}))} launchers=${JSON.stringify(asWritten?.launchers ?? null)} instancePrefs=${JSON.stringify(asWritten?.instancePrefs ?? null)}`,
+    );
+    check(
+      '★★ A16：启动一次之后 `folders` **被清空**（旧的绑定与读数作废，从空态开始）',
+      Object.keys(onDisk?.folders ?? {}).length === 0,
+      `folders=${JSON.stringify(Object.keys(onDisk?.folders ?? {}))}`,
+    );
+    check(
+      '★ 而 D1 那两格**补上了空值**（`launchers: []` + `instancePrefs: {}`）—— 少了它们，浅合并会把磁盘那份旧值捡回来',
+      Array.isArray(onDisk?.launchers) &&
+        onDisk.launchers.length === 0 &&
+        typeof onDisk?.instancePrefs === 'object' &&
+        onDisk.instancePrefs !== null &&
+        Object.keys(onDisk.instancePrefs).length === 0,
+      `launchers=${JSON.stringify(onDisk?.launchers ?? null)} instancePrefs=${JSON.stringify(onDisk?.instancePrefs ?? null)}`,
+    );
+    check(
+      '★ 而**别的格**没被顺手洗掉：`prefs` 与 `stateVersion` 逐格照旧（迁移只该动它点名的那几格）',
+      onDisk?.prefs?.catalogGameVersion === '1.8.9' &&
+        onDisk?.prefs?.bulkChannel === 'origin' &&
+        onDisk?.stateVersion === 2 &&
+        onDisk?.version === 1,
+      JSON.stringify({ prefs: onDisk?.prefs ?? null, stateVersion: onDisk?.stateVersion, version: onDisk?.version }),
+    );
+
+    /*
+     * ---- 第二次启动（case i）：同一份 userData、**不重种任何东西** --------------------
+     * ⚠️★ 这一支**不记判据**（照末尾"写相位没跑起来"那一支的先例）：子进程的 2（没跑起来）
+     *    与 1（某条不成立）是两件事，把它折成一条 `✗` 会抹掉这个区别（§5.74 那一族）。
+     *    它自己的逐条读数由子进程打到 stdout（stdio 继承）。
+     */
+    const second = spawnSync(
+      process.execPath,
+      [self, '--phase', 'prefs', '--case', 'i', '--reuse-user-data', currentUserDataDir],
+      { stdio: 'inherit', cwd: repoRoot, env: { ...process.env, MCSR_VERIFY_REEXEC: '1' } },
+    );
+    if (second.status === 2) {
+      console.error('\n✗ case i（第二次启动）**没跑起来**（退出码 2）—— 原因见上面那一行');
+      console.error('  （退出码 2 = 这条检查没跑成，**不等于**判据通过）');
+    } else {
+      check(
+        '（子进程）case i 的两条判据全成立（第二次启动：那一格不被清）',
+        second.status === 0,
+        `子进程退出码 ${String(second.status)}`,
+      );
+    }
+  }
+  if (CASE === 'i') {
+    /*
+     * ⚠️★ 这一趟的**起点是 h 的产物**（那份文件已经**被迁移过**：`folders` 空、两格在）——
+     *    所以下面的判据**不许**假设盘上还有 `manual-migration-folder`（第二版就是那么错的 ✗）。
+     */
+    const before = readStateFileJson();
+    check(
+      '（前置）这一趟的起点是**h 迁移之后**的那份（`folders` 已清、D1 两格已在）',
+      Object.keys(before?.folders ?? {}).length === 0 &&
+        Array.isArray(before?.launchers) &&
+        typeof before?.instancePrefs === 'object' &&
+        before?.instancePrefs !== null,
+      `folders=${JSON.stringify(Object.keys(before?.folders ?? {}))} launchers=${JSON.stringify(before?.launchers ?? null)}`,
+    );
+    /*
+     * ★★ **"一次性"的落点**：这一趟启动**不许**再动 `folders`。
+     *    ⚠️ 为什么"清成空"这种坏法在这里**看得见**：`migrateState` 那个缺陷的表现是
+     *    "**每次读盘都清**"，而这一趟读的是一份"两格已在"的文件 —— 它清不出东西来（本来就空）。
+     *    ⇒ 所以这一条量的其实是"**没把它写坏**"，而**真正**那一半（"重种一样东西进去、再启动一次，
+     *    它还在不在"）由 **case j 的逐字节比对**来量 —— 两处合起来才是完整的"一次性"。
+     */
+    check(
+      '★ 第二次启动之后 `folders` 仍然是空的、且两格仍然在（这一趟没有把它写坏）',
+      Object.keys(before?.folders ?? {}).length === 0 &&
+        Array.isArray(before?.launchers) &&
+        typeof before?.instancePrefs === 'object',
+      JSON.stringify({ folders: Object.keys(before?.folders ?? {}), launchers: before?.launchers ?? null }),
+    );
+
+    /*
+     * ---- 第三次启动（case j）：同一份 userData ⇒ 断言**那份文件逐字节没变** --------------
+     * ⚠️★ 这一条才是"**一次性**"最硬的读数：它是**同一个对象的前后两个字节**（§5.44 那一族）。
+     *    复现那把刀：把 `migrateState` 的判据改回"一律清"（缺陷那一版）⇒ 这一趟的
+     *    `folders` 被清（本来就空 ⇒ 看起来一样），但**只要**夹具里有一条会在启动时
+     *    被重新派生/写回的 entry，字节就会变；⇒ 下面同时断言"**两格的内容也逐字节相同**"。
+     */
+    const bytesBefore = readFileSync(stateFile(), 'utf8');
+    const third = spawnSync(
+      process.execPath,
+      [self, '--phase', 'prefs', '--case', 'j', '--reuse-user-data', currentUserDataDir],
+      { stdio: 'inherit', cwd: repoRoot, env: { ...process.env, MCSR_VERIFY_REEXEC: '1' } },
+    );
+    if (third.status === 2) {
+      console.error('\n✗ case j（第三次启动）**没跑起来**（退出码 2）—— 原因见上面那一行');
+    } else {
+      check(
+        '（子进程）case j 的判据全成立（第三次启动：那份文件逐字节没变）',
+        third.status === 0,
+        `子进程退出码 ${String(third.status)}`,
+      );
+    }
+    const bytesAfter = readFileSync(stateFile(), 'utf8');
+    check(
+      '★★ A16 的"一次性"：第三次启动把**同一个文件**读写一遍之后，它的**字节逐字不变**（sha256 前后一致就是"没动过"的硬读数）',
+      bytesAfter === bytesBefore,
+      bytesAfter === bytesBefore
+        ? `sha256 前 16 位 ${sha256Of(stateFile()).slice(0, 16)}（两份一致）`
+        : `变了：${String(bytesBefore.length)}B → ${String(bytesAfter.length)}B`,
+    );
+  }
+  if (CASE === 'j') {
+    /*
+     * ⚠️★ case j **只做一件事**：把这一趟结束时的字节留给 **case i** 去比对（它 spawn 完我之后
+     *    立刻读）。所以这里除了"我确实跑起来了"之外**不记判据** —— 判据住在 i 那一侧，
+     *    因为只有那里同时握着**前**与**后**两份字节（§5.44：比字节要在**同一个观察者**里比）。
+     */
+    const onDisk = readStateFileJson();
+    console.log(
+      `  （case j 读数，供 case i 比对）folders=${JSON.stringify(Object.keys(onDisk?.folders ?? {}))} launchers=${JSON.stringify(onDisk?.launchers ?? null)} instancePrefs=${JSON.stringify(onDisk?.instancePrefs ?? null)} prefs.catalogGameVersion=${String(onDisk?.prefs?.catalogGameVersion)}`,
+    );
+    check(
+      '（case j）这一趟真的把状态文件读出来了（否则 i 那侧的字节比对没有意义）',
+      onDisk !== null,
+      stateFile(),
+    );
+  }
 
   server.close();
   if (!KEEP) rmSync(workRoot, { recursive: true, force: true });
@@ -4863,6 +5805,25 @@ if (PHASE === 'state-file') {
       `子进程退出码 ${String(child.status)}`,
     );
   }
+  /*
+   * ★ Task 5（D1）：`h` = "**D1 之前**写的状态文件"（`folders` 非空、D1 那两格都缺）
+   *   ⇒ 一次性迁移；`i`（第二次启动）与 `j`（第三次启动）由 **h 自己** spawn
+   *   —— 三个进程，**谁也不重种夹具**（理由见 `prefsPhase` 里 `if (CASE === 'h')` 那一段）。
+   * ⚠️ 与上面那一支**分开走**：h 的子进程失败时它自己已经打印了逐条读数，这里再折一条
+   *   `✗` 正好把"哪一半红的"说清楚（`i` / `j` 的退出码 2 与 1 由 h 那一支分辨，见那里的注释）。
+   */
+  console.log('\n## ★ Task 5（D1）：A16 一次性迁移（"D1 之前"的文件 ⇒ 清一次；再启动 ⇒ 不再清）');
+  const migrationChild = spawnSync(process.execPath, [self, '--phase', 'prefs', '--case', 'h'], {
+    stdio: 'inherit',
+    cwd: repoRoot,
+    env: { ...process.env, MCSR_VERIFY_REEXEC: '1' },
+  });
+  check(
+    '（子进程）A16 迁移的四条判据 + 后两次启动（case i / j）全成立',
+    migrationChild.status === 0,
+    `子进程退出码 ${String(migrationChild.status)}`,
+  );
+
   /*
    * ★ Task 5：写路径（单行更新 + 四条负向证明）。**也起一个子进程**：它要一套被劫持过的
    * 目录（release 的 url / sha512、镜像表），而目录是启动时抓的、缓存在模块里 ——
