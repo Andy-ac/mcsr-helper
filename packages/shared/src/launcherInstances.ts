@@ -89,17 +89,21 @@ export function listInstances(
        ⇒ 凭空多一次 `exists` 会让每一条枚举测试都拿到空列表。
        实例"中途被删"由调用方逐块 try/catch 兜（spec §7 / A14），不在这里。 */
     const dirs = resolveDirs(fs, kind, root, instancePath);
-    out.push({
+    /* 先造出实例（两格版本/loader 先占位），再由 `parseInstanceMeta` 只读它自己那**一份**
+       元数据文件把它们填上 —— 顺序如此是因为那个函数要的是 `LauncherInstance` 本身。 */
+    const draft: LauncherInstance = {
       key: instanceKeyOf(kind, root, instancePath),
       kind,
       name,
       instancePath,
-      gameVersion: null /* Task 2 填：读实例元数据 */,
-      loader: null /* Task 2 填 */,
+      gameVersion: null /* 占位：下面立刻填 */,
+      loader: null /* 占位：下面立刻填 */,
       modsDir: dirs.modsDir,
       savesDir: dirs.savesDir,
       needsConfirm: dirs.needsConfirm,
-    });
+    };
+    const meta = parseInstanceMeta(fs, draft);
+    out.push({ ...draft, gameVersion: meta.gameVersion, loader: meta.loader });
   }
   return out;
 }
@@ -150,4 +154,93 @@ export function resolveDirs(
     return { modsDir: sharedMods, savesDir: sharedSaves, needsConfirm: false };
   }
   return { modsDir: perInstanceMods, savesDir: perInstanceSaves, needsConfirm: true };
+}
+
+/**
+ * ★ 实例元数据（spec §6 的"版本从哪读"那一列 + A11）。
+ *
+ * ⚠️ **只读纪律**（A13）：下面这一族各读**一份**实例自己的元数据文件 —— 不写、不改，
+ *    也不碰 `instance.cfg` 与版本 json。
+ * ⚠️ **不猜**：读不出来 / JSON 坏 / 里面没有那一条 ⇒ 对应的格子给 `null`
+ *    （界面按 A7 显示"待确认"，用户在界面上手改 —— A12；绝不填一个看起来合理的默认值）。
+ */
+
+/** MultiMC / Prism / MCSR 的组件表（`mmc-pack.json`）→ 游戏版本与 loader。 */
+function metaFromMmcPack(
+  fs: LauncherFs,
+  instancePath: string,
+): { gameVersion: string | null; loader: string | null } {
+  const raw = fs.readFile(`${instancePath}${SEP}mmc-pack.json`);
+  if (raw === null) return { gameVersion: null, loader: null };
+  try {
+    const parsed = JSON.parse(raw) as {
+      components?: readonly { uid?: string; version?: string }[];
+    };
+    const components = parsed.components ?? [];
+    const mc = components.find((c) => c.uid === 'net.minecraft')?.version ?? null;
+    const fabric = components.find((c) => c.uid === 'net.fabricmc.fabric-loader')?.version;
+    const forge = components.find((c) => c.uid === 'net.minecraftforge')?.version;
+    /* ⚠️ 只认这两家**已核实**的 uid；quilt / liteloader / optifine 之类**不猜** ⇒ loader 留 null。 */
+    let loader: string | null = null;
+    if (fabric !== undefined) loader = `fabric ${fabric}`;
+    else if (forge !== undefined) loader = `forge ${forge}`;
+    return { gameVersion: mc, loader };
+  } catch {
+    return { gameVersion: null, loader: null }; /* 坏文件 ⇒ 留空，界面上是"待确认" */
+  }
+}
+
+/** 版本 json（PCL / HMCL / 官方）→ 游戏版本；`inheritsFrom` 是最准的那条线索。 */
+function metaFromVersionJson(
+  fs: LauncherFs,
+  instancePath: string,
+  name: string,
+): { gameVersion: string | null; loader: string | null } {
+  const raw = fs.readFile(`${instancePath}${SEP}${name}.json`);
+  if (raw === null) return { gameVersion: null, loader: null };
+  try {
+    const parsed = JSON.parse(raw) as {
+      id?: string;
+      inheritsFrom?: string;
+      clientVersion?: string;
+    };
+    /* 顺序：`clientVersion`（少数启动器会写的显式游戏版本）⇒ `inheritsFrom`（PCL/HMCL 的
+       版本 json 指向原版那一版 ✓）⇒ `id`（`id` 里可能带着 loader 串，是最差的一条）。 */
+    const gameVersion = parsed.clientVersion ?? parsed.inheritsFrom ?? parsed.id ?? null;
+    /* ⚠️★ loader 这一格**故意留空**：`id` 形如 `1.16.1-Fabric 0.17.3`，从字符串里切一顿
+       也能"切出来" —— 那正是本设计的"不猜"要挡的东西（Global Constraints）。PCL/HMCL 的
+       loader 只有两条可靠来路：读 `libraries`（未核实，留给后续）或用户手改（A12）。 */
+    return { gameVersion, loader: null };
+  } catch {
+    return { gameVersion: null, loader: null };
+  }
+}
+
+/** 实例 → `{ gameVersion, loader }`：MultiMC 系读 `mmc-pack.json`，其余读版本 json。 */
+export function parseInstanceMeta(
+  fs: LauncherFs,
+  instance: LauncherInstance,
+): { gameVersion: string | null; loader: string | null } {
+  return isPerInstance(instance.kind)
+    ? metaFromMmcPack(fs, instance.instancePath)
+    : metaFromVersionJson(fs, instance.instancePath, instance.name);
+}
+
+/** ★ A12：用户在这个实例上手改过的解析路径（只给出来的那几格才算覆盖）。 */
+export type InstanceOverride = { modsDir?: string; savesDir?: string };
+
+/**
+ * ★ 路径覆盖优先（A12）：手改过的格子**优先于**探测结果，剩下没给的格子照旧。
+ * ⚠️ 只有**真的改了**某一格才把 `needsConfirm` 清掉（空覆盖不产生"用户确认过"这个事实）；
+ *    函数是**纯的**：不碰传进来的那个对象（`undefined` ⇒ 原样返回）。
+ */
+export function applyOverride(
+  instance: LauncherInstance,
+  override: InstanceOverride | undefined,
+): LauncherInstance {
+  if (override === undefined) return instance;
+  const modsDir = override.modsDir ?? instance.modsDir;
+  const savesDir = override.savesDir ?? instance.savesDir;
+  const changed = modsDir !== instance.modsDir || savesDir !== instance.savesDir;
+  return { ...instance, modsDir, savesDir, needsConfirm: changed ? false : instance.needsConfirm };
 }
