@@ -103,7 +103,10 @@ export function listInstances(
       needsConfirm: dirs.needsConfirm,
     };
     const meta = parseInstanceMeta(fs, draft);
-    out.push({ ...draft, gameVersion: meta.gameVersion, loader: meta.loader });
+    /* ★ T12：**先读实例自己那份**（`parseInstanceMeta` 只读它自己那一份）——
+       读不出来时**才**退到共享的 `libraries\`（`loaderFromSharedLibraries`，兜底且可能不准）。 */
+    const loader = meta.loader ?? loaderFromSharedLibraries(fs, root);
+    out.push({ ...draft, gameVersion: meta.gameVersion, loader });
   }
   return out;
 }
@@ -205,39 +208,132 @@ function metaFromVersionJson(
       id?: string;
       inheritsFrom?: string;
       clientVersion?: string;
+      libraries?: readonly { name?: string }[];
     };
     /* 顺序：`clientVersion`（★ PCL2 就写在这里 —— 本机实测 `D:\PCL2\.minecraft\versions\*`
        那 6 份 json **全部**只有 `clientVersion`、**0 份**有 `inheritsFrom`，而 `id` 形如
        `1.16.1-Fabric 0.17.3` ⇒ 少了这一格就会把 loader 串当成版本 ✗）⇒ `inheritsFrom`
-       （别家启动器的版本 json 用它指向原版那一版）⇒ `id`（最差的一条）。 */
+       （别家启动器的版本 json 用它指向原版那一版）⇒ `id`（最差的一条）。
+       ⚠️★ 两格都在时**必须 `clientVersion` 压过 `inheritsFrom`** —— ㉒ 就是钉这一条的
+       （两格值不同 ⇒ 换顺序立刻红；T2 评审的刀 I 曾经全绿，就是缺它）。 */
     const gameVersion = parsed.clientVersion ?? parsed.inheritsFrom ?? parsed.id ?? null;
-    /* ⚠️★ loader 这一格**故意留空**：`id` 形如 `1.16.1-Fabric 0.17.3`，从字符串里切一顿
-       也能"切出来" —— 那正是本设计的"不猜"要挡的东西（Global Constraints）。可靠来路是
-       `libraries`（本机实测里面有 `net.fabricmc:fabric-loader:0.17.3`，但那要另写一条判定
-       与夹具 ⇒ 不在本任务；v1 先留空，用户手改那边 A12 今天也没有 loader 的口）。 */
-    return { gameVersion, loader: null };
+    /* ★ T12（spec A7）：loader 的**真值**在**这一份 json 自己的 `libraries`** 里 ——
+       PCL2 / HMCL / 官方的版本 json 都没有可靠的 loader 字段（`id` 形如
+       `1.16.1-Fabric 0.17.3`，从字符串里切一顿也能"切出来"，那正是"不猜"要挡的东西）。
+       ⚠️ 那不是数组（或整格不在）时给 `[]` —— 别让它收到 `undefined` 而抛 ✗。 */
+    const libraries = parsed.libraries;
+    return {
+      gameVersion,
+      loader: loaderFromLibrariesArray(Array.isArray(libraries) ? libraries : []),
+    };
   } catch {
     return { gameVersion: null, loader: null };
   }
 }
 
-/** 实例 → `{ gameVersion, loader }`：MultiMC 系读 `mmc-pack.json`，其余读版本 json。 */
+/** 版本 json 的 `libraries` 里那两个 loader 的坐标（T2 真机核实的写法：`group:artifact:version`）。 */
+const FABRIC_LIB = 'net.fabricmc:fabric-loader:';
+const FORGE_LIB = 'net.minecraftforge:forge:';
+
+/**
+ * ★ T12（spec A7）：loader 的**真值**来自实例自己那份版本 json 的 `libraries`。
+ * ⚠️ 按**数组顺序**取第一条认得出来的 —— 启动器自己排的顺序就是它的答案，
+ *    本仓**不额外偏袒** fabric 或 forge（T2 评审的刀 K 证明过："谁优先"没有判据时会静默错；
+ *    ㉓ 就是钉这一条的：两个夹具只差数组顺序、期望值随之不同）。
+ */
+export function loaderFromLibrariesArray(libs: readonly { name?: string }[]): string | null {
+  for (const lib of libs) {
+    const name = lib.name;
+    if (typeof name !== 'string') continue;
+    if (name.startsWith(FABRIC_LIB)) return `fabric ${name.slice(FABRIC_LIB.length)}`;
+    if (name.startsWith(FORGE_LIB)) return `forge ${name.slice(FORGE_LIB.length)}`;
+  }
+  return null;
+}
+
+/**
+ * ★ T12：**兜底** —— 实例自己那份 json 里没有 loader 时，看共享的 `libraries\` 目录。
+ * ⚠️★ 这条是**兜底、可能不准**（接法选的是 (b)：它住在 `listInstances` 里，
+ *    `parseInstanceMeta` 只管"实例自己那份" ⇒ 那个函数的签名与调用点一个都没动）：
+ *    这个目录是**跨版本共享**的（PCL/HMCL 装的每个版本都往里放），本机实测同一目录下有
+ *    8 个 `fabric-loader` 版本 + 1 个 forge ⇒ **只有在唯一候选时才敢报**；两个候选（或同一个
+ *    loader 有两个版本）⇒ `null` —— 宁可空着让用户手改（A12 / T8 的界面），也不猜一个 ✗。
+ * ⚠️ 两处根都试（`<根>\libraries` 与 `<根>\.minecraft\libraries`）：PCL2 / HMCL 的 libraries
+ *    在 `.minecraft\` 底下，而官方那份根本身就是 `.minecraft`（两种拼法各命中一边）。
+ */
+export function loaderFromSharedLibraries(fs: LauncherFs, rootPath: string): string | null {
+  const roots = [`${rootPath}${SEP}libraries`, `${rootPath}${SEP}.minecraft${SEP}libraries`];
+  const candidates: string[] = [];
+  for (const root of roots) {
+    for (const v of fs.listDir(`${root}${SEP}net${SEP}fabricmc${SEP}fabric-loader`)) {
+      candidates.push(`fabric ${v}`);
+    }
+    for (const v of fs.listDir(`${root}${SEP}net${SEP}minecraftforge${SEP}forge`)) {
+      candidates.push(`forge ${v}`);
+    }
+  }
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+/**
+ * MCSR Launcher 的实例元数据（★ 2026-10-11 源码实证，spec §6 / §13.1）：
+ * `<实例>\instance.json`，字段是 `minecraftVersion` + `fabricVersion.loaderVersion` ——
+ * 它**不写** `mmc-pack.json`（那个名字只出现在它"从 Prism/MultiMC 整合包导入"的
+ * `MigrationUtils` 里），而且它**只有 fabric**（字段名就是 `fabricVersion`）。
+ */
+function metaFromMcsrInstance(
+  fs: LauncherFs,
+  instancePath: string,
+): { gameVersion: string | null; loader: string | null } {
+  const raw = fs.readFile(`${instancePath}${SEP}instance.json`);
+  if (raw === null) return { gameVersion: null, loader: null };
+  try {
+    const parsed = JSON.parse(raw) as {
+      minecraftVersion?: string;
+      fabricVersion?: { loaderVersion?: string };
+    };
+    const loaderVersion = parsed.fabricVersion?.loaderVersion;
+    return {
+      gameVersion: parsed.minecraftVersion ?? null,
+      loader: typeof loaderVersion === 'string' ? `fabric ${loaderVersion}` : null,
+    };
+  } catch {
+    return { gameVersion: null, loader: null }; /* 坏文件 ⇒ 留空（同 ⑰ 的规矩） */
+  }
+}
+
+/**
+ * 实例 → `{ gameVersion, loader }`：MultiMC 系读 `mmc-pack.json`，其余读版本 json。
+ * ⚠️ **只管"实例自己那份"**（只读纪律 A13 + "不猜"）：**不做**共享 `libraries\` 那个兜底 ——
+ *    那个住在 `listInstances` 里（接法 (b)，见 `loaderFromSharedLibraries` 的注释）。
+ */
 export function parseInstanceMeta(
   fs: LauncherFs,
   instance: LauncherInstance,
 ): { gameVersion: string | null; loader: string | null } {
+  /* ★ `mcsr`：**真值是 `instance.json`**（上面的核实）⇒ `mmc-pack.json` 只是**兜底** ——
+     它确实会认后者，但那只发生在"从 Prism/MultiMC 整合包导入"的路径上
+     （㉖ 测真值那条路、⑮ 测兜底那条路，两边各一条判据）。 */
+  if (instance.kind === 'mcsr') {
+    const own = metaFromMcsrInstance(fs, instance.instancePath);
+    if (own.gameVersion !== null || own.loader !== null) return own;
+    return metaFromMmcPack(fs, instance.instancePath);
+  }
   return isPerInstance(instance.kind)
     ? metaFromMmcPack(fs, instance.instancePath)
     : metaFromVersionJson(fs, instance.instancePath, instance.name);
 }
 
-/** ★ A12：用户在这个实例上手改过的解析路径（只给出来的那几格才算覆盖）。 */
-export type InstanceOverride = { modsDir?: string; savesDir?: string };
+/** ★ A12：用户在这个实例上手改过的解析路径 / loader（只给出来的那几格才算覆盖）。 */
+export type InstanceOverride = { modsDir?: string; savesDir?: string; loader?: string };
 
 /**
  * ★ 路径覆盖优先（A12）：手改过的格子**优先于**探测结果，剩下没给的格子照旧。
- * ⚠️ 只有**真的改了**某一格才把 `needsConfirm` 清掉（空覆盖不产生"用户确认过"这个事实）；
- *    函数是**纯的**：不碰传进来的那个对象（`undefined` ⇒ 原样返回）。
+ * ⚠️ 只有**真的改了**某一格**路径**才把 `needsConfirm` 清掉（空覆盖不产生"用户确认过"这个事实）。
+ * ★ T12：`loader` 也认（**给了就用给的** ✓ —— A12 的手改口），但它是**另一件事**：
+ *    `needsConfirm` 说的是"**路径**是猜的" ⇒ 只改 loader **不算**确认了路径（㉕ 钉着这一条；
+ *    T8 有显式的确认动作）。
+ * ⚠️ 函数是**纯的**：不碰传进来的那个对象（`undefined` ⇒ 原样返回）。
  */
 export function applyOverride(
   instance: LauncherInstance,
@@ -246,6 +342,13 @@ export function applyOverride(
   if (override === undefined) return instance;
   const modsDir = override.modsDir ?? instance.modsDir;
   const savesDir = override.savesDir ?? instance.savesDir;
+  const loader = override.loader ?? instance.loader;
   const changed = modsDir !== instance.modsDir || savesDir !== instance.savesDir;
-  return { ...instance, modsDir, savesDir, needsConfirm: changed ? false : instance.needsConfirm };
+  return {
+    ...instance,
+    modsDir,
+    savesDir,
+    loader,
+    needsConfirm: changed ? false : instance.needsConfirm,
+  };
 }
