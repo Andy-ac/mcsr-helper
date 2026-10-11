@@ -51,6 +51,7 @@ import {
   type TimedSample,
   withSample,
 } from '@mcsr/shared/downloadProgress';
+import { instanceKeyParts, type LauncherKind } from '@mcsr/shared/launcherInstances';
 import {
   batchTargets,
   type Channel,
@@ -84,6 +85,17 @@ export function reasonOf(error: unknown): string {
 type ModFoldersAction<K extends keyof DesktopBridge['modFolders']> = (
   ...args: Parameters<DesktopBridge['modFolders'][K]>
 ) => Promise<void>;
+
+/**
+ * ★ D1（T8）：`probeLaunchers()` 的**一条候选**（"类型 + 根"）。
+ *
+ * ⚠️ 它与契约那条通道的返回元素**逐字同形**（`{ kind, rootPath }`），只是给它一个名字：
+ *    那个形状要在三个地方出现（钩子的读数 / 面板的 props / 那一格的状态），
+ *    手抄三遍就会有一天对不上（而症状是"候选表画得出来、但按下去加错了类型"）。
+ * ⚠️ 返回值里**没有 id**（`addLauncher` 那一格写着）：id 是"添加"那一刻由主进程按
+ *    `${kind}:${归一化后的根}` 造的 ⇒ 界面拿到的只是"可以加的那个根"。
+ */
+export type LauncherCandidate = { kind: LauncherKind; rootPath: string };
 
 /**
  * 这一页要用的动作（文件夹那一层 + 第三段那一条）。
@@ -158,6 +170,50 @@ export interface ModFoldersHandlers {
    *    「全部更新」，混起来会得到"界面显示 origin、实际按镜像下载"）。
    */
   downloadPack: ModFoldersAction<'downloadPack'>;
+  /* ---- D1 的 T8：启动器绑定那一格（A7 / A8 / A12 / A14） ---- */
+  /**
+   * ★★ D1（T8）：**重新检测**（A14 那颗「重试」+ 候选表的刷新）。
+   *
+   * ⚠️★ 它**不是**"只扫一遍候选"：`state.launchers[].error` 是**这一趟枚举**的产物
+   *    （`mod-folders.ts` 的 `launcherViews`），而唯一会重算它的通道是
+   *    `listLauncherInstances()`（`refreshInstances()` —— 那一份注释写着"它是唯一写
+   *    `enumeration` 的地方"）⇒ 这一支必须**先重新枚举**，否则那块坏掉的启动器
+   *    点一百次重试都还是那句原话（一颗"修不好它声称要修的东西"的按钮）。
+   *    ⚠️ 顺带把候选重扫一遍：这一支的语义就是"重新检测"，用户按一次就够。
+   * ⚠️★ 返回值是 `Promise<void>`（**不是**整份状态）⇒ 它不走下面那个 `run()`：
+   *    枚举的结果由主进程 `rebuild()` 推回来（走 `onStatus`），候选落在 `detected` 那一格。
+   */
+  probeLaunchers: () => Promise<void>;
+  /**
+   * ★ A12 的手改口：把一个实例的解析结果（`mods` / `saves` / `loader`）写进去并持久化。
+   * ⚠️ 逐格覆盖：只送变过的那几格（空串会被主进程**拒**，见 `instancePatchOf`）。
+   */
+  setInstancePaths: ModFoldersAction<'setInstancePaths'>;
+  /** 加一条启动器绑定（同一个 `(kind, 归一化后的根)` 再加一次是**幂等**的）。 */
+  addLauncher: ModFoldersAction<'addLauncher'>;
+  /** 移除一条绑定（只删我们自己的记账；它名下的实例转为"不再追踪"，A13）。 */
+  removeLauncher: ModFoldersAction<'removeLauncher'>;
+  /** ★ A9：勾选 / 取消勾选（勾选 ⇒ 主进程立刻扫一次这个实例的 `mods`）。 */
+  setInstanceTracked: ModFoldersAction<'setInstanceTracked'>;
+  /**
+   * ★★ 显式的"确认这个路径"（2026-10-11 控制器裁定）。
+   * ⚠️ 它写 `instancePrefs[key].confirmed = true` ⇒ 视图里那格"待确认"（显示值
+   * `needsConfirm && !confirmed`）随之消失 —— 用户"看着对、什么都没改"这一种接受
+   * **只有这一条落点**（同值覆盖不产生"确认过"这个事实）。
+   */
+  confirmInstance: ModFoldersAction<'confirmInstance'>;
+  /* ---- D1 的 T8：「改一条绑定的根路径」—— 契约里没有的那一条，见实现 ---- */
+  /**
+   * ★★ D1（T8）：**改一条绑定的根路径**（A7 的"根路径可改"）。
+   *
+   * ⚠️★ 契约里**没有**"改根"这条通道（现读 `DesktopBridge.modFolders`：这一组七格里
+   *    只有 `addLauncher(kind, rootPath)` 与 `removeLauncher(id)`）⇒ 它是这两条的**复合**，
+   *    顺序是**先移除旧的、再加新根**（理由与代价写在下面那一支的注释里）。
+   * ⚠️ 入参形状与 `ModPageAction` 那一格逐字一致（`id` + `rootPath`）：`kind` 从 `id` 里
+   *    拆回来（`instanceKeyParts` —— 绑定 id 与实例 key 是同一个 `${kind}:${相对根}` 形状，
+   *    见 `LauncherBinding` 的注释），所以**不新增一格入参**。
+   */
+  selectLauncherRoot: (id: string, rootPath: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,20 +257,44 @@ export function reduceModFoldersLoad(
 }
 
 /**
- * `ModFoldersHandlers` 那十二条动作的包装。
+ * `ModFoldersHandlers` 那十几条动作的包装。
  *
  * ⚠️ 两件事**只有这一处实现**：把主进程返回的状态落到界面上；以及接住 `reject`。
  * ⚠️ 开跑之前先撤掉**上一次**的失败结论（它说的是上一次那个动作）。
+ * ⚠️★ 而"返回值**不是** `ModFoldersState`"的那些通道（`openFolder` / `cancelDownload`
+ *    与 D1 的 T8 那六条）**不走 `run()`**：它们各写各的接住逻辑（见下面每一支）。
+ *    那一类通道照样会把新状态推回来（主进程 `rebuild()` ⇒ `onStatus`），
+ *    所以"界面会不会更新"这件事不取决于它们的返回值。
  */
 function makeModFoldersHandlers(
   api: DesktopBridge['modFolders'],
   apply: (state: ModFoldersState) => void,
   fail: (message: string | null) => void,
+  detect: (candidates: readonly LauncherCandidate[] | null) => void,
 ): ModFoldersHandlers {
   const run = async (call: () => Promise<ModFoldersState>): Promise<void> => {
     fail(null);
     try {
       apply(await call());
+    } catch (error) {
+      fail(reasonOf(error));
+    }
+  };
+
+  /**
+   * 给"返回值不是整份状态"的那些通道用：撤掉上一次那句、跑、接住。
+   *
+   * ⚠️★ 这几条的契约返回值是 `Promise<void>`（`addLauncher` / `removeLauncher` /
+   *    `setInstancePaths` / `setInstanceTracked` / `confirmInstance` —— 现读
+   *    `DesktopBridge.modFolders`），**不是** `openFolder` / `cancelDownload` 那种
+   *    "带回一次结果"的形状 ⇒ 它们没有第二件事要接（没有 `{ok:false, reason}`），
+   *    只需要把**抛**接住：主进程对坏入参是**抛**（`requireInstanceKey` /
+   *    `instancePatchOf` / `requireLauncherKind` 都会抛，各自带一句人话）。
+   */
+  const runVoid = async (call: () => Promise<void>): Promise<void> => {
+    fail(null);
+    try {
+      await call();
     } catch (error) {
       fail(reasonOf(error));
     }
@@ -300,6 +380,58 @@ function makeModFoldersHandlers(
         fail(reasonOf(error));
       }
     },
+    /* ---- D1 的 T8：启动器绑定那一格 ---- */
+    /*
+     * ★★ 重新检测（A14 的重试）：**先重新枚举、再重扫候选**。
+     * ⚠️★ 顺序是承重的：`state.launchers[].error` 只在枚举那一趟里被重算
+     *    （`refreshInstances()`），不先枚举的话，那颗按钮修不好它声称要修的东西。
+     */
+    probeLaunchers: async (): Promise<void> => {
+      fail(null);
+      try {
+        await api.listLauncherInstances();
+        detect(await api.probeLaunchers());
+      } catch (error) {
+        fail(reasonOf(error));
+      }
+    },
+    setInstancePaths: (
+      key: string,
+      patch: { modsDir?: string; savesDir?: string; loader?: string },
+    ) => runVoid(() => api.setInstancePaths(key, patch)),
+    addLauncher: (kind: LauncherKind, rootPath: string) =>
+      runVoid(() => api.addLauncher(kind, rootPath)),
+    removeLauncher: (id: string) => runVoid(() => api.removeLauncher(id)),
+    setInstanceTracked: (key: string, tracked: boolean) =>
+      runVoid(() => api.setInstanceTracked(key, tracked)),
+    confirmInstance: (key: string) => runVoid(() => api.confirmInstance(key)),
+    /*
+     * ★★ 改一条绑定的根路径 = **移除旧的 + 加新根**（契约里没有"改根"这条通道）。
+     *
+     * ⚠️★ 顺序：**先移除旧的、再加新根**。反过来（先加后删）在"新根归一化之后与旧根
+     *    是同一条"（用户只是多打了一个尾部分隔符：`D:\PCL2` 与 `D:\PCL2\` —— 主进程
+     *    在入口归一化，两者是**同一条**）时会走成"加同一条（幂等、状态不变）+ 删掉它"
+     *    ⇒ **绑定直接消失**。而这个顺序的代价是**契约自己写明的**那一条：
+     *    `removeLauncher` 把它名下被追踪的实例一律转为"不再追踪"（`mod-folders.ts` 的
+     *    那一段注释：绑定没了 ⇒ 它们不该继续被追踪）。改根本来就会换掉这些实例的解析
+     *    结果 ⇒ 用户本来就要重新看一眼、重新勾；而"绑定消失"是不可恢复的那一种。
+     * ⚠️★ `kind` 从 `id` 里拆回来（`instanceKeyParts` 是那个形状的**唯一**一份实现；
+     *    绑定 id = `${kind}:${归一化后的根}`，见 `LauncherBinding` 的注释）。
+     *    ⚠️ 那个 `as` 是如实的：这个 id 来自 `state.launchers`（主进程按一个它自己用
+     *    `requireLauncherKind` 校验过的 kind 造的）⇒ 值本来就是 `LauncherKind`；
+     *    而真拿到一个不认识的串时，主进程的 `requireLauncherKind` 会当场拒并给一句原话
+     *    （落到 `actionError`，不是一次静默的空点击）。
+     */
+    selectLauncherRoot: async (id: string, rootPath: string): Promise<void> => {
+      fail(null);
+      try {
+        const kind = instanceKeyParts(id).kind as LauncherKind;
+        await api.removeLauncher(id);
+        await api.addLauncher(kind, rootPath);
+      } catch (error) {
+        fail(reasonOf(error));
+      }
+    },
   };
 }
 
@@ -335,6 +467,16 @@ export type ModFoldersData =
        * ⚠️ 它是**推导出来的**、不是第二份真相：状态里那一格说"没有在跑"时它恒为 `null`。
        */
       progress: PageProgress | null;
+      /**
+       * ★★ D1（T8）：`probeLaunchers()` 的产物（启动器**候选**，喂给绑定页）。
+       *
+       * ⚠️★ 它是这一层**唯一**一份"不在 `ModFoldersState` 里"的读数：候选是"这台机器上
+       *    可能有哪些启动器"，而那份状态是"用户**绑了**哪些"—— 两件事，别合并
+       *    （合并之后"未绑定 ⇒ 没有候选"会让引导那一格永远空着）。
+       * ⚠️ `null` = 还没探测到 / 那一次探测失败了（与"真的一个候选都没有"分开：
+       *    前者该等、后者该让人手动填）。
+       */
+      detected: readonly LauncherCandidate[] | null;
     };
 
 // ---------------------------------------------------------------------------
@@ -536,6 +678,17 @@ export function useModFolders(): ModFoldersData {
    *    `progressKeyOf` 里的 `runStartedAt` 收掉（T5 评审 Important 2）。
    */
   const [live, setLive] = useState<PageProgress | null>(null);
+  /**
+   * ★★ D1（T8）：启动器**候选**（`probeLaunchers()` 的产物）。
+   *
+   * ⚠️★ 为什么它由**这一层**取（而不是 `Files.tsx`）：能力门在这里（`d1Capable(api)`），
+   *    而"先问这个壳够不够、再调它"这条纪律只有一处实现 —— 页面那一层再判一次
+   *    就是**第二套特性检测**（`capabilitiesOf` / `d1Capable` 的文件头写着为什么不行）。
+   * ⚠️ 探测**失败**是**静默**的（留在 `null`）：它是一条只读的便利读数，
+   *    "没探测到"时手动添加那条路照旧在（界面上那就是"还没有候选"），
+   *    而把它变成一次红色报错会让"这台机器上没装常见启动器"看起来像坏了。
+   */
+  const [detected, setDetected] = useState<readonly LauncherCandidate[] | null>(null);
 
   /*
    * ⚠️ `desktopBridge()` 每次读拿到的是同一个对象（preload 在页面脚本之前注入），
@@ -548,7 +701,7 @@ export function useModFolders(): ModFoldersData {
   }, []);
 
   const handlers = useMemo(
-    () => (api === null ? null : makeModFoldersHandlers(api, accept, setActionError)),
+    () => (api === null ? null : makeModFoldersHandlers(api, accept, setActionError, setDetected)),
     [api, accept],
   );
 
@@ -607,6 +760,16 @@ export function useModFolders(): ModFoldersData {
         setLoad((prev) => reduceModFoldersLoad(prev, { kind: 'failure', reason: reasonOf(error) }));
       },
     );
+    /*
+     * ★★ D1（T8）：候选**与首拉并行**（它不是首拉的一部分：那份状态里没有候选）。
+     * ⚠️ 它排在订阅之后 ⇒ 用户打开这一页时「启动器绑定」那一格（新用户的默认 tab）
+     *    已经有一份候选可看，而不是"先去点一下检测"。
+     * ⚠️ 失败 ⇒ `null`（静默，理由写在 `detected` 那一格）。
+     */
+    void api.probeLaunchers().then(
+      (candidates) => setDetected(candidates),
+      () => setDetected(null),
+    );
     return () => {
       unsubscribeProgress();
       unsubscribe();
@@ -634,6 +797,7 @@ export function useModFolders(): ModFoldersData {
       handlers,
       actionError,
       progress: progressOf(load.state, live),
+      detected,
     };
   }
   return { status: 'loading' };

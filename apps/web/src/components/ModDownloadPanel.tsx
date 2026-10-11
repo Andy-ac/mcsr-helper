@@ -44,6 +44,8 @@
  *    代价与理由写在 spec §15；判据（"页面与主进程读同一个 `packDownloadableIn`"）不变。
  * ⚠️ 走子路径 `@mcsr/shared/modCatalog`（与 `lib/api.ts` 的 `fetchModCatalog` 同一处 alias）。
  */
+
+import type { LauncherKind } from '@mcsr/shared/launcherInstances';
 import { buildIndex, type ModIndex } from '@mcsr/shared/modCatalog';
 import { type Channel, type ModFoldersState, planVersionPage } from '@mcsr/shared/modFolders';
 import { useMemo, useState } from 'react';
@@ -177,7 +179,53 @@ export type ModPageAction =
    *    上游是 `DownloadProgressLine` 那颗 `data-action="cancel-download"` 按钮
    *    （四处下载共用同一条线：文件夹行的批量汇总行、jar 行、第三段那一行）。
    */
-  | { kind: 'cancel-download' };
+  | { kind: 'cancel-download' }
+  /*
+   * ★★ D1（T8）：「启动器绑定」那一格的七个动作（spec §4.6 / A7 / A8 / A12 / A14）。
+   *
+   * ⚠️★ 为什么"绑定页"的动作也走**这一份**联合（它住在这个文件里，而渲染它的是
+   *    `LauncherBindingPanel`）：那一页与这一页共用**同一处**动作接缝
+   *    （`routes/Files.tsx` 的 `makeModPageAction`）—— 两套接缝就是两处"哪个动作接哪条
+   *    通道"，而那种漂的表现是"某一页的按钮点了没反应"。
+   * ⚠️★ 计划把新成员钉成**六个**（`select-launcher-root` / `add-launcher` /
+   *    `remove-launcher` / `set-instance-paths` / `confirm-instance` /
+   *    `set-instance-tracked`）；这里是**七个** —— 第七个（`probe-launchers`）是
+   *    A14 那颗「重试」**必须有**的那一格：七条 D1 通道里唯一会重算
+   *    `state.launchers[].error` 的是 `listLauncherInstances()`，而"重试"没有任何一个
+   *    现成成员发得出来（`add-launcher` 也能顺带触发一次枚举，但它的语义是"加一条"，
+   *    用它当重试会让产物里两颗不同意思的按钮长得一模一样）。理由与代价写在
+   *    `makeModPageAction` 那一支与报告里。
+   */
+  /*
+   * ⚠️ 入参逐格照计划：`id` + `rootPath`。⚠️★ 契约里**没有**"改根"这条通道
+   *    （那一组七格只有 `addLauncher` / `removeLauncher`）⇒ 接线是那两条的复合，
+   *    而 `kind` 从 `id` 里拆回来（`ModFoldersData` 的 `selectLauncherRoot` 那一支）。
+   */
+  | { kind: 'select-launcher-root'; id: string; rootPath: string }
+  /** 加一条绑定（`rootPath` 原样送：归一化在主进程入口那一处做）。 */
+  | { kind: 'add-launcher'; launcherKind: LauncherKind; rootPath: string }
+  /** 移除一条绑定（只删我们自己的记账；磁盘上的东西一个字节都不动）。 */
+  | { kind: 'remove-launcher'; id: string }
+  /**
+   * ★ A12 的手改口：`mods` / `saves` / `loader` 逐格覆盖（**只送变过的那几格**）。
+   * ⚠️ 空串会被主进程拒（`instancePatchOf`：每格必须是非空字符串，省略 = 不改）。
+   */
+  | {
+      kind: 'set-instance-paths';
+      key: string;
+      modsDir?: string;
+      savesDir?: string;
+      loader?: string;
+    }
+  /** ★★ 显式的"确认这个路径"（写 `instancePrefs[key].confirmed = true`）。 */
+  | { kind: 'confirm-instance'; key: string }
+  /** ★ A9：勾选 / 取消勾选（`key` = `instance.key` = 派生那条 folder 的 `folderId`）。 */
+  | { kind: 'set-instance-tracked'; key: string; tracked: boolean }
+  /**
+   * ★★ 重新检测（A14 那颗「重试」）。
+   * ⚠️ 它**先重新枚举、再重扫候选**（理由写在 `ModFoldersData` 的 `probeLaunchers`）。
+   */
+  | { kind: 'probe-launchers' };
 
 /**
  * 动作层往下传的形状。

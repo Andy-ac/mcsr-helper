@@ -51,6 +51,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { DesktopDownload } from '@/components/DesktopDownload';
 import { Notice } from '@/components/Form';
+import { LauncherBindingPanel } from '@/components/LauncherBindingPanel';
 import {
   ModDownloadPanel,
   type ModPageAction,
@@ -190,7 +191,24 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
         await handlers.rescan(action.folderId);
         break;
       case 'unbind-folder':
-        await handlers.unbindFolder(action.folderId);
+        /*
+         * ★★ D1（T8）：这一支**改发"取消追踪"**（控制器 2026-10-12 裁定 (b)；计划
+         *    `:1280-1283` 点名的那一条）。
+         *
+         * ⚠️★ 修之前它发的是这条同名通道（`handlers.unbindFolder(folderId)`），而主进程
+         *    那一侧写的是**派生结构**（`mod-folders.ts` 的 `unbindFolder` 只有一句
+         *    `delete state.folders[id]`）⇒ 下一趟对账按"被追踪的实例"重新派生它、
+         *    **又长回来** —— 用户看到的是"点了像成功、状态自己回来"。
+         * ⇒ 改发 `setInstanceTracked(key, false)`：那一条写的是
+         *    `instancePrefs[key].tracked = false`，也就是"这件事不再管了"真正的落点。
+         *    ⚠️★ 两个入参是**同一个字符串**：`folderId` 就是 `instance.key`
+         *    （`deriveFolders` 用它当 key，spec §7）⇒ 这里不做任何转换。
+         * ⚠️ `unbind-folder` 这个成员**形状照旧保留**（它与 `bind-folder` 一样是老客户端
+         *    与新 bundle 共用的契约面，见 `ModPageAction` 那一格的注释）；改变的是
+         *    它**接哪条通道**。⚠️ 而"取消追踪"这个语义从此有**两个**入口
+         *    （绑定页的勾选框与这一颗），两条发的是**同一条**通道。
+         */
+        await handlers.setInstanceTracked(action.folderId, false);
         break;
       case 'set-folder-version':
         await handlers.setFolderGameVersion(action.folderId, action.version);
@@ -259,6 +277,52 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
          */
         await handlers.cancelDownload();
         break;
+      /* ---- ★★ D1（T8）：「启动器绑定」那一格的七个动作 ---- */
+      /*
+       * ⚠️★ 这七条里有**六条**的契约返回值是 `Promise<void>`（`addLauncher` /
+       *    `removeLauncher` / `setInstancePaths` / `setInstanceTracked` /
+       *    `confirmInstance`）或"没有对应通道"（`select-launcher-root` 是复合）⇒
+       *    它们的状态更新**不经过**这里的返回值，而是主进程 `rebuild()` 推回来的
+       *    （`onStatus` ⇒ `useModFolders()` 的 `apply`）。⛔ 别在这里加"把返回的状态
+       *    写进界面"的第二种写法：那会变成两处落状态，而它们迟早不一致。
+       * ⚠️★ `probe-launchers` 那一支（A14 的重试）**先重新枚举、再重扫候选**：
+       *    七条 D1 通道里唯一会重算 `state.launchers[].error` 的是
+       *    `listLauncherInstances()`，只重扫候选修不好那一块 —— 理由与"为什么计划里
+       *    的六个成员不够用"写在 `ModPageAction` 那一格与报告里。
+       */
+      case 'probe-launchers':
+        await handlers.probeLaunchers();
+        break;
+      case 'select-launcher-root':
+        /*
+         * ⚠️ `rootPath` **原样**转过去（不拼分隔符、不 trim —— 归一化在主进程入口那一处，
+         *   见 `normalizedBindingRoot`）；`id` 是那条绑定自己的键。
+         */
+        await handlers.selectLauncherRoot(action.id, action.rootPath);
+        break;
+      case 'add-launcher':
+        await handlers.addLauncher(action.launcherKind, action.rootPath);
+        break;
+      case 'remove-launcher':
+        await handlers.removeLauncher(action.id);
+        break;
+      case 'set-instance-paths':
+        /*
+         * ⚠️ 三格**原样**送（`undefined` = 不改这一格 —— 主进程的 `instancePatchOf`
+         *   只跳过 `undefined`，而空串会被它**拒**）：面板那一层已经只送变过的那几格。
+         */
+        await handlers.setInstancePaths(action.key, {
+          modsDir: action.modsDir,
+          savesDir: action.savesDir,
+          loader: action.loader,
+        });
+        break;
+      case 'confirm-instance':
+        await handlers.confirmInstance(action.key);
+        break;
+      case 'set-instance-tracked':
+        await handlers.setInstanceTracked(action.key, action.tracked);
+        break;
       default: {
         /*
          * ★★ 穷尽性守卫：走到这里说明 `ModPageAction` 多了一个没人处理的成员 ——
@@ -272,20 +336,6 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
       }
     }
   };
-}
-
-/**
- * ★ D1（T6）：「启动器绑定」那一格 —— **本任务只留钩子**，内容由 **T8** 填。
- *
- * ⚠️★ 它**必须**画着 `data-tab-panel="launchers"` 这个钩子（本任务与 T8 的断言接在它上面），
- *    而壳里现在是空的：`{null}` 与"整块不渲染"在产物里长得一样，但**钩子在**这件事
- *    让 T8 的断言有落点（也不必等 T8 才把这一支接上）。
- * ⚠️★ 空态那一句**不在这里**：这一支只可能出现在"够 D1 的壳 + 状态已就绪"之后
- *    （`useModFolders()` 已经把不够 D1 的壳判成 `unavailable`，页面那一支连 tab 都不画）
- *    ⇒ 这里不需要、也不该再写一句"需要桌面版"（两处说法会漂）。
- */
-export function LauncherBindingPanel() {
-  return <div data-tab-panel="launchers" />;
 }
 
 export function Files() {
@@ -377,11 +427,41 @@ export function Files() {
           >
             {selected === 'launchers' ? (
               /*
-               * ★ D1（T6）：这一格本任务只留一个**钩子**，内容由 T8 填 —— 它盖在
-               *   `mods.status` 三个支路**之上**：三个支路都不改"启动器绑定"这一格
-               *   画不画（T8 自己那一层再按 `instancesStatus` 分档）。
+               * ★★ D1（T8）：这一格的内容（T6 只留了钩子），面板在
+               *   `components/LauncherBindingPanel.tsx`。
+               *
+               * ⚠️★ 钩子 `data-tab-panel="launchers"` 画在**外面**这一层 div 上，
+               *   不画在面板里：T6 与 T8 的断言都接在它上面，而面板只在 `ready` 那一支
+               *   才渲染 ⇒ 钩子必须挂在"三个支路都能到达"的地方。
+               *
+               * ⚠️★ 三个支路各有自己的载荷（与 `mods` 那一格同一条纪律）：
+               *   · `loading` ⇒ 「正在扫描…」——**不是**"需要桌面版"：这个壳够 D1，
+               *     它只是还没读到状态；把"还在等"说成"没这个能力"是一句谎报；
+               *   · `failed` ⇒ 失败原话（这一格**没有** `state` 可绑）。⚠️ 用的是
+               *     **这一格自己的**词条（`files.launchersStateError`）：失败的原因与
+               *     `mods` 那一格同源（同一个 `getState()`），但"拿不到 mod 目录状态"
+               *     那句话在这里**说错了主语**（用户会跑去找 mod 目录）；
+               *   · `ready` ⇒ 真面板（`state` + `detected` + 动作接缝）。
+               * ⚠️ `unavailable`（浏览器 / 老桌面壳）**到不了这一支**：上面那个岔口
+               *    整页只画 `ModFoldersUnavailable`（连 tab 都不画，spec §9.12）。
                */
-              <LauncherBindingPanel />
+              <div data-tab-panel="launchers">
+                {mods.status === 'loading' ? (
+                  <ModCatalogScanning />
+                ) : mods.status === 'failed' ? (
+                  <Notice kind="bad">
+                    {t('files.launchersStateError', { reason: mods.reason })}
+                  </Notice>
+                ) : (
+                  <LauncherBindingPanel
+                    state={mods.state}
+                    detected={mods.detected}
+                    onAction={makeModPageAction(mods.handlers)}
+                    busy={mods.state.busy}
+                    notice={mods.actionError}
+                  />
+                )}
+              </div>
             ) : selected === 'tools' ? (
               <ToolsPanel />
             ) : mods.status === 'loading' ? (

@@ -64,7 +64,10 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * zh **15** 组、en **16** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；现读的清单见文件末尾那条探针）。
+ * 现读：zh **45** 组、en **46** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；权威是文件末尾那条
+ * `expectedGroups` 探针 —— 它数的是 `ok()` 的条数，数错时会把 `actual` / `expected` 都印出来）。
+ * ⚠️★ 这一格**已经过期过两次**（T6 瘦身与 T7 加 ㊿ 之后仍写着 15/16 —— 那是 A 的 T6 之前的
+ *    数）⇒ T8 加 ㊾h 与 51a–51g 时**同批**改准（本仓的"手抄的现数要同批改"那条纪律）。
  * ⚠️ 组号是**顺序**，不是历史编号 —— 现读的清单见文件末尾那条探针上面那一段。
  */
 import assert from 'node:assert/strict';
@@ -72,10 +75,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import type { DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
 import { en, zhCN } from '@mcsr/shared/i18n';
+import { instanceKeyOf, instanceKeyParts } from '@mcsr/shared/launcherInstances';
 import { buildIndex, type ModRelease, parseModCatalog } from '@mcsr/shared/modCatalog';
 import {
   type CatalogRowView,
   type InstanceView,
+  type LauncherBindingView,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
@@ -91,6 +96,7 @@ import { MemoryRouter } from 'react-router';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { FolderJarList } from '@/components/FolderJarList';
+import { LauncherBindingPanel } from '@/components/LauncherBindingPanel';
 import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import {
   d1Capable,
@@ -752,13 +758,20 @@ assert.equal(
  *
  * ⚠️ 桩里的方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
  *    `desktopBridge()` / `desktopBridge()?.modFolders` 判成"在不在"。
- * ⚠️★★ **三档**（T6 从 boolean 扩的，spec §7 / 老壳能力门）：
+ * ⚠️★★ **五档**（T6 从 boolean 扩成三档，T8 又加了两档）：
  *   · `'browser'` = **纯浏览器**：连 `mcsr` 都没有 ⇒ `desktopBridge()` 给 `null`；
  *   · `'zero04'` = **0.0.4 的桌面壳**：`mcsr` 在、**没有** `modFolders` —— 它是
  *     `Files.tsx` 文件头那三档里的**第②档**（"有 `mcsr`、没有 `modFolders`"）；
  *   · `'old'` = **0.1.1 的老桌面壳**：`mcsr` 在、`modFolders` 也在，**但没有 D1 那七格**
  *     —— 这一档正是"新页面拿到一份没有 `instances` / `launchers` 的状态"那个坑的现场，
  *     老壳必须被 `d1Capable()` 判成"与浏览器同一档"；
+ *   · `'d1MinusOne'` = ★★ **T8 加的**：D1 那七格里**只少一格**（今天少的是
+ *     `confirmInstance`）—— 它把"**少任何一格**就不够 D1"这条判据变成**可复跑**的
+ *     （T6 当初用一份**一次性夹具**证过它，那份夹具跑完就删了、没进库
+ *     ⇒ 那条判据当时**不可复跑**，这是 T6 交接给 T8 的四条里的第一条）。
+ *     ⚠️★ 它**不是** `'old'` 的别名：`'old'` 是"七格全无"（0.1.1 的真实形状），
+ *     这一档是"七格里有六格"（一个**假想的**坏壳）—— 两档要证的命题不同，
+ *     而 ㊾h 会**逐格**遍历（少哪一格都红），所以这一档只是那份遍历里的一个取样点。
  *   · `'d1'` = **0.2.0 的壳**：D1 那七格**全部**在（㉝ 最后那条 `deepEqual` 把这一档
  *     与 `MOD_FOLDERS_CHANNELS` 逐条对账）。
  *   ⚠️★ `'zero04'` 与 `'old'` **不是同一档**（T6 第一版把它们并成了一个 `'old'` ⇒
@@ -766,40 +779,30 @@ assert.equal(
  *    `files.partTwoUnavailable` 那句文案恰恰是在 T6 从 `0.0.5` 改成 `0.2.0` 的
  *    ⇒ "0.0.4 用户看到的那句话变了"这件事当时没有任何读数）。两档的**页面**产物今天
  *    一样（都判 `unavailable`），但**桩的形状**不一样，而桩的形状正是能力门的输入。
- *   ⚠️★ 三/四档**必须**是同一条联合里的值（不是两个布尔 + 开关）：那样 `modFolders`
- *    在没有它的那两档上是 `undefined`（`?.` 判据与 expand 版同义），而在另外两档上
+ *   ⚠️★ 四/五档**必须**是同一条联合里的值（不是两个布尔 + 开关）：那样 `modFolders`
+ *    在没有它的那两档上是 `undefined`（`?.` 判据与 expand 版同义），而在另外三档上
  *    都在 —— `shellStub('old').modFolders` 因此**读得出来、也传得进 `d1Capable()`**。
  *   ⚠️ `modFolders` 那一格用**展开**而不是 `modFolders: undefined`：`{ modFolders: undefined }`
  *    与"没有这一格"在 `?.` 下结果一样，但前者会让"这个对象里有这个键"看起来成立
  *    （读桩的人会以为浏览器那一档也有那条通道）。
- * ⚠️★ 首拉状态里**故意**放了一条已绑定的启动器（`STUB_LAUNCHER`，理由写在它那一段）：
- *    默认 tab 因此落在「mod 下载」⇒ ⑰ 与 ㉝ 量的"第一帧画的是「正在扫描…」"仍然成立。
+ * ⚠️★★ 首拉状态里**放什么都不会改变第一帧**（T6 实测，**这条是删掉一个死夹具的理由**）：
+ *    静态渲染**不跑 effect** ⇒ `getState()` 的返回值**到不了** `state`
+ *    ⇒ `hasLaunchers` 在这一遍恒为 `false` ⇒ 默认 tab 恒是「启动器绑定」。
+ *    ⛔ 别往"给桩喂一条已绑定的启动器、把默认 tab 掰到 mod 下载"那条路上再试一次——
+ *    那个常量（`STUB_LAUNCHER`）**永远够不到任何断言**，所以它已经删掉了
+ *    （够不到的死夹具比注释更容易误导下一个人）。
  */
-type ShellTier = 'browser' | 'zero04' | 'old' | 'd1';
-
-/**
- * ★ D1（T6）：桩里那一份**首拉状态**（`modFolders.getState()` 的返回值）。
- *
- * ⚠️★ 为什么它必须带**一条已绑定的启动器**（而不是空的 `{}`）：这一页的默认 tab 由
- *    `initialTabFor({ hasLaunchers })` 决定（A8）⇒ 一个启动器都没绑时，静态渲染出来的
- *    第一屏是**「启动器绑定」**那一格，而「正在扫描…」在「mod 下载」那一格里
- *    ⇒ **⑰ 与 ㉝ 第三条**（它们量的是"第一帧画的是不是那一屏"）就无从谈起了。
- *    这里放一条绑定，读作"一个**已经绑过启动器**的老用户打开这一页"——
- *    那正是那两条断言当年量的人（新用户的默认落在 ㊾b 里用纯函数单独钉）。
- * ⚠️ `error: null` = 这一趟读到过它（见 `LauncherBindingView` 的注释）；形状与
- *    `MOD_FOLDERS_CHANNELS` 那条对账无关，所以这里**只是**喂给 `state.launchers` 的数据。
- */
-const STUB_LAUNCHER = {
-  id: 'multimc:D:\\MultiMC',
-  kind: 'multimc',
-  rootPath: 'D:\\MultiMC',
-  error: null,
-};
+type ShellTier = 'browser' | 'zero04' | 'old' | 'd1' | 'd1MinusOne';
 
 function shellStub(tier: ShellTier) {
   /** 0.1.1 那一档就有的那些格（D1 之前契约里的全部）；两个桌面档共用它。 */
   const preD1 = {
-    getState: async () => ({ launchers: [STUB_LAUNCHER] }),
+    /*
+     * ⚠️★ 这一格的返回值**没有任何人读**（静态渲染不跑 effect，见上面那一段）——
+     *    它只需要"是一个与契约同形的函数"。原来是 `{ launchers: [STUB_LAUNCHER] }`，
+     *    而那个常量够不到任何断言 ⇒ T8 把它连同常量一起删了，只留形状。
+     */
+    getState: async () => ({}),
     onStatus: () => () => undefined,
     /*
      * ★ C 的 T3：第二条推送（进度帧）。照 `onStatus` 那一格写（形状与它一致）。
@@ -862,6 +865,28 @@ function shellStub(tier: ShellTier) {
     setInstanceTracked: async () => undefined,
     confirmInstance: async () => undefined,
   };
+  /*
+   * ★★ D1（T8）：**只少一格**那一档（`'d1MinusOne'`）。
+   *
+   * ⚠️★ 为什么它必须是一档**桩**而不是"临时改一行、跑完改回来"：T6 当初正是用一次性夹具
+   *    证的这条命题，而那份夹具**跑完就删了、没进库** ⇒ 那条判据从此**不可复跑**
+   *    （本仓对"证据只住在会被清掉的地方"有成文的纪律）⇒ 交接给 T8 的活。
+   * ⚠️★ 少的是 `confirmInstance`（七格里的第六格）：它**不是**任选的一格 ——
+   *    D1 的"显式确认"那颗按钮走的正是它（`confirmInstance(key)`），
+   *    少它就等于"这一页能看、但确认按钮调到一个不存在的函数"。
+   * ⚠️★ 而"**少任何一格**都不够 D1"这条更强的命题由 ㊾h **逐格遍历**钉住
+   *    （它自己造七份"少一格"的壳）⇒ 这一档只服务页面级的那一条读数
+   *    （`pageShellOf('d1MinusOne')` 真的只画那句"需要桌面版"）。
+   */
+  const d1MinusOne = {
+    probeLaunchers: d1Only.probeLaunchers,
+    listLauncherInstances: d1Only.listLauncherInstances,
+    setInstancePaths: d1Only.setInstancePaths,
+    addLauncher: d1Only.addLauncher,
+    removeLauncher: d1Only.removeLauncher,
+    setInstanceTracked: d1Only.setInstanceTracked,
+    /* ⛔ 这一档**故意**没有 `confirmInstance` —— 它就是"只少一格"的那一格。 */
+  };
   return {
     isDesktop: true,
     platform: 'test',
@@ -886,7 +911,13 @@ function shellStub(tier: ShellTier) {
     },
     ...(tier === 'browser' || tier === 'zero04'
       ? {}
-      : { modFolders: { ...preD1, ...(tier === 'd1' ? d1Only : {}) } }),
+      : {
+          modFolders: {
+            ...preD1,
+            ...(tier === 'd1' ? d1Only : {}),
+            ...(tier === 'd1MinusOne' ? d1MinusOne : {}),
+          },
+        }),
   };
 }
 
@@ -4179,6 +4210,62 @@ console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门
   );
   ok('㊾c 老桌面壳被判成"不够 D1"（纯函数），而且整页真的只画那句"需要桌面版"（一个 tab 都没有）');
 
+  /* ---- ㊾h：★ T8（T6 交接的第一条）"**少任何一格**就不够 D1" ---- */
+  /*
+   * ⚠️★★ 这一条要修的正是"判据**不可复跑**"：T6 当初用一份**一次性夹具**证过"老壳少
+   *    `confirmInstance` 一格也判不够"，而那份夹具**跑完就删了、没进库**
+   *    ⇒ 从那以后没有任何东西在守它（本仓对"证据只住在会被清掉的地方"有成文纪律）。
+   *
+   * ⚠️★ 判据的形状是**逐格遍历**（不是"挑一格试试"）：
+   *   · 遍历的集合**从桩里现读**（`shellStub('d1')` 有、`shellStub('old')` 没有的那些名字）
+   *     —— 不手抄七个键名：手抄的那一份会与 `ModFoldersData.tsx` 的 `D1_CHANNELS` 漂，
+   *     而漂起来的表现是**这道门对某个壳恒 false**（`/files` 对所有人整块消失、零门禁输出）。
+   *   · 它同时**反着**钉住 `D1_CHANNELS` 不许少一格：少了哪一格，删掉那一格时
+   *     `d1Capable()` 仍会看剩下六格 ⇒ 下面这条当场红（"清单与判据必须逐格对齐"）。
+   *   · `d1Names.length === 7` 是**覆盖面控制**：集合若因为桩被改坏而缩水，
+   *     循环会静默地少跑几轮 —— 那正是"没问题"与"没扫到"分不开的那一类（§5.32②）。
+   * ⚠️★ 页面级那一半单独读一次（`'d1MinusOne'` 那一档真的渲染整页）：只断纯函数的话，
+   *    "判成 unavailable 了、但页面照样画 tab / 照样去读 `state.instances`"这种坏法照样绿。
+   */
+  const d1Api = shellStub('d1').modFolders ?? {};
+  const preD1Names = new Set(Object.keys(shellStub('old').modFolders ?? {}));
+  const d1Names = Object.keys(d1Api).filter((name) => !preD1Names.has(name));
+  assert.equal(
+    d1Names.length,
+    7,
+    `㊾h D1 那一组应当是**七格**（现读 ${String(d1Names.length)} 格：${d1Names.join(' / ')}）` +
+      '—— 少一格多半是桩被改坏了，而下面的遍历会因为集合缩水而静默少跑几轮',
+  );
+  for (const missing of d1Names) {
+    const minusOne: Record<string, unknown> = { ...d1Api };
+    delete minusOne[missing];
+    assert.equal(
+      d1Capable(minusOne),
+      false,
+      `㊾h 只少 \`${missing}\` 这一格 ⇒ 这个壳**也不够** D1（"少任何一格"里的这一格；` +
+        '判据是"格在不在"，不是版本号）',
+    );
+  }
+  assert.equal(
+    d1Capable({ ...d1Api, confirmInstance: undefined }),
+    false,
+    '㊾h 夹具那一档（`d1MinusOne`：少了 `confirmInstance`）走的正是上面循环里的一格 —— ' +
+      '⚠️ 值写成 `undefined` 与"没有这一格"同义（`?.` 与 `typeof === function` 两条判据都这么读）',
+  );
+  const minusOnePage = pageShellOf('d1MinusOne');
+  assert.ok(
+    minusOnePage.includes('data-mod-folders="unavailable"'),
+    '㊾h 只少一格的壳也走"与浏览器同一档"：整页只画那句"需要桌面版 0.2.0"',
+  );
+  assert.equal(
+    /data-tab="/.test(minusOnePage),
+    false,
+    '㊾h 而它**一个 tab 都不许画**（少一格 = 这一页整块用不了；画出来会让它看起来只是"没加载"）',
+  );
+  ok(
+    '㊾h ★ 只少**任何一格**（逐格遍历，现读 7 格）都不够 D1：纯函数逐格红，而页面级真的只画那句"需要桌面版"',
+  );
+
   /* ---- ㊾e：那句词条得说清新版本号 ---- */
   assert.ok(
     t('files.partTwoUnavailable').includes('0.2.0'),
@@ -4656,7 +4743,507 @@ const packSelectOf = (markup: string): string =>
   ok('㊿e A8 第三种空态（说明 + 一颗去勾选）+ A6（实例层的目标收成当前这一个、版本层只列不装）');
 }
 
-const expectedGroups = LANG === 'en' ? 38 : 37;
+// ---------------------------------------------------------------------------
+// 51 ★★ D1（T8）：「启动器绑定」那一格（A7 / A8 / A12 / A14 / A15）
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 组号从 51 起用 **ASCII 数字**：Unicode 的圈号到 ㊿（= 50）就没了 ——
+ *    组号只是给人看的标签，与文件末尾那条 `pass` 计数无关。
+ *
+ * ⚠️★ 这一组量的是"用户第一次进来要做的事"，也是**唯一**能改解析结果的地方（spec §4.6）：
+ *    根路径可改 / 每个实例六样 / 待确认标 + **显式确认** / 勾选框 / 两种空态 /
+ *    逐块失败 + 重试 / 浏览器里那句引导。
+ * ⚠️★ 判据的锚点是**产物里的机器读数**（`data-launcher-block` / `data-instance-row` /
+ *    `data-instance-mods` …）与**那句原话本身**：静态渲染**不跑事件处理器**，所以
+ *    "按下去真的走了哪条通道"只能由**源码形状**（下面 51g）与 `tsc` 的穷尽性守卫兜着
+ *    （`makeModPageAction` 那个 `const never: never = action`）。
+ * ⚠️★ 夹具的名字 / 路径一律 **ASCII**：⑱ 那条"英文产物零汉字"的扫描要在 `--en` 那一遍过
+ *    （主进程写死的中文在这个脚本里一律换成 ASCII 记号，见 `NOTE` 那一段的同一条纪律）。
+ *    唯一"原样印"的中文是 `BLOCK_ERROR` —— 它是**夹具**，也是 ASCII。
+ * ⚠️★ 实例夹具的 `instancePath` 与 `key` **必须同源**（`instanceKeyOf` 拼出来的那一对）：
+ *    这一页按"实例落在哪个根里面"把它挂到对应的启动器块下（`instancesOfBinding`），
+ *    两格对不上时那一行会**一个块都不属于** ⇒ 下面每一条断言都会以"找不到那一行"红，
+ *    而红的原因与产品缺陷无关（那正是"夹具写错"那一类，先修夹具）。
+ */
+
+/** 一条**读得到**的绑定（`error: null` = 这一趟读到过它，见 `LauncherBindingView`）。 */
+const LAUNCHER_ROOT = 'D:\\MultiMC';
+const BINDING_OK: LauncherBindingView = {
+  id: `multimc:${LAUNCHER_ROOT}`,
+  kind: 'multimc',
+  rootPath: LAUNCHER_ROOT,
+  error: null,
+};
+/**
+ * 一块**读不动**的绑定（A14 的现场：路径被搬走 / 没权限 / 元数据坏）。
+ * ⚠️ 真实那一句由主进程写（中文，带路径）；夹具用 ASCII 记号，理由见上面那一段。
+ */
+const BROKEN_ROOT = 'E:\\Prism';
+const BLOCK_ERROR = 'LAUNCHER-BLOCK-ERROR-77: instances dir is missing';
+const BINDING_BROKEN: LauncherBindingView = {
+  id: `pcl2:${BROKEN_ROOT}`,
+  kind: 'pcl2',
+  rootPath: BROKEN_ROOT,
+  error: BLOCK_ERROR,
+};
+
+/**
+ * 一个**属于 `LAUNCHER_ROOT`** 的实例夹具：`instancePath` 与 `key` 由同一个函数认出来。
+ * ⚠️★ 名字取 `key` 的末段（`instanceKeyParts` 的逆）—— 与 `InstancePicker` 那一处同一条。
+ * ⚠️★ **夹具自钉**：那一对 `(key, instancePath)` 必须真的对得上
+ *    （`instanceKeyOf(kind, 根, 实例路径) === key`）—— 面板就是按这条判据把实例挂到对应的
+ *    启动器块下的，两格对不上时那一行**一个块都不属于** ⇒ 下面每一条断言都会以"找不到
+ *    那一行"红，而那个红的理由与产品缺陷无关（夹具写错那一类）。
+ */
+function boundInstance(over: Partial<InstanceView> & { key: string }): InstanceView {
+  const name = instanceKeyParts(over.key).name;
+  const instancePath = `${LAUNCHER_ROOT}\\instances\\${name}`;
+  assert.equal(
+    instanceKeyOf('multimc', LAUNCHER_ROOT, instancePath),
+    over.key,
+    `夹具自钉：这个实例的 key 与它的路径对不上（${over.key} vs ${instancePath}）`,
+  );
+  return instanceView({
+    name,
+    instancePath,
+    modsDir: `${instancePath}\\.minecraft\\mods`,
+    savesDir: `${instancePath}\\.minecraft\\saves`,
+    ...over,
+  });
+}
+/** 被追踪、版本与 loader 都读得出来（实例行的正例）。 */
+const PANEL_INSTANCE_TRACKED = boundInstance({
+  key: 'multimc:instances/1.16.1 - Ranked#1',
+  gameVersion: '1.16.1',
+  loader: 'fabric 0.17.3',
+  tracked: true,
+  /* ⚠️ 显示值是 `needsConfirm && !confirmed`（`instanceViewsOf` 算好的）：这一行两样都不画。 */
+  confirmed: true,
+  needsConfirm: false,
+});
+/** **待确认**（探测判不出来）且没勾：待确认标 + 确认按钮就长在这一行上。 */
+const PANEL_INSTANCE_CONFIRM = boundInstance({
+  key: 'multimc:instances/1.15.2 - RSG',
+  gameVersion: '1.15.2',
+  loader: null,
+  tracked: false,
+  confirmed: false,
+  needsConfirm: true,
+});
+/**
+ * 路径**手改过**（A12）⇒ `needsConfirm` 被 `applyOverride` 清掉、也没确认过。
+ * ⚠️★ 它同时是"路径输入框的初值 = **生效值**"那条判据的靶子：`modsDir` / `savesDir`
+ *    两格**不是**从 `instancePath` 拼出来的探测值 ⇒ 输入框里必须是这两个手改值。
+ */
+const PANEL_INSTANCE_EDITED = boundInstance({
+  key: 'multimc:instances/1.12.2',
+  gameVersion: '1.12.2',
+  tracked: false,
+  confirmed: false,
+  needsConfirm: false,
+  modsDir: 'D:\\hand-edited\\mods',
+  savesDir: 'D:\\hand-edited\\saves',
+});
+/** `probeLaunchers()` 的产物（候选）—— 两条，其中第二条是"官方启动器"那一档。 */
+const CANDIDATES = [
+  { kind: 'multimc' as const, rootPath: LAUNCHER_ROOT },
+  { kind: 'official' as const, rootPath: 'C:\\Users\\someone\\AppData\\Roaming\\.minecraft' },
+];
+
+/** 这一组的默认状态：一条绑得住的启动器 + 上面那三行实例。 */
+function launcherPanelState(over: Partial<ModFoldersState> = {}): ModFoldersState {
+  return stateOf([], {
+    launchers: [BINDING_OK],
+    instances: [PANEL_INSTANCE_TRACKED, PANEL_INSTANCE_CONFIRM, PANEL_INSTANCE_EDITED],
+    ...over,
+  });
+}
+
+/** 一次「启动器绑定」那一格的渲染（纯 props 组件 ⇒ 自检直接喂它）。 */
+const launcherBindingHtml = (over: Record<string, unknown> = {}): string =>
+  keep(
+    html(
+      React.createElement(LauncherBindingPanel, {
+        state: launcherPanelState(),
+        detected: CANDIDATES,
+        onAction: noop,
+        busy: false,
+        ...over,
+      }),
+    ),
+  );
+
+/**
+ * 一个**启动器块**那一段产物：从 `data-launcher-block="<id>"` 起，到**下一个**块为止。
+ *
+ * ⚠️★ 与 `folderRowSpanOf` 同一条取舍：它不是"配平地切出那个 `<section>`"，
+ *    而是"相邻两块之间的那一段"。⚠️ 代价（认）：**最后**那一块的窗口会一直伸到产物末尾
+ *    ⇒ 它把后面"添加启动器"那一节也包进来；所以只在这段里找**块自己**的东西
+ *    （原话 / 重试 / 它名下的行），别在这段里断"整页只有一处某东西"。
+ */
+function launcherBlockSpanOf(markup: string, id: string): string {
+  const start = markup.indexOf(`data-launcher-block="${id}"`);
+  assert.notEqual(
+    start,
+    -1,
+    `产物里找不到 data-launcher-block="${id}" 那一块 —— 那个启动器没画出来`,
+  );
+  const next = markup.indexOf('data-launcher-block="', start + 1);
+  return next === -1 ? markup.slice(start) : markup.slice(start, next);
+}
+
+/** 一个实例行那一段产物（从 `data-instance-row="<key>"` 到下一个行）。 */
+function bindingRowSpanOf(markup: string, key: string): string {
+  const start = markup.indexOf(`data-instance-row="${key}"`);
+  assert.notEqual(start, -1, `产物里找不到 data-instance-row="${key}" 那一行 —— 那个实例没画出来`);
+  const next = markup.indexOf('data-instance-row="', start + 1);
+  return next === -1 ? markup.slice(start) : markup.slice(start, next);
+}
+
+/**
+ * 产物里**某一个 `<input>`** 那个标签（按 `属性名="值"` 定位，从 `<input` 起到它自己的 `>`）。
+ *
+ * ⚠️★ 为什么不用正则配平：属性值里有 Windows 路径（反斜杠）与 `:`，而 `<input` 与 `>` 之间
+ *    **没有**嵌套标签 ⇒ 按"下一个 `>`"截断是安全的；配平一个正则只会更难读。
+ */
+function inputTagOf(markup: string, attr: string, value: string): string {
+  const at = markup.indexOf(`${attr}="${value}"`);
+  assert.notEqual(at, -1, `产物里找不到 ${attr}="${value}" —— 那一格没画出来（或值不是这个）`);
+  const start = markup.lastIndexOf('<input', at);
+  assert.notEqual(
+    start,
+    -1,
+    `${attr}="${value}" 前面没有 \`<input\` —— 那个机器读数挂在了别的标签上`,
+  );
+  const end = markup.indexOf('>', at);
+  return markup.slice(start, end + 1);
+}
+
+{
+  console.log(`【${LANG}】51 启动器绑定那一格（A7 / A8 / A12 / A14 / A15）`);
+
+  /* ---- 51a：A7 —— 一个实例行里**六样**都在场 ---- */
+  /*
+   * ⚠️★ A7 的六样：实例名 / 版本 / loader / `mods`（可改）/ `saves`（可改）/ 勾选框。
+   *    判据分两条腿：前三样读**文字**（`textOf`，标签与值都在），后三样读**那个 input 标签**
+   *    （`value=` 是初值、`checked` 是勾选读数）—— 只读文字的话，"输入框画了但没有初值"
+   *    照样绿（那是这一页最贵的一格：初值错 ⇒ 用户一按保存就把路径改坏）。
+   */
+  const panelHtml = launcherBindingHtml();
+  const trackedRow = bindingRowSpanOf(panelHtml, PANEL_INSTANCE_TRACKED.key);
+  const editedRow = bindingRowSpanOf(panelHtml, PANEL_INSTANCE_EDITED.key);
+  const trackedText = textOf(trackedRow);
+  /*
+   * ⚠️★ 两侧都要过 `textOf`：它把**空白全压掉**（`1.16.1 - Ranked#1` ⇒ `1.16.1-Ranked#1`）
+   *    ⇒ 只压一侧的话，带空格的夹具名在**正确**的产物上红（那次红的理由与产品无关）。
+   */
+  assert.ok(
+    trackedText.includes(textOf(PANEL_INSTANCE_TRACKED.name)),
+    `51a ① 实例名：那一行里要看得到 \`${PANEL_INSTANCE_TRACKED.name}\`（磁盘上的内容，原样印）`,
+  );
+  assert.ok(trackedText.includes('1.16.1'), '51a ② 版本：那一行里要看得到这个实例的版本');
+  /*
+   * ⚠️★ loader 那一格是**输入框**（A7 的"可手改"）⇒ 它的值在**属性**里，`textOf` 读不到
+   *    ⇒ 判据是"那个 input 的初值" + "它自己的标签在文字里"（两个方向都要，
+   *    否则"画了一个没有标签的空框"照样绿）。
+   */
+  assert.ok(
+    inputTagOf(trackedRow, 'data-instance-loader', PANEL_INSTANCE_TRACKED.key).includes(
+      `value="${PANEL_INSTANCE_TRACKED.loader}"`,
+    ),
+    '51a ③ loader：那一格是**可改的输入框**，初值 = 这个实例解析出来的 loader 串',
+  );
+  assert.ok(
+    trackedText.includes(textOf(resolved('files.instanceLoaderLabel'))),
+    '51a ③ 而且那一格的标签在（同一个框里既要有值、也要说清它是什么）',
+  );
+  const modsInput = inputTagOf(trackedRow, 'data-instance-mods', PANEL_INSTANCE_TRACKED.key);
+  assert.ok(
+    modsInput.includes(`value="${PANEL_INSTANCE_TRACKED.modsDir}"`),
+    '51a ④ `mods` 输入框：初值必须是**生效值**（`state.instances` 里那一格）',
+  );
+  const savesInput = inputTagOf(trackedRow, 'data-instance-saves', PANEL_INSTANCE_TRACKED.key);
+  assert.ok(
+    savesInput.includes(`value="${PANEL_INSTANCE_TRACKED.savesDir}"`),
+    '51a ⑤ `saves` 输入框：同上（初值 = 生效值）',
+  );
+  const trackedBox = inputTagOf(trackedRow, 'data-instance-tracked', PANEL_INSTANCE_TRACKED.key);
+  assert.ok(
+    trackedBox.includes(' checked'),
+    '51a ⑥ 勾选框：被追踪的那一行真的带 `checked` 读数（否则用户看不出自己勾没勾）',
+  );
+  const editedBox = inputTagOf(editedRow, 'data-instance-tracked', PANEL_INSTANCE_EDITED.key);
+  assert.equal(
+    editedBox.includes(' checked'),
+    false,
+    '51a ⑥ 反面：**没被追踪**的那一行不许带 `checked`（恒画 `checked` 就分不出勾没勾）',
+  );
+  /*
+   * ★★ "初值是**生效值**、不是探测值"那条纪律的靶子：这一行的 `modsDir` / `savesDir` 是
+   *    用户手改过的（`D:\hand-edited\…`），而 `instancePath` 还在 `D:\MultiMC\instances\…`
+   *    ⇒ 谁要是"自己按 instancePath 拼一个 .minecraft\mods"，这一条当场红。
+   */
+  assert.ok(
+    inputTagOf(editedRow, 'data-instance-mods', PANEL_INSTANCE_EDITED.key).includes(
+      'D:\\hand-edited\\mods',
+    ),
+    '51a ★ 手改过的那一行：初值是**手改后的生效值**（不是按 `instancePath` 拼出来的探测值）',
+  );
+  ok(
+    '51a A7：一个实例行里六样都在场（名称 / 版本 / loader / mods 输入框 / saves 输入框 / 勾选框带 checked 读数），' +
+      '而且路径初值是**生效值**',
+  );
+
+  /* ---- 51b：待确认标 + 显式确认（2026-10-11 控制器裁定的那条验收）---- */
+  /*
+   * ⚠️★ 判据是**成对**的（这是这一组唯一"必须能让去掉实现变红"的一条）：
+   *   · `needsConfirm === true` ⇒ 标 **与** 按钮**两样都在**；
+   *   · `needsConfirm === false`（= `confirmed` 或路径被手改过）⇒ **两样都不画**。
+   *   只写前半条的话，"标在任何实例上都画"照样绿（那正是"点了确认标还在"那一类坏法）。
+   */
+  const confirmRow = bindingRowSpanOf(panelHtml, PANEL_INSTANCE_CONFIRM.key);
+  assert.ok(
+    confirmRow.includes(`data-instance-needs-confirm="${PANEL_INSTANCE_CONFIRM.key}"`),
+    '51b `needsConfirm` 的那一行要有那个标（`data-instance-needs-confirm="<key>"`）',
+  );
+  assert.ok(
+    /data-action="confirm-instance"/.test(confirmRow),
+    '51b 而且要有那颗「确认这个路径」（它走 `confirmInstance(key)` ⇒ 写 `instancePrefs[key].confirmed = true`）',
+  );
+  for (const [why, row] of [
+    ['已经被确认过（`confirmed`）', trackedRow],
+    ['路径被手改过（`applyOverride` 清了 `needsConfirm`）', editedRow],
+  ] as const) {
+    assert.equal(
+      row.includes('data-instance-needs-confirm='),
+      false,
+      `51b 反面（${why}）：那个标记**不许**画 —— 恒画它就是"点了确认、标还在"`,
+    );
+    assert.equal(
+      row.includes('data-action="confirm-instance"'),
+      false,
+      `51b 反面（${why}）：那颗按钮**也不许**画（它已经没什么可确认的了）`,
+    );
+  }
+  ok(
+    '51b ★ 待确认标 + 「确认这个路径」只画在 `needsConfirm` 的那些行上（confirmed / 手改过 ⇒ 两样都不画）',
+  );
+
+  /* ---- 51c：A8 的两支空态（未绑定 / 已绑未勾）---- */
+  /*
+   * ⚠️★ 两句必须是**两句不同的话**，而且要**互斥**：判据是"这一支在场 ∧ 另一支不在场"
+   *    （只断"某一支在场"的话，一个"两支都画"的实现照样绿 —— 而那时用户会被指去
+   *    做一件他做不了的事："去勾一个实例"对一个还没绑启动器的用户是没有那个东西）。
+   */
+  const noneHtml = launcherBindingHtml({
+    state: launcherPanelState({ launchers: [], instances: [] }),
+    detected: [],
+  });
+  assert.ok(
+    noneHtml.includes('data-launcher-empty="none"'),
+    '51c① 一条绑定都没有 ⇒ 引导去绑定（`data-launcher-empty="none"`）',
+  );
+  assert.equal(
+    noneHtml.includes('data-launcher-empty="untracked"'),
+    false,
+    '51c① 反面：那一支**不许**同时画"去勾选"（两句话说成一句会把用户指错地方）',
+  );
+  const untrackedHtml = launcherBindingHtml({
+    state: launcherPanelState({
+      instances: [PANEL_INSTANCE_CONFIRM, PANEL_INSTANCE_EDITED],
+    }),
+  });
+  assert.ok(
+    untrackedHtml.includes('data-launcher-empty="untracked"'),
+    '51c② 有绑定、但一个实例都没被勾 ⇒ 引导勾选（`data-launcher-empty="untracked"`）',
+  );
+  assert.equal(
+    untrackedHtml.includes('data-launcher-empty="none"'),
+    false,
+    '51c② 反面：它**不是**"未绑定"那一支（有绑定就不该再叫人去绑）',
+  );
+  /* ★ 而"这一版没有被追踪的实例"那第三支是 T7 的（`InstancePicker`，自检 ㊿e）—— 不在这里。 */
+  ok('51c A8 的两支空态（未绑定启动器 / 已绑但一个实例都没勾）各自在场、而且互斥');
+
+  /* ---- 51d：A14 —— 逐块失败 + 重试（一个块坏掉不许整页空）---- */
+  const brokenHtml = launcherBindingHtml({
+    state: launcherPanelState({
+      launchers: [BINDING_BROKEN, BINDING_OK],
+      instances: [PANEL_INSTANCE_TRACKED],
+    }),
+    detected: [],
+  });
+  const brokenBlock = launcherBlockSpanOf(brokenHtml, BINDING_BROKEN.id);
+  assert.ok(
+    brokenBlock.includes(BLOCK_ERROR),
+    '51d 坏掉的那一块要画出**那句原话**（主进程写的失败原因照带，不是"出错了"这种自己编的话）',
+  );
+  assert.ok(
+    /data-action="probe-launchers"/.test(brokenBlock),
+    '51d 而它带一颗重试按钮（再枚举一遍 / 再扫一次候选）',
+  );
+  const healthyBlock = launcherBlockSpanOf(brokenHtml, BINDING_OK.id);
+  assert.equal(
+    /data-action="probe-launchers"/.test(healthyBlock),
+    false,
+    '51d 反面：**没坏**的那一块不带那颗按钮（它没有要重试的东西）',
+  );
+  assert.ok(
+    healthyBlock.includes(`data-instance-row="${PANEL_INSTANCE_TRACKED.key}"`),
+    '51d ★ 而它**照常渲染**：另一个块坏掉时，好的那一块的实例行必须还在（整页空 = A14 要防的那件事）',
+  );
+  ok('51d A14：坏掉的那一块画出原话 + 一颗重试，而**别的块照常渲染**（一个块坏掉不许整页空）');
+
+  /* ---- 51e：A15 —— 浏览器 / 老桌面壳里那一句 + 装桌面版的引导 ---- */
+  /*
+   * ⚠️★★ 这一支的**边界**（如实写，不粉饰）：产品里它**够不到** —— 页面在
+   *    `useModFolders().status === 'unavailable'` 时整页只画 `ModFoldersUnavailable`
+   *    （`data-mod-folders="unavailable"`，老壳一个 tab 都不画），而 launchers 那一格
+   *    只在 `loading` / `failed` / `ready` 三态里画（前两态各有自己的载荷）。
+   *    ⇒ 它是**组件契约**上的一支（`state === null` ⇒ 这个客户端给不出那份状态），
+   *    由自检**直接渲染**钉住；A15 的**页面级**那一半在 ㉕ 与 ㊾d/㊾h。
+   * ⚠️★ 而它画的必须是**同一条词条**（`files.partTwoUnavailable`）—— T6 的注释明确写过
+   *    "这里不需要、也不该再写一句'需要桌面版'（两处说法会漂）"：语句只有一份，
+   *    两个渲染点共用它（`resolved()` 那条针孔探针保证它真的解析出了译文）。
+   */
+  const needDesktopHtml = launcherBindingHtml({ state: null, detected: null });
+  assert.ok(
+    needDesktopHtml.includes('data-launcher-needs-desktop="yes"'),
+    '51e `state === null` ⇒ 这一格说的是"需要在桌面版里绑定"',
+  );
+  assert.ok(
+    textOf(needDesktopHtml).includes(textOf(resolved('files.partTwoUnavailable'))),
+    '51e 而且用的就是**页面那条词条**（不是第二句"需要桌面版" ⇒ 两处说法不会漂）',
+  );
+  for (const forbidden of [
+    'data-instance-row=',
+    'data-instance-mods=',
+    'data-instance-saves=',
+    'data-instance-tracked=',
+    'data-launcher-block=',
+    'data-launcher-empty=',
+    'data-launcher-candidate=',
+    'data-action="probe-launchers"',
+    'data-action="add-launcher"',
+  ]) {
+    assert.equal(
+      needDesktopHtml.includes(forbidden),
+      false,
+      `51e 而**别的什么都不画**：产物里不许出现 \`${forbidden}\``,
+    );
+  }
+  /*
+   * ⚠️ "装桌面版的引导"那一半只能读**源码形状**：`<DesktopDownload />` 在静态渲染下
+   *    恒画 `null`（它自己 `if (desktopBridge()) return null;`，而自检里没有 preload、
+   *    `/api/desktop/release` 那一次取数也不跑）⇒ 产物上**没有任何东西**可断。
+   *    ⚠️ 它断的是"**用的是现成那个组件**"（页面在浏览器那一支用的就是它），
+   *    不是"这一刻画出来了"。
+   */
+  const panelSource = withoutComments(
+    readFileSync(new URL('../src/components/LauncherBindingPanel.tsx', import.meta.url), 'utf8'),
+  );
+  assert.ok(
+    panelSource.includes('<DesktopDownload'),
+    '51e 装桌面版的引导用的是**现成的那个组件**（`DesktopDownload`，与页面浏览器那一支同源）',
+  );
+  ok(
+    '51e A15：`state === null` ⇒ 只有"需要在桌面版里绑定"那一句 + 装桌面版的引导（其余一个字节都不画）',
+  );
+
+  /* ---- 51f：候选（只列命中的）+ 手动添加（永远在的那条路）---- */
+  assert.equal(
+    countOf(panelHtml, 'data-launcher-candidate="'),
+    CANDIDATES.length,
+    '51f **只列命中的**：候选表里一条命中一行（多一行就会让人去加一个不存在的根）',
+  );
+  assert.ok(
+    panelHtml.includes(`data-launcher-candidate="${CANDIDATES[0].kind}:${CANDIDATES[0].rootPath}"`),
+    '51f 那一行的身份是"类型 + 根"（`addLauncher(kind, rootPath)` 的两个入参）',
+  );
+  assert.ok(
+    panelHtml.includes('data-launcher-manual="yes"'),
+    '51f 而"手动添加"（选类型 + 填路径）**永远在**——探测只是候选，spec §6 那条"手动指定根必须一直在"',
+  );
+  const noCandidateHtml = launcherBindingHtml({ detected: [] });
+  assert.equal(
+    countOf(noCandidateHtml, 'data-launcher-candidate="'),
+    0,
+    '51f 反面：一条都没命中 ⇒ 候选表一行都不画',
+  );
+  assert.ok(
+    noCandidateHtml.includes('data-launcher-manual="yes"'),
+    '51f 反面：而"手动添加"照旧在（那是"一个都没命中"时唯一的出路）',
+  );
+  ok('51f 候选只列命中的那几条（每条一颗「添加」），一条都没命中时只剩"手动添加"');
+
+  /* ---- 51g：接线（源码形状）——七个动作各接哪条通道，以及 T7 交接的那颗坏按钮 ---- */
+  /*
+   * ⚠️★ 静态渲染**不跑处理器**，所以"按下去走哪条通道"只能读源码形状；而**第一道**守卫
+   *    其实是 `tsc`：`makeModPageAction` 那个 `const never: never = action` 会让"加了成员
+   *    却忘了处理"在编译期红（实测过，见那个函数头）。这里断的是**更强**的那半句：
+   *    每一支**接的是哪一条通道**（漏了不会红，接错了才会 —— 而接错的表现是"点了没反应"
+   *    或"点 A 做了 B"，两者都不会有任何门禁出声）。
+   * ⚠️★ 表驱动：`(kind, 那一支里必须出现的那次调用)`。把任何两行对调 ⇒ 当场红。
+   */
+  const WIRING: readonly (readonly [string, string])[] = [
+    ['select-launcher-root', 'handlers.selectLauncherRoot(action.id, action.rootPath)'],
+    ['add-launcher', 'handlers.addLauncher(action.launcherKind, action.rootPath)'],
+    ['remove-launcher', 'handlers.removeLauncher(action.id)'],
+    ['set-instance-paths', 'handlers.setInstancePaths(action.key,'],
+    ['confirm-instance', 'handlers.confirmInstance(action.key)'],
+    ['set-instance-tracked', 'handlers.setInstanceTracked(action.key, action.tracked)'],
+    ['probe-launchers', 'handlers.probeLaunchers()'],
+  ];
+  for (const [kind, call] of WIRING) {
+    const start = filesRouteCode.indexOf(`case '${kind}':`);
+    assert.notEqual(
+      start,
+      -1,
+      `51g \`makeModPageAction\` 里没有 \`case '${kind}':\` 那一支（那个动作发出去没人接）`,
+    );
+    const next = filesRouteCode.indexOf('case ', start + 1);
+    const branch = filesRouteCode.slice(start, next === -1 ? undefined : next);
+    assert.ok(
+      branch.includes(call),
+      `51g \`${kind}\` 那一支接的必须是 \`${call}\`（现读那一支：${branch.slice(0, 120)}…）`,
+    );
+  }
+  /*
+   * ★★ T7 交接给 T8 的那颗**坏按钮**（控制器裁定 (b)）：「解绑」原来发 `unbind-folder`，
+   *    而主进程的 `unbindFolder` 只是 `delete state.folders[id]` ⇒ 下一趟对账又长回来
+   *    （用户看到的是"点了像成功、状态自己回来"）。计划 `:1280-1283` 点名改成
+   *    `set-instance-tracked(key, false)`。⚠️ 这一条**只能**读源码形状：
+   *    那颗按钮在 `VersionFolderList` 里（不是本任务的 in-scope 文件）⇒ 改的是**接缝**
+   *    （`folderId` 就是 `instance.key`，spec §7 ⇒ 两个入参是同一个字符串）。
+   */
+  const unbindStart = filesRouteCode.indexOf("case 'unbind-folder':");
+  assert.notEqual(unbindStart, -1, "51g 找不到 `case 'unbind-folder':` 那一支（锚点没了）");
+  const unbindNext = filesRouteCode.indexOf('case ', unbindStart + 1);
+  const unbindBranch = filesRouteCode.slice(
+    unbindStart,
+    unbindNext === -1 ? undefined : unbindNext,
+  );
+  assert.ok(
+    unbindBranch.includes('handlers.setInstanceTracked(action.folderId, false)'),
+    '51g ★ 「解绑」那一颗现在发的是**取消追踪**（写 `instancePrefs[key].tracked = false`）',
+  );
+  assert.equal(
+    unbindBranch.includes('unbindFolder'),
+    false,
+    '51g ★ 反面：它**不再**发 `unbindFolder` —— 那一条写的是**派生结构**（`delete folders[id]`），' +
+      '下一趟对账会把它长回来（"点了像成功、状态自己回来"）',
+  );
+  assert.ok(
+    pageShellOf('d1').includes('data-tab-panel="launchers"'),
+    '51g ★ T6 留下的那个钩子还在：`Files.tsx` 的 launchers 那一支仍然画着 `data-tab-panel="launchers"`',
+  );
+  ok(
+    '51g 接线：七个动作在 `makeModPageAction` 里各接一条通道（表驱动），' +
+      '而「解绑」那一颗改发取消追踪（T7 交接的坏按钮）',
+  );
+}
+
+const expectedGroups = LANG === 'en' ? 46 : 45;
 assert.equal(
   pass,
   expectedGroups,

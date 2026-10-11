@@ -4247,8 +4247,16 @@ export const en: TranslationSchema = {
      *   Update" (which is exactly T7's assertion 5), and this quiet button does not touch
      *   it. Whether it stays is the controller's call (deleting it = the two places in the
      *   component).
+     * ⚠️★ D1 (T8) changed the value: `Unbind` -> **`Stop tracking`**. Its only render point
+     *   today is the button on a folder row (`VersionFolderList.tsx` :448), and that button
+     *   now sends `set-instance-tracked(key, false)` (controller ruling (b), 2026-10-12: the
+     *   old `unbindFolder` wrote the **derived** structure, so the next reconcile grew it
+     *   right back - "it looks like it worked, then the state comes back"). Leaving the value
+     *   alone would promise something the button no longer does.
+     *   ⚠️ The **key** stays `unbind`: renaming it would touch that render point (not an
+     *   in-scope file here), and the key itself never reaches the screen.
      */
-    unbind: 'Unbind',
+    unbind: 'Stop tracking',
     update: 'Update',
     updateAll: 'Update all',
     /*
@@ -5073,5 +5081,56 @@ export const en: TranslationSchema = {
       'There is no folder to download into - bind a mods folder for this version whose path still exists first.',
     /** ★ Accessible name of the target picker (every row looks alike, so screen readers need the pack title). */
     packsFolderLabel: 'Download "{{title}}" into',
+    /*
+     * ===================================================================
+     * D1 (T8): the "Launcher binding" tab (spec 4.6 / A7 / A8 / A12 / A14 / A15)
+     * ===================================================================
+     * ⚠️ Same prefix rule as the rest of this section: always `files.`; no `=>` (U+21D2) or
+     * down-triangle (U+25BE) in these values (neither is in the self-hosted pixel subsets).
+     * ⚠️★ No **new** "needs the desktop app" sentence lives here: the A15 branch
+     *    (`state === null`) reuses the `partTwoUnavailable` entry above, so there is no
+     *    second wording that could drift.
+     * ⚠️ Reused entries (not duplicated here): `instanceFieldVersion` / `instanceFieldMods` /
+     *    `instanceFieldSaves` / `instanceNeedsConfirm`.
+     * ⚠️★ There is deliberately no "save version" control word here: that cell is a
+     *    **display** (A7) - versions are changed from the folder row in the instance layer.
+     */
+    /** ★ Shown when this tab cannot get the state (a different subject than `partOneStateError`). */
+    launchersStateError: 'Cannot read the launcher and instance state: {{reason}}',
+    /** ★★ A8 empty state #1 (nothing bound at all). */
+    launcherEmptyNone: 'No launcher is bound yet - bind one and its instances will show up here.',
+    /** ★★ A8 empty state #2 (bound, but no instance is ticked). */
+    launcherEmptyUntracked:
+      'A launcher is bound, but no instance is ticked - tick the ones you use so they get scanned and updated.',
+    /** ★ A14: enumeration is async, so say "reading" instead of claiming nothing is ticked. */
+    launcherReading: 'Reading instances...',
+    /** ★ A7: "the root path can be changed" - label of that input. */
+    launcherRootLabel: 'Root path',
+    /** ★ The "change" button (it sits next to that input). */
+    launcherRootChange: 'Change',
+    /** ★ Remove one binding (only our own bookkeeping; nothing on disk is touched, A13). */
+    launcherRemove: 'Remove this launcher',
+    /** ★ The bottom section: detected candidates + manual add. */
+    launcherAddTitle: 'Add a launcher',
+    /** ★ Label of the kind picker in the manual path (the six names come from `files.launcherKind*`). */
+    launcherKindLabel: 'Kind',
+    /** ★ The button on every candidate (and on the manual path). */
+    launcherAdd: 'Add',
+    /** ★ Nothing was detected: the probe only scans the usual places, manual entry is the way out. */
+    launcherNoCandidates: 'No launcher was detected automatically - add one manually below.',
+    /** ★ This binding has no instance yet (a different sentence from "this block cannot be read"). */
+    launcherNoInstances: 'No instance has been read under this launcher yet.',
+    /** ★★ A14: print the original failure sentence (written by the main process, with the path). */
+    launcherBlockError: 'This launcher cannot be read: {{reason}}',
+    /** ★ A14: the retry button (re-enumerate, then re-probe candidates). */
+    launcherRetry: 'Retry',
+    /** ★★ A9 checkbox label. */
+    instanceTrackLabel: 'Track this instance',
+    /** ★ Label of the loader field (fabric / forge / quilt - the same word in both languages). */
+    instanceLoaderLabel: 'loader',
+    /** ★ The "save paths" button (only changed, non-empty fields are sent). */
+    instanceSavePaths: 'Save paths',
+    /** ★★ The explicit "confirm this path" action. */
+    instanceConfirmPath: 'Confirm this path',
   },
 };
