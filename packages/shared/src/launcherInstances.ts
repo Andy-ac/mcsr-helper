@@ -47,11 +47,22 @@ function instancesParentOf(kind: LauncherKind, rootPath: string): string {
   }
 }
 
+/** 根路径归一化：去掉尾部的 `\` / `/`（否则 `D:\PCL2\` 会拼出 `D:\PCL2\\.minecraft\mods` ✗）。 */
+function normalizeRoot(rootPath: string): string {
+  return rootPath.replace(/[\\/]+$/, '');
+}
+
 /** `key` 用"类型 + 相对根的路径"（正斜杠）—— 稳定、可读、跨平台可比。 */
 export function instanceKeyOf(kind: LauncherKind, rootPath: string, instancePath: string): string {
-  const rel = instancePath.startsWith(rootPath)
-    ? instancePath.slice(rootPath.length).replace(/^[\\/]+/, '')
-    : instancePath;
+  const root = normalizeRoot(rootPath);
+  /* ⚠️★ 必须按**分隔符边界**判"在不在根里面"：只写 `startsWith(root)` 的话，
+     根 `D:\MultiMC` 会把兄弟目录 `D:\MultiMC2\instances\x` 也裁成 `2\instances\x` ✗
+     （2026-10-11 T1 评审的 Minor 二）。今天调用路径还够不到那种根，但规则本身要是对的。 */
+  const inside =
+    instancePath === root ||
+    instancePath.startsWith(`${root}${SEP}`) ||
+    instancePath.startsWith(`${root}/`);
+  const rel = inside ? instancePath.slice(root.length).replace(/^[\\/]+/, '') : instancePath;
   return `${kind}:${rel.replace(/\\/g, '/')}`;
 }
 
@@ -65,7 +76,9 @@ export function listInstances(
   kind: LauncherKind,
   rootPath: string,
 ): LauncherInstance[] {
-  const parent = instancesParentOf(kind, rootPath);
+  /* ★ 归一化在**入口**做一次：下面所有拼接与 key 都用它（spec A11 的路径形状稳定）。 */
+  const root = normalizeRoot(rootPath);
+  const parent = instancesParentOf(kind, root);
   const names = fs.listDir(parent);
   const out: LauncherInstance[] = [];
   for (const name of names) {
@@ -75,9 +88,9 @@ export function listInstances(
        而所有夹具给的都只是"父目录 + 实例内的 `.minecraft`/`mods`"，
        ⇒ 凭空多一次 `exists` 会让每一条枚举测试都拿到空列表。
        实例"中途被删"由调用方逐块 try/catch 兜（spec §7 / A14），不在这里。 */
-    const dirs = resolveDirs(fs, kind, rootPath, instancePath);
+    const dirs = resolveDirs(fs, kind, root, instancePath);
     out.push({
-      key: instanceKeyOf(kind, rootPath, instancePath),
+      key: instanceKeyOf(kind, root, instancePath),
       kind,
       name,
       instancePath,
@@ -94,11 +107,19 @@ export function listInstances(
 /**
  * 实例 → `mods`/`saves`。
  *
- * ⚠️ 判据（spec §6 的表，逐字）：
+ * ⚠️ 判据（spec §6 的表 + 它下面那段订正，**以订正为准**）：
  *   · MultiMC / Prism / MCSR：`<实例>\.minecraft\{mods,saves}`（天然隔离）；
  *   · 官方：`<根>\{mods,saves}`（**从来不隔离** ⇒ 共享是确定事实，不标待确认）；
- *   · PCL2 / HMCL：`<实例>\mods` 在 ⇒ 隔离；否则 `<根>\.minecraft\mods` 在 ⇒ 共享；
- *     **两处都不在 ⇒ 按隔离算并标 `needsConfirm`**（不静默按共享 —— spec §6）。
+ *   · PCL2 / HMCL：**实例自己那一份 `mods` 或 `saves` 存在 ⇒ 隔离**（⚠️★ 不只是 `mods`：
+ *     这两家的"版本隔离"是**整个游戏目录**级别的，mods/saves/config 一起搬 ⇒
+ *     `versions\<名>\saves` 在而 `mods` 不在时，隔离**是开着的**，只是用户还没建 mods 目录）；
+ *     否则**共享那份 `mods` 或 `saves` 存在 ⇒ 共享**；
+ *     **四处都不在 ⇒ 按隔离算并标 `needsConfirm`**（不静默按共享 —— spec §6）。
+ *   ⚠️★ 2026-10-11 订正：这一段原来写"spec §6 逐字"而只提 `mods` ✗ —— T1 的评审查出
+ *     下面那两个 `|| fs.exists(*Saves)` **两把刀都拔不动**（没有任何用例覆盖），
+ *     逼出了"要么按字面去掉、要么把规则说准并补 saves-only 用例"这个选择；
+ *     定的是**后者**（现实里隔离确实是整目录级别的 ⇒ 代码是对的、注释与 spec 才是漏的），
+ *     并且补了用例 ⑥ 让那半条件**能红**（实测：去掉它 ⑥ 立刻红 ✓）。
  */
 export function resolveDirs(
   fs: LauncherFs,

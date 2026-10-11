@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type LauncherFs, listInstances } from '@mcsr/shared/launcherInstances';
+import { instanceKeyOf, type LauncherFs, listInstances } from '@mcsr/shared/launcherInstances';
 
 /** 只读的假文件系统：给一组"存在的目录/文件"与"目录内容"，其余一律不存在。 */
 function fakeFs(
@@ -70,5 +70,82 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
 
   it('⑤ 根路径不存在 ⇒ 空列表（不抛；界面那一块自己报错）', () => {
     assert.deepEqual(listInstances(fakeFs({}), 'multimc', 'Z:\\nope'), []);
+  });
+
+  /*
+   * ★★ ⑥–⑪ 是 **T1 评审**（Needs fixes）逼出来的：它实测"删掉 `resolveDirs` 里那两个
+   *    `|| fs.exists(*Saves)` 仍然 5 pass"✗ ⇒ 那半条件**没有任何判据**；
+   *    以及"把 `isPerInstance` 砍到只剩 multimc 仍 5 pass"✗ ⇒ prism / hmcl / mcsr 三个分支零覆盖。
+   *    ⇒ 下面每一条都各自压住一处（拔掉对应的实现就会红 ✓）。
+   */
+  it('⑥ ★ saves-only 仍是隔离（隔离是**整目录**级别的；这半条件此前无判据）', () => {
+    const fs = fakeFs({
+      'D:\\PCL2\\.minecraft\\versions': ['1.16.1-Fabric 0.19.0'],
+      'D:\\PCL2\\.minecraft\\versions\\1.16.1-Fabric 0.19.0\\saves': [],
+    });
+    const one = listInstances(fs, 'pcl2', 'D:\\PCL2')[0]!;
+    assert.equal(
+      one.modsDir,
+      'D:\\PCL2\\.minecraft\\versions\\1.16.1-Fabric 0.19.0\\mods',
+      'saves 在 ⇒ 隔离开着 ⇒ 目标就是实例自己那份 mods（哪怕它还没被建出来）',
+    );
+    assert.equal(one.needsConfirm, false, '有证据 ⇒ 不是"待确认"');
+  });
+
+  it('⑦ Prism：与 MultiMC 同形（instances\\* + 实例内 .minecraft）', () => {
+    const fs = fakeFs({
+      'E:\\PrismLauncher\\instances': ['1.16.1'],
+      'E:\\PrismLauncher\\instances\\1.16.1\\.minecraft': [],
+    });
+    const one = listInstances(fs, 'prism', 'E:\\PrismLauncher')[0]!;
+    assert.equal(one.modsDir, 'E:\\PrismLauncher\\instances\\1.16.1\\.minecraft\\mods');
+    assert.equal(one.key, 'prism:instances/1.16.1');
+    assert.equal(one.needsConfirm, false);
+  });
+
+  it('⑧ HMCL：versions\\*，隔离与共享各一种（与 PCL2 同规则）', () => {
+    const fs = fakeFs({
+      'D:\\HMCL\\.minecraft\\versions': ['iso', 'shared'],
+      'D:\\HMCL\\.minecraft\\versions\\iso\\mods': [],
+      'D:\\HMCL\\.minecraft\\mods': [],
+    });
+    const list = listInstances(fs, 'hmcl', 'D:\\HMCL');
+    assert.equal(
+      list.find((i) => i.name === 'iso')!.modsDir,
+      'D:\\HMCL\\.minecraft\\versions\\iso\\mods',
+    );
+    assert.equal(list.find((i) => i.name === 'shared')!.modsDir, 'D:\\HMCL\\.minecraft\\mods');
+  });
+
+  it('⑨ MCSR Launcher：v1 先按 MultiMC 系枚举（它的真实布局**未核实**，spec §13）', () => {
+    const fs = fakeFs({
+      'D:\\MCSRLauncher\\instances': ['1.16.1'],
+      'D:\\MCSRLauncher\\instances\\1.16.1\\.minecraft': [],
+    });
+    const one = listInstances(fs, 'mcsr', 'D:\\MCSRLauncher')[0]!;
+    assert.equal(one.modsDir, 'D:\\MCSRLauncher\\instances\\1.16.1\\.minecraft\\mods');
+    assert.equal(one.key, 'mcsr:instances/1.16.1');
+  });
+
+  it('⑩ 根路径尾部分隔符要归一化（`D:\\PCL2\\` 与 `D:\\PCL2` 同结果）', () => {
+    const dirs = {
+      'D:\\PCL2\\.minecraft\\versions': ['v1'],
+      'D:\\PCL2\\.minecraft\\mods': [],
+    };
+    const a = listInstances(fakeFs(dirs), 'pcl2', 'D:\\PCL2')[0]!;
+    const b = listInstances(fakeFs(dirs), 'pcl2', 'D:\\PCL2\\')[0]!;
+    assert.deepEqual(b, a, '尾部多一个 \\ 不该改变任何一格（含 key 与 modsDir）');
+  });
+
+  it('⑪ `instanceKeyOf` 按**分隔符边界**裁根（兄弟前缀根不许裁错）', () => {
+    assert.equal(
+      instanceKeyOf('multimc', 'D:\\MultiMC', 'D:\\MultiMC\\instances\\x'),
+      'multimc:instances/x',
+    );
+    assert.equal(
+      instanceKeyOf('multimc', 'D:\\MultiMC', 'D:\\MultiMC2\\instances\\x'),
+      'multimc:D:/MultiMC2/instances/x',
+      'D:\\MultiMC2 不在 D:\\MultiMC 里 ⇒ 不裁（原来的 startsWith 会裁成 2/instances/x ✗）',
+    );
   });
 });
