@@ -1,16 +1,25 @@
 /**
- * 「文件更新」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-04 **A 的 T3** 换成 tab 骨架）。
+ * 「资源下载」`/files` —— 侧栏那一栏的落地页（2026-09-24；2026-10-04 **A 的 T3** 换成 tab 骨架；
+ * 2026-10-12 **D1 的 T6** 改成三个 tab 并接上老桌面壳的能力门）。
+ *
+ * ⚠️★ 侧栏显示名改成「资源下载」（A1）只动词条：路由 `'/files'` 与短名 `block: 'files'`
+ *    **一个字不动**（`lib/nav.ts` 的注释写着这个短名连着四处：侧栏 CSS、首页说明、
+ *    词条命名空间、路由）。
  *
  * ===========================================================================
  * ★★ 这一页现在的形状（spec §4）：**一格一个模块，按游戏版本组织**
  * ===========================================================================
- *   · **tab**：「mod 下载」（默认）与「工具下载」（占位卡，写明"待更新"）；
+ *   · **tab**（三个，顺序即 `ModTabs` 里那个数组）：「启动器绑定」/「mod 下载」/「工具下载」；
+ *     ⚠️ **默认**落在哪一格由 `initialTabFor()` 说了算（没绑启动器 ⇒ 启动器绑定）；
+ *   · **启动器绑定**那一格里：**T8** 填（本任务只留 `data-tab-panel="launchers"` 钩子）；
  *   · **mod 下载**那一格里：顶部并排区（版本下拉 + 「显示全部已绑定的文件夹」）
  *     → 跨版本那一栏（点开才画）→ **按版本分组的文件夹行**（默认折叠）
  *     → 「该版本所有 mod」（**T5** 接进来）。
- * ⚠️★ 那些块**只在** `modFolders` 通道在的客户端（桌面版 0.0.5+）画：
- *    没有那条通道 ⇒ 这一页**只有一句**"需要桌面版 0.0.5"（spec §9.12 / D1：
- *    0.0.4 与浏览器**都**是这一档，区别只在上面多不多一句 `browserOnly`）。
+ * ⚠️★ 那些块**只在够得上 D1 的客户端**画（`useModFolders().status !== 'unavailable'`）：
+ *    不够 ⇒ 这一页**只有一句**"需要桌面版 0.2.0"（spec §9.12 / D1）。
+ *    ⚠️★ T6 之后"不够"有**三档**，区别只在上面多不多一句 `browserOnly`：
+ *      ① 纯浏览器（连 `mcsr` 都没有）；② 0.0.4 的壳（有 `mcsr`、没有 `modFolders`）；
+ *      ③ **0.1.1 的老桌面壳**（有 `modFolders`、**没有 D1 那七格**，判据 = `d1Capable()`）。
  *    ⇒ v1 那张带写盘按钮的表**不再挂在这一页上**（它的组件与判据在 **T6** 已经连文件
  *    一起删了：`FileUpdateTable.tsx` 与 `scripts/filesrender.tsx` 都不在树里了）。
  *
@@ -21,16 +30,20 @@
  *    自检渲染这一页永远只能看到「正在扫描…」，页面上每一块都断言不到
  *    （`docs/pending.md §5.63`；`ModDownloadPanel` / `VersionFolderList` 之所以是
  *    纯 props 组件，也是同一条）。
+ *    ⚠️★ 同一条理由的第二个后果（T6）：静态渲染下这一页**拿不到 `state`** ⇒
+ *    「tab 条与面板画的是不是同一格」只能靠**推导值**（`selected`）保证，
+ *    而 `initialTabFor()` 那两支由自检 ㊾b **直接渲染那个纯函数**来钉。
  *
  * ===========================================================================
- * ⚠️★ 这一页里"我是谁"只问两个问题，各**一处**判据（T3 改准）
+ * ⚠️★ 这一页里"我是谁"只问两个问题，各**一处**判据（T3 改准；T6 扩了第一个）
  * ===========================================================================
- *   · "这个壳有没有 `modFolders` 通道" ⇒ `useModFolders().status === 'unavailable'`
- *     —— 它就是"这个客户端太老"那一条（0.0.4 与浏览器都落在这里）；
+ *   · "这个壳够不够 D1" ⇒ `useModFolders().status === 'unavailable'`
+ *     —— 它就是"这个客户端太老 / 没有这个能力"那一条（上面那三档都落在这里，判据在
+ *     `ModFoldersData.tsx` 的 `d1Capable()` 里，**只有那一处**）；
  *   · "这是不是一个桌面壳" ⇒ `desktopBridge()`（**只**用来决定浏览器那句说明与装桌面版的
  *     入口要不要画）。⚠️ 上个版本这一格是从 v1 的 `useFileUpdates().handlers` 推的，
  *     而 v1 的面板已经从这一页下去了 ⇒ 那一格不能再依赖 v1 的取数。
- * ⚠️★ 两处判据问的是**两个不同的问题**，所以不会分叉；而"我是不是 0.0.5"这个问题
+ * ⚠️★ 两处判据问的是**两个不同的问题**，所以不会分叉；而"这个壳够不够 D1"这个问题
  *    仍然只有第一处问（别在这里再读一次 `desktopBridge()?.modFolders`）。
  */
 import { desktopBridge } from '@mcsr/shared/desktop';
@@ -51,15 +64,16 @@ import {
 import { ToolsPanel } from '@/components/ToolsPanel';
 
 /**
- * 这一页在 `modFolders` 不存在时的样子（**特性检测**，spec §6.8 / §8 的最后一行）：
- * 说清"需要桌面版 0.0.5"。
+ * 这一页"不够 D1"时的样子（**能力检测**，spec §6.8 / §8 的最后一行）：
+ * 说清"需要桌面版 **0.2.0**"。
  *
  * ⚠️★ 单独导出一个**纯组件**的理由与 `ModCatalogScanning` 同一个：自检里没有 preload
  *    （`window.mcsr` 是 `undefined`）⇒ `useModFolders()` 恒为 `unavailable`，
  *    而那一支渲染的就是它 ⇒ 只有单独拿组件渲染才断言得到（`foldersrender.tsx` 的
  *    ㉕「特性检测」那一组 —— 它今天**还在**，见那个脚本的 `ok(...)` 清单）。
- * ⚠️ 它同时覆盖两种壳：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
- *    （连 `mcsr` 都没有 —— 那时页面上面还有一句 `browserOnly` 说清了原因）。
+ * ⚠️ 它同时覆盖**三档**：0.0.4（有 `mcsr`、没有 `modFolders`）、纯浏览器（连 `mcsr`
+ *    都没有 —— 那时页面上面还有一句 `browserOnly` 说清了原因）、以及 **0.1.1 的老桌面壳**
+ *    （有 `modFolders`、没有 D1 那七格 ⇒ `d1Capable()` 判它不够）。
  * ⚠️★ 它的类名**刻意不是** `.filespanel`（第一版是它，2026-10-03 跑 `check:all` 时红了）：
  *    当时 v1 的渲染自检（`apps/web/scripts/filesrender.tsx` ⑰）有一条**粗糙的**判据 ——
  *    `assert.equal(pageHtml.includes('filespanel'), false, '还没拿到状态就不画面板')`
@@ -69,6 +83,8 @@ import { ToolsPanel } from '@/components/ToolsPanel';
  *    ⚠️★ T6 之后这条**历史理由已经消失**：`filesrender.tsx` 连文件一起删了
  *      ⇒ 今天 `.filesunavailable` 只是**沿用**（那一格与"v1 那张表"不再可能同屏）。
  *      ⚠️ 原来那句"记一笔给 T10（那条判据本身是粗的）"随之作废 —— 那条判据已经不存在了。
+ *      ⚠️★ 而 `data-mod-folders="unavailable"` 这一格**今天有真判据**：㉕（三种壳）与
+ *      ㊾d（老桌面壳真的走这一档、而且一个 tab 都不画）。
  */
 export function ModFoldersUnavailable() {
   const { t } = useTranslation();
@@ -80,8 +96,20 @@ export function ModFoldersUnavailable() {
   );
 }
 
-/** 两个 tab（顺序即 spec §4 那个图）。 */
-type ModTab = 'mods' | 'tools';
+/** 三个 tab（顺序即 spec §4 那个图：启动器绑定 → mod 下载 → 工具下载）。 */
+export type ModTab = 'launchers' | 'mods' | 'tools';
+
+/**
+ * ★ D1（spec A8）：**默认**落在哪个 tab。
+ *
+ * ⚠️★ 一个新用户（一个启动器都没绑）落在「mod 下载」是没有意义的 —— 那一页会先告诉他
+ *    "先去绑一个实例"；把他直接送到「启动器绑定」少一步。
+ * ⚠️ 做成纯函数是因为**页面外壳断言不到这一支**：外壳在静态渲染下停在 `loading`
+ *    （拿不到 `state`）⇒ 两支都由渲染自检 ㊾b 直接钉这个函数。
+ */
+export function initialTabFor(input: { hasLaunchers: boolean }): ModTab {
+  return input.hasLaunchers ? 'mods' : 'launchers';
+}
 
 /**
  * tab 那一条。
@@ -95,10 +123,14 @@ type ModTab = 'mods' | 'tools';
  *    `Videos.tsx` 那一处写着"只挂半个 `role="tab"` 会被读屏念成一个没有对应面板的选项卡"，
  *    所以这里两边都挂了。代价（认）：未选中的那一格**不渲染**（面板里的东西不便宜）
  *    ⇒ 它那颗按钮的 `aria-controls` 在选中之前指向一个不存在的 id（读屏会忽略它）。
+ * ⚠️★ **导出**是为了渲染自检能**单独**渲染它（㊾a 钉顺序与选中态）—— 与文件头那段
+ *    "纯组件才断言得到"是同一条理由；`Files.tsx` 里其余组件都不导出。
+ * ⚠️ 版本那一层（页首那个版本下拉）**不在这里**：它是页面主体的第一块，三个 tab 都看得见。
  */
-function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTab) => void }) {
+export function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTab) => void }) {
   const { t } = useTranslation();
   const items: readonly { id: ModTab; label: string }[] = [
+    { id: 'launchers', label: t('files.tabLaunchers') },
     { id: 'mods', label: t('files.tabMods') },
     { id: 'tools', label: t('files.tabTools') },
   ];
@@ -230,20 +262,58 @@ export function makeModPageAction(handlers: ModFoldersHandlers): ModPageActionHa
   };
 }
 
+/**
+ * ★ D1（T6）：「启动器绑定」那一格 —— **本任务只留钩子**，内容由 **T8** 填。
+ *
+ * ⚠️★ 它**必须**画着 `data-tab-panel="launchers"` 这个钩子（本任务与 T8 的断言接在它上面），
+ *    而壳里现在是空的：`{null}` 与"整块不渲染"在产物里长得一样，但**钩子在**这件事
+ *    让 T8 的断言有落点（也不必等 T8 才把这一支接上）。
+ * ⚠️★ 空态那一句**不在这里**：这一支只可能出现在"够 D1 的壳 + 状态已就绪"之后
+ *    （`useModFolders()` 已经把不够 D1 的壳判成 `unavailable`，页面那一支连 tab 都不画）
+ *    ⇒ 这里不需要、也不该再写一句"需要桌面版"（两处说法会漂）。
+ */
+export function LauncherBindingPanel() {
+  return <div data-tab-panel="launchers" />;
+}
+
 export function Files() {
   const { t } = useTranslation();
   /*
-   * ★ 数据源（T7）：只有 0.0.5+ 的桌面壳才会给出 `ready`；浏览器与 0.0.4 恒为 `unavailable`。
+   * ★ 数据源（T7）：只有 0.2.0+ 的桌面壳才会给出 `ready`；浏览器、0.0.4 的壳与
+   *   **0.1.1 的老桌面壳**（有 `modFolders`、没有 D1 那七格）恒为 `unavailable`。
    */
   const mods = useModFolders();
-  /** 当前 tab（默认「mod 下载」；spec §4）。 */
-  const [tab, setTab] = useState<ModTab>('mods');
+  /**
+   * 当前 tab。⚠️★ `null` = **用户还没点过**（那一格是"用户的选择"，不是"默认值"），
+   *    于是它下面按 `initialTabFor()` 现推一个 —— D1 的默认规则（A8）。
+   *    ⚠️ 计划里这一格写的是 `useEffect` + `setTab(...)`：渲染期推导更准（少一帧
+   *    "tab 条说 mod 下载、面板却在画别的"），而且不需要那一条 effect（它在依赖没变时
+   *    也不会重跑，但"多一处状态同步"就是多一处会漂的地方）。
+   */
+  const [tab, setTab] = useState<ModTab | null>(null);
   /**
    * ⚠️ 判据是 `desktopBridge()`（**不是** `useModFolders()`）：后者答的是"有没有那条通道"，
    *    而这个答的是"这是不是一个桌面壳"—— 浏览器要看到装桌面版的入口，0.0.4 不要
    *    （它已经是桌面壳了）。⚠️ 两者问的是两个问题 ⇒ 不会分叉（见文件头那一段）。
    */
   const desktop = desktopBridge() !== null;
+  /**
+   * ★★ D1（spec A8）：默认 tab —— **没绑启动器 ⇒ 落在「启动器绑定」**。
+   * ⚠️ 状态还没到时 `state` 是 `null`（`launchers` 读不出来）⇒ 先按"一个都没绑"算，
+   *    拿到状态之后如果发现有绑定，它会自动落到「mod 下载」（用户点过 `tab` 就不再改）。
+   */
+  /** ★ D1（A8 的第一个空态判的也是这一格）：绑过启动器没有（`launchers.length === 0`）。 */
+  const hasLaunchers = mods.status === 'ready' && mods.state.launchers.length > 0;
+  /**
+   * ★★ D1（spec A8）：默认 tab —— **没绑启动器 ⇒ 落在「启动器绑定」**（绑过 ⇒ 「mod 下载」）。
+   * ⚠️ 状态还没到时 `launchers` 读不出来 ⇒ 先按"一个都没绑"算（那一支也就是
+   *    `initialTabFor({ hasLaunchers: false })`）；拿到状态之后，用户没点过的话
+   *    这一格会**自己**落到该去的那一格。
+   * ⚠️★ 这一格是**推导值**、不是第二份状态：`tab` 只记"用户点过哪一格"，
+   *    "没点过时该在哪一格"永远由 `initialTabFor()` 现推（两处各存一份的话，
+   *    "绑了启动器但界面还停在启动器绑定"这种漂法不会有任何断言出声）。
+   */
+  const selected: ModTab = tab ?? initialTabFor({ hasLaunchers });
 
   return (
     <>
@@ -272,19 +342,35 @@ export function Files() {
 
       {/*
         ===================================================================
-        ★★ 唯一的岔口（T3）：**没有 `modFolders` 通道**的壳 ⇒ 只有一句话
+        ★★ 唯一的岔口（T3；T6 扩了一档）：**不够 D1 的壳** ⇒ 只有一句话
         ===================================================================
         ⚠️★ 那一档**不画 tab**（spec §9.12 / D1：0.0.4 用户"只能看到升级提示"）：
            tab 是"这一页有几个模块"的导航，而没有那条通道时一个模块都没有 ——
            画出来会让"这个客户端太老"看起来像"还有一个模块没做"。
+        ⚠️★★ T6 之后这一支是**三档合一**（判据在 `useModFolders()` 里，只有那一处）：
+           ① 纯浏览器（连 `mcsr` 都没有）；② 0.0.4（有 `mcsr`、**没有** `modFolders`）；
+           ③ **0.1.1 的老桌面壳**（有 `modFolders`、**没有 D1 那七格**）。
+           ③ 是这一轮新进来的：线上 bundle 由服务端下发，而老壳给不出 `launchers` /
+           `instances` ⇒ 拿它去渲染就是 `undefined.map` 那一类崩溃 ⇒ 判成与浏览器同一档。
       */}
       {mods.status === 'unavailable' ? (
         <ModFoldersUnavailable />
       ) : (
         <>
-          <ModTabs tab={tab} onSelect={setTab} />
-          <div role="tabpanel" id={`modtabpanel-${tab}`} aria-labelledby={`modtab-${tab}`}>
-            {tab === 'tools' ? (
+          <ModTabs tab={selected} onSelect={setTab} />
+          <div
+            role="tabpanel"
+            id={`modtabpanel-${selected}`}
+            aria-labelledby={`modtab-${selected}`}
+          >
+            {selected === 'launchers' ? (
+              /*
+               * ★ D1（T6）：这一格本任务只留一个**钩子**，内容由 T8 填 —— 它盖在
+               *   `mods.status` 三个支路**之上**：三个支路都不改"启动器绑定"这一格
+               *   画不画（T8 自己那一层再按 `instancesStatus` 分档）。
+               */
+              <LauncherBindingPanel />
+            ) : selected === 'tools' ? (
               <ToolsPanel />
             ) : mods.status === 'loading' ? (
               /*

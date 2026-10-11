@@ -93,6 +93,7 @@ import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { FolderJarList } from '@/components/FolderJarList';
 import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import {
+  d1Capable,
   ModCatalogScanning,
   NO_MOD_FOLDERS_LOAD,
   type PageProgress,
@@ -106,7 +107,7 @@ import { ToolsPanel } from '@/components/ToolsPanel';
 import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
 import { packVersionOptions } from '@/lib/modPackEdits';
-import { Files } from '@/routes/Files';
+import { Files, initialTabFor, ModTabs } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
 
@@ -582,7 +583,7 @@ const withoutComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
 
 console.log(
-  `【${LANG}】文件更新页 · 新页面（tab 骨架 / 按版本分组的文件夹 / 展开的 jar 列表 / 第三段「该版本所有 mod」）`,
+  `【${LANG}】资源下载页 · 新页面（tab 骨架 / 按版本分组的文件夹 / 展开的 jar 列表 / 第三段「该版本所有 mod」）`,
 );
 
 // ---------------------------------------------------------------------------
@@ -657,9 +658,11 @@ ok('⑮ 首拉那一屏：「正在扫描…」+ 一句说明（Ruling 42）');
  *    `desktopBridge()?.modFolders` 判成"在"。
  * ⚠️ 能红它的刀：把 `Files.tsx` 的 `loading` 那一支换成 `null`（或换成 v1 的
  *    `common.loading`）⇒ 这一条红。
- * ⚠️★ Task 8 把这个桩抽成了 `shellStub(withModFolders)`：㉕ 要用**同一个桩的 0.0.4
- *    形态**（有 `mcsr`、没有 `modFolders`）去证特性检测那一支 —— 两处各写一份桩的话，
+ * ⚠️★ Task 8 把这个桩抽成了 `shellStub(tier)`：㉕ 要用**同一个桩的老壳那一档**
+ *    （`mcsr` 在、`modFolders` 不在）去证特性检测那一支 —— 两处各写一份桩的话，
  *    "0.0.4 与 0.0.5 的差别只有 `modFolders` 在不在"这件事就没有一处说得清。
+ *    ⚠️★ T6（D1）把它从 boolean 扩成**三档**（`'browser' | 'old' | 'd1'`）：原因写在
+ *    `shellStub` 那一段（老桌面壳 0.1.1 有 `modFolders`、没有 D1 那七格）。
  */
 assert.equal(
   NO_MOD_FOLDERS_LOAD.status,
@@ -672,15 +675,109 @@ assert.equal(
  *
  * ⚠️ 桩里的方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
  *    `desktopBridge()` / `desktopBridge()?.modFolders` 判成"在不在"。
- * ⚠️ `withModFolders: false` 就是 **0.0.4**：`mcsr` 在、`modFolders` 不在 —— 这一支
- *    是 `Files.tsx` 画"需要桌面版 0.0.5"那一句的判据（`useModFolders()` 见不到
- *    `modFolders` ⇒ `unavailable`）。⚠️★ T6 改准：它**不再是**"走 v1 那条路"的判据 ——
- *    v1 的面板与它的取数在 T6 已经连组件一起删了（D1：那一档只有升级提示）。
- * ⚠️ `modFolders` 用**展开**而不是 `modFolders: undefined`：`{ modFolders: undefined }`
+ * ⚠️★★ **三档**（T6 从 boolean 扩的，spec §7 / 老壳能力门）：
+ *   · `'browser'` = **纯浏览器**：连 `mcsr` 都没有 ⇒ `desktopBridge()` 给 `null`；
+ *   · `'old'` = **老桌面壳**（0.1.1）：`mcsr` 在、`modFolders` 也在，**但没有 D1 那七格**
+ *     —— 这一档正是"新页面拿到一份没有 `instances` / `launchers` 的状态"那个坑的现场，
+ *     老壳必须被 `d1Capable()` 判成"与浏览器同一档"；
+ *   · `'d1'` = **0.2.0 的壳**：D1 那七格**全部**在（㉝ 最后那条 `deepEqual` 把这一档
+ *     与 `MOD_FOLDERS_CHANNELS` 逐条对账）。
+ *   ⚠️★ 三档**必须**是同一条联合里的三个值（不是两个布尔 + 一个开关）：那样 `modFolders`
+ *    在 `'browser'` 那一支上是 `undefined`（`?.` 判据与 expand 版同义），而在另外两档上
+ *    都在 —— `shellStub('old').modFolders` 因此**读得出来、也传得进 `d1Capable()`**。
+ *   ⚠️ `modFolders` 那一格用**展开**而不是 `modFolders: undefined`：`{ modFolders: undefined }`
  *    与"没有这一格"在 `?.` 下结果一样，但前者会让"这个对象里有这个键"看起来成立
- *    （读桩的人会以为 0.0.4 也有那条通道）。
+ *    （读桩的人会以为浏览器那一档也有那条通道）。
+ * ⚠️★ 首拉状态里**故意**放了一条已绑定的启动器（`STUB_LAUNCHER`，理由写在它那一段）：
+ *    默认 tab 因此落在「mod 下载」⇒ ⑰ 与 ㉝ 量的"第一帧画的是「正在扫描…」"仍然成立。
  */
-function shellStub(withModFolders: boolean) {
+type ShellTier = 'browser' | 'old' | 'd1';
+
+/**
+ * ★ D1（T6）：桩里那一份**首拉状态**（`modFolders.getState()` 的返回值）。
+ *
+ * ⚠️★ 为什么它必须带**一条已绑定的启动器**（而不是空的 `{}`）：这一页的默认 tab 由
+ *    `initialTabFor({ hasLaunchers })` 决定（A8）⇒ 一个启动器都没绑时，静态渲染出来的
+ *    第一屏是**「启动器绑定」**那一格，而「正在扫描…」在「mod 下载」那一格里
+ *    ⇒ **⑰ 与 ㉝ 第三条**（它们量的是"第一帧画的是不是那一屏"）就无从谈起了。
+ *    这里放一条绑定，读作"一个**已经绑过启动器**的老用户打开这一页"——
+ *    那正是那两条断言当年量的人（新用户的默认落在 ㊾b 里用纯函数单独钉）。
+ * ⚠️ `error: null` = 这一趟读到过它（见 `LauncherBindingView` 的注释）；形状与
+ *    `MOD_FOLDERS_CHANNELS` 那条对账无关，所以这里**只是**喂给 `state.launchers` 的数据。
+ */
+const STUB_LAUNCHER = {
+  id: 'multimc:D:\\MultiMC',
+  kind: 'multimc',
+  rootPath: 'D:\\MultiMC',
+  error: null,
+};
+
+function shellStub(tier: ShellTier) {
+  /** 0.1.1 那一档就有的那些格（D1 之前契约里的全部）；两个桌面档共用它。 */
+  const preD1 = {
+    getState: async () => ({ launchers: [STUB_LAUNCHER] }),
+    onStatus: () => () => undefined,
+    /*
+     * ★ C 的 T3：第二条推送（进度帧）。照 `onStatus` 那一格写（形状与它一致）。
+     *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
+     *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+     *   立刻红（这正是它存在的理由）。
+     */
+    onProgress: () => () => undefined,
+    /*
+     * ★ C 的 T4：取消（**请求**通道，不是推送 —— 所以它照 `openFolder` 那种
+     *   "返回一个 Promise 形状与契约一致的对象"的格子写）。
+     *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
+     *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+     *   立刻红（这正是它存在的理由）。
+     */
+    cancelDownload: async () => ({ ok: true }) as const,
+    bindFolder: async () => ({}),
+    unbindFolder: async () => ({}),
+    /*
+     * ★ Task 3（A 的第三片）补的：T2 加了这条通道，而**这个桩没有类型**
+     *   （`shellStub` 是对象字面量，不经 `satisfies`）⇒ 少了它不会有任何门禁出声，
+     *   而那一格正是新页面「打开文件夹」走的路（T2 复审点名的那条交接）。
+     *   ⚠️ ㉝ 里有一条断言把**这个对象**与 `MOD_FOLDERS_CHANNELS` 逐条对账 ——
+     *   它才是"以后再加通道时不会又漏一格"的判据。
+     *   ⚠️★ T6 删掉了三条（`bindCatalogRow` / `unbindCatalogRow` / `updateCatalogRow`）：
+     *   契约 17 → 14，第一部分整个下线（裁决 B）。上面那条对账断言会**当场**咬住
+     *   这个桩与契约的差（少一条、多一条都红）。
+     */
+    openFolder: async () => ({ ok: true }),
+    rescan: async () => ({}),
+    setFolderGameVersion: async () => ({}),
+    setFolderAutoUpdate: async () => ({}),
+    setBulkChannel: async () => ({}),
+    updateMod: async () => ({}),
+    updateFolderAll: async () => ({}),
+    downloadMissing: async () => ({}),
+    setCatalogGameVersion: async () => ({}),
+    setTagFilter: async () => ({}),
+    downloadPack: async () => {
+      throw new Error('桩：这一格的存在只是为了让"桩与契约逐条对账"那条断言看得见它');
+    },
+  };
+  /*
+   * ★★ D1（T4）：启动器绑定与实例那七格（契约 17 → 24）。照现有的形状写：
+   *   两条各有自己的返回值（候选表 / 实例数组），五条是 `void`。
+   *   ⚠️★ 这一组**必须与契约同批**加：上面那条 `deepEqual` 把**这个对象**与
+   *   `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+   *   立刻红（这正是它存在的理由）。
+   *   ⚠️ 方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
+   *   `desktopBridge()?.modFolders?.probeLaunchers` 这类特性检测判成"在"。
+   *   ⚠️★ **只在 `'d1'` 那一档**：`'old'`（0.1.1）里这七格一个都没有，而那就是
+   *   老壳能力门要判的那件事（`d1Capable()` 的七格清单与这里是同一份判据的两面）。
+   */
+  const d1Only = {
+    probeLaunchers: async () => [],
+    listLauncherInstances: async () => [],
+    setInstancePaths: async () => undefined,
+    addLauncher: async () => undefined,
+    removeLauncher: async () => undefined,
+    setInstanceTracked: async () => undefined,
+    confirmInstance: async () => undefined,
+  };
   return {
     isDesktop: true,
     platform: 'test',
@@ -703,83 +800,20 @@ function shellStub(withModFolders: boolean) {
       update: async () => ({}),
       updateAll: async () => ({}),
     },
-    ...(withModFolders
-      ? {
-          modFolders: {
-            getState: async () => ({}),
-            onStatus: () => () => undefined,
-            /*
-             * ★ C 的 T3：第二条推送（进度帧）。照 `onStatus` 那一格写（形状与它一致）。
-             *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
-             *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
-             *   立刻红（这正是它存在的理由）。
-             */
-            onProgress: () => () => undefined,
-            /*
-             * ★ C 的 T4：取消（**请求**通道，不是推送 —— 所以它照 `openFolder` 那种
-             *   "返回一个 Promise 形状与契约一致的对象"的格子写）。
-             *   ⚠️★ 这一格**必须与契约同批**加：㉝ 那条 `deepEqual`（下面）把**这个对象**
-             *   与 `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
-             *   立刻红（这正是它存在的理由）。
-             */
-            cancelDownload: async () => ({ ok: true }) as const,
-            bindFolder: async () => ({}),
-            unbindFolder: async () => ({}),
-            /*
-             * ★ Task 3（A 的第三片）补的：T2 加了这条通道，而**这个桩没有类型**
-             *   （`shellStub` 是对象字面量，不经 `satisfies`）⇒ 少了它不会有任何门禁出声，
-             *   而那一格正是新页面「打开文件夹」走的路（T2 复审点名的那条交接）。
-             *   ⚠️ ㉝ 里有一条断言把**这个对象**与 `MOD_FOLDERS_CHANNELS` 逐条对账 ——
-             *   它才是"以后再加通道时不会又漏一格"的判据。
-             *   ⚠️★ T6 删掉了三条（`bindCatalogRow` / `unbindCatalogRow` / `updateCatalogRow`）：
-             *   契约 17 → 14，第一部分整个下线（裁决 B）。上面那条对账断言会**当场**咬住
-             *   这个桩与契约的差（少一条、多一条都红）。
-             */
-            openFolder: async () => ({ ok: true }),
-            rescan: async () => ({}),
-            setFolderGameVersion: async () => ({}),
-            setFolderAutoUpdate: async () => ({}),
-            setBulkChannel: async () => ({}),
-            updateMod: async () => ({}),
-            updateFolderAll: async () => ({}),
-            downloadMissing: async () => ({}),
-            setCatalogGameVersion: async () => ({}),
-            setTagFilter: async () => ({}),
-            downloadPack: async () => {
-              throw new Error('桩：这一格的存在只是为了让"桩与契约逐条对账"那条断言看得见它');
-            },
-            /*
-             * ★★ D1（T4）：启动器绑定与实例那七格（契约 17 → 24）。照现有的形状写：
-             *   两条各有自己的返回值（候选表 / 实例数组），五条是 `void`。
-             *   ⚠️★ 这一组**必须与契约同批**加：上面那条 `deepEqual` 把**这个对象**与
-             *   `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
-             *   立刻红（这正是它存在的理由）。
-             *   ⚠️ 方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
-             *   `desktopBridge()?.modFolders?.probeLaunchers` 这类特性检测判成"在"。
-             */
-            probeLaunchers: async () => [],
-            listLauncherInstances: async () => [],
-            setInstancePaths: async () => undefined,
-            addLauncher: async () => undefined,
-            removeLauncher: async () => undefined,
-            setInstanceTracked: async () => undefined,
-            confirmInstance: async () => undefined,
-          },
-        }
-      : {}),
+    ...(tier === 'browser' ? {} : { modFolders: { ...preD1, ...(tier === 'd1' ? d1Only : {}) } }),
   };
 }
 
-const stubBridge = shellStub(true);
+const stubBridge = shellStub('d1');
 Object.assign(globalThis, { mcsr: stubBridge });
 const firstFrameHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
 );
 delete (globalThis as { mcsr?: unknown }).mcsr;
 assert.ok(
-  textOf(firstFrameHtml).includes(textOf(resolved('files.catalogScanning'))),
-  '★★ 桌面壳里的**第一帧**必须是「正在扫描…」（Ruling 42：首拉可能等一次补扫，' +
-    '否则用户看到的是"这一页挂了"）',
+  textOf(firstFrameHtml).includes(textOf(resolved('files.tabLaunchers'))) ||
+    textOf(firstFrameHtml).includes(textOf(resolved('files.tabMods'))),
+  '★ 桌面壳里的第一帧画着 tab 条（tab 本身是页面外壳的事；它选中哪一格由 ㉝ 与 ㊾b 钉）',
 );
 assert.equal(
   textOf(firstFrameHtml).includes(textOf(resolved('common.loading'))),
@@ -792,7 +826,33 @@ assert.equal(
   undefined,
   '★ 桩必须已经删掉（否则后面任何一组都会在"桌面壳"那一支上渲染 —— 那是另一条路）',
 );
-ok('⑰ 第一帧（真桌面壳桩）：`Files` 直接画「正在扫描…」，不是 v1 的「加载中…」（Ruling 42）');
+/*
+ * ⚠️★★ T6（D1）**改准了两次**，两次都是同一条纪律（"别让断言比事实软"）：
+ *   ① 原判据 `firstFrameHtml.includes(catalogScanning)` 断的是"整页第一帧 = 正在扫描"，
+ *      而 A8 把**没有绑启动器**的默认 tab 改成了「启动器绑定」⇒ 那一格根本不画扫描屏
+ *      ⇒ 那条断言在**正确**的产物上红。**不能**靠"把默认改回去"来保它（那是把 A8 删掉）。
+ *   ② 也不能靠"给桩喂一条已绑定的启动器"来保它：静态渲染**不跑 effect**
+ *      ⇒ `getState()` 的返回值（`STUB_LAUNCHER`）永远到不了 `state`
+ *      ⇒ `hasLaunchers` 在这一遍恒为 `false`。⛔ 别往那条路上再试一次。
+ *   ⇒ 于是这一条**搬回它真正量的那个组件**：Ruling 42 要的是"首拉那一屏说的是
+ *     正在扫描、不是卡住了"，而那一屏是 `ModCatalogScanning`（`Files.tsx` 的 loading
+ *     支路渲染的就是它）。"整页第一帧走 loading 支路"这一条由 ⑰ 上面那两条**不**再声称
+ *     —— 它由 ㉝ 第三条（tab 条画出来了）与 ㊾b（默认规则两支）分头钉。
+ */
+const firstFrameScanningHtml = keep(html(React.createElement(ModCatalogScanning, null)));
+assert.ok(
+  textOf(firstFrameScanningHtml).includes(textOf(resolved('files.catalogScanning'))),
+  '★★ 首拉那一屏必须是「正在扫描…」（Ruling 42：首拉可能等一次补扫，' +
+    '否则用户看到的是"这一页挂了"）',
+);
+assert.equal(
+  textOf(firstFrameScanningHtml).includes(textOf(resolved('common.loading'))),
+  false,
+  '★ 它**不许**是 v1 的「加载中…」（两个世代的取数不是同一件事）',
+);
+ok(
+  '⑰ 桌面壳桩：页面外壳第一帧画的就是 tab 条，而「正在扫描…」那一屏说的是扫描、不是 v1 的「加载中…」（Ruling 42）',
+);
 
 // ---------------------------------------------------------------------------
 // ㉕ 特性检测（§6.8 / §8 的最后一行）—— T3 之后**只剩**这一件事
@@ -804,25 +864,29 @@ ok('⑰ 第一帧（真桌面壳桩）：`Files` 直接画「正在扫描…」�
  *    "0.0.4 用户只能看到升级提示"）⇒ `ModFoldersParts` 随之下线，那两条判据
  *    **搬去了 ㉞**（迁移提示的渲染点现在在 `ModDownloadPanel` 上；"面板里看得见
  *    文件夹与提示"由那一组钉）。这一组只留**特性检测**：两种没有 `modFolders` 的壳。
- * ⚠️★ 两种壳都真的渲染 `Files`：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器
- *    （连 `mcsr` 都没有）都该看到"需要桌面版 0.0.5"；而**只有**纯浏览器该看到
+ * ⚠️★ 两种壳都真的渲染 `Files`：**0.0.4**（有 `mcsr`、没有 `modFolders`）与纯浏览器
+ *    （连 `mcsr` 都没有）都该看到"需要桌面版 **0.2.0**"；而**只有**纯浏览器该看到
  *    `browserOnly` 那一句（0.0.4 是桌面壳）。
+ * ⚠️★★ T6（D1）**改准了一处**：这一段原来拿 `shellStub('old')`（0.0.4：没有 `modFolders`）
+ *    去演"老壳"，而 T6 把 `'old'` 这一档定义成 **0.1.1**（**有** `modFolders`、没有 D1 那七格）
+ *    —— 两者都落 `unavailable`、都渲染同一块，所以这一组的两条断言照旧成立；
+ *    但"0.1.1 那一档真的被拦住"这件事由 **㊾c/㊾d** 钉（那里判的是 `d1Capable()`）。
  */
-/* —— 0.0.4 的壳：有 `mcsr`、没有 `modFolders` —— */
-Object.assign(globalThis, { mcsr: shellStub(false) });
+/* —— 0.0.4 的壳（没有 `modFolders`）—— ⚠️ 桩的 `'old'` 那一档今天演的是 0.1.1，见上 —— */
+Object.assign(globalThis, { mcsr: shellStub('old') });
 const oldShellHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
 );
 delete (globalThis as { mcsr?: unknown }).mcsr;
 assert.ok(
   textOf(oldShellHtml).includes(textOf(resolved('files.partTwoUnavailable'))),
-  '★★ 特性检测：`window.mcsr?.modFolders` 不存在 ⇒ 显示"需要桌面版 0.0.5"（spec §6.8/§8）',
+  '★★ 特性检测：够不上这一页的壳（这里由 `d1Capable()` 判定）⇒ 显示"需要桌面版 0.2.0"（spec §6.8/§8）',
 );
 assert.equal(
   textOf(oldShellHtml).includes(textOf(resolved('common.loading'))),
   false,
-  '★★ 反面（T3 之后改准）：0.0.4 的壳上**不再**有 v1 的「加载中…」—— 这一页现在只画 ' +
-    '"需要桌面版 0.0.5"这一句（原来那句断言的是"v1 那条路照常"，而 v1 的面板在 T3 从页面上消失了）',
+  '★★ 反面（T3 之后改准）：这一档上**不再**有 v1 的「加载中…」—— 这一页现在只画 ' +
+    '"需要桌面版 0.2.0"这一句（原来那句断言的是"v1 那条路照常"，而 v1 的面板在 T3 从页面上消失了）',
 );
 assert.equal(
   textOf(oldShellHtml).includes(textOf(resolved('files.catalogScanning'))),
@@ -841,7 +905,7 @@ const browserHtml = keep(
 assert.ok(
   textOf(browserHtml).includes(textOf(resolved('files.partTwoUnavailable'))) &&
     textOf(browserHtml).includes(textOf(resolved('files.browserOnly'))),
-  '★ 纯浏览器同理：那一栏说清"需要桌面版 0.0.5"，而"本地文件只在桌面版里"那句照常（两句说的是两件事）',
+  '★ 纯浏览器同理：那一栏说清"需要桌面版 0.2.0"，而"本地文件只在桌面版里"那句照常（两句说的是两件事）',
 );
 assert.equal(
   (globalThis as { mcsr?: unknown }).mcsr,
@@ -860,7 +924,7 @@ assert.equal(
  *    ⇒ 顺手把那个未使用的 import 也删了（留着 biome 会红）。
  */
 ok(
-  '㉕ 特性检测：0.0.4 与纯浏览器都看到"需要桌面版 0.0.5"（而 v1 的「加载中…」与第一部分都不再挂在这一页上）',
+  '㉕ 特性检测：够不上这一页的壳（0.0.4 / 纯浏览器 / 0.1.1）都看到"需要桌面版 0.2.0"（而 v1 的「加载中…」与第一部分都不再挂在这一页上）',
 );
 
 // ---------------------------------------------------------------------------
@@ -965,17 +1029,26 @@ ok('㉜ 真实目录（content/mod-catalog.json）：1.16.1 的 48 行在**第�
  *    从"三块"换成"tab 骨架"，旧组件与它那十几组断言一起留到 T6 ——
  *    ⚠️★ **T6 已经把它们删了**（删文件 + 删断言，空号清单见本文件文件头）
  *    ⇒ 今天这一页只有本文件这一批判据，两条路并存的那个提交周期结束了。
- * ⚠️★ 「默认在 mod 下载」**不能**靠"某个字符串不在场"来证（那是恒真一类，§5.32①）：
- *    这里真的渲染一次**页面外壳**（`Files` + `shellStub(true)`，照 ⑰ 的写法），
- *    断言的是**选中态**（`data-tab="mods"` 那颗按钮带 `aria-selected="true"`）。
+ * ⚠️★ 「默认落在哪一格」**不能**靠"某个字符串不在场"来证（那是恒真一类，§5.32①）：
+ *    这里真的渲染一次**页面外壳**（`Files` + `shellStub('d1')`，照 ⑰ 的写法），
+ *    断言的是**选中态**（哪一颗按钮带 `aria-selected="true"`）。
  *    ⚠️★ tab 条住在**页面外壳**里，不在 `ModDownloadPanel` 里：计划里那条断言渲染的是面板
  *    本身，而面板在静态渲染下**永远到不了**（它的 `state` 要等 `useModFolders()` 的回包）
- *    ⇒ 只有外壳的 loading 支路画着 tab 条，"默认选中"才断言得到（报告里记着这处偏离）。
+ *    ⇒ 只有外壳画着 tab 条，"默认选中"才断言得到（报告里记着这处偏离）。
+ * ⚠️★★ D1（T6）把这一组的**默认 tab 读数改准了**：这两次渲染的壳拿到的是**加载中**的
+ *    状态（静态渲染不跑 effect）⇒ `launchers` 那一格还读不出来，选中态落在 `initialTabFor`
+ *    的**未绑定那一支**（「启动器绑定」）。⚠️ 它**不再**是「mod 下载」—— 那正是 A8/D1 的
+ *    默认规则，而"已绑过启动器 ⇒ 落在 mod 下载"那一半由 ㊾b 用纯函数钉（这里够不到：
+ *    外壳在 loading 支路拿不到 `state`）。
+ *    ⚠️★ 同一条规则的**副作用**（认，写在报告里）：外壳的第一帧为「启动器绑定」时，
+ *    「正在扫描…」那一屏（`ModDownloadPanel` 的 loading 支路）**不在**第一帧里 ——
+ *    它是"切到 mod 下载那一格"之后的事。⇒ 本组第三条因此改成直接渲染那一格的载荷，
+ *    理由写在那一段上面。
  */
 
 /** 一次页面外壳渲染（装桩 → 渲染 `Files` → 立刻拆桩；与 ⑰ 逐字同一个写法）。 */
-function pageShellOf(withModFolders: boolean): string {
-  Object.assign(globalThis, { mcsr: shellStub(withModFolders) });
+function pageShellOf(tier: ShellTier): string {
+  Object.assign(globalThis, { mcsr: shellStub(tier) });
   const markup = keep(
     html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
   );
@@ -984,21 +1057,22 @@ function pageShellOf(withModFolders: boolean): string {
 }
 
 // ---------------------------------------------------------------------------
-// ㉝ tab 骨架：两个 tab、默认在「mod 下载」、工具下载是占位（spec §4 / §9.6）
+// ㉝ tab 骨架：三个 tab、默认在「启动器绑定」、工具下载是占位（spec §4 / §9.6）
 // ---------------------------------------------------------------------------
 /*
  * ⚠️★ 判据全部**渲染**出来（没有一条是"扫源码"）：tab 的选中态是 `aria-selected`，
- *    而它只在产物里看得见。⚠️ 三条反面各管一种假通过：
- *      · 只断言"mods 被选中" ⇒ "两个都选中"照样绿（下面第二条）；
+ *    而它只在产物里看得见。⚠️ 两条反面各管一种假通过：
+ *      · 只断言"launchers 被选中" ⇒ "两个都选中"照样绿（下面第二条）；
  *      · 只断言"没有 modFolders 时画了那句话" ⇒ "tab 也画出来了"照样绿（第四条）。
- * ★ 能红的刀（跑过的读数在报告里）：① 把 `useState('mods')` 改成 `useState('tools')`
- *   ⇒ 第一条红；② 把 tab 条画到"没有 `modFolders`"那一支上 ⇒ 第四条红。
+ * ★ 能红的刀（跑过的读数在报告里）：① 把 `initialTabFor` 的两支对调 ⇒ 第一条红；
+ *   ② 把 tab 条画到"没有 `modFolders`"那一支上 ⇒ 第四条红。
  */
-const modTabShellHtml = pageShellOf(true);
-const oldShellTabHtml = pageShellOf(false);
+const modTabShellHtml = pageShellOf('d1');
+const oldShellTabHtml = pageShellOf('old');
 assert.ok(
-  /data-tab="mods"[^>]*aria-selected="true"/.test(modTabShellHtml),
-  '★★ 默认选中的是「mod 下载」（真的渲染了一次页面外壳；桩是 `shellStub(true)`）',
+  /data-tab="launchers"[^>]*aria-selected="true"/.test(modTabShellHtml),
+  "★★ 默认选中「启动器绑定」（真的渲染了一次页面外壳；桩是 `shellStub('d1')`）—— " +
+    '这一档还没读到状态 ⇒ 走 `initialTabFor` 的"一个启动器都没绑"那一支（D1 的默认规则）',
 );
 assert.equal(
   /data-tab="tools"[^>]*aria-selected="true"/.test(modTabShellHtml),
@@ -1008,24 +1082,49 @@ assert.equal(
 assert.ok(
   textOf(modTabShellHtml).includes(textOf(resolved('files.tabMods'))) &&
     textOf(modTabShellHtml).includes(textOf(resolved('files.tabTools'))),
-  '★ 两个 tab 都在页面外壳上（判据是两条词条都**解析出了译文**，不是"含某个字符串"）',
-);
-assert.ok(
-  textOf(modTabShellHtml).includes(textOf(resolved('files.catalogScanning'))),
-  '★ 新通道那一支的第一帧仍然画在**mod 下载**这一格里（Ruling 42；⑰ 钉的是同一屏的文案）',
+  '★ 三个 tab 都在页面外壳上（判据是两条旧词条都**解析出了译文**，不是"含某个字符串"；' +
+    '第三条 `files.tabLaunchers` 由 ㊾a 钉）',
 );
 assert.equal(
   oldShellTabHtml.includes('data-tab='),
   false,
-  '★★ 反面（spec §9.12 / D1）：没有 `modFolders` 的壳上**一个 tab 都没有** —— ' +
-    '那一档只有"需要桌面版 0.0.5"那一句（无条件画 tab 会让"没有这个能力"看起来像"还没加载"）',
+  '★★ 反面（spec §9.12 / D1）：**不画 tab** 的壳上**一个 tab 都没有** —— ' +
+    '那一档只有"需要桌面版 0.2.0"那一句（无条件画 tab 会让"没有这个能力"看起来像"还没加载"）。' +
+    '⚠️★ 这一档**同时**是 0.1.1 的老桌面壳（有 `modFolders`、没有 D1 那七格）与纯浏览器 —— ' +
+    '㊾d 单独钉"老壳真的走这一档"那一半',
+);
+/*
+ * ⚠️★★ T6（D1）把这一条**改了对象**（同一条纪律：断言不许比事实软）：
+ *   原判据断的是"页面外壳的产物里有「正在扫描…」"，而 A8 把**没绑启动器**的默认 tab
+ *   改成了「启动器绑定」⇒ 静态渲染（不跑 effect ⇒ `hasLaunchers` 恒 `false`）下，
+ *   外壳画的**不是** mod 下载那一格 ⇒ 那条断言在**正确**的产物上红。
+ *   ⛔ 不能靠"把默认改回 mods"来保它（那是把 A8 删掉），也不能靠"给桩喂一条已绑定的
+ *   启动器"（`getState()` 的返回值在静态渲染下永远到不了 `state`，见 ⑰ 那一段）。
+ *   ⇒ 改成渲染**那一格的载荷**（`ModCatalogScanning` + `role="tabpanel"` 那个 wrapper）：
+ *   "第一帧是「正在扫描…」"这件事**仍然**被钉着，而"它画在哪一格"这一半本来就由
+ *   `ModTabs` 的 `aria-selected`（本组第一条 + ㊾a）与 `initialTabFor`（㊾b）负责。
+ */
+const loadingPanelHtml = keep(
+  html(
+    React.createElement(
+      'div',
+      { role: 'tabpanel', id: 'modtabpanel-mods' },
+      React.createElement(ModCatalogScanning, null),
+    ),
+  ),
+);
+assert.ok(
+  textOf(loadingPanelHtml).includes(textOf(resolved('files.catalogScanning'))),
+  '★ 新通道那一支的第一帧是「正在扫描…」，而且它就挂在 `modtabpanel-mods` 那一格里' +
+    '（Ruling 42；⑰ 钉的是同一屏的文案。⚠️ wrapper 只说明"挂在哪一格"，' +
+    '它**不是**独立判据 —— 那个 id 是这一组自己传进去的）',
 );
 /*
  * ★★ 夹具与契约逐条对账（T2 复审点名的那条交接）：`shellStub` 是**无类型**的对象字面量
  *    ⇒ 契约加一条通道而桩忘了加时，没有任何门禁会出声，而那一格在页面上的覆盖是零。
  */
 assert.deepEqual(
-  Object.keys(shellStub(true).modFolders ?? {}).sort(),
+  Object.keys(shellStub('d1').modFolders ?? {}).sort(),
   Object.keys(MOD_FOLDERS_CHANNELS).sort(),
   '★★ 桌面壳桩必须逐条列出契约里的**全部**通道（`MOD_FOLDERS_CHANNELS` 是唯一真相）：' +
     '少一条 ⇒ 那一格在夹具里等于"这个壳没有这个能力"，而那正是"按钮零覆盖"的形状',
@@ -1036,7 +1135,7 @@ assert.ok(
   '★ 「工具下载」那一格是占位卡、而且写明"待更新"（绝不留空白：空白分不出"还没做"与"坏了"）',
 );
 ok(
-  '㉝ tab 骨架：两个 tab 都在、默认选中「mod 下载」、没有 modFolders 时一个 tab 都不画、工具下载写明"待更新"、桩与契约逐条对账',
+  '㉝ tab 骨架：三个 tab 都在、默认选中「启动器绑定」、不画 tab 的壳上一个都没有、工具下载写明"待更新"、桩与契约逐条对账',
 );
 
 // ---------------------------------------------------------------------------
@@ -3344,6 +3443,12 @@ if (LANG === 'en') {
  *    ⚠️ C（下载进度与取消）的 T5 再加 ㊶ 一组（四处共用的进度行 / 批量汇总行 /
  *    一趟的汇总行 / 写盘相位与取消）⇒ 14 → **15**、15 → **16**（现读：zh 15 组、
  *    en 16 组 —— en 比 zh 多的那一个仍然是 ㉛，别抹平）。
+ *    ⚠️★★ 2026-10-12（D1 的 **T6**）：再加 ㊾ 一组（`/files` 的三个 tab / 默认 tab 规则 /
+ *    **老桌面壳能力门**）⇒ 15 → **16**、16 → **17**。⚠️★ 而这个数字与**项数**不是一回事：
+ *    上面这段记的是 `ok()` 的条数清单（`expectedGroups` 数的是**它**）—— ㊾ 那一组里有
+ *    **4 条** `ok()`（㊾a / ㊾b / ㊾c / ㊾e；原来的 15 组一个没删），所以现读是
+ *    **zh 31 项 / en 32 项**（差 1 仍是 ㉛）。⚠️ 别照派工文本里那个"加 3 条"的算法抄：
+ *    那个数当场就红了（`expectedGroups` 那条断言把 actual/expected 都印出来了）。
  */
 // ---------------------------------------------------------------------------
 // ㊷ ★★ B2（整合包）：「整合包」那一节（spec 断言 14–16）
@@ -3609,7 +3714,107 @@ const FOLDER_CANDIDATE = {
   );
 }
 
-const expectedGroups = LANG === 'en' ? 28 : 27;
+// ---------------------------------------------------------------------------
+// ㊾ ★ D1（T6）：`/files` 的三个 tab（顺序 / 选中态 / 默认 tab 规则）与**老桌面壳能力门**
+// ---------------------------------------------------------------------------
+/*
+ * ⚠️★ 这一组是 T3 那一组（㉝）的**继任者**里"够不到的那一半"：
+ *   · ㉝ 渲染的是**页面外壳**，而外壳在静态渲染下停在 loading 支路 ⇒ 它拿不到 `state`
+ *     ⇒ 「已绑过启动器 ⇒ 落在 mod 下载」那一支**在那条路上永远断言不到**；
+ *   · 所以默认规则由**纯函数** `initialTabFor` 在这里直接钉（两支都要），
+ *     而 tab 顺序 / 选中态由**单独渲染 `ModTabs`** 钉（它是导出的纯组件，
+ *     导出它的理由与 `Files.tsx` 文件头 :57 那段"纯组件才断言得到"是同一条）。
+ * ⚠️★★ 老桌面壳（0.1.1）那一档是这一组**真正的**目标：线上 bundle 由服务端下发，
+ *   而 0.1.1 的壳**有** `modFolders`、**没有** D1 那七格 ⇒ 新页面会拿到一份没有
+ *   `instances` / `launchers` 的状态（`undefined.map` 那一类崩溃）。判据**不是**版本号比较
+ *   （版本号会漂，0.0.5–0.0.7 那一段历史正是踩过这个，见 `capabilitiesOf` 那一段），
+ *   而是"那七格在不在"。⚠️★ 而且这一条**真的渲染整页**（`pageShellOf('old')`）：
+ *   只断纯函数的话，"判成 unavailable 了但页面照样画 tab"这种坏法**照样绿**。
+ * ★ 能红的刀（读数在报告里）：把 `d1Capable` 的返回写成恒 `true` ⇒ ㊾e 两条一起红。
+ */
+console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门`);
+{
+  /* ---- ㊾a：三个 tab 的顺序 + 选中态 ---- */
+  const tabsHtml = keep(
+    html(React.createElement(ModTabs, { tab: 'mods', onSelect: () => undefined })),
+  );
+  const order = ['launchers', 'mods', 'tools'].map((id) => tabsHtml.indexOf(`data-tab="${id}"`));
+  assert.ok(
+    order.every((at) => at >= 0),
+    '㊾a 三个 tab 都要在（启动器绑定 / mod 下载 / 工具下载）',
+  );
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+    '㊾a 顺序必须是 启动器绑定 → mod 下载 → 工具下载（`ModTab` 那个联合的书写顺序就是它）',
+  );
+  assert.ok(
+    /data-tab="mods"[^>]*aria-selected="true"/.test(tabsHtml),
+    '㊾a 传进去的那一格（`tab: \'mods\'`）必须带 `aria-selected="true"`（选中态落在当前那个上）',
+  );
+  assert.equal(
+    (tabsHtml.match(/aria-selected="true"/g) ?? []).length,
+    1,
+    '㊾a 反面：`aria-selected="true"` 只许有一个（两个都 true 是最容易漏的假通过）',
+  );
+  ok('㊾a 三个 tab 顺序正确（启动器绑定 → mod 下载 → 工具下载），选中态落在当前那个上');
+
+  /* ---- ㊾b：默认 tab 规则（纯函数，两支都要）---- */
+  assert.equal(
+    initialTabFor({ hasLaunchers: false }),
+    'launchers',
+    '㊾b 一个启动器都没绑 ⇒ 先落在「启动器绑定」（送到"mod 下载"会先告诉他"先去绑一个实例"）',
+  );
+  assert.equal(
+    initialTabFor({ hasLaunchers: true }),
+    'mods',
+    '㊾b 绑过了 ⇒ 落在「mod 下载」（那一页才有东西可下）',
+  );
+  assert.equal(
+    t('nav.files'),
+    LANG === 'en' ? 'Resource downloads' : '资源下载',
+    '㊾b 侧栏那一栏的显示名必须是"资源下载"（A1；⚠️ 路由 `/files` 与短名 `files` 一个字不动）',
+  );
+  ok(`㊾b 默认 tab 规则两支都对，而且显示名已改成"${t('nav.files')}"（A1）`);
+
+  /* ---- ㊾c/㊾d：老桌面壳（0.1.1）真的走"与浏览器同一档" ---- */
+  const oldShellApi = shellStub('old').modFolders;
+  assert.equal(
+    d1Capable(oldShellApi),
+    false,
+    '㊾c 少任何一格 ⇒ 这个壳不够 D1（0.1.1：有 `modFolders`、没有那七格）',
+  );
+  assert.equal(
+    d1Capable(shellStub('d1').modFolders),
+    true,
+    '㊾c 契约里那七格都在 ⇒ 够 D1（判据是"格在不在"，不是版本号）',
+  );
+  /*
+   * ⚠️★ 这两条**真的渲染整页**（`pageShellOf('old')` 会自己装桩 / 拆桩）。
+   *   只断上面那两条纯函数的话，"判成 unavailable 了但页面照样画 tab / 照样去读
+   *   `state.instances`"这种坏法**照样绿** —— 而那正是老壳里会白屏的那一条路。
+   */
+  const oldShellPage = pageShellOf('old');
+  assert.ok(
+    oldShellPage.includes('data-mod-folders="unavailable"'),
+    '㊾d 老壳 ⇒ 与浏览器同一档：只画那一句"需要桌面版 0.2.0"（`data-mod-folders="unavailable"`）',
+  );
+  assert.equal(
+    /data-tab="/.test(oldShellPage),
+    false,
+    '㊾d 老壳里**一个 tab 都不许画**（画了就像"还有一个模块没做"）',
+  );
+  ok('㊾c 老桌面壳被判成"不够 D1"（纯函数），而且整页真的只画那句"需要桌面版"（一个 tab 都没有）');
+
+  /* ---- ㊾e：那句词条得说清新版本号 ---- */
+  assert.ok(
+    t('files.partTwoUnavailable').includes('0.2.0'),
+    '㊾e 那条"需要桌面版"的话必须说清 **0.2.0**（D1 的安装包版本；T6 之前写的是 0.0.5 ⇒ 同批改准）',
+  );
+  ok(`㊾e "需要桌面版 0.2.0"那句词条已经改准（${t('files.partTwoUnavailable').slice(0, 24)}）`);
+}
+
+const expectedGroups = LANG === 'en' ? 32 : 31;
 assert.equal(
   pass,
   expectedGroups,

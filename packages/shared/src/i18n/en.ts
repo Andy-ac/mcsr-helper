@@ -91,16 +91,19 @@ export const en: TranslationSchema = {
      */
     ranked: 'Ranked now',
     /*
-     * ★ "File updates" (2026-09-24) — checking and updating local files, a
-     *   **desktop-only** capability.
+     * ★ "Resource downloads" (was "File updates" from 2026-09-24; **renamed by D1**) —
+     *   bind a launcher, track instances, then download mods / modpacks per game
+     *   version; a **desktop-only** capability.
+     * ⚠️★ **Only the display name changed**: the block name `files` and the route
+     *   `/files` are untouched (A1) - that block name is wired in four places
+     *   (sidebar CSS, the home-page blurb, the string namespace, the route), see
+     *   the note in `lib/nav.ts`.
      * ⚠️ Its sidebar position is just **above** "Profile" (`lib/nav.ts`), so this
      *   entry sits between `ranked` and `profile` too: the names (here) and the
      *   order (`NAV_SECTIONS`) are two tables, kept in the same reading order so
      *   the next person adding a section can see where it goes.
-     * ⚠️ Not "Local files" / "Mods": the page covers the bound mod jars **and**
-     *   the catalog, and "file updates" is the phrase the section is built on.
      */
-    files: 'File updates',
+    files: 'Resource downloads',
     profile: 'Profile',
     admin: 'Admin',
     /*
@@ -184,12 +187,13 @@ export const en: TranslationSchema = {
        * ⚠️ This line is required by `block: 'files'` in `lib/nav.ts` (the home
        *    page looks each row up by `home.desc.<block>`; without it the page
        *    prints a raw key and `check:home` goes red).
-       * ⚠️ The wording says "are current" and **avoids "auto-update"**: writing
-       *    files always takes a click, and that phrase reads as "it will change
-       *    my files by itself" (the page's `files.autoHint` exists to clear that
-       *    up, and a one-line home row has no room to do it).
+       * ⚠️★ D1 (T6) **corrected it once**: this line shares the block name with
+       *    the sidebar entry (`nav.files`), so it had to change in the same
+       *    commit - otherwise the home page kept printing a stale "file updates"
+       *    blurb for a section that now means "bind a launcher, download mods and
+       *    modpacks into instances per game version".
        */
-      files: 'Check whether your local mods are current',
+      files: 'Bind your launcher and install mods and modpacks into instances per game version',
       profile:
         'Your account: sign-in state, email verification, what you posted and what you saved.',
     },
@@ -4124,6 +4128,14 @@ export const en: TranslationSchema = {
   /**
    * "File updates" `/files` (2026-09-24) — the whole page's strings.
    *
+   * ⚠️★ D1 (T6): **both the sidebar and the page title now read "Resource
+   *    downloads"** (A1; `nav.files` and `files.title` are two strings with one
+   *    display name) — only the display name changed, the route `'/files'` and
+   *    the block name `files` are untouched.
+   *    The rest of this section still says "folder" in places: relabelling those
+   *    to "instance" is T7/T8's job (one change per commit, so the same sentence
+   *    is not rewritten three times).
+   *
    * ===========================================================================
    * ⚠️★ This section has to land with the page, and it serves a table that is
    * **the next task's** work
@@ -4176,8 +4188,9 @@ export const en: TranslationSchema = {
    *    ⇒ All of them are `{{…}}` here. **Not one word of wording changed.**
    */
   files: {
-    title: 'File updates',
-    intro: 'Compare local files with the latest upstream versions, and update them when you click.',
+    title: 'Resource downloads',
+    intro:
+      'Bind your launchers, track instances, and install mods and modpacks into them per game version; compare local files with the latest upstream versions and update them when you click.',
     /*
      * ⚠️★ This is a **disclaimer**, not decoration: the checkbox is labelled
      *    "Auto", and it does **not** write anything (T1's `FileBinding.autoUpdate`
@@ -4757,14 +4770,22 @@ export const en: TranslationSchema = {
     missingStatusCatalogUnavailable:
       'The catalog has not been fetched, so the missing list stays empty (fix the catalog first: part one\'s "Rescan (re-fetch catalog)" fetches it again).',
     /*
-     * ★★ Feature detection (spec §6.8 / §8's last row): without `window.mcsr?.modFolders`
-     *    part two says "needs desktop 0.0.5" while **part one and the v1 features keep
-     *    working**.
-     * ⚠️ It covers both shells: 0.0.4 (has `mcsr`, no `modFolders`) and a plain browser
-     *    (no `mcsr` at all - there `browserOnly` above already explains why).
+     * ★★ Capability detection (spec §6.8 / §8's last row): shown when this client
+     *    **cannot reach this page at all**.
+     * ⚠️★ It now covers **three tiers** (the predicate lives in `ModFoldersData.tsx`'s
+     *    `d1Capable()`, one place): 0.0.4 (has `mcsr`, no `modFolders`), a plain
+     *    browser (no `mcsr` at all - there `browserOnly` above already explains
+     *    why), and the **0.1.1 desktop shell** (has `modFolders`, missing D1's
+     *    seven channels).
+     * ⚠️★ The version is **0.2.0** (the D1 installer): 0.0.5 is what this string
+     *    said when it was written, but the page now also needs the launcher-binding
+     *    channels - telling people 0.0.5 sends them to a build that still falls short.
+     * ⚠️ It does **not** say "everything above keeps working": this page is all
+     *    there is today (tab skeleton + two modules), and when the client falls
+     *    short **no tabs are drawn at all** (spec §9.12) - the sentence is the page.
      */
     partTwoUnavailable:
-      'This section needs desktop 0.0.5 (this client has no mod-folder support yet) - everything above keeps working.',
+      'This section needs desktop 0.2.0 (this client lacks the capabilities "Resource downloads" uses: binding launchers and instances).',
     /*
      * ===================================================================
      * A (mod-download page restructure) - Task 3: the tab skeleton
@@ -4776,6 +4797,13 @@ export const en: TranslationSchema = {
      * `check-font-coverage.mjs` scans exactly this directory.
      * (The row's disclosure triangle is drawn with CSS for that reason.)
      */
+    /*
+     * ★ D1 (T6): three tabs - the **order** does not live here (it is the order of
+     * the array in `Files.tsx`'s `ModTabs`), but the names must line up:
+     * Launcher binding -> Mod downloads -> Tool downloads.
+     * ⚠️ The last two are from T3 (values unchanged); the first one is new in D1.
+     */
+    tabLaunchers: 'Launcher binding',
     tabMods: 'Mod downloads',
     tabTools: 'Tool downloads',
     /*

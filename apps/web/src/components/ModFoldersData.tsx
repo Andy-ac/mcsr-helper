@@ -306,12 +306,17 @@ function makeModFoldersHandlers(
 /** `useModFolders()` 的产物。⚠️ 只有 `ready` 那一支有动作层（其余三支没有东西可动）。 */
 export type ModFoldersData =
   /**
-   * 桌面壳里**没有** `modFolders`（0.0.4 的老客户端、或纯浏览器）。
+   * 这个壳**够不上这一页**：桌面壳里没有 `modFolders`（0.0.4 的老客户端）、纯浏览器、
+   * 或者 **0.1.1 的老桌面壳**（有 `modFolders`、没有 D1 那七格 ⇒ `d1Capable()` 拦下）。
    *
-   * ⚠️★ 这一支**不走 v1 那条路**：这一页从 T3 起是 tab 骨架，`modFolders` 不在时它只画
-   *    一句"需要桌面版 0.0.5"（spec §9.12 / D1："0.0.4 用户只能看到升级提示"）；
+   * ⚠️★ 这一支**不走 v1 那条路**：这一页从 T3 起是 tab 骨架，够不上时它只画
+   *    一句"需要桌面版 **0.2.0**"（spec §9.12 / D1："0.0.4 用户只能看到升级提示"）；
    *    v1 的面板在 T6 已经连组件一起删掉了。⇒ 这一支读作"这个客户端没有 mod 文件夹功能"，
    *    而 `Files.tsx` 那一边的渲染点就是 `ModFoldersUnavailable`。
+   * ⚠️★ T6（D1）之后它是**三档合一**（判据在 `d1Capable()`，一处）：那三档的区别只在
+   *    页面上方多不多一句 `browserOnly`；⚠️ 代价（认，spec §7 写着）：0.1.1 的壳里
+   *    这一页**整块用不了**（旧的手工绑定界面已经随 D1 从 bundle 里删掉了）——
+   *    出路是 0.2.0 的安装包（自动更新）。
    */
   | { status: 'unavailable' }
   /**
@@ -411,6 +416,68 @@ function capabilitiesOf(api: DesktopBridge['modFolders']): ProgressCapabilities 
 }
 
 /**
+ * ★★ D1（T6）：**这个壳够不够 D1** —— 判据是那**七格在不在**，**不是**版本号比较。
+ *
+ * ⚠️★★ 为什么必须有这一道门（现场是线上真实存在的组合）：**线上 bundle 由服务端下发**，
+ *    而 **0.1.1 的老桌面壳**里 `modFolders` 通道**在**（所以 `useModFolders()` 会走
+ *    `ready` 那一支）、只是**没有** D1 加的那七格 ⇒ 新页面会拿到一份没有 `launchers` /
+ *    `instances` 的状态 ⇒ `state.instances.map(...)` 那一类当场 TypeError，
+ *    而 `apps/web` 全仓**没有 error boundary**（`capabilitiesOf` 那一段写着同一个现场）
+ *    ⇒ `/files` **整页白屏**。
+ * ⚠️★ 与 `capabilitiesOf` 是**同一族、不同一件事**，所以是两个函数：
+ *    · `capabilitiesOf`：子项目 C 那两格（进度推送 / 取消）**在不在**（14 格的旧壳）；
+ *    · `d1Capable`：D1 那七格**在不在**（0.1.1 的壳七格全无）。
+ *    合成一个的话，"0.1.1 够不够"与"0.0.7 够不够"就只有一个答案了。
+ * ⚠️★ **不许**写成"版本号比较"（`versions.electron >= '0.2.0'` 那种）：版本号会漂，
+ *    而 0.0.5–0.0.7 那一段历史正是踩过这个坑 —— 有 `modFolders` 不等于有这一版的格子
+ *    （`capabilitiesOf` 的文件头写着那条现场）。能力才是判据，版本号只是它的一个影子。
+ * ⚠️ 放宽只发生在**这一层的读数**上（与 `capabilitiesOf` 逐字同一条纪律）：
+ *    契约里那七格是**必需**的，所以这里不能给契约加 `?:`（那会让
+ *    `MOD_FOLDERS_CHANNELS` 那条 `satisfies` 咬不住"契约加了方法却忘了加通道"）。
+ * ⚠️★ 参数类型是"这七格**可能不在**"的结构（不是 `DesktopBridge['modFolders']`）：
+ *    渲染自检里的老壳桩本来就没有那七格，它要能**直接**传进来（㊾c 的两条就是那一对）。
+ * ⚠️★★ 而它**必须**从契约 `Pick` 出来（不能手抄七个键名）：那样契约里改掉其中任何一个名字
+ *    ⇒ **这里当场编译失败**。⚠️ 手抄的版本给不了这个保证（七个键都是可选的 ⇒ 少一个
+ *    照样可赋值 ⇒ 一声不响地把一个真壳判成"不够 D1"，那正是这一道门要防的坏法）。
+ */
+type D1Capabilities = Partial<
+  Pick<
+    DesktopBridge['modFolders'],
+    | 'probeLaunchers'
+    | 'listLauncherInstances'
+    | 'setInstancePaths'
+    | 'addLauncher'
+    | 'removeLauncher'
+    | 'setInstanceTracked'
+    | 'confirmInstance'
+  >
+>;
+
+/**
+ * 那七格的**名字**（判据的唯一一份清单）。
+ *
+ * ⚠️★ 写成一张表再遍历，而不是七个 `!== undefined` 串起来：名字只有这一处，
+ *    而它们与 `D1Capabilities` 那七个键是**同一组**（少写一格 ⇒ 契约里那一格永远读不到，
+ *    而 `typeof … === 'function'` 照样只判剩下的六个 ⇒ 一个真壳可能被判成"不够 D1"）。
+ * ⚠️★ 键名逐字照契约（`packages/shared/src/desktop.ts` 的 `DesktopBridge.modFolders`）：
+ *    第二条是 `listLauncherInstances`（**不是** `listInstances`）—— 它的 IPC 串叫
+ *    `-list-instances`，两处名字不一样，照**契约的键名**写才判得对。
+ */
+const D1_CHANNELS = [
+  'probeLaunchers',
+  'listLauncherInstances',
+  'setInstancePaths',
+  'addLauncher',
+  'removeLauncher',
+  'setInstanceTracked',
+  'confirmInstance',
+] as const satisfies readonly (keyof D1Capabilities)[];
+
+export function d1Capable(api: D1Capabilities): boolean {
+  return D1_CHANNELS.every((name) => typeof (api as Record<string, unknown>)[name] === 'function');
+}
+
+/**
  * 订阅高频那一条通道（**旧壳里没有它 ⇒ 退化成 no-op 退订函数**）。
  *
  * ⚠️★ 没有这一道判据的现场写在 `capabilitiesOf` 那一段：同步 `TypeError` + 没有 error
@@ -428,14 +495,17 @@ function subscribeProgress(
 }
 
 /**
- * 取数（**只有桌面壳里、而且 `modFolders` 真的在**才会跑）。
+ * 取数（**只有桌面壳里、而且这个壳够得上 D1** 才会跑）。
  *
  * ⚠️★ 顺序：**先订阅，再立刻 `getState()`**。主进程在应用启动时就会抓目录、扫文件夹，
  *    而这一页要等远程网页加载完才挂载 ⇒ 检查早于订阅时那一次推送**没有任何人收到**，
  *    表现是"界面上永远停在加载中"，而完全不报错。
- * ⚠️★ 判据是 `desktopBridge()?.modFolders` 在不在，**不是** `desktopBridge()` 在不在：
+ * ⚠️★ 判据的第一层是 `desktopBridge()?.modFolders` 在不在，**不是** `desktopBridge()` 在不在：
  *    0.0.4 的壳有 `mcsr` 但**没有** `modFolders`（`shared/desktop.ts` 的契约是 0.0.5 才有的）
- *    ⇒ 那种客户端在这一页上**只有一句"需要桌面版 0.0.5"**。
+ *    ⇒ 那种客户端在这一页上**只有一句"需要桌面版 0.2.0"**。
+ * ⚠️★★ 第二层（D1 的 T6）：`modFolders` **在**也还不够 —— **0.1.1 的老桌面壳**有这条通道、
+ *    没有那七格 ⇒ 走 `d1Capable(api)`（判"格在不在"，不是版本号）。
+ *    ⚠️ 两层判据在这一支里合起来读作"这个客户端够不上这一页"。
  * ⚠️★ 而 `modFolders` 在**不等于**这一版的两条新通道在（C1）：0.0.5–0.0.7 的壳有
  *    `modFolders`（只有 14 格）⇒ 订阅走 `subscribeProgress` 的能力检测、
  *    取消走 `makeModFoldersHandlers` 里那一道同样的判据，两条都不许直接调。
@@ -470,8 +540,16 @@ export function useModFolders(): ModFoldersData {
   );
 
   useEffect(() => {
-    // 浏览器 / 老客户端：这一栏根本不存在（那一支只画"需要桌面版 0.0.5"）。
-    if (api === null) return;
+    /*
+     * 浏览器 / 老客户端（0.0.4：有 `mcsr`、没有 `modFolders`）⇒ 这一栏根本不存在
+     * （那一支只画"需要桌面版 0.2.0"）。
+     * ⚠️★ D1（T6）：**0.1.1 的老桌面壳**在这里也被挡住（`!d1Capable(api)`）——
+     *    它有 `modFolders`（所以 `api !== null`），但没有那七格 ⇒ 订阅进来之后
+     *    这一页会拿着 `undefined.map` 去渲染 ⇒ 整页白屏。理由写在 `d1Capable` 那一段。
+     *    ⛔ 那半条判据**必须与下面"支路"那道门是同一条**：只堵一处的话，
+     *    "不订阅但照样渲染"照样崩。
+     */
+    if (api === null || !d1Capable(api)) return;
     const unsubscribe = api.onStatus(accept);
     /*
      * ★★ C 的 T5：高频那条通道（D3 已经节流到 ≥100 ms / ≥64 KB）。
@@ -522,7 +600,13 @@ export function useModFolders(): ModFoldersData {
     };
   }, [api, accept]);
 
-  if (api === null) return { status: 'unavailable' };
+  /*
+   * ★★ D1（T6）：不够 D1 的壳**与浏览器同一档**（`unavailable`）⇒ `Files.tsx` 那一支
+   *    只画一句"需要桌面版 0.2.0"，一个 tab 都不画。
+   *    ⚠️★ 判据只此一处：上面那个 effect 里的同一个判据是"别去订阅"，这里是"别去渲染"；
+   *    两处都读同一个 `d1Capable(api)`，所以不会出现"订阅了却不渲染"那种半档。
+   */
+  if (api === null || !d1Capable(api)) return { status: 'unavailable' };
   if (load.status === 'failed') return { status: 'failed', reason: load.failure };
   if (load.status === 'ready') {
     /*
