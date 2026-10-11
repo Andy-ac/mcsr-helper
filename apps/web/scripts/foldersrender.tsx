@@ -4982,12 +4982,15 @@ function inputTagOf(markup: string, attr: string, value: string): string {
    * ★★ "初值是**生效值**、不是探测值"那条纪律的靶子：这一行的 `modsDir` / `savesDir` 是
    *    用户手改过的（`D:\hand-edited\…`），而 `instancePath` 还在 `D:\MultiMC\instances\…`
    *    ⇒ 谁要是"自己按 instancePath 拼一个 .minecraft\mods"，这一条当场红。
+   * ⚠️★ 判据**必须**带上 `value="`（不能只断"这个标签里有那个串"）：同一个 `<input>` 上
+   *    还挂着 `title={instance.modsDir}`，而那一格**也是**生效值 ⇒ 松判据会被 `title`
+   *    满足（实测：把 `value` 改成按 `instancePath` 拼出来的探测值时，松判据**照样绿**）。
    */
   assert.ok(
     inputTagOf(editedRow, 'data-instance-mods', PANEL_INSTANCE_EDITED.key).includes(
-      'D:\\hand-edited\\mods',
+      'value="D:\\hand-edited\\mods"',
     ),
-    '51a ★ 手改过的那一行：初值是**手改后的生效值**（不是按 `instancePath` 拼出来的探测值）',
+    '51a ★ 手改过的那一行：`value=` 是**手改后的生效值**（不是按 `instancePath` 拼出来的探测值）',
   );
   ok(
     '51a A7：一个实例行里六样都在场（名称 / 版本 / loader / mods 输入框 / saves 输入框 / 勾选框带 checked 读数），' +
@@ -5062,8 +5065,23 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     false,
     '51c② 反面：它**不是**"未绑定"那一支（有绑定就不该再叫人去绑）',
   );
+  /*
+   * ★★ 51c③：**已经有实例被勾着**时，"去勾选"那句话一个字都不许画。
+   *
+   * ⚠️★ 这一条是**补出来的**（刀 3 的读数）：原来只断"两支空态各自的夹具"，
+   *    于是一个"**永远**画'去勾选'"的实现**整套自检照样绿**（实测：把那一格的判据
+   *    写成恒假 ⇒ `通过 45 项`、退出码 0）⇒ 那一半当时**不可证**。
+   *    对用户的代价很实：十个实例都勾好了，页面上还挂着一句"一个实例都没被勾上"。
+   */
+  assert.equal(
+    panelHtml.includes('data-launcher-empty="untracked"'),
+    false,
+    '51c③ 反面：已经有实例被勾着（默认夹具里那一个）⇒ 不许再喊"去勾选"',
+  );
   /* ★ 而"这一版没有被追踪的实例"那第三支是 T7 的（`InstancePicker`，自检 ㊿e）—— 不在这里。 */
-  ok('51c A8 的两支空态（未绑定启动器 / 已绑但一个实例都没勾）各自在场、而且互斥');
+  ok(
+    '51c A8 的两支空态（未绑定启动器 / 已绑但一个实例都没勾）各自在场、而且互斥、有勾选时一支都不画',
+  );
 
   /* ---- 51d：A14 —— 逐块失败 + 重试（一个块坏掉不许整页空）---- */
   const brokenHtml = launcherBindingHtml({
