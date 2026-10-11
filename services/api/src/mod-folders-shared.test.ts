@@ -511,6 +511,13 @@ test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫�
    * ⚠️ 盘上的 mod 文件不受影响：丢的只是本应用的记账（spec §10 把这条代价写下来了）。
    * ⚠️ 别的格子**一格都不许**跟着丢 —— 尤其别把"清旧绑定"做成"整份重建"。
    * ⚠️★ 刀：把 `migrateState` 早返回里的 `folders: {}` 去掉 ⇒ 这一条红。
+   * ⚠️★ 评审 #1（Critical）：`launchers` / `instancePrefs` 这两格**必须给真值**。
+   *   旧夹具里**没有** `instancePrefs` 这个键，而期望值也是 `{}` ⇒ 那句断言只证明"缺就给空值"，
+   *   与"把用户已有的洗成 `{}`"**分不开**（§5.32① 恒真断言）。实测：把 `migrateState` 里
+   *   "保留既有 `instancePrefs`"那三行换成 `instancePrefs: {}`，旧夹具下**35 条一条都不红** ✗。
+   *   代价是实的：手改路径（A12）与 `confirmed`（T8 的确认动作）会**静默消失**，
+   *   而没有任何用例拦得住。⇒ 现在夹具里是一条真绑定 + 一格带 `modsDir`/`savesDir`/`confirmed`
+   *   的真偏好，下面断言**它原样还在**。
    */
   const old = {
     version: 1,
@@ -519,6 +526,16 @@ test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫�
     catalogBindings: {},
     folders: {
       'old-id': { path: 'D:\\old\\mods', gameVersion: '1.16.1', autoUpdate: true, boundAt: 1 },
+    },
+    /* ★ 两格真值（D1 的配置）—— 非空、非默认，刀才拔得动。 */
+    launchers: [{ id: 'multimc:D:\\MultiMC', kind: 'multimc', rootPath: 'D:\\MultiMC' }],
+    instancePrefs: {
+      'multimc:instances/a': {
+        tracked: true,
+        modsDir: 'HAND\\mods',
+        savesDir: 'HAND\\saves',
+        confirmed: true,
+      },
     },
     prefs: {
       bulkChannel: 'origin',
@@ -529,9 +546,51 @@ test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫�
   };
   const migrated = migrateState(old);
   assert.deepEqual(migrated.folders, {}, '旧绑定一律清掉');
-  assert.deepEqual(migrated.launchers, [], '新的一格给空数组');
-  assert.deepEqual(migrated.instancePrefs, {});
+  /*
+   * ★ 这两条是"**已有的原样保留**"那一半（评审 #1 的判据）。
+   * ⚠️ 别再退回 `deepEqual(migrated.instancePrefs, {})` —— 那是恒真的那一半。
+   */
+  assert.deepEqual(migrated.launchers, old.launchers, '已有的启动器绑定一格都不许洗');
+  assert.deepEqual(
+    migrated.instancePrefs,
+    old.instancePrefs,
+    '已有的勾选与手改路径（含 `confirmed`）一格都不许洗',
+  );
   assert.equal(migrated.prefs.catalogGameVersionChosen, true, '其它 prefs 一格都不许动');
+});
+
+test('★ D1：老 v2 文件里**没有**这两格 ⇒ 迁移补出空值（不是 `undefined`）', () => {
+  /*
+   * ★ 评审 #2（Important）：`StateFileV2` 上这两格是**必填**，而 D1 之前写的 v2 文件里
+   *   根本没有它们 ⇒ `migrateState` 必须补出 `[]` / `{}`，而**不是**让 `undefined` 流到
+   *   读它的那一侧（T4/T8 会直接 `state.instancePrefs[key]`、遍历 `state.launchers`）。
+   * ⚠️★ 期望值**不许**只写 `deepEqual(…, {})`：`isRecord(undefined)` 为假 ⇒ 兜底恰好也给
+   *   `{}` ⇒ 那句 `deepEqual` 在"兜底生效"与"原样透传出 `undefined`"两种实现下**都绿**
+   *   （§5.32① 的恒真形态；评审实测过：拔掉兜底仍然 35 条全绿 ✗）。
+   *   ⇒ 判据用**类型谓词**（`Array.isArray` / `typeof … === 'object'`），最后再补两条"它就是
+   *   空的那一份"的读数 —— 形状与内容分开压，缺任何一条都会让某个坏实现溜过去。
+   * ⚠️★ 刀：把 `migrateState` v2 分支里这两格的兜底换成**原样透传**
+   *   （`launchers: (raw as StateFileV2).launchers` / 同理 `instancePrefs`）⇒ 这一条红
+   *   （`typeof undefined === 'object'` 为假、`Array.isArray(undefined)` 为假）。
+   */
+  const migrated = migrateState({
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {},
+    prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
+  });
+  assert.ok(
+    Array.isArray(migrated.launchers),
+    '`launchers` 必须是数组（`undefined` 会让 T4 的 `for (const b of …)` 在跟损坏无关的地方抛）',
+  );
+  assert.ok(
+    typeof migrated.instancePrefs === 'object' && migrated.instancePrefs !== null,
+    '`instancePrefs` 必须是对象（`undefined` 会让 T4 的 `state.instancePrefs[key]` 在跟损坏无关的地方抛）',
+  );
+  assert.deepEqual(migrated.launchers, [], '而且它就是空的那一份');
+  assert.deepEqual(migrated.instancePrefs, {}, '而且它就是空的那一份');
 });
 
 test('★ D1：`folders` 由"被追踪的实例"派生（folderId = instance.key，path = modsDir）', () => {
