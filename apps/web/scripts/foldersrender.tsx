@@ -3675,10 +3675,12 @@ assert.equal(
 /*
  * ★★ 写盘相位**照旧**印它（T5 那条"写盘不印字节"说的是**字节**，不是这一格）——
  *    ⚠️★ 这一条同时证"它**不是**批量的附属品"：写盘那一帧没有序号句，而它必须在。
- *    用的帧是**另一个** `updatedCount`（7）：与上面那条比的是**不同的数** ⇒
- *    一个把计数写死的实现在这里红。
+ *    ⚠️★★ 用的帧是**另一个** `updatedCount`（`INSTALL_UPDATED = 7`，**不是**帧默认那个 2）：
+ *    与上面那条比**同一个数**的话，这一条就退化成"把上面那一句再念一遍"
+ *    （§5.32 ①）—— 一个**写死** `已更新 2` 的实现在两条上都绿。
  */
-const installUpdatedCopy = labelOf('files.progressUpdated', { count: 7 });
+const INSTALL_UPDATED = 7;
+const installUpdatedCopy = labelOf('files.progressUpdated', { count: INSTALL_UPDATED });
 const installUpdatedHtml = keep(
   html(
     React.createElement(DownloadProgressLine, {
@@ -3688,7 +3690,7 @@ const installUpdatedHtml = keep(
           run: 'update-folder-all',
           itemIndex: 6,
           itemCount: 12,
-          updatedCount: 7,
+          updatedCount: INSTALL_UPDATED,
         }),
         samples: [],
       },
@@ -3700,8 +3702,8 @@ const installUpdatedHtml = keep(
 );
 assert.ok(
   textOf(installUpdatedHtml).includes(installUpdatedCopy) &&
-    installUpdatedHtml.includes('data-updated="7"'),
-  '★★★ 写盘相位**照旧**印「已更新 7」（字节 / ETA 被置成 `—` 是那三格的事，这一格不跟着消失）' +
+    installUpdatedHtml.includes(`data-updated="${String(INSTALL_UPDATED)}"`),
+  `★★★ 写盘相位**照旧**印「已更新 ${String(INSTALL_UPDATED)}」（字节 / ETA 被置成 \`—\` 是那三格的事，这一格不跟着消失）` +
     '—— 把 `view.installing` 也当成"不印已更新"的条件，这一条就红',
 );
 
@@ -4957,8 +4959,26 @@ const PANEL_INSTANCE_EDITED = boundInstance({
  * ⚠️ 实例名**现读夹具**（不是抄一个字面量）：`PANEL_INSTANCE_TRACKED.name` 改了，
  *    这一条跟着走。进度帧的 `folderId` 取**实例的 key**（实例层那一行的
  *    `folderId === instance.key`，见 A9）—— 两个值都从夹具现取。
+ * ⚠️★★ **为什么这一份的 modid 是 `fast_reset` 而不是 `sodium`**（这是**踩出来的**）：
+ *    原来用 `sodium` 时，"帧里那个 modid 真的在产物里"那半句是**空炮** ——
+ *    文件名 `sodium-2.5.1+1.16.1.jar` **自己就含 `sodium`** ⇒ 就算批量那一句里
+ *    一个 mod 名都没印（把值里的 `{{modid}}` 拿掉），这一条照样绿。
+ *    实测现场：把**两本** i18n 的值都改成不含 `{{modid}}`（占位符集合仍相同 ⇒
+ *    `i18n-keys.test.ts` 不红），渲染自检**照样全绿**（`EXIT=0`）。
+ *    ⇒ 换一个**目录里真实存在、且与文件名互不包含**的 modid（`fast_reset`，
+ *    它的 jar 叫 `fast-reset-….jar`：`fast_reset` 不是它的子串，反过来也不是）。
+ *    ⚠️ 帧的 `fileName` 也换成一个**与 modid 无关**的名字（默认那个含 `sodium`）。
+ *    换完这一条才真的咬得住"mod 名印出来了"（刀 6b 复验：那一刀红了）。
  */
-const a19State = stateOf([modRowFixture('sodium', 'Sodium Prime')], {
+const A19_MODID = 'fast_reset';
+const A19_FILENAME = 'fast-reset-2.4.1+1.16.x.jar';
+assert.equal(
+  A19_FILENAME.includes(A19_MODID) || A19_MODID.includes(A19_FILENAME.replace(/\.jar$/, '')),
+  false,
+  `探针（夹具自钉）：A19 这一份的 modid 与文件名**必须互不包含**（否则那半句判据是空炮）—— ` +
+    `modid=${JSON.stringify(A19_MODID)}、fileName=${JSON.stringify(A19_FILENAME)}`,
+);
+const a19State = stateOf([modRowFixture(A19_MODID, 'Fast Reset')], {
   tags: [MOD_TAG],
   launchers: [BINDING_OK],
   instances: [PANEL_INSTANCE_TRACKED],
@@ -4974,6 +4994,8 @@ const a19Html = keep(
       progress: linePayloadOf({
         run: 'update-folder-all',
         folderId: PANEL_INSTANCE_TRACKED.key,
+        modid: A19_MODID,
+        fileName: A19_FILENAME,
         itemIndex: 3,
         itemCount: 48,
       }),
@@ -4992,19 +5014,21 @@ const a19Row = folderRowSpanOf(a19Html, PANEL_INSTANCE_TRACKED.key);
  *    已经被 `textOf` 压成了 `1.16.1-Ranked#1` ⇒ 直接 `includes(name)` 是一条
  *    **恒假**的断言（永远红，而红的理由与产品无关）。本文件里凡是比"一段带空格的文字"
  *    都要两边过同一个口径（`labelOf` 就是为这件事存在的）。
+ * ⚠️★ 而 `A19_MODID` / `A19_FILENAME` **互不包含**（上面那条自钉钉着）⇒
+ *    "两样都在"这两半**各自**都咬得住（少印哪一样都会红）。
  */
 const a19InstanceLabel = textOf(PANEL_INSTANCE_TRACKED.name);
 assert.ok(
   textOf(a19Html).includes(a19InstanceLabel) &&
     a19Html.includes(`data-instance-head="${PANEL_INSTANCE_TRACKED.key}"`) &&
-    textOf(a19Row).includes(progressFrameOf().modid) &&
-    textOf(a19Row).includes(progressFrameOf().fileName) &&
+    textOf(a19Row).includes(A19_MODID) &&
+    textOf(a19Row).includes(A19_FILENAME) &&
     textOf(a19Row).includes(updatedCopy) &&
     a19Row.includes('data-updated="2"'),
   '★★★ A19 + A20 的四样读数**在同一屏里同时在场**：实例名（T7 的实例层头）+ mod 名 + 文件名 + ' +
     '「已更新 N」—— 少任何一样这条就红（这一份产物实测：实例名 ' +
-    `${JSON.stringify(PANEL_INSTANCE_TRACKED.name)}、帧里的 modid ${JSON.stringify(progressFrameOf().modid)}、` +
-    `文件名 ${JSON.stringify(progressFrameOf().fileName)}；进度那一行切自 \`folderRowSpanOf(${JSON.stringify(PANEL_INSTANCE_TRACKED.key)})\`）`,
+    `${JSON.stringify(PANEL_INSTANCE_TRACKED.name)}、帧里的 modid ${JSON.stringify(A19_MODID)}、` +
+    `文件名 ${JSON.stringify(A19_FILENAME)}；进度那一行切自 \`folderRowSpanOf(${JSON.stringify(PANEL_INSTANCE_TRACKED.key)})\`）`,
 );
 
 /** `probeLaunchers()` 的产物（候选）—— 两条，其中第二条是"官方启动器"那一档。 */
