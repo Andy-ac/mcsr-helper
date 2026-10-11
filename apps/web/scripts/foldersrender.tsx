@@ -321,6 +321,16 @@ function stateOf(rows: CatalogRowView[], extra: Partial<ModFoldersState> = {}): 
     bulkChannel: 'origin',
     catalogRows: rows,
     folders: [],
+    /*
+     * ★★ D1（T4）：`launchers` / `instances` / `instancesStatus` 是**新增的必需格**
+     *   （与契约同批）。⚠️ 这里是这个脚本里**唯一**一处构造 `ModFoldersState` 的入口
+     *   （全文另有一处 `as unknown as` 的 cast，它不构造）⇒ 默认值补在**这一处**就够，
+     *   **不要**去逐个改用例。⚠️ `instancesStatus: 'ok'`：这些夹具渲染的是"已经读到过"
+     *   的那一档（`'reading'` 是 A14 的另一档，由 T8 的用例单独造）。
+     */
+    launchers: [],
+    instances: [],
+    instancesStatus: 'ok',
     missing: [],
     missingStatus: 'ok',
     notices: [],
@@ -738,6 +748,22 @@ function shellStub(withModFolders: boolean) {
             downloadPack: async () => {
               throw new Error('桩：这一格的存在只是为了让"桩与契约逐条对账"那条断言看得见它');
             },
+            /*
+             * ★★ D1（T4）：启动器绑定与实例那七格（契约 17 → 24）。照现有的形状写：
+             *   两条各有自己的返回值（候选表 / 实例数组），五条是 `void`。
+             *   ⚠️★ 这一组**必须与契约同批**加：上面那条 `deepEqual` 把**这个对象**与
+             *   `MOD_FOLDERS_CHANNELS` 逐条对账 —— 契约加了而桩没加，`check:folders`
+             *   立刻红（这正是它存在的理由）。
+             *   ⚠️ 方法体**永远不会被执行**（静态渲染不跑 effect）：它们只是让
+             *   `desktopBridge()?.modFolders?.probeLaunchers` 这类特性检测判成"在"。
+             */
+            probeLaunchers: async () => [],
+            listLauncherInstances: async () => [],
+            setInstancePaths: async () => undefined,
+            addLauncher: async () => undefined,
+            removeLauncher: async () => undefined,
+            setInstanceTracked: async () => undefined,
+            confirmInstance: async () => undefined,
           },
         }
       : {}),

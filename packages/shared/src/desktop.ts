@@ -20,7 +20,8 @@
  */
 import type { DownloadProgress } from './downloadProgress';
 import type { FileUpdatesState } from './fileUpdates';
-import type { Channel, ModFoldersState } from './modFolders';
+import type { LauncherKind } from './launcherInstances';
+import type { Channel, InstanceView, ModFoldersState } from './modFolders';
 
 // ---------------------------------------------------------------------------
 // 更新状态
@@ -326,6 +327,84 @@ export interface DesktopBridge {
       folderId: string,
       channel: Channel,
     ) => Promise<ModFoldersState>;
+
+    /*
+     * ===========================================================================
+     * ★★ D1（T4，2026-10-11）：启动器绑定与实例 —— **七条**通道（契约 17 → 24）
+     * ===========================================================================
+     * 这一组把"手工绑一个 mods 目录"换成"绑启动器 ⇒ 自动枚举实例 ⇒ 勾选即派生 folder"，
+     * 而**入参纪律一个字都没变**（上面那两段仍逐字有效）：
+     *   · `addLauncher(kind, rootPath)` 是这一组里**唯一**收路径的一条，而它**不是**"往哪儿
+     *     写盘"的那条路径 —— 它是"去哪儿**读**"（枚举实例）。"写到哪里"仍然只能由主进程从
+     *     **它自己**那份派生状态里取（`folderId` ⇒ `folders[folderId].path`）⇒ 被注入的页面
+     *     能按 id 触发写盘，但**指定不了目标目录**。
+     *   · ⚠️ `setInstancePaths` / `setInstanceTracked` / `confirmInstance` 收的是 `key`
+     *     （`instance.key`，`<类型>:<相对根的路径>`）—— 它由主进程枚举出来、经 `state.instances`
+     *     交给页面，页面**递不进一个自己编的 key**（主进程那一侧按枚举结果校验）。
+     *   · ★ `listInstances()` 是**主动重扫一遍**：界面渲染读的是 `state.instances`（低频状态里
+     *     那一格），这条通道只是"用户点了刷新"的路 ⇒ 它返回的与 `state.instances` 是**同一份**
+     *     枚举结果（两处各枚举一遍就会漂）。
+     * ⚠️★ 只读纪律（spec A13）：这七条里**没有一条**会写启动器或实例的文件
+     *    （`instance.cfg` / `mmc-pack.json` / `versions\<名>\<名>.json` 都不动）——
+     *    它们只写我们**自己那份**状态文件（绑定表与每实例的勾选/覆盖）。
+     */
+
+    /**
+     * 扫一遍**常见位置**，报出命中的启动器根（不写任何东西、也不做全盘扫描）。
+     *
+     * ⚠️ 返回值里**没有 id**：id 是"添加"那一刻由主进程按 `${kind}:${归一化的根}` 造的
+     *    （见 `addLauncher`）⇒ 页面拿到的候选只是一个"可以加的那个根"。
+     * ⚠️ 判"命中"的判据在**主进程**那一侧（"实例父目录真的能列出实例"，不是"根目录存在"）：
+     *    `%APPDATA%\.minecraft` 几乎人人都有而未必是用户真正在用的那个 ⇒ 报一个错的根
+     *    比什么都不报更坏（用户会以为已经绑好了）。
+     */
+    probeLaunchers(): Promise<{ kind: LauncherKind; rootPath: string }[]>;
+    /**
+     * **重新枚举**当前绑定的全部启动器、写回状态，并返回那一格 `state.instances`。
+     *
+     * ⚠️★ 界面**渲染**只读 `state.instances`；这条通道是"用户点「刷新」"的路。
+     * ⚠️ 逐块失败（A14）：一个启动器块读不动**不影响**其它块，那一块的失败原话落在
+     *    `state.launchers[].error`（界面据此画那句话 + 一颗重试按钮 = 再调一次这条通道）。
+     */
+    listLauncherInstances(): Promise<InstanceView[]>;
+    /**
+     * 手改一个实例的解析结果（A12：**手改优先于探测**，而且持久化）。
+     *
+     * ⚠️ 逐格覆盖：只给出来的那几格才算覆盖，其余照旧用探测结果（不是整份替换）。
+     * ⚠️ `loader` 也是逐格覆盖之一（T12 起 `applyOverride` 认它）。
+     */
+    setInstancePaths(
+      key: string,
+      patch: { modsDir?: string; savesDir?: string; loader?: string },
+    ): Promise<void>;
+    /**
+     * 加一条启动器绑定（`rootPath` 在**入口**归一化：`D:\PCL2` 与 `D:\PCL2\` 是同一条）。
+     *
+     * ⚠️ 幂等：同一个 `(kind, 归一化后的根)` 再加一次不会变成两条绑定。
+     */
+    addLauncher(kind: LauncherKind, rootPath: string): Promise<void>;
+    /**
+     * 移除一条绑定。⚠️ 它**只删我们自己的记账**（不碰启动器目录一个字节，A13），
+     * 而它名下被追踪的实例一律转为"不再追踪"⇒ 派生的 folder 与扫描读数在下一趟对账里一起消失。
+     */
+    removeLauncher(id: string): Promise<void>;
+    /**
+     * 勾选 / 取消勾选一个实例（A9）。
+     *
+     * ⚠️★ 勾选 ⇒ **立刻扫一次**（用户马上就能看到"缺哪些"）；取消 ⇒ 派生的 folder 消失、
+     *    扫描读数一并清掉。两条都是**只读磁盘**的动作（扫描不写盘），与"下载"无关。
+     */
+    setInstanceTracked(key: string, tracked: boolean): Promise<void>;
+    /**
+     * ★ 显式的"确认这个路径"（2026-10-11 控制器裁定）。
+     *
+     * ⚠️★ 为什么需要一条**动作**、而不是"路径字符串变了就算确认过"：T2 的 `applyOverride`
+     *    只在**值真的变了**时清 `needsConfirm`（同值覆盖不清，那是对的 —— 空覆盖不产生
+     *    "用户确认过"这个事实）⇒ 用户"看着对、什么都没改"这一种接受**没有落点**。
+     *    这条通道就是那个落点：它写 `instancePrefs[key].confirmed = true`，界面上的"待确认"标
+     *    随之消失（视图里那一格是显示值 `needsConfirm && !confirmed`）。
+     */
+    confirmInstance(key: string): Promise<void>;
   };
 }
 
@@ -402,7 +481,7 @@ export function desktopBridge(): DesktopBridge | null {
 }
 
 /**
- * `modFolders` 那**十七条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
+ * `modFolders` 那**二十四条** IPC 通道名 —— 与 `FILE_UPDATES_CHANNELS` 同一条理由，
  * 所以住在契约旁边（不在这里重复那一段论证，改这一组之前先读上面那一段）：
  * 通道名是字符串，写错一个字母**类型检查看不见**，而失败形态是静默的 ——
  * `invoke` 没有 handler 时 reject（页面那一步什么也没发生）、`on` 对着一个不存在的
@@ -420,17 +499,27 @@ export function desktopBridge(): DesktopBridge | null {
  *    对齐判据**：少写一条 / 多写一条都当场编译失败。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
- * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**五处不是纯 kebab**
- *    （照 v1 的缩写习惯，五个都列在这里，免得下一个人按规则推出来对不上）：
+ * ★★ 2026-10-11（D1 的 T4）：这一组**加了七条** —— `probeLaunchers` / `listInstances` /
+ *    `setInstancePaths` / `addLauncher` / `removeLauncher` / `setInstanceTracked` /
+ *    `confirmInstance`（启动器绑定与实例，见上面 `DesktopBridge.modFolders` 里那一段）。
+ *    14（T6 之后）→ 17（C 的 T3/T4 + B2 的 T4）→ **24**（本轮的 +7）。
+ *    为什么与 preload、主进程、`foldersrender.tsx` 的桩**一起**做：那个桩与这里的键
+ *    有一条**逐条对账**的断言（`check:folders` ㉝）⇒ 只加契约会让 web 门禁红成一个
+ *    **看起来范围外**的红点。
+ * ⚠️ 通道名的形状照 v1：`mcsr:modfolders-<方法名的 kebab>`。**六处不是纯 kebab**
+ *    （照 v1 的缩写习惯，六个都列在这里，免得下一个人按规则推出来对不上）：
  *      · `onStatus` ⇒ `-status`（去掉 `on`，与 v1 的 `mcsr:fileupdates-status` 同型）
  *      · `onProgress` ⇒ `-progress`（**同型**：去掉 `on` —— C 的 T3 加的**第二条推送**）
  *      · `setFolderAutoUpdate` ⇒ `-set-folder-auto`（`Update` 缩成 `auto`，照 v1 的 `-set-auto`）
  *      · `setFolderGameVersion` ⇒ `-set-folder-version`（`GameVersion` 缩成 `version`）
  *      · `setCatalogGameVersion` ⇒ `-set-catalog-version`（同上）
+ *      · ★ `listLauncherInstances` ⇒ `-list-instances`（**D1 的 T4 加的**：串是 brief 钉住的
+ *        形状，而键名必须是**桥方法名**（`satisfies` 咬的就是它）⇒ 两者对不上，
+ *        `-list-launcher-instances` 那个"按规则推出来"的串**不存在**）
  *    其余都是方法名的逐字 kebab（`openFolder` ⇒ `-open-folder`、C 的 T4 加的
  *    `cancelDownload` ⇒ `-cancel-download` 都在其中；⚠️ 后一条是**请求**、不是推送 ——
  *    它落在这一组只是因为名字逐字 kebab，与"推送"那两处无关）。
- *    ★★ **逐字 kebab 的条数只写在这一处**：**17 个成员 − 5 个非纯 kebab = 12**
+ *    ★★ **逐字 kebab 的条数只写在这一处**：**24 个成员 − 6 个非纯 kebab = 18**
  *    （上面那句不再复述这个数字 —— §5.15：同一个活数字出现两种说法就是缺陷信号，
  *    加一条逐字 kebab 的通道时**只改这一行**）。
  *    ⚠️★ 下面这几句交代这个数的**来历**，它们**都不是活数字**（不要照它们现数）：
@@ -438,7 +527,11 @@ export function desktopBridge(): DesktopBridge | null {
  *    是"成员数 − 非纯 kebab 数"；C 的 T3 加 `onProgress` **只动"非纯 kebab"那一侧**
  *    （它**不**在这一组里），逐字 kebab 那一侧没动；而 C 的 T4 加的 `cancelDownload`
  *    **是**逐字 kebab（`-cancel-download`）⇒ 逐字 kebab 那一侧 +1，就是 **11**；**B2 的 T4** 加的 `downloadPack`
- *    （`-download-pack`）**也是逐字 kebab** ⇒ 那一侧再 +1，就是上面那个 **12**。
+ *    （`-download-pack`）**也是逐字 kebab** ⇒ 那一侧再 +1，就是 **12**；★ **D1 的 T4** 加的那七条里
+ *    **六条是逐字 kebab**（`-probe-launchers` / `-set-instance-paths` / `-add-launcher` /
+ *    `-remove-launcher` / `-set-instance-tracked` / `-confirm-instance`），**一条不是**
+ *    （`listLauncherInstances` ⇒ `-list-instances`，见上面第六条）⇒ 逐字 kebab 那一侧 +6、
+ *    非纯 kebab 那一侧 +1，就是上面那个 **18** 与 **6**。
  *
  * 键名与 `DesktopBridge['modFolders']` 的方法名**逐一对应**（`satisfies` 那一条兜住
  * "契约加了方法却忘了加通道"）。⚠️ 这一条 `satisfies` **只有在 `modFolders` 是必需成员时
@@ -473,4 +566,29 @@ export const MOD_FOLDERS_CHANNELS = {
   setCatalogGameVersion: 'mcsr:modfolders-set-catalog-version',
   setTagFilter: 'mcsr:modfolders-set-tag-filter',
   downloadPack: 'mcsr:modfolders-download-pack',
+  /*
+   * ★★ D1（T4）：启动器绑定与实例那七条。⚠️ 契约上那七格（`DesktopBridge.modFolders`）
+   *    与这里**逐一对应**，由下面那条 `satisfies` 在编译期咬住。
+   *    ⚠️ 七条**全是 invoke**（页面调、主进程答）—— 这一组里**只推不答**的仍然只有
+   *    `onStatus` 与 `onProgress` 两条（`preload.ts` 与 `verify-mod-folders.mjs` 里
+   *    "几条通道 / 几条 handler"那几个数因此都是**现读**改的，见各自那一行注释）。
+   */
+  probeLaunchers: 'mcsr:modfolders-probe-launchers',
+  /*
+   * ⚠️★ 这一条的**键名**（`listLauncherInstances`）与**串**（`-list-instances`）对不上，
+   *    是有意的：串照 brief 钉住的形状（`mcsr:modfolders-list-instances`），而键名必须是
+   *    `DesktopBridge.modFolders` 上那个**方法名**（下面那条 `satisfies` 就是这么咬的）。
+   *    ⇒ 它是这一组里**第六条"非纯 kebab"**（见上面那一段：`listLauncherInstances` 的逐字
+   *    kebab 会是 `-list-launcher-instances`）。下一个人按规则推串时会对不上，所以列在那里。
+   *    ⚠️★ 这一条注释里**不许出现半角单引号**（连"举例说明"也不行）：`verify-mod-folders.mjs`
+   *    的 `channelsOf()` 是**按源码文本**数这个块里的引号串的 ⇒ 多一对引号它当场 `bail`
+   *    （退出码 2，"这条检查没跑起来"，看起来像探针坏了）。实测踩过两次，现场就是这几行。
+   *    要引类型时用**反引号 + 点号**（`DesktopBridge.modFolders`），不要用下标那种写法。
+   */
+  listLauncherInstances: 'mcsr:modfolders-list-instances',
+  setInstancePaths: 'mcsr:modfolders-set-instance-paths',
+  addLauncher: 'mcsr:modfolders-add-launcher',
+  removeLauncher: 'mcsr:modfolders-remove-launcher',
+  setInstanceTracked: 'mcsr:modfolders-set-instance-tracked',
+  confirmInstance: 'mcsr:modfolders-confirm-instance',
 } as const satisfies Record<keyof DesktopBridge['modFolders'], string>;

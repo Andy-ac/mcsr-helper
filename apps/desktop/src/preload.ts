@@ -6,7 +6,8 @@ import {
 } from '@mcsr/shared/desktop';
 import type { DownloadProgress } from '@mcsr/shared/downloadProgress';
 import type { FileUpdatesState } from '@mcsr/shared/fileUpdates';
-import type { Channel, ModFoldersState } from '@mcsr/shared/modFolders';
+import type { LauncherKind } from '@mcsr/shared/launcherInstances';
+import type { Channel, InstanceView, ModFoldersState } from '@mcsr/shared/modFolders';
 import { contextBridge, ipcRenderer } from 'electron';
 
 /**
@@ -189,14 +190,17 @@ const bridge: DesktopBridge = {
    *    "页面唯一的数据来源"的一部分，本期**有意接受**（文件头那一段写着这条决定）。
    *
    * ⚠️★ 主进程那一半（`ipcMain.handle` 的注册）**早就在了**（Task 4 落地、现在住
-   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **17 条**通道里
-   *    **15 条**是真注册的 handler（现数：`ipcMain.handle` 那 15 条），余下 **2 条**
+   *    `apps/desktop/src/mod-folders.ts` 的 `registerIpc()`）：这一组 **24 条**通道里
+   *    **22 条**是真注册的 handler（现数：`ipcMain.handle` 那 22 条），余下 **2 条**
    *    （`onStatus` 与 C 的 T3 加的 `onProgress`）是**推**给页面的（主进程只 `send`，
-   *    没有 handler 可注册）—— 所以"17 条通道 / 15 个 handler"不是少了两条（**B2 的 T4** 加 `downloadPack` ⇒ 两边各 +1）。
+   *    没有 handler 可注册）—— 所以"24 条通道 / 22 个 handler"不是少了两条（**B2 的 T4** 加 `downloadPack` ⇒ 两边各 +1；
+   *    ★ **D1 的 T4** 加那七条 ⇒ 两边**各 +7**：七条**全是 invoke**，没有一条是纯推送）。
    *    ⚠️★ 这两个数**随手抄的会过期**：现数口径是"`MOD_FOLDERS_CHANNELS` 有几个键"
    *    与"`mod-folders.ts` 里 `ipcMain.handle(...)` 有几条"。C 的 T4 加 `cancelDownload`
    *    时这半句没跟着改（写的是 15 / 13），最终修复波（I2）逐条现数改准成 16 / 14
    *    —— 同族的 `mod-folders.ts` 与 `shared/desktop.ts` 那两处当时已经改过。
+   *    ⚠️★ **D1 的 T4** 再逐条现数改一次：17 / 15 → **24 / 22**
+   *    （`verify-mod-folders.mjs` 里那两句同族的手抄注释也同批改了）。
    *    ⚠️ 这条注释原来写的是"主进程那一半是 Task 4 的、今天还不存在 ⇒ 这几条 invoke 一律
    *    reject" —— 那是**转发先落地、行为随后**那个中间态的一句话，Task 4 之后就成了假话
    *    （T2 复审的 Minor ③ 记的正是它，最终修复波改准）。
@@ -348,6 +352,50 @@ const bridge: DesktopBridge = {
         MOD_FOLDERS_CHANNELS.setTagFilter,
         tags,
       ) as Promise<ModFoldersState>;
+    },
+    /*
+     * ★★ D1（T4，2026-10-11）：启动器绑定与实例那七条（契约 17 → 24）。
+     *   与这一组其它每一条**同一条纪律**：显式逐个转发、通道名取自常量、**入参不含"写哪儿"**。
+     *   ⚠️ `addLauncher(kind, rootPath)` 收一个路径，而它是"去哪儿**读**"不是"往哪儿写" ——
+     *      写盘的目标永远由主进程从它自己那份派生状态里取（见契约上那一段）。
+     *   ⚠️ 三条 `key` 通道（`setInstancePaths` / `setInstanceTracked` / `confirmInstance`）
+     *      递的是 `instance.key`，它由主进程枚举出来经 `state.instances` 交给页面。
+     *   ⚠️ 七条的返回值：两条各有各的形状（候选表 / `InstanceView[]`），五条是 `void`
+     *      —— **不是** `ModFoldersState`：它们改完状态会由主进程 `rebuild()` 推那一份
+     *      （`onStatus`），页面读推送来的那一份，不必再拿一次返回值
+     *      （这正是"状态只有一处真相"那条纪律的落地）。
+     */
+    probeLaunchers(): Promise<{ kind: LauncherKind; rootPath: string }[]> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.probeLaunchers) as Promise<
+        { kind: LauncherKind; rootPath: string }[]
+      >;
+    },
+    listLauncherInstances(): Promise<InstanceView[]> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.listLauncherInstances) as Promise<
+        InstanceView[]
+      >;
+    },
+    setInstancePaths(
+      key: string,
+      patch: { modsDir?: string; savesDir?: string; loader?: string },
+    ): Promise<void> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.setInstancePaths, key, patch) as Promise<void>;
+    },
+    addLauncher(kind: LauncherKind, rootPath: string): Promise<void> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.addLauncher, kind, rootPath) as Promise<void>;
+    },
+    removeLauncher(id: string): Promise<void> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.removeLauncher, id) as Promise<void>;
+    },
+    setInstanceTracked(key: string, tracked: boolean): Promise<void> {
+      return ipcRenderer.invoke(
+        MOD_FOLDERS_CHANNELS.setInstanceTracked,
+        key,
+        tracked,
+      ) as Promise<void>;
+    },
+    confirmInstance(key: string): Promise<void> {
+      return ipcRenderer.invoke(MOD_FOLDERS_CHANNELS.confirmInstance, key) as Promise<void>;
     },
   },
 };

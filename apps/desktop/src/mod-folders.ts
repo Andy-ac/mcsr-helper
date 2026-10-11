@@ -9,10 +9,14 @@
  *     目标换成上游最新版）；
  *   · **扫文件夹 / 推断游戏版本**（`scanFolder` / `resolveGameVersion`）；
  *   · **组装 `ModFoldersState` 并推给页面**（`broadcast`）；
- *   · **十五条 IPC 的注册**（**今天契约 17 个成员**；来处：C 的 T4 之后是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
+ *   · **二十二条 IPC 的注册**（**今天契约 24 个成员**；来处：C 的 T4 之后是 16 个成员：`onStatus` 与 `onProgress` 只推、不 handle；
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
  *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
- *     T4 加 `cancelDownload`（16）、**B2 的 T4** 加 `downloadPack`（17）—— 后三条**都没有**加 handler 之外的注册面）；
+ *     T4 加 `cancelDownload`（16）、**B2 的 T4** 加 `downloadPack`（17）—— 后三条**都没有**加 handler 之外的注册面；
+ *     ★★ **D1 的 T4** 加那七条（`probeLaunchers` / `listInstances` / `setInstancePaths` /
+ *     `addLauncher` / `removeLauncher` / `setInstanceTracked` / `confirmInstance`）⇒
+ *     契约 17 → **24**、handler 15 → **22**：**七条全是 handler**（这一组里只推不 handle 的
+ *     仍然只有 `onStatus` / `onProgress` 那两条，所以"通道数 − 2 = handler 数"照旧成立））；
  *   · ★ **写盘**（Task 5 单行 / Task 6 批量）：`updateMod`（文件夹里那一行）、
  *     **整夹更新** `updateFolderAll`、**缺失下载** `downloadMissing`、**B2 的整包下载** `downloadPack`
  *     —— 四个入口共用
@@ -74,12 +78,19 @@
  *     退而求其次喂一份**空目录**是错的：那会把每一份扫描读数都标成"清单外 mod"。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import { SITE } from '@mcsr/shared';
 import { MOD_FOLDERS_CHANNELS } from '@mcsr/shared/desktop';
 import type { ByteSample, DownloadProgress, TimedSample } from '@mcsr/shared/downloadProgress';
 import { shouldPush } from '@mcsr/shared/downloadProgress';
+import {
+  type LauncherFs,
+  type LauncherInstance,
+  type LauncherKind,
+  listInstances,
+} from '@mcsr/shared/launcherInstances';
 import {
   buildIndex,
   type ModCatalog,
@@ -92,9 +103,15 @@ import {
 import {
   type Channel,
   channelUrl,
+  deriveFolders,
   type FolderVerdict,
+  type InstancePref,
+  type InstanceView,
+  instanceViewsOf,
   isKnownGameVersion,
   isKnownMirror,
+  type LauncherBinding,
+  type LauncherBindingView,
   type ModFolderRowView,
   type ModFoldersState,
   type ModFolderView,
@@ -590,6 +607,13 @@ function placeholderState(): ModFoldersState {
     bulkChannel: 'origin',
     catalogRows: [],
     folders: [],
+    /*
+     * ★★ D1（T4）：模块还没初始化 ⇒ **还没有任何绑定、也还没有读过实例**
+     * （`instancesStatus: 'reading'` —— 界面据此说"正在读取…"，而不是"你一个实例都没有"）。
+     */
+    launchers: [],
+    instances: [],
+    instancesStatus: 'reading',
     missing: [],
     missingStatus: 'catalog-unavailable',
     notices: [],
@@ -640,6 +664,20 @@ function buildState(): ModFoldersState {
   if (deps === null) return placeholderState();
   const st = requireState();
   const gameVersion = st.prefs.catalogGameVersion;
+
+  /*
+   * ★★ D1（T4）：这一处是**实例**那一侧的入口，而它必须**同步、零 I/O**：
+   *   · `instanceViews()` 只读 `enumeration` 缓存（枚举住在 `refreshInstances()` 那条异步路里）；
+   *   · `reconcileFolders()` 把"被追踪的实例"派生成 `folders` 的那几条、把既有的值合并回来、
+   *     把不再被追踪的回收掉（改动了才落盘）。
+   * ⚠️★ 顺序是承重的：**先对账再取 `entries`** —— 反过来的话，这一份状态里的 `folders` 还是
+   *    上一趟的样子（用户勾了一个实例，界面上要等下一次推送才看得到它）。
+   * ⚠️ `launcherViews(st)` 顺带会把"坏绑定"那句 notice 推进 `notices`，所以它也在
+   *    `notices` 组装**之前**（下面那个数组字面量里现读 `notices`）。
+   */
+  const instances = instanceViews();
+  reconcileFolders(st, instances);
+  const launchers = launcherViews(st);
 
   const known = catalogOf();
   /*
@@ -743,6 +781,15 @@ function buildState(): ModFoldersState {
     bulkChannel: st.prefs.bulkChannel,
     catalogRows,
     folders,
+    launchers,
+    instances,
+    /*
+     * ★ D1（A14）：`instances: []` 的两个原因分得开 —— `enumeration === null` 是"还没有跑完
+     *   任何一趟枚举"（界面说"正在读取…"），否则是"读到了，就是这么多"。
+     * ⚠️ `launchers: []`（一条绑定都没有）**也**可以是 `'ok'`：那是"读过了、但没有东西可读"，
+     *   与"还在读"是两句不同的话（A8 的第一个空态判的是 `launchers.length === 0`）。
+     */
+    instancesStatus: enumeration === null ? 'reading' : 'ok',
     missing,
     missingStatus,
     // 目录与缺失清单那两条**不是** push 进 notices 的：它们是"这一次读数的结论"，条件不成立时该消失
@@ -1012,12 +1059,44 @@ function setFolderAutoUpdate(folderId: unknown, on: unknown): Promise<ModFolders
   });
 }
 
+/**
+ * 改一个 folder 的游戏版本（界面那一格下拉）。
+ *
+ * ★★ D1（T4，2026-10-11 控制器现读后裁定）：**两条分支，各有各的落点** ——
+ *   ① **实例派生的 folder**（`key` 在这一趟枚举结果里）⇒ 写 `instancePrefs[key].gameVersion`
+ *      （**用户手改那一档，对账的最高优先**），**并且同时**写 `folders[key].gameVersion`
+ *      （界面与探针不必等下一趟对账就能看到 ✓）。
+ *      ⚠️★ 为什么必须有这一档：实例元数据读不出来时（`gameVersion: null`）它在
+ *      "版本 → 实例"那个流程里**永远够不到** ⇒ 用户没法往它里面装东西，而**今天**用户
+ *      可以在文件夹行上手改 ⇒ 不收下这一格就是**功能倒退**（A10 的"零功能损失"）。
+ *      ⚠️ `null` ⇒ **删掉那一格**（= 交回自动），不是"把 null 写下来"：`undefined` 的含义
+ *      在 `InstancePref.gameVersion` 上是"没手改过"，与"手改成了 null"必须区分。
+ *      ⚠️ 写进 `instancePrefs` 的一律是**用户明确选的那一版** —— `adoptFolderGameVersion`
+ *      推断出来的值**只写 `folders`**（混起来就分不清"用户选的"与"我们猜的"）。
+ *   ② **手工绑定的 folder**（没有 pref、也不在枚举结果里）⇒ **照旧只写 `folders`**：
+ *      桌面探针那一族断言（`setFolderGameVersion` 的读数）全靠它，**一个字都不许改**。
+ *   两条分支的落点不同，但**读数都在返回的那份状态里**（各自那一格），所以界面两条路一样。
+ */
 function setFolderGameVersion(folderId: unknown, gameVersion: unknown): ModFoldersState {
-  const { entry } = requireFolder(folderId);
+  const { folderId: id, entry } = requireFolder(folderId);
+  const isInstance = instanceByKey(id) !== undefined;
   if (gameVersion === null) {
     entry.gameVersion = null; // 交回自动推断（spec §8）
+    if (isInstance) {
+      const pref = prefRecordOf(requireState(), id);
+      if (pref !== undefined) {
+        /* ★ 删那一格，不是写 `null`（见上面那一段：`undefined` 与 `null` 在这里是两件事）。 */
+        const { gameVersion: _dropped, ...rest } = pref;
+        requireState().instancePrefs[id] = rest;
+      }
+    }
   } else {
-    entry.gameVersion = requireGameVersion(gameVersion, 'gameVersion');
+    const version = requireGameVersion(gameVersion, 'gameVersion');
+    entry.gameVersion = version;
+    if (isInstance) {
+      const prev = prefRecordOf(requireState(), id) ?? { tracked: false };
+      requireState().instancePrefs[id] = { ...prev, gameVersion: version };
+    }
   }
   persist();
   rebuild();
@@ -2272,12 +2351,662 @@ export async function downloadPack(
 }
 
 // ---------------------------------------------------------------------------
+// ★★ D1（T4）：启动器绑定、实例枚举与**对账**
+// ---------------------------------------------------------------------------
+/*
+ * ===========================================================================
+ * 这一段负责什么（边界写下来，免得下一个人以为它管得比实际宽）
+ * ===========================================================================
+ *   · **探测**常见位置（`probeLaunchersOnDisk`）—— 只读、只扫 spec §6 列的候选，不全盘扫；
+ *   · **枚举**绑定的启动器（`enumerateAll` / `refreshInstances`）—— 逐块 try/catch（A14），
+ *     结果进**模块级缓存**（`enumeration`），**只有 `refreshInstances` 一处写它**；
+ *   · **对账**（`reconcileFolders`）—— 同步、零 I/O：把"被追踪的实例"派生成 `folders` 那几条、
+ *     把既有的值合并回来、把不再被追踪的回收掉。它是 D1"零功能损失"的落点：
+ *     `folders` 的**形状一个字没变** ⇒ 扫描 / 判定 / 整夹更新 / 缺失清单**一行都不用改**。
+ *
+ * ⚠️★ **只读纪律**（spec A13）：这一段里**没有一处**写启动器或实例的文件 ——
+ *    枚举读的是 `mmc-pack.json` / 版本 json / 目录名，写盘只写我们**自己那份**状态文件
+ *    （`persist()` ⇒ `file-tracking.json`）。`instance.cfg` / `instance.json` 一个字节都不碰。
+ *
+ * ⚠️★ **为什么枚举必须缓存**（不许塞进 `buildState()` 里现算）：
+ *    现读 `rebuild()` ⇒ **每一次状态改动都会重算 `buildState()`**（换相位、换项、每次勾选、
+ *    每次 rescan……），而枚举是"每个实例若干次 `readdir` / `readFile`"（spec §13.3 记着这条
+ *    耗时风险），更别说 `buildState()` 是**同步**路径 ⇒ 它会变成一现场 syscall。
+ *    ⇒ 形状：`enumerated` 只被 `refreshInstances()`（异步）写；`buildState()` **只读**它。
+ *
+ * ⚠️★ **对账必须落盘**：启动那一趟（`startUp`）读的是**盘上那一份** `folders`
+ *    （它只扫 `autoUpdate === true` 的条目）⇒ 对账改动了就 `persist()`。而"改动了"这件事
+ *    由 `sameFolderEntry` 逐格比出来 —— 稳态下（第二趟起）对账**一格都不改** ⇒ 不写盘。
+ *    ⚠️ `persist()` 在**停住态**（状态文件坏且备份也失败）会抛，而这条路是**同步**的
+ *    状态组装路径 ⇒ 抛出去会让 `rebuild()` 连带 IPC 全炸。⇒ 这一处**接住**并记一句
+ *    （写不下去的那次对账照旧生效在内存里，下一趟重启再对一次）。
+ */
+
+/**
+ * 六个启动器类型 —— **现读** `LauncherKind` 的六个成员照抄。
+ *
+ * ⚠️★ 为什么这里必须有一份**值**：`LauncherKind` 是**类型**，运行时拿不到它的成员表，
+ *    而"渲染进程递进来的 `kind` 是不是一个真类型"这条校验要一个值（`addLauncher` 的入参
+ *    是不可信的）。⇒ 下面那个 `satisfies Record<LauncherKind, true>` 就是这份抄件与类型
+ *    之间的**编译期**焊接：类型加一个成员而这里漏了 ⇒ 当场编译失败（多写一个也失败）。
+ */
+const LAUNCHER_KINDS = Object.keys({
+  multimc: true,
+  prism: true,
+  pcl2: true,
+  hmcl: true,
+  official: true,
+  mcsr: true,
+} satisfies Record<LauncherKind, true>) as LauncherKind[];
+
+/**
+ * 真实文件系统（`LauncherFs` 的**产品**实现；另一个在测试里用假表实现）。
+ *
+ * ⚠️★ 三个方法的失败语义是**分开**的，而这份分寸正是 A14 能成立的前提：
+ *   · `exists` ⇒ 永远不抛（`existsSync` 本身就是问"在不在"）；
+ *   · `readFile` ⇒ **读不到就给 `null`、不抛**：元数据读不出来是**正常情形**
+ *     （实例没有那一份 json / 内容坏了）⇒ `parseInstanceMeta` 如实给 `gameVersion: null`
+ *     （"不猜"），而**不是**让整块枚举炸掉；
+ *   · `listDir` ⇒ **"不存在"与"读不动"分得开**：`ENOENT` / `ENOTDIR` 给空数组
+ *     （绝大多数候选根根本不存在，那是正常的），其余错误（`EACCES` / `EPERM` / `EIO`…）
+ *     **照抛** —— 那才是 A14 说的"这一块读不动"，由 `enumerateAll` 的逐块 catch 接住、
+ *     记进那一块的 `error`（界面画出来 + 可重试）。
+ *     ⚠️★ 把它也吞成空数组的话，"一个目录都读不出来"会长成"这个启动器一个实例都没有"——
+ *     那正是 Ruling 65 / 判修 1 那条纪律要治的"把不知道说成没有"。
+ */
+const realFs: LauncherFs = {
+  listDir(dir: string): readonly string[] {
+    try {
+      return readdirSync(dir);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+      throw error;
+    }
+  },
+  exists(path: string): boolean {
+    return existsSync(path);
+  },
+  readFile(path: string): string | null {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return null; // ★ 读不出来 = 不知道（`parseInstanceMeta` 会如实留空），不是失败
+    }
+  },
+};
+
+/** 一条绑定这一趟枚举的结果：成功的 id 与失败的 id ⇒ 原话。 */
+interface Enumeration {
+  instances: readonly LauncherInstance[];
+  /** 这一趟**读成功**的绑定 id。 */
+  ok: ReadonlySet<string>;
+  /** 这一趟**读不动**的绑定 id ⇒ 失败原话（界面画出这一句 + 一颗重试按钮）。 */
+  failed: ReadonlyMap<string, string>;
+}
+
+/**
+ * ★★ 枚举缓存 —— **只能由 `refreshInstances()` 写**（一处）。
+ * ⚠️ `null` = **还没有跑过任何一趟**（不是"没有任何实例"）：这两个状态在 `instances` 上
+ *    长得一样（都是 `[]`），所以状态里另有一格 `instancesStatus` 把它们分开（A14）。
+ */
+let enumeration: Enumeration | null = null;
+
+/** 枚举的**串行队列**（与 `queueScan` / `queueLoadCatalog` 同一条理由）。 */
+let refreshQueue: Promise<void> = Promise.resolve();
+
+/** 这一趟枚举出来的实例（**同步、零 I/O** —— `buildState()` 只走这一条路）。 */
+function enumerated(): readonly LauncherInstance[] {
+  return enumeration?.instances ?? [];
+}
+
+/** 枚举缓存里按 key 找一条（同步；找不到就是 `undefined`）。⚠️ 这是**原始**那一份（没套覆盖）。 */
+function instanceByKey(key: string): LauncherInstance | undefined {
+  return enumerated().find((instance) => instance.key === key);
+}
+
+/** 界面那一份实例（同一个缓存 + 现读的 pref ⇒ 与 `deriveFolders` 读的是**同一份**枚举）。 */
+function instanceViews(): readonly InstanceView[] {
+  return instanceViewsOf(enumerated(), requireState().instancePrefs);
+}
+
+/**
+ * 按 key 找一条**视图**（手改的路径 / loader / 版本**都已经套用**）。
+ *
+ * ⚠️★ 这个区别是**承重**的（实测踩过一次，由 `.cache/d1-t4-probe.mjs` 的 ⑥ 抓到）：
+ *    `instanceByKey` 给的是**探测出来**的那一份，而"勾选要扫哪个目录"必须用**用户手改之后**
+ *    的那一份 —— 用原始那一份会去扫**另一个目录**，却把读数记在**这个** folderId 上
+ *    ⇒ 界面显示的是别人家的读数（而且不报错），连"取消勾选 ⇒ 读数清除"那条判据都会假绿
+ *    （读数来自一个**一直存在**的目录 ⇒ `onlyIfMissing` 每次都跳过扫描）。
+ */
+function instanceViewByKey(key: string): InstanceView | undefined {
+  return instanceViews().find((view) => view.key === key);
+}
+
+/**
+ * 一次绑定的**形状校验**（状态文件只保顶层形状 ⇒ `launchers: [42]` 能一路流到这里）。
+ *
+ * ⚠️ 返回值是"哪里不对"的原话，`null` = 形状对。判据全是**形状**，不碰文件系统。
+ */
+function bindingShapeError(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null) return '不是一条绑定（不是一个对象）';
+  const { id, kind, rootPath } = raw as Partial<LauncherBinding>;
+  if (typeof id !== 'string' || id === '') return '缺 id';
+  if (typeof kind !== 'string' || !LAUNCHER_KINDS.includes(kind as LauncherKind)) {
+    return `不认识的启动器类型：${JSON.stringify(kind)}`;
+  }
+  if (typeof rootPath !== 'string' || rootPath === '') return '缺 rootPath';
+  return null;
+}
+
+/**
+ * 逐块枚举：**一个启动器块坏掉不许让整份列表空**（spec A14）。
+ *
+ * ⚠️★ 每一块各自 `try/catch`，失败只记进 `failed`（key = 绑定 id）—— 其余块照常进结果。
+ * ⚠️★ `await yieldToEventLoop()` 在每一块之后：这是"A14 枚举**异步**"的落地 ——
+ *    一次枚举要读几十上百个目录，一路同步跑下来会把主进程的事件循环按住（窗口不响应）。
+ * ⚠️ 坏形状的绑定（`launchers: [42]`）在这一层就跳过：它连 id 都没有，界面画不出它、
+ *    也就无从重试 ⇒ 记一句 notice（由 `pushNotice`，见 `launcherViews` 的调用点）。
+ */
+async function enumerateAll(bindings: readonly unknown[]): Promise<Enumeration> {
+  const instances: LauncherInstance[] = [];
+  const ok = new Set<string>();
+  const failed = new Map<string, string>();
+  for (const [index, raw] of bindings.entries()) {
+    const shapeError = bindingShapeError(raw);
+    if (shapeError !== null) {
+      // 合成一个**永远不会与真 id 撞**的键：它只用来把这句话带出去
+      failed.set(`坏绑定#${String(index)}`, shapeError);
+      continue;
+    }
+    const binding = raw as LauncherBinding;
+    try {
+      instances.push(...listInstances(realFs, binding.kind, binding.rootPath));
+      ok.add(binding.id);
+    } catch (error) {
+      failed.set(binding.id, messageOf(error));
+    }
+    await yieldToEventLoop();
+  }
+  return { instances, ok, failed };
+}
+
+/**
+ * 重新枚举当前绑定的全部启动器、写回缓存，并返回那一份实例视图。
+ *
+ * ⚠️★ **它是唯一写 `enumeration` 的地方**（`refreshInstances()` 的调用点：模块初始化那一趟
+ *    `startUp`、第一次 `getState`、`addLauncher` / `removeLauncher`、`confirmInstance` 之后，
+ *    以及 `listInstances` 那条通道本身 = "用户点刷新"）。
+ *    ⚠️ **勾选 / 取消勾选不走这里**：勾选只动我们自己的状态（那两格），扫启动器目录是白费 I/O。
+ * ⚠️ 串行：两条通道同时来（页面连点刷新 / 与 `addLauncher` 撞上）不会并发读同一批目录，
+ *    也不会出现"谁后到谁说了算"的两份缓存。
+ */
+function refreshInstances(): Promise<readonly InstanceView[]> {
+  const run = async (): Promise<void> => {
+    enumeration = await enumerateAll(requireState().launchers as readonly unknown[]);
+    rebuild();
+  };
+  const next = refreshQueue.then(run, run);
+  refreshQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next.then(() => instanceViews());
+}
+
+/**
+ * 界面上"绑定的启动器"那一栏（`ModFoldersState.launchers`）。
+ *
+ * ⚠️ `error` 取的是**这一趟**枚举的失败原话（成功 / 还没读过 ⇒ `null`）—— 它**不是**
+ *    `pushNotice` 那种一旦说了就永远挂着的东西：重试成功之后那一格必须自己变回 `null`。
+ * ⚠️ 坏形状的绑定画不出来（连 id 都没有）⇒ 跳过 + 一句 notice（那句话是**粘的**，因为
+ *    它要用户去手改状态文件，不是"再点一次刷新"能修好的）。
+ */
+function launcherViews(st: SharedState): LauncherBindingView[] {
+  const out: LauncherBindingView[] = [];
+  for (const raw of st.launchers as readonly unknown[]) {
+    const shapeError = bindingShapeError(raw);
+    if (shapeError !== null) {
+      pushNotice(`状态文件里有一条读不出来的启动器绑定（${shapeError}）⇒ 界面不画它，请手动核对`);
+      continue;
+    }
+    const binding = raw as LauncherBinding;
+    out.push({
+      id: binding.id,
+      kind: binding.kind,
+      rootPath: binding.rootPath,
+      error: enumeration?.failed.get(binding.id) ?? null,
+    });
+  }
+  return out;
+}
+
+/** 两格 folder entry 是不是逐格相同（对账据此判"要不要写盘"）。 */
+function sameFolderEntry(
+  a: SharedState['folders'][string],
+  b: SharedState['folders'][string],
+): boolean {
+  return (
+    a.path === b.path &&
+    a.gameVersion === b.gameVersion &&
+    a.autoUpdate === b.autoUpdate &&
+    a.boundAt === b.boundAt
+  );
+}
+
+/** 这个 key 是哪种启动器的实例（`instanceKeyOf` 造的形状：`<类型>:<相对根的路径>`）。 */
+function kindOfInstanceKey(key: string): LauncherKind | null {
+  return LAUNCHER_KINDS.find((kind) => key.startsWith(`${kind}:`)) ?? null;
+}
+
+/**
+ * ★★ **对账：派生 + 合并 + 回收**（同步、零 I/O；`buildState()` 里那一次调用）。
+ *
+ * 三条规则，逐条都有它的**代价**写在下面（改之前先读）：
+ *
+ * ① **补 / 改**：每个**被追踪**的实例 ⇒ `deriveFolders` 那一条（`path = modsDir`，
+ *    路径 / loader / 版本的手改**已经**由 `instanceViewsOf` 套用过了 ⇒ 这里不重套一遍）。
+ *    · `boundAt` = **既有那条的值 ?? 现在** —— ★ 不许每次重算：那会让界面每次刷新都
+ *      "看起来刚绑过"（那一格是显示顺序的依据：`sortedFolders` 按它升序）。
+ *    · `autoUpdate` = **既有那条的值 ?? `true`** —— ⚠️ **不要**写成恒 `true`：那一格是
+ *      用户在文件夹行上开的开关，恒 `true` 会让"关掉它"变成一个**自己变回来**的控件。
+ *      而"新出现的实例 folder 默认 `true`"是必须的（`deriveFolders` 就给 `true`）：
+ *      `startUp` 只扫 `autoUpdate === true` 的条目 ⇒ 给 `false` 的话升级后每次启动都扫不到它。
+ *    · `gameVersion` = **三档**：`pref.gameVersion`（用户手改，最高优先）⇒
+ *      `instance.gameVersion`（启动器元数据）⇒ **既有那条的值**（含 `adoptFolderGameVersion`
+ *      从 jar 里推断出来的那一份）⇒ `null`。前两档由视图给出（`base.gameVersion`），
+ *      这里只补第三档。⚠️ 少了第三档，用户以前手改/推断出来的版本会在第一次对账时被抹成
+ *      `null` —— 而"版本未知"的文件夹在"版本 → 实例"流程里够不到（那是实打实的功能倒退）。
+ *      ⚠️ 推断值**只写 `folders`、不进 `instancePrefs`**：混起来就再也分不清"用户选的"与
+ *      "我们猜的"（见 `InstancePref.gameVersion`）。
+ *
+ * ② **回收（GC）**：一个**已经有 pref** 的 key（= 它是实例派生的，手工绑定那条不写 pref），
+ *    若它**不再被追踪**、或**已经不在这一趟枚举结果里** ⇒ 删掉那一格 + `forgetScan(id)`
+ *    （A9：取消勾选 ⇒ folder 消失**且**读数清除；只删一格的话，那个 key 的旧读数会留在
+ *    `mod-folder-scan` 的缓存里，同一个路径再勾回来会拿到**旧读数**）。
+ *    ⚠️★ **"不在枚举结果里"只有在"这一趟没有把它读不动"时才算数**：一个块失败时它名下的
+ *    实例**不在结果里**，而那**不等于**"它们没了" —— 那时回收等于把一整块启动器的派生
+ *    folder（连同读数）删掉，而且**落盘**（用户看到的是一夜之间全没了）。
+ *    ⇒ 判据是"这个 key 的类型这一趟有没有读不动的绑定"（`failedKinds`）。
+ *
+ * ③ ⚠️★ **不是实例的那些 entry（= 手工绑定的）原样保留**：spec §7 明写旧的手工绑定通道
+ *    "保留在契约里（只是不再是 UI 入口）"，而**桌面探针那一整套判据就是靠 `bindFolder`
+ *    造夹具的** ⇒ 把它们一起清掉等于把现有全部覆盖拆了。判据是"这一格有没有 pref"
+ *    （只有实例那几条通道会写 `instancePrefs`；手工绑定的 id 是路径的 sha1，两者不撞）。
+ *    ⇒ `bindFolder` / `unbindFolder` 两个 handler **照旧能跑**，只是界面上不再有入口（T7 摘按钮）。
+ *
+ * ⚠️ 对账改动了就 `persist()`（见这一段开头那一段：启动扫描读的是盘上那一份）。
+ */
+function reconcileFolders(st: SharedState, views: readonly InstanceView[]): void {
+  let changed = false;
+  const byKey = new Map(views.map((view) => [view.key, view] as const));
+
+  /* ---- ① 补 / 改 ---- */
+  const derived = deriveFolders(
+    views,
+    st.instancePrefs,
+    (key) => st.folders[key]?.boundAt ?? Date.now(),
+  );
+  for (const [key, base] of Object.entries(derived)) {
+    const prev = st.folders[key];
+    const next: SharedState['folders'][string] = {
+      path: base.path,
+      gameVersion: base.gameVersion ?? prev?.gameVersion ?? null,
+      autoUpdate: prev?.autoUpdate ?? base.autoUpdate,
+      boundAt: prev?.boundAt ?? base.boundAt,
+    };
+    if (prev === undefined || !sameFolderEntry(prev, next)) {
+      st.folders[key] = next;
+      changed = true;
+    }
+  }
+  /* ⚠️ `byKey` 在这里的用处：下面 ② 要判"这个 key 还在不在这一趟的实例里"。
+     ①本身不需要它（`deriveFolders` 已经按 `tracked === true` 筛过一遍）。 */
+
+  /* ---- ② 回收 ---- */
+  const failedKinds = new Set<LauncherKind>();
+  if (enumeration !== null) {
+    for (const id of enumeration.failed.keys()) {
+      const binding = (st.launchers as readonly unknown[])
+        .map((raw) => (bindingShapeError(raw) === null ? (raw as LauncherBinding) : null))
+        .find((b) => b !== null && b.id === id);
+      if (binding != null) failedKinds.add(binding.kind);
+    }
+  }
+  for (const key of Object.keys(st.folders)) {
+    const pref = prefRecordOf(st, key);
+    if (pref === undefined) continue; // ★ ③ 手工绑定 ⇒ 原样保留（一个字节都不动）
+    if (pref.tracked === true && byKey.has(key)) continue; // 还在追踪、也在结果里 ⇒ 由 ① 那条覆盖
+    if (pref.tracked === true) {
+      /* 追踪着、但这一趟没枚举到 ⇒ 只有"它所属的类型这一趟没有读不动的块"才敢回收。 */
+      if (enumeration === null) continue;
+      const kind = kindOfInstanceKey(key);
+      if (kind === null || failedKinds.has(kind)) continue;
+    }
+    delete st.folders[key];
+    forgetScan(key);
+    changed = true;
+  }
+
+  /* ---- 落盘（只在真的改了时）---- */
+  if (!changed) return;
+  try {
+    persist();
+  } catch (error) {
+    /*
+     * ⚠️★ 这一句**必须**接住（这一条路是同步的状态组装路径）：停住态下 `persist()` 会抛，
+     *    抛出去会让 `rebuild()` 连带 `getState` 一起炸 —— 而"状态文件写不下去"已经由
+     *    `initModFolders` 那条 notice + 弹框说过一次了。写不下去时对账照旧生效在**内存**里。
+     */
+    pushNotice(`对账改了文件夹表，但状态文件写不下去：${messageOf(error)}`);
+  }
+}
+
+/** 现读 `state.instancePrefs[key]`（坏形状 —— `null` / 不是对象 —— 一律当"没有这一格"）。 */
+function prefRecordOf(st: SharedState, key: string): InstancePref | undefined {
+  const pref = st.instancePrefs[key];
+  return typeof pref === 'object' && pref !== null ? pref : undefined;
+}
+
+/**
+ * 一条绑定的**根路径归一化**（去掉尾部的 `\` / `/`）。
+ *
+ * ⚠️★ 为什么"添加启动器"这条入口必须归一化（而 `listInstances` 内部**也**做一次）：
+ *    绑定 id 是 `${kind}:${根}`，而 `D:\PCL2` 与 `D:\PCL2\` 不归一化就是**两条绑定**
+ *    ⇒ 同一台机器上会出现两套同名的实例（`instanceKeyOf` 用的是比出来的相对路径）。
+ * ⚠️ 它与 `launcherInstances.ts` 的 `normalizeRoot`（私有）**同形**：那一份管"枚举时的入参"，
+ *    这一份管"记账时的键"。两处都要，因为它们服务的是两件事；⚠️ 改一处时另一处要一起看。
+ */
+function normalizedBindingRoot(rootPath: string): string {
+  return rootPath.trim().replace(/[\\/]+$/, '');
+}
+
+/** 真实 Windows 上"常见盘符根"：`C:\`…`Z:\` 里**真的存在**的那些（只 stat 根，不全盘扫）。 */
+function driveRoots(): string[] {
+  if (process.platform !== 'win32') return ['/'];
+  const roots: string[] = [];
+  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZAB') {
+    const root = `${letter}:\\`;
+    if (existsSync(root)) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * ★ D1（T4）：扫**常见位置**报出命中的启动器根（spec §6 的探测策略：不做全盘扫描）。
+ *
+ * ⚠️★ 判"命中"的判据是**"这个根真的能列出实例"**（`listInstances(...).length > 0`），
+ *    **不是**"根目录存在"：后者会把 `%APPDATA%\.minecraft` 这种人人都有、而未必是用户
+ *    真正在用的根报出来 —— 用户会以为已经绑好了，之后**所有判定都落在错的目录上**
+ *    （"报了一个它其实不用的根"比"什么都没报"更坏）。
+ *    ★ 用 `listInstances` 而不是自己拼"实例父目录存不存在"：拼一遍就是**第二份**目录布局
+ *    规则（`instancesParentOf` 那一份），两处迟早漂。
+ * ⚠️ 候选根由**外面**定（`probeLaunchers` 的调用方是页面），这里只负责"哪些真的能用"。
+ * ⚠️ 读不动的候选根（`EACCES` 之类）⇒ **不报**（`try/catch` 吞掉）：探测的产物是
+ *    "可以加的那些"，一个加不上的根不该出现在那里（用户加了它也只会在枚举时看到错误）。
+ */
+function probeLaunchersOnDisk(): { kind: LauncherKind; rootPath: string }[] {
+  const home = homedir();
+  const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming');
+  const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local');
+  const drives = driveRoots();
+
+  const candidates: { kind: LauncherKind; rootPath: string }[] = [];
+  const seen = new Set<string>();
+  const add = (kind: LauncherKind, rootPath: string): void => {
+    const root = normalizedBindingRoot(rootPath);
+    if (root === '') return;
+    const id = `${kind}:${root.toLowerCase()}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    candidates.push({ kind, rootPath: root });
+  };
+
+  for (const drive of drives) {
+    add('multimc', `${drive}MultiMC`);
+    add('prism', `${drive}PrismLauncher`);
+    add('pcl2', `${drive}PCL2`);
+    add('hmcl', `${drive}HMCL`);
+  }
+  for (const kind of ['multimc', 'prism'] as const) {
+    const name = kind === 'multimc' ? 'MultiMC' : 'PrismLauncher';
+    add(kind, join(appData, name));
+    add(kind, join(home, name));
+  }
+  add('pcl2', join(home, 'PCL2'));
+  add('hmcl', join(home, 'HMCL'));
+  /* 官方：`%APPDATA%\.minecraft`（默认安装位置；`versions\` 下才有实例，见下面那条判据）。 */
+  add('official', join(appData, '.minecraft'));
+  /*
+   * ★ MCSR Launcher（spec §13.1 的那条**推断**，2026-10-11 源码实证了一半）：
+   *   根 = "启动 exe 时的 CWD 下的 `launcher\`"，官方 Windows 安装包的 `DefaultDirName` 是
+   *   `{localappdata}\MCSRLauncher` ⇒ 最常见的是第三个候选。**没有**用户可选那一步
+   *   ⇒ 命中不了就让用户手填（界面上"手动指定根"必须一直在）。
+   */
+  add('mcsr', join(localAppData, 'MCSRLauncher', 'launcher'));
+  add('mcsr', join(localAppData, 'MCSRLauncher'));
+  add('mcsr', join(appData, 'MCSRLauncher', 'launcher'));
+
+  const hits: { kind: LauncherKind; rootPath: string }[] = [];
+  for (const candidate of candidates) {
+    try {
+      if (listInstances(realFs, candidate.kind, candidate.rootPath).length > 0)
+        hits.push(candidate);
+    } catch {
+      /* 读不动 ⇒ 不报（见上面那一条：探测的产物是"可以加的那些"） */
+    }
+  }
+  return hits;
+}
+
+/** 一个 `instance.key` 的**形状**校验（入参来自渲染进程 ⇒ 一律不可信）。 */
+function requireInstanceKeyShape(key: unknown): string {
+  if (typeof key !== 'string' || key === '') {
+    throw new Error('非法参数：key 必须是非空字符串（`instance.key`）');
+  }
+  return key;
+}
+
+/**
+ * 一个 `instance.key` 的**存在性**校验：它要么在**这一趟枚举结果**里，要么**已经有 pref**。
+ *
+ * ⚠️★ 为什么"已经有 pref"也算过：枚举是**逐块**的，一块读不动时它名下的实例不在结果里 ——
+ *    那时用户仍然要能取消勾选 / 把路径改回去（否则"一块坏掉"就把那一块的操作**全锁死**了，
+ *    而那正好是 A14 要求"坏掉的那一块可以重试"的反面）。
+ * ⚠️ 两条都不成立 ⇒ **抛**：不猜、也不给一个凭空造出来的 key 建一条配置
+ *    （那会让状态文件里长出界面永远看不到的垃圾格）。
+ */
+function requireInstanceKey(key: unknown): string {
+  const id = requireInstanceKeyShape(key);
+  if (instanceByKey(id) === undefined && prefRecordOf(requireState(), id) === undefined) {
+    throw new Error(`枚举结果里没有这个实例（先刷新一次再操作）：${id}`);
+  }
+  return id;
+}
+
+/** `setInstancePaths` 的 patch：只认那三格，且每格必须是**非空字符串**（或省略 = 不改）。 */
+function instancePatchOf(patch: unknown): { modsDir?: string; savesDir?: string; loader?: string } {
+  if (!isRecord(patch)) throw new Error('非法参数：patch 必须是一个对象');
+  const out: { modsDir?: string; savesDir?: string; loader?: string } = {};
+  for (const field of ['modsDir', 'savesDir', 'loader'] as const) {
+    const value = patch[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || value === '') {
+      throw new Error(`非法参数：${field} 必须是非空字符串（省略 = 不改这一格）`);
+    }
+    out[field] = value;
+  }
+  return out;
+}
+
+/**
+ * ★ A12：手改一个实例的解析结果（**持久化**，且下一趟枚举时它**优先于探测**）。
+ *
+ * ⚠️ 逐格覆盖（`{...prev, ...clean}`）：只给出来的那几格才算覆盖 —— 整份替换会让"只改
+ *    `saves`"顺手把 `mods` 也钉死成当时看到的那一份。
+ * ⚠️ 通知**不去重**：`patch` 是空对象时这一趟什么也不改（但也不抛 —— 界面失焦时可能发一次
+ *    空的 patch，那不是错误）。
+ * ⚠️★ 它**不重扫启动器目录**（改的是解析结果，不是磁盘布局）：`rebuild()` 会让视图与派生
+ *    的 folder 立刻跟上（`reconcileFolders` 是同步的）。
+ */
+function setInstancePaths(key: unknown, patch: unknown): void {
+  const id = requireInstanceKey(key);
+  const clean = instancePatchOf(patch);
+  if (Object.keys(clean).length === 0) return;
+  const st = requireState();
+  const prev = prefRecordOf(st, id) ?? { tracked: false };
+  st.instancePrefs[id] = { ...prev, ...clean };
+  persist();
+  rebuild();
+}
+
+/**
+ * ★ 控制器 2026-10-11 裁定的那条**显式确认**：把"用户看过并接受了这个解析结果"记下来。
+ *
+ * ⚠️★ 为什么不靠"字符串变没变"推：`applyOverride` 只在**值真的变了**时清 `needsConfirm`
+ *    （同值覆盖不清 —— 那是对的，空覆盖不产生"用户确认过"这个事实）⇒ 用户"看着对、
+ *    什么都没改"这一种接受**没有落点**。这条通道就是那个落点。
+ */
+async function confirmInstance(key: unknown): Promise<void> {
+  const id = requireInstanceKey(key);
+  const st = requireState();
+  const prev = prefRecordOf(st, id) ?? { tracked: false };
+  st.instancePrefs[id] = { ...prev, confirmed: true };
+  persist();
+  /*
+   * ⚠️ 这里走一趟**重新枚举**（而不是只 `rebuild()`）：确认这个动作的对象是"解析结果"，
+   *    而解析结果可能刚好在这一刻变了（用户可能刚改过磁盘上的东西）—— 重新读一次，
+   *    用户点的那一下才是对着**当前**这一份结果按的。⇒ 界面随之拿到的 `needsConfirm`
+   *    是"刚读出来的那一份 + 已确认"（视图里那一格是显示值 `needsConfirm && !confirmed`）。
+   */
+  await refreshInstances();
+}
+
+/**
+ * ★ A9：勾选 / 取消勾选一个实例。
+ *
+ * ⚠️★ 勾上 ⇒ **立刻扫一次**：用户马上就能看到"缺哪些"（`missing` 与文件夹行都靠这份读数），
+ *    而这正是 A9 要的"勾选即触发一次扫描"。⚠️★ 要扫的路径必须从**枚举结果**里取
+ *    （`view.modsDir`，路径手改**已套用**），**不要**从 `folders` 里查 —— 勾选那一刻
+ *    `folders[key]` **还不存在**（它是下一趟对账才长出来的），查不到 ⇒ 扫描落空 ⇒
+ *    "勾了却看不到任何读数"。
+ * ⚠️ 取消 ⇒ **删读数**（A9 的字面"读数一并清"），那一格 `folders` 由紧接着的 `rebuild()`
+ *    里那次对账回收（`reconcileFolders` 的第 ② 条）—— 两条路都在**同一趟**里发生，
+ *    所以界面看到的永远是"消失了、且读数也没了"。
+ * ⚠️ 它在**取消**那一支不要求实例还在枚举结果里（见 `requireInstanceKey`）：一块读不动时，
+ *    用户仍然要能取消勾选。
+ */
+async function setInstanceTracked(key: unknown, tracked: unknown): Promise<void> {
+  const id = requireInstanceKey(key);
+  if (typeof tracked !== 'boolean') throw new Error('非法参数：tracked 只接受布尔');
+  /*
+   * ★★ **勾选**那一支要求这个实例有一份**视图**（= 它的 `modsDir` 能算出来）。
+   *    ⚠️ 少了这道闸，"勾上但它派生不出 folder（视图把这一行滤掉了）"会变成一个
+   *    **静默的成功**：状态里记着 `tracked: true`，而界面上什么都没有 —— 正是 A9 要防的
+   *    "勾了却看不到任何读数"。⇒ 宁可当场拒（它同时也是"解析结果读不出来"的如实报告）。
+   * ⚠️ **取消**那一支不要求（`prefRecordOf` 兜住）：一块读不动时用户仍然要能取消勾选。
+   */
+  const view = tracked ? instanceViewByKey(id) : undefined;
+  if (tracked && view === undefined) {
+    throw new Error(`这个实例的解析结果读不出来（勾了也扫不成）⇒ 先改好路径再勾：${id}`);
+  }
+  const st = requireState();
+  const prev = prefRecordOf(st, id) ?? {};
+  st.instancePrefs[id] = { ...prev, tracked };
+  /*
+   * ⚠️ 先落盘、再扫描：勾选这件事本身（用户的意图）比扫描读数重要 —— 扫描中途出任何事，
+   *    "它被追踪着"这个事实都已经记下来了（下次启动照样扫它）。
+   */
+  persist();
+  if (view !== undefined) {
+    /*
+     * ★★ 路径取**视图**那一格（覆盖已套用）。⚠️ 用 `instanceByKey`（原始那一份）会去扫
+     *    **探测出来的**目录、却把读数记在这个 folderId 上 —— 界面显示的是别人家的读数，
+     *    而且完全不报错。实测由 `.cache/d1-t4-probe.mjs` 的 ⑥ 抓到。
+     */
+    await queueScan(id, view.modsDir, { onlyIfMissing: true });
+  } else {
+    forgetScan(id);
+  }
+  rebuild();
+}
+
+/** `addLauncher` / `removeLauncher` 的 kind 校验（渲染进程递进来的东西一律不可信）。 */
+function requireLauncherKind(kind: unknown): LauncherKind {
+  if (typeof kind !== 'string' || !LAUNCHER_KINDS.includes(kind as LauncherKind)) {
+    throw new Error(`非法参数：不认识的启动器类型：${JSON.stringify(kind)}`);
+  }
+  return kind as LauncherKind;
+}
+
+/**
+ * 加一条启动器绑定（幂等：同一个 `(kind, 归一化后的根)` 不会变成两条）。
+ *
+ * ⚠️★ 归一化在**入口**做（见 `normalizedBindingRoot`）：`D:\PCL2` 与 `D:\PCL2\` 是**同一条**。
+ * ⚠️ 它只写我们自己的状态（A13：不碰启动器目录一个字节），然后**重新枚举**那一趟
+ *    （新绑的启动器要立刻长出实例列表，否则用户点了"添加"什么都看不到）。
+ */
+async function addLauncher(kind: unknown, rootPath: unknown): Promise<void> {
+  const launcherKind = requireLauncherKind(kind);
+  if (typeof rootPath !== 'string' || rootPath === '') {
+    throw new Error('非法参数：rootPath 必须是非空字符串');
+  }
+  const root = normalizedBindingRoot(rootPath);
+  if (root === '') throw new Error(`非法参数：这个根路径归一化之后是空的：${rootPath}`);
+  const st = requireState();
+  const id = `${launcherKind}:${root}`;
+  if (!st.launchers.some((binding) => bindingShapeError(binding) === null && binding.id === id)) {
+    st.launchers = [...st.launchers, { id, kind: launcherKind, rootPath: root }];
+    persist();
+  }
+  await refreshInstances();
+}
+
+/**
+ * 移除一条绑定：**只删我们自己的记账**（A13）。
+ *
+ * ⚠️★ 它名下**这一趟枚举到的**实例一律转为"不再追踪"（读数一并清）：绑定没了 ⇒ 下一次枚举
+ *    它们就不会出现 ⇒ 它们在 `folders` 里的那一条也留不住（对账的第 ② 条）。
+ *    把它明说出来（而不是等对账去猜）有两个好处：① 用户"取消绑定"的意图就是"别再管这些
+ *    实例了"；② 即使那一趟枚举因为别的原因读不动，这些实例的勾选也已经落定了。
+ * ⚠️ "它名下的实例"按**实例路径落在根里面**判（`isInsideFolder`，与本文件 §13.1 那条用的是
+ *    同一个谓词）：key 里只有相对路径、**没有根**，所以两个同类型的根下同一个相对路径
+ *    **会撞出同一个 key** —— 用路径判才分得开。
+ */
+async function removeLauncher(id: unknown): Promise<void> {
+  if (typeof id !== 'string' || id === '') throw new Error('非法参数：id 必须是非空字符串');
+  const st = requireState();
+  const binding = (st.launchers as readonly unknown[])
+    .map((raw) => (bindingShapeError(raw) === null ? (raw as LauncherBinding) : null))
+    .find((b) => b !== null && b.id === id);
+  if (binding == null) throw new Error(`状态里没有这条启动器绑定：${id}`);
+
+  st.launchers = (st.launchers as readonly unknown[]).filter(
+    (raw) => !(bindingShapeError(raw) === null && (raw as LauncherBinding).id === id),
+  ) as LauncherBinding[];
+  /* ⚠️ 上面这个 `as` 是**如实**的：`migrateState` 只保顶层形状 ⇒ 盘上可能还留着坏元素
+     （`[42]` 那种），而它们**照旧留在表里**（我们不悄悄替用户改写他的状态文件 ——
+     坏元素由 `launcherViews` 那句 notice 说出来，用户自己去改）。 */
+  for (const instance of enumerated()) {
+    if (instance.kind !== binding.kind) continue;
+    if (!isInsideFolder(instance.instancePath, binding.rootPath)) continue;
+    const prev = prefRecordOf(st, instance.key) ?? {};
+    st.instancePrefs[instance.key] = { ...prev, tracked: false };
+    forgetScan(instance.key);
+  }
+  persist();
+  /* ★ 重新枚举 ⇒ 对账把那些派生出来的 folder 一起回收（并且落盘）。 */
+  await refreshInstances();
+}
+
+// ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
 
 /**
- * 注册十五条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
- * 主进程只 `send`，没有 handler 可注册）。
+ * 注册二十二条 `ipcMain.handle`（`onStatus` 与 C 的 T3 加的 `onProgress` 是**推**给页面的：
+ * 主进程只 `send`，没有 handler 可注册 ⇒ 24 个契约成员 − 2 条推送 = 22 条 handler，
+ * ★ D1 的 T4 加了七条（那七条**全是** handler，见文件头那一行）。
  *
  * ⚠️ 通道名一律取自 `MOD_FOLDERS_CHANNELS`（`@mcsr/shared/desktop`），**不写字符串字面量**：
  *    写错一个字母**类型检查看不见**，而失败形态是静默的（`invoke` reject / `on` 永不触发）。
@@ -2291,6 +3020,14 @@ function registerIpc(): void {
    *    第二次起都是现成的读数，不再扫（`onlyIfMissing`）。
    */
   ipcMain.handle(MOD_FOLDERS_CHANNELS.getState, async () => {
+    /*
+     * ★★ D1（T4）：**第一次**要状态时先把实例枚举出来（枚举是异步的、结果住在缓存里，
+     *    而 `folders` 是从它派生的）—— 少了这一句，页面第一次拿到的那份状态里一个派生的
+     *    folder 都没有（要等下一次推送才出现，而"下一次推送"可能要等到用户去点别的按钮）。
+     * ⚠️ 只在**还没有跑过任何一趟**时做：之后各次不再重枚举（缓存现成；用户点「刷新」
+     *    走 `listInstances` 那条通道）。
+     */
+    if (enumeration === null) await refreshInstances();
     // 文件夹清单由这一侧给（`sortedFolders` 属于状态组装，见 `ensureScans` 的注释）
     await ensureScans(sortedFolders(requireState()));
     rebuild();
@@ -2368,10 +3105,37 @@ function registerIpc(): void {
    *    —— 它的作用范围就是"主进程自己记着的那一趟"。
    */
   ipcMain.handle(MOD_FOLDERS_CHANNELS.cancelDownload, () => cancelDownload());
+
+  /*
+   * ===========================================================================
+   * ★★ D1（T4）：启动器绑定与实例 —— 七条通道（契约 17 → 24）
+   * ===========================================================================
+   * 入参一律 `unknown`（与上面每一条同一条纪律 —— 校验在函数体里）。返回值除两条外都是
+   * `void`：状态由这些函数里的 `rebuild()` 推给页面（`onStatus`），页面读那一份
+   * （状态只有一处真相，不必再从返回值里拿一次）。
+   * ⚠️★ 只读纪律（A13）：这七条**一条都不写**启动器或实例的文件 ——
+   *    `probeLaunchers` / `listInstances` 只读盘，其余五条只写我们**自己那份**状态文件。
+   */
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.probeLaunchers, () => probeLaunchersOnDisk());
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.listLauncherInstances, () => refreshInstances());
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.setInstancePaths, (_event, key: unknown, patch: unknown) => {
+    setInstancePaths(key, patch);
+  });
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.addLauncher, (_event, kind: unknown, rootPath: unknown) =>
+    addLauncher(kind, rootPath),
+  );
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.removeLauncher, (_event, id: unknown) => removeLauncher(id));
+  ipcMain.handle(
+    MOD_FOLDERS_CHANNELS.setInstanceTracked,
+    (_event, key: unknown, tracked: unknown) => setInstanceTracked(key, tracked),
+  );
+  ipcMain.handle(MOD_FOLDERS_CHANNELS.confirmInstance, (_event, key: unknown) =>
+    confirmInstance(key),
+  );
 }
 
 /**
- * 初始化：**接手 v1 那份状态对象** → 注册十五条 IPC → 后台抓目录 + 扫已绑定文件夹。
+ * 初始化：**接手 v1 那份状态对象** → 注册二十二条 IPC → 后台抓目录 + 枚举实例 + 扫已绑定文件夹。
  *
  * ⚠️ 与 v1 的 `initFileUpdates` 同一条时序纪律：**IPC 的注册发生在第一个 `await`
  *    之前**（`main.ts` 里这个 `await` 在创建窗口之前）—— 反过来的话存在一个
@@ -2452,6 +3216,14 @@ async function startUp(): Promise<void> {
     );
   }
   await queueLoadCatalog();
+  /*
+   * ★★ D1（T4）：**先枚举实例、再扫**。`folders` 是从"被追踪的实例"派生的，而这一趟
+   *    只扫 `autoUpdate === true` 的条目 ⇒ 顺序反了的话，升级之后第一次启动扫的是**盘上
+   *    旧的那一份** `folders`，而派生出来的那些要等页面拉状态才补扫（A10 要的正是"照旧"）。
+   * ⚠️ `refreshInstances()` 内部会 `rebuild()` ⇒ 对账（派生 + 回收 + 落盘）已经在这一句里
+   *    发生过了，所以下面那个循环读到的是**刚对完账**的那一份。
+   */
+  await refreshInstances();
   const st = requireState();
   for (const [folderId, entry] of sortedFolders(st)) {
     if (entry.autoUpdate) {

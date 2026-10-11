@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import type { LauncherInstance } from '@mcsr/shared/launcherInstances';
 import { type ModRelease, parseModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
 import {
   attributeLegacyBindings,
@@ -12,6 +13,8 @@ import {
   deriveFolders,
   type FolderScanEntry,
   groupFoldersByVersion,
+  type InstancePref,
+  instanceViewsOf,
   type ModFoldersState,
   type ModFolderView,
   migrateState,
@@ -1000,6 +1003,15 @@ function stateWith(over: Partial<ModFoldersState> = {}): ModFoldersState {
     mirrors: [],
     catalogRows: [],
     folders: [],
+    /*
+     * ★★ D1（T4）：`launchers` / `instances` / `instancesStatus` 是**新增的必需格**
+     * （与契约同批加的）。⚠️ 它们是**必填**的 ⇒ 漏了这里整个套件在 `tsc` 那一步就红
+     * （这正是"必填"该有的形状）。这一份夹具不演实例 ⇒ 给空 + `'ok'`
+     * （`'reading'` 是 A14 的另一档，由 `instanceViewsOf` 那几条以外的用例造，这里不必）。
+     */
+    launchers: [],
+    instances: [],
+    instancesStatus: 'ok',
     missing: [],
     missingStatus: 'ok',
     notices: [],
@@ -1295,4 +1307,185 @@ test('planVersionPage：下载目标是"路径在 + 有读数 + 里面还没有�
     ['a', 'b'],
     '★ 对照：没有它的那个 modid 两个文件夹都能装（否则上面那条可能只是"目标表被清空了"）',
   );
+});
+
+/*
+ * ===========================================================================
+ * D1 / Task 4：实例视图 `instanceViewsOf`（A12 手改优先 + "待确认"的**显示值**）
+ * ===========================================================================
+ * 这一格是界面**唯一**的实例来源（`ModFoldersState.instances`），而它同时喂
+ * `deriveFolders`（同一个枚举结果 ⇒ 两边不漂）⇒ 它要一次干完三件事：
+ *   ① 套用 `instancePrefs[key]` 里的**路径 / loader 覆盖**（A12：手改优先于探测）；
+ *   ② 把"待确认"算成**显示值** `needsConfirm && !confirmed`（界面的标与确认按钮看它）；
+ *   ③ 带上 `tracked`（勾选框的选中态）。
+ *
+ * ⚠️ 夹具是**手搓的 `LauncherInstance` 字面量**（与上面 `deriveFolders` 那条同一条口径）：
+ *    这里要钉的是**投影**那三条规则，不是 T1 的枚举规则（那个的判据住在
+ *    `src/launcher-instances.test.ts` 的假文件系统里）。
+ */
+
+/** 一个实例（只写出投影读得到的格子，其余给固定值 —— 免得每条用例堆十几行）。 */
+function instanceOf(over: Partial<LauncherInstance> & { key: string }): LauncherInstance {
+  return {
+    kind: 'multimc',
+    name: over.key,
+    instancePath: 'D:\\MultiMC\\instances\\x',
+    gameVersion: '1.16.1',
+    loader: null,
+    modsDir: 'D:\\MultiMC\\instances\\x\\.minecraft\\mods',
+    savesDir: 'D:\\MultiMC\\instances\\x\\.minecraft\\saves',
+    needsConfirm: false,
+    ...over,
+  };
+}
+
+test('★ D1/A12：`modsDir`/`savesDir` 手改优先于探测结果（而且只有**真的改了**才清"待确认"）', () => {
+  /*
+   * ⚠️★ A12 的字面是"解析结果可手改并持久化；**手改优先于探测**" —— 这条判据的落地点就在
+   *    这一格：视图里的 `modsDir` 必须是**手改那一份**，否则界面显示的是探测值、而扫描
+   *    （`setInstanceTracked` 拿视图里的 `modsDir` 去扫）扫的是另一份。
+   * ⚠️ "改了才清 `needsConfirm`"是 T2 `applyOverride` 的规则：**空覆盖**（`{}`）不产生
+   *    "用户确认过"这个事实 —— 少了这一半，"打开过手改框"就会被当成"用户确认了路径"。
+   * ⚠️★ 刀（两条，读数在报告里）：
+   *    ① 把 `instanceViewsOf` 里的 `applyOverride(...)` 换成原样透传 ⇒ 第一条红；
+   *    ② 把 `applyOverride` 的 `changed` 判据去掉（恒清 `needsConfirm`）⇒ 第二条红。
+   */
+  const detected = instanceOf({ key: 'multimc:instances/x', needsConfirm: true });
+  const views = instanceViewsOf([detected], {
+    'multimc:instances/x': { tracked: true, modsDir: 'E:\\手改\\mods' },
+  });
+  assert.equal(views.length, 1);
+  assert.equal(views[0]!.modsDir, 'E:\\手改\\mods', '手改过的 mods 优先于探测结果');
+  assert.equal(
+    views[0]!.savesDir,
+    detected.savesDir,
+    '没手改的那一格照旧是探测结果（覆盖是**逐格**的，不是整份替换）',
+  );
+  assert.equal(views[0]!.needsConfirm, false, '路径被真的改过 ⇒ 那一格不再是"待确认"');
+  assert.equal(views[0]!.tracked, true);
+
+  // 对照：空覆盖（只勾选、没改路径）**不**等于"用户确认过"
+  const empty = instanceViewsOf([detected], { 'multimc:instances/x': { tracked: true } });
+  assert.equal(empty[0]!.modsDir, detected.modsDir);
+  assert.equal(
+    empty[0]!.needsConfirm,
+    true,
+    '"改过路径"才是确认；只勾选**不**清待确认（同值覆盖不清，控制器 2026-10-11 裁定）',
+  );
+
+  /*
+   * ★ A12 的**第三格**：`loader` 也是逐格覆盖之一（`InstancePref.loader` ⇒ T2/T12 的
+   *   `applyOverride` 认它）。⚠️ 这一条是**跨任务**的接口判据：少传一个字段、或
+   *   `applyOverride` 那一支被摘掉，它当场红（而"界面上的 loader 改了没反应"完全不报错）。
+   * ⚠️ 与 `needsConfirm` 的关系是**有意**的：只改 loader **不算**确认了路径
+   *   （"待确认"说的是路径是猜的）⇒ 两格一起钉。
+   */
+  const loaderEdited = instanceViewsOf([detected], {
+    'multimc:instances/x': { tracked: true, loader: 'fabric 9.9.9' },
+  })[0]!;
+  assert.equal(loaderEdited.loader, 'fabric 9.9.9', 'loader 的手改要进视图（A12 的手改口之一）');
+  assert.equal(
+    loaderEdited.needsConfirm,
+    true,
+    '只改 loader 不算"确认了路径"（用户要按 T8 那颗显式确认的按钮）',
+  );
+});
+
+test('★ D1：`confirmed` 是显式确认 ⇒ 视图里的 `needsConfirm` 是**显示值**（`&& !confirmed`）', () => {
+  /*
+   * ⚠️★ 这一格是 T8 那两颗控件的**唯一**判据面（"待确认"标 + 一颗「确认这个路径」按钮）：
+   *    · `needsConfirm === true` ⇒ 两样都画；`false` ⇒ 两样都不画。
+   *    所以视图里那一格必须是**算过 `confirmed` 的显示值** —— 把原始值透传出去的话，
+   *    用户点了「确认」之后标**照样**在（点了没反应），而这一条会红。
+   * ⚠️ 两半都要有读数：只钉"确认后 false"，把实现写成恒 `false` 也能过 ⇒ 所以先钉
+   *    "没确认时是 true"。
+   * ⚠️★ 刀：把 `instanceViewsOf` 里那句 `&& !confirmed` 删掉 ⇒ 第三条断言红。
+   */
+  const raw = instanceOf({ key: 'pcl2:.minecraft/versions/v1', kind: 'pcl2', needsConfirm: true });
+  const before = instanceViewsOf([raw], { 'pcl2:.minecraft/versions/v1': { tracked: true } })[0]!;
+  assert.equal(before.needsConfirm, true, '没确认过 ⇒ 待确认标要在（否则"确认"这个动作没有对象）');
+  assert.equal(before.confirmed, false, '`confirmed` 记的是**原始**那一格（没确认过）');
+
+  const after = instanceViewsOf([raw], {
+    'pcl2:.minecraft/versions/v1': { tracked: true, confirmed: true },
+  })[0]!;
+  assert.equal(after.needsConfirm, false, '显式确认之后"待确认"必须消失（T8 的验收就是这一条）');
+  assert.equal(after.confirmed, true);
+  assert.equal(after.modsDir, raw.modsDir, '确认不改路径，只是"我看过并接受了"');
+
+  // 对照：探测本身就判得出来的实例从来不画标（不需要用户确认任何东西）
+  const certain = instanceOf({ key: 'official:1.16.1', kind: 'official', needsConfirm: false });
+  assert.equal(
+    instanceViewsOf([certain], {})[0]!.needsConfirm,
+    false,
+    '`needsConfirm: false` 的实例不许被画成待确认（确认那一档是叠加，不是改写）',
+  );
+});
+
+test('★ D1：版本那一档 —— `instancePrefs[key].gameVersion`（用户手改）压过启动器元数据', () => {
+  /*
+   * ★★ 控制器 2026-10-11 现读后补的那一档（plan T4 Step 3 第 2 条）：没有它，
+   *    "元数据读不出来 ⇒ 版本未知（`null`）"的实例在**版本 → 实例**流程里永远够不到
+   *    ⇒ 用户没法往它里面装东西。今天用户能在文件夹行的版本下拉里手改 ⇒ 那是功能倒退。
+   * ⚠️ 它与"推断值"是**两件事**：`adoptFolderGameVersion` 从 jar 里推断出来的东西只写
+   *    `folders[...]`、**不进** `instancePrefs` ⇒ 这一格里有值就一定是用户手改的。
+   * ⚠️★ 刀：把 `instanceViewsOf` 里那一格改回 `instance.gameVersion`（丢掉覆盖）⇒ 红。
+   */
+  const unknown = instanceOf({ key: 'multimc:instances/nometa', gameVersion: null });
+  assert.equal(
+    instanceViewsOf([unknown], {})[0]!.gameVersion,
+    null,
+    '没手改、元数据也读不出来 ⇒ 如实是 null（**不猜**）',
+  );
+  assert.equal(
+    instanceViewsOf([unknown], {
+      'multimc:instances/nometa': { tracked: true, gameVersion: '1.8.9' },
+    })[0]!.gameVersion,
+    '1.8.9',
+    '用户手改的版本要出现在视图里（它是"版本未知"的实例唯一的出路）',
+  );
+
+  // 手改**压过**元数据（两边都有值、且不同 —— 少了这一半，"优先"这件事没有判据）
+  const known = instanceOf({ key: 'multimc:instances/x', gameVersion: '1.16.1' });
+  assert.equal(
+    instanceViewsOf([known], {
+      'multimc:instances/x': { tracked: false, gameVersion: '1.12.2' },
+    })[0]!.gameVersion,
+    '1.12.2',
+    '两边都有值时以**用户手改**为准（否则"改了就被覆盖"这颗控件最坏）',
+  );
+});
+
+test('★ D1：勾选态与实例集合本身 —— 一个都不许多、一个都不许少、顺序照枚举', () => {
+  /*
+   * ⚠️ 这一条钉的是"投影**不许筛人**"：`instanceViewsOf` 是界面唯一的实例来源，
+   *    在这里过滤掉"没勾选的"或"待确认的"，界面上就再也看不到它们 ⇒ 用户无从勾选。
+   *    `tracked` 只是**一格的读数**，不是过滤条件（与 `deriveFolders` 那条相反：
+   *    那一条**只**派生被追踪的，两条规则各自有各自的位置）。
+   * ⚠️★ 刀：在 `instanceViewsOf` 里加一句 `if (prefs[i.key]?.tracked !== true) continue;`
+   *    ⇒ 第一条断言红（长度 3 → 1）。
+   */
+  const list = [
+    instanceOf({ key: 'multimc:instances/a' }),
+    instanceOf({ key: 'multimc:instances/b' }),
+    instanceOf({ key: 'multimc:instances/c' }),
+  ];
+  const prefs: Record<string, InstancePref> = {
+    'multimc:instances/a': { tracked: true },
+    'multimc:instances/c': { tracked: false },
+    // b 一个格子都没有（从来没勾过）
+  };
+  const views = instanceViewsOf(list, prefs);
+  assert.deepEqual(
+    views.map((v) => v.key),
+    ['multimc:instances/a', 'multimc:instances/b', 'multimc:instances/c'],
+    '三个都必须在（顺序照枚举结果）—— 投影不是勾选过滤器',
+  );
+  assert.deepEqual(
+    views.map((v) => v.tracked),
+    [true, false, false],
+    '`tracked`：勾过的是 true，"从来没勾过"（缺那一格）与"勾过又取消"都是 false',
+  );
+  // 纯函数：不许改传进来的那个对象（改了的话"同一份枚举结果喂两处"就不成立了）
+  assert.equal(list[0]!.modsDir, 'D:\\MultiMC\\instances\\x\\.minecraft\\mods');
 });

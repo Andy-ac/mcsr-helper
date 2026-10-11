@@ -297,9 +297,18 @@ console.log(
  * ⚠️★ 两个数字分开打（2026-10-04 收口波订正：这里原来写"15 条里 / handle 只有 14 条"；
  *    **A 的 S2** 加了 `openFolder` 之后是 17 个成员；**A 的 T6** 删掉那三条（裁决 B）
  *    之后是 **14** 个成员；**C 的 T3** 加了 `onProgress` 之后是 **15** 个；
- *    **C 的 T4** 加了 `cancelDownload` 之后是 **16** 个；**B2 的 T4** 加了 `downloadPack` 之后是 **17** 个）：**17** 个通道名
+ *    **C 的 T4** 加了 `cancelDownload` 之后是 **16** 个；**B2 的 T4** 加了 `downloadPack` 之后是 **17** 个；
+ *    ★ **D1 的 T4** 加了那七条之后是 **24** 个）：**24** 个通道名
  *    进 `main.cjs`（两条推送的串也在里面 —— 它们是主进程 `send` 出去的），
- *    其中 `ipcMain.handle` 只有 **15** 条 —— 余下 2 条（`onStatus` / `onProgress`）只**推**（`send`）。
+ *    其中 `ipcMain.handle` 只有 **22** 条 —— 余下 2 条（`onStatus` / `onProgress`）只**推**（`send`）。
+ *    ⚠️★ 口径与**数法**：这里说的是**本族**的 handler 数 ——
+ *    **数法：契约成员数 − 2 条推送**（`onStatus` / `onProgress`，就是下面那个 `PUSH_CHANNELS`）；
+ *    或者数"`main.cjs` 加载之后 `handlers` 里本族通道的条数"（`waitForHandlers()` 用的就是它）。
+ *    ⚠️ **不要**拿 `grep "ipcMain.handle(MOD_FOLDERS_CHANNELS\."` 去数：本族有 **5 条注册是跨行写的**
+ *    （`ipcMain.handle(` 换行之后才是 `MOD_FOLDERS_CHANNELS.<成员>`）⇒ 朴素 grep 会数出一个
+ *    **比真值小**的数，然后下一个人以为注释又漂了。
+ *    ⚠️ 也**不是**下面那个 `handle:` 读数 —— 那一个是**整份 `main.cjs`** 里 `ipcMain.handle(`
+ *    的出现次数（含别的通道族），两个数**不该相等**（§5.15 那一族：同一个名字两种口径就会有人对不上）。
  * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 13/14：
  *    手抄的数字会在"通道表加了/删了一条"时变成一句**看起来还在的假话**（§5.32 ④）。
  */
@@ -1091,8 +1100,11 @@ function loadArtifact() {
 }
 
 /*
- * 等 14 条 invoke 通道注册好（16 个成员里 `onStatus` 与 `onProgress` 是**推送**、没有 handler）。
+ * 等 **22** 条 invoke 通道注册好（**24** 个成员里 `onStatus` 与 `onProgress` 是**推送**、没有 handler）。
  *
+ * ⚠️★ 这两个数**现数**改过一次（D1 的 T4）：之前写的是"14 条 / 16 个成员"，而**通道表从
+ *    B2 的 T4 起就是 17 个成员**（那一次改了上面 `:300` 那一族、漏了这一族）⇒ 那个 14 当时
+ *    就已经是错的（真值 15）。⚠️ 所以别把它当基线去"加 N"，照着现数写。
  * ⚠️★ `PUSH_CHANNELS` 是**现读**出来的（`Object.values(MOD_CH)` 里那两条推送），不是手抄的
  *    两个键名：漏一条的表现是这里**永远等不到**（240 × 25ms）⇒ `waitForHandlers()` 给 false
  *    ⇒ 两处 `bail`（退出码 2，看起来像"这条检查没跑起来"）。C 的 T3 加 `onProgress` 时撞到的
@@ -1100,7 +1112,7 @@ function loadArtifact() {
  */
 const PUSH_CHANNELS = [MOD_CH.onStatus, MOD_CH.onProgress].filter((name) => name !== undefined);
 
-/** 等 14 条 invoke 通道注册好（两条推送不算）。 */
+/** 等 **22** 条 invoke 通道注册好（两条推送不算）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
   for (let i = 0; i < 240; i += 1) {

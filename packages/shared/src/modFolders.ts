@@ -43,7 +43,7 @@
 
 import type { DownloadProgress } from './downloadProgress';
 import { compareLocalVersions } from './fileUpdates';
-import type { LauncherInstance, LauncherKind } from './launcherInstances';
+import { applyOverride, type LauncherInstance, type LauncherKind } from './launcherInstances';
 import type {
   ModCatalog,
   ModEntry,
@@ -850,6 +850,40 @@ export interface ModFoldersState {
   catalogRows: readonly CatalogRowView[];
   folders: readonly ModFolderView[];
   /**
+   * ★★ D1（T4）：**绑定的启动器**（界面那一页一块一行）+ 这一趟枚举它的结果。
+   *
+   * ⚠️★ 为什么它必须在状态里：`probeLaunchers` 报的是**候选**（`{kind, rootPath}`，没有 id），
+   *    而"移除某一条绑定"要的是**绑定的 id**（`removeLauncher(id)`）⇒ 状态里没有这一格，
+   *    界面就**没有任何地方**读得到 id：它画不出"已绑定的启动器"那一栏，也拆不掉任何一条。
+   *    （A8 的第一个空态"未绑定启动器"判的也是它：`launchers.length === 0`。）
+   * ⚠️ `error` 是**这一趟**枚举这一块的失败原话（成功 / 还没读过 ⇒ `null`）：A14 要求
+   *    "单个启动器块失败不影响其它块，**且该块可重试**" ⇒ 界面要能指出**是哪一块**坏了、
+   *    并给它一颗重试按钮。它由 `enumeration` 缓存现算（不是 `pushNotice` 那种一旦说了
+   *    就永远挂在 `notices` 里的东西 —— 重试成功之后那句话必须消失）。
+   */
+  launchers: readonly LauncherBindingView[];
+  /**
+   * ★★ D1（T4）：界面渲染实例的**唯一**来源（`InstanceView`：已套用路径/loader/版本的手改、
+   * 已带 `tracked`、`needsConfirm` 是**显示值**）。
+   *
+   * ⚠️★ 它与 `folders` **读同一份枚举结果**（`buildState()` 里那一处）⇒ 两边不会漂：
+   *    各枚举一遍的话，"界面上有 3 个实例、而派生出来 2 个 folder"只是时间问题。
+   */
+  instances: readonly InstanceView[];
+  /**
+   * ★★ D1（A14）：上面那两份读数是**哪来的** —— `'reading'` = 还没有跑完任何一趟枚举，
+   * `'ok'` = 至少跑完过一趟（`instances` 就是那一趟的读数）。
+   *
+   * ⚠️★ 为什么必须有一格来分这两件事（A14 / spec §7："枚举走队列，界面显示'正在读取…'"）：
+   *    `instances: []` 有**两个在数据上分不开**的原因 —— "还没读到" 与 "读到了、一个实例都没有"，
+   *    而界面把前者画成后者就是**编出来的结论**（"你一个实例都没有"，用户于是去重新绑启动器）。
+   *    这与 `missingStatus`（判修 2）/ `ModFolderView.hasReading`（Ruling 65）是**同一条纪律**：
+   *    分不清"不知道"与"没有"的读数不许当结论用。
+   * ⚠️ `launchers: []`（一条绑定都没有）时这一格**照旧**可以是 `'ok'` —— 那是"读过了、
+   *    但没有任何启动器可读"，与"还在读"是两句话。
+   */
+  instancesStatus: 'reading' | 'ok';
+  /**
    * 底部缺失清单。
    *
    * ⚠️★ **它空着有两种完全不同的原因**（2026-10-03 复审的**判修 2**）：
@@ -941,6 +975,23 @@ export interface LegacyBinding {
 export type LauncherBinding = { id: string; kind: LauncherKind; rootPath: string };
 
 /**
+ * ★ D1（T4）：一条绑定 + **这一趟枚举它的结果**（`ModFoldersState.launchers` 的元素）。
+ *
+ * ⚠️ `rootPath` 是**归一化之后**那一份（"添加启动器"那条通道在**入口**做的）：不归一化的话
+ *    `D:\PCL2` 与 `D:\PCL2\` 会变成**两条**绑定，而它们的实例键又不相同 ⇒ 同一台机器上
+ *    会出现两套同名的实例（`instanceKeyOf` 用的是比出来的相对路径）。
+ * ⚠️ `error` 的两种取值都是**如实**的：`null` = 这一趟读到过它（哪怕是 0 个实例），
+ *    非空 = 这一块读不动（原话照带，界面据此画那句话 + 一颗重试按钮）。**它不是**"这一块
+ *    一个实例都没有" —— 那是 `instances` 里筛 `kind` 的事，两句话分得开。
+ */
+export interface LauncherBindingView {
+  id: string;
+  kind: LauncherKind;
+  rootPath: string;
+  error: string | null;
+}
+
+/**
  * ★ D1：一个实例上的**用户选择** —— 勾没勾、以及手改过的解析路径（A12：手改优先于探测）。
  *
  * ⚠️ 键是 `LauncherInstance.key`（`<类型>:<相对根的路径>`）—— 那个形状由
@@ -955,9 +1006,101 @@ export type InstancePref = {
   tracked: boolean;
   modsDir?: string;
   savesDir?: string;
+  /**
+   * ★★ D1（T4）：**用户手改的游戏版本**（A12 的手改口）。
+   *
+   * ⚠️★ 它与"推断值"是**两件事**（这条分开是承重的）：`adoptFolderGameVersion()` 从 jar /
+   *    `mmc-pack.json` **推断**出来的版本照旧**只写 `folders[...]`**、一个字节都不进这里
+   *    —— 混起来之后就再也分不清"用户选的"与"我们猜的"（下一次对账该保留哪一个？）。
+   * ⚠️ 少了这一格的后果是**实打实的功能倒退**（2026-10-11 控制器现读后补的）：元数据读不出来
+   *    的实例 `gameVersion === null`，而"版本 → 实例"那一层是按版本筛实例的 ⇒ 它**永远够不到**
+   *    ⇒ 用户没法往它里面装任何东西。而今天用户可以在文件夹行的版本下拉里手改 ⇒ 那条路必须活着。
+   * ⇒ 对账时的优先级是 `pref.gameVersion ?? instance.gameVersion ?? 既有那条的值 ?? null`
+   *   （`apps/desktop/src/mod-folders.ts` 的 `reconcileFolders`）。
+   * ⚠️ `undefined` = **没手改过**（交回自动）；非空字符串才作数（坏状态文件里的 `''` / `42`
+   *    一律当"没改过"，见 `instanceViewsOf` 的 `viewOfOne`）。
+   */
+  gameVersion?: string;
+  /**
+   * ★ D1（A12 的手改口之一）：**用户手改的 loader 串**。
+   *
+   * ⚠️ 消费它的是 T2 的 `applyOverride`（`@mcsr/shared/launcherInstances`）—— 这里**不**再套用
+   *    一遍：同一条规则两份实现的漂法是"界面显示 `fabric 0.17.3`、而别处按探测值走"。
+   */
+  loader?: string;
   /** ★ D1（T8 的「确认这个路径」动作）：用户显式确认过这个实例的解析结果 ⇒ 界面不再画"待确认"标。 */
   confirmed?: boolean;
 };
+
+/**
+ * ★★ D1（T4）：**界面看到的**一个实例 —— `LauncherInstance` 加上两格**用户状态**。
+ *
+ * ⚠️★ 它是界面渲染实例的**唯一**来源（`ModFoldersState.instances`），而它与
+ *    `deriveFolders` 读**同一份**枚举结果（`buildState` 里那一处）⇒ 两边不会漂。
+ * ⚠️★ `needsConfirm` 在这一层是**显示值**（`instance.needsConfirm && !pref.confirmed`）：
+ *    界面据此画"待确认"标与那颗「确认这个路径」按钮，两样都只看它一格
+ *    （把原始值透传出去的话，用户点了确认之后标**照样**在 —— 点了没反应）。
+ * ⚠️ 路径 / loader / 版本三格都**已套用用户的手改**（A12：手改优先于探测）。
+ */
+export type InstanceView = LauncherInstance & { tracked: boolean; confirmed: boolean };
+
+/** 一格 pref 只认"普通对象"（坏状态文件里的 `null` / `42` 一律当"没有这一格"）。 */
+function prefOf(prefs: Record<string, InstancePref>, key: string): InstancePref | undefined {
+  const pref = prefs[key];
+  return typeof pref === 'object' && pref !== null ? pref : undefined;
+}
+
+/**
+ * 一个实例 + 一格用户配置 ⇒ **视图**（纯函数，改不完传进来的那个对象）。
+ *
+ * ⚠️ 三条规则的落点各只有一处：
+ *   · 路径 / loader 覆盖 ⇒ **交给 T2 的 `applyOverride`**（这里不重写它，连"哪几格算覆盖"
+ *     都不判 —— 那个函数的入参形状就是那份判据）；
+ *   · 版本那一档 ⇒ 手改（非空字符串）压过元数据（见 `InstancePref.gameVersion`）；
+ *   · `tracked` / `confirmed` 各自 `=== true` 才算（缺那一格与"显式 false"在这里同义，
+ *     与 `deriveFolders` 的 `!== true` 是同一条纪律）。
+ */
+function viewOfOne(instance: LauncherInstance, pref: InstancePref | undefined): InstanceView {
+  const applied = applyOverride(instance, pref);
+  const confirmed = pref?.confirmed === true;
+  const handEdited = pref?.gameVersion;
+  return {
+    ...applied,
+    gameVersion:
+      typeof handEdited === 'string' && handEdited !== '' ? handEdited : applied.gameVersion,
+    tracked: pref?.tracked === true,
+    confirmed,
+    needsConfirm: applied.needsConfirm && !confirmed,
+  };
+}
+
+/**
+ * 枚举结果 + 用户配置 ⇒ **界面那一份实例列表**（纯函数）。
+ *
+ * 三条边界：
+ *   · **不许筛人**：`tracked` 只是每一格上的读数，不是过滤条件 —— 在这里丢掉"没勾选的"
+ *     或"待确认的"，界面上就再也看不到它们 ⇒ 用户无从勾选（"只派生被追踪的那些"是
+ *     `deriveFolders` 的规则，两条各在各的位置）；
+ *   · **顺序照枚举结果**（调用方给什么序就是什么序）：界面按它画行，排序会让"刚扫到的实例"
+ *     跳到别处；
+ *   · ★ **坏元素不许炸掉整页**（plan T4 Step 3 的边界）：状态文件里的 `instancePrefs` 只保
+ *     顶层形状（`migrateState` 不判元素）⇒ 一个 `null` / `{ modsDir: 42 }` 能一路流到这里。
+ *     处置是"**那一行不画、其余照常**"：判据是**结果那一格**（`key` / `modsDir` 是不是非空
+ *     字符串），而不是在这里重判一遍覆盖规则。
+ */
+export function instanceViewsOf(
+  instances: readonly LauncherInstance[],
+  prefs: Record<string, InstancePref>,
+): InstanceView[] {
+  const out: InstanceView[] = [];
+  for (const instance of instances) {
+    const view = viewOfOne(instance, prefOf(prefs, instance.key));
+    if (typeof view.key !== 'string' || view.key === '') continue;
+    if (typeof view.modsDir !== 'string' || view.modsDir === '') continue;
+    out.push(view);
+  }
+  return out;
+}
 
 /**
  * 状态文件 v2。
