@@ -108,6 +108,7 @@ import { VersionFolderList } from '@/components/VersionFolderList';
 import { VersionModList } from '@/components/VersionModList';
 import type { ModPackWire } from '@/lib/api';
 import { packVersionOptions } from '@/lib/modPackEdits';
+import { NAV_SECTIONS } from '@/lib/nav';
 import { Files, initialTabFor, ModTabs } from '@/routes/Files';
 
 const LANG = process.argv.includes('--en') ? 'en' : 'zh-CN';
@@ -499,7 +500,7 @@ const INSTANCE_RANKED = instanceView({ key: `multimc:instances/1.16.1 - Ranked#1
  * ⚠️ 它不进 `㊿d` 那份明细（那一组自己有一份 `allInstancesState`，见那里）。
  * ⚠️★ 定义必须在**第一个用它的人之前**（`skeletonState` 在 ㉞ 那一段）：`const` 的 TDZ
  *    会让那一处抛 `ReferenceError`，而 biome 的 `noInvalidUseBeforeDeclaration`
- *    就是这么报的。
+ *    就是这么报的（它在那次收工里是 4 条红里的一条）。
  */
 const INSTANCE_UNTRACKED_SAME_VERSION = instanceView({
   key: 'multimc:instances/1.16.1 - Not ticked',
@@ -648,6 +649,16 @@ function linksIn(markup: string): { href: string; label: string }[] {
 const withoutComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '');
 
+/**
+ * `Files.tsx` 的源码（剥注释）—— **㉝ 与 ㊲/㊴ 三组都读它**。
+ * ⚠️★ 定义在这里（工具段）而**不是**第一次用到它的那一组旁边：脚本是顺序执行的，
+ *    而 ㉝（tab 骨架那一组）比 ㊲ 早得多 ⇒ 放在后面就是一次 TDZ 崩溃
+ *    （biome 的 `noInvalidUseBeforeDeclaration` 会把这条挡住 —— 本文件那次收工里它报了 4 条红）。
+ */
+const filesRouteCode = withoutComments(
+  readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8'),
+);
+
 console.log(
   `【${LANG}】资源下载页 · 新页面（tab 骨架 / 按版本分组的文件夹 / 展开的 jar 列表 / 第三段「该版本所有 mod」）`,
 );
@@ -743,13 +754,20 @@ assert.equal(
  *    `desktopBridge()` / `desktopBridge()?.modFolders` 判成"在不在"。
  * ⚠️★★ **三档**（T6 从 boolean 扩的，spec §7 / 老壳能力门）：
  *   · `'browser'` = **纯浏览器**：连 `mcsr` 都没有 ⇒ `desktopBridge()` 给 `null`；
- *   · `'old'` = **老桌面壳**（0.1.1）：`mcsr` 在、`modFolders` 也在，**但没有 D1 那七格**
+ *   · `'zero04'` = **0.0.4 的桌面壳**：`mcsr` 在、**没有** `modFolders` —— 它是
+ *     `Files.tsx` 文件头那三档里的**第②档**（"有 `mcsr`、没有 `modFolders`"）；
+ *   · `'old'` = **0.1.1 的老桌面壳**：`mcsr` 在、`modFolders` 也在，**但没有 D1 那七格**
  *     —— 这一档正是"新页面拿到一份没有 `instances` / `launchers` 的状态"那个坑的现场，
  *     老壳必须被 `d1Capable()` 判成"与浏览器同一档"；
  *   · `'d1'` = **0.2.0 的壳**：D1 那七格**全部**在（㉝ 最后那条 `deepEqual` 把这一档
  *     与 `MOD_FOLDERS_CHANNELS` 逐条对账）。
- *   ⚠️★ 三档**必须**是同一条联合里的三个值（不是两个布尔 + 一个开关）：那样 `modFolders`
- *    在 `'browser'` 那一支上是 `undefined`（`?.` 判据与 expand 版同义），而在另外两档上
+ *   ⚠️★ `'zero04'` 与 `'old'` **不是同一档**（T6 第一版把它们并成了一个 `'old'` ⇒
+ *    评审 R4：`Files.tsx` 的三档说法里第②档**一个断言都没有**了，而
+ *    `files.partTwoUnavailable` 那句文案恰恰是在 T6 从 `0.0.5` 改成 `0.2.0` 的
+ *    ⇒ "0.0.4 用户看到的那句话变了"这件事当时没有任何读数）。两档的**页面**产物今天
+ *    一样（都判 `unavailable`），但**桩的形状**不一样，而桩的形状正是能力门的输入。
+ *   ⚠️★ 三/四档**必须**是同一条联合里的值（不是两个布尔 + 开关）：那样 `modFolders`
+ *    在没有它的那两档上是 `undefined`（`?.` 判据与 expand 版同义），而在另外两档上
  *    都在 —— `shellStub('old').modFolders` 因此**读得出来、也传得进 `d1Capable()`**。
  *   ⚠️ `modFolders` 那一格用**展开**而不是 `modFolders: undefined`：`{ modFolders: undefined }`
  *    与"没有这一格"在 `?.` 下结果一样，但前者会让"这个对象里有这个键"看起来成立
@@ -757,7 +775,7 @@ assert.equal(
  * ⚠️★ 首拉状态里**故意**放了一条已绑定的启动器（`STUB_LAUNCHER`，理由写在它那一段）：
  *    默认 tab 因此落在「mod 下载」⇒ ⑰ 与 ㉝ 量的"第一帧画的是「正在扫描…」"仍然成立。
  */
-type ShellTier = 'browser' | 'old' | 'd1';
+type ShellTier = 'browser' | 'zero04' | 'old' | 'd1';
 
 /**
  * ★ D1（T6）：桩里那一份**首拉状态**（`modFolders.getState()` 的返回值）。
@@ -866,7 +884,9 @@ function shellStub(tier: ShellTier) {
       update: async () => ({}),
       updateAll: async () => ({}),
     },
-    ...(tier === 'browser' ? {} : { modFolders: { ...preD1, ...(tier === 'd1' ? d1Only : {}) } }),
+    ...(tier === 'browser' || tier === 'zero04'
+      ? {}
+      : { modFolders: { ...preD1, ...(tier === 'd1' ? d1Only : {}) } }),
   };
 }
 
@@ -933,13 +953,18 @@ ok(
  * ⚠️★ 两种壳都真的渲染 `Files`：**0.0.4**（有 `mcsr`、没有 `modFolders`）与纯浏览器
  *    （连 `mcsr` 都没有）都该看到"需要桌面版 **0.2.0**"；而**只有**纯浏览器该看到
  *    `browserOnly` 那一句（0.0.4 是桌面壳）。
- * ⚠️★★ T6（D1）**改准了一处**：这一段原来拿 `shellStub('old')`（0.0.4：没有 `modFolders`）
- *    去演"老壳"，而 T6 把 `'old'` 这一档定义成 **0.1.1**（**有** `modFolders`、没有 D1 那七格）
- *    —— 两者都落 `unavailable`、都渲染同一块，所以这一组的两条断言照旧成立；
- *    但"0.1.1 那一档真的被拦住"这件事由 **㊾c/㊾d** 钉（那里判的是 `d1Capable()`）。
+ * ⚠️★★ T6（D1）在这一段上**错过两次**，两次都记下来了（评审 R4）：
+ *    ① 第一版把"0.0.4 的那一档"**并进了** `'old'`（那时 `'old'` 演的是 0.0.4）；
+ *    ② T6 又把 `'old'` 定义成 **0.1.1**（有 `modFolders`、没有 D1 那七格）⇒ 于是
+ *       `Files.tsx` 三档说法里的**第②档（0.0.4）一个断言都没有了**，而
+ *       `files.partTwoUnavailable` 那句话恰恰是在 T6 从 `0.0.5` 改成 `0.2.0` 的。
+ *    ⇒ 现在**各归各**：这一组指回 `shellStub('zero04')`（有 `mcsr`、没有 `modFolders`），
+ *    而 0.1.1 那一档由 **㊾c/㊾d** 钉（那里判 `d1Capable()`、并断言整页只画那一句话）。
+ *    两档的**页面**产物今天相同（都判 `unavailable`），但**桩的形状**不同 ——
+ *    而桩的形状正是能力门的输入，所以两档都要各有一条读数。
  */
-/* —— 0.0.4 的壳（没有 `modFolders`）—— ⚠️ 桩的 `'old'` 那一档今天演的是 0.1.1，见上 —— */
-Object.assign(globalThis, { mcsr: shellStub('old') });
+/* —— 0.0.4 的壳：有 `mcsr`、**没有** `modFolders` —— */
+Object.assign(globalThis, { mcsr: shellStub('zero04') });
 const oldShellHtml = keep(
   html(React.createElement(MemoryRouter, null, React.createElement(Files, null))),
 );
@@ -990,7 +1015,7 @@ assert.equal(
  *    ⇒ 顺手把那个未使用的 import 也删了（留着 biome 会红）。
  */
 ok(
-  '㉕ 特性检测：够不上这一页的壳（0.0.4 / 纯浏览器 / 0.1.1）都看到"需要桌面版 0.2.0"（而 v1 的「加载中…」与第一部分都不再挂在这一页上）',
+  '㉕ 特性检测：0.0.4（有 `mcsr`、没有 `modFolders`）与纯浏览器都看到"需要桌面版 0.2.0"；0.1.1 那一档由 ㊾c/㊾d 钉',
 );
 
 // ---------------------------------------------------------------------------
@@ -1160,30 +1185,82 @@ assert.equal(
     '㊾d 单独钉"老壳真的走这一档"那一半',
 );
 /*
- * ⚠️★★ T6（D1）把这一条**改了对象**（同一条纪律：断言不许比事实软）：
- *   原判据断的是"页面外壳的产物里有「正在扫描…」"，而 A8 把**没绑启动器**的默认 tab
- *   改成了「启动器绑定」⇒ 静态渲染（不跑 effect ⇒ `hasLaunchers` 恒 `false`）下，
- *   外壳画的**不是** mod 下载那一格 ⇒ 那条断言在**正确**的产物上红。
- *   ⛔ 不能靠"把默认改回 mods"来保它（那是把 A8 删掉），也不能靠"给桩喂一条已绑定的
- *   启动器"（`getState()` 的返回值在静态渲染下永远到不了 `state`，见 ⑰ 那一段）。
- *   ⇒ 改成渲染**那一格的载荷**（`ModCatalogScanning` + `role="tabpanel"` 那个 wrapper）：
- *   "第一帧是「正在扫描…」"这件事**仍然**被钉着，而"它画在哪一格"这一半本来就由
- *   `ModTabs` 的 `aria-selected`（本组第一条 + ㊾a）与 `initialTabFor`（㊾b）负责。
+ * ⚠️★★ T6（D1）把这一条**改了两次**，两次都是同一条纪律（断言不许比事实软）：
+ *   ① 原判据断"页面外壳的产物里有「正在扫描…」"；A8 把**没绑启动器**的默认 tab 改成
+ *      「启动器绑定」⇒ 静态渲染（不跑 effect ⇒ `hasLaunchers` 恒 `false`）下外壳画的不是
+ *      mod 下载那一格 ⇒ 那条断言在**正确**的产物上红。
+ *   ② 我第一版改成"自己 `createElement` 拼一个 `role="tabpanel"` wrapper 再塞
+ *      `ModCatalogScanning`" ⇒ **恒真**（那个 id 是我自己传进去的，产物里当然有那句话）。
+ *      T6 的独立评审把这一条点成 R5（§5.32① 的第一类：测的是自己拼出来的字符串）。
+ *   ⇒ 现在的形状（评审 R3 建议的那一条）：**渲染那一格真正的载荷**，而且把
+ *   "`mods` 那一格在三个 status 支路上各画什么"**成表**钉住 ——
+ *   判据全部落在产品组件自己的输出上（不是我先写一句话再断言它在那儿）。
+ *   ⚠️ 两个前提各自钉死，否则这张表会变成空跑：
+ *     · `Files.tsx` 的 loading 支路**真的**渲染 `ModCatalogScanning`（源码形状，剥注释后读）；
+ *     · `ToolsPanel` 那一支的载荷身份由它自己的 `data-tab-panel="tools"` 钉（下面那条）。
  */
-const loadingPanelHtml = keep(
-  html(
-    React.createElement(
-      'div',
-      { role: 'tabpanel', id: 'modtabpanel-mods' },
-      React.createElement(ModCatalogScanning, null),
-    ),
-  ),
+const modsBranchHtml = (payload: React.ReactElement): string =>
+  keep(html(React.createElement('div', { role: 'tabpanel', id: 'modtabpanel-mods' }, payload)));
+/* ⛔ 这里**不许**读模块级那个 `filesRouteCode`：同模块的 `const` 有 TDZ，
+ * 在这个位置读它抛 `ReferenceError`（看起来像"断言没跑"，§5.74 那一类）⇒ 下面自己读一次。 */
+const modsLoadingHtml = modsBranchHtml(React.createElement(ModCatalogScanning, null));
+assert.ok(
+  modsLoadingHtml.includes('role="tabpanel"') &&
+    textOf(modsLoadingHtml).includes(textOf(resolved('files.catalogScanning'))),
+  '★ `mods` 那一格的 **loading** 支路（挂在 `role="tabpanel"` 那一格上）画的是「正在扫描…」' +
+    '（Ruling 42：首拉可能等一次补扫）',
+);
+assert.equal(
+  textOf(modsLoadingHtml).includes(textOf(resolved('common.loading'))),
+  false,
+  '★ 反面：它**不许**是 v1 的「加载中…」（两个世代的取数不是同一件事）',
+);
+/*
+ * ⚠️★ 另外两支**够不到**，如实记（不写成"已经证过"）：
+ *   · `failed` 那一支的载荷是 `Files.tsx` 里的一句 `<Notice>`（`partOneStateError`），
+ *     它**不在** `ModDownloadPanel` 里 —— 我实测过：拿 `stateOf([], { catalogStatus: 'unavailable' })`
+ *     去渲染真面板，产物里**没有**那句话（面板对"目录不可用"有自己的说法）。
+ *   · `ready` 那一支要 `mods.state` + `mods.handlers`，静态渲染不跑 effect ⇒ 拿不到。
+ *   ⇒ 三支的**分派关系**改用**源码形状**钉（剥注释再读：注释里逐字写着这些名字，
+ *   不剥 = 守卫被自己的注释喂饱）。⚠️ 它与下面那条 `ToolsPanel` 的钩子各管一半：
+ *   源码形状管"哪一支接哪一个载荷"，钩子管"那个载荷自己的身份"。
+ *   这一条**不是**运行时断言，但它真的会红：三支的顺序接错 / 少画一支 ⇒ 落空。
+ */
+const modsBranchSource = withoutComments(
+  readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8'),
 );
 assert.ok(
-  textOf(loadingPanelHtml).includes(textOf(resolved('files.catalogScanning'))),
-  '★ 新通道那一支的第一帧是「正在扫描…」，而且它就挂在 `modtabpanel-mods` 那一格里' +
-    '（Ruling 42；⑰ 钉的是同一屏的文案。⚠️ wrapper 只说明"挂在哪一格"，' +
-    '它**不是**独立判据 —— 那个 id 是这一组自己传进去的）',
+  modsBranchSource.includes('<ModCatalogScanning />'),
+  '★ `Files.tsx` 的 loading 支路**真的**渲染 `<ModCatalogScanning />`（剥注释后读源码形状）',
+);
+assert.ok(
+  modsBranchSource.includes('files.partOneStateError'),
+  '★ `mods` 那一格的 **failed** 支路画的是 `files.partOneStateError` 那句（源码形状：它住在路由页里）',
+);
+assert.ok(
+  modsBranchSource.includes('<ModDownloadPanel'),
+  '★ `ready` 那一支画的是 `ModDownloadPanel`（源码形状：它要 `state` + `handlers`，静态渲染够不到）',
+);
+/*
+ * ⚠️★ 这一条**不是**给「工具下载」补内容（T10 的事），而是把"哪一格归哪个载荷"钉住：
+ *    只钉 loading 那一支的话，**把三支的顺序接错**（tools 画成 mods）照样绿。
+ */
+assert.ok(
+  keep(html(React.createElement(ToolsPanel, null))).includes('data-tab-panel="tools"'),
+  '★ 前提：`ToolsPanel` 自己带 `data-tab-panel="tools"` 这个钩子（tools 那一支的载荷身份）',
+);
+/*
+ * ⚠️★ 锚点是 **`) : selected === 'tools' ? (`** —— 这一轮**改准了一处**（改的是断言，不是实现）：
+ *    T6 写的那一条锚 `"{selected === 'tools' ? ("`，而 `biome --write` 之后 `Files.tsx` 里
+ *    那一句长成 `) : selected === 'tools' ? (`（`} else` 那一支不再换行）⇒ 旧锚点在**正确**的
+ *    产物上落空。⚠️ 收窄/改准之后它咬的还是**同一件事**：`tools` 那一支必须接在
+ *    `launchers` 之后（顺序接错 ⇒ 这一条落空），而"那个载荷自己的身份"由上面那条钩子管。
+ */
+assert.ok(
+  modsBranchSource.includes(") : selected === 'tools' ? ("),
+  "★ 而且 `Files.tsx` 真的按 `selected === 'tools'` 分派它（顺序接错会红在这里）" +
+    "（⚠️ 锚点只取 `) : selected === 'tools' ? (` 那一小段：整行的形状被 biome 换行过，" +
+    '锚整行会在**正确**的产物上红）',
 );
 /*
  * ★★ 夹具与契约逐条对账（T2 复审点名的那条交接）：`shellStub` 是**无类型**的对象字面量
@@ -2141,9 +2218,11 @@ ok(
 const jarListCode = withoutComments(
   readFileSync(new URL('../src/components/FolderJarList.tsx', import.meta.url), 'utf8'),
 );
-const filesRouteCode = withoutComments(
-  readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8'),
-);
+/*
+ * ⚠️★ `filesRouteCode` 定义在**文件前面那个工具段**（不是这里）：㉝ 那一组（比这一组早得多）
+ *    就要读它 —— 原来它在这一行，而 `const` 的 TDZ 让那一处抛 `ReferenceError`
+ *    （biome 的 `noInvalidUseBeforeDeclaration` 报的就是这件事：4 条红里的一条）。
+ */
 assert.match(
   jarListCode,
   /onAction\(\{\s*kind:\s*'update-mod',[\s\S]{0,160}?channel:\s*'origin',?\s*\}\)/,
@@ -3669,15 +3748,21 @@ if (LANG === 'en') {
  *    en 16 组 —— en 比 zh 多的那一个仍然是 ㉛，别抹平）。
  *    ⚠️★★ 2026-10-12（D1 的 **T6**）：再加 ㊾ 一组（`/files` 的三个 tab / 默认 tab 规则 /
  *    **老桌面壳能力门**）⇒ 15 → **16**、16 → **17**。⚠️★ 而这个数字与**项数**不是一回事：
- *    上面这段记的是 `ok()` 的条数清单（`expectedGroups` 数的是**它**）—— ㊾ 那一组里有
- *    **4 条** `ok()`（㊾a / ㊾b / ㊾c / ㊾e；原来的 15 组一个没删），所以现读是
- *    **zh 31 项 / en 32 项**（差 1 仍是 ㉛）。⚠️ 别照派工文本里那个"加 3 条"的算法抄：
- *    那个数当场就红了（`expectedGroups` 那条断言把 actual/expected 都印出来了）。
+ *    上面这段记的是 `ok()` 的条数（`expectedGroups` 数的是**它**）。
+ *    ⛔ **别在这段里手抄 `ok()` 的条数**（评审 Minor 2 的现场：这里先后写过 "4 条" 与
+ *    "㊾a/㊾b/㊾c/㊾e"，而**两个都不是**当时那个数 —— 它们各自对应一版脚本，而脚本还在长；
+ *    手抄的计数一定会过期，它旁边那句"现数"才是真判据）。
+ *    ⇒ 要数就现数：`expectedGroups` 那条断言会在数错时把 `actual` / `expected` 都印出来。
  *    ⚠️★★ 2026-10-12（D1 的 **T7**）：再加 **㊿** 一组（"版本 → 实例"两层界面 / 只读明细 /
- *    A6 的整合包目标）⇒ 16 → **17**。⚠️ 而它的 **`ok()` 是 5 条**（㊿a–㊿e）
- *    ⇒ 项数 31 → **36**、32 → **37**（差 1 仍是 ㉛）。**两个数都要现数**，别推算。
+ *    A6 的整合包目标）⇒ 16 → **17**。⚠️ 同一段写过"它的 `ok()` 是 5 条" ⇒ 那也是手抄的
+ *    计数，一样**别信**（同一条理由）。
  *    ⚠️ 同一轮里 ㉞ / ㊱ / ㊴ / ㊶ 那几组**换了量法**（"文件夹行"的渲染点从版本层搬进了
  *    实例层 ⇒ 那几条断言跟着换层），组数**没变**（它们各自仍然是一个 `ok()`）。
+ *    ⚠️★★ 2026-10-12（D1 的 **T6 修复轮**）：㉝ 与 ⑰ 那两条**换了量法**（"整页第一帧 =
+ *    正在扫描…"被 A8 的默认 tab 规则否掉 ⇒ 改成渲染那一格的载荷 + 源码形状钉三支的分派）；
+ *    ⑰ 自己仍然是一个 `ok()`、㉝ 也仍然是一个 ⇒ **组数不变**。㊾ 里**加了 1 条** `ok()`
+ *    （㊾f/㊾g 合并成 "A1 的另外两半"：页面标题 + 短名）⇒ 现数 **zh 37 / en 38**
+ *    （差 1 仍是 ㉛；⛔ 这个数也是现读的，改了脚本**重跑**再抄）。
  */
 // ---------------------------------------------------------------------------
 // ㊷ ★★ B2（整合包）：「整合包」那一节（spec 断言 14–16）
@@ -4006,7 +4091,52 @@ console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门
   );
   ok(`㊾b 默认 tab 规则两支都对，而且显示名已改成"${t('nav.files')}"（A1）`);
 
+  /* ---- ㊾f/㊾g：A1 的**另外两半**（页面标题、短名）---- */
+  /*
+   * ⚠️★★ 评审 R1：A1 有三半，而 T6 原来只钉了中间那一半（`nav.files`）。
+   *   实测的坏法是"把 `<h1>` 硬编码成旧文案"⇒ **zh 31 项全绿**（只有 `--en` 因为
+   *   "英文界面见汉字"那条通用扫描才红，而红的理由与 A1 无关）⇒ 页面标题那一半当时不可证。
+   *   ⇒ 判据落在**页面产物**上：渲染 `pageShellOf('d1')`，断言里面**真的印出** `files.title`
+   *   的译文。⚠️ 要用 `resolved()` 过一遍针孔探针（缺键时 `t()` 原样回 key，
+   *   "含某个字符串"那类断言会变成空跑）。
+   */
+  const titleHtml = pageShellOf('d1');
+  const titleText = textOf(resolved('files.title'));
+  assert.ok(
+    textOf(titleHtml).includes(titleText),
+    `㊾f 页面标题必须是 t('files.title') 的译文（现读：${titleText}）—— ` +
+      'A1 的"显示名 = 资源下载"要**两处**都成立（侧栏那一处由 ㊾b 钉）',
+  );
+  assert.equal(
+    t('files.title'),
+    LANG === 'en' ? 'Resource downloads' : '资源下载',
+    '㊾f 而且那条词条本身必须就是「资源下载」（不是"页面印了某个别的词"）',
+  );
+  /*
+   * ⚠️★ 短名那一半（评审 R6）：`nav.ts:80-85` 的注释说 `block: 'files'` 连着四处。
+   *   ⚠️ 这一条**不是**在补一个"没有判据"的洞 —— 我现读实测过：把这个短名改成
+   *   `'resourceDownloads'` ⇒ **`homerender` 两种语言都红**（红在它那条词条探针上：
+   *   `home.desc.resourceDownloads` 解析不出译文）。所以短名**有**判据，
+   *   只是那条判据住在**首页**那个脚本里（`homerender.tsx`），不在这里。
+   *   ⇒ 这里加一条**廉价的正面自钉**：`NAV_SECTIONS` 里那一栏的短名**就是** `'files'`。
+   *   它与 `homerender` 那条是**两个方向**：那边钉"短名变了会被发现"（红），
+   *   这边钉"短名是哪几个字"（正），而且不依赖首页渲染。
+   */
+  assert.equal(
+    NAV_SECTIONS.find((section) => section.to === '/files')?.block,
+    'files',
+    '㊾g `/files` 那一栏的短名必须是 `files`（A1：**只**改显示名；短名连着侧栏 CSS、' +
+      '首页说明 `home.desc.files`、词条命名空间、路由四处）',
+  );
+  ok(
+    `㊾f A1 的另外两半：页面标题印的是「${titleText}」，而短名仍是 \`files\`（路由与命名空间一个字没动）`,
+  );
   /* ---- ㊾c/㊾d：老桌面壳（0.1.1）真的走"与浏览器同一档" ---- */
+  /*
+   * ⚠️★ 这两条用的是**桩**里的 `modFolders`（0.1.1 那一档：`mcsr` 在、`modFolders` 也在，
+   *    但没有 D1 那七格）—— 它不是"没有 `modFolders`"那一档（那一档是 `'zero04'`，
+   *    由 ㉕ 钉）。两档都判 `unavailable`，但**桩的形状不同** ⇒ 两条读数各钉一件事。
+   */
   const oldShellApi = shellStub('old').modFolders;
   assert.equal(
     d1Capable(oldShellApi),
@@ -4512,7 +4642,7 @@ const packSelectOf = (markup: string): string =>
   ok('㊿e A8 第三种空态（说明 + 一颗去勾选）+ A6（实例层的目标收成当前这一个、版本层只列不装）');
 }
 
-const expectedGroups = LANG === 'en' ? 37 : 36;
+const expectedGroups = LANG === 'en' ? 38 : 37;
 assert.equal(
   pass,
   expectedGroups,
@@ -4527,8 +4657,15 @@ console.log('   没有点击、没有请求、没有真实浏览器、也没有�
 console.log('   具体没被覆盖的（至少这几样）：');
 console.log('     · 点一下真的走了哪条通道 / 真的弹了原生对话框 —— 静态渲染不跑事件处理器，');
 console.log('       ㉟㊲㊴ 只钉住"那条接线在、而且只有一条"；');
-console.log('     · tab 那两颗按钮**点下去之后**换的是哪一块（T3 的 tab 条是页面外壳的 useState，');
-console.log('       静态渲染只画得到默认那一态；㉝ 证的是"默认选中"，换栏由下面的源码形状兜着）；');
+console.log(
+  '     · tab 那三颗按钮**点下去之后**换的是哪一块（tab 条是页面外壳的 useState，静态渲染只画得到默认那一态；',
+);
+console.log(
+  '       ⚠️ T6 修复轮改准：⑰/㉝ 现在钉的是"默认选中哪一格"（㉝ 第一条 + ㊾a/㊾b）与"三支各画什么载荷"',
+);
+console.log(
+  '       （源码形状 + 那一格的载荷渲染），**不再**声称"整页第一帧就是正在扫描…"——那条被 A8 的默认 tab 规则否掉了）；',
+);
 console.log(
   '     · `openFolder` 那一次**真的**调用与它的 reject 被接住（㉟ 只钉"接线在"与"接住的那一格在"）；',
 );
