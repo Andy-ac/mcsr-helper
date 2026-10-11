@@ -1233,10 +1233,24 @@ assert.ok(
   modsBranchSource.includes('<ModCatalogScanning />'),
   '★ `Files.tsx` 的 loading 支路**真的**渲染 `<ModCatalogScanning />`（剥注释后读源码形状）',
 );
+/*
+ * ★★ `failed` 那一支画的是**哪一条词条**：判据**不是** `includes('files.partOneStateError')` ——
+ *   那是**松**的：把 key 打成 `files.partOneStateErrorXX`（缺键 ⇒ 界面上印出这个 key 本身）
+ *   仍然包含原串 ⇒ 旧写法**照样绿**（我自己的刀 5 实测过，所以这里改成表驱动）。
+ *   ⇒ 现读 `Files.tsx` 里**所有** `t('files.…')` / `t('common.…')` 的 key，逐条过 `resolved()`：
+ *   缺一条键 ⇒ 那条探针当场红（§5.32①：判据必须能回答"它坏了会怎么红"）。
+ */
+const routeKeys = [
+  ...new Set(
+    [...modsBranchSource.matchAll(/t\('((?:files|common)\.[A-Za-z]+)'/g)].map((m) => m[1]),
+  ),
+].sort();
 assert.ok(
-  modsBranchSource.includes('files.partOneStateError'),
-  '★ `mods` 那一格的 **failed** 支路画的是 `files.partOneStateError` 那句（源码形状：它住在路由页里）',
+  routeKeys.includes('files.partOneStateError'),
+  '★ `failed` 那一支画的是 `files.partOneStateError` 那句（现读到的 key：' +
+    `${routeKeys.join(', ')}）`,
 );
+for (const key of routeKeys) resolved(key);
 assert.ok(
   modsBranchSource.includes('<ModDownloadPanel'),
   '★ `ready` 那一支画的是 `ModDownloadPanel`（源码形状：它要 `state` + `handlers`，静态渲染够不到）',
