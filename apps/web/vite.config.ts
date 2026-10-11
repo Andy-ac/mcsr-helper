@@ -173,6 +173,27 @@ export default defineConfig({
        *    下面那行裸包名 `'@mcsr/shared'` **之上**。
        */
       '@mcsr/shared/modPacks': resolvePath('../../packages/shared/src/modPacks.ts'),
+      /*
+       * ⚠️★ 这一条是「资源下载 · 启动器绑定」（D1，2026-10-11 T1）加的 —— 上面那几段注释说的坑
+       *    **又一次**发生了（现数：`resources` / `live` / `ranked` / `seedPicker` / `tracking` /
+       *    `fileUpdates` / `downloadProgress` / `modPacks`，这一次是**第九次**），
+       *    而它**与 `packages/shared/package.json` 的 `exports` 是同批加的**
+       *    （漏一处就出现 `Failed to resolve import "@mcsr/shared/launcherInstances"`，
+       *    而症状看起来像"用的人写错了 import"）。
+       *
+       *    本任务（T1）只**登记**，页面上还一个字节都不引它 —— T4/T5 的启动器绑定页会引
+       *    `listInstances` / `instanceKeyOf`（都是**值**）⇒ 那一天必须已经有这一条。
+       *    ⚠️ 而两端门禁一个都不会响：`pnpm -w check` 的 typecheck 走 `exports`
+       *    （moduleResolution: bundler），渲染自检由 tsx 直接跑、**根本不经过 Vite**。
+       *
+       * ⚠️ 位置不能动：alias 是**前缀替换**、取第一个命中的，所以它必须在
+       *    下面那行裸包名 `'@mcsr/shared'` **之上**。
+       */
+      // ⚠️ 这一条**必须写成一行**：`scripts/check-shared-aliases.mjs` 按"一行一条"读这张表
+      //    （正则 + `resolvePath(…)` 必须同行），换行它就读不到目标路径 ⇒ 门禁报 `no-target`。
+      //    而这一行有 102 字符（biome 的 lineWidth 是 100）⇒ 只能在这里压掉格式化那一步。
+      // biome-ignore format: 见上一行 —— 换行会让 `check-shared-aliases.mjs` 读不到目标路径
+      '@mcsr/shared/launcherInstances': resolvePath('../../packages/shared/src/launcherInstances.ts'),
       '@mcsr/shared': resolvePath('../../packages/shared/src/index.ts'),
       '@mcsr/ui': resolvePath('../../packages/ui/src/index.ts'),
       '@': resolvePath('./src'),

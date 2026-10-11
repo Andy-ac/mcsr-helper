@@ -42,6 +42,7 @@
     "./tracking": "./src/tracking.ts",
     "./modCatalog": "./src/modCatalog.ts",
     "./modFolders": "./src/modFolders.ts",
+    "./launcherInstances": "./src/launcherInstances.ts",
     "./fabricMeta": "./src/fabricMeta.ts",
     "./downloadProgress": "./src/downloadProgress.ts",
     "./modPacks": "./src/modPacks.ts"
