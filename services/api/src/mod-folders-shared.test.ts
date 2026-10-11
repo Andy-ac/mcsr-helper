@@ -504,20 +504,19 @@ test('★ 状态迁移：坏输入不抛（返回可写的干净状态，由调�
   }
 });
 
-test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫描读数）', () => {
+test('★ D1：迁移把**旧文件**的 `folders` 清空（spec A16：丢弃旧绑定与扫描读数）', () => {
   /*
    * ★ D1（spec A16）：升级后旧的手工绑定**与它的扫描读数**一律清掉，界面从"未绑定启动器"
    *   空态开始 —— 新模型只认"启动器实例"（`launchers` + `instancePrefs`）。
    * ⚠️ 盘上的 mod 文件不受影响：丢的只是本应用的记账（spec §10 把这条代价写下来了）。
+   * ⚠️★ **这一支的判据是"这份文件是 D1 之前写的"**（两格**都不在**；见 `migrateState` 的注释
+   *   与下面那条"D1 之后"的用例）。⚠️ 早期实现在 v2 分支里**无条件**清 —— 而 `migrateState`
+   *   每次读盘都跑 ⇒ 那不是迁移，是"`folders` 永不持久化"：桌面探针因此红了 16 条
+   *   （2026-10-12 修，见 task-3-fix3-report.md）。
    * ⚠️ 别的格子**一格都不许**跟着丢 —— 尤其别把"清旧绑定"做成"整份重建"。
-   * ⚠️★ 刀：把 `migrateState` 早返回里的 `folders: {}` 去掉 ⇒ 这一条红。
-   * ⚠️★ 评审 #1（Critical）：`launchers` / `instancePrefs` 这两格**必须给真值**。
-   *   旧夹具里**没有** `instancePrefs` 这个键，而期望值也是 `{}` ⇒ 那句断言只证明"缺就给空值"，
-   *   与"把用户已有的洗成 `{}`"**分不开**（§5.32① 恒真断言）。实测：把 `migrateState` 里
-   *   "保留既有 `instancePrefs`"那三行换成 `instancePrefs: {}`，旧夹具下**35 条一条都不红** ✗。
-   *   代价是实的：手改路径（A12）与 `confirmed`（T8 的确认动作）会**静默消失**，
-   *   而没有任何用例拦得住。⇒ 现在夹具里是一条真绑定 + 一格带 `modsDir`/`savesDir`/`confirmed`
-   *   的真偏好，下面断言**它原样还在**。
+   * ⚠️★ 刀 2：把清空整条去掉（⇒ 从不清理）⇒ 这一条红。
+   * ⚠️ 夹具**故意不带**那两格（那正是"上一版写的文件"的形状）；"已有的两格原样保留"那一半
+   *   由下一条用例（**D1 之后**的文件）用**真值**压住（评审 #1 的判据搬到了那一支）。
    */
   const old = {
     version: 1,
@@ -527,7 +526,58 @@ test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫�
     folders: {
       'old-id': { path: 'D:\\old\\mods', gameVersion: '1.16.1', autoUpdate: true, boundAt: 1 },
     },
-    /* ★ 两格真值（D1 的配置）—— 非空、非默认，刀才拔得动。 */
+    prefs: {
+      bulkChannel: 'origin',
+      catalogGameVersion: '1.16.1',
+      catalogGameVersionChosen: true,
+      tagFilter: [],
+    },
+  };
+  const migrated = migrateState(old);
+  assert.deepEqual(migrated.folders, {}, '旧绑定一律清掉');
+  /*
+   * 两格补默认 —— 判据用**形状谓词**而不是 `deepEqual(…, [])` / `deepEqual(…, {})`：
+   * 后者在"兜底生效"与"原样透传出 `undefined`"两种实现下分不开（评审 #2，§5.32①）。
+   */
+  assert.ok(Array.isArray(migrated.launchers), '`launchers` 补成数组（不是 `undefined`）');
+  assert.ok(
+    typeof migrated.instancePrefs === 'object' && migrated.instancePrefs !== null,
+    '`instancePrefs` 补成对象（不是 `undefined`）',
+  );
+  assert.equal(migrated.prefs.catalogGameVersionChosen, true, '其它 prefs 一格都不许动');
+  /* ★ 一次性：第一次清完这份文件就带上两格了 ⇒ 再跑一次逐字段相同（**不是**每次读盘都清）。 */
+  assert.deepEqual(migrateState(migrated), migrated, '幂等：再跑一次逐字段相同');
+});
+
+test('★ D1：**D1 之后**写的 v2 文件（两格都在）⇒ `folders` 与 `prefs` 逐格原样', () => {
+  /*
+   * ★★ 2026-10-12 修复（桌面探针基线 **16 ✗ / 346 ✓ / EXIT 1** 抓到的缺陷）：
+   *   `migrateState` 在**每次读盘**时都跑（`readStateFile` → 它）⇒ 把 `folders: {}` **无条件**
+   *   写在 v2 分支里不是"迁移"，是"**`folders` 永不持久化**"：v2 状态文件每次加载都丢掉全部
+   *   绑定 ✗。而 A16 要的是**升级时清一次**；spec §7 还明写旧的手工绑定通道**保留在契约里**
+   *   （只是不再是 UI 入口）⇒ "没有 `instancePrefs` 的 entry"（手工绑定 / 预置文件夹）正是被
+   *   那句话**每次**清掉的那一类，而桌面探针那 347 条判据（靠"预置一个 folder 再启动"造夹具）
+   *   因此红了 16 条（签名：`✗ 三格原样保留 … —— {"folders":{}}`）。
+   * ⇒ 一次性迁移的判据只能是"**这份文件是 D1 之前写的**"（`launchers` 与 `instancePrefs`
+   *   两格**都不在**）。这一条压的是另一半：**两格都在**（= 我们这一版自己 `persist()` 写出来的）
+   *   ⇒ `folders` / `prefs` / `launchers` / `instancePrefs` **逐格原样**，而且**再跑一次还是原样**。
+   * ⚠️★ 刀 1：把那个"D1 之前"的条件去掉（退回"每次都清"）⇒ 这一条**当场红**
+   *   （`folders`: actual `{}` / expected 那条真绑定）。
+   */
+  const after = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {
+      'multimc:instances/a': {
+        path: 'D:\\MultiMC\\instances\\a\\.minecraft\\mods',
+        gameVersion: '1.16.1',
+        autoUpdate: true,
+        boundAt: 1234,
+      },
+    },
+    /* ★ 两格**真值**（评审 #1 要的那半：非空、非默认，刀才拔得动）。 */
     launchers: [{ id: 'multimc:D:\\MultiMC', kind: 'multimc', rootPath: 'D:\\MultiMC' }],
     instancePrefs: {
       'multimc:instances/a': {
@@ -544,19 +594,20 @@ test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫�
       tagFilter: [],
     },
   };
-  const migrated = migrateState(old);
-  assert.deepEqual(migrated.folders, {}, '旧绑定一律清掉');
-  /*
-   * ★ 这两条是"**已有的原样保留**"那一半（评审 #1 的判据）。
-   * ⚠️ 别再退回 `deepEqual(migrated.instancePrefs, {})` —— 那是恒真的那一半。
-   */
-  assert.deepEqual(migrated.launchers, old.launchers, '已有的启动器绑定一格都不许洗');
+  const migrated = migrateState(after);
+  assert.deepEqual(
+    migrated.folders,
+    after.folders,
+    'D1 之后的文件：`folders` 逐格原样（**不许**每次读盘清一次）',
+  );
+  assert.deepEqual(migrated.launchers, after.launchers, '已有的启动器绑定一格都不许洗');
   assert.deepEqual(
     migrated.instancePrefs,
-    old.instancePrefs,
+    after.instancePrefs,
     '已有的勾选与手改路径（含 `confirmed`）一格都不许洗',
   );
-  assert.equal(migrated.prefs.catalogGameVersionChosen, true, '其它 prefs 一格都不许动');
+  assert.deepEqual(migrated.prefs, after.prefs, '`prefs` 逐格原样');
+  assert.deepEqual(migrateState(migrated), migrated, '幂等：再跑一次逐字段相同');
 });
 
 test('★ D1：老 v2 文件里**没有**这两格 ⇒ 迁移补出空值（不是 `undefined`）', () => {

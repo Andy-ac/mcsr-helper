@@ -1213,36 +1213,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *      **可达到、也已断言的那一半**是 D8 真正要的结果：旧数据**读到就忽略**，
  *      而且**第一次持久化之后**它不再存在（我们这份的 `{}` 覆盖掉磁盘那份的旧内容）。
  *      ⚠️ 幂等仍然成立：`migrateState(migrateState(x))` 逐字段相同（第二次也是 `{}`）。
- *   ⑤ ★★ **2026-10-11（D1 的 T3，spec A16）：`folders` 同样一律清成 `{}`** ——
+ *   ⑤ ★★ **2026-10-11（D1 的 T3，spec A16）：`folders` 对"**D1 之前写的文件**"清成 `{}`** ——
  *      新模型里"谁在 `folders` 里"由**被追踪的实例**派生（`deriveFolders`），旧的手工绑定
- *      与它的扫描读数因此全部作废，界面从"未绑定启动器"空态开始。
+ *      与它的扫描读数因此作废，界面从"未绑定启动器"空态开始。
  *      ⚠️ **盘上的 mod 文件不受影响**：丢的只是本应用的记账（spec §10 把这条代价写下来了）。
  *      ⚠️ 与 ④ 同一条载荷性约束：写成 `folders: {}` 而**不是**删掉这个键（浅合并会捡回来）。
  *      ⚠️ 同时把 D1 新引入的两格补上默认值（`launchers: []` / `instancePrefs: {}`），
  *     而**已经有的**那两格原样保留 —— 它们就是用户的绑定与勾选，洗它们等于替用户取消勾选。
  *      ⚠️ 幂等：第二次跑 `folders` 还是 `{}`、两格还是原样 ⇒ 逐字段相同。
+ *      ⚠️★ **2026-10-12 修（本条原来写的是"一律清成 `{}`"，那是错的）**：这个函数**每次读盘
+ *      都会跑**（`readStateFile` → 它）⇒ 无条件清就不是迁移，是"`folders` 永不持久化"。
+ *      ⇒ 清空的**前提**是"这份文件是 D1 之前写的"（两格都不在，见函数体里那段注释）；
+ *      **两格都在**（我们自己写出来的文件）⇒ `folders` 原样保留。桌面探针那 16 条红就是
+ *      这条判据缺了造成的（`task-3-fix3-report.md`）。
  */
 export function migrateState(raw: unknown): StateFileV2 {
   const record = isRecord(raw) ? raw : null;
 
   if (record?.stateVersion === 2) {
+    const previous = raw as StateFileV2;
+    /*
+     * ★★ D1 的"清旧 `folders`"必须是**一次性迁移** —— 判据是"**这份文件是 D1 之前写的**"：
+     * `launchers` 与 `instancePrefs` **两格都不在**（那正是上一版 `persist()` 写出来的形状）。
+     *
+     * ⚠️★ 2026-10-12 修复（桌面探针基线 **16 ✗ / 346 ✓ / EXIT 1** 抓到的真缺陷）：
+     *   原来这里是**无条件** `folders: {}`，而这个函数在**每次读盘**时都跑
+     *   （`readStateFile` → `migrateState`）⇒ 那不是"升级时清一次"，是
+     *   "**`folders` 永不持久化**"：v2 状态文件每次加载都丢掉全部绑定 ✗。
+     *   代价的现场：spec §7 明写旧的手工绑定通道**保留在契约里**（只是不再是 UI 入口），
+     *   而"没有 `instancePrefs` 的 entry"（手工绑定 / 预置文件夹）正是被那句话**每次**清掉的
+     *   那一类；桌面探针那 347 条判据（靠"预置一个 folder 再启动"造夹具）因此红了 16 条，
+     *   签名是 `✗ 三格原样保留 … —— {"folders":{}}` 与多处"（没有这个文件夹）"。
+     *   ⇒ 第一次读旧文件清一次；清完那份文件就带上两格了 ⇒ **之后不再清**（幂等）。
+     * ⚠️ 方向上的取舍（认）：**两格都在** ⇒ 一律原样保留 —— 哪怕那份 `folders` 是我们自己
+     *   派生出来的（T4 的 `persist()` 会把它写下来）。"清一次"只在老文件上发生。
+     */
+    const predatesD1 = previous.launchers === undefined && previous.instancePrefs === undefined;
     return {
-      ...(raw as StateFileV2),
+      ...previous,
       catalogBindings: {},
-      /* ★ D1（spec A16）：旧的手工绑定与它的扫描读数一律丢弃 —— 新模型只认"启动器实例"
-         （`launchers` + `instancePrefs`）。⚠️ 盘上的 mod 文件不受影响：丢的只是本应用的记账
-         （spec §10 把这条代价写下来了）。
-         ⚠️★ 与 ④ 同一条载荷性约束：这里必须是 `folders: {}` 而**不是**"把这个键丢掉" ——
-         `file-updates.ts` 的写盘是浅合并，我们这份里没有这个键时磁盘那份会被**捡回来**。 */
-      folders: {},
+      /* ★ D1（spec A16，**只对 D1 之前写的文件**）：旧的手工绑定与它的扫描读数一律丢弃 ——
+         新模型只认"启动器实例"（`launchers` + `instancePrefs`）。⚠️ 盘上的 mod 文件不受影响：
+         丢的只是本应用的记账（spec §10 把这条代价写下来了）。
+         ⚠️★ 与 ④ 同一条载荷性约束：写成 `folders: {}` 而**不是**把这个键丢掉 ——
+         `file-updates.ts` 的写盘是浅合并，我们这份里没有这个键时磁盘那份会被**捡回来**。
+         ⚠️ 保留那一支加 `isRecord` 守卫（不是无条件透传）：`migrateState` 的判据里有
+         "写下去也安全"，透传一个 `null` 会破坏它；容器形状不对 ⇒ 退回 `{}`，
+         而**元素级**的判据仍在调用方那道归一化 / 读它的那一块（见 `readStateFile`）。 */
+      folders: predatesD1 ? {} : isRecord(previous.folders) ? previous.folders : {},
       /* ⚠️ 这两格**原样保留**（缺 / 类型不对才退化）：它们是 D1 新引入的配置，
          盘上要么还没有（老 v2）⇒ 给空值，要么就是用户真正的绑定与勾选 ⇒ 一格都不许洗。 */
-      launchers: Array.isArray((raw as StateFileV2).launchers)
-        ? (raw as StateFileV2).launchers
-        : [],
-      instancePrefs: isRecord((raw as StateFileV2).instancePrefs)
-        ? (raw as StateFileV2).instancePrefs
-        : {},
+      launchers: Array.isArray(previous.launchers) ? previous.launchers : [],
+      instancePrefs: isRecord(previous.instancePrefs) ? previous.instancePrefs : {},
     };
   }
 
