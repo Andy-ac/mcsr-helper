@@ -436,9 +436,22 @@ function capabilitiesOf(api: DesktopBridge['modFolders']): ProgressCapabilities 
  *    `MOD_FOLDERS_CHANNELS` 那条 `satisfies` 咬不住"契约加了方法却忘了加通道"）。
  * ⚠️★ 参数类型是"这七格**可能不在**"的结构（不是 `DesktopBridge['modFolders']`）：
  *    渲染自检里的老壳桩本来就没有那七格，它要能**直接**传进来（㊾c 的两条就是那一对）。
- * ⚠️★★ 而它**必须**从契约 `Pick` 出来（不能手抄七个键名）：那样契约里改掉其中任何一个名字
- *    ⇒ **这里当场编译失败**。⚠️ 手抄的版本给不了这个保证（七个键都是可选的 ⇒ 少一个
- *    照样可赋值 ⇒ 一声不响地把一个真壳判成"不够 D1"，那正是这一道门要防的坏法）。
+ * ⚠️★★ 而它从契约 `Pick` 出来（不是手抄七个键名）——⚠️ 但**别说这条能拦住"契约改名"**，
+ *    那是**假的**（T6 的独立评审实测过，这里复核过同一条读数）：把契约 `desktop.ts` 里
+ *    `listLauncherInstances` 那一格改名 ⇒ `tsc -p apps/web/tsconfig.json --noEmit`
+ *    **退出 0、零行输出**（`Pick` 的键与 `satisfies` 的键**同时**不匹配才可能红，而
+ *    只改契约那一侧时两边"一致地错"，所以谁都不出声）。
+ *    ⇒ **它会退化成**：契约改名 + 有人跟着把 `D1_CHANNELS` 也改掉 ⇒ `d1Capable()` 对真壳
+ *    恒 `false` ⇒ `/files` 对所有人整块消失，**零门禁输出**。这正是这道门要防的那类坏法。
+ *    真正拦住它的是**另外两条**（都不在编译期）：
+ *      · 本文件 `D1_CHANNELS` 那一行末尾的 `satisfies readonly (keyof D1Capabilities)[]`
+ *        （现读 `:487`）—— 它是**这一侧漏了一格**时当场红的那个（实测：从上面 `Pick` 的键
+ *        联合里删掉 `| 'listLauncherInstances'` ⇒ `TS2322`，位置就在那一行上）；
+ *      · 渲染自检里"**桌面壳桩与契约逐条对账**"那条 `deepEqual`
+ *        （`foldersrender.tsx:1175`，把壳桩的键与 `MOD_FOLDERS_CHANNELS` 对账）——
+ *        它是**改契约那一侧**时先红的那个；外加 ㊾c/㊾d 那两条"七个格子逐格都读到"的读数。
+ *    ⇒ 结论按事实写：**契约改名时这里不会编译失败**；"七个名字一处都不许漂"这件事由
+ *    上面那两条运行时判据守着，不是由这个类型守着的。
  */
 type D1Capabilities = Partial<
   Pick<
