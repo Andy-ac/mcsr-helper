@@ -389,7 +389,39 @@ let messageResponses = [];
  */
 let onPageSend = (channel, payload) => {
   pushes.push({ channel, payload, at: Date.now() });
+  captured.push({ channel, payload, at: Date.now() });
 };
+
+/**
+ * ★★ T9 修复轮（C1/I1）：**按趟**收帧的仪器 —— 与 `pushes` 分开、**每一趟前后清一次**。
+ *
+ * ⚠️★ 为什么不能继续用 `pushes.slice(before)`（㊱ 的第一版就是这么写的）：
+ *    `pushes` 是**模块级**的、从加载起一直在涨，而"一趟跑完了"这件事我是从
+ *    `await invoke(...)` 返回**之后**才读的 —— 那一刻**属于下一趟**的帧可能已经在里面了
+ *    （`noteUpdated()` 那一帧是**同步**推的，而下一趟的第一帧由 `setRunItem` 推）。
+ *    后果是**读数漂**：同一份字节上，我量到 `帧数 4 / [0,0,1,1]`，独立评审量到
+ *    `帧数 5 / [0,0,1,1,1]`（`updatedCount` 的走向一致，差的是**尾帧**）。
+ *    ⇒ 单靠"帧数"当锚点是不可复跑的（§M2）；这一轮所有**新的**计数判据一律用
+ *    `captureFramesOf` 取帧（每一趟自己一个窗口），**不许**再写 `pushes.slice(...)`。
+ * ⚠️ 它不替代 `pushes`：既有那些判据（㉗ 的帧数/间隔、㉘c 的取消时机）照旧读 `pushes`，
+ *    行为一字不变（两边都记同一份 `{channel, payload, at}`）。
+ */
+const captured = [];
+/**
+ * 跑一趟并把它**这一趟**推出来的帧原样交回（按 `channel` 过滤；`'*'` = 不过滤）。
+ *
+ * ⚠️ 清窗口**在 `work()` 之前**、读数**紧接着**它取 ⇒ 即使下一趟的帧已经推进 `pushes`，
+ *    这一趟的 `captured` 里也只有它自己的（取完立刻不再有写入者）。
+ */
+async function captureFramesOf(channel, work) {
+  captured.length = 0;
+  const value = await work();
+  const frames = captured
+    .filter((entry) => channel === '*' || entry.channel === channel)
+    .map((entry) => entry.payload);
+  captured.length = 0;
+  return { value, frames };
+}
 
 const app = {
   // ⚠️ 固定 false：打包态会让启动那一路去载 electron-updater（它在 `initUpdater` 里被
@@ -4127,14 +4159,31 @@ async function writePhase() {
     const beforeSecond = goodReqs();
     const bytesBefore = readFileSync(targetPath);
     const listingBefore = listing(dirGood);
-    let second = null;
-    try {
-      second = await invoke(MOD_CH.updateMod, id, fx.good.modid, key, {
-        mirrorId: fx.good.mirrorId,
-      });
-    } catch (error) {
-      second = error;
-    }
+    /*
+     * ★★★ T9 修复轮（C1 的另一半）：**空转那一趟的计数必须停在 0**。
+     *    ⚠️★ 这一条钉的是 `writeRun` 里那个 `skipped === null` 判断的**反面**：
+     *    把 `if (skipped === null)` 改成"无条件 `noteUpdated()`"（或者把幂等那一支也放行），
+     *    这一条当场红 —— 而**正向那一趟**（⑯b）看不出来（两趟都是 1 的话它照样绿）。
+     *    ⚠️ 也就是"**跳过不算**"在单行这条路上第一次有了直接判据
+     *    （独立评审的 C1：这一处在此之前**一条判据都没有**）。
+     */
+    const { value: secondRun, frames: secondFrames } = await captureFramesOf(
+      MOD_CH.onProgress,
+      () =>
+        invoke(MOD_CH.updateMod, id, fx.good.modid, key, { mirrorId: fx.good.mirrorId }).catch(
+          (error) => error,
+        ),
+    );
+    const second = secondRun;
+    const secondCounts = secondFrames
+      .map((frame) => frame.updatedCount)
+      .filter((value) => typeof value === 'number');
+    check(
+      '★★★ T9（A20）**空转那一趟**（幂等：一个字节都没写）⇒ 帧里的 `updatedCount` **一次都不许是 1**' +
+        '（把 `writeRun` 里那个 `skipped === null` 判断放宽 ⇒ 这一条红 —— 正向那一趟看不出来）',
+      secondFrames.length >= 1 && secondCounts.length >= 1 && secondCounts.every((value) => value === 0),
+      `帧数 ${String(secondFrames.length)}；updatedCount 序列 ${JSON.stringify(secondCounts)}`,
+    );
     check(
       '★ 第二次 updateMod 成功返回（不是靠抛错"恰好"没下载）',
       isState(second),
@@ -4201,13 +4250,40 @@ async function writePhase() {
     const v1Bytes = readFileSync(v1Part);
     const beforeReqs = goodReqs();
     let state = null;
-    try {
-      state = await invoke(MOD_CH.updateMod, id, fx.good.modid, `${fx.good.modid}|1.16.1`, {
+    /*
+     * ★★★ T9 修复轮（C1）：**单行这条路（`writeRun`，`updateMod` 与 `downloadMissing` 共用）
+     *    的计数落点，在这一轮之前一条判据都没有** —— 独立评审把 `mod-folders.ts` 那句
+     *    `if (skipped === null) noteUpdated();` **整行删掉**，重建之后探针**全绿**
+     *    （`EXIT=0`、`✗` 0 条）⇒ A20 的"只数成功的"在这两个入口上**没有任何人守**。
+     *
+     * ⚠️★ 这一趟必须**真的装成**（本组的"（前置）"那条钉着"目标就位 + 请求 +1"）。
+     * ⚠️ 判据的形状是"**首值 0 / 至少一帧 1 / 最大值恰好 1**"，**不是**"恰好一帧"：
+     *    字节帧的条数由节流决定（那是时序、不是产品语义）⇒ 写死帧数会在**正确**的实现上报红
+     *    （§5.32 ③ / §M3 同族）。`max === 1` 那半边能红在"每项加一"那类坏实现上。
+     */
+    const { value: run1, frames: lineFrames } = await captureFramesOf(MOD_CH.onProgress, () =>
+      invoke(MOD_CH.updateMod, id, fx.good.modid, `${fx.good.modid}|1.16.1`, {
         mirrorId: fx.good.mirrorId,
-      });
-    } catch (error) {
-      state = error;
-    }
+      }).catch((error) => error),
+    );
+    state = run1;
+    console.log(
+      `  ${basename(dir)}：${listing(dir)}；单行那趟的帧 ${JSON.stringify(
+        lineFrames.map((frame) => ({ phase: frame.phase, updated: frame.updatedCount })),
+      )}`,
+    );
+    const lineCounts = lineFrames
+      .map((frame) => frame.updatedCount)
+      .filter((value) => typeof value === 'number');
+    check(
+      '★★★ T9（A20）单行那趟（`writeRun` 那条路）：`updatedCount` **从 0 起、至少一帧到 1、最大值恰好 1**' +
+        '（删掉 `mod-folders.ts` 里 `if (skipped === null) noteUpdated();` 这一行 ⇒ 这一条红）',
+      lineCounts.length >= 1 &&
+        lineCounts[0] === 0 &&
+        lineCounts.includes(1) &&
+        Math.max(...lineCounts) === 1,
+      `帧的 updatedCount 序列 ${JSON.stringify(lineCounts)}`,
+    );
     console.log(`  ${basename(dir)}：${listing(dir)}`);
     check(
       '（前置）这一趟真的走完了写盘：目标就位、字节 = 目录里那一条、请求 +1',
@@ -5409,6 +5485,9 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
   let installCancelResult = null;
   onPageSend = (channel, payload) => {
     pushes.push({ channel, payload, at: Date.now() });
+    /* ★ T9 修复轮：这条仪器也照记（与默认实现同一份形状 —— `captureFramesOf` 才看得见
+       ㉘c 之后推出来的帧；今天没有调用者，但两处各自记一半是最容易烂的那种形状）。 */
+    captured.push({ channel, payload, at: Date.now() });
     if (channel === MOD_CH.onProgress && payload?.phase === 'install' && installCancelResult === null) {
       installCancelResult = invoke(MOD_CH.cancelDownload);
     }
@@ -5538,12 +5617,19 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
         }
       });
     }, 25);
-    const state = await invoke(MOD_CH.downloadPack, pack.id, '1.16.1', id, 'origin');
+    /*
+     * ★★ 帧按 `captureFramesOf` 取：**这一趟自己的窗口**（`pushes.slice(before)` 会把
+     *    下一趟的帧吃进来 —— 那是 T9 修复轮发现的"帧数不可复跑"的根因，见那个函数头顶）。
+     *    ⚠️ 这一趟**两项都装成**，所以"最后一项装成时有没有帧推出去"正好落在它身上（I1）。
+     */
+    const { value: state, frames: packFrames } = await captureFramesOf(MOD_CH.onProgress, () =>
+      invoke(MOD_CH.downloadPack, pack.id, '1.16.1', id, 'origin'),
+    );
     clearInterval(poll);
     const runs = [...new Set(seen.map((s) => s.run))];
     const indexes = [...new Set(seen.map((s) => s.item))].sort((a, b) => a - b);
     console.log(
-      `  夹具自检：这一趟下好的项 ${JSON.stringify(state.lastRun?.updated)}；项序读数 ${JSON.stringify(indexes)}；run 读数 ${JSON.stringify(runs)}`,
+      `  夹具自检：这一趟下好的项 ${JSON.stringify(state.lastRun?.updated)}；项序读数 ${JSON.stringify(indexes)}；run 读数 ${JSON.stringify(runs)}；帧里的 updatedCount ${JSON.stringify(packFrames.map((frame) => frame.updatedCount))}`,
     );
     check(
       '★★ 中途的进度帧报的是 `download-pack`（把 `bulkRun` 的 `run` 写死回 `update-folder-all` ⇒ 这条红：页面会把整包下载念成"整夹更新"）',
@@ -5575,6 +5661,32 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
         existsSync(join(dir, pack.items[0].targetName)) &&
         existsSync(join(dir, pack.items[1].targetName)),
       JSON.stringify({ lastRun: state.lastRun, listing: listing(dir) }),
+    );
+    /*
+     * ★★★ T9 修复轮（I1）：**`downloadPack` 那一处的计数落点，在这一轮之前一条判据都没有**
+     *    —— 独立评审把 `else` 支路里那句 `noteUpdated();` 删掉（`updated.push` 留着），
+     *    重建之后探针**全绿**（`EXIT=0`、`✗` 0 条）。
+     * ⚠️★ 后果**比 C1 更具体**：`downloadPack` 的每一次成功装盘都靠这个 `noteUpdated()`
+     *    **主动推一帧**（`bulkRun` 收尾**不推帧**、`endRun()` 只把 `progress` 清空，
+     *    而 `updateFolderAll` 至少还有"用户取消"那一支补推）⇒ 只留 `updated.push` 的话，
+     *    **最后一项装成时那一帧不会被推**，这一趟的**终值计数一次都到不了页面**。
+     * ⚠️ 判据的形状（照 §M3 "**别写'恰好一帧'**"）：
+     *    · 每一帧都带这一格；· 首帧是 0；· 单调不减；· **末帧 == `lastRun.updated.length`**。
+     *    最后那半边就是"终值计数真的推出去了"——它是这一条的全部要点。
+     * ⚠️ 帧按 `captureFramesOf` 取（**这一趟自己的窗口**），不读模块级的 `pushes`
+     *    （理由见那个函数头顶：`pushes.slice` 会把**下一趟**的帧吃进来 ⇒ 帧数不可复跑）。
+     */
+    const packUpdated = state.lastRun?.updated ?? [];
+    check(
+      '★★★ T9（A20）整包那趟：每一帧都带 `updatedCount`、首帧 0、单调不减，而且**末帧 == `lastRun.updated.length`（终值计数真的推出去了）**' +
+        '（删掉 `downloadPack` 里那句 `noteUpdated();` ⇒ 这一条红：末帧会停在 1）',
+      packFrames.length >= 1 &&
+        packFrames.every((frame) => typeof frame.updatedCount === 'number') &&
+        packFrames[0].updatedCount === 0 &&
+        packFrames.every((frame, i) => i === 0 || frame.updatedCount >= packFrames[i - 1].updatedCount) &&
+        packFrames[packFrames.length - 1].updatedCount === packUpdated.length &&
+        packUpdated.length === 2,
+      `帧的 updatedCount 序列 ${JSON.stringify(packFrames.map((frame) => frame.updatedCount))}；lastRun.updated = ${JSON.stringify(packUpdated)}`,
     );
   });
 
@@ -5883,8 +5995,19 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
    *      构造不出来。㉟ 那一条走的是 `downloadPack` 的 `plan.items`（**不用**文件夹的扫描读数
    *      筛），所以那边能造。
    *    ⇒ 这一条钉的是 A20 的**字面**："跳过与失败**都不算**" —— 跳过的那一项**不进
-   *      `updatedCount`**（它是"没被碰"的那一类）；而"可批量但空转（`alreadyCurrent`）不算"
-   *      那半边由 `writeRun` 那一处（单行）与 `downloadPack` 那一处（㉟ 的 `updated: []`）钉着。
+   *      `updatedCount`**（它是"没被碰"的那一类）。
+   *    ⚠️★★ **`updateFolderAll` 里那个 `alreadyCurrent` 那一支今天没有判据**（T9 修复轮就地改准）：
+   *      原文写的是"那半边由 `writeRun` 那一处与 `downloadPack` 那一处钉着"，**那句已经作废**
+   *      （当时两处都**没有**判据 —— 独立评审各删一次、探针全绿；这一轮给那两处各补了一条，
+   *      见 **⑯ 的幂等那一趟**与 **㉚ 的"末帧 == updated.length"**）。
+   *      而**这一支**（`updateFolderAll` 循环体里、可批量且空转那一格）**构造不出来**：
+   *      `row.batchable` 要求 `verdict.kind` 是 `older`/`different-build`，而
+   *      `installRelease` 的 `alreadyCurrent` 要求目标文件**已是这一份** ⇒ 判 `same`
+   *      ⇒ 不可批量 ⇒ 它永远进不了那一支（详证见上）。⇒ 它是**防御性**代码，
+   *      成立靠的正是这两条判据的**互斥**（`packages/shared/src/modCatalog.ts` 的
+   *      `isUpdatable` 一族与 `apps/desktop/src/mod-folders.ts` 的 `installRelease` ③），
+   *      **不是**靠某一条断言。⚠️ 若将来有人把两条路合并，这一格会静默失效 —— 那时**必须**
+   *      补一条判据（今天补不了，因为它不可达）。
    *
    * ⚠️★ 三个数的**出处**（一条判据要同时读三个方向，少一个都只钉住一半）：
    *   · `1` —— `updatedCount`（这一格本身）；
@@ -5934,47 +6057,84 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
       );
       /*
        * ★★ 仪器：**每一帧**都收下来（`onProgress` 那一条载体）。
-       *    ⚠️ 这里**不改** `onPageSend`（㉘c 那一处会把它换掉）—— 直接读 `pushes` 就行：
-       *    它从模块加载起就一直在记（`{channel, payload, at}`），下面按 `before` 切片。
+       *    ⚠️★★ T9 修复轮改准：原来这里读的是模块级的 `pushes.slice(before)` —— 而
+       *    `pushes` 从加载起一直在涨、"这一趟跑完了"却是在 `await invoke(...)` 返回**之后**
+       *    才判的 ⇒ 属于**下一趟**的帧（`noteUpdated` 那一帧是同步推的）会被算进来。
+       *    后果是**帧数读数漂**：同一份字节上我量到 `帧数 4 / [0,0,1,1]`、独立评审量到
+       *    `帧数 5 / [0,0,1,1,1]`（走向一致，差的是**尾帧**）⇒ 帧数当不了锚点（§M2）。
+       *    ⇒ 改用 `captureFramesOf`（**这一趟自己的窗口**，逐趟清）；这一轮之后
+       *    **新的**计数判据一律用它，不再写 `pushes.slice(...)`。
        */
-      const before = pushes.length;
       const beforeReqs = packReqs();
-      const state = await invoke(MOD_CH.updateFolderAll, id, 'origin');
-      const frames = pushes
-        .slice(before)
-        .filter((entry) => entry.channel === MOD_CH.onProgress)
-        .map((entry) => entry.payload);
+      const { value: state, frames } = await captureFramesOf(MOD_CH.onProgress, () =>
+        invoke(MOD_CH.updateFolderAll, id, 'origin'),
+      );
       console.log(
         `  夹具自检：这一夹 ${listing(dir)}；这一趟 lastRun ${JSON.stringify(state.lastRun)}；` +
           `帧里的 updatedCount ${JSON.stringify(frames.map((frame) => frame.updatedCount))}`,
       );
       /*
-       * ★★★ **主判据**：终帧的 `updatedCount === 1`。
+       * ★★★ **主判据**：这一趟帧里的 `updatedCount` **最大值恰好是 1**（首值 0、单调不减）。
        *
-       * ⚠️★ 三个数各自能红的刀（逐条都实测过，读数记在 `task-9-report.md`）：
-       *   · 把计数器改成"每进一项就加一"（`setRunItem` 里 `+= 1`）⇒ 变成 **3**；
-       *   · 把跳过那一支也算（`else if (why !== null)` 里也加）⇒ 变成 **2**；
-       *   · 把 `noteUpdated()` 从 `writeRun` 挪到 `endRun()` 之后（单行那两趟）⇒ 单行那条判据红；
-       *   · 整个删掉（`noteUpdated` 里不 `+= 1`）⇒ 变成 **0**。
+       * ⚠️★ 判据写的是 `Math.max(...counts) === 1` 而**不是**"最后一帧是 1"：
+       *    `captureFramesOf` 取到的是"`await` 返回那一刻之前"落进窗口的帧 —— 而主进程可能
+       *    在收尾那一瞬间还推一帧（`pushProgress(true)` 那几条支路），它**属于这一趟、
+       *    也是 1**（`updatedCount` 不会因为多推一帧就变）⇒ 写"最后一帧"是**多一个
+       *    与本判据无关的时序依赖**（第一版就是这么写的，而且我量与评审量出的帧数还不一样，
+       *    见 §M2）。**首值 0 + 单调不减 + 最大值 1** 这三条一起，量的才是"只数成功的"。
+       *
+       * ⚠️★ 三个数各自能红的刀（逐条都实测过，读数记在 `task-9-fix-report.md`）：
+       *   · 把计数器改成"每进一项就加一"（`setRunItem` 里 `+= 1`）⇒ 最大值变成 **3**；
+       *   · 把跳过那一支也算（`else` 里也加）⇒ 变成 **2**；
+       *   · 整个删掉（`noteUpdated` 里不 `+= 1`）⇒ 变成 **0**；
+       *   · ⛔ **这里曾经写着第四条"把 `noteUpdated()` 从 `writeRun` 挪到 `endRun()` 之后
+       *     ⇒ 单行那条判据红" —— 那句是空炮**（T9 修复轮就地删掉）：当时探针里**没有**
+       *     任何一条判据读单行那两趟的 `updatedCount`（独立评审把 `writeRun` 那句整行删掉，
+       *     探针 **`EXIT=0`、`✗` 0 条**）⇒ 那句注释指向一条**不存在**的判据。
+       *     现在那两处**各有**一条：正向在 **⑯b**（首值 0 / 至少一帧 1 / 最大值恰好 1）、
+       *     空转在 **⑯ 的第二次**（一次都不许是 1）、整包在 **㉚**（末帧 == `updated.length`）。
        */
-      const lastFrame = frames[frames.length - 1];
+      const counts = frames
+        .map((frame) => frame.updatedCount)
+        .filter((value) => typeof value === 'number');
       check(
-        '★★★ 终帧的 `updatedCount` **恰好是 1**（一项真的装成；跳过与失败都不算 —— A20 的字面）',
-        lastFrame !== undefined && lastFrame.updatedCount === 1,
-        `帧数 ${String(frames.length)}；updatedCount 序列 ${JSON.stringify(frames.map((frame) => frame.updatedCount))}`,
+        '★★★ 这一趟的帧：`updatedCount` 首值 0、单调不减、**最大值恰好是 1**（一项真的装成；跳过与失败都不算 —— A20 的字面）',
+        counts.length >= 1 &&
+          counts[0] === 0 &&
+          counts.every((value, i) => i === 0 || value >= counts[i - 1]) &&
+          Math.max(...counts) === 1,
+        `帧数 ${String(frames.length)}（按这一趟自己的窗口数）；updatedCount 序列 ${JSON.stringify(counts)}`,
       );
       /*
-       * ★★ 同一格在**进行中**就要有值（不是只在收尾那一帧才冒出来）——
-       *    `updatedCount >= 1` 的那些帧里，`modid` 一定是**那一项装成之后**的换项帧
-       *    （`setRunItem` 是每项一帧的 `force`；`noteUpdated` 自己再补一帧）⇒
-       *    这一条同时证"它是**累计**、不是终帧特供"。
+       * ★★ 同一格在**进行中**就要有值（不是只在末帧才冒出来），而且**只可能属于装成的那一项**
+       *    （它自己那一帧）**或它之后的那一项**（`updatedCount` 是**累计**：后面那一项开工时
+       *    带着的是**前一项的成果**）—— **绝不可能属于被跳过的那一项**（它做完就 `skipped`，
+       *    从不进 `setRunItem`）。
+       *
+       * ⚠️★★ 这条断言的第一版写的是"这些帧的 `modid` **就是** `t9.ok`"，实测**假红**：
+       *    `[{"state-output",1},{"stronghold-trainer",1}]` —— 第二项（**失败**那一项）开工时
+       *    带着累计 1。那不是产品缺陷，是"累计"这个语义本身（§5.79：红点长得像产品缺陷）。
+       *    ⇒ 改成"**属于装成那一项或它之后的那一项**、且**不含被跳过那一项**"：
+       *    前一半钉"它跟着**这一趟**走"（不是凭空冒出来的数），后一半钉"跳过的那一项没被算"。
+       * ⚠️ 取 `cumulative[0]` 只用来钉"**第一个**出现的累计帧一定属于装成的那一项"
+       *    （那一项是这一趟的**第一项**）；**不许**把这一条改成"恰好一帧"或"每一帧都属于它"
+       *    （跳过那一项不产帧、而后面各项都会带着累计值 ⇒ 那两种写法都会在**正确**的实现上报红，
+       *    §M3 那一族）。
        */
+      const okIndex = [
+        t9.ok.modid,
+        t9.bad.modid,
+      ];
       const cumulative = frames.filter(
         (frame) => typeof frame.updatedCount === 'number' && frame.updatedCount >= 1,
       );
       check(
-        '★★ 进行中的帧里就带着它（`updatedCount >= 1` 的帧至少一帧，而且那些帧的 modid 是**那一项自己**）',
-        cumulative.length >= 1 && cumulative[0].modid === t9.ok.modid,
+        '★★ 进行中的帧里就带着它（`updatedCount >= 1` 的帧至少一帧；第一个属于**装成的那一项**；' +
+          '而所有这样的帧都只属于"装成那一项**或它之后**的项"、**绝不属于被跳过的那一项**）',
+        cumulative.length >= 1 &&
+          cumulative[0].modid === t9.ok.modid &&
+          cumulative.every((frame) => okIndex.includes(frame.modid)) &&
+          !cumulative.some((frame) => frame.modid === t9.skipped.modid),
         JSON.stringify(cumulative.map((frame) => ({ modid: frame.modid, item: frame.itemIndex, updated: frame.updatedCount }))),
       );
       /*
