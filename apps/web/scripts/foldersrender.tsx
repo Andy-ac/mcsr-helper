@@ -487,6 +487,25 @@ function instanceView(over: Partial<InstanceView> & { key: string }): InstanceVi
 }
 /** 1.16.1 上被追踪的那一个（实例层的目标）。 */
 const INSTANCE_RANKED = instanceView({ key: `multimc:instances/1.16.1 - Ranked#1` });
+/**
+ * ★★ 刀 3 之后补的那一格：**同一个版本**（1.16.1）上**没被追踪**的那一个。
+ *
+ * ⚠️★ 现场（这把刀真的跑过，读数在报告里）：把 `InstancePicker` 里 `tracked === true`
+ *    那一格删掉 ⇒ 整套自检**照样全绿** —— 因为原来那三个夹具的**版本各不相同**
+ *    （1.16.1 / 1.16.5 / 1.8.9）⇒ `gameVersion === page.version` 那一半已经把它们挡在门外，
+ *    "被追踪"那一半**没有任何判据**。
+ * ⇒ 这一格只服务那一件事：它**与本组那个被追踪的实例同版**（1.16.1）⇒ 少了 `tracked`
+ *    那一格时它会**混进候选里**，`㉞` 的"未追踪不画卡"当场红（`㊿a` 也会跟着红）。
+ * ⚠️ 它不进 `㊿d` 那份明细（那一组自己有一份 `allInstancesState`，见那里）。
+ * ⚠️★ 定义必须在**第一个用它的人之前**（`skeletonState` 在 ㉞ 那一段）：`const` 的 TDZ
+ *    会让那一处抛 `ReferenceError`，而 biome 的 `noInvalidUseBeforeDeclaration`
+ *    就是这么报的。
+ */
+const INSTANCE_UNTRACKED_SAME_VERSION = instanceView({
+  key: 'multimc:instances/1.16.1 - Not ticked',
+  name: '1.16.1 - Not ticked',
+  tracked: false,
+});
 /** 另一个版本上被追踪的那一个（跨版本那一栏的第二个分组）。 */
 const INSTANCE_OLD = instanceView({
   key: 'multimc:instances/1.8.9 - RSG',
@@ -1208,7 +1227,14 @@ const skeletonState = stateOf([ROW_GITHUB], {
    *    而下面这几条量的东西（"这一版有哪些实例"/"一个下载入口都没有"）就成了空跑。
    *    ⚠️ `INSTANCE_RANKED` 是 1.16.1 且 `tracked: true` ⇒ 版本层恰好一张卡。
    */
-  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED],
+  /*
+   * ⚠️★ 三条实例，各有各的用处（下面那几条断言逐条点名）：
+   *    · `INSTANCE_RANKED`（1.16.1，**被追踪**）⇒ 版本层**恰好**画它一张卡；
+   *    · `INSTANCE_UNTRACKED`（1.16.5，未追踪）⇒ 被**版本**筛挡掉；
+   *    · `INSTANCE_UNTRACKED_SAME_VERSION`（1.16.1，未追踪）⇒ 版本筛**挡不住**它，
+   *      只有 `tracked === true` 那一格能挡 ⇒ 少了那一格这把刀才红得起来（读数在报告里）。
+   */
+  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED, INSTANCE_UNTRACKED_SAME_VERSION],
 });
 const skeletonHtml = keep(
   html(
@@ -1247,8 +1273,22 @@ assert.equal(
   skeletonHtml.includes(`data-instance-card="${INSTANCE_UNTRACKED.key}"`),
   false,
   '★★ 反面：**未追踪**的实例不画卡（它没有 folder ⇒ 点进去只会看到一屏空白）—— ' +
-    '⚠️ 夹具里那一条是 1.16.5，就算实现漏了 `tracked` 那一格也会被版本筛挡掉 ⇒ ' +
-    '这一条真正咬住的是**下面 ㊿d** 里"未追踪的行没有 `open-instance`"那一条',
+    '⚠️ 这一条咬的是**版本**那一半（它是 1.16.5），"被追踪"那一半由下一条咬',
+);
+/*
+ * ★★ 刀 3 之后补：**同版但没被追踪**的那一个。
+ *
+ * 现场：上面那条断的是 1.16.5（另一个版本）⇒ 就算实现漏了 `tracked === true` 那一格，
+ * 它也会被 `gameVersion === page.version` 挡掉 ⇒ **那把刀实测全绿**（读数在报告里）。
+ * ⇒ 判据换成"**同一个版本**上没被追踪的那一个不许画卡"：少了 `tracked` 那一格时，
+ * 它**混进候选**，这一条当场红（而且它正是"未追踪的实例没有 folder ⇒ 点进去一屏空白"
+ * 那条规矩唯一咬得住的地方）。
+ */
+assert.equal(
+  skeletonHtml.includes(`data-instance-card="${INSTANCE_UNTRACKED_SAME_VERSION.key}"`),
+  false,
+  '★★★ 而**同版但未追踪**的那一个**也不许**画卡（它是"版本筛挡不住"的那一半）—— ' +
+    '少了 `tracked === true` 那一格 ⇒ 这一条红（夹具自钉见 `twoLayerState` 那一段）',
 );
 assert.equal(
   textOf(skeletonHtml).includes(textOf(resolved('files.partOneTitle'))),
@@ -4057,8 +4097,16 @@ const twoLayerState = stateOf([ROW_GITHUB, ROW_LITHIUM], {
       unrecognized: [],
     }),
   ],
-  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED, INSTANCE_OLD],
+  instances: [INSTANCE_RANKED, INSTANCE_UNTRACKED, INSTANCE_UNTRACKED_SAME_VERSION, INSTANCE_OLD],
 });
+assert.equal(
+  twoLayerState.instances.filter(
+    (instance) => instance.gameVersion === '1.16.1' && instance.tracked === false,
+  ).length,
+  1,
+  '夹具自钉（T7 / 刀 3）：1.16.1 上**恰好一个没被追踪**的实例 —— 少了它，"版本筛"' +
+    '会把未追踪的全部挡在门外，`tracked` 那一格就没有判据（那把刀实测**全绿**）',
+);
 
 /**
  * ★★ ④（A5 的六样）那份明细**自己**的状态：**三档扫描状态在同一份产物里各有一行**。
