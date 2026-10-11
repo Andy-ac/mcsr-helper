@@ -9,6 +9,7 @@ import {
   batchTargets,
   type CatalogRowView,
   channelUrl,
+  deriveFolders,
   type FolderScanEntry,
   groupFoldersByVersion,
   type ModFoldersState,
@@ -482,8 +483,12 @@ test('★★ D8（A 的 T6）：`catalogBindings` 里有旧数据时**读到就�
     migrated,
     '幂等仍然成立：再跑一次逐字段相同（`catalogBindings` 还是 `{}`）',
   );
-  // ★ 对照：**只有**那一格被清（别把"清空 catalogBindings"做成"整份重建"）
-  assert.deepEqual(migrated.folders, stale.folders);
+  /*
+   * ★ 对照：`prefs` / `items` 一格都不许动（别把"清旧数据"做成"整份重建"）。
+   * ⚠️★ D1（spec A16）之后 `folders` **也**被 `migrateState` 清空 ⇒ 这一条不再拿它当
+   *    "其余不动"的对照：夹具里它是 `{}`，`deepEqual` 与"没被清"分不开（§5.32① 恒真断言）。
+   *    A16 真正的判据是**下面**那条用例（它的旧 `folders` 是**非空**的）。
+   */
   assert.deepEqual(migrated.prefs, stale.prefs);
   assert.deepEqual(migrated.items, stale.items);
 });
@@ -494,6 +499,77 @@ test('★ 状态迁移：坏输入不抛（返回可写的干净状态，由调�
     assert.equal(s.stateVersion, 2);
     assert.deepEqual(s.folders, {});
   }
+});
+
+test('★ D1：迁移把旧 `folders` 清空（spec A16：丢弃旧绑定与扫描读数）', () => {
+  /*
+   * ★ D1（spec A16）：升级后旧的手工绑定**与它的扫描读数**一律清掉，界面从"未绑定启动器"
+   *   空态开始 —— 新模型只认"启动器实例"（`launchers` + `instancePrefs`）。
+   * ⚠️ 盘上的 mod 文件不受影响：丢的只是本应用的记账（spec §10 把这条代价写下来了）。
+   * ⚠️ 别的格子**一格都不许**跟着丢 —— 尤其别把"清旧绑定"做成"整份重建"。
+   * ⚠️★ 刀：把 `migrateState` 早返回里的 `folders: {}` 去掉 ⇒ 这一条红。
+   */
+  const old = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {
+      'old-id': { path: 'D:\\old\\mods', gameVersion: '1.16.1', autoUpdate: true, boundAt: 1 },
+    },
+    prefs: {
+      bulkChannel: 'origin',
+      catalogGameVersion: '1.16.1',
+      catalogGameVersionChosen: true,
+      tagFilter: [],
+    },
+  };
+  const migrated = migrateState(old);
+  assert.deepEqual(migrated.folders, {}, '旧绑定一律清掉');
+  assert.deepEqual(migrated.launchers, [], '新的一格给空数组');
+  assert.deepEqual(migrated.instancePrefs, {});
+  assert.equal(migrated.prefs.catalogGameVersionChosen, true, '其它 prefs 一格都不许动');
+});
+
+test('★ D1：`folders` 由"被追踪的实例"派生（folderId = instance.key，path = modsDir）', () => {
+  /*
+   * ★ D1（spec A9/A10）：**被追踪的实例 ⇒ 一条 folder**，而 `folders` 的形状一个字没变
+   *   ⇒ 扫描 / 判定 / 整夹更新 / 缺失清单全都照旧工作，只是"谁在里面"改由实例决定。
+   *   `folderId` 直接用 `instance.key`（`<类型>:<相对根的路径>`）：稳定、可读、跨启动器不撞。
+   * ⚠️★ `autoUpdate` 是 **`true`**（2026-10-11 控制器现读纠正，初稿写的是 `false` ✗）：
+   *    `autoUpdate` **只管"启动时扫不扫"** —— `apps/desktop/src/mod-folders.ts` 的 `startUp`
+   *    里那句 `if (entry.autoUpdate)` ⇒ 给 `false` 的话，升级到 D1 的机器在启动那一趟**不扫**
+   *    任何派生的 folder（读数只能等页面拉状态时补扫），而 `bindFolder` 给**新绑**文件夹的
+   *    默认值正是 `autoUpdate: true`。⇒ 下面那条 `deepEqual` 压住的就是这件事：把
+   *    `deriveFolders` 里那一格改成 `false`，它当场红（**不是**一条恒真断言）。
+   * ⚠️★ 刀：去掉 `deriveFolders` 里那道 `tracked !== true ⇒ continue` 的过滤 ⇒ 这一条红。
+   */
+  const inst = (key: string, modsDir: string, gameVersion: string | null) => ({
+    key,
+    kind: 'multimc' as const,
+    name: key,
+    instancePath: 'x',
+    gameVersion,
+    loader: null,
+    modsDir,
+    savesDir: `${modsDir}\\..\\saves`,
+    needsConfirm: false,
+  });
+  const derived = deriveFolders(
+    [
+      inst('multimc:instances/a', 'A\\mods', '1.16.1'),
+      inst('multimc:instances/b', 'B\\mods', '1.12.2'),
+    ],
+    { 'multimc:instances/a': { tracked: true }, 'multimc:instances/b': { tracked: false } },
+    () => 1234,
+  );
+  assert.deepEqual(Object.keys(derived), ['multimc:instances/a'], '只派生被追踪的那些');
+  assert.deepEqual(derived['multimc:instances/a'], {
+    path: 'A\\mods',
+    gameVersion: '1.16.1',
+    autoUpdate: true,
+    boundAt: 1234,
+  });
 });
 
 test('★ older + auto ⇒ 真的进批量（在**文件夹行**上：`batchable` 与 `batchTargets` 的自增分支）', () => {

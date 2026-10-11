@@ -279,6 +279,13 @@ function normalizePrefs(raw: unknown): StateFileV2['prefs'] {
  *      · **键存在但类型不对**（`null` / 数组 / 标量 / 字段类型错）⇒ 坏文件。它只可能来自
  *        手改、截断写入或被别的程序覆盖 —— 那种文件里 `items` 也可能已经不对了，
  *        "猜着修"会把一个真正的损坏伪装成一次成功的启动。
+ * ⚠️★ D1（T3）新加的两格 `launchers` / `instancePrefs` **不走上面这道归一化**：
+ *    它们的**顶层形状**由 `migrateState` 兜住（不是数组 / 不是普通对象 ⇒ 退回空值），
+ *    而这一层**不判格子里面**是什么 —— 元素级的判据属于读它们的那一侧
+ *    （`mod-folders.ts` 的启动器块，按 spec A14 逐块 try/catch + 重试）。
+ *    代价（认，写在这里免得下一个人以为是漏的）：一个元素长了坏形状时不会被报成坏文件，
+ *    而是在读它的那一块里失败 —— 那一块本来就要求"单个块坏掉不影响其它块"。
+ *    它**读回来是原样的**：下面 `state` 那一份是 `{...migrated, …}`，两格随 `migrated` 一起回来。
  */
 export function readStateFile(): StateFileRead {
   const file = stateFilePath();
@@ -1984,8 +1991,14 @@ function registerIpc(): void {
  *
  * ⚠️ 启动时无条件写一次状态文件：让"这个功能有没有跑起来"有一个看得见、可核对的产物
  *    （全新安装时写的是 `emptyState()` 那一份：`version: 1` + `stateVersion: 2` +
- *    空的 `items` / `catalogBindings` / `folders` / 默认的 `prefs`，实测 199 字节），
+ *    空的 `items` / `catalogBindings` / `folders` / `launchers` / `instancePrefs` +
+ *    默认的 `prefs`，实测 **280 字节**），
  *    同时把"坏文件重建为空"这个结果立刻落盘。
+ *    ⚠️ 那个数是个**读数**，量法是 `writeStateFile` 那一句本身：
+ *       `Buffer.byteLength(JSON.stringify(emptyState(), null, 2), 'utf8')`
+ *       ⇒ 往空状态里加/减一格就要重量一次（D1 的 T3 加 `launchers` + `instancePrefs`
+ *       两格：238 → 280）。它**不是**判据，别拿它当断言（这里原先手抄的 "199" 已经
+ *       对不上任何形状了 —— 实测改动前是 238）。
  *    代价：每次启动都写一个几百字节的 JSON（即使内容没变）。
  */
 export async function initFileUpdates(ctx: {

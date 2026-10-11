@@ -43,6 +43,7 @@
 
 import type { DownloadProgress } from './downloadProgress';
 import { compareLocalVersions } from './fileUpdates';
+import type { LauncherInstance, LauncherKind } from './launcherInstances';
 import type {
   ModCatalog,
   ModEntry,
@@ -929,6 +930,36 @@ export interface LegacyBinding {
 }
 
 /**
+ * ★ D1：一个**绑定的启动器**（`rootPath` = 用户指定或探测到的那个根）。
+ *
+ * ⚠️ `id` 与 `kind` + `rootPath` 是**同一件事的两种说法**（`id` 由"添加启动器"那条通道
+ *    按 `${kind}:${rootPath}` 造出来）：留 `id` 是因为"移除某一条绑定"要一个稳定的键，
+ *    而 `kind` / `rootPath` 是枚举实例时真正要喂给 `listInstances` 的两格。
+ * ⚠️ `rootPath` **原样存**（不做归一化）：去掉尾部 `\` 那一步是 `listInstances` 的入参纪律
+ *    （`launcherInstances.ts` 的 `normalizeRoot`），在这里再写一遍就是第二份实现。
+ */
+export type LauncherBinding = { id: string; kind: LauncherKind; rootPath: string };
+
+/**
+ * ★ D1：一个实例上的**用户选择** —— 勾没勾、以及手改过的解析路径（A12：手改优先于探测）。
+ *
+ * ⚠️ 键是 `LauncherInstance.key`（`<类型>:<相对根的路径>`）—— 那个形状由
+ *    `instanceKeyOf` 一处决定，这里不再造第二套 id。
+ * ⚠️ `modsDir` / `savesDir` **可选**：只有用户真的手改过某一格才有它（A12 的"手改优先"
+ *    由 T2 的 `applyOverride` 在枚举之后套用 —— 派生这一层不碰这两格，见 `deriveFolders`）。
+ * ⚠️ `confirmed` 管的是**另一件事**：`needsConfirm` 是"这个解析靠猜"（探测判不出来），
+ *    而它是"用户看过并**显式接受**了当前解析结果" ⇒ 界面的"待确认"标按
+ *    `needsConfirm && !confirmed` 画（那条规则的实现在 T4 的 `instanceViewsOf`，不在这里）。
+ */
+export type InstancePref = {
+  tracked: boolean;
+  modsDir?: string;
+  savesDir?: string;
+  /** ★ D1（T8 的「确认这个路径」动作）：用户显式确认过这个实例的解析结果 ⇒ 界面不再画"待确认"标。 */
+  confirmed?: boolean;
+};
+
+/**
  * 状态文件 v2。
  *
  * ⚠️★ `version: 1` 与 `stateVersion: 2` **同时存在**，而且必须一直同时存在：
@@ -967,6 +998,27 @@ export interface StateFileV2 {
     string,
     { path: string; gameVersion: string | null; autoUpdate: boolean; boundAt: number }
   >;
+  /**
+   * ★ D1：**绑定的启动器**（旧的 `folders` 保留在类型里，但迁移时清空 —— spec A16）。
+   *
+   * ⚠️ 它与 `folders` 的关系是**一格输入、一格派生**：这一格记"用户绑了哪些启动器"，
+   *    `folders` 记"当前被追踪的实例派生成什么样"（`deriveFolders`）。
+   * ⚠️★ 为什么它必须始终出现在**我们这一份**里（写盘那一侧的载荷性约束）：`file-updates.ts`
+   *    的 `mergeWithDisk` 是 `{...磁盘, ...我们这份}` 的**浅合并** ⇒ **只有我们这份里没有
+   *    这个键时**，磁盘那份才会被捡回来。而"移除一个启动器"是**替换整张表**表达的
+   *    （`launchers` 里少一条）⇒ 只要这一格在（`migrateState` 保证：缺就补 `[]`），
+   *    移除就落得下去。这与 `catalogBindings` 那条（`migrateState` 的 ④）同源。
+   */
+  launchers: readonly LauncherBinding[];
+  /**
+   * ★ D1：按 `instance.key` 记的**勾选与路径覆盖**。
+   *
+   * ⚠️ 取消勾选**不是删这一格**：`tracked: false` 与"从来没勾过"对 `deriveFolders` 是
+   *    同一个结果（都派生不出 folder），但保留它才不会把用户手改过的路径（A12）一起忘掉
+   *    —— 重新勾上时那两格还在。清读数（spec A9 的"取消勾选 ⇒ 扫描读数清除"）是
+   *    调用方在**派生结果**上做的事，不是在这里删配置。
+   */
+  instancePrefs: Record<string, InstancePref>;
   prefs: {
     bulkChannel: Channel;
     catalogGameVersion: string;
@@ -996,11 +1048,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 把盘上读到的东西迁移成 v2。**纯函数、不抛、不写盘**。
  *
- * 判据（四条，方向都是"不丢数据"）：
+ * 判据（五条，方向都是"不丢数据"）：
  *   ① `stateVersion === 2` ⇒ **原样返回**（幂等：再跑一次逐字段相同），
- *      **除了 `catalogBindings` 那一格**（见 ④）。不重建的理由：将来往 v2 里加字段时，
- *      重建会把新字段**静默剥掉**；代价是一个被**截断**的 v2 不会在这里被补全 ——
- *      那是调用方那份三态读的活（v1 的 `fatal` ⇒ 绝不覆盖）。
+ *      **除了 `catalogBindings`（见 ④）与 `folders`（见 ⑤）那两格**。不重建的理由：将来往
+ *      v2 里加字段时，重建会把新字段**静默剥掉**；代价是一个被**截断**的 v2 不会在这里
+ *      被补全 —— 那是调用方那份三态读的活（v1 的 `fatal` ⇒ 绝不覆盖）。
+ *      ⚠️ ⑤ 与 ② 是同一条口径：**新格缺就补空值，已有的配置一格都不洗**。
  *   ② 否则（v1、或任何读不出来的输入）⇒ 造一份干净的 v2：`items` **只在它真的是个
  *      对象时**保留，其余字段给默认值。**不做删除式迁移** —— 读不出来不等于可以丢。
  *   ③ 任何输入都不抛：调用方拿到的一定是一份"写下去也安全"的状态，由它决定要不要覆盖。
@@ -1017,12 +1070,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *      **可达到、也已断言的那一半**是 D8 真正要的结果：旧数据**读到就忽略**，
  *      而且**第一次持久化之后**它不再存在（我们这份的 `{}` 覆盖掉磁盘那份的旧内容）。
  *      ⚠️ 幂等仍然成立：`migrateState(migrateState(x))` 逐字段相同（第二次也是 `{}`）。
+ *   ⑤ ★★ **2026-10-11（D1 的 T3，spec A16）：`folders` 同样一律清成 `{}`** ——
+ *      新模型里"谁在 `folders` 里"由**被追踪的实例**派生（`deriveFolders`），旧的手工绑定
+ *      与它的扫描读数因此全部作废，界面从"未绑定启动器"空态开始。
+ *      ⚠️ **盘上的 mod 文件不受影响**：丢的只是本应用的记账（spec §10 把这条代价写下来了）。
+ *      ⚠️ 与 ④ 同一条载荷性约束：写成 `folders: {}` 而**不是**删掉这个键（浅合并会捡回来）。
+ *      ⚠️ 同时把 D1 新引入的两格补上默认值（`launchers: []` / `instancePrefs: {}`），
+ *     而**已经有的**那两格原样保留 —— 它们就是用户的绑定与勾选，洗它们等于替用户取消勾选。
+ *      ⚠️ 幂等：第二次跑 `folders` 还是 `{}`、两格还是原样 ⇒ 逐字段相同。
  */
 export function migrateState(raw: unknown): StateFileV2 {
   const record = isRecord(raw) ? raw : null;
 
   if (record?.stateVersion === 2) {
-    return { ...(raw as StateFileV2), catalogBindings: {} };
+    return {
+      ...(raw as StateFileV2),
+      catalogBindings: {},
+      /* ★ D1（spec A16）：旧的手工绑定与它的扫描读数一律丢弃 —— 新模型只认"启动器实例"
+         （`launchers` + `instancePrefs`）。⚠️ 盘上的 mod 文件不受影响：丢的只是本应用的记账
+         （spec §10 把这条代价写下来了）。
+         ⚠️★ 与 ④ 同一条载荷性约束：这里必须是 `folders: {}` 而**不是**"把这个键丢掉" ——
+         `file-updates.ts` 的写盘是浅合并，我们这份里没有这个键时磁盘那份会被**捡回来**。 */
+      folders: {},
+      /* ⚠️ 这两格**原样保留**（缺 / 类型不对才退化）：它们是 D1 新引入的配置，
+         盘上要么还没有（老 v2）⇒ 给空值，要么就是用户真正的绑定与勾选 ⇒ 一格都不许洗。 */
+      launchers: Array.isArray((raw as StateFileV2).launchers)
+        ? (raw as StateFileV2).launchers
+        : [],
+      instancePrefs: isRecord((raw as StateFileV2).instancePrefs)
+        ? (raw as StateFileV2).instancePrefs
+        : {},
+    };
   }
 
   return {
@@ -1031,6 +1109,10 @@ export function migrateState(raw: unknown): StateFileV2 {
     items: isRecord(record?.items) ? record.items : {},
     catalogBindings: {},
     folders: {},
+    /* 干净那份（v1 / 读不出来）也要带上这两格 —— 少了它们，写盘那一侧就是"这个键不存在"，
+       而 `mergeWithDisk` 会把磁盘那份旧值捡回来（同 `catalogBindings`）。 */
+    launchers: [],
+    instancePrefs: {},
     prefs: {
       bulkChannel: 'origin',
       catalogGameVersion: '1.16.1',
@@ -1039,6 +1121,49 @@ export function migrateState(raw: unknown): StateFileV2 {
       tagFilter: [],
     },
   };
+}
+
+/**
+ * ★ D1：**被追踪的实例 ⇒ `folders`**（spec A9/A10）。
+ *
+ * 这一条是整个 D1"零功能损失"的关键：`folders` 的形状一个字没变 ⇒ 扫描、判定、
+ * 整夹更新、缺失清单全都照旧工作，只是"谁在里面"改由实例决定
+ * （`folderId` 就是 `instance.key`，所以"这个 folder 是哪个实例"一眼可读）。
+ * ⚠️★ `autoUpdate` 是 **`true`**（2026-10-11 控制器现读纠正，初稿写的是 `false` ✗）：
+ *    `autoUpdate` **只管"启动时扫不扫"** —— `apps/desktop/src/mod-folders.ts` 的 `startUp`
+ *    里那句 `if (entry.autoUpdate)`（模块头"有意的取舍"那一节写着它真的在筛选）⇒ 派生出来的
+ *    folder 若给 `false`，被追踪的实例在启动那一趟**不会被扫**（读数只能等页面拉状态时补扫）
+ *    —— 那是 A10 要保的行为的**倒退** ✗。它也与 `bindFolder` 给**新绑**文件夹的默认值一致
+ *    （那边那一格就是 `autoUpdate: true`，理由写着"默认 false 的话，新绑的文件夹在下次启动时
+ *    会被启动那一次扫描漏掉"）⇒ 派生 = 一次"自动的绑定"，默认值就该与它相同。
+ *    ⚠️ 这一格**不是**"自动下载"开关：写盘/下载永远要一次点击。
+ * ⚠️ 路径覆盖（`InstancePref.modsDir` / `savesDir`）**不在这里**套用：那是 T2 的
+ *    `applyOverride`，由调用方在**枚举之后、派生之前**做一次（A12 的"手改优先"只留一处
+ *    实现）—— 在这里再读一遍 `prefs[key].modsDir` 就等于让同一条规则有两个会漂的版本。
+ * ⚠️ `confirmed` 这里也**不读**：它管的是界面上那颗"待确认"标（T4 的 `instanceViewsOf`），
+ *    与"派生哪几条 folder"无关。
+ * ⚠️ 纯函数：不读盘、不写盘；`boundAt` 由调用方给 —— "这条 folder 是什么时候绑上的"
+ *    是一份持久化读数（跨重启要稳定），不是这里能算出来的东西。
+ */
+export function deriveFolders(
+  instances: readonly LauncherInstance[],
+  prefs: Record<string, InstancePref>,
+  boundAt: (key: string) => number,
+): StateFileV2['folders'] {
+  const out: StateFileV2['folders'] = {};
+  for (const instance of instances) {
+    /* ★ 只派生**被追踪**的那些。"从来没勾过"（这一格缺）与"勾过又取消了"（`tracked: false`）
+       在派生上必须是**同一个结果** ⇒ 判据写成 `!== true` 而不是 `=== false`：
+       后者会让缺那一格的实例漏进派生结果里（`undefined === false` 为假 ⇒ 不被跳过 ✗）。 */
+    if (prefs[instance.key]?.tracked !== true) continue;
+    out[instance.key] = {
+      path: instance.modsDir,
+      gameVersion: instance.gameVersion,
+      autoUpdate: true,
+      boundAt: boundAt(instance.key),
+    };
+  }
+  return out;
 }
 
 /**
