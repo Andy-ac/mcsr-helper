@@ -644,6 +644,53 @@ test('★ D1：老 v2 文件里**没有**这两格 ⇒ 迁移补出空值（不�
   assert.deepEqual(migrated.instancePrefs, {}, '而且它就是空的那一份');
 });
 
+test('★★ D1：D1 之后的文件里 `folders` **类型不对** ⇒ 坏值必须原样交出（不许在迁移这一步修好它）', () => {
+  /*
+   * ★★ 2026-10-12 **第二个真回归**（桌面探针抓到，现场 `.cache/t5-probe-final.txt`）：
+   *     ✗ 类型不对的那三格 ⇒ 备份出一个 `.corrupt-<ts>`（找到了 0 个）
+   *     ✓ 重建之后三格都是对象（`folders` 被重建为空、剩下的有默认值）—— `{"folders":{}, "prefs":{…}}`
+   *     ✗ **告诉了用户**（弹了一次原生提示框）——（一次都没弹）
+   *   ⇒ 应用把它当坏文件重建了，却**没备份、没弹框** = **静默丢数据** ✗。
+   *
+   *   机制（`apps/desktop/src/file-updates.ts` 的 `readStateFile` 那一段把顺序写下来了）：
+   *     · **形状闸门在 `migrateState` 之前**（老判据 `version` / `items`）；
+   *     · **v2 的三格在迁移之后还要过一道归一化**（Ruling 31）——**那道归一化就是**
+   *       "键存在但类型不对 ⇒ 走'备份 + 重建 + 告诉用户'"的判据；
+   *     · 0.1.1 时 `migrateState` 的 v2 分支**不碰 `folders`** ⇒ 坏值原样传到归一化 ⇒ 检出不合法 ✓；
+   *     · A16 改成无条件 `folders: {}`、修复轮 3 又加 `isRecord(...) ? … : {}`
+   *       ⇒ **坏值在迁移这一步就被静默改成 `{}`** ⇒ 归一化看到的是"合法对象" ⇒ **损坏信号消失** ✗✗。
+   *
+   * ⇒ 这一条压的就是那个分寸：**D1 之后的文件**（两格都在）里 `folders` 是坏值时，
+   *   `migrateState` 必须把它**原样**交出去（`null` / `'x'` / `42` / `[]` 都原样），
+   *   让**下游那一道**去判它不合法。
+   * ⚠️ 这**不是**"迁移可以交出不安全的东西"，是**分层**：`readStateFile` 拿到坏值后
+   *   **根本不写回**，而是走"备份 + 重建 + 告诉用户"。
+   * ⚠️★ 刀 1：把那一行改回 `isRecord(previous.folders) ? previous.folders : {}` ⇒ 这一条红。
+   */
+  for (const bad of [null, 'x', 42, []]) {
+    const after = {
+      version: 1,
+      stateVersion: 2,
+      items: {},
+      catalogBindings: {},
+      folders: bad,
+      launchers: [{ id: 'multimc:D:\\MultiMC', kind: 'multimc', rootPath: 'D:\\MultiMC' }],
+      instancePrefs: { 'multimc:instances/a': { tracked: true } },
+      prefs: { bulkChannel: 'origin', catalogGameVersion: '1.16.1', tagFilter: [] },
+    };
+    const migrated = migrateState(after);
+    assert.deepEqual(
+      migrated.folders,
+      bad,
+      `坏值 ${JSON.stringify(bad)} 必须**原样**交出（让下游那道归一化看得见它）`,
+    );
+    // 其余格子照旧原样（坏 `folders` **不许**牵连它们）
+    assert.deepEqual(migrated.launchers, after.launchers);
+    assert.deepEqual(migrated.instancePrefs, after.instancePrefs);
+    assert.deepEqual(migrated.prefs, after.prefs);
+  }
+});
+
 test('★ D1：`folders` 由"被追踪的实例"派生（folderId = instance.key，path = modsDir）', () => {
   /*
    * ★ D1（spec A9/A10）：**被追踪的实例 ⇒ 一条 folder**，而 `folders` 的形状一个字没变

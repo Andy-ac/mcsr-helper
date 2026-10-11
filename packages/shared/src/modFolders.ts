@@ -1224,8 +1224,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *      ⚠️★ **2026-10-12 修（本条原来写的是"一律清成 `{}`"，那是错的）**：这个函数**每次读盘
  *      都会跑**（`readStateFile` → 它）⇒ 无条件清就不是迁移，是"`folders` 永不持久化"。
  *      ⇒ 清空的**前提**是"这份文件是 D1 之前写的"（两格都不在，见函数体里那段注释）；
- *      **两格都在**（我们自己写出来的文件）⇒ `folders` 原样保留。桌面探针那 16 条红就是
- *      这条判据缺了造成的（`task-3-fix3-report.md`）。
+ *      **两格都在**（我们自己写出来的文件）⇒ `folders` **原样**保留 —— ★ **"原样"包括它是
+ *      个坏值的时候**（`null` / `'x'` / …）：**不许**在这里把它"修"成 `{}`，否则调用方那道
+ *      "类型不对 ⇒ 备份 + 重建 + 告诉用户"的归一化就**看不见损坏**了（静默丢数据 ✗）。
+ *      两次回归的现场与读数：`task-3-fix3-report.md`（16 ✗）与 `task-3-fix4-report.md`。
  */
 export function migrateState(raw: unknown): StateFileV2 {
   const record = isRecord(raw) ? raw : null;
@@ -1257,12 +1259,24 @@ export function migrateState(raw: unknown): StateFileV2 {
          丢的只是本应用的记账（spec §10 把这条代价写下来了）。
          ⚠️★ 与 ④ 同一条载荷性约束：写成 `folders: {}` 而**不是**把这个键丢掉 ——
          `file-updates.ts` 的写盘是浅合并，我们这份里没有这个键时磁盘那份会被**捡回来**。
-         ⚠️ 保留那一支加 `isRecord` 守卫（不是无条件透传）：`migrateState` 的判据里有
-         "写下去也安全"，透传一个 `null` 会破坏它；容器形状不对 ⇒ 退回 `{}`，
-         而**元素级**的判据仍在调用方那道归一化 / 读它的那一块（见 `readStateFile`）。 */
-      folders: predatesD1 ? {} : isRecord(previous.folders) ? previous.folders : {},
+         ★★ **其余情形一律原样交出，哪怕它是个坏值**（`null` / `'x'` / `42` / `[]` 都原样 ——
+         这**故意不是** `isRecord(...) ? … : {}`）。因果关系写在这里，免得下一个人再"好心"修一次：
+           · `readStateFile` 的**形状闸门在迁移之前**，而 **v2 的三格在迁移之后还要过一道
+             归一化**（`normalizeFolders` / `normalizeCatalogBindings` / `normalizePrefs`，
+             Ruling 31）——**那道归一化才是**"键存在但类型不对 ⇒ 备份 + 重建 + 告诉用户"
+             的判据；
+           · 在这里把坏值"修"成 `{}`，那道归一化看到的就是一个**合法对象** ⇒
+             **损坏信号消失**：应用照样把文件当坏的重建，却**不备份、不弹框**（静默丢数据 ✗）。
+             实测现场：桌面探针 `✗ 类型不对的那三格 ⇒ 备份出一个 .corrupt-<ts>`（0 个）+
+             `✗ 告诉了用户`（一次都没弹）——0.1.1 时 `migrateState` 的 v2 分支**不碰** `folders`，
+             所以那时这条不红；是 A16 之后才出现的（`task-3-fix4-report.md`）。
+           · ⇒ "写下去也安全"**由调用方那道归一化兜住**：它对类型不对的文件**根本不写回**，
+             而是走备份 + 重建。这一层只负责**把坏值原样送到它面前**。 */
+      folders: predatesD1 ? {} : previous.folders,
       /* ⚠️ 这两格**原样保留**（缺 / 类型不对才退化）：它们是 D1 新引入的配置，
-         盘上要么还没有（老 v2）⇒ 给空值，要么就是用户真正的绑定与勾选 ⇒ 一格都不许洗。 */
+         盘上要么还没有（老 v2）⇒ 给空值，要么就是用户真正的绑定与勾选 ⇒ 一格都不许洗。
+         ⚠️ 它们的"类型不对 ⇒ 退回空值"**不影响**上面那条链条：这两格**不走** `readStateFile`
+         那道归一化（见那里 D1 那一段的注释）⇒ 这里修不修它们，损坏信号都不经过它们。 */
       launchers: Array.isArray(previous.launchers) ? previous.launchers : [],
       instancePrefs: isRecord(previous.instancePrefs) ? previous.instancePrefs : {},
     };
