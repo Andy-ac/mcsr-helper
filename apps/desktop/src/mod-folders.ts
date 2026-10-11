@@ -90,6 +90,7 @@ import {
   type LauncherInstance,
   type LauncherKind,
   listInstances,
+  missingInstancesDir,
 } from '@mcsr/shared/launcherInstances';
 import {
   buildIndex,
@@ -103,7 +104,6 @@ import {
 import {
   type Channel,
   channelUrl,
-  deriveFolders,
   type FolderVerdict,
   type InstancePref,
   type InstanceView,
@@ -118,6 +118,8 @@ import {
   missingMods,
   planCatalogRows,
   planFolderView,
+  scanTargetOf,
+  reconcileFolders as sharedReconcileFolders,
   type TagOptionView,
 } from '@mcsr/shared/modFolders';
 import { type PackSkipReason, packPlanFor } from '@mcsr/shared/modPacks';
@@ -2376,10 +2378,14 @@ export async function downloadPack(
  *
  * ⚠️★ **对账必须落盘**：启动那一趟（`startUp`）读的是**盘上那一份** `folders`
  *    （它只扫 `autoUpdate === true` 的条目）⇒ 对账改动了就 `persist()`。而"改动了"这件事
- *    由 `sameFolderEntry` 逐格比出来 —— 稳态下（第二趟起）对账**一格都不改** ⇒ 不写盘。
+ *    由共享内核那一份（`@mcsr/shared/modFolders` 的 `reconcileFolders` 逐格比出来）——
+ *    稳态下（第二趟起）对账**一格都不改** ⇒ 不写盘。
  *    ⚠️ `persist()` 在**停住态**（状态文件坏且备份也失败）会抛，而这条路是**同步**的
  *    状态组装路径 ⇒ 抛出去会让 `rebuild()` 连带 IPC 全炸。⇒ 这一处**接住**并记一句
  *    （写不下去的那次对账照旧生效在内存里，下一趟重启再对一次）。
+ * ⚠️★ 修复轮（评审 I1）：**规则**（派生 / 合并既有值 / 回收）已经搬进 `packages/shared`
+ *    的 `reconcileFolders`（**纯函数**，`services/api` 的用例钉得住它）；这一份只剩
+ *    "取数 + `forgetScan` + 落盘"三件事。⚠️ 别把规则搬回来 —— 那会让它又变成零判据的那一半。
  */
 
 /**
@@ -2473,11 +2479,14 @@ function instanceViews(): readonly InstanceView[] {
 /**
  * 按 key 找一条**视图**（手改的路径 / loader / 版本**都已经套用**）。
  *
- * ⚠️★ 这个区别是**承重**的（实测踩过一次，由 `.cache/d1-t4-probe.mjs` 的 ⑥ 抓到）：
- *    `instanceByKey` 给的是**探测出来**的那一份，而"勾选要扫哪个目录"必须用**用户手改之后**
- *    的那一份 —— 用原始那一份会去扫**另一个目录**，却把读数记在**这个** folderId 上
- *    ⇒ 界面显示的是别人家的读数（而且不报错），连"取消勾选 ⇒ 读数清除"那条判据都会假绿
- *    （读数来自一个**一直存在**的目录 ⇒ `onlyIfMissing` 每次都跳过扫描）。
+ * ⚠️★ 这个区别是**承重**的：`instanceByKey` 给的是**探测出来**的那一份，而"勾选要扫哪个目录"
+ *    必须用**用户手改之后**的那一份 —— 用原始那一份会去扫**另一个目录**，却把读数记在
+ *    **这个** folderId 上 ⇒ 界面显示的是别人家的读数（而且不报错）。
+ * ⚠️★ 判据住在**版本控制里**：`@mcsr/shared/modFolders` 的 `scanTargetOf`（规则只留一处，
+ *    只认视图）+ `services/api/src/mod-folders-shared.test.ts` 里那两条
+ *    （纯函数一条 + `setInstanceTracked` 的**源码形状**一条）。
+ *    ⚠️ 修复轮之前这里指向的是 `.cache/d1-t4-probe.mjs` —— 那份脚本**不在版本控制里**
+ *    （评审 I1/I2 点名的正是这件事：别让文档比证据硬）。
  */
 function instanceViewByKey(key: string): InstanceView | undefined {
   return instanceViews().find((view) => view.key === key);
@@ -2507,6 +2516,14 @@ function bindingShapeError(raw: unknown): string | null {
  *    一次枚举要读几十上百个目录，一路同步跑下来会把主进程的事件循环按住（窗口不响应）。
  * ⚠️ 坏形状的绑定（`launchers: [42]`）在这一层就跳过：它连 id 都没有，界面画不出它、
  *    也就无从重试 ⇒ 记一句 notice（由 `pushNotice`，见 `launcherViews` 的调用点）。
+ * ★★ 修复轮（评审 C1）：**先问一句"这一块的实例父目录在不在"**，不在就当场记成"读不动"
+ *    （`failed`）—— 这是那个绕过口的堵法。为什么不能靠 `listInstances` 自己发现：
+ *    `realFs.listDir` 把 `ENOENT`/`ENOTDIR` **故意吞成空数组**（候选根绝大多数不存在，
+ *    那是正常的），于是"根整体不在"与"这个启动器一个实例都没有"**长得一模一样**
+ *    ⇒ 那一块被算成成功 ⇒ 对账于是把用户派生出来的 folder 与读数删掉**并落盘**，
+ *    而界面上一句"我读不到它"都没有（评审 `harness.mjs rootgone` 的实测现场）。
+ *    ⚠️ 判据只有一处：`missingInstancesDir`（`@mcsr/shared/launcherInstances`）——
+ *    布局规则（`instancesParentOf`）也只在那一份里。
  */
 async function enumerateAll(bindings: readonly unknown[]): Promise<Enumeration> {
   const instances: LauncherInstance[] = [];
@@ -2521,8 +2538,13 @@ async function enumerateAll(bindings: readonly unknown[]): Promise<Enumeration> 
     }
     const binding = raw as LauncherBinding;
     try {
-      instances.push(...listInstances(realFs, binding.kind, binding.rootPath));
-      ok.add(binding.id);
+      const missing = missingInstancesDir(realFs, binding.kind, binding.rootPath);
+      if (missing !== null) {
+        failed.set(binding.id, missing); // ★ "读不动"：不算成功、它的实例缺席也不作数
+      } else {
+        instances.push(...listInstances(realFs, binding.kind, binding.rootPath));
+        ok.add(binding.id);
+      }
     } catch (error) {
       failed.set(binding.id, messageOf(error));
     }
@@ -2581,123 +2603,38 @@ function launcherViews(st: SharedState): LauncherBindingView[] {
   return out;
 }
 
-/** 两格 folder entry 是不是逐格相同（对账据此判"要不要写盘"）。 */
-function sameFolderEntry(
-  a: SharedState['folders'][string],
-  b: SharedState['folders'][string],
-): boolean {
-  return (
-    a.path === b.path &&
-    a.gameVersion === b.gameVersion &&
-    a.autoUpdate === b.autoUpdate &&
-    a.boundAt === b.boundAt
-  );
-}
-
-/** 这个 key 是哪种启动器的实例（`instanceKeyOf` 造的形状：`<类型>:<相对根的路径>`）。 */
-function kindOfInstanceKey(key: string): LauncherKind | null {
-  return LAUNCHER_KINDS.find((kind) => key.startsWith(`${kind}:`)) ?? null;
-}
-
 /**
- * ★★ **对账：派生 + 合并 + 回收**（同步、零 I/O；`buildState()` 里那一次调用）。
+ * ★★ **对账**（`buildState()` 里那一次调用）—— 规则住在 `@mcsr/shared/modFolders` 的
+ * `reconcileFolders`（**纯函数**，评审 I1：那样才有 `services/api` 的用例钉得住它），
+ * 这一份只做**三件主进程才有的事**：
+ *   ① 取数：`views`（枚举缓存 + 现读的 pref）、`st.folders`、`st.launchers`、
+ *      这一趟读不动的绑定 id（`enumeration.failed`）、"跑过枚举没有"（`enumeration !== null`）；
+ *   ② 落盘：`changed` 为真才 `persist()`（启动扫描读的是**盘上那一份** `folders`）；
+ *   ③ 清读数：被回收的每一个 key 都要 `forgetScan`（A9：取消勾选 ⇒ folder 消失**且**读数清除；
+ *      缓存住在 `mod-folder-scan.ts`，纯函数那一层够不着它）。
  *
- * 三条规则，逐条都有它的**代价**写在下面（改之前先读）：
- *
- * ① **补 / 改**：每个**被追踪**的实例 ⇒ `deriveFolders` 那一条（`path = modsDir`，
- *    路径 / loader / 版本的手改**已经**由 `instanceViewsOf` 套用过了 ⇒ 这里不重套一遍）。
- *    · `boundAt` = **既有那条的值 ?? 现在** —— ★ 不许每次重算：那会让界面每次刷新都
- *      "看起来刚绑过"（那一格是显示顺序的依据：`sortedFolders` 按它升序）。
- *    · `autoUpdate` = **既有那条的值 ?? `true`** —— ⚠️ **不要**写成恒 `true`：那一格是
- *      用户在文件夹行上开的开关，恒 `true` 会让"关掉它"变成一个**自己变回来**的控件。
- *      而"新出现的实例 folder 默认 `true`"是必须的（`deriveFolders` 就给 `true`）：
- *      `startUp` 只扫 `autoUpdate === true` 的条目 ⇒ 给 `false` 的话升级后每次启动都扫不到它。
- *    · `gameVersion` = **三档**：`pref.gameVersion`（用户手改，最高优先）⇒
- *      `instance.gameVersion`（启动器元数据）⇒ **既有那条的值**（含 `adoptFolderGameVersion`
- *      从 jar 里推断出来的那一份）⇒ `null`。前两档由视图给出（`base.gameVersion`），
- *      这里只补第三档。⚠️ 少了第三档，用户以前手改/推断出来的版本会在第一次对账时被抹成
- *      `null` —— 而"版本未知"的文件夹在"版本 → 实例"流程里够不到（那是实打实的功能倒退）。
- *      ⚠️ 推断值**只写 `folders`、不进 `instancePrefs`**：混起来就再也分不清"用户选的"与
- *      "我们猜的"（见 `InstancePref.gameVersion`）。
- *
- * ② **回收（GC）**：一个**已经有 pref** 的 key（= 它是实例派生的，手工绑定那条不写 pref），
- *    若它**不再被追踪**、或**已经不在这一趟枚举结果里** ⇒ 删掉那一格 + `forgetScan(id)`
- *    （A9：取消勾选 ⇒ folder 消失**且**读数清除；只删一格的话，那个 key 的旧读数会留在
- *    `mod-folder-scan` 的缓存里，同一个路径再勾回来会拿到**旧读数**）。
- *    ⚠️★ **"不在枚举结果里"只有在"这一趟没有把它读不动"时才算数**：一个块失败时它名下的
- *    实例**不在结果里**，而那**不等于**"它们没了" —— 那时回收等于把一整块启动器的派生
- *    folder（连同读数）删掉，而且**落盘**（用户看到的是一夜之间全没了）。
- *    ⇒ 判据是"这个 key 的类型这一趟有没有读不动的绑定"（`failedKinds`）。
- *
- * ③ ⚠️★ **不是实例的那些 entry（= 手工绑定的）原样保留**：spec §7 明写旧的手工绑定通道
- *    "保留在契约里（只是不再是 UI 入口）"，而**桌面探针那一整套判据就是靠 `bindFolder`
- *    造夹具的** ⇒ 把它们一起清掉等于把现有全部覆盖拆了。判据是"这一格有没有 pref"
- *    （只有实例那几条通道会写 `instancePrefs`；手工绑定的 id 是路径的 sha1，两者不撞）。
- *    ⇒ `bindFolder` / `unbindFolder` 两个 handler **照旧能跑**，只是界面上不再有入口（T7 摘按钮）。
- *
- * ⚠️ 对账改动了就 `persist()`（见这一段开头那一段：启动扫描读的是盘上那一份）。
+ * ⚠️★ `forgetScan` **不能**漏：只删 entry 的话，那个 key 的旧读数会留在缓存里，
+ *    同一个路径再勾回来会拿到**旧读数**（"昨晚的目录"）。
+ * ⚠️ `persist()` 那一处**必须**接住异常：这是**同步**的状态组装路径，停住态（状态文件坏且
+ *    备份也失败）下它会抛 —— 抛出去会让 `rebuild()` 连带 `getState` 一起炸，而"写不下去"
+ *    已经由 `initModFolders` 那条 notice + 弹框说过一次了。写不下去时对账照旧生效在**内存**里。
  */
 function reconcileFolders(st: SharedState, views: readonly InstanceView[]): void {
-  let changed = false;
-  const byKey = new Map(views.map((view) => [view.key, view] as const));
-
-  /* ---- ① 补 / 改 ---- */
-  const derived = deriveFolders(
-    views,
-    st.instancePrefs,
-    (key) => st.folders[key]?.boundAt ?? Date.now(),
-  );
-  for (const [key, base] of Object.entries(derived)) {
-    const prev = st.folders[key];
-    const next: SharedState['folders'][string] = {
-      path: base.path,
-      gameVersion: base.gameVersion ?? prev?.gameVersion ?? null,
-      autoUpdate: prev?.autoUpdate ?? base.autoUpdate,
-      boundAt: prev?.boundAt ?? base.boundAt,
-    };
-    if (prev === undefined || !sameFolderEntry(prev, next)) {
-      st.folders[key] = next;
-      changed = true;
-    }
-  }
-  /* ⚠️ `byKey` 在这里的用处：下面 ② 要判"这个 key 还在不在这一趟的实例里"。
-     ①本身不需要它（`deriveFolders` 已经按 `tracked === true` 筛过一遍）。 */
-
-  /* ---- ② 回收 ---- */
-  const failedKinds = new Set<LauncherKind>();
-  if (enumeration !== null) {
-    for (const id of enumeration.failed.keys()) {
-      const binding = (st.launchers as readonly unknown[])
-        .map((raw) => (bindingShapeError(raw) === null ? (raw as LauncherBinding) : null))
-        .find((b) => b !== null && b.id === id);
-      if (binding != null) failedKinds.add(binding.kind);
-    }
-  }
-  for (const key of Object.keys(st.folders)) {
-    const pref = prefRecordOf(st, key);
-    if (pref === undefined) continue; // ★ ③ 手工绑定 ⇒ 原样保留（一个字节都不动）
-    if (pref.tracked === true && byKey.has(key)) continue; // 还在追踪、也在结果里 ⇒ 由 ① 那条覆盖
-    if (pref.tracked === true) {
-      /* 追踪着、但这一趟没枚举到 ⇒ 只有"它所属的类型这一趟没有读不动的块"才敢回收。 */
-      if (enumeration === null) continue;
-      const kind = kindOfInstanceKey(key);
-      if (kind === null || failedKinds.has(kind)) continue;
-    }
-    delete st.folders[key];
-    forgetScan(key);
-    changed = true;
-  }
-
-  /* ---- 落盘（只在真的改了时）---- */
-  if (!changed) return;
+  const result = sharedReconcileFolders({
+    instances: views,
+    prefs: st.instancePrefs,
+    folders: st.folders,
+    launchers: st.launchers as readonly LauncherBinding[],
+    failed: [...(enumeration?.failed.keys() ?? [])],
+    enumerated: enumeration !== null,
+    now: Date.now(),
+  });
+  if (!result.changed) return;
+  for (const key of result.removed) forgetScan(key);
+  st.folders = result.folders;
   try {
     persist();
   } catch (error) {
-    /*
-     * ⚠️★ 这一句**必须**接住（这一条路是同步的状态组装路径）：停住态下 `persist()` 会抛，
-     *    抛出去会让 `rebuild()` 连带 `getState` 一起炸 —— 而"状态文件写不下去"已经由
-     *    `initModFolders` 那条 notice + 弹框说过一次了。写不下去时对账照旧生效在**内存**里。
-     */
     pushNotice(`对账改了文件夹表，但状态文件写不下去：${messageOf(error)}`);
   }
 }
@@ -2721,11 +2658,18 @@ function normalizedBindingRoot(rootPath: string): string {
   return rootPath.trim().replace(/[\\/]+$/, '');
 }
 
-/** 真实 Windows 上"常见盘符根"：`C:\`…`Z:\` 里**真的存在**的那些（只 stat 根，不全盘扫）。 */
+/**
+ * 真实 Windows 上"常见盘符根"：`A:\`…`Z:\` 里**真的存在**的那些（只 stat 根，不全盘扫）。
+ *
+ * ⚠️ 顺序是**字母序**（`A` 到 `Z`）—— 修复轮（评审 I3）现读订正：原来写的是
+ *    `'CDEFGHIJKLMNOPQRSTUVWXYZAB'`（C…Z 之后又回到 A、B），那不是任何有意义的顺序，
+ *    而它**真的**决定 `probeLaunchers` 返回候选的次序 ⇒ 换成一眼可读的字母序。
+ *    ⚠️ 找不到盘符（`existsSync` 为假）的直接跳过；顺序本身不是契约（界面上那是一个列表）。
+ */
 function driveRoots(): string[] {
   if (process.platform !== 'win32') return ['/'];
   const roots: string[] = [];
-  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZAB') {
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
     const root = `${letter}:\\`;
     if (existsSync(root)) roots.push(root);
   }
@@ -2741,11 +2685,19 @@ function driveRoots(): string[] {
  *    （"报了一个它其实不用的根"比"什么都没报"更坏）。
  *    ★ 用 `listInstances` 而不是自己拼"实例父目录存不存在"：拼一遍就是**第二份**目录布局
  *    规则（`instancesParentOf` 那一份），两处迟早漂。
- * ⚠️ 候选根由**外面**定（`probeLaunchers` 的调用方是页面），这里只负责"哪些真的能用"。
+ * ⚠️ 候选根由**外面**定（`probeLaunchers` 的的调用方是页面），这里只负责"哪些真的能用"。
  * ⚠️ 读不动的候选根（`EACCES` 之类）⇒ **不报**（`try/catch` 吞掉）：探测的产物是
  *    "可以加的那些"，一个加不上的根不该出现在那里（用户加了它也只会在枚举时看到错误）。
+ * ★★ 修复轮（评审 I3）：它**现在是 `async`**，而且每一轮候选之后 `await yieldToEventLoop()`
+ *    —— 与 `enumerateAll` **同一条纪律**（A14"枚举异步"）。为什么必须：
+ *    命中一个真启动器时 `listInstances` 会枚举**全部实例**（每个实例 1–3 次 `readFileSync`），
+ *    而这条 handler 是 `ipcMain.handle(..., () => probeLaunchersOnDisk())` —— 同步跑完会把
+ *    主进程的事件循环**按住**（窗口不响应、扫描推送全停）。候选数是
+ *    「存在的盘符 × 4 + 固定的那几条」⇒ 有界的，让出一次就够。
+ * ⚠️ 代价（认，评审 I3 点名）：候选表按**盘符数**翻倍，所以多盘机器上这一趟的 I/O 也是线性放大
+ *    —— 这一条**没有耗时读数**（本机没造多盘夹具），只记形状。
  */
-function probeLaunchersOnDisk(): { kind: LauncherKind; rootPath: string }[] {
+async function probeLaunchersOnDisk(): Promise<{ kind: LauncherKind; rootPath: string }[]> {
   const home = homedir();
   const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming');
   const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local');
@@ -2795,6 +2747,8 @@ function probeLaunchersOnDisk(): { kind: LauncherKind; rootPath: string }[] {
     } catch {
       /* 读不动 ⇒ 不报（见上面那一条：探测的产物是"可以加的那些"） */
     }
+    // ★ 与 `enumerateAll` 同一条纪律：一块一次，别把事件循环按住（见 docblock 那一段）
+    await yieldToEventLoop();
   }
   return hits;
 }
@@ -2900,14 +2854,20 @@ async function setInstanceTracked(key: unknown, tracked: unknown): Promise<void>
   const id = requireInstanceKey(key);
   if (typeof tracked !== 'boolean') throw new Error('非法参数：tracked 只接受布尔');
   /*
-   * ★★ **勾选**那一支要求这个实例有一份**视图**（= 它的 `modsDir` 能算出来）。
+   * ★★ **勾选**那一支要求这个实例有一份**视图**（= 它的 `modsDir` 能算出来）——
+   *    而且"要扫哪个目录"**只经 `scanTargetOf`**（共享内核那一格：只认视图，没有视图就没有目标）。
    *    ⚠️ 少了这道闸，"勾上但它派生不出 folder（视图把这一行滤掉了）"会变成一个
    *    **静默的成功**：状态里记着 `tracked: true`，而界面上什么都没有 —— 正是 A9 要防的
    *    "勾了却看不到任何读数"。⇒ 宁可当场拒（它同时也是"解析结果读不出来"的如实报告）。
+   *    ⚠️ 取址**必须**用视图那一份（手改已套用）：拿原始枚举的 `modsDir` 会去扫**探测出来**的
+   *    目录、却把读数记在这个 key 上 ⇒ 界面显示的是别人家的读数，而且不报错。
+   *    ⇒ 那件事由 `scanTargetOf` + 一条**源码形状**判据钉住（`services/api` 那个测试文件里；
+   *    原来的注释指向一份**不在版本控制里**的探针，评审 I2 点了这一条）。
    * ⚠️ **取消**那一支不要求（`prefRecordOf` 兜住）：一块读不动时用户仍然要能取消勾选。
    */
   const view = tracked ? instanceViewByKey(id) : undefined;
-  if (tracked && view === undefined) {
+  const target = scanTargetOf(view);
+  if (tracked && target === null) {
     throw new Error(`这个实例的解析结果读不出来（勾了也扫不成）⇒ 先改好路径再勾：${id}`);
   }
   const st = requireState();
@@ -2918,13 +2878,8 @@ async function setInstanceTracked(key: unknown, tracked: unknown): Promise<void>
    *    "它被追踪着"这个事实都已经记下来了（下次启动照样扫它）。
    */
   persist();
-  if (view !== undefined) {
-    /*
-     * ★★ 路径取**视图**那一格（覆盖已套用）。⚠️ 用 `instanceByKey`（原始那一份）会去扫
-     *    **探测出来的**目录、却把读数记在这个 folderId 上 —— 界面显示的是别人家的读数，
-     *    而且完全不报错。实测由 `.cache/d1-t4-probe.mjs` 的 ⑥ 抓到。
-     */
-    await queueScan(id, view.modsDir, { onlyIfMissing: true });
+  if (target !== null) {
+    await queueScan(id, target, { onlyIfMissing: true });
   } else {
     forgetScan(id);
   }

@@ -29,8 +29,18 @@ export type LauncherInstance = {
 
 const SEP = '\\';
 
-/** 实例目录的父目录（枚举它即可拿到全部实例名）。 */
-function instancesParentOf(kind: LauncherKind, rootPath: string): string {
+/**
+ * 实例目录的父目录（枚举它即可拿到全部实例名）。
+ *
+ * ⚠️★ 它从 T4 的修复轮起是**导出**的（评审 C1）：主进程要用它回答"**这一块读得动吗**"。
+ *    为什么必须在**这里**问：`listInstances` 读的就是这一个目录，而"它不在"与"它是空的"
+ *    在 `readdirSync` 之后**长得一样**（都是空列表）⇒ 只靠 `listInstances` 分不开
+ *    "这个启动器一个实例都没有"与"我根本读不到它"。分不开的后果是实的：
+ *    那一块会被算成"成功、0 个实例" ⇒ 名下被追踪的实例"不在枚举结果里" ⇒
+ *    派生出来的 folder **连同扫描读数一起被删掉并落盘**，而界面上只会说"这个启动器没有实例"
+ *    （评审实测：`harness.mjs rootgone`）。⇒ 布局规则**只留这一份**，判据在 `missingInstancesDir`。
+ */
+export function instancesParentOf(kind: LauncherKind, rootPath: string): string {
   switch (kind) {
     case 'multimc':
     case 'prism':
@@ -41,10 +51,32 @@ function instancesParentOf(kind: LauncherKind, rootPath: string): string {
     case 'official':
       return `${rootPath}${SEP}versions`;
     case 'mcsr':
-      /* ⚠️ MCSR Launcher 的目录布局**未核实**（spec §13）：v1 先按"MultiMC 系"枚举，
-         用户在界面上可以改根路径与解析结果 —— 核实之后这里再改准。 */
+      /* ⚠️ MCSR Launcher 的目录布局：spec §6 那张表下的 2026-10-11 实证说**形状与 MultiMC 同形**
+         （`instances\*\.minecraft\{mods,saves}`）—— 变的只是**元数据文件**（`instance.json`，
+         见 `parseInstanceMeta`）。根目录通常是 `%LOCALAPPDATA%\MCSRLauncher\launcher`。 */
       return `${rootPath}${SEP}instances`;
   }
+}
+
+/**
+ * ★★ 修复轮（评审 C1）：这个绑定的**实例父目录**在不在 —— 不在就是"这一块读不动"。
+ *
+ * @returns 缺失时给**那一句原话**（带路径，界面直接印它）；在 ⇒ `null`。
+ *
+ * ⚠️★ 判据只有一条：`instancesParentOf(kind, rootPath)` 那个目录存不存在。
+ *    · 它不在（根被搬走 / 硬盘没挂 / 启动器换了目录名）⇒ 返回那句话 ⇒ 调用方把这一块
+ *      记进 `failed`、**不许**把它算成"成功、0 个实例"（那会让对账回收掉用户的 folder）；
+ *    · 它在、只是空的 ⇒ `null`（"这个启动器一个实例都没有"是**正常**情形）。
+ * ⚠️ 用 `fs.exists` 而不是 `listDir`：后者在"读不动"（`EACCES`）时**照抛**，而这里问的是
+ *    "在不在" —— 权限问题会由紧接着的 `listInstances` 抛出并被逐块 `catch` 接住（两条路各管各的）。
+ */
+export function missingInstancesDir(
+  fs: LauncherFs,
+  kind: LauncherKind,
+  rootPath: string,
+): string | null {
+  const parent = instancesParentOf(kind, normalizeRoot(rootPath));
+  return fs.exists(parent) ? null : `实例目录不在：${parent}`;
 }
 
 /** 根路径归一化：去掉尾部的 `\` / `/`（否则 `D:\PCL2\` 会拼出 `D:\PCL2\\.minecraft\mods` ✗）。 */

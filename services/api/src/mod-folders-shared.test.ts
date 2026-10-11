@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { LauncherInstance } from '@mcsr/shared/launcherInstances';
+import type { LauncherFs, LauncherInstance } from '@mcsr/shared/launcherInstances';
+import { missingInstancesDir } from '@mcsr/shared/launcherInstances';
 import { type ModRelease, parseModCatalog, parseModCatalogWire } from '@mcsr/shared/modCatalog';
 import {
   attributeLegacyBindings,
@@ -15,6 +16,7 @@ import {
   groupFoldersByVersion,
   type InstancePref,
   instanceViewsOf,
+  type LauncherBinding,
   type ModFoldersState,
   type ModFolderView,
   migrateState,
@@ -22,6 +24,9 @@ import {
   planCatalogRows,
   planFolderView,
   planVersionPage,
+  reconcileFolders,
+  type StateFileV2,
+  scanTargetOf,
 } from '@mcsr/shared/modFolders';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1645,4 +1650,479 @@ test('★ D1：勾选态与实例集合本身 —— 一个都不许多、一个
   );
   // 纯函数：不许改传进来的那个对象（改了的话"同一份枚举结果喂两处"就不成立了）
   assert.equal(list[0]!.modsDir, 'D:\\MultiMC\\instances\\x\\.minecraft\\mods');
+});
+
+/*
+ * ===========================================================================
+ * D1 / T4 **修复轮**：对账 `reconcileFolders`（评审 I1 —— 把 788 行里唯一能红的那 4 条
+ * 之外的核心面搬进版本控制；C1 —— 回收守卫的绕过口；I4 —— 守卫按类型判的代价）
+ * ===========================================================================
+ * ⚠️★ 这一组是**纯函数**用例：`apps/desktop/src/mod-folders.ts` 只是"取数与落盘"那一层
+ *    （`instanceViews()` / `enumeration` / `persist()` / `forgetScan()`），规则全在这里。
+ *    判据 = 提交字节 + 评审实测（`harness.mjs rootgone` / `failedblock` / `gc` / `autoupdate` / `manual`）
+ *    的那几件事，逐条搬成能红的断言。
+ */
+
+/** 一条绑定（`rootPath` 用 Windows 形状 —— `instanceKeyOf` 的形状就是这么来的）。 */
+function bindingOf(kind: LauncherBinding['kind'], rootPath: string): LauncherBinding {
+  return { id: `${kind}:${rootPath}`, kind, rootPath };
+}
+
+/** 一格 folder entry（`StateFileV2['folders']` 的形状）。 */
+function folderEntry(
+  path: string,
+  over: Partial<StateFileV2['folders'][string]> = {},
+): StateFileV2['folders'][string] {
+  return { path, gameVersion: '1.16.1', autoUpdate: true, boundAt: 1000, ...over };
+}
+
+const MM_ROOT = 'D:\\MultiMC';
+const MM_KEY = 'multimc:instances/1.16.1 - Ranked#1';
+const MM_BINDING = bindingOf('multimc', MM_ROOT);
+
+test('★ D1/C1：一个块**读不动**时，它名下的派生 folder 一条都不许少（回收守卫的绕过口）', () => {
+  /*
+   * ★★ 评审 C1 的现场（`harness.mjs rootgone`，提交字节）：
+   *    "启动器根整体不在"被 `realFs.listDir` 的 `ENOENT ⇒ []` 吞成"**成功、0 个实例**"
+   *    ⇒ `failed` 空 ⇒ 守卫不拦 ⇒ 派生 folder 被删 + 读数清 + **落盘**，
+   *    而界面上一句"我读不到它"都没有（`launchers[].error` 是 `null`）。
+   * ⚠️ 这一条钉的是**守卫那一半**（`failedKinds` / `enumerated` 判据）；"根不在 ⇒ 它进 `failed`"
+   *    那一半由 `missingInstancesDir`（`@mcsr/shared/launcherInstances`）的单测钉住 ——
+   *    两半合起来才是完整的修法（见修复轮报告 §3）。
+   * ⚠️★ 刀：把 `reconcileFolders` 里 `if (failedKinds.has(kind) || !readKinds.has(kind)) continue;`
+   *    整条删掉 ⇒ 这一条红（folder 被回收、`removed` 里有它、`changed` 变 true）。
+   */
+  const prev = { [MM_KEY]: folderEntry('D:\\MultiMC\\instances\\x\\.minecraft\\mods') };
+  const result = reconcileFolders({
+    // 这一趟**什么都没枚举到**（根不在 ⇒ 那一块读不动）
+    instances: [],
+    prefs: { [MM_KEY]: { tracked: true } },
+    folders: prev,
+    launchers: [MM_BINDING],
+    failed: [MM_BINDING.id],
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(
+    Object.keys(result.folders),
+    [MM_KEY],
+    '★ 读不动 ⇒ 这条派生 folder **一条都不许少**（C1：静默删掉 + 落盘是那个绕过口的症状）',
+  );
+  assert.equal(result.changed, false, '★ 而且**不许**产生改动（`changed` 会让调用方落盘）');
+  assert.deepEqual(
+    result.removed,
+    [],
+    '没有东西被回收 ⇒ `removed` 是空的（调用方也就不会 forgetScan）',
+  );
+  assert.deepEqual(
+    result.folders[MM_KEY],
+    prev[MM_KEY],
+    '既有的那一格逐格不变（autoUpdate/boundAt 都不许动）',
+  );
+});
+
+test('★ D1/C1 反向：读得动的那一趟里**真的没了**的实例 ⇒ 该回收（别修过头）', () => {
+  /*
+   * ⚠️★ 这一条是 C1 的**反向牙**（评审 §末节第 1 条点名）：根在、枚举读得动（`failed` 空）、
+   *    而那个实例真的不在结果里 ⇒ 必须回收（连同 `removed` 交给调用方 `forgetScan`）。
+   *    少了它，一个"永远不回收"的实现也能过上面那一条（`readKinds` 恒空 ⇒ 全留）。
+   * ⚠️★ 刀：把 `if (pref.tracked === true && derived[key] !== undefined) continue;` 之后的
+   *    回收那几行整条删掉 ⇒ 这一条红（`folders` 里那一格还在、`removed` 空）。
+   */
+  const GONE = 'multimc:instances/真没了';
+  const result = reconcileFolders({
+    instances: [], // 读成功，但一个实例都没有
+    prefs: { [GONE]: { tracked: true } },
+    folders: { [GONE]: folderEntry('D:\\MultiMC\\instances\\真没了\\.minecraft\\mods') },
+    launchers: [MM_BINDING],
+    failed: [], // ★ 这一趟没有读不动的块
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(Object.keys(result.folders), [], '读得动 + 不在结果里 ⇒ 回收');
+  assert.deepEqual(result.removed, [GONE], '被回收的 key 要交给调用方（它对每一个 forgetScan）');
+  assert.equal(result.changed, true, '回收是改动 ⇒ 调用方要落盘');
+});
+
+test('★ D1/A9：还没跑过枚举（`enumerated: false`）时，缺席**不算数**', () => {
+  /*
+   * ⚠️ 启动那一趟的时序：`buildState()` 可能在第一次枚举**回来之前**被调用
+   *    （`placeholderState` 之后、`refreshInstances` 之前）⇒ 那一刻"枚举结果为空"**不是**
+   *    "实例没了"。把它当缺席处理，升级/重启的机器会在第一帧就把用户的 folder 删掉并落盘。
+   * ⚠️★ 刀：把 `if (!enumerated) continue;` 删掉 ⇒ 这一条红。
+   */
+  const result = reconcileFolders({
+    instances: [],
+    prefs: { [MM_KEY]: { tracked: true } },
+    folders: { [MM_KEY]: folderEntry('D:\\MultiMC\\instances\\x\\.minecraft\\mods') },
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: false, // ★ 还没读到过
+    now: 2222,
+  });
+  assert.deepEqual(Object.keys(result.folders), [MM_KEY], '还没读到 ⇒ 什么都不许删');
+  assert.equal(result.changed, false);
+});
+
+test('★ D1/A9：取消勾选 ⇒ 那一格被回收（`tracked !== true` 与"从没勾过"同义）', () => {
+  /*
+   * ⚠️ `tracked: false`（勾过又取消）与缺那一格（从没勾过）在**派生**上同义，但**回收**上不同：
+   *    前者在 `folders` 里有实体要删，后者本来就没有实体。这里钉前者。
+   * ⚠️★ 刀：把 `if (pref === undefined) continue;` 改成恒 `continue`（手工绑定那条保护写过头）
+   *    ⇒ 这一条红（取消勾选的 folder 赖着不走）。
+   */
+  const result = reconcileFolders({
+    instances: [],
+    prefs: { [MM_KEY]: { tracked: false } },
+    folders: {
+      [MM_KEY]: folderEntry('D:\\MultiMC\\instances\\x\\.minecraft\\mods', { autoUpdate: false }),
+    },
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(Object.keys(result.folders), [], '取消勾选 ⇒ 消失（A9 前半）');
+  assert.deepEqual(result.removed, [MM_KEY], '读数清除由调用方按 `removed` 做（A9 后半）');
+});
+
+test('★ D1：手工绑定的 entry（没有 pref）**原样保留**，逐格不动', () => {
+  /*
+   * ★ spec §7：旧的手工绑定通道"保留在契约里（只是不再是 UI 入口）"，而桌面探针那一整套判据
+   *   就是靠 `bindFolder` 造夹具的 ⇒ 对账把它们清掉等于把现有全部覆盖拆了。
+   * ⚠️ 判据是"这一格有没有 pref"（实例那几条通道都会写 `instancePrefs`；手工绑定的 id 是路径的
+   *   sha1，两者不撞）。
+   * ⚠️★ 刀（评审的 `manual_pruned`）：把 `if (pref === undefined) continue;` 连同收窄一起拿掉
+   *    ⇒ 手工那一格被删（评审实测那是 `TypeError` 炸掉状态组装 —— 更响，但同样红）。
+   */
+  const manual = folderEntry('D:\\手工\\mods', {
+    autoUpdate: false,
+    gameVersion: '1.8.9',
+    boundAt: 7,
+  });
+  const result = reconcileFolders({
+    instances: [],
+    prefs: { [MM_KEY]: { tracked: true } },
+    folders: { f1a2b3c4d5e6f7a8: manual },
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(
+    result.folders,
+    { f1a2b3c4d5e6f7a8: manual },
+    '手工绑定逐格原样（含 autoUpdate/版本/boundAt）',
+  );
+  assert.equal(result.changed, false, '没碰它 ⇒ 不算改动');
+});
+
+test('★ D1：`autoUpdate` / `boundAt` **沿用既有值**，版本三档照旧（新出现的才给默认）', () => {
+  /*
+   * ★ 三件事一次钉住（评审的刀 2b / 3 / 5 各自要红的正是其中一条）：
+   *   · `autoUpdate: false` 的那一格**不许**被对账改回 `true`（那是用户在文件夹行上开的开关）；
+   *   · `boundAt` 沿用既有值（每次重算会让界面"看起来刚绑过"）；
+   *   · 版本那一格：视图给 `null`（元数据读不出来）⇒ 用**既有值**兜（第三档），不是 `null`。
+   * ⚠️★ 刀：把 `autoUpdate: prev?.autoUpdate ?? base.autoUpdate` 改成恒 `true` ⇒ 第一条红；
+   *    把 `boundAt` 改成 `now` ⇒ 第二条红；把 `?? prev?.gameVersion` 去掉 ⇒ 第三条红。
+   */
+  const existing = folderEntry('D:\\MultiMC\\instances\\x\\.minecraft\\mods', {
+    autoUpdate: false,
+    boundAt: 111,
+    gameVersion: '1.12.2',
+  });
+  const view = instanceOf({ key: MM_KEY, gameVersion: null, modsDir: existing.path });
+  const result = reconcileFolders({
+    instances: [view],
+    prefs: { [MM_KEY]: { tracked: true } },
+    folders: { [MM_KEY]: existing },
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 9999,
+  });
+  assert.equal(result.folders[MM_KEY]!.autoUpdate, false, '★ 关掉的开关不许自己变回来');
+  assert.equal(result.folders[MM_KEY]!.boundAt, 111, '★ `boundAt` 沿用既有值（不是 now）');
+  assert.equal(
+    result.folders[MM_KEY]!.gameVersion,
+    '1.12.2',
+    '★ 第三档：既有值兜住（元数据读不出来时）',
+  );
+  assert.equal(result.changed, false, '三格都没变 ⇒ 不产生改动（稳态第二趟起不写盘）');
+
+  /* 对照：**新出现**的实例 folder ⇒ `autoUpdate` 是 true、`boundAt` 是 now、版本照视图 */
+  const fresh = instanceOf({
+    key: 'multimc:instances/新的',
+    gameVersion: '1.16.1',
+    modsDir: 'D:\\MultiMC\\instances\\新的\\.minecraft\\mods',
+  });
+  const created = reconcileFolders({
+    instances: [fresh],
+    prefs: { 'multimc:instances/新的': { tracked: true } },
+    folders: {},
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 9999,
+  });
+  assert.deepEqual(created.folders['multimc:instances/新的'], {
+    path: fresh.modsDir,
+    gameVersion: '1.16.1',
+    autoUpdate: true, // ★ 新出现的必须默认 true（否则 `startUp` 那趟扫不到它）
+    boundAt: 9999,
+  });
+  assert.equal(created.changed, true);
+});
+
+test('★ D1/I4：同类型的**另一条**绑定读得动、这条读不动 ⇒ 仍然不许回收（按类型的代价，认）', () => {
+  /*
+   * ★ 评审 I4 的如实记录（**不是**缺陷，是"这条判据能做到的边界"）：
+   *    `LauncherInstance.key` 是 `<类型>:<相对根的路径>`（`instanceKeyOf`）—— **根不在里面**
+   *    ⇒ 两个同类型的根下同名同形的实例会撞出**同一个 key** ⇒ 从 key 反推"它属于哪一条绑定"
+   *    在**原理上**做不到。⇒ 判据只能是"这个**类型**这一趟有没有成功的读取"。
+   *    代价：`D:\MultiMC` 读不动时，`E:\MultiMC` 名下**真的删了**的实例也回收不了（多留一行死行）。
+   *    方向是安全的那一侧（宁可留、不误删），而唯一的出路是让用户去修好那一块 ⇒ 界面要能说清
+   *    （那是 `launchers[].error` 那一格的事）。
+   * ⚠️★ 刀：把 `failedKinds.has(kind)` 那一半换掉（例如只看 `readKinds`）
+   *    ⇒ 这一条红（读不动那一类的缺席被当成了"真的没了"）。
+   */
+  const E_ROOT = 'E:\\MultiMC';
+  const E_BINDING = bindingOf('multimc', E_ROOT);
+  const E_KEY = 'multimc:instances/1.16.1 - Ranked#1';
+  const result = reconcileFolders({
+    instances: [], // E 那一条也没枚举到（两条绑定都读不出实例——夹具只是为了造"一条 failed 一条 ok"）
+    prefs: { [E_KEY]: { tracked: true } },
+    folders: {
+      [E_KEY]: folderEntry('E:\\MultiMC\\instances\\1.16.1 - Ranked#1\\.minecraft\\mods'),
+    },
+    launchers: [MM_BINDING, E_BINDING],
+    failed: [MM_BINDING.id], // ★ 只有 D 那条读不动
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(
+    Object.keys(result.folders),
+    [E_KEY],
+    '★ 这个类型有一条绑定读不动 ⇒ 缺席不算数（宁可留一条死行，也不误删用户的 folder）',
+  );
+
+  /* 对照：把读不动的那条**移除**（只剩读得动的）⇒ 同一个 key 就该回收了（守卫不是恒不回收） */
+  const healed = reconcileFolders({
+    instances: [],
+    prefs: { [E_KEY]: { tracked: true } },
+    folders: {
+      [E_KEY]: folderEntry('E:\\MultiMC\\instances\\1.16.1 - Ranked#1\\.minecraft\\mods'),
+    },
+    launchers: [E_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(Object.keys(healed.folders), [], '没有读不动的块了 ⇒ 真的没了就回收');
+});
+
+test('★ D1：坏元素不许炸掉对账（`instancePrefs` 里那一格不是对象）', () => {
+  /*
+   * ⚠️ 状态文件只保**顶层**形状（`migrateState` 不判元素）⇒ `instancePrefs: { k: null }` 能一路
+   *    流到这里（T3 的评审用探针实测过那一批）。这一格不是对象 ⇒ 当"没有这一格"（手工绑定的
+   *    待遇：保留），**不许**让 `pref.tracked` 这种读取在"跟文件损坏毫无关系的地方"抛。
+   */
+  const broken = folderEntry('D:\\坏的\\mods');
+  const raw = { [MM_KEY]: broken } satisfies StateFileV2['folders'];
+  const prefs = { [MM_KEY]: null } as unknown as Record<string, InstancePref>;
+  const result = reconcileFolders({
+    instances: [],
+    prefs,
+    folders: raw,
+    launchers: [MM_BINDING],
+    failed: [],
+    enumerated: true,
+    now: 2222,
+  });
+  assert.deepEqual(
+    Object.keys(result.folders),
+    [MM_KEY],
+    '坏 pref ⇒ 当"没有 pref"（保留那一格），不抛',
+  );
+});
+
+test('★★ D1/C1（另一半）：`missingInstancesDir` 把"根不在"与"一个实例都没有"分开', () => {
+  /*
+   * ★★ 评审 C1 的**根因那一半**：`realFs.listDir` 把 `ENOENT`/`ENOTDIR` 故意吞成 `[]`
+   *    （候选根绝大多数不存在，那是正常的）⇒ `listInstances` 对"根不在"与"空启动器"
+   *    给出**同一个**结果（空列表）⇒ 那一块被算成"成功、0 个实例" ⇒ 对账于是回收掉
+   *    用户派生出来的 folder 与读数**并落盘**（界面只会说"这个启动器没有实例"）。
+   *    ⇒ 判据收在 `missingInstancesDir` 一格：**实例父目录在不在**。
+   * ⚠️ 夹具用的是**假的 `LauncherFs`**（与 `launcher-instances.test.ts` 同一条口径）：
+   *    这张表里有什么路径，就"存在"什么。
+   * ⚠️★ 刀：把 `missingInstancesDir` 改成恒 `null`（或恒返回一句话）⇒ 这一条红。
+   *    ⚠️ 它单独红了**还不够**：那条 folder 不许被删的**下游**由上面 C1 那一条（守卫）钉住 ——
+   *    两半合起来才是完整的修法（报告 §3 写着这个分工）。
+   */
+  const fs: LauncherFs = {
+    listDir: (dir) => (dir === 'D:\\MultiMC\\instances' ? ['a'] : []),
+    exists: (path) =>
+      path === 'D:\\MultiMC\\instances' || path === 'D:\\PCL2\\.minecraft\\versions',
+    readFile: () => null,
+  };
+  assert.equal(
+    missingInstancesDir(fs, 'multimc', 'D:\\MultiMC'),
+    null,
+    '实例父目录在（哪怕是空的）⇒ **不是**读不动（"这个启动器一个实例都没有"是正常情形）',
+  );
+  assert.equal(
+    missingInstancesDir(fs, 'multimc', 'D:\\MultiMC\\'),
+    null,
+    '★ 根带尾部分隔符也是同一件事（归一化在判据内部做，与绑定的入口归一化同一条纪律）',
+  );
+  assert.equal(
+    missingInstancesDir(fs, 'multimc', 'E:\\MultiMC'),
+    '实例目录不在：E:\\MultiMC\\instances',
+    '★ 根不在 ⇒ 给**那一句原话**（界面直接印它；调用方据此把这一块记进 `failed`）',
+  );
+  /* 官方那一条的父目录是 `<根>\\versions`（不是 `instances`）—— 布局规则只有一处 */
+  assert.equal(missingInstancesDir(fs, 'official', 'D:\\PCL2'), '实例目录不在：D:\\PCL2\\versions');
+  assert.equal(
+    missingInstancesDir(fs, 'pcl2', 'D:\\PCL2'),
+    null,
+    'PCL2 的父目录是 `.minecraft\\versions`',
+  );
+});
+
+test('★ D1/I2：`scanTargetOf` 只认**视图**那一格（没有视图就没有目标）', () => {
+  /*
+   * ★ 评审 I2 的实测：`setInstanceTracked` 从**视图**取 `modsDir` 这件事在**本仓量不出差别**
+   *    （勾选那一刻 `folders[key]` 要么不存在、要么与视图同源 ⇒ 那把刀全绿），而写错的症状是
+   *    "拿探测值去扫、读数记在这个 key 上 ⇒ 界面显示别人家的读数，且不报错"。
+   *    ⇒ 规则收进这一个函数：**视图那一格，没有视图就没有目标**（调用方据此拒掉勾选）。
+   * ⚠️★ 刀：把 `view?.modsDir ?? null` 换成 `null` 恒值 ⇒ 第一条红；换成读 `view.gameVersion`
+   *    之类 ⇒ 第一条红。
+   */
+  const view = instanceViewsOf(
+    [instanceOf({ key: 'multimc:instances/x', modsDir: 'E:\\手改\\mods' })],
+    {
+      'multimc:instances/x': { tracked: true, modsDir: 'E:\\手改\\mods' },
+    },
+  )[0]!;
+  assert.equal(scanTargetOf(view), 'E:\\手改\\mods', '有视图 ⇒ 就是视图那一格（手改已套用）');
+  assert.equal(
+    scanTargetOf(undefined),
+    null,
+    '没有视图 ⇒ **没有**目标（不许退回探测值、也不许退回 folders）',
+  );
+});
+
+/*
+ * ===========================================================================
+ * D1 / T4 修复轮：**源码形状判据**（评审 I2 / 修复轮清单 5、6）
+ * ===========================================================================
+ * ⚠️★ 这一组的**边界必须说清**（免得下一个人把它当运行期判据）：
+ *    · 它读的是 `apps/desktop/src/mod-folders.ts` 的**文本**，断言的是"那几处接缝的形状"；
+ *    · 它**证明不了**运行期行为（`apps/desktop` 没有测试运行器 —— 那是本仓的结构性事实）；
+ *    · 它要挡的是**具体的坏法**（把 `buildState` 改成现算枚举、把那一格写死成 `'ok'`、
+ *      把勾选取址改回原始枚举），而那几种坏法**此前在本仓一条判据都没有**（评审 §"我没能拔动的"）。
+ *    ⚠️ 锚点一律用**内容**（函数名 / 表达式），不用行号：行号会漂（§5.15）。
+ *    ⚠️ 代价（认）：把函数改名会让它红 —— 那正是"要一起看一眼"的信号，不是误报。
+ */
+
+/** 现读仓库里某一份源码（路径相对本文件 —— `services/api/src/` ⇒ 三级到仓库根）。 */
+function sourceOf(relativePath: string): string {
+  const path = join(HERE, '../../..', relativePath);
+  assert.ok(existsSync(path), `这份源码不在（路径写错？）：${path}`);
+  return readFileSync(path, 'utf8');
+}
+
+/** 取一个**顶层**函数的函数体（锚点：`\n[async ]function <名>(` ⇒ 下一个顶层 `function` 之前）。 */
+function bodyOf(source: string, name: string): string {
+  for (const keyword of ['\nfunction ', '\nasync function ']) {
+    const start = source.indexOf(`${keyword}${name}(`);
+    if (start < 0) continue;
+    const rest = source.slice(start + 1);
+    // 下一个**顶层**声明（`\nfunction ` / `\nasync function `，行首无缩进）
+    const ends = ['\nfunction ', '\nasync function ']
+      .map((k) => rest.indexOf(k, 1))
+      .filter((i) => i > 0);
+    const end = ends.length === 0 ? -1 : Math.min(...ends);
+    return end < 0 ? rest : rest.slice(0, end);
+  }
+  assert.fail(`找不到那个函数（改名了？）：${name}`);
+}
+
+test('★★ D1（源码形状）：`buildState` **只读缓存**、`refreshInstances` 是枚举的**唯一写者**', () => {
+  /*
+   * ★ 评审 §"我没能拔动的"第 2 条：刀 6 红的理由是 `ReferenceError`（"代码不成立"），
+   *   **不是**"`buildState` 真的零 I/O" ⇒ 那一条当时只有读代码 + 现数。
+   *   这里把它变成能红的形状判据：枚举是"每实例若干次 `readdir`/`readFile`"，而 `buildState()`
+   *   是**同步**路径（每一次状态改动都要跑）⇒ 它一旦现算枚举，主进程就会在每次推送里做 syscall。
+   */
+  const src = sourceOf('apps/desktop/src/mod-folders.ts');
+  const buildState = bodyOf(src, 'buildState');
+  assert.ok(
+    buildState.includes('instanceViews()'),
+    '`buildState` 必须经 `instanceViews()`（只读缓存）拿实例',
+  );
+  for (const forbidden of ['enumerateAll(', 'listInstances(', 'realFs.']) {
+    assert.ok(
+      !buildState.includes(forbidden),
+      `★★ \`buildState\` 里不许出现 \`${forbidden}\`（它是同步路径 ⇒ 枚举现算会把事件循环按住）`,
+    );
+  }
+  assert.ok(
+    buildState.includes('reconcileFolders('),
+    '对账必须在 `buildState` 里跑（派生 + 回收 + 落盘）',
+  );
+
+  const refresh = bodyOf(src, 'refreshInstances');
+  assert.ok(refresh.includes('enumerateAll('), '`refreshInstances` 是那条异步枚举路');
+  /*
+   * ⚠️ 数的是**赋值**（`enumeration = <非 =>`）——`enumeration === null` 那种**读**不算：
+   *    用 `split('enumeration =')` 数会把 `===` 也算进去（第一版就数出 2）。
+   */
+  const writes = src.match(/\benumeration = [^=]/g) ?? [];
+  assert.equal(
+    writes.length,
+    1,
+    '★ 写 `enumeration` 的地方**只能有一处**（写者唯一 ⇒ "缓存"才有意义）',
+  );
+  assert.ok(refresh.includes('enumeration = '), '而那一处就在 `refreshInstances` 里');
+});
+
+test('★★ D1（源码形状）：`instancesStatus` 由"跑过枚举没有"决定（不许写死）', () => {
+  /*
+   * ★ 评审 §"我没能拔动的"第 3、4 条：`instancesStatus` 的**两个方向都没有牙**
+   *   （恒 `'ok'` 它们的基线仍然全绿）⇒ A14 那句"还在读 ⇒ 界面说'正在读取…'、不许画成'一个都没有'"
+   *   在提交字节里等于没有判据。这里钉住**那一格的算法**：它必须由 `enumeration === null` 分出两档。
+   * ⚠️★ 刀：把那一句换成 `instancesStatus: 'ok',` ⇒ 这一条红。
+   */
+  const src = sourceOf('apps/desktop/src/mod-folders.ts');
+  assert.match(
+    src,
+    /instancesStatus:\s*enumeration === null \? 'reading' : 'ok',/,
+    "★★ `instancesStatus` 必须是 `enumeration === null ? 'reading' : 'ok'`（写死成 'ok' = A14 那一档没了）",
+  );
+  assert.match(
+    bodyOf(src, 'placeholderState'),
+    /instancesStatus:\s*'reading'/,
+    '占位状态（还没初始化）那一份也必须是 `reading`（界面据此说"正在读取…"）',
+  );
+});
+
+test('★★ D1（源码形状/I2）：勾选取址**只经 `scanTargetOf(视图)`**，不许回退到枚举原始值', () => {
+  /*
+   * ★ 评审 I2：刀 12（`scan_path_from_folders`）全绿 ⇒ 那一处**没有**本仓判据，而症状是
+   *   "拿探测出来的 `modsDir` 去扫、读数记在这个 key 上"（界面显示别人家的读数、不报错）。
+   *   ⇒ 形状判据：`setInstanceTracked` 里必须有 `scanTargetOf(`，而且**不许**出现
+   *   `instanceByKey(`（那是"原始枚举"那一份，`instanceViewByKey` 前面那段注释写着它为什么不能用）。
+   * ⚠️★ 刀：把 `scanTargetOf(view)` 换成 `instanceByKey(id)?.modsDir ?? view.modsDir` ⇒ 这一条红。
+   */
+  const src = sourceOf('apps/desktop/src/mod-folders.ts');
+  const tracked = bodyOf(src, 'setInstanceTracked');
+  assert.ok(
+    tracked.includes('scanTargetOf('),
+    '★ 勾选要扫的路径必须经 `scanTargetOf`（只认视图那一格）',
+  );
+  assert.ok(
+    !tracked.includes('instanceByKey('),
+    '★★ 不许在勾选那一支里读**原始枚举**（`instanceByKey`）—— 那会扫错目录却把读数记在这个 key 上',
+  );
 });

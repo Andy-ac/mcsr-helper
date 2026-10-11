@@ -1346,6 +1346,177 @@ export function deriveFolders(
 }
 
 /**
+ * ★★ D1（T4 修复轮 / 评审 I1）：**对账**（派生 + 合并 + 回收）—— **纯函数、零 I/O**。
+ *
+ * ⚠️★ 为什么它从 `apps/desktop/src/mod-folders.ts` 搬到这里（评审 I1 的实测）：那一份
+ *    **没有测试运行器** ⇒ 那 788 行里唯一能红的判据只有 `instanceViewsOf` 四条纯函数用例，
+ *    而对账恰恰是 A9/A10"零功能损失"的落点。搬进 `packages/shared` 之后，
+ *    `services/api/src/mod-folders-shared.test.ts` 够得着它（本仓既有的形状：判定层住 shared、
+ *    断言住 api）。
+ * ⚠️★ **行为一个字节都不许变**（评审逐条核过、也有刀钉着）：`boundAt` 沿用既有值、
+ *    `autoUpdate` 沿用既有值（`?? true` 只兜"新出现的"）、版本三档
+ *    （`视图 ?? 既有 ?? null`，而视图那一格已经是 `pref ?? 元数据`）、手工绑定（没有 pref）原样保留、
+ *    被回收的那些还要由调用方 `forgetScan`。
+ *
+ * 三条规则与它们的**代价**：
+ *   ① **补 / 改**：每个被追踪的实例 ⇒ `deriveFolders` 那一条；`boundAt` / `autoUpdate` /
+ *      版本那一格按上面的顺序合并既有值（理由见 `deriveFolders` 与 `InstancePref.gameVersion`）。
+ *   ② **回收**：有 pref 的 key（= 实例派生的；手工绑定的 id 是路径的 sha1、从不写 pref）
+ *      若**不再被追踪**（`tracked !== true`），或**已不在这一趟的派生结果里**，就删掉它。
+ *      ⚠️★ "不在结果里"**只有在能把缺席归因给一次成功的读取时**才算数 —— 判据是
+ *      `enumerated` + `failed`（见 `ReconcileFoldersInput.enumerated` / `.failed` 那两段）。
+ *      少了这道闸，一个块读不动（根不在 / 权限 / 盘点没挂）会让它名下那些派生 folder
+ *      连同读数**一起被删掉并落盘** —— 用户看到的是"一夜之间全没了"，而界面上一句
+ *      "我读不到它"都没有（评审 C1 的实测现场）。
+ *   ③ ⚠️ **不是实例的那些 entry（= 手工绑定的）原样保留**：spec §7 明写旧的手工绑定通道
+ *      "保留在契约里（只是不再是 UI 入口）"，而桌面探针那一整套判据就是靠 `bindFolder` 造夹具的。
+ *
+ * @returns `folders`（**新的一份**，入参那一份不被改）、`changed`（`false` ⇒ 调用方**不要**落盘：
+ *          稳态下第二趟起都是 `false`）、`removed`（被回收的 key —— 调用方要对每一个 `forgetScan`，
+ *          因为读数缓存住在主进程那一侧）。
+ */
+export interface ReconcileFoldersInput {
+  /** 这一趟枚举出来的实例（手改的路径 / loader / 版本**已套用** —— 与界面那一份**同一个数组**）。 */
+  instances: readonly LauncherInstance[];
+  prefs: Record<string, InstancePref>;
+  /** 既有的 `folders`（**不改它**）。 */
+  folders: StateFileV2['folders'];
+  /** 当前**绑定的启动器**（判"这个 key 的类型这一趟有没有成功的读取"）。 */
+  launchers: readonly LauncherBinding[];
+  /**
+   * 这一趟**读不动**的绑定 id（`enumerateAll` 收集的）—— 它们的实例"不在结果里"**不是**
+   * "它们没了"。⚠️ 按**类型**判（不是按绑定）：`LauncherInstance.key` 是
+   * `<类型>:<相对根的路径>`（`instanceKeyOf`），**根不在里面** ⇒ 两个同类型的根下
+   * 同名同形的实例会撞出**同一个 key** ⇒ 从 key 反推"它属于哪一条绑定"**在原理上做不到**。
+   * 代价（认，评审 I4）：同类型的另一条绑定读得动时，它名下的**真实删除**也会被这道闸兜住
+   * （多留一行死行），方向是安全的那一侧。
+   */
+  failed: readonly string[];
+  /** 跑过至少一趟枚举吗（`false` = 还没读到 ⇒ 缺席一律**不许**当"没了"）。 */
+  enumerated: boolean;
+  /** "现在"（新出现的 entry 的 `boundAt`）—— 由调用方给，纯函数不读时钟。 */
+  now: number;
+}
+
+export interface ReconcileFoldersResult {
+  folders: StateFileV2['folders'];
+  changed: boolean;
+  removed: readonly string[];
+}
+
+/** 两格 folder entry 是不是逐格相同（对账据此判"要不要写盘"）。 */
+function sameFolderEntry(
+  a: StateFileV2['folders'][string],
+  b: StateFileV2['folders'][string],
+): boolean {
+  return (
+    a.path === b.path &&
+    a.gameVersion === b.gameVersion &&
+    a.autoUpdate === b.autoUpdate &&
+    a.boundAt === b.boundAt
+  );
+}
+
+export function reconcileFolders(input: ReconcileFoldersInput): ReconcileFoldersResult {
+  const { instances, prefs, folders, launchers, failed, enumerated, now } = input;
+  const out: StateFileV2['folders'] = { ...folders };
+  let changed = false;
+
+  /* ---- ① 补 / 改 ---- */
+  const derived = deriveFolders(instances, prefs, (key) => folders[key]?.boundAt ?? now);
+  for (const [key, base] of Object.entries(derived)) {
+    const prev = out[key];
+    const next: StateFileV2['folders'][string] = {
+      path: base.path,
+      /* ★ 版本三档：`base.gameVersion` 已经是"手改 ?? 启动器元数据"（视图套过），
+         这里只补第三档 —— 既有那条的值（可能来自 `adoptFolderGameVersion` 从 jar 里推断）。 */
+      gameVersion: base.gameVersion ?? prev?.gameVersion ?? null,
+      /* ★ 那一格是**用户在文件夹行上开的开关** ⇒ 沿用既有值；只有**新出现**的才给 `true`
+         （恒 `true` 会让"关掉它"变成一个自己变回来的控件）。 */
+      autoUpdate: prev?.autoUpdate ?? base.autoUpdate,
+      boundAt: prev?.boundAt ?? base.boundAt,
+    };
+    if (prev === undefined || !sameFolderEntry(prev, next)) {
+      out[key] = next;
+      changed = true;
+    }
+  }
+
+  /* ---- ② 回收 ---- */
+  /*
+   * 这一趟**读成功**的类型（有它，缺席才算"真的没了"）。⚠️ 只按类型：见 `failed` 那一段。
+   */
+  const failedIds = new Set(failed);
+  const readKinds = new Set<LauncherKind>();
+  const failedKinds = new Set<LauncherKind>();
+  for (const binding of launchers) {
+    if (failedIds.has(binding.id)) failedKinds.add(binding.kind);
+    else readKinds.add(binding.kind);
+  }
+
+  const removed: string[] = [];
+  for (const key of Object.keys(out)) {
+    const pref = prefOf(prefs, key);
+    if (pref === undefined) continue; // ★ ③ 手工绑定 ⇒ 原样保留（一个字节都不动）
+    if (pref.tracked === true && derived[key] !== undefined) continue; // 已被 ① 覆盖
+    if (pref.tracked === true) {
+      if (!enumerated) continue; // 还没跑过枚举 ⇒ 缺席不算数
+      const kind = launcherKindOfKey(key);
+      if (kind === null) continue; // 认不出类型（坏 key）⇒ 不敢回收
+      if (failedKinds.has(kind) || !readKinds.has(kind)) continue; // 读不动 / 没有成功的读取
+    }
+    delete out[key];
+    removed.push(key);
+    changed = true;
+  }
+
+  return { folders: out, changed, removed };
+}
+
+/**
+ * 这个 key 是哪种启动器的实例（`instanceKeyOf` 造的形状：`<类型>:<相对根的路径>`）。
+ * ⚠️ 它是**从 key 反读**那一格类型，用来做"这一趟有没有成功读到过这个类型"的判据 ——
+ * 不是"这个 key 属于哪一条绑定"（那一条**在原理上做不到**，见 `ReconcileFoldersInput.failed`）。
+ */
+function launcherKindOfKey(key: string): LauncherKind | null {
+  const at = key.indexOf(':');
+  if (at <= 0) return null;
+  const kind = key.slice(0, at);
+  return LAUNCHER_KINDS.includes(kind as LauncherKind) ? (kind as LauncherKind) : null;
+}
+
+/**
+ * 六个启动器类型（运行时的那一份值 —— `satisfies` 把它焊在类型上：类型加成员而这里漏了 ⇒ 编译失败）。
+ * ⚠️ 与 `apps/desktop/src/mod-folders.ts` 的 `LAUNCHER_KINDS` **是同一件事**：那一份用于
+ * "渲染进程递进来的 kind 是不是真类型"的校验，这一份用于对账的"这一格是哪一类" ⇒
+ * 两处都只是**取类型的成员表**，规则本身（各类型的枚举与解析）仍然只在 `launcherInstances.ts` 里。
+ */
+const LAUNCHER_KINDS = Object.keys({
+  multimc: true,
+  prism: true,
+  pcl2: true,
+  hmcl: true,
+  official: true,
+  mcsr: true,
+} satisfies Record<LauncherKind, true>) as LauncherKind[];
+
+/**
+ * ★★ D1（T4 修复轮 / 评审 I2）：**勾选那一刻要扫哪个目录** —— 只认**视图**。
+ *
+ * ⚠️★ 为什么它必须是单独的一格（评审的实测）：把这一格写成"视图 ?? `folders[key].path` 兜底"
+ *    在**本仓量不出差别**（勾选那一刻 `folders[key]` 要么不存在、要么与视图同源）⇒ 那把刀
+ *    全绿。而写错的症状很实在：拿**探测值**（`instanceByKey(...).modsDir`）去扫，
+ *    读数却记在这个 key 上 ⇒ 界面显示的是**别人家**的读数，而且完全不报错。
+ *    ⇒ 规则收成这一个函数（"视图那一格，没有视图就没有目标"），并且：
+ *    · 调用方（主进程）**只**从这里拿路径；
+ *    · `services/api` 的用例钉住它的两张脸（有视图 / 没有视图）；
+ *    · 另有一条**源码形状**判据钉住"调用方只经它取址"（见那个测试文件里那一条的注释与边界）。
+ */
+export function scanTargetOf(view: InstanceView | undefined): string | null {
+  return view?.modsDir ?? null;
+}
+
+/**
  * v1 的单文件绑定往哪去（**纯函数，没有 I/O**）。
  *
  * 三种去向，**判据的顺序是有意的**：
