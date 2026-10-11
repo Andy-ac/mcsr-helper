@@ -123,7 +123,10 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
     assert.equal(list.find((i) => i.name === 'shared')!.modsDir, 'D:\\HMCL\\.minecraft\\mods');
   });
 
-  it('⑨ MCSR Launcher：v1 先按 MultiMC 系枚举（它的真实布局**未核实**，spec §13）', () => {
+  it('⑨ MCSR Launcher：按 MultiMC 系枚举（布局**已核实**同形，spec §13.1；元数据是 `instance.json`）', () => {
+    /* ⚠️★ 标题在 T12 修复轮改准：原来写"真实布局**未核实**，spec §13" —— 而 spec §13.1
+       2026-10-11 已经**源码实证**过了（实例形状与我们猜的一致 ⇒ 这一条的断言一字没变、
+       只是措辞过期）。元数据那一格的真值见 ㉖。 */
     const fs = fakeFs({
       'D:\\MCSRLauncher\\instances': ['1.16.1'],
       'D:\\MCSRLauncher\\instances\\1.16.1\\.minecraft': [],
@@ -513,5 +516,102 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
       'fabric 0.17.3',
       '同一形状换成 PCL2 ⇒ 兜底**仍然有效**（这条路不许被这道守卫一起砍掉）',
     );
+  });
+
+  it('㉘ ★★ 实例自己那份**压过**共享 `libraries\\`（两条路都在、且**值不同**时才有判据）', () => {
+    /* ★ T12 评审的刀 G（Critical）：⑳/㉓ 只给"实例自己那份"、㉔ 只给"共享那份"
+       ⇒ **没有任何一条用例**让两条路同时有值 ⇒ "先读实例自己那份"这个**顺序本身**零判据：
+       把 `meta.loader ?? loaderFromSharedLibraries(...)` 两项对调 ⇒ 26 条全绿 ✗
+       （而对调之后会**静默换版本**）。这条就是给那个顺序补的判据。 */
+    const root = 'D:\\PCL2';
+    const fs = fakeFs(
+      {
+        'D:\\PCL2\\.minecraft\\versions': ['v1'],
+        /* 共享那份**只有一个**候选（㉔ 那种"多候选 ⇒ null"的情形不在这里）⇒ 兜底**会**给出一个值，
+           所以"拿到哪个"完全取决于两条路的先后 —— 值必须与实例自己那份**不同**。 */
+        'D:\\PCL2\\.minecraft\\libraries\\net\\fabricmc\\fabric-loader': ['0.18.6'],
+      },
+      {
+        'D:\\PCL2\\.minecraft\\versions\\v1\\v1.json': JSON.stringify({
+          id: 'v1',
+          clientVersion: '1.16.1',
+          libraries: [{ name: 'net.fabricmc:fabric-loader:0.17.3' }],
+        }),
+      },
+    );
+    assert.equal(
+      listInstances(fs, 'pcl2', root)[0]!.loader,
+      'fabric 0.17.3',
+      '实例自己那份 json 里的 `libraries` 是**每实例一份**的真值 ⇒ 必须压过共享那份（0.18.6）',
+    );
+  });
+
+  it('㉙ ★ `libraries` 里的坏元素 ⇒ 跳过它（不抛）；跳过之后**继续往后找**', () => {
+    /* ★ T12 评审的刀 H（Important）：`if (typeof name !== 'string') continue;` 这一行删掉 ⇒ 26 条全绿，
+       但 `[{name:123}]` ⇒ `THREW: name.startsWith is not a function`、`[{}]` ⇒ `THREW: Cannot read
+       properties of undefined`。而调用方（`mod-folders.ts`）是**逐块 try/catch** ⇒
+       一个坏元素会让**整个启动器块**消失（与 spec §7"绝不因一个实例坏掉就整页空"相反）。 */
+    const mk = (libs: readonly unknown[]) => {
+      const root = 'D:\\PCL2';
+      const fs = fakeFs(
+        { 'D:\\PCL2\\.minecraft\\versions': ['v1'] },
+        {
+          'D:\\PCL2\\.minecraft\\versions\\v1\\v1.json': JSON.stringify({
+            id: 'v1',
+            clientVersion: '1.16.1',
+            libraries: libs,
+          }),
+        },
+      );
+      return listInstances(fs, 'pcl2', root)[0]!;
+    };
+    assert.equal(mk([{ name: 123 }, {}]).loader, null, '坏元素一律跳过 ⇒ 读不出就留 null（不抛）');
+    assert.equal(
+      mk([{ name: 123 }, { name: 'net.fabricmc:fabric-loader:0.17.3' }]).loader,
+      'fabric 0.17.3',
+      '跳过坏元素之后要**继续往后找** —— 一个坏元素不许把这一份 json 里的真值一起废掉',
+    );
+  });
+
+  it('㉚ ★ 兜底的**第一处**根（`<根>\\libraries`）也要生效 —— 官方那一家的根本身就是 `.minecraft`', () => {
+    /* ★ T12 评审的 I-3：㉔ 的两个夹具都只用到第二处（`<根>\.minecraft\libraries`）
+       ⇒ `roots` 数组的**第一处**零覆盖（删掉它 ⇒ 全绿）。官方（`official`）的根**就是**
+       `.minecraft` ⇒ 它的共享库在 `<根>\libraries` ⇒ 正好命中第一处。 */
+    const root = '%APPDATA%\\.minecraft';
+    const fs = fakeFs(
+      {
+        [`${root}\\versions`]: ['1.16.1'],
+        [`${root}\\libraries\\net\\fabricmc\\fabric-loader`]: ['0.17.3'],
+      },
+      { [`${root}\\versions\\1.16.1\\1.16.1.json`]: JSON.stringify({ id: '1.16.1' }) },
+    );
+    assert.equal(
+      listInstances(fs, 'official', root)[0]!.loader,
+      'fabric 0.17.3',
+      '命中 `<根>\\libraries` 那一处 —— 删掉 roots 的第一项 ⇒ 这一条必须红',
+    );
+  });
+
+  it('㉛ ★ 兜底那条路上**读不动**（fs 会抛）⇒ 这一格留空，不许把它抛出去（A14）', () => {
+    /* ★ T12 评审的 I-4：真实 `fs.listDir` 只吞 ENOENT/ENOTDIR，别的错**会抛**；
+       而兜底那条路新增了 4 次 `listDir` ⇒ 一次 EACCES 就会带着整个启动器块一起死
+       （逐块 catch 兜得住，但"这一格留空"显然比"整块消失"好）。 */
+    const root = 'D:\\PCL2';
+    const fs: LauncherFs = {
+      listDir: (dir) => {
+        if (dir.includes('libraries')) throw new Error('EACCES: permission denied');
+        return dir === `${root}\\.minecraft\\versions` ? ['v1'] : [];
+      },
+      exists: () => false,
+      readFile: () =>
+        JSON.stringify({
+          id: 'v1',
+          clientVersion: '1.16.1',
+        }) /* 这份 json **没有** libraries 线索 */,
+    };
+    const list = listInstances(fs, 'pcl2', root);
+    assert.equal(list.length, 1, '枚举本身不许被这一次读失败带走');
+    assert.equal(list[0]!.gameVersion, '1.16.1', '别的格照旧填上');
+    assert.equal(list[0]!.loader, null, '读不动 ⇒ 这一格留空（不猜、也不抛）');
   });
 });

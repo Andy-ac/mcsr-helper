@@ -273,16 +273,26 @@ export function loaderFromLibrariesArray(libs: readonly { name?: string }[]): st
  *    共享 `libraries\`，而它们的元数据是权威的 ⇒ 对它们跑兜底会把原版实例误报成 fabric。
  * ⚠️ 两处根都试（`<根>\libraries` 与 `<根>\.minecraft\libraries`）：PCL2 / HMCL 的 libraries
  *    在 `.minecraft\` 底下，而官方那份根本身就是 `.minecraft`（两种拼法各命中一边）。
+ * ★★ 读不动不许带走整块（A14 / T12 评审 I-4）：真实 `fs.listDir` **会抛**（只吞 ENOENT/ENOTDIR，
+ *    见 `modFolders` 侧那个实现）⇒ 一次 EACCES 若从这里抛出去，就是**整个启动器块**消失
+ *    （逐块 catch 兜得住，但"这一格留空"显然比"整块消失"好）⇒ 下面**逐处** try/catch：
+ *    读不动就把那一处当"没有候选"跳过。⚠️ 代价：这一格的兜底可能因此给 `null`（留空、手改 ✓），
+ *    而**不是**一个猜出来的值。
  */
 export function loaderFromSharedLibraries(fs: LauncherFs, rootPath: string): string | null {
   const roots = [`${rootPath}${SEP}libraries`, `${rootPath}${SEP}.minecraft${SEP}libraries`];
   const candidates: string[] = [];
   for (const root of roots) {
-    for (const v of fs.listDir(`${root}${SEP}net${SEP}fabricmc${SEP}fabric-loader`)) {
-      candidates.push(`fabric ${v}`);
-    }
-    for (const v of fs.listDir(`${root}${SEP}net${SEP}minecraftforge${SEP}forge`)) {
-      candidates.push(`forge ${v}`);
+    /* 一处读不动（EACCES / 瞬时占用…）⇒ 只丢掉这一处的候选，另一处与别的实例都不受影响。 */
+    try {
+      for (const v of fs.listDir(`${root}${SEP}net${SEP}fabricmc${SEP}fabric-loader`)) {
+        candidates.push(`fabric ${v}`);
+      }
+      for (const v of fs.listDir(`${root}${SEP}net${SEP}minecraftforge${SEP}forge`)) {
+        candidates.push(`forge ${v}`);
+      }
+    } catch {
+      /* 读不动 ⇒ 这一处当没有候选（宁可这一格留空，也不把整块带走） */
     }
   }
   return candidates.length === 1 ? candidates[0]! : null;
