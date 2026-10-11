@@ -227,6 +227,18 @@ interface RunContext {
   runStartedAt: number;
   itemIndex: number;
   itemCount: number;
+  /**
+   * ★★ D1 · T9（spec A20）：**这一趟**"真的写盘成功"的文件数（累计）。
+   *
+   * ⚠️★★ 它与上面那两格**不是一类**，所以**归零的时机也不同**：
+   *    · `itemIndex` 是"处理到第几项" ⇒ `setRunItem()` **每一项**都动它；
+   *    · 这一格是"这一趟真的写下去几个文件" ⇒ 只有 `beginRun()` 把它归零，
+   *      而 `setRunItem()` **一个字节都不许碰它**（归错的表现是界面上的"已更新"
+   *      每换一项就跳回 0 —— 那正是"看起来在工作"的那一类坏法）。
+   * ⚠️ 只有"真的写盘成功"才 +1（四个计数点各自就写在 `lastRun.updated.push(...)` 旁边）：
+   *    跳过（`skipped`）与失败（`failed`）、取消（`cancelled`）**都不加**。
+   */
+  updatedCount: number;
   phase: DownloadProgress['phase'];
   cancelling: boolean;
   modid: string;
@@ -254,6 +266,8 @@ function refreshProgress(): void {
           total: activeRun.total,
           itemIndex: activeRun.itemIndex,
           itemCount: activeRun.itemCount,
+          /* ★ T9：本趟累计（**每一帧**都带上它 —— 含写盘相位与终帧）。 */
+          updatedCount: activeRun.updatedCount,
           runStartedAt: activeRun.runStartedAt,
           cancelling: activeRun.cancelling,
         };
@@ -272,6 +286,11 @@ function beginRun(input: {
     runStartedAt: Date.now(),
     itemIndex: 0,
     itemCount: input.itemCount,
+    /*
+     * ★★ T9（A20）：「这一趟真的写下去几个文件」从这里**重新开始数**（每一趟一趟的累计）。
+     *    ⚠️ 归零**只在这里**（`endRun()` 把 `activeRun` 整个丢掉，不是它；`setRunItem()` 不碰它）。
+     */
+    updatedCount: 0,
     phase: 'download',
     cancelling: false,
     modid: '',
@@ -295,7 +314,16 @@ function beginRun(input: {
   lastPush = null;
 }
 
-/** 换一项：项序 +1、字节归零、相位回到 `download`。 */
+/**
+ * 换一项：项序 +1、字节归零、相位回到 `download`。
+ *
+ * ⚠️★★ T9（A20）：这个函数归零的是"**这一项**"的字段（字节 / 相位）——
+ *    `updatedCount` 是"**这一趟**"的累计，**这里一个字节都不许碰它**。
+ *    归错的表现是"每换一项，界面上的『已更新』就跳回 0"：它看起来完全正常
+ *    （数字一直在动），而用户永远看不到"这一趟已经装成几个"。
+ *    判据：`verify-mod-folders.mjs` 的「`updatedCount` 只数成功的」那一条
+ *    （夹具里一项成、一项跳、一项失败 ⇒ 终帧必须是 **1**；每进一项就加一 ⇒ 3）。
+ */
 function setRunItem(input: { modid: string; fileName: string }): void {
   if (activeRun === null) return;
   activeRun.itemIndex += 1;
@@ -308,6 +336,34 @@ function setRunItem(input: { modid: string; fileName: string }): void {
   // ★ C/S3：**换项必须立刻让页面看到**（D3：换项那一帧不受 100 ms 下限约束）
   pushProgress(true);
   rebuild();
+}
+
+/**
+ * ★★ T9（spec A20）：**这一趟又有一个文件真的写下去了** ⇒ 累计 +1。
+ *
+ * ⚠️★ 它**只**该出现在"真的写盘成功"的落点上（下一句就是
+ *    `lastRun.updated` 记账的那几处）—— **不另造第二个判据**：
+ *    "这个文件真的写下去了"这件事在那些地方**已经**被记账了，两处各判一次必然漂。
+ * ⚠️★ 它**不是**"处理了一项"：跳过（`skipped`）、失败（`failed`）、取消（`cancelled`）
+ *    三条路上的分支**一处都不许调它** —— 那正是这条判据要钉的事（A20 的字面：
+ *    跳过与失败**都不算**）。
+ * ⚠️★★ **这里必须自己推一帧**（`pushProgress(true)`，不受 D3 的 100 ms 下限约束）：
+ *    这一格是"进行中就要看得见"的读数（brief 的 UI 那一条），而**单行**那两趟
+ *    （`itemCount === 1`）在它 +1 之后往往**再没有别的帧**：`installRelease` 那个
+ *    `notePhase('install')` 帧是在**写盘之前**推的（那一刻还没装成），而紧接着
+ *    `endRun()` 就把 `progress` 清成 `null` 了 ⇒ 不推这一帧的话，"已更新 1"
+ *    在单行这条路上**一次都到不了页面**（只活在主进程那个变量里）。
+ *    ⚠️ 批量那一侧它照样是安全的：`force` 只让 100 ms 那条下限失效，
+ *    `itemIndex` / `itemCount` / 字节那几格一个都没动（T3 的节流判据只比 `download`
+ *    相位的帧间隔，而这一帧的相位是 `install`）。
+ * ⚠️ 顺序：`refreshProgress()` 先算好这一趟的帧，`pushProgress` 再读**同一个**
+ *    `progress` 变量（两条载体不是两份真相 —— 见 `pushProgress` 头顶那一段）。
+ */
+function noteUpdated(): void {
+  if (activeRun === null) return;
+  activeRun.updatedCount += 1;
+  refreshProgress();
+  pushProgress(true);
 }
 
 /** 相位（写盘那一段没有字节 —— 那不是网络流量）。 */
@@ -1511,6 +1567,17 @@ async function writeRun(
     beginRun({ run: input.run, folderId: input.folderId, itemCount: 1 });
     rebuild();
     skipped = await work();
+    /*
+     * ★★ T9（A20）：**"真的写盘成功了"就在这一句上** —— `work()` 的约定是
+     *    "返回 `null` = 真的更新了"，一句话 = 为什么没动（幂等那一支**一个字节都没写**）。
+     *    ⇒ 累计 +1 与下面那句 `lastRun.updated: [modid]` 落在**同一步**，不另造第二个判据。
+     * ⚠️★ **必须在这里、不能在 `endRun()` 之后**：`endRun()` 把 `activeRun` 清成 `null`
+     *    ⇒ 那之后 `noteUpdated()` 直接返回，`updatedCount` 永远停在 0
+     *    （而 `writeRun` 是 `updateMod` 与 `downloadMissing` **共用**的那条路 ⇒
+     *    "两个入口都不计数"会是一处静默的洞）。
+     * ⚠️ 失败那一支（`catch`）**不加**：那一条 `throw` 出去，一个字节都没落盘。
+     */
+    if (skipped === null) noteUpdated();
   } catch (error) {
     busy = false;
     /*
@@ -1551,6 +1618,12 @@ async function writeRun(
    *    （`updated` 是实话，而"点过取消"这件事一处都没记），**不为它造判据**
    *    —— 理由：那个窗口构造不出确定性夹具（要恰好卡在最后一次 `rename` 与
    *    `downloadTo` 返回之间）。
+   */
+  /*
+   * ⚠️★ T9：**这一支不计数** —— 计数的落点在 `writeRun` 里那**唯一**一处
+   *    （它按 `work()` 的返回值判，`updateMod` 与 `downloadMissing` 两条入口共用）。
+   *    在这里再加一次就是"同一个文件数两遍"，而在 `downloadMissing` 上还会**恒不加**
+   *    （那时 `activeRun` 早在 `endRun()` 里清掉了）⇒ 两处判据必然漂。
    */
   lastRun =
     skipped === null
@@ -1986,8 +2059,18 @@ export async function updateFolderAll(
               channel: chan,
               what: what(row.modid),
             });
-            if (why === null) updated.push(row.modid);
-            else skipped.push({ modid: row.modid, reason: why });
+            /*
+             * ★★ T9（A20）："真的写盘成功了"就是 `why === null` 这一支
+             *    （`installFolderRow` 的约定：一句话 = 为什么没动 ⇒ 进 `skipped`）。
+             *    ⇒ 累计 +1 与 `updated.push` 落在**同一步**；`skipped` / `catch` 那两支
+             *    一个字节都不许加（跳过与失败**都不算**）。
+             */
+            if (why === null) {
+              updated.push(row.modid);
+              noteUpdated();
+            } else {
+              skipped.push({ modid: row.modid, reason: why });
+            }
           } catch (error) {
             if (isCancelling()) {
               // ★ 当前这一项是被我们打断的那一项 ⇒ 记进 `cancelled`，然后停
@@ -2155,6 +2238,13 @@ export async function downloadMissing(
        */
       oldCopies: [],
     });
+    /*
+     * ⚠️★ T9：**这一支不计数** —— 计数的落点在 `writeRun` 里那**唯一**一处
+     *    （按 `work()` 的返回值判：`null` = 真的写了），而 `updateMod` 与
+     *    `downloadMissing` 两条入口**共用**那一处 ⇒ 在这里再加一次会数两遍，
+     *    而且两处判据必然漂（派工文本第 3 条："**不要另造第二个判据**"）。
+     *    ⚠️ 返回值那一句仍然要用 `outcome`（它就是"为什么没动"那句话的来源）。
+     */
     // 与 `updateMod` 同一步：目录刚被我们改过 ⇒ 强制重扫（缺失清单与文件夹行都靠它更新）
     await queueScan(id, entry.path, { onlyIfMissing: false });
     return outcome.alreadyCurrent ? '这个文件已经是这一份（没有下载、没有写盘）' : null;
@@ -2327,6 +2417,8 @@ export async function downloadPack(
             skipped.push({ modid: item.modid, reason: SKIP_TEXT['already-current'] });
           } else {
             updated.push(item.modid);
+            /* ★★ T9（A20）：与上面那两桶**同一条互斥线** —— 空转（`alreadyCurrent`）不加。 */
+            noteUpdated();
           }
         } catch (error) {
           /*

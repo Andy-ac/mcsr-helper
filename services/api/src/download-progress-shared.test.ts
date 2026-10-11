@@ -221,6 +221,9 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
       itemCount: 2,
       runStartedAt: 0,
       cancelling: false,
+      /* ★ T9：这一格是**必填**的（`DownloadProgress` 加的那一格）—— 这里给它 0：
+         本用例量的是 `progressKeyOf`（键的形状），与"已装成几个"无关。 */
+      updatedCount: 0,
       ...over,
     });
     assert.equal(
@@ -262,6 +265,7 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
       itemCount: 1,
       runStartedAt: 0,
       cancelling: false,
+      updatedCount: 0,
     };
     const enough = progressLineOf({
       progress,
@@ -305,6 +309,7 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
         itemCount: 1,
         runStartedAt: 0,
         cancelling: false,
+        updatedCount: 0,
       },
       samples: [],
       now: 10_000,
@@ -328,6 +333,7 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
         itemCount: 1,
         runStartedAt: 0,
         cancelling: false,
+        updatedCount: 0,
       },
       samples: [],
       now: 10_000,
@@ -337,5 +343,73 @@ describe('★ 页面侧的样本窗口与视图模型（D6：切 tab 回来还�
     assert.equal(view.total, '—');
     assert.equal(view.rate, '—');
     assert.equal(view.eta, '—');
+  });
+});
+
+/**
+ * ★★ D1 · T9（spec A20 / §8）：**"已更新文件数"**（`updatedCount`）。
+ *
+ * ⚠️★ 为什么它必须住在共享内核：主进程那四个计数点住在 Electron 主进程里
+ *    （`apps/desktop` **没有测试运行器**，只有 typecheck），**这里**是本层唯一能写死期望值的地方；
+ *    而"这一格到底透没透出来"是视图模型的事 —— 界面靠它印「已更新 N」。
+ * ⚠️★★ 判据的形状是"**两个相位都要有它**"，不是"某一格等于某个数"：
+ *    这一格是**本趟累计**，与 `installing` 无关（写盘那一刻它**照旧**是那个数 ——
+ *    T5 那条"写盘相位把字节/ETA 全置成 `—`"的判定**不许**顺手把它也清掉；
+ *    这正是"看起来在工作"的一类坏法：写盘时界面上的"已更新"跳回 0）。
+ */
+describe('★★ T9：`updatedCount`（本趟**真的写盘成功**的累计 —— 与"第 i / n 项"并存、不混为一谈）', () => {
+  /** 一帧（`over` 换掉要换的那几格；`updatedCount` 有一份默认值，免得每个用例都写）。 */
+  const frame = (over: Partial<DownloadProgress>): DownloadProgress => ({
+    run: 'update-folder-all',
+    phase: 'download',
+    folderId: 'f1',
+    modid: 'sodium',
+    fileName: 'sodium-2.5.1+1.16.1.jar',
+    received: 12_400_000,
+    total: 27_100_000,
+    itemIndex: 3,
+    itemCount: 12,
+    runStartedAt: 0,
+    cancelling: false,
+    updatedCount: 2,
+    ...over,
+  });
+
+  it('★★ 下载相位：`updatedCount` 透出来（进行中那一行就要印它，不是只到收尾才有）', () => {
+    const view = progressLineOf({ progress: frame({}), samples: [], now: 10_000 });
+    assert.equal(view.installing, false);
+    assert.equal(
+      view.updatedCount,
+      2,
+      '进行中的那一帧带着**当前**累计（spec §8：显示形如"已更新 2"）',
+    );
+  });
+
+  it('★★ 写盘相位：它**照旧**在（字节 / ETA 被置成 `—` 是那三格的事，不是这一格的事）', () => {
+    const view = progressLineOf({
+      progress: frame({ phase: 'install' }),
+      samples: [],
+      now: 10_000,
+    });
+    assert.equal(view.installing, true);
+    assert.equal(view.received, '—', '字节那一格照旧被置成 `—`（T5 的判定一字不动）');
+    assert.equal(view.updatedCount, 2, '写盘时"已更新 N"不许跳回 0 —— 它是**本趟**的累计');
+  });
+
+  it('★★ 与"第 i / n 项"**同时**在、而且**不是同一个数**（两件事、两个格子）', () => {
+    const view = progressLineOf({ progress: frame({}), samples: [], now: 10_000 });
+    assert.equal(view.itemIndex, 3, '"处理到第几项"照旧');
+    assert.equal(view.itemCount, 12, '"一共几项"照旧');
+    assert.equal(view.updatedCount, 2, '"真的写盘成功了几项"是**另一格**');
+    assert.notEqual(
+      view.updatedCount,
+      view.itemIndex,
+      '两者混为一谈的实现（拿 itemIndex 当 updatedCount）在这里红',
+    );
+  });
+
+  it('★ 一趟刚开始（一个文件都还没装成）⇒ 它**真的是** 0（不是缺一格、也不是 `null`）', () => {
+    const view = progressLineOf({ progress: frame({ updatedCount: 0 }), samples: [], now: 10_000 });
+    assert.equal(view.updatedCount, 0, '起点就是 0（"一个都没装成"是真的读数，不是"算不出来"）');
   });
 });

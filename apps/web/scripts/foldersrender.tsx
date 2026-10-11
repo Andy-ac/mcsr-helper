@@ -3078,6 +3078,17 @@ const progressFrameOf = (over: Partial<DownloadProgress> = {}): DownloadProgress
   itemCount: 1,
   runStartedAt: 0,
   cancelling: false,
+  /*
+   * ★★ T9（spec A20）：这一格是**必填**的（`DownloadProgress` 加的那一格）⇒
+   *    夹具里必须有一个值，否则整组的 `updatedCount` 是 `undefined`
+   *    （界面照旧画得出来 —— `undefined > 0` 是 `false` ⇒ "已更新"那一格**一个都不印**，
+   *     而**旧的那几条判据一条都不会红**：这正是"夹具的洞"那一类）。
+   *    ⚠️ 取 **2**（不是 0）是刻意的：0 那一档在下面有**专门的一条反面判据**，
+   *    而正面的那两条要的是"它真的印出来" ⇒ 夹具默认值必须是**非 0**。
+   *    ⚠️ `itemIndex` 是 1（默认值）而这里是 2 —— 两个数**故意不同**，
+   *    "拿 itemIndex 当已更新"的实现因此在这两份夹具上都会露出来。
+   */
+  updatedCount: 2,
   ...over,
 });
 const NOW = 10_000;
@@ -3161,11 +3172,20 @@ const lineCopy = labelOf('files.progressLine', {
   rate: '—',
   eta: '—',
 });
-/** 批量那一句「第 3/48 项 · <文件名>」（`itemIndex` / `itemCount` 来自帧，名字也在里面）。 */
+/**
+ * 批量那一句「正在更新 <modid>（第 3 / 48 项）」（`itemIndex` / `itemCount` 与 `modid` 都来自帧）。
+ *
+ * ⚠️★ T9 改准：这一句的占位符换过了 —— 老词条是「第 {{index}}/{{count}} 项 · {{name}}」
+ *    （`{{name}}` 是**文件名**），T9 改成带 **mod 名**（`{{modid}}`）的那一句。
+ *    ⇒ 这一格现在传 `modid`（`progressFrameOf().modid`），**不再**传 `name`
+ *    （传错了的话 i18next 会把 `{{modid}}` 原样印出来 —— 而 `labelOf` 会比出**同样**缺
+ *    `{{modid}}` 的两份字符串 ⇒ 那是一条恒真的断言。所以下面还单钉了"帧里那个 modid
+ *    真的出现在产物里"，见 ㊶ 那一组）。
+ */
 const batchCopy = resolved('files.progressBatch', {
+  modid: progressFrameOf().modid,
   index: 3,
   count: 48,
-  name: progressFrameOf().fileName,
 });
 /**
  * 同一个句子的**归一化**形式（`textOf` 那套口径，空白全压掉）。
@@ -3193,9 +3213,14 @@ const batchHtml = keep(
 );
 assert.ok(
   textOf(batchHtml).includes(
-    labelOf('files.progressBatch', { index: 3, count: 48, name: progressFrameOf().fileName }),
+    labelOf('files.progressBatch', {
+      modid: progressFrameOf().modid,
+      index: 3,
+      count: 48,
+    }),
   ),
-  '★★ 汇总档（批量）印「第 3/48 项 · <文件名>」（spec §4 的第二档；`itemIndex/itemCount` 来自帧）',
+  '★★ 汇总档（批量）印「正在更新 <modid>（第 3 / 48 项）」（spec §4 的第二档 + A19 的"在装什么"；' +
+    '`itemIndex/itemCount` 与 `modid` 都来自帧）',
 );
 /*
  * ★★★ T5 修复轮 2（复审"范围外观察"里那条 spec 缺口）：**汇总档那一行里也要有字节**。
@@ -3617,12 +3642,78 @@ assert.deepEqual(
   '★ 而且不可再点（连点两次不该发两次请求）',
 );
 /*
- * ★★ 一趟的汇总行（`files.lastRunSummary` + `files.lastRunCancelled`）。
+ * ★★★ T9（spec A20 / §8）：那一格「**已更新 N**」在界面上**真的印出来了**。
+ *
+ * ⚠️★ 为什么这条必须有（它是 A20 的"**界面上看得见**"那一半）：
+ *    主进程那一侧（数得对不对）由桌面探针 ㊱ 钉着；共享内核那一侧（这一格透没透出来）
+ *    由 `services/api` 的单测钉着。而**"组件真的把它画出来了"**只有这一层量得到 ——
+ *    删掉 `DownloadProgressLine` 里那一个 `<span data-updated>`，上面那些判据
+ *    **一条都不会红**（它们读的是帧与视图模型，不是产物）。
+ * ⚠️★ 判据的形状是**两半**，缺一不可：
+ *    ① 文案那一半：产物里真的有 `files.progressUpdated`（`{{count}}` 填的是帧里那个数）；
+ *    ② **机器读数**那一半：`data-updated` 那一格**是那个数本身** ——
+ *       只断①的话，一个"把 2 印成 7"的实现照样绿（文案在不在与数对不对是两件事）。
+ * ⚠️★ 帧里的 `updatedCount` 与 `itemIndex` 是**两个不同的数**（2 vs 3）：两者混为一谈的
+ *    实现（拿 `itemIndex` 当"已更新"）在②上当场红。
+ */
+const updatedCopy = labelOf('files.progressUpdated', { count: 2 });
+assert.ok(
+  textOf(batchHtml).includes(updatedCopy) && batchHtml.includes('data-updated="2"'),
+  '★★★ 那一条批量进度行里**真的印出了「已更新 2」**（文案 + `data-updated="2"` 两半都要在）—— ' +
+    'spec A20："进行中的那一行与收尾汇总都显示它"；把 `DownloadProgressLine` 里那个 span 删掉，这一条就红',
+);
+assert.equal(
+  batchHtml.includes('data-updated="3"'),
+  false,
+  '★★ 反面：印的**不是** `itemIndex`（这一帧是 3）—— "处理到第几项"与"真的装成几个"混为一谈的实现红了',
+);
+assert.equal(
+  textOf(batchHtml).includes(labelOf('files.progressUpdated', { count: 0 })),
+  false,
+  '★★ 反面：一个都没装成时**不印**「已更新 0」（那是噪声；"一个都没装成"由收尾那行汇总如实说）',
+);
+/*
+ * ★★ 写盘相位**照旧**印它（T5 那条"写盘不印字节"说的是**字节**，不是这一格）——
+ *    ⚠️★ 这一条同时证"它**不是**批量的附属品"：写盘那一帧没有序号句，而它必须在。
+ *    用的帧是**另一个** `updatedCount`（7）：与上面那条比的是**不同的数** ⇒
+ *    一个把计数写死的实现在这里红。
+ */
+const installUpdatedCopy = labelOf('files.progressUpdated', { count: 7 });
+const installUpdatedHtml = keep(
+  html(
+    React.createElement(DownloadProgressLine, {
+      progress: {
+        frame: progressFrameOf({
+          phase: 'install',
+          run: 'update-folder-all',
+          itemIndex: 6,
+          itemCount: 12,
+          updatedCount: 7,
+        }),
+        samples: [],
+      },
+      onCancel: noop,
+      variant: 'summary',
+      now: NOW,
+    }),
+  ),
+);
+assert.ok(
+  textOf(installUpdatedHtml).includes(installUpdatedCopy) &&
+    installUpdatedHtml.includes('data-updated="7"'),
+  '★★★ 写盘相位**照旧**印「已更新 7」（字节 / ETA 被置成 `—` 是那三格的事，这一格不跟着消失）' +
+    '—— 把 `view.installing` 也当成"不印已更新"的条件，这一条就红',
+);
+
+/*
+ * ★★ 那一趟的汇总行（`files.lastRunSummary` + `files.lastRunCancelled`）。
  *
  * ⚠️★ 为什么要在这里加一条：`files.lastRunSummary` 在本次改动**之前没有任何渲染点**
  *    （一条死键 —— T6 把旧第二部分删掉之后就没有了），而 D4 要的是"取消**单独说**"。
  *    ⇒ 判据打在**面板的产物**上（不是打在某个组件上）：这两句话是页面级别的读数。
  * ★ 能红的刀：把面板里那一格 `<p className="moddownload__lastrun">` 删掉 ⇒ 红。
+ * ⚠️★ T9 就地加上"**四个数都在**"那半句：本任务要"确认它**仍然**在，别在改措辞时把它弄丢"
+ *    —— 那条判据断的是**整句**（`lastRunSummary` 一个词条四个数 ⇒ 句子在 = 四个数都在）。
  */
 const lastRunState = stateOf([ROW_GITHUB], {
   folders: [folder({ folderId: 'f1' })],
@@ -3690,7 +3781,11 @@ assert.equal(
 );
 ok(
   '㊶ 下载进度与取消：行内档（**批量帧也印**字节/百分比/速度/ETA、不印序号）、样本不足显示 —、' +
-    '汇总档（文件夹块上）「第 N/M 项」+ **同一条字节行**、三个渲染点的接线（两个行内站点各一正一反 + ' +
+    '汇总档（文件夹块上）「**正在更新 <modid>（第 N / M 项）**」（T9 起带上 mod 名）+ **同一条字节行**、' +
+    '★ T9：那一格「**已更新 N**」**真的印出来了**（文案 + `data-updated` 两半，印的**不是** `itemIndex`；' +
+    '写盘相位照旧印、一个都没装成时不印）+ **A19 的四样读数在同一屏里同时在场**' +
+    '（实例名 + mod 名 + 文件名 + 已更新 N；**那两条判据住在文件后半段 T8 那一区**，' +
+    '理由写在那一段的注释里 —— A19 的实例名只有 `boundInstance` 造得出来）、三个渲染点的接线（两个行内站点各一正一反 + ' +
     '面板把载荷转发给两个站点，且两处各自印什么分开断）、取消按钮的身份（`common.cancel` + `data-action`）、' +
     '一趟的汇总行（含取消单独一格）、写盘相位无字节且取消置灰并说明**且不印序号句**（`itemCount: 48` 的汇总档）、' +
     '`cancelling` 变「正在取消…」、收尾之后一律不显示、' +
@@ -4844,6 +4939,74 @@ const PANEL_INSTANCE_EDITED = boundInstance({
   modsDir: 'D:\\hand-edited\\mods',
   savesDir: 'D:\\hand-edited\\saves',
 });
+/*
+ * ★★ A19 的"**三件事 + 计数**在同一份产物里同时在场"（brief 的 UI 最后一条）。
+ *
+ * ⚠️★ "哪个实例"落在 **T7 的实例层头部**（实例名 / `modsDir` / 版本 / loader），而这一行
+ *    进度帧画在它下面那一块里 ⇒ 要"**同一份产物**"就必须走**面板**（它把两者画在
+ *    同一棵树上）。**不能**拿 ② 那一份 `panelLineState` 用：它的 `instances: []`
+ *    （`stateOf` 的默认值）⇒ 那一屏根本没有实例层头，实例名**不可能**出现在里面。
+ * ⚠️★★ **位置是承重的**：这一块必须在 `boundInstance`（**上面**那个函数声明）**之后** ——
+ *    实例夹具只能由它造（`instanceKeyOf(kind, 根, 实例路径) === key` 那条自钉要
+ *    真的对得上；`instanceView({key})` 那种写法给不出一个真实的 `name` —— 它把 `name`
+ *    默认成**整个 key**），而 `const` 的 TDZ 会让放在上面的版本抛 `ReferenceError`
+ *    （biome 的 `noInvalidUseBeforeDeclaration` 也会当场报）。
+ * ⚠️★ 代价（认）：它因此**物理上住在本文件后半段**（T8 那一区），但**逻辑上属于 ㊶**
+ *    （`DownloadProgressLine` 的进度那一组）—— 下面 ㊶ 那条 `ok()` 的措辞里点了名。
+ *    判据的编号由 `ok()` 决定，与它住文件的哪一段无关。
+ * ⚠️ 实例名**现读夹具**（不是抄一个字面量）：`PANEL_INSTANCE_TRACKED.name` 改了，
+ *    这一条跟着走。进度帧的 `folderId` 取**实例的 key**（实例层那一行的
+ *    `folderId === instance.key`，见 A9）—— 两个值都从夹具现取。
+ */
+const a19State = stateOf([modRowFixture('sodium', 'Sodium Prime')], {
+  tags: [MOD_TAG],
+  launchers: [BINDING_OK],
+  instances: [PANEL_INSTANCE_TRACKED],
+  folders: [folder({ folderId: PANEL_INSTANCE_TRACKED.key, rows: [] })],
+});
+const a19Html = keep(
+  html(
+    React.createElement(ModDownloadPanel, {
+      state: a19State,
+      onAction: noop,
+      initialInstance: PANEL_INSTANCE_TRACKED.key,
+      onGoToLaunchers: noop,
+      progress: linePayloadOf({
+        run: 'update-folder-all',
+        folderId: PANEL_INSTANCE_TRACKED.key,
+        itemIndex: 3,
+        itemCount: 48,
+      }),
+    }),
+  ),
+);
+/*
+ * ⚠️★ 判据的两半都要量**这一份产物**里那一行（不是随便哪个地方）：
+ *    `folderRowSpanOf` 切的是"这一个文件夹那一行"，实例头在它**上面** ⇒
+ *    实例名要在**整份产物**里找、进度那几样要在**这一行里**找。
+ *    ⚠️ 夹具自钉：那一行真的在（`folderRowSpanOf` 找不到会当场抛，不是静默给空串）。
+ */
+const a19Row = folderRowSpanOf(a19Html, PANEL_INSTANCE_TRACKED.key);
+/*
+ * ⚠️★ 实例名要**过 `textOf` 再比**：它自己带空格（`1.16.1 - Ranked#1`），而产物那一边
+ *    已经被 `textOf` 压成了 `1.16.1-Ranked#1` ⇒ 直接 `includes(name)` 是一条
+ *    **恒假**的断言（永远红，而红的理由与产品无关）。本文件里凡是比"一段带空格的文字"
+ *    都要两边过同一个口径（`labelOf` 就是为这件事存在的）。
+ */
+const a19InstanceLabel = textOf(PANEL_INSTANCE_TRACKED.name);
+assert.ok(
+  textOf(a19Html).includes(a19InstanceLabel) &&
+    a19Html.includes(`data-instance-head="${PANEL_INSTANCE_TRACKED.key}"`) &&
+    textOf(a19Row).includes(progressFrameOf().modid) &&
+    textOf(a19Row).includes(progressFrameOf().fileName) &&
+    textOf(a19Row).includes(updatedCopy) &&
+    a19Row.includes('data-updated="2"'),
+  '★★★ A19 + A20 的四样读数**在同一屏里同时在场**：实例名（T7 的实例层头）+ mod 名 + 文件名 + ' +
+    '「已更新 N」—— 少任何一样这条就红（这一份产物实测：实例名 ' +
+    `${JSON.stringify(PANEL_INSTANCE_TRACKED.name)}、帧里的 modid ${JSON.stringify(progressFrameOf().modid)}、` +
+    `文件名 ${JSON.stringify(progressFrameOf().fileName)}；进度那一行切自 \`folderRowSpanOf(${JSON.stringify(PANEL_INSTANCE_TRACKED.key)})\`）`,
+);
+
 /** `probeLaunchers()` 的产物（候选）—— 两条，其中第二条是"官方启动器"那一档。 */
 const CANDIDATES = [
   { kind: 'multimc' as const, rootPath: LAUNCHER_ROOT },

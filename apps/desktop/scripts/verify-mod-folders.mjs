@@ -785,7 +785,13 @@ const server = createServer((req, res) => {
    *   主相位里它是空的 ⇒ 这一段的判据在主相位**不可能**被触发（桩的行为逐字不变）。
    */
   for (const [prefix, entry] of downloads) {
-    if (!req.url.startsWith(prefix)) continue;
+    /*
+     * ★ T9：`exact: true` 那一档比的是**整条路径逐字相等**（`origin` 通道下"每条 release
+     *   一份自己的字节"靠它 —— 前缀比法在那里会把同一目录下别的 release 也吃进来）。
+     *    ⚠️ 前缀那几条（`hijack` / `hijackSlowGroup` / `packMod`）的行为**一字不变**。
+     */
+    const hit = entry.exact === true ? req.url === prefix : req.url.startsWith(prefix);
+    if (!hit) continue;
     downloadLog.push({ url: req.url, prefix });
     res.writeHead(200, {
       'content-type': 'application/java-archive',
@@ -947,6 +953,45 @@ function buildWriteFixture() {
 
   /*
    * =========================================================================
+   * ★★ T9（spec A20）：**「已更新文件数」只数真的写盘成功的**
+   * =========================================================================
+   * ⚠️★ 为什么必须**单开一组夹具**（三条新 modid + 一条新镜像）：这一条判据要的是
+   *    "**同一趟**里三种去向**同时**发生" —— 一项真的装成、一项**跳过**、一项**失败**
+   *    ⇒ 终帧的 `updatedCount` 必须是 **1**（不是 3、也不是 0）。而"跳过"与"失败"
+   *    在**字节那一层**上互斥（§5.32 ①：夹具少一支，判据就退化成"只数了成功的"）：
+   *      · 失败那一条要的是"桩回的字节与 `release.sha512` **不一致**"；
+   *      · 跳过那一支要的是"目标位置那份字节与 `release.sha512` **逐字节相同**"。
+   *    ⇒ 只有"**每条 release 一份自己的字节**"才构造得出来，而 `updateFolderAll` 一趟
+   *      只收**一个**通道（`hijackSlowGroup` 那种"一镜像一份字节、三条共用"做不到这件事）
+   *      ⇒ 走 **`origin` 通道**（每条 release 用自己的 url ⇒ 桩按**精确路径**分别应答）。
+   * ⚠️★ 为什么三格都要在（逐条都是"换一种坏实现"的刀）：
+   *      · 少了成功那一项 ⇒ 计数恒 0，"只数成功的"退化成"什么都不数"；
+   *      · 少了失败那一项 ⇒ 把 `catch` 支路也加一的实现照样绿；
+   *      · 少了跳过那一项 ⇒ 把 `else if (why !== null)` 支路也加一的实现照样绿
+   *        （**跳过不算**与**失败不算**是两把不同的刀，缺一条只钉得住一半）。
+   * ⚠️★ 桩的 `downloads` 表原先只支持**前缀**（`startsWith`）⇒ 下面这个
+   *    `exact: true` 那一档是 T9 加的（一整条路径逐字相等），只给这一组用：
+   *    前缀那几条（`hijack` / `hijackSlowGroup` / `packMod`）的读数**一字不变**。
+   */
+  let t9Group = null;
+  if (WRITE) {
+    const t9MirrorId = 'probe-t9count';
+    /*
+     * ⚠️ 这一条镜像**其实是多余的**（三条项都走 `origin`，`channelUrl` 不看镜像表）——
+     *    留着只是为了与 `hijack` / `hijackSlowGroup` / `packMod` 那三处**同一个形状**，
+     *    免得下一个人以为"这里为什么不用镜像"是一处刻意的缺口。
+     */
+    modCatalog.mirrors.push({
+      id: t9MirrorId,
+      label: `探针桩（${t9MirrorId}）`,
+      prefix: `${siteOrigin}/mirror-t9count/`,
+      hosts: [host],
+    });
+    t9Group = { mirrorId: t9MirrorId };
+  }
+
+  /*
+   * =========================================================================
    * ★ B2 / Task 5：**整合包**的夹具（断言 9–13）
    * =========================================================================
    * ⚠️★ 为什么这些项走**通道 `origin`**、而不是像别处那样各开一条镜像：
@@ -955,7 +1000,8 @@ function buildWriteFixture() {
    *    （`hijackSlowGroup` 头顶那一段写着全文）。`origin` 通道下每条 release 用自己的 url
    *    ⇒ 两个 mod 各有一份自己的字节与自己的延迟，断言 11（第二个 sha512 对不上）
    *    才有办法构造。
-   * ⚠️★ 用 `progressPool.slice(2, 9)`（前两个是 ㉖/㉖b 的 `fx.slow` / `fx.other`）：
+   * ⚠️★ 用 `progressPool.slice(2, 9)`（前两个是 ㉖/㉖b 的 `fx.slow` / `fx.other`，
+   *    尾巴三条是 T9 的 `t9` 那三条）：
    *    `hijack` 是**就地改** `modCatalog.releases` ⇒ 复用同一个 modid 会把别人的夹具改掉。
    * ⚠️ 每一项的目标名都**不与文件夹里已有的那份 jar 同名**：包里的项是"这个文件夹里还没有"
    *    的那一批，而 `installRelease` 收到 `oldCopies: []` ⇒ 目标位置上要是有个我们没见过的
@@ -967,6 +1013,50 @@ function buildWriteFixture() {
       `夹具前提不成立：整合包的夹具要 7 个"未被占用、1.16.1 下唯一候选、可排序、download=auto"的 modid，只找到 ${String(packPool.length)} 个`,
     );
   }
+  /*
+   * ★★ T9：`slice(-4,-1)` 取的**尾巴**那三条。
+   *
+   * ⚠️★ 这一条守卫与上面那条**一起**才能说清"三组夹具各占哪几格"：
+   *    2（㉖ / ㉖b）+ 7（整合包）+ 3（T9）= **12** ⇒ 池子一小就会有人去抢别人的 modid
+   *    （`hijack` / `t9Mod` / `packMod` 都是**就地改** `modCatalog.releases`），
+   *    而症状长得像产品缺陷（§5.79）。取**尾巴**而不是接着 `slice(9,12)`：尾巴那三条
+   *    与前面那两组的索引**天然不重叠**，即使将来有人往池子中间插一条也不会串位。
+   */
+  const t9Pool = progressPool.slice(-4, -1);
+  if (t9Pool.length < 3 || progressPool.length < 12) {
+    bail(
+      `夹具前提不成立：三组夹具（㉖ 两条 / 整合包七条 / T9 三条）要 12 个"可排序、未被占用、download=auto"的 modid，只有 ${String(progressPool.length)} 个（T9 这一组拿到 ${String(t9Pool.length)} 个）`,
+    );
+  }
+  const t9Suffix = (t9Group?.mirrorId ?? 'probe-t9count').replace('probe-', '');
+  const t9Mod = (modid, pathName, servedExtra) => {
+    const release = modCatalog.releases.find(
+      (candidate) => candidate.modid === modid && candidate.targetVersions.includes('1.16.1'),
+    );
+    if (release === undefined) bail(`夹具前提不成立：${modid} 在 1.16.1 下没有 release`);
+    const official = probeJar(modid, SERVED_JAR_VERSION);
+    const served = servedExtra ? probeJar(modid, SERVED_JAR_VERSION, true) : official;
+    const name = `${pathName}.jar`;
+    release.url = `${siteOrigin}/origin/${name}`;
+    release.sha512 = sha512OfBuffer(official);
+    release.size = official.length;
+    downloads.set(`/origin/${name}`, { bytes: served, exact: true });
+    return {
+      modid,
+      release,
+      targetName: name,
+      official,
+      served,
+      local: probeJar(modid, PROGRESS_LOCAL_JAR_VERSION, true),
+      mirrorId: `probe-${t9Suffix}`,
+    };
+  };
+  /** ★★ T9 的三条：**真的装成** / **失败**（下完 sha512 对不上）/ **跳过**（目标已是这一份）。 */
+  const t9 = {
+    ok: t9Mod(t9Pool[0], 't9-count-ok', false),
+    bad: t9Mod(t9Pool[1], 't9-count-bad', true),
+    skipped: t9Mod(t9Pool[2], 't9-count-skip', false),
+  };
   /** 一个"包里的 mod"：劫持 release 的 url / sha512 / size，并在桩上登记它自己的字节。 */
   const packMod = (modid, pathName, opts = {}) => {
     const release = modCatalog.releases.find(
@@ -1057,6 +1147,8 @@ function buildWriteFixture() {
     slow,
     other,
     packs,
+    /** ★★ T9：整夹更新里"一项成 / 一项跳 / 一项失败"那三条（㊱ 用）。 */
+    t9,
   };
 }
 const writeFixture = buildWriteFixture();
@@ -1095,6 +1187,16 @@ if (WRITE) {
       writeFixture.packs.current,
     ]
       .map(packSummaryOf)
+      .join('；')}`,
+  );
+  /* ★★ T9：那三条也打印（§5.79：每个读数都要说清"我看了哪个对象"）。 */
+  console.log(
+    `  T9 的「只数成功的」夹具（㊱，走 origin 通道、桩按**精确路径**应答）：${[
+      ['装成', writeFixture.t9.ok],
+      ['跳过', writeFixture.t9.skipped],
+      ['失败', writeFixture.t9.bad],
+    ]
+      .map(([what, entry]) => `${what} ${entry.modid}→${entry.targetName}（桩回 ${String(entry.served.length)}B / 官方 ${String(entry.official.length)}B）`)
       .join('；')}`,
   );
 }
@@ -3553,6 +3655,8 @@ async function holdFileExclusively(path) {
 async function writePhase() {
   const fx = writeFixture;
   if (fx === null) bail('写路径的夹具没建起来（PHASE 不是 write？）');
+  /** ★★ T9：整夹更新里"一项成 / 一项跳 / 一项失败"那三条（㊱ 用）。 */
+  const t9 = fx.t9;
   if (process.platform !== 'win32') {
     bail("负向证明 ⑦ 需要 Windows：只有 [System.IO.File]::Open(...,'None') 能得到 EBUSY");
   }
@@ -5755,6 +5859,173 @@ await section('⑱ 同名旧文件被换掉 ⇒ `.old` 被删掉；旧副本删�
         '★ 目标那一份的字节一个字节都没变（sha512 仍是夹具那一份）',
         sha512Of(targetPath) === sha512OfBuffer(already.official),
         `${sha512Of(targetPath).slice(0, 16)}…`,
+      );
+    },
+  );
+
+  /*
+   * =========================================================================
+   * ㊱ ★★ T9（spec A20 / §8）：**「已更新文件数」只数真的写盘成功的**
+   * =========================================================================
+   * 判据一句话：**同一趟**整夹更新里三种去向**同时**发生 ——
+   *   ① 一项真的装成（进 `updated`）、② 一项**跳过**、③ 一项**失败**
+   *   （桩回的字节与 `release.sha512` 对不上 ⇒ 下完被拒）。
+   *   ⇒ 终帧的 `updatedCount` 必须是 **1**（不是 3、也不是 0：
+   *     3 = "每进一项就加一"那种坏实现；0 = "一个都没数"）。
+   *
+   * ⚠️★★ **"跳过"这一项只能是"不可批量"那一支，构造不出别的**（现读 `updateFolderAll`
+   *    的循环体，两条路是**互斥**的，写在这里免得下一个人白试一遍）：
+   *      · 可批量那一支（`row.batchable === true`）⇒ 进 `installFolderRow` ⇒ 只有
+   *        `why === null`（真的写了）与 `skipped.push(幂等那句)` 两种去向；
+   *      · 不可批量那一支（`else`）⇒ `skipped.push(skipReasonOf(row))`，**从不**下载。
+   *    ⇒ 想造"可批量的行走到幂等那一支"就得让**缓存的扫描读数**与**盘上那一刻**不一致
+   *      （"盘上有、读数里没有"）—— 而那份读数是**这一趟刚扫出来的**（`prepare` 之后立刻跑），
+   *      构造不出来。㉟ 那一条走的是 `downloadPack` 的 `plan.items`（**不用**文件夹的扫描读数
+   *      筛），所以那边能造。
+   *    ⇒ 这一条钉的是 A20 的**字面**："跳过与失败**都不算**" —— 跳过的那一项**不进
+   *      `updatedCount`**（它是"没被碰"的那一类）；而"可批量但空转（`alreadyCurrent`）不算"
+   *      那半边由 `writeRun` 那一处（单行）与 `downloadPack` 那一处（㉟ 的 `updated: []`）钉着。
+   *
+   * ⚠️★ 三个数的**出处**（一条判据要同时读三个方向，少一个都只钉住一半）：
+   *   · `1` —— `updatedCount`（这一格本身）；
+   *   · `skipped` / `failed` —— `lastRun` 那两个桶（**上一趟**的总账，与上面那一格
+   *     **口径不同、都要在**：派工文本第 2 条提醒）。
+   *   ⇒ 断言写成"**三个桶各恰好一条、而且就是那三个 modid**"，而不是"长度等于 1"：
+   *     后者对"跳过那条被算成 updated"这种坏实现**照样绿**（总数没变）。
+   */
+  await section(
+    '㊱ ★★ T9（A20）：`updatedCount` **只数真的写盘成功的**（一项成、一项跳、一项失败 ⇒ 终帧是 1）',
+    async () => {
+      const dir = join(workRoot, 't9-count');
+      mkdirSync(dir, { recursive: true });
+      /*
+       * ★★ 三份文件各有各的落法（每一格的**位置**都是判据的一部分）：
+       *   · `t9.ok`   ⇒ 写**诱饵名**（`local` 那份字节）：`release` 的目标名上因此**没有文件**
+       *                 ⇒ 真的去下载 ⇒ 桩回的是 `official`（sha512 对得上）⇒ **装成**。
+       *                 ⚠️ 诱饵名以那个 modid 开头，`readJarMeta` 才认得出它
+       *                 （`prepare()` 要求这一夹至少有一行）。
+       *   · `t9.bad`  ⇒ 同样写诱饵名 ⇒ 真的去下载 ⇒ 桩回的字节 sha512 对不上 ⇒ **失败**。
+       *   · `t9.skipped` ⇒ 写**目标名**、字节 = `official`（版本号 9.9.9 = 目录里那一条）
+       *                 ⇒ 判定 `same` ⇒ **不可批量** ⇒ 走"跳过"那一支
+       *                 （一个请求都不发、一个字节都不写）。
+       */
+      writeFileSync(join(dir, `${t9.ok.modid}-old.jar`), t9.ok.local);
+      writeFileSync(join(dir, `${t9.bad.modid}-old.jar`), t9.bad.local);
+      writeFileSync(join(dir, t9.skipped.targetName), t9.skipped.official);
+      const id = await prepare(dir);
+      /*
+       * ★★ 夹具自钉（三段，逐段都是"这一节到底测没测到东西"的前提）：
+       *    ① 三行都在；
+       *    ② **恰好两行可批量**（成 / 失败那两条 —— 跳过那条是 `same` ⇒ 不可批量）；
+       *    ③ 跳过那条的目标位置上那份字节**真的**等于 `release.sha512`。
+       */
+      const rows = folderByPath(await invoke(MOD_CH.getState), dir)?.rows ?? [];
+      const batchRows = rows.filter((row) => row.batchable);
+      const skipRow = rows.find((row) => row.modid === t9.skipped.modid);
+      check(
+        '★★ 夹具自钉（三段）：三行都在、**恰好两行可批量**、跳过那条判成 `same`、目标那份字节 = release 的 sha512',
+        rows.length === 3 &&
+          batchRows.length === 2 &&
+          /* ⚠️ 这一格是**对象**（`{ kind: 'same' }`），不是字符串 —— 第一版拿它直接比 'older'，
+             读数是 `[object Object]` ⇒ 这一条红在**夹具自钉**上（§5.74 那一族：红点长得像产品缺陷）。 */
+          skipRow?.verdict?.kind === 'same' &&
+          sha512Of(join(dir, t9.skipped.targetName)) === t9.skipped.release.sha512,
+        `${listing(dir)}；rows=${JSON.stringify(rows.map((row) => `${row.modid}:${row.verdict?.kind ?? '?'}${row.batchable ? '+batchable' : ''}`))}`,
+      );
+      /*
+       * ★★ 仪器：**每一帧**都收下来（`onProgress` 那一条载体）。
+       *    ⚠️ 这里**不改** `onPageSend`（㉘c 那一处会把它换掉）—— 直接读 `pushes` 就行：
+       *    它从模块加载起就一直在记（`{channel, payload, at}`），下面按 `before` 切片。
+       */
+      const before = pushes.length;
+      const beforeReqs = packReqs();
+      const state = await invoke(MOD_CH.updateFolderAll, id, 'origin');
+      const frames = pushes
+        .slice(before)
+        .filter((entry) => entry.channel === MOD_CH.onProgress)
+        .map((entry) => entry.payload);
+      console.log(
+        `  夹具自检：这一夹 ${listing(dir)}；这一趟 lastRun ${JSON.stringify(state.lastRun)}；` +
+          `帧里的 updatedCount ${JSON.stringify(frames.map((frame) => frame.updatedCount))}`,
+      );
+      /*
+       * ★★★ **主判据**：终帧的 `updatedCount === 1`。
+       *
+       * ⚠️★ 三个数各自能红的刀（逐条都实测过，读数记在 `task-9-report.md`）：
+       *   · 把计数器改成"每进一项就加一"（`setRunItem` 里 `+= 1`）⇒ 变成 **3**；
+       *   · 把跳过那一支也算（`else if (why !== null)` 里也加）⇒ 变成 **2**；
+       *   · 把 `noteUpdated()` 从 `writeRun` 挪到 `endRun()` 之后（单行那两趟）⇒ 单行那条判据红；
+       *   · 整个删掉（`noteUpdated` 里不 `+= 1`）⇒ 变成 **0**。
+       */
+      const lastFrame = frames[frames.length - 1];
+      check(
+        '★★★ 终帧的 `updatedCount` **恰好是 1**（一项真的装成；跳过与失败都不算 —— A20 的字面）',
+        lastFrame !== undefined && lastFrame.updatedCount === 1,
+        `帧数 ${String(frames.length)}；updatedCount 序列 ${JSON.stringify(frames.map((frame) => frame.updatedCount))}`,
+      );
+      /*
+       * ★★ 同一格在**进行中**就要有值（不是只在收尾那一帧才冒出来）——
+       *    `updatedCount >= 1` 的那些帧里，`modid` 一定是**那一项装成之后**的换项帧
+       *    （`setRunItem` 是每项一帧的 `force`；`noteUpdated` 自己再补一帧）⇒
+       *    这一条同时证"它是**累计**、不是终帧特供"。
+       */
+      const cumulative = frames.filter(
+        (frame) => typeof frame.updatedCount === 'number' && frame.updatedCount >= 1,
+      );
+      check(
+        '★★ 进行中的帧里就带着它（`updatedCount >= 1` 的帧至少一帧，而且那些帧的 modid 是**那一项自己**）',
+        cumulative.length >= 1 && cumulative[0].modid === t9.ok.modid,
+        JSON.stringify(cumulative.map((frame) => ({ modid: frame.modid, item: frame.itemIndex, updated: frame.updatedCount }))),
+      );
+      /*
+       * ★★ 三个桶各恰好一条、modid 逐条对（不是"长度等于 1"）—— 它把"三个方向真的都发生过"
+       *    钉在**上一趟的总账**上（与 `updatedCount` 口径不同，两条都要在）。
+       */
+      const updated = (state.lastRun?.updated ?? []).map((modid) => modid);
+      const skippedList = state.lastRun?.skipped ?? [];
+      const failedList = state.lastRun?.failed ?? [];
+      check(
+        '★★ 同一趟里三个方向真的都发生了：`updated` / `skipped`(幂等) / `failed`(sha512) 各恰好一条、modid 逐条对',
+        updated.length === 1 &&
+          updated[0] === t9.ok.modid &&
+          skippedList.length === 1 &&
+          skippedList[0].modid === t9.skipped.modid &&
+          skippedList[0].reason.includes('已经是这一份') &&
+          failedList.length === 1 &&
+          failedList[0].modid === t9.bad.modid &&
+          failedList[0].reason.includes('sha512'),
+        JSON.stringify(state.lastRun),
+      );
+      /*
+       * ★★ 而盘上那一半也要对得上（"数了 1 个"必须真的是"写下去了 1 个文件"）：
+       *    成功那一项的目标文件在、跳过那一项的目标文件**字节没变**、
+       *    失败那一项**没有落盘**、也没有 `.part` 残留。
+       */
+      check(
+        '★★ 盘上那一半：成功那项的目标文件就位、跳过那项的字节一个字节没变、失败那项**没有**落盘',
+        existsSync(join(dir, t9.ok.targetName)) &&
+          sha512Of(join(dir, t9.ok.targetName)) === t9.ok.release.sha512 &&
+          sha512Of(join(dir, t9.skipped.targetName)) === t9.skipped.release.sha512 &&
+          !existsSync(join(dir, t9.bad.targetName)),
+        `${listing(dir)}`,
+      );
+      check('★ 没有 `.part` / `.old` 残留', noPartsOrOlds(dir), listing(dir));
+      /*
+       * ★★ 请求计数（第二条独立读数，§5.38）：**跳过那一项一个请求都不发**。
+       *    ⚠️ 这一趟走 `origin`，桩只对 `/mirror-` 开头的前缀记 `downloadLog` ⇒
+       *    这里**只能**量"至少 2 个"（成功 + 失败各一个）—— 而"跳过那项没发请求"这半边
+       *    由 `skipped[0].reason` 那句"已经是这一份（**没有下载**、没有写盘）"钉着
+       *    （它是 `installRelease` 幂等那一支自己的措辞，只有走到那一支才会有）。
+       */
+      check(
+        '★★ 这一趟真的下了字节（至少 2 个请求：成功 + 失败各一个；跳过那一项由 reason 里的"没有下载"钉着）',
+        packReqs() >= beforeReqs + 2,
+        `请求数 ${String(beforeReqs)} → ${String(packReqs())}`,
+      );
+      check(
+        '★ 收尾之后 `progress` 清空、`busy` 回到 false（界面不停在最后一帧）',
+        state.progress === null && state.busy === false,
+        JSON.stringify({ progress: state.progress, busy: state.busy }),
       );
     },
   );

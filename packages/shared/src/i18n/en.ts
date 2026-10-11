@@ -5036,8 +5036,26 @@ export const en: TranslationSchema = {
      */
     /** ★ Sub-project C: the progress line (`{{done}}` / `{{total}}` are already "12.4 MB"). */
     progressLine: '{{done}} / {{total}} · {{percent}} · {{rate}} · {{eta}} left',
-    /** ★ The per-folder batch line: which item out of how many, and which file. */
-    progressBatch: 'Item {{index}}/{{count}} · {{name}}',
+    /*
+     * ★★ D1 · T9 (spec A19/A20, §8): the batch sentence **carries the mod id**, and
+     * "updated N" becomes its own entry.
+     *
+     * ⚠️★ They are two different readings, hence two entries and two render sites
+     *    (`DownloadProgressLine`):
+     *      · this one = **which** mod is being installed and **which item** of the run
+     *        (`itemIndex` / `itemCount`, i.e. "processed how many");
+     *      · `progressUpdated` = how many files were **really written to disk**
+     *        (A20: skipped and failed ones do **not** count).
+     *    ⇒ Merging them (or using `itemIndex` as "updated") is exactly the confusion
+     *      spec §8 names.
+     * ⚠️★ `{{modid}}` is the raw frame value (catalog ids are ASCII: `sodium`); it is
+     *    **not** the display name - that would need a catalog lookup this layer does not do.
+     * ⚠️ No `=>` (U+21D2) or down-triangle (U+25BE) in these values (neither is in the
+     *    self-hosted pixel subsets).
+     */
+    progressBatch: 'Updating {{modid}} (item {{index}} / {{count}})',
+    /** ★★ T9: cumulative files really written this run (in-progress line **and** the wrap-up). */
+    progressUpdated: 'Updated {{count}}',
     /** ★ Writing to disk (no bytes - this is not network traffic). */
     progressInstall: 'Writing {{name}}…',
     /** ★ Cancel was requested; waiting for the run to stop. */

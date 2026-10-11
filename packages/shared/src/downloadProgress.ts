@@ -24,6 +24,20 @@ export interface DownloadProgress {
   /** 批量时的项序（1 起；单行下载时 itemIndex = itemCount = 1） */
   itemIndex: number;
   itemCount: number;
+  /**
+   * ★★ D1 · T9（spec A20 / §8）：**本趟**"真的写盘成功"的文件数（累计）。
+   *
+   * ⚠️★ 与 `itemIndex` / `itemCount` **不是一回事**，两个都要在、都要显示：
+   *    · `itemIndex` / `itemCount` = "**处理到**第几项 / 一共几项"；
+   *    · 这一格 = "**真的写盘成功**了几项" —— 跳过与失败**都不算**（A20 的字面）。
+   *    ⇒ 拿 `itemIndex` 当它、或者只印一个数，就是 spec §8 明写要避免的"混为一谈"。
+   * ⚠️ 命名是 `updatedCount` 而不是 `updated`：`lastRun.updated` 是**上一趟**的
+   *    **modid 数组**（总账）；这一格是**这一趟**的**数字**（进行中的读数）—— 口径与类型都不同，
+   *    名字近一点就会有人拿它当来源（那正是派工文本点名的第 2 条提醒）。
+   * ⚠️ 起点是 **0**（不是 `null`）："一个都还没装成"是**真的读数**，
+   *    与"算不出来"（本模块一律给 `null` / `—`）是两句话。
+   */
+  updatedCount: number;
   /** 本趟开始时间（epoch ms），页面自己算已用时 */
   runStartedAt: number;
   /** 这一趟是否已被要求取消（页面据此把按钮变成"正在取消…"） */
@@ -182,6 +196,14 @@ export interface ProgressLineView {
   /** 批量时的项序（单行时 `itemIndex === itemCount === 1`，界面据此决定要不要画那一行）。 */
   itemIndex: number;
   itemCount: number;
+  /**
+   * ★★ D1 · T9：**本趟累计**"真的写盘成功"的文件数（界面印「已更新 N」）。
+   *
+   * ⚠️★ 它**不随相位变**：写盘相位把字节 / ETA 置成 `—` 是**那三格**的判定
+   *    （理由见 `progressLineOf` 头顶），与"已经装成几个"无关 ⇒ 这一格照旧透出来。
+   *    写盘时把它一起清掉的表现是"界面上的『已更新』跳回 0"，而它看起来像在工作。
+   */
+  updatedCount: number;
   /** 写盘相位（**没有字节** —— 那不是网络流量；取消按钮也要置灰）。 */
   installing: boolean;
   cancelling: boolean;
@@ -223,6 +245,7 @@ export function progressLineOf(input: {
     eta: formatEta(rate.etaMs),
     itemIndex: progress.itemIndex,
     itemCount: progress.itemCount,
+    updatedCount: progress.updatedCount,
     installing,
     cancelling: progress.cancelling,
   };
