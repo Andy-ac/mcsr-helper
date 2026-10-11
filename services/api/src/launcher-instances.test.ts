@@ -464,4 +464,54 @@ describe('★ D1 纯规则：启动器实例枚举与 mods/saves 解析', () => 
       '实例形状不变（实测同形 ✓）',
     );
   });
+
+  it('㉗ ★ 兜底**只**给"元数据带不到 loader"的三家（pcl2/hmcl/official）；MultiMC 系不兜底', () => {
+    /* ★★ 2026-10-11 控制器裁定（T12 修复轮）：MultiMC / Prism / **MCSR Launcher** 的根下**本来就有
+       共享的 `libraries\`**（MultiMC/Prism 的库目录；MCSR Launcher 也有一份 —— spec §6 那段源码实证）
+       ⇒ 如果对它们也跑兜底，一个**原版**实例（`mmc-pack.json` 里只有 `net.minecraft`）会在
+       "根下 fabric-loader **恰好只有一个**版本"（很常见）时被报成 `fabric <那个版本>` ✗ ——
+       把一个原版实例说成 fabric，**填了一个错的值，比留空更坏**（Global Constraints 的"不猜"）。
+       那三家的元数据（`mmc-pack.json` / `instance.json`）**是权威且完整的** ⇒ 它们不做兜底；
+       兜底只对"实例自己那份 json 可能带不到 loader"的 pcl2 / hmcl / official 生效。
+       ⚠️ 两个夹具必须同在：只有第一个的话，"把兜底整个删掉"也能过 ✗。 */
+    const vanillaPack = JSON.stringify({
+      components: [{ uid: 'net.minecraft', version: '1.16.1' }],
+    });
+    const multimcRoot = 'D:\\MultiMC';
+    const multimc = fakeFs(
+      {
+        [`${multimcRoot}\\instances`]: ['vanilla'],
+        [`${multimcRoot}\\instances\\vanilla\\.minecraft`]: [],
+        /* 根下这份共享库里**恰好一个** fabric-loader（本机很常见的形状） */
+        [`${multimcRoot}\\libraries\\net\\fabricmc\\fabric-loader`]: ['0.17.3'],
+      },
+      { [`${multimcRoot}\\instances\\vanilla\\mmc-pack.json`]: vanillaPack },
+    );
+    const mmc = listInstances(multimc, 'multimc', multimcRoot)[0]!;
+    assert.equal(mmc.gameVersion, '1.16.1');
+    assert.equal(
+      mmc.loader,
+      null,
+      '权威元数据说"没有 loader 组件" ⇒ 留空；共享 libraries 是跨版本的 ⇒ **不许**据此报 fabric',
+    );
+
+    const pcl2Root = 'D:\\PCL2';
+    const pcl2 = fakeFs(
+      {
+        [`${pcl2Root}\\.minecraft\\versions`]: ['v1'],
+        [`${pcl2Root}\\.minecraft\\libraries\\net\\fabricmc\\fabric-loader`]: ['0.17.3'],
+      },
+      {
+        [`${pcl2Root}\\.minecraft\\versions\\v1\\v1.json`]: JSON.stringify({
+          id: 'v1',
+          clientVersion: '1.16.1',
+        }),
+      },
+    );
+    assert.equal(
+      listInstances(pcl2, 'pcl2', pcl2Root)[0]!.loader,
+      'fabric 0.17.3',
+      '同一形状换成 PCL2 ⇒ 兜底**仍然有效**（这条路不许被这道守卫一起砍掉）',
+    );
+  });
 });

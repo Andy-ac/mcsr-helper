@@ -104,8 +104,18 @@ export function listInstances(
     };
     const meta = parseInstanceMeta(fs, draft);
     /* ★ T12：**先读实例自己那份**（`parseInstanceMeta` 只读它自己那一份）——
-       读不出来时**才**退到共享的 `libraries\`（`loaderFromSharedLibraries`，兜底且可能不准）。 */
-    const loader = meta.loader ?? loaderFromSharedLibraries(fs, root);
+       读不出来时**才**退到共享的 `libraries\`（`loaderFromSharedLibraries`，兜底且可能不准）。
+       ★★ 2026-10-11 控制器裁定（T12 修复轮）：**兜底只给"元数据带不到 loader"的那三家**
+       （`pcl2` / `hmcl` / `official`，即 `!isPerInstance(kind)`）——
+       **MultiMC / Prism / MCSR Launcher 的根下本来就有共享的 `libraries\`**
+       （MultiMC/Prism 的库目录；MCSR Launcher 也有一份），而它们的元数据
+       （`mmc-pack.json` / `instance.json`）**是权威且完整的** ⇒ 对它们跑兜底会把
+       **原版实例误报成 fabric**：`mmc-pack.json` 里只有 `net.minecraft`、而根下
+       `libraries\net\fabricmc\fabric-loader` 恰好只有一个版本（很常见的机器）时，
+       就会算出 `fabric <那个版本>` ✗ —— 那是"填一个错的值"，比留空更坏（Global Constraints 的"不猜"）。
+       ㉗ 的第二个夹具（同形状换成 pcl2）钉住"这道守卫不许把兜底整条砍掉"。 */
+    const loader =
+      meta.loader ?? (!isPerInstance(kind) ? loaderFromSharedLibraries(fs, root) : null);
     out.push({ ...draft, gameVersion: meta.gameVersion, loader });
   }
   return out;
@@ -258,6 +268,9 @@ export function loaderFromLibrariesArray(libs: readonly { name?: string }[]): st
  *    这个目录是**跨版本共享**的（PCL/HMCL 装的每个版本都往里放），本机实测同一目录下有
  *    8 个 `fabric-loader` 版本 + 1 个 forge ⇒ **只有在唯一候选时才敢报**；两个候选（或同一个
  *    loader 有两个版本）⇒ `null` —— 宁可空着让用户手改（A12 / T8 的界面），也不猜一个 ✗。
+ * ⚠️★ **调用方还要满足一个条件**（`listInstances` 里那道 kind 守卫，㉗ 钉着它）：
+ *    只有 `pcl2` / `hmcl` / `official` 才许调它 —— MultiMC 系（含 MCSR Launcher）的根下**也有**
+ *    共享 `libraries\`，而它们的元数据是权威的 ⇒ 对它们跑兜底会把原版实例误报成 fabric。
  * ⚠️ 两处根都试（`<根>\libraries` 与 `<根>\.minecraft\libraries`）：PCL2 / HMCL 的 libraries
  *    在 `.minecraft\` 底下，而官方那份根本身就是 `.minecraft`（两种拼法各命中一边）。
  */
