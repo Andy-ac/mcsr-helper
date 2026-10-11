@@ -1996,9 +1996,11 @@ function registerIpc(): void {
  *    同时把"坏文件重建为空"这个结果立刻落盘。
  *    ⚠️ 那个数是个**读数**，量法是 `writeStateFile` 那一句本身：
  *       `Buffer.byteLength(JSON.stringify(emptyState(), null, 2), 'utf8')`
- *       ⇒ 往空状态里加/减一格就要重量一次（D1 的 T3 加 `launchers` + `instancePrefs`
- *       两格：238 → 280）。它**不是**判据，别拿它当断言（这里原先手抄的 "199" 已经
- *       对不上任何形状了 —— 实测改动前是 238）。
+ *       ⇒ 往空状态里加/减一格就要重量一次。这条手抄数字**已经漂过一次**，现场值得记住：
+ *       这里原先写"实测 199 字节"，而 199 对应的是 **Ruling 37 之前**的形状（`prefs` 里还
+ *       没有 `catalogGameVersionChosen` 那一格）；那一格一加就成了 **238**，注释没跟着改
+ *       （D1 的 T3 又加 `launchers` + `instancePrefs` 两格 ⇒ 238 → 280）。
+ *       它**不是**判据，别拿它当断言。
  *    代价：每次启动都写一个几百字节的 JSON（即使内容没变）。
  */
 export async function initFileUpdates(ctx: {
