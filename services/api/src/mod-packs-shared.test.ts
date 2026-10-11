@@ -203,4 +203,100 @@ describe('★ B2 纯判断：packPlanFor / packDownloadableIn', () => {
       assert.equal(packInputSchema.safeParse(bad).success, false, JSON.stringify(bad).slice(0, 60));
     }
   });
+
+  /**
+   * ★★ 2026-10-07 用户报的 bug：整包下载把 `mcsrranked` 装成 **5.8.22**（目录那条），
+   *    而同一行的「下载到 ▾」装 **5.8.26**（上游最新）。
+   * 根因：行级两条路都走 `resolveTarget(candidates, upstreamLatest)`（"唯一候选 + 上游命中
+   *    ⇒ 用上游那条"，spec §7.2 / D1），而**整合包这条路没传上游** ⇒ 落到 `candidates[0]`。
+   * ⇒ 下面两条钉的就是"包这条路也必须走同一份判定"。
+   */
+  it('⑧ ★ 传了 `upstreamLatest` ⇒ 目标换成**上游那条**（不是目录那条）', () => {
+    const index = indexOf({
+      mods: ['mcsrranked'],
+      releases: [{ modid: 'mcsrranked', version: '5.8.22', url: 'https://catalog/5.8.22.jar' }],
+    });
+    const withoutUpstream = packPlanFor({
+      modids: ['mcsrranked'],
+      gameVersion: '1.16.1',
+      folder: FOLDER_EMPTY,
+      index,
+    });
+    assert.equal(
+      withoutUpstream.items[0]?.release.version,
+      '5.8.22',
+      '不传上游 ⇒ 仍是目录那条（这就是 bug 现场：只在这一格上退化，不是错误路径）',
+    );
+
+    const upstreamRelease = {
+      ...withoutUpstream.items[0]!.release,
+      version: '5.8.26',
+      url: 'https://upstream/5.8.26.jar',
+    };
+    const upstreamLatest = new Map([['mcsrranked', upstreamRelease]]);
+    const withUpstream = packPlanFor({
+      modids: ['mcsrranked'],
+      gameVersion: '1.16.1',
+      folder: FOLDER_EMPTY,
+      index,
+      upstreamLatest,
+    });
+    assert.equal(
+      withUpstream.items[0]?.release.version,
+      '5.8.26',
+      '传了上游 ⇒ 目标必须是上游那条（与行级 `resolveTarget` 同一份判定）',
+    );
+    assert.equal(withUpstream.items[0]?.release.url, 'https://upstream/5.8.26.jar');
+    /* 上游只改"装哪一条"，不改"在不在这一趟里" ⇒ 可下数与不传时**相同** */
+    assert.equal(
+      packDownloadableIn({
+        modids: ['mcsrranked'],
+        gameVersion: '1.16.1',
+        folder: FOLDER_EMPTY,
+        index,
+        upstreamLatest,
+      }),
+      1,
+    );
+  });
+
+  it('⑨ 0 条 / 多候选时上游**不参与**（与 `resolveTarget` 同一条门控）', () => {
+    const index = indexOf({
+      mods: ['no-rel', 'two-cand'],
+      releases: [
+        { modid: 'two-cand', version: '1.0', url: 'https://x/a.jar' },
+        { modid: 'two-cand', version: '1.1', url: 'https://x/b.jar' },
+      ],
+    });
+    /* 上游那条的**完整形状**（`ModRelease` 十一格都要有 —— 少一格 tsc 会红，这是有意的） */
+    const upstreamOf = (modid: string, url: string) => ({
+      modid,
+      version: '9.9',
+      url,
+      sha1: 'a'.repeat(40),
+      sha512: 'b'.repeat(128),
+      size: 1,
+      targetVersions: ['1.16.1'],
+      dependencies: [],
+      obsolete: false,
+      intermediary: [],
+      download: 'auto' as const,
+    });
+    const upstreamLatest = new Map([
+      ['no-rel', upstreamOf('no-rel', 'https://u/9.9.jar')],
+      ['two-cand', upstreamOf('two-cand', 'https://u/two.jar')],
+    ]);
+    const plan = packPlanFor({
+      modids: ['no-rel', 'two-cand'],
+      gameVersion: '1.16.1',
+      folder: FOLDER_EMPTY,
+      index,
+      upstreamLatest,
+    });
+    assert.deepEqual(plan.items, [], '这两种情形下上游一律不用 ⇒ 都不进这一趟');
+    assert.deepEqual(plan.skipped, [
+      { modid: 'no-rel', reason: 'no-release' },
+      { modid: 'two-cand', reason: 'ambiguous' },
+    ]);
+  });
 });

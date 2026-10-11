@@ -143,8 +143,15 @@ export type TargetSource = 'catalog' | 'upstream';
  * ⚠️ 目录行与文件夹行**必须共用这一份**：第二部分的候选与第一部分来自同一个
  *    `(modid, 游戏版本)`，各写一遍的话"同一个 mod、同一个版本、两处说法不一致"
  *    只是时间问题（Ruling 14 的现场就是这么来的）。
+ *
+ * ★★ 2026-10-07（用户报的 bug 的修复）：**导出**给 `modPacks.ts` 共用。
+ *    现场：整包下载把 `mcsrranked` 装成目录那条 **5.8.22**，而同一行的「下载到 ▾」装上游 **5.8.26** ✗ ——
+ *    因为整合包那条路（`packPlanFor`）**没有上游这一格**、直接取了 `candidates[0]`。
+ *    修法**不是**在 `modPacks.ts` 里再写一遍"唯一候选就用上游"（那就是第二份判定，
+ *    正是上面那句说的病根）⇒ 而是把**这同一个**函数导出去共用。
+ *    ⚠️ 它仍然只做判定、不做 I/O：上游那张表由调用方抓来传进来（主进程 `upstreamLatestOf()`）。
  */
-function resolveTarget(
+export function resolveTarget(
   candidates: readonly ModRelease[],
   upstream: ModRelease | null,
 ): { target: ModRelease | null; targetSource: TargetSource } {

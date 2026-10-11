@@ -2181,6 +2181,14 @@ export async function downloadPack(
     gameVersion: version,
     folder: { recognizedModids: recognized },
     index,
+    /*
+     * ★★ 2026-10-07（用户报的 bug 的修复）：**必须**把上游那张表传进来。
+     *    不传的后果是实的：`mcsrranked` 会被装成**目录那条 5.8.22**，而同一行的
+     *    「下载到 ▾」装的是**上游 5.8.26**（那是 `planCatalogRows` → `resolveTarget` 的结果）——
+     *    同一个 mod、同一个游戏版本，两条路两个版本 ✗。
+     *    ⚠️ 与行级那条路（`planCatalogRows({… upstreamLatest: upstreamLatestOf()})`）**同一个来源** ✓。
+     */
+    upstreamLatest: upstreamLatestOf(),
   });
 
   return bulkRun({
