@@ -3278,6 +3278,17 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
      *    它们的实例照旧枚举得出来）——"一个块坏掉不许让整页空"。
      * ⚠️ 边界（如实写）：`goneRoot` **不在** A13 那串指纹根里（`fixtureRootPaths` 是五个夹具根
      *    + `probeRoot`）⇒ 这一节证的**不是**"删根这一趟没有别人写盘"，只证上面那三件事。
+     * ⚠️★★ **第二条边界（这一节量不到的那一支；2026-10-12 实测，别把它读成已覆盖）**：
+     *    这一节走的是 `enumerateAll` 里 `missingInstancesDir` 那道**守卫**（"父目录不在"），
+     *    而同一个 `try` 里还有一支**逐块 `catch`**（真的抛异常时记进 `failed`）——
+     *    那一支今天**没有夹具**，而且**本探针构造不出来**：`realFs.readFile` 吞掉一切、
+     *    `realFs.listDir` 只吞 `ENOENT`/`ENOTDIR`（其余照抛）、`loaderFromSharedLibraries`
+     *    自己逐处 `try` ⇒ 能让一块**真的抛**的只剩"父目录**在**、但读不动"（`EACCES`/`EPERM`），
+     *    而那要 ACL 夹具（以当前用户跑不稳，评审自己也认了这一条）。
+     *    ⇒ **实测读数**：把那支 `catch` 换成 `throw error;` ⇒ 重建 + 跑完整探针
+     *      **`EXIT 0` / `✗` 0 条**（几何造不出差别：探针里没有一步能让它跑到）。
+     *      ⇒ 这一支是**判据欠账**（记在 `.cache/d1-pending-section.md`，收口进 `docs/pending.md`），
+     *      ⛔ 别把下面第一条 `★★ C-w1` 的绿读成"逐块 catch 也有人守"。
      */
     await section(
       '★★ C-w1 / I-w1：一条绑定的根被**整体删掉** ⇒ 那一块记成"读不动"、派生 folder 一条不少',
