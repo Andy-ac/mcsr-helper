@@ -5364,9 +5364,20 @@ function inputTagOf(markup: string, attr: string, value: string): string {
    *    ⚠️ 原来只断"这一档里印的是 `pickNoInstances`" —— 一个"两句都印"的实现照样绿，
    *    而那种坏法对用户的代价很实：还没绑启动器的人被指去"去勾一个 1.16.1 的实例"，
    *    而他没有那个东西可勾。
-   *    ⇒ 两半都要：**这一档印这一句、不印另一句**；另一档反过来。
+   *    ⇒ 两半都在：**这一档印这一句、不印另一句**；另一档反过来。
    * ⚠️ 锚点是**渲染出来的字**（`t()` 的产物），不是 key —— `resolved()` 那条针孔探针
    *    保证两个 key 都真的解析出了译文（否则这条断言会退化成"key 与 key 相等"）。
+   *
+   * ⚠️★★ **它与 ㊿e（本文件 `:1690` 附近）的关系，如实写在这里**（评审 I1 的实测）：
+   *    任何**把 `pickVersionEmpty` 弄没**的实现（"两句都不印" / "两档都印
+   *    `pickNoInstances`"）都会**先**红在 ㊿e 那一条上（它在文件里**排得更早**、
+   *    而 `ModDownloadPanel` 内部也走 `InstancePicker`）⇒ 那种坏法下**这一组轮不到自己的红**。
+   *    ⇒ 所以：**上面第一条（正面）与 ㊿e 是重复的**（同一件事、上游有一把更早的锁）；
+   *    这一组**真正独有**的是**第二条（互斥）**—— 它能在"**两句都印**"这种形状上单独红：
+   *    那时 ㊿e 的 `includes(pickVersionEmpty)` 照样成立（它只断"那一句在"），
+   *    而第二条的 `!includes(pickNoInstances)` 当场红。
+   *    ⚠️ 那一形状有**实测读数**（T10 修复轮的刀 `g3-both-printed`：红在本文件这一组的
+   *    `51i ★ 反面…` 那一行，而 ㊿e 那一条**没红**）—— 见 `task-10-fix-report.md`。
    */
   const pickNoInstancesHtml = keep(
     html(
@@ -5764,12 +5775,30 @@ function inputTagOf(markup: string, attr: string, value: string): string {
   /*
    * ⚠️★ 与 ③ 那一段（`.jar--unrecognized`）**同一条纪律**：先剥注释，再找 `选择器 { … }`。
    *    不剥的话，本文件里那些**逐字写着类名**的注释会把"只留注释、删掉规则"变成绿。
+   *
+   * ⚠️★★ **这一条量的是"写法"，不是"效果"**（评审 I3/I4 的实测，如实写在这里）：
+   *    · `overflow`：判据认 `hidden` 与 `clip` 两种**都让 `text-overflow` 生效**的写法
+   *      （`overflow-x: hidden` 也算 —— 它在 inline 轴上裁剪、文字照样省略）。
+   *      ⚠️ 代价：**别的等价写法认不出来**（例如 `overflow: hidden` 拆成
+   *      `overflow-x: hidden` + `overflow-y: hidden` 之外的组合）；判据只保证
+   *      "这条规则里**写着**一样裁剪"，**不保证浏览器真的画出了省略号**（那要真实布局）。
+   *    · `min-width`：认 `0` 与 `0px`（**两者等价**），`min-width: 2px` 那种**必须红**
+   *      （它挡不住 `min-content` 撑开格子 ⇒ 屏幕上照样被推走）。
+   *    ⚠️ 为什么不能更松也不能更紧：更松（只认"出现 `hidden`"）会把 `overflow: clip`
+   *      这种**行为正确**的实现判红；更紧（只认 `hidden`）会把 `overflow-x: hidden` 判红。
+   *      两者都是评审实测出来的（`clip` 假绿 / `overflow-x: hidden` 假红）。
+   * ⚠️★ 清单里的**六格**都是"显示长文本"的那一族（`<span>`）—— `input` 不吃省略族
+   *    （它靠选中与横滚），见 52d。
    */
   const longTextRules: readonly (readonly [string, string])[] = [
-    ['launcherinst__name', '实例行的实例名（T8 建的组件，今天一条规则都没有）'],
+    ['launcherinst__name', '实例行的实例名（T8 建的组件，T10 之前一条规则都没有）'],
     ['allfolders__name', '「显示全部实例」那一行的实例名'],
     ['allfolders__path', '「显示全部实例」那一行的两条路径'],
     ['launcheradd__path', '「添加启动器」候选那一行的根路径'],
+    /* ⚠️★ 这两格是 T10 修复轮补进来的（评审 I2）：规则与 `title` 都写了，
+       而 52e 的清单里没有它们 ⇒ 它们的效果面**没有判据**（只有 52f-2 的"类名有规则"）。 */
+    ['instancepicker__name', '「版本 → 实例」那张卡的实例名（T7 建的组件）'],
+    ['instancepicker__path', '同一张卡上的 `mods` 路径'],
   ];
   for (const [selector, why] of longTextRules) {
     const rule = withoutCssComments(stylesCode).match(
@@ -5782,8 +5811,9 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     );
     assert.match(
       rule[1],
-      /overflow:\s*hidden/,
-      `52e ★★★ \`.${selector}\` 那条规则里有 \`overflow: hidden\`（缺了它 \`text-overflow\` 什么都不做）`,
+      /overflow(-x)?:\s*(hidden|clip)/,
+      `52e ★★★ \`.${selector}\` 那条规则里有 \`overflow: hidden\`（或等价的 \`clip\` / \`overflow-x: hidden\`）` +
+        '—— 缺了它 `text-overflow` 什么都不做（它只在**被裁剪**的那一侧生效）',
     );
     assert.match(
       rule[1],
@@ -5795,6 +5825,18 @@ function inputTagOf(markup: string, attr: string, value: string): string {
       /white-space:\s*nowrap/,
       `52e ★★★ \`.${selector}\` 那条规则里有 \`white-space: nowrap\`（缺了它长文本**照旧换行** —— ` +
         '而"换行把相邻列挤走"正是 A21 点名要治的那一件事）',
+    );
+    /*
+     * ★ 反面：那一格不许写成 `overflow: visible`（那是**唯一**让 `text-overflow` 失效的取值）。
+     *   ⚠️ 它是"正面那条"的反向控制：正面认 `hidden`/`clip`，这一条把 `visible` 显式挡掉 ——
+     *   少了它，"`overflow: hidden` 写在注释掉的那一行里、真正的取值是 `visible`"那种写法
+     *   会被正面判据漏过去。
+     */
+    assert.doesNotMatch(
+      rule[1],
+      /overflow(-x|-y)?:\s*visible/,
+      `52e ★★ 反面：\`.${selector}\` 那条规则里**不许**有 \`overflow: visible\` —— ` +
+        '那是唯一让 `text-overflow` 失效的取值（不裁剪 ⇒ 没有省略号）',
     );
     /*
      * ★ 反面：这一族**不许**再靠"断行"来兜底（`word-break: break-all` / `overflow-wrap: anywhere`）。
@@ -5812,27 +5854,33 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     );
   }
   /*
-   * ★★ 那两格是 **flex 项** ⇒ 还必须有 `min-width: 0`。
+   * ★★ 这六格是 **flex 项** ⇒ 还必须有 `min-width: 0`。
    *    现场：flex 项的自动最小尺寸是 `min-content`（**整个最长单词的宽度**）——
    *    `overflow: hidden` 与 `text-overflow` 都拦不住它：格子会先被那个 200 字符的名字撑开，
    *    省略号根本没机会出现，而被挤走的正是右边那一列（A21 说的"挤压相邻列"）。
    *    ⚠️ 这条**不是**可有可无的第二份：52e 那三条**全在**而缺 `min-width: 0` 时，
    *    屏幕上照样是"名字把按钮推走"（三条判据全绿）。
+   *    ⚠️★ 正则收紧到"**就是 0**"（评审 I4）：`0` 与 `0px` 等价（都收），
+   *    而 `min-width: 2px` 那种**必须红** —— 旧的 `/min-width:\s*0/` 是**前缀匹配**，
+   *    它对 `2px` 也绿（量的是"以 0 开头"，不是"能不能被压缩"）。
    */
   for (const [selector, why] of [
     ['launcherinst__name', '它在 `.launcherinst` 那个 flex 行里'],
     ['allfolders__name', '它在 `.allfolders__row` 那个 flex 行里'],
     ['allfolders__path', '同上，两条路径都在那一行里'],
     ['launcheradd__path', '它在 `.launcheradd__row` 那个 flex 行里'],
+    ['instancepicker__name', '它在 `.instancepicker__card` 那个 flex 行里'],
+    ['instancepicker__path', '同上'],
   ] as const) {
     const rule = withoutCssComments(stylesCode).match(
       new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
     );
     assert.match(
       rule?.[1] ?? '',
-      /min-width:\s*0/,
+      /min-width:\s*0(px)?\s*[;}]/,
       `52e ★★ \`.${selector}\` 那条规则里有 \`min-width: 0\`（${why}：flex 项的自动最小尺寸是 ` +
-        '`min-content` ⇒ 不给这一条，那 200 个字符会先把格子撑开，省略号没机会出现）',
+        '`min-content` ⇒ 不给这一条，那 200 个字符会先把格子撑开，省略号没机会出现）。' +
+        '⚠️ 判据认 `0` 与 `0px`（等价），**不认** `2px` 那种',
     );
   }
   /*
@@ -5865,8 +5913,9 @@ function inputTagOf(markup: string, attr: string, value: string): string {
       '而不是让那七样挤成一团或换行（spec §9 的最后一条）',
   );
   ok(
-    '52e ★★★ 四条长文本规则三样同在（overflow: hidden / text-overflow: ellipsis / ' +
-      'white-space: nowrap）+ `min-width: 0`；两行容器 `flex-wrap: nowrap` + `overflow-x: auto`',
+    '52e ★★★ 六条长文本规则三样同在（overflow: hidden/clip · text-overflow: ellipsis · ' +
+      'white-space: nowrap）+ `min-width: 0`；两行容器 `flex-wrap: nowrap` + `overflow-x: auto`。' +
+      '⚠️ 量的是**写法**不是效果（等价写法与浏览器行为见上面那段注释）',
   );
 
   /* ---- 52f：★★ 四个新类名族在 `styles.css` 里**一条规则都没有**这个事实（T8 的欠账） ---- */
@@ -5916,22 +5965,29 @@ function inputTagOf(markup: string, attr: string, value: string): string {
       '各有规则，而且两个小标题与兄弟标题同一种字体',
   );
 
-  /* ---- 52f-2：★★ **那 36 个类名**逐条对账（不是只抽查四族） ---- */
+  /* ---- 52f-2：★★ **五个 D1 组件用到的每一个类名**逐条对账（不是只抽查四族） ---- */
   /*
-   * ⚠️★★ **这一条能红，而且开工时就是红的**：T7/T8 建的两个组件一共用了 **36** 个类名，
-   *    而 `styles.css` 里**一条规则都没有** ⇒ 屏幕上那一页落回**浏览器默认样式**。
-   *    ⚠️ 这个 36 是**当时的现读数**（`.cache/knife/t10/csscoverage.mjs`，那把仪器不在
-   *    版本控制里）—— 断言本身量的是**当下**这一份源码，不依赖那个数。
-   * ⚠️ 判据是"**这个类名在 `styles.css` 里有一条规则**"（先剥注释），不是"字符串在文件里"：
-   *    后者对本脚本里那些**逐字写着类名**的注释恒绿（§5.82 那个假绿）。
-   * ⚠️★ 下面的排除表**只放"规则住在别处"的那几条**（全局按钮 / 徽章基础类 / 跨页共用），
-   *    而且有一条"排除表不许烂掉"的探针钉着它 —— 死条目会静默挡掉一个新的缺失类名。
-   * ⚠️★ **过期的排除条目**（第一版写进去、被上面那条探针抓出来的四条，逐条记在这里，
-   *    免得下一个人再往里塞）：`px`（组件里根本没用，那是 `.px` 工具类）、
-   *    `mcsr-btn` / `mcsr-btn--sm`（这两个组件用的是 `.cta` / `.ghostbtn`）、
-   *    `badge--dim`（今天没有组件用它）。
+   * ⚠️★★ **这一条能红，而且开工时就是红的**：T7/T8 建的两个组件当时一共用了 **36** 个
+   *    类名**而 `styles.css` 里一条规则都没有** ⇒ 屏幕上那一页落回浏览器默认样式。
+   *    ⚠️★ 两个数**别混**（评审 M2）：**36 = 当时缺规则的那一批**、
+   *    **63 = 今天这五个组件用到的全部类名**（现读，本断言自己会打印）。
+   *    ⚠️★ 而"36"这个读数来自 `.cache/knife/t10/csscoverage.mjs` —— 那把仪器
+   *    **不在版本控制里**（评审 M3）⇒ **那个数不可复跑**：本段只当**当时的现场记录**读，
+   *    当判据的是下面这条断言（它量的是当下这一份源码）。
+   * ⚠️ 判据是"**这个类名在 `styles.css` 里有一条以它开头的规则**"：
+   *    · 先**剥注释**（否则本脚本里那些逐字写着类名的注释会让"只留注释、删掉规则"恒绿，
+   *      §5.82 那个假绿）；
+   *    · 形状是 `/\.<类名>\s*[,{]/` —— **不是**"这个 `.token` 在文件里出现过"。
+   *      ⚠️★ 后者是**恒真面**（评审 C2 的实测现场）：后代选择器**右边**也算数
+   *      （`.moddownload__packs > h3`）⇒ 把 `.moddownload__packs { … }` 整块删掉
+   *      **两遍都绿**。允许 `,` 是因为**共享规则**（几条选择器常写在同一条里）。
+   * ⚠️★ **原来这里有一张 9 条的"排除表"（全局按钮 / 徽章基础类 / 跨页共用），T10 修复轮
+   *    删掉了它**：判据换成形状匹配之后，那 9 条**每一条都有以它开头的规则**
+   *    （现读仪器 `.cache/knife/t10/shape-coverage.mjs`：**9/9 有规则**）⇒ 那张表唯一的作用
+   *    就是**将来把一个新的"缺规则"类名挡在门外**（一张恒真面）。
+   *    ⇒ 它换成了下面那条**仪器自测**（同一个"防腐烂"的意图，但防的是判据自己）。
    * ⚠️ 代价（认）：这条扫描**够不到**"类名拼错了但两边都错"（那要靠人看一眼），
-   *    也够不到"规则在、但属性写错了"（属性由 52e 那四条 + 52f 的字体抽查守）。
+   *    也够不到"规则在、但属性写错了"（属性由 52e 那几条守）。
    */
   const D1_COMPONENTS = [
     'InstancePicker.tsx',
@@ -5940,18 +5996,6 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     'VersionFolderList.tsx',
     'ModPacksSection.tsx',
   ];
-  /** 有意排除的那些：**规则住在别处**的全局类（见上面那一段）。⚠️ 不许塞死条目。 */
-  const SHARED_CLASSES = new Set([
-    'badge',
-    'badge--problem',
-    'cta',
-    'ghostbtn',
-    'state',
-    'state--empty',
-    'folderlist',
-    'filetable__err',
-    'filters__select',
-  ]);
   const usedClasses = new Map<string, string[]>();
   for (const file of D1_COMPONENTS) {
     const source = withoutComments(
@@ -5965,32 +6009,48 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     }
   }
   const cssNoComments = withoutCssComments(stylesCode);
-  const definedClasses = new Set(
-    [...cssNoComments.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]),
+  /** 这个类名在 `styles.css` 里有没有一条**以它开头**的规则（共享规则 `sel,` 也算）。 */
+  const hasRule = (cls: string): boolean =>
+    new RegExp(`\\.${cls.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*[,{]`).test(cssNoComments);
+  const missingRulesOf = (classes: readonly string[]): string[] =>
+    classes.filter((cls) => !hasRule(cls)).sort();
+  /*
+   * ★★ **仪器自测**（§5.32 ②/④「没跑」与 §5.38「空结果恰好证实错误结论」那两族）：
+   *    这条判据的正例是"缺规则的那个数组**是空的**"—— 而一个坏掉的扫描器
+   *    （正则写死 / `usedClasses` 一个都没收到）**给出同样的空数组** ⇒ 光看正例分不出
+   *    "真的一个都不缺"与"什么都没扫到"。⇒ 拿一个**一定不在 `styles.css` 里**的类名
+   *    混进**同一个函数**：它**必须**被报出来。
+   *    ⚠️ 这一条是**上一版那张排除表的替身**：排除表用"死条目探针"防白名单腐烂，
+   *    这里用"自测探针"防**判据**腐烂（少了它，整条断言可以退化成一句恒真的空话）。
+   */
+  assert.deepEqual(
+    missingRulesOf(['launcherinst__name', 'zzz-planted-not-in-css']),
+    ['zzz-planted-not-in-css'],
+    '52f-2 探针（仪器自测）：同一个函数对一个**一定不在 `styles.css` 里**的类名必须报出来 —— ' +
+      '它红了说明扫描器或那个正则坏了（那会让下面那条正例变成空炮）',
   );
-  const missingClasses = [...usedClasses.keys()]
-    .filter((cls) => !SHARED_CLASSES.has(cls) && !definedClasses.has(cls))
-    .sort();
+  /*
+   * ★ 第二条仪器读数（§5.38 "报 0 之前先找出第二条独立读数"）：扫描**真的收到了东西**。
+   *    ⚠️ 它是**下限**、不是现数（现数 63 由下面那条 `ok()` 打印）：它只兜
+   *    "扫描面塌成 0（或几个）"那种**空跑**，不会因为组件删掉一个就红。
+   */
+  assert.ok(
+    usedClasses.size >= 50,
+    `52f-2 探针：扫描面真的收到了东西（现读 ${String(usedClasses.size)} 个类名）—— ` +
+      '低于 50 说明扫描器或组件清单坏了，而不是"这五个组件变简单了"',
+  );
+  const missingClasses = missingRulesOf([...usedClasses.keys()]);
   assert.deepEqual(
     missingClasses,
     [],
     `52f-2 ★★★ 这五个组件里用到的**每一个**类名在 \`apps/web/src/styles.css\` 里都有规则 —— ` +
       `现读用了 ${String(usedClasses.size)} 个，缺规则的这些必须逐条补上（读数：${JSON.stringify(missingClasses)}）`,
   );
-  /*
-   * ★ 排除表**不许烂掉**：表里每一个类名都必须真的被这五个组件用到 —— 否则它是死条目，
-   *   而"死条目"的代价是它悄悄把一个新的缺失类名挡在门外（那种假绿没有任何信号）。
-   */
-  const deadExclusions = [...SHARED_CLASSES].filter((cls) => !usedClasses.has(cls));
-  assert.deepEqual(
-    deadExclusions,
-    [],
-    `52f-2 探针：排除表里每个类名都**真的**被这五个组件用到了（死条目会静默挡掉新的缺失类名）—— ` +
-      `现读过期的：${JSON.stringify(deadExclusions)}`,
-  );
   ok(
     `52f-2 ★★★ ${String(usedClasses.size)} 个类名逐条对账：五个 D1 组件用到的每一个都在 ` +
-      `\`styles.css\` 里有规则（T7/T8 那 36 个缺口的全量判据；排除表 ${String(SHARED_CLASSES.size)} 条各有理由、且无死条目）`,
+      '`styles.css` 里有一条**以它开头**的规则（判据是"类名后面紧跟 , 或 {"那种形状：' +
+      '`.moddownload__packs > h3` 那种**后代选择器右边**不算数 —— 那是评审 C2 的恒真面；' +
+      '旧那张 9 条排除表已删，换成一条仪器自测探针）',
   );
 
   /* ---- 52g：★ mod 名那一格（第三段那张表）：长文件名不许把版本那一列推走 ---- */
@@ -5999,9 +6059,13 @@ function inputTagOf(markup: string, attr: string, value: string): string {
    *    "mod 名、包名"）。它是**磁盘上的文件名**，而文件名可以任意长。
    * ⚠️★ 它的类名是 `.dlprogress__file`（T9 那一族）**之外**的另一格：`.jarrow__file`
    *    （第一/第二部分的 jar 表）与第三段那张表里的文件名。
-   *    今天这三处各写着 `word-break: break-all`（"可断行"）—— **今天不动它们**：
-   *    spec A21 的字面判据由 52e 那四条守着，而这三处**没有超长夹具**
-   *    （动它们就是"改了没人守的东西"，见报告"不确定的地方"那一条）。
+   *    今天这三处各写着 `word-break: break-all`（"可断行"）—— **T10 不动它们**：
+   *    spec A21 的**那一半**（mod 名 / 包名）**没做**，而这三处**没有超长夹具**
+   *    （动它们就是"改了没人守的东西"）。
+   * ⚠️★ T10 修复轮（评审 M1）：这条欠账**不再只活在报告里** —— 它已经写进
+   *    `styles.css` 那两条规则**上方**（`.jarrow__file` 与 `.dlprogress__file` 各一段指针，
+   *    逐条列了"今天缺哪三样、要做的顺序是什么"）⇒ 下一个读样式表的人不会把它读成
+   *    "有意这样"。下面这两条 `assert.ok` 是**回归哨**（老形状不许被顺手改掉）。
    */
   assert.ok(
     withoutCssComments(stylesCode).match(/\.jarlist\s*\{[^}]*overflow-x:\s*auto/),

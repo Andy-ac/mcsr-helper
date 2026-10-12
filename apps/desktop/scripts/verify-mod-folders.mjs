@@ -2949,11 +2949,36 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
        * ⚠️ 收尾：跑完把这一节自己加的那条绑定**移掉**（收尾那一趟按 `fixtureRoots`
        *    删，看不到这个新根 ⇒ 留着它就等于往后面几组留了一条野绑定）。
        */
-      const multiFixtureRoot = join(workRoot, 'MultiMC');
+      /*
+       * ★★ T10 修复轮（评审 C1）：这个新根**必须与 `mmcRoot` 逐字不同**。
+       *
+       * ⚠️★★ 第一版写的是 `join(workRoot, 'MultiMC')` —— 那与上面 `mmcRoot` **是同一个字符串**
+       *    ⇒ "移除旧绑定 + 加新根"退化成**同一条上的无操作**（`addLauncher` 对同一个
+       *    `(kind, 归一化后的根)` 是幂等的）⇒ 下面那条"净效果：绑定数不变"**在把
+       *    `removeLauncher` 整行删掉时照样绿**（实测：`绑定 5 → 5`）—— 一条**空炮**：
+       *    夹具把一个不动的对象当成了被测对象（评审 C1 的现场）。
+       *    ⇒ 教训写在这里：**"改根"这一节的夹具必须让两边的根不同**，否则它测的是"没改"。
+       * ⚠️ 为什么不写 `join(workRoot, 'MultiMC') + '\\'`（真实用户多打一个尾部分隔符那种）：
+       *    主进程在入口把尾部分隔符归一化掉 ⇒ 那又变成**同一条**（同 C1 的空炮形状）。
+       *    那条危险路径（"先加后删"会让绑定消失）是**归一化**那一件事的判据，
+       *    不在这一节（见本节开头那一段"本探针不做归一化那一半"）。
+       */
+      const multiFixtureRoot = join(workRoot, 'MultiMC-moved');
       /** ⚠️ 必须与 `mmcKey` **逐字相同**（见下面那一段：key 里没有根）。 */
       const newName = 'multimc:instances/1.16.1 - Ranked#1';
       if (mmcKey !== newName) {
         bail(`这一节的夹具前提不成立：mmcKey=${mmcKey} 与 newName=${newName} 应当逐字相同`);
+      }
+      /*
+       * ★★ 夹具自钉（C1 的回归哨）：两个根**必须不同**（`samePath` 与逐字都比较一次）。
+       *    ⚠️ 少了这一条，下一个人把 `multiFixtureRoot` 改回 `MultiMC` 时**没有任何信号** ——
+       *    而代价是这一节整节变成空炮（这一轮的 C1 就是这么来的）。
+       */
+      if (samePath(mmcRoot, multiFixtureRoot)) {
+        bail(
+          `这一节的夹具前提不成立：新根与旧根是同一个（${multiFixtureRoot}）⇒ ` +
+            '"移除旧的 + 加新根"会退化成无操作，净效果那一条就成了空炮（评审 C1）',
+        );
       }
       /** 一个实例的 `mods` 目录的归一化形式（用来判"那条读数是不是同一个实例"）。 */
       const modsOf = (path) => resolve(join(String(path), '.minecraft', 'mods')).toLowerCase();
@@ -3005,48 +3030,80 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
         JSON.stringify(afterChange.launchers.map((entry) => `${entry.kind}:${entry.rootPath}`)),
       );
 
-      /*
-       * ④ 已知代价的现场：旧根名下那条实例的勾**被清掉了**（读数一并清）。
-       *    ⚠️★ 判据**不能**拿 `key` 判（`mmcKey` 与"新根下将来那个实例"的 key 是**同一个
-       *    字符串**：key 里只有相对路径、没有根）⇒ 拿 **`modsDir` 路径**判它是不是同一条
-       *    读数（`removeLauncher` 也是按路径判"哪些实例在这个根里面"的，`isInsideFolder`）。
-       */
-      const oldInstance = (afterChange.instances ?? []).find(
-        (instance) => modsOf(instance.modsDir) === modsOf(mmcMods),
-      );
-      check(
-        'T10 ★★ 已知代价（**必须真的发生**）：旧根名下那条被追踪的实例现在 `tracked === false` —— ' +
-          '改根会清掉那条绑定名下实例的勾选（`removeLauncher` 的明文语义；' +
-          '这一格若变绿了就说明"改根"这条路的语义悄悄变了）',
-        oldInstance !== undefined && oldInstance.tracked === false,
-        oldInstance === undefined
-          ? `（找不到那条实例 —— 现读：${JSON.stringify((afterChange.instances ?? []).map((i) => i.modsDir))}）`
-          : `tracked=${String(oldInstance.tracked)}（路径 ${String(oldInstance.modsDir)}）`,
-      );
       check(
         'T10 ★★ 而它派生出来的那条 folder 也一起消失了（`folderId === instance.key`）',
         afterChange.folders.every((folder) => folder.folderId !== mmcKey),
         `folders=${JSON.stringify(afterChange.folders.map((folder) => folder.folderId))}`,
       );
+
+      /*
+       * ④ 已知代价的现场（两条**互相独立**的读数，§5.38 那条纪律）。
+       *
+       * ⚠️★★ T10 修复轮（评审 C1 的连带）：第一版这一格读的是"改根之后 `state.instances` 里
+       *    那条实例的 `tracked`" —— 那个读法**只在"新根 == 旧根"时才拿得到东西**：
+       *    根一换，那条实例就不在枚举结果里了（它属于旧根）⇒ 读数恒为 `undefined` ⇒ 那一条
+       *    必然红。**夹具一改对，这一个读法就失效了**（这正是"夹具的洞"被发现之后的连带）。
+       * ⇒ 换成两条**不依赖"它还枚举得到"**的读数：
+       *    ① **盘上那份 prefs**（`file-tracking.json` 的 `instancePrefs[<key>].tracked`）——
+       *       它是 `removeLauncher` 真正写下去的东西，与投影无关；
+       *    ② **端到端**：把旧根**再加回来**，看那条实例是不是带着 `tracked === false` 回来
+       *       （用户可见的那一面：改完根再改回去，勾选没了、要重新勾）。
+       *    ⚠️★ 判据**不能**拿 `key` 判"是不是同一条实例"（`mmcKey` 与"新根下将来那个实例"的
+       *    key 是**同一个字符串**：key 里只有相对路径、没有根）⇒ 拿 **`modsDir` 路径**判
+       *    （`removeLauncher` 也是按路径判"哪些实例在这个根里面"的，`isInsideFolder`）。
+       */
+      const prefOnDisk = readStateFileJson()?.instancePrefs?.[mmcKey];
       check(
-        `T10 ★★ 盘上那份已装的 mod（${derivedModid}）**重新回到缺失清单里**（扫描读数与勾选一起被清 ⇒ ` +
-          'A13：只动我们自己的记账，一个字节都没碰盘上那份 jar）',
-        (afterChange.missing ?? []).some((entry) => entry.modid === derivedModid),
-        `missing 共 ${String((afterChange.missing ?? []).length)} 条；` +
-          `含 ${derivedModid}=${String((afterChange.missing ?? []).some((e) => e.modid === derivedModid))}`,
+        'T10 ★★ 已知代价①（**盘上那份**读数）：`file-tracking.json` 里 `instancePrefs[<key>].tracked` 被翻成 `false` —— ' +
+          '`removeLauncher` 会把它名下被追踪的实例一律转为"不再追踪"（改根本来就会换掉它们的解析结果）',
+        prefOnDisk?.tracked === false,
+        `盘上那一格=${JSON.stringify(prefOnDisk ?? null)}`,
+      );
+      /*
+       * 端到端那一半：把**旧根**再加回来 ⇒ 那条实例回来、但勾选是空的。
+       * ⚠️ 它会多出一条 `multimc:${mmcRoot}` 绑定（`fixtureRoots` 里有它 ⇒ 后面那一趟收尾
+       *    会顺手删掉它）；本条读完之后马上确认它真的被删（见下面那条收尾判据）。
+       */
+      await invoke(MOD_CH.addLauncher, 'multimc', mmcRoot);
+      const afterReadd = await invoke(MOD_CH.getState);
+      const readdedInstance = (afterReadd.instances ?? []).find(
+        (instance) => modsOf(instance.modsDir) === modsOf(mmcMods),
+      );
+      check(
+        'T10 ★★ 已知代价②（**端到端**）：把旧根**加回来** ⇒ 那条实例回来了、而勾选**是空的**' +
+          '（`tracked === false`）—— 用户可见的那一面：改完根再改回去，得重新勾一次',
+        readdedInstance !== undefined && readdedInstance.tracked === false,
+        readdedInstance === undefined
+          ? `（找不到那条实例 —— 现读：${JSON.stringify((afterReadd.instances ?? []).map((i) => i.modsDir))}）`
+          : `tracked=${String(readdedInstance.tracked)}（路径 ${String(readdedInstance.modsDir)}）`,
+      );
+      check(
+        `T10 ★★ 而它**没有**派生回 ` +
+          '`folders[]`（勾选没了 ⇒ 不派生），盘上那份已装的 mod（' +
+          `${derivedModid}）**照旧在缺失清单里** —— ` +
+          'A13：改根只动我们自己的记账，一个字节都没碰盘上那份 jar',
+        afterReadd.folders.every((folder) => folder.folderId !== mmcKey) &&
+          (afterReadd.missing ?? []).some((entry) => entry.modid === derivedModid),
+        `folders=${JSON.stringify(afterReadd.folders.map((folder) => folder.folderId))}；` +
+          `missing 共 ${String((afterReadd.missing ?? []).length)} 条；` +
+          `含 ${derivedModid}=${String((afterReadd.missing ?? []).some((e) => e.modid === derivedModid))}`,
       );
 
       /*
-       * ⑤ 收尾：把这一节自己加的那条绑定移掉。
-       *    ⚠️★ **必须单独移**：后面那一趟收尾是按 `fixtureRoots` 逐条删的，而
+       * ⑤ 收尾：把这一节自己加的两条绑定都移掉（新根那条 + 上面刚加回来的旧根那条）。
+       *    ⚠️★ 新根那条**必须单独移**：后面那一趟收尾是按 `fixtureRoots` 逐条删的，而
        *    `multiFixtureRoot` **不在**那张表里 ⇒ 不移的话它会活到后面几组，
-       *    而那些组的判据（"启动器那一块画了几个"）会因为多一条野绑定而红在**夹具**上。
+       *    而那些组的判据会因为多一条野绑定而红在**夹具**上。
        */
       await invoke(MOD_CH.removeLauncher, `multimc:${multiFixtureRoot}`);
+      await invoke(MOD_CH.removeLauncher, `multimc:${mmcRoot}`);
       const cleaned = await invoke(MOD_CH.getState);
       check(
-        'T10（收尾）这一节自己加的那条绑定移掉了（不留一条野绑定给后面几组）',
-        cleaned.launchers.every((entry) => !samePath(entry.rootPath, multiFixtureRoot)),
+        'T10（收尾）这一节自己加的两条绑定都移掉了（新根那条 + 上面加回来的旧根那条）',
+        cleaned.launchers.every(
+          (entry) =>
+            !samePath(entry.rootPath, multiFixtureRoot) && !samePath(entry.rootPath, mmcRoot),
+        ),
         JSON.stringify(cleaned.launchers.map((entry) => entry.id)),
       );
     },
@@ -3070,45 +3127,52 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
       JSON.stringify((await invoke(MOD_CH.getState)).launchers.map((l) => l.id)),
     );
 
-  /*
-   * ★★ **A13（只读纪律）**：上面那一整趟（枚举 / 勾选 / 取消勾选 / 确认）跑完之后，
-   *    启动器那几棵树必须**逐字节没被碰过** —— 大小、mtime、条目集合三样都在指纹里。
-   *
-   * ⚠️★ 它为什么必须有（这是一个**判据缺口**，由 T4 的收口报告点出来）：spec A13 是
-   *    D1 的一条硬约束（"除三种下载外，不改启动器/实例的任何文件" —— `instance.cfg` /
-   *    `mmc-pack.json` / `versions\<名>\<名>.json` 都不动），而在这个探针之前，仓库里
-   *    **没有任何判据**量过它（T4 那份量过指纹的探针**不在仓库里**）。
-   * ⚠️★ 它**能红**：在参照 worktree 里往"枚举那一趟"塞一次写入（`realFs.listDir()` 里
-   *    多写一个文件）⇒ 下面这条当场红（读数见 T5 的报告 / `.cache/t5-ref-*`）。
-   * ⚠️ 它**不是**"跑两遍指纹都一样"那种恒真：`treesBeforeText` 取在**夹具造完之后、
-   *    任何一次 `invoke` 之前** ⇒ 这一整段里产品若碰了那棵树，它一定落在这两个读数之间。
-   */
-  const treesAfterText = fixtureRootPaths.map((root) => treeFingerprint(root)).join('\n=====\n');
-  check(
-    '★★ A13：枚举 / 勾选 / 取消勾选 / 确认这一整趟**没有碰过**启动器那几棵树（大小 + mtime + 条目集合逐字节一致）',
-    treesAfterText === treesBeforeText,
-    treesAfterText === treesBeforeText
-      ? `两边都是 ${String(fixtureRootPaths.reduce((n, root) => n + treeEntryCount(treeFingerprint(root)), 0))} 个条目、sha256 前 16 位 ${createHash('sha256').update(treesAfterText).digest('hex').slice(0, 16)}`
-      : `指纹变了：${String(treeEntryCount(treesBeforeText))} → ${String(treeEntryCount(treesAfterText))} 个条目`,
-  );
+    /*
+     * ★★ **A13（只读纪律）**：上面那一整趟（枚举 / 勾选 / 取消勾选 / 确认）跑完之后，
+     *    启动器那几棵树必须**逐字节没被碰过** —— 大小、mtime、条目集合三样都在指纹里。
+     *
+     * ⚠️★ 它为什么必须有（这是一个**判据缺口**，由 T4 的收口报告点出来）：spec A13 是
+     *    D1 的一条硬约束（"除三种下载外，不改启动器/实例的任何文件" —— `instance.cfg` /
+     *    `mmc-pack.json` / `versions\<名>\<名>.json` 都不动），而在这个探针之前，仓库里
+     *    **没有任何判据**量过它（T4 那份量过指纹的探针**不在仓库里**）。
+     * ⚠️★ 它**能红**：在参照 worktree 里往"枚举那一趟"塞一次写入（`realFs.listDir()` 里
+     *    多写一个文件）⇒ 下面这条当场红（读数见 T5 的报告 / `.cache/t5-ref-*`）。
+     * ⚠️ 它**不是**"跑两遍指纹都一样"那种恒真：`treesBeforeText` 取在**夹具造完之后、
+     *    任何一次 `invoke` 之前** ⇒ 这一整段里产品若碰了那棵树，它一定落在这两个读数之间。
+     * ⚠️★ T10 修复轮（评审 M4）：这一段在 T10 那一轮被**纯缩进位移**（4 空格 → 2 空格）
+     *    改过一次 —— 行为没变（`✗` 0 条可证），但那种 diff 会把真正的改动埋掉。
+     *    已还原成它本来的层级（它在 `await section(...)` 的花括号里 ⇒ 4 空格）。
+     */
+    const treesAfterText = fixtureRootPaths
+      .map((root) => treeFingerprint(root))
+      .join('\n=====\n');
+    check(
+      '★★ A13：枚举 / 勾选 / 取消勾选 / 确认这一整趟**没有碰过**启动器那几棵树（大小 + mtime + 条目集合逐字节一致）',
+      treesAfterText === treesBeforeText,
+      treesAfterText === treesBeforeText
+        ? `两边都是 ${String(fixtureRootPaths.reduce((n, root) => n + treeEntryCount(treeFingerprint(root)), 0))} 个条目、sha256 前 16 位 ${createHash('sha256').update(treesAfterText).digest('hex').slice(0, 16)}`
+        : `指纹变了：${String(treeEntryCount(treesBeforeText))} → ${String(treeEntryCount(treesAfterText))} 个条目`,
+    );
 
-  /*
-   * ★ 收尾：把①那个"常见位置里的空槽"**删掉** —— 它住在**用户的真实目录**里
-   *   （`%USERPROFILE%\MultiMC` 那一族，不是 `<tmp>`）⇒ 留着它就是"往这台机器上
-   *   放了一个假启动器"（下一次跑探针时它会变成"本来就有的根"，§5.79 那一族的温床）。
-   *   ⚠️ 只删**我自己造的那一层**（`probeRoot`），不动它的任何祖先。
-   */
-  rmSync(probeRoot, { recursive: true, force: true });
-  check(
-    '（收尾）① 那个"常见位置里的空槽"删掉了（不留一个假启动器在这台机器上）',
-    !existsSync(probeRoot),
-    probeRoot,
-  );
+    /*
+     * ★ 收尾：把①那个"常见位置里的空槽"**删掉** —— 它住在**用户的真实目录**里
+     *   （`%USERPROFILE%\MultiMC` 那一族，不是 `<tmp>`）⇒ 留着它就是"往这台机器上
+     *   放了一个假启动器"（下一次跑探针时它会变成"本来就有的根"，§5.79 那一族的温床）。
+     *   ⚠️ 只删**我自己造的那一层**（`probeRoot`），不动它的任何祖先。
+     */
+    rmSync(probeRoot, { recursive: true, force: true });
+    check(
+      '（收尾）① 那个"常见位置里的空槽"删掉了（不留一个假启动器在这台机器上）',
+      !existsSync(probeRoot),
+      probeRoot,
+    );
   });
 
   return { workRoot, ok: failures === 0 };
 }
-// ===========================================================================// 相位二：§13.1 / `readStateFile` 加固（每条要一份全新的模块状态 ⇒ 子进程）
+
+// ===========================================================================
+// 相位二：§13.1 / `readStateFile` 加固（每条要一份全新的模块状态 ⇒ 子进程）
 // ===========================================================================
 async function stateFilePhase() {
   const workRoot = mkdtempSync(join(tmpdir(), `verify-mod-folders-state-${CASE}-`));
