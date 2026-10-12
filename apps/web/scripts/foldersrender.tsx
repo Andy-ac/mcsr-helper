@@ -64,10 +64,12 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * 现读：zh **45** 组、en **46** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；权威是文件末尾那条
+ * 现读：zh **55** 组、en **56** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；权威是文件末尾那条
  * `expectedGroups` 探针 —— 它数的是 `ok()` 的条数，数错时会把 `actual` / `expected` 都印出来）。
  * ⚠️★ 这一格**已经过期过两次**（T6 瘦身与 T7 加 ㊿ 之后仍写着 15/16 —— 那是 A 的 T6 之前的
  *    数）⇒ T8 加 ㊾h 与 51a–51g 时**同批**改准（本仓的"手抄的现数要同批改"那条纪律）。
+ * ⚠️★ 2026-10-12（D1 的 **T10**）：再加 **52** 一组（A21 长文本 / 省略 / 列宽稳定，8 条）、
+ *    外加交接来的 **51h / 51i** 两条 ⇒ 45/46 → **55/56**（现数，同批改准）。
  * ⚠️ 组号是**顺序**，不是历史编号 —— 现读的清单见文件末尾那条探针上面那一段。
  */
 import assert from 'node:assert/strict';
@@ -96,6 +98,7 @@ import { MemoryRouter } from 'react-router';
 import { AllFoldersView } from '@/components/AllFoldersView';
 import { DownloadProgressLine } from '@/components/DownloadProgressLine';
 import { FolderJarList } from '@/components/FolderJarList';
+import { InstancePicker } from '@/components/InstancePicker';
 import { LauncherBindingPanel } from '@/components/LauncherBindingPanel';
 import { ModDownloadPanel } from '@/components/ModDownloadPanel';
 import {
@@ -529,6 +532,21 @@ const INSTANCE_UNTRACKED = instanceView({
   tracked: false,
   /* ⚠️ 待确认是**显示值**（`needsConfirm && !confirmed`）：这一行两样都读得到。 */
   needsConfirm: true,
+});
+/**
+ * ★★ T7 交接的第一条（T10 补）：**某一个被追踪的实例，版本读不出来**（`gameVersion: null`）。
+ *
+ * ⚠️★ 它服务的**唯一**判据是 51h：`AllFoldersView` 的"当前那一版那一组排最前"。
+ *    那条断言读的是产物里 `data-version` 的**出现顺序**，而"版本未知"那一组的
+ *    `data-version` 是**空串**（`group.version ?? ''`）—— 三个值互不相同，顺序才咬得住。
+ * ⚠️ 版本未知的实例是**可达**的（元数据读不出来 / 用户还没手改过版本），
+ *    它的出路是实例层那个版本下拉（见 `AllFoldersView` 文件头那一段）。
+ */
+const INSTANCE_UNKNOWN_VERSION = instanceView({
+  key: 'multimc:instances/no-metadata',
+  name: 'no-metadata',
+  gameVersion: null,
+  loader: null,
 });
 
 // ---------------------------------------------------------------------------
@@ -4941,6 +4959,31 @@ const PANEL_INSTANCE_EDITED = boundInstance({
   modsDir: 'D:\\hand-edited\\mods',
   savesDir: 'D:\\hand-edited\\saves',
 });
+/**
+ * ★★ **超长文本夹具**：200 字符的实例名 / 路径 / 包名（spec §11 逐字要求的那一条）。
+ *
+ * ⚠️★ 三个夹具**一律 ASCII**（不许用汉字堆长度）：⑱ 那条"英文产物零汉字"的扫描要在
+ *    `--en` 那一遍过（主进程/磁盘上的中文在这个脚本里一律换成 ASCII 记号，
+ *    见文件头 `TAG_LABEL` / `NOTE` 那一段的同一条纪律）。
+ * ⚠️ 名字里**没有 `/`**：`instanceKeyParts` 取的是末段 ⇒ 带斜杠的名字会让
+ *    `instanceKeyOf` 拼出来的 key 与夹具的 key 对不上，那一行会**一个块都不属于**
+ *    （`boundInstance` 的自钉会当场红 —— 那时红的是夹具，不是产品）。
+ * ⚠️★ 位置：它必须**在 51 那一组之前**（51h/51i 用到了它），而它又只能由
+ *    `boundInstance` 造 ⇒ 紧跟在 `boundInstance` 那一族夹具后面。
+ */
+const LONG_NAME = 'Cobblemon-Elite-Ranked-'.repeat(10);
+const LONG_PATH = `D:\\MultiMC-LONG\\${'deeply-nested-segment-'.repeat(9)}mods`;
+/** 一个**属于 `LAUNCHER_ROOT`**、名字与两条路径都 200 字符的实例。 */
+const PANEL_INSTANCE_LONG = boundInstance({
+  key: `multimc:instances/${LONG_NAME}`,
+  gameVersion: '1.16.1',
+  tracked: false,
+  confirmed: false,
+  needsConfirm: false,
+  modsDir: LONG_PATH,
+  savesDir: `${LONG_PATH}-saves`,
+});
+
 /*
  * ★★ A19 的"**三件事 + 计数**在同一份产物里同时在场"（brief 的 UI 最后一条）。
  *
@@ -5269,6 +5312,102 @@ function inputTagOf(markup: string, attr: string, value: string): string {
   ok(
     '51c A8 的两支空态（未绑定启动器 / 已绑但一个实例都没勾）各自在场、而且互斥、有勾选时一支都不画',
   );
+  /*
+   * ★★ T7 交接的第一条：**T7 自己列的"当前那一版排最前"没有判据**。
+   *
+   * ⚠️★ 判据的锚点必须是 `data-version` 的**出现顺序**（产物里那几组是按 `ordered` 画出来的）
+   *    —— 只断"那一组在不在"的话，一个"照状态首次出现顺序画"的实现（= 把 `ordered` 那两行
+   *    删掉）**整套自检照样绿**：`allInstancesState` 的首次出现顺序里 `1.16.1` 恰好就在最前。
+   *    ⇒ 夹具**故意**让当前那一版（`1.16.1`）**不是**第一个出现的版本，判据才有内容。
+   */
+  const versionOrderHtml = keep(
+    html(
+      React.createElement(AllFoldersView, {
+        instances: [INSTANCE_OLD, INSTANCE_UNKNOWN_VERSION, INSTANCE_RANKED],
+        gameVersion: '1.16.1',
+        folders: [],
+        onAction: noop,
+        onOpenInstance: noop,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  /*
+   * ⚠️★ 锚点是**分组那个 `div`**（`class="allfolders__group"` 与 `data-version` 同在一个
+   *    标签里），**不是**裸的 `data-version`：`VersionBadge` 也挂着一格 `data-version`
+   *    （`VersionFolderList.tsx` 那一个 span）⇒ 裸正则数到的是一行**两个**版本号，
+   *    顺序判据会被自己的夹具骗过（这是实测踩到的：第一版读数
+   *    `['1.16.1','1.16.1','1.8.9','1.8.9','','']` —— 长得像产品缺陷，其实是判据写松了）。
+   */
+  const versionsInOrder = [
+    ...versionOrderHtml.matchAll(/<div class="allfolders__group" data-version="([^"]*)"/g),
+  ].map((m) => m[1]);
+  assert.equal(
+    versionsInOrder.length,
+    3,
+    `51h 探针：三组都要画出来（实测 ${String(versionsInOrder.length)} 组）—— ` +
+      '少于三组时下面的顺序断言是空跑',
+  );
+  assert.deepEqual(
+    versionsInOrder,
+    ['1.16.1', '1.8.9', ''],
+    '51h ★ 当前看着的那一版（`gameVersion`）那一组排**最前**，其余组照旧按**首次出现顺序**',
+  );
+  ok('51h ★ 「显示全部实例」把当前那一版提到最前（其余组的相对顺序一个字不动）');
+
+  /*
+   * ★★ T7 交接的第二条：**`pickNoInstances` 那一档的反向断言**（T10 补）。
+   *
+   * ⚠️★ 那一档是"**一个实例都没读到**"（还没绑启动器 / 枚举还没回来），它与
+   *    `pickVersionEmpty`（"读到了实例、只是这一版没有被追踪的"）是**两句不同的话**
+   *    （Ruling 65：分不清"不知道"与"没有"的读数不许当结论用）。
+   *    ⚠️ 原来只断"这一档里印的是 `pickNoInstances`" —— 一个"两句都印"的实现照样绿，
+   *    而那种坏法对用户的代价很实：还没绑启动器的人被指去"去勾一个 1.16.1 的实例"，
+   *    而他没有那个东西可勾。
+   *    ⇒ 两半都要：**这一档印这一句、不印另一句**；另一档反过来。
+   * ⚠️ 锚点是**渲染出来的字**（`t()` 的产物），不是 key —— `resolved()` 那条针孔探针
+   *    保证两个 key 都真的解析出了译文（否则这条断言会退化成"key 与 key 相等"）。
+   */
+  const pickNoInstancesHtml = keep(
+    html(
+      React.createElement(InstancePicker, {
+        instances: [],
+        gameVersion: '1.16.1',
+        selected: null,
+        onSelect: noop,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  const pickVersionEmptyHtml = keep(
+    html(
+      React.createElement(InstancePicker, {
+        instances: [INSTANCE_UNTRACKED],
+        gameVersion: '1.16.1',
+        selected: null,
+        onSelect: noop,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  const pickNoInstances = textOf(resolved('files.pickNoInstances'));
+  const pickVersionEmpty = textOf(resolved('files.pickVersionEmpty', { version: '1.16.1' }));
+  assert.notEqual(
+    pickNoInstances,
+    pickVersionEmpty,
+    '探针：这两句词条必须是**两句不同的话**（同一句就等于这一档不存在）',
+  );
+  assert.ok(
+    textOf(pickNoInstancesHtml).includes(pickNoInstances) &&
+      !textOf(pickNoInstancesHtml).includes(pickVersionEmpty),
+    '51i ★ 一个实例都没读到 ⇒ 印「先去绑一个启动器」那一句，而**不许**印"去勾一个 1.16.1 的"',
+  );
+  assert.ok(
+    textOf(pickVersionEmptyHtml).includes(pickVersionEmpty) &&
+      !textOf(pickVersionEmptyHtml).includes(pickNoInstances),
+    '51i ★ 反面：读到了实例、只是这一版没被追踪的 ⇒ 印"去勾一个 1.16.1 的"，不许印"先去绑一个"',
+  );
+  ok('51i ★ 两种"空"是两句不同的话、而且互斥（未绑启动器 / 这一版没有被追踪的实例）');
 
   /* ---- 51d：A14 —— 逐块失败 + 重试（一个块坏掉不许整页空）---- */
   const brokenHtml = launcherBindingHtml({
@@ -5448,7 +5587,437 @@ function inputTagOf(markup: string, attr: string, value: string): string {
   );
 }
 
-const expectedGroups = LANG === 'en' ? 46 : 45;
+// ---------------------------------------------------------------------------
+// 52 ★★ D1（T10）：A21 —— 布局简洁规整 + 长文本**单行省略 / 悬浮看全 / 列宽稳定**
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一组的**唯一**判据对象是 spec A21（§9 是它的细则）：
+ *    "实例名 / 路径 / mod 名 / 包名一律**单行省略 + 悬浮看全**；列宽稳定；窄窗口下不串行、
+ *     不挤压相邻列"，而且"**必须有超长文本夹具**（渲染自检里放一条 200 字符的实例名/路径）"。
+ *
+ * ⚠️★★ 为什么它必须**读 `styles.css`**（而不是只断产物里那个类名在）：
+ *    本仓**没有 CSS 门禁** —— `apps/web/scripts/*render*.tsx` 只渲染、只看产物；
+ *    而"那个类名到底有没有规则、规则里写没写那三样"**没有任何自动化覆盖**。
+ *    现场（§5.70 的同族）：D1 的 T7 / T8 建了 `InstancePicker` 与 `LauncherBindingPanel`
+ *    两个组件，类名都挂上了，而 `styles.css` 里**一条规则都没有** ⇒ 屏幕上那些格子
+ *    落回浏览器默认样式，"超长文本把相邻列挤走"这件事**照样发生**，
+ *    而当时**所有门禁全绿**。⇒ 下面的断言是这一族唯一的守。
+ *
+ * ⚠️★ 两条取舍写在这里，免得下一个人以为是漏了：
+ *   · 判据钉的是**属性**（`overflow` / `text-overflow` / `white-space` / `min-width`），
+ *     不是"类名在文件里" —— 后者对"只留注释、删掉规则"恒绿（§5.82 那个假绿，
+ *     与 `.jar--unrecognized` 那一条同源）；
+ *   · 三样**必须同在那一条规则里**（`overflow: hidden` / `text-overflow: ellipsis` /
+ *     `white-space: nowrap`）：缺 `white-space` ⇒ 长文本照旧换行（列被撑高、相邻列错位）；
+ *     缺 `overflow` ⇒ `text-overflow` 什么都不做（规范：它只在溢出且被裁剪时生效）；
+ *     缺 `text-overflow` ⇒ 文字被硬切、看不出"这里还有"。三者缺一都做不到单行省略。
+ */
+
+/**
+ * ★★ **超长文本夹具**：200 字符的实例名 / 路径（spec §11 逐字要求的那一条）。
+ * ⚠️ 它们**声明在 51 那一组之前**（`boundInstance` 那一族夹具后面）——
+ *    51h/51i 用到了 `PANEL_INSTANCE_LONG`，而 `const` 的 TDZ 会让放在这里的版本抛。
+ */
+
+{
+  console.log(`【${LANG}】52 A21 长文本：单行省略 / 悬浮看全 / 列宽稳定（含超长文本夹具）`);
+
+  /* ---- 52a：★ 夹具自钉 —— 三个夹具真的"超长"，而不是名字叫超长 ---- */
+  for (const [what, value] of [
+    ['实例名', LONG_NAME],
+    ['mods 路径', LONG_PATH],
+    ['saves 路径', `${LONG_PATH}-saves`],
+  ] as const) {
+    assert.ok(
+      value.length >= 200,
+      `52a 探针：夹具「${what}」真的有 200 个字符（实测 ${String(value.length)} 个）—— ` +
+        '短夹具上"省略"这件事根本没有东西可省，下面每一条都会退化成空跑',
+    );
+  }
+  assert.equal(
+    LONG_NAME.includes('/') || LONG_NAME.includes('\\'),
+    false,
+    '52a 探针：实例名里不许有分隔符（`instanceKeyParts` 取末段 ⇒ 带斜杠的夹具会与 key 对不上）',
+  );
+  ok(
+    `52a ★ 超长文本夹具：实例名 ${String(LONG_NAME.length)} 个字符、两条路径 ` +
+      `${String(LONG_PATH.length)} 个字符（spec §9 / §11 逐字要求的那一条）`,
+  );
+
+  /* ---- 52b：★ 全文都在产物里（被省略的是**视觉**，不是数据） ---- */
+  /*
+   * ⚠️★ 这一条与 52c 是**两件事**，缺一不可：
+   *    · 缺了它 ⇒ "把长文本截断成 40 个字符再渲染"那种实现**照样绿**（数据真的丢了，
+   *      而那正是 A21 里"省略的是视觉"的反面）；
+   *    · 缺了 52c ⇒ "渲染了全文、但没给 `title`"那种实现绿 —— 而用户**根本看不到全路径**
+   *      （比换行更坏：换行至少看得全）。
+   */
+  const longPanelHtml = launcherBindingHtml({
+    state: launcherPanelState({ instances: [PANEL_INSTANCE_LONG] }),
+  });
+  const longRow = bindingRowSpanOf(longPanelHtml, PANEL_INSTANCE_LONG.key);
+  assert.ok(
+    longRow.includes(PANEL_INSTANCE_LONG.name),
+    '52b ★ 实例名那 200 个字符**一个不少**地在产物里（被省略的是视觉，不是数据）',
+  );
+  assert.ok(
+    inputTagOf(longRow, 'data-instance-mods', PANEL_INSTANCE_LONG.key).includes(
+      `value="${LONG_PATH}"`,
+    ) &&
+      inputTagOf(longRow, 'data-instance-saves', PANEL_INSTANCE_LONG.key).includes(
+        `value="${LONG_PATH}-saves"`,
+      ),
+    '52b ★ 两条 200 字符的路径也在（`value=` 上逐字对 —— 截断过的值在这里红）',
+  );
+  ok('52b ★ 200 字符的实例名与路径**全文都在产物里**（截断数据的实现在这里红）');
+
+  /* ---- 52c：★★ `title` 是"悬浮看全"的唯一实现 ---- */
+  /*
+   * ⚠️★ 判据逐条钉"**那一格**自己带 `title="<全文>"`"，不是"产物里某处有 `title`"：
+   *    后者会被**任何**一个别的 `title` 满足（实测：`launcherinst__name` 那一格
+   *    与两个路径输入框上都有 `title` ⇒ 松判据对"名字那一格漏了 title"照样绿）。
+   */
+  assert.ok(
+    longRow.includes(`title="${PANEL_INSTANCE_LONG.name}"`),
+    '52c ★★ 实例名那一格自己带着 `title`（**全文**）—— 漏掉它 = 用户看不到全名（比换行更坏）',
+  );
+  assert.ok(
+    inputTagOf(longRow, 'data-instance-mods', PANEL_INSTANCE_LONG.key).includes(
+      `title="${LONG_PATH}"`,
+    ),
+    '52c ★★ `mods` 那一格自己带着 `title`（全文）',
+  );
+  assert.ok(
+    inputTagOf(longRow, 'data-instance-saves', PANEL_INSTANCE_LONG.key).includes(
+      `title="${LONG_PATH}-saves"`,
+    ),
+    '52c ★★ `saves` 那一格自己带着 `title`（全文）',
+  );
+  /*
+   * ⚠️★ 根路径那一格（改根这一页）也是"显示长文本"：它的 `title` 由 T8 的组件给。
+   *    这条同时是**下一条**（候选那一行）的对照：两处都是磁盘上的路径，
+   *    但一个是**输入框**（不省略）、一个是**显示**（省略 + title）。
+   */
+  assert.ok(
+    inputTagOf(longPanelHtml, 'data-launcher-root', BINDING_OK.id).includes(
+      `title="${BINDING_OK.rootPath}"`,
+    ),
+    '52c ★★ 根路径那一格也带着 `title`（改根这一页的路径同样是"悬浮看全"）',
+  );
+  assert.ok(
+    longPanelHtml.includes(`title="${CANDIDATES[0].rootPath}"`),
+    '52c ★★ 「添加启动器」的候选那一行也带着 `title`（那一格会很长：路径是磁盘上的内容）',
+  );
+  /*
+   * ★★ 「显示全部实例」那一栏的六样里，三格是长文本（名字 / 两条路径）。
+   * ⚠️ 这一份**单独渲染**（面板那一屏里没有它）。
+   */
+  const longAllFoldersHtml = keep(
+    html(
+      React.createElement(AllFoldersView, {
+        instances: [PANEL_INSTANCE_LONG],
+        gameVersion: '1.16.1',
+        folders: [],
+        onAction: noop,
+        onOpenInstance: noop,
+        onGoToLaunchers: noop,
+      }),
+    ),
+  );
+  const longAllRow = ((): string => {
+    const start = longAllFoldersHtml.indexOf(`data-instance-row="${PANEL_INSTANCE_LONG.key}"`);
+    assert.notEqual(start, -1, '52c 夹具自钉：「显示全部实例」里那一行没渲染出来');
+    return longAllFoldersHtml.slice(start);
+  })();
+  for (const [what, value] of [
+    ['实例名', PANEL_INSTANCE_LONG.name],
+    ['mods 路径', LONG_PATH],
+    ['saves 路径', `${LONG_PATH}-saves`],
+  ] as const) {
+    assert.ok(
+      longAllRow.includes(`title="${value}"`),
+      `52c ★★ 「显示全部实例」那一行的${what}带着 \`title\`（全文）`,
+    );
+  }
+  ok(
+    '52c ★★ 七处长文本各自带着 `title`（实例行的名字 / mods / saves / 根路径 / 候选那一行 / ' +
+      '「显示全部实例」的名字与两条路径）',
+  );
+
+  /* ---- 52d：★★ 三处**没有** `title` 的长文本落点（如实记 + 用别的守兜住） ---- */
+  /*
+   * ⚠️★ 这三处是这一组**够不到**的地方，逐条写清楚，别让"这一组全绿"读成"五处都守住了"：
+   *   ① `instancepicker`（「版本 → 实例」那一层的实例卡）**不在这一组**：它由 T7 的 ㊿ 覆盖，
+   *      而它今天**没有**超长夹具（那是 T10 的欠账之一，见报告"不确定的地方"）；
+   *   ② `launcheradd__input`（手动填根的那个输入框）**没有** `title`：它是**可编辑**的输入框
+   *      （用户填的就是它，纵向能滚），与"显示长文本"那一族不是同一件事 ⇒ 今天不改它
+   *      （改了会动 T8 的组件，而 spec A21 的字面只点名"实例名 / 路径 / mod 名 / 包名"
+   *      这几格的**显示**）；
+   *   ③ `launcherblock__input`（改根那个框）同理，但它**有** `title`（52c 已钉）。
+   */
+  ok(
+    '52d ★ 本组够不到的两处如实记在注释里：`instancepicker`（缺超长夹具、由 ㊿ 覆盖）与 ' +
+      '`launcheradd__input`（可编辑框，没有 `title`）',
+  );
+
+  /* ---- 52e：★★ 那条"不会挤走相邻列"的判据（读 styles.css） ---- */
+  /*
+   * ⚠️★ 与 ③ 那一段（`.jar--unrecognized`）**同一条纪律**：先剥注释，再找 `选择器 { … }`。
+   *    不剥的话，本文件里那些**逐字写着类名**的注释会把"只留注释、删掉规则"变成绿。
+   */
+  const longTextRules: readonly (readonly [string, string])[] = [
+    ['launcherinst__name', '实例行的实例名（T8 建的组件，今天一条规则都没有）'],
+    ['allfolders__name', '「显示全部实例」那一行的实例名'],
+    ['allfolders__path', '「显示全部实例」那一行的两条路径'],
+    ['launcheradd__path', '「添加启动器」候选那一行的根路径'],
+  ];
+  for (const [selector, why] of longTextRules) {
+    const rule = withoutCssComments(stylesCode).match(
+      new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
+    );
+    assert.ok(
+      rule,
+      `52e ★★ \`.${selector}\` 在 \`apps/web/src/styles.css\` 里**有规则** —— ${why}；` +
+        '没有规则 = 那 200 个字符照旧把相邻列挤走（本仓没有 CSS 门禁，这一条是唯一的守）',
+    );
+    assert.match(
+      rule[1],
+      /overflow:\s*hidden/,
+      `52e ★★★ \`.${selector}\` 那条规则里有 \`overflow: hidden\`（缺了它 \`text-overflow\` 什么都不做）`,
+    );
+    assert.match(
+      rule[1],
+      /text-overflow:\s*ellipsis/,
+      `52e ★★★ \`.${selector}\` 那条规则里有 \`text-overflow: ellipsis\`（缺了它文字被硬切、看不出"还有"）`,
+    );
+    assert.match(
+      rule[1],
+      /white-space:\s*nowrap/,
+      `52e ★★★ \`.${selector}\` 那条规则里有 \`white-space: nowrap\`（缺了它长文本**照旧换行** —— ` +
+        '而"换行把相邻列挤走"正是 A21 点名要治的那一件事）',
+    );
+    /*
+     * ★ 反面：这一族**不许**再靠"断行"来兜底（`word-break: break-all` / `overflow-wrap: anywhere`）。
+     *   ⚠️ 这是 52e 的**第二条腿**，而它真的咬得住：`.allfolders__path` 原来是
+     *   `word-break: break-all`（"可断行"那一族），T10 把它改成单行省略 ——
+     *   两样同时留着的话，`white-space: nowrap` 赢（它们不冲突），但下一个人把 nowrap 挪走时
+     *   `break-all` 会**静默接住**（换行而不是省略，而且没有任何信号）。
+     */
+    assert.doesNotMatch(
+      rule[1],
+      /word-break:\s*break-all|overflow-wrap:\s*anywhere/,
+      `52e ★ 反面：\`.${selector}\` 那条规则里**不许**再写着断行那一族` +
+        '（`word-break: break-all` / `overflow-wrap: anywhere`）—— 单行省略与"允许断行"是两件事，' +
+        '两样都在时"谁赢"取决于哪一条被下一个人挪走',
+    );
+  }
+  /*
+   * ★★ 那两格是 **flex 项** ⇒ 还必须有 `min-width: 0`。
+   *    现场：flex 项的自动最小尺寸是 `min-content`（**整个最长单词的宽度**）——
+   *    `overflow: hidden` 与 `text-overflow` 都拦不住它：格子会先被那个 200 字符的名字撑开，
+   *    省略号根本没机会出现，而被挤走的正是右边那一列（A21 说的"挤压相邻列"）。
+   *    ⚠️ 这条**不是**可有可无的第二份：52e 那三条**全在**而缺 `min-width: 0` 时，
+   *    屏幕上照样是"名字把按钮推走"（三条判据全绿）。
+   */
+  for (const [selector, why] of [
+    ['launcherinst__name', '它在 `.launcherinst` 那个 flex 行里'],
+    ['allfolders__name', '它在 `.allfolders__row` 那个 flex 行里'],
+    ['allfolders__path', '同上，两条路径都在那一行里'],
+    ['launcheradd__path', '它在 `.launcheradd__row` 那个 flex 行里'],
+  ] as const) {
+    const rule = withoutCssComments(stylesCode).match(
+      new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
+    );
+    assert.match(
+      rule?.[1] ?? '',
+      /min-width:\s*0/,
+      `52e ★★ \`.${selector}\` 那条规则里有 \`min-width: 0\`（${why}：flex 项的自动最小尺寸是 ` +
+        '`min-content` ⇒ 不给这一条，那 200 个字符会先把格子撑开，省略号没机会出现）',
+    );
+  }
+  /*
+   * ★★ 窄窗口 + 列宽稳定那一条：**徽章与按钮那一列不许被文本推走**。
+   *    判据是"那一行是**单行**的（`flex-wrap: nowrap`）、而**滚动**落在它外面"
+   *    —— 与 §9 那条"横向滚动优先于挤压 / 换行"逐字对应。
+   *    ⚠️ 这两处是**新加的容器**（T7 / T8 建的组件今天一条规则都没有）：下面 52f 那一条
+   *    接着量"这四个类名一条规则都没有"这个事实本身。
+   */
+  for (const [selector, why] of [
+    ['launcherinst', '一个实例那一行（名字 + 版本 + 两个路径框 + 保存 + 勾选 + 待确认）'],
+    [
+      'allfolders__row',
+      '「显示全部实例」的一行（类型 + 名字 + 版本 + 两条路径 + 扫描态 + 两颗按钮）',
+    ],
+  ] as const) {
+    const rule = withoutCssComments(stylesCode).match(
+      new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
+    );
+    assert.ok(rule, `52e ★ \`.${selector}\` 有规则 —— ${why}`);
+    assert.match(
+      rule[1],
+      /flex-wrap:\s*nowrap/,
+      `52e ★★ \`.${selector}\` **不许换行**（\`flex-wrap: nowrap\`）—— 换行 = 相邻列错位（A21）`,
+    );
+  }
+  assert.ok(
+    /\.launcherinst\b[^{]*\{[^}]*overflow-x:\s*auto/.test(withoutCssComments(stylesCode)),
+    '52e ★★ 窄窗口下**横向滚动优先**：`overflow-x: auto` 落在 `.launcherinst` 那一行上 —— ' +
+      '而不是让那七样挤成一团或换行（spec §9 的最后一条）',
+  );
+  ok(
+    '52e ★★★ 四条长文本规则三样同在（overflow: hidden / text-overflow: ellipsis / ' +
+      'white-space: nowrap）+ `min-width: 0`；两行容器 `flex-wrap: nowrap` + `overflow-x: auto`',
+  );
+
+  /* ---- 52f：★★ 四个新类名族在 `styles.css` 里**一条规则都没有**这个事实（T8 的欠账） ---- */
+  /*
+   * ⚠️★ 现场（这一轮开工时现读 `.cache/knife/t10/csscoverage.mjs` 的读数）：
+   *    T7 建的 `InstancePicker` + T8 建的 `LauncherBindingPanel` 一共用了 **36** 个类名，
+   *    而 `styles.css` 里**一条规则都没有** —— 其中就包括这四族。
+   *    ⇒ 屏幕上那一页落回**浏览器默认样式**：`<h3>` 是默认标题、`<section>` 没有间距、
+   *    实例行是一个竖着的默认块流（"徽章与按钮那一列"根本不存在，所以也谈不上对齐）。
+   *    这一条钉的是"**这四族必须各有规则**"（内容由上面几条与下面这条抽查）。
+   */
+  for (const [selector, why] of [
+    ['launcherbinding', '「启动器绑定」那一整格（T8 的容器）'],
+    ['launcherblock', '一个绑定的启动器那一块（类型 + 根 + 两个按钮 + 它名下的实例）'],
+    ['launcherinst', '一个实例那一行'],
+    ['launcheradd', '底部的「添加启动器」那一节（候选 + 手动）'],
+  ] as const) {
+    assert.ok(
+      withoutCssComments(stylesCode).match(
+        new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{`),
+      ),
+      `52f ★★ \`.${selector}\` 在 \`apps/web/src/styles.css\` 里有规则 —— ${why}；` +
+        'T8 建了 616 行组件而样式一条都没有（那 36 个类名是**同一个**缺口，' +
+        '读数在 `.cache/knife/t10/csscoverage.mjs`，它不是产物、是当时的仪器）',
+    );
+  }
+  /*
+   * ★ 抽查那四族里**最像"标题"**的那两个：它们必须与这一页别的标题同一种字体
+   *   （`.folderrow__title` / `.toolspanel__title` 都是像素字体 —— 同一页上
+   *   "这一段是什么"的字长着两个样子是最容易看出来的那类不一致）。
+   */
+  for (const [selector, why] of [
+    ['launcherblock__title', '一个启动器块的小标题'],
+    ['launcheradd__title', '「添加启动器」那一节的小标题'],
+  ] as const) {
+    const rule = withoutCssComments(stylesCode).match(
+      new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
+    );
+    assert.match(
+      rule?.[1] ?? '',
+      /font-family:\s*var\(--font-pixel\)/,
+      `52f ★ \`.${selector}\` 用像素字体（${why}）—— 与这一页每一个兄弟标题同一套语言`,
+    );
+  }
+  ok(
+    '52f ★★ 四个新类名族（launcherbinding / launcherblock / launcherinst / launcheradd）' +
+      '各有规则，而且两个小标题与兄弟标题同一种字体',
+  );
+
+  /* ---- 52f-2：★★ **那 36 个类名**逐条对账（不是只抽查四族） ---- */
+  /*
+   * ⚠️★★ **这一条能红，而且开工时就是红的**：T7/T8 建的两个组件一共用了 **36** 个类名，
+   *    而 `styles.css` 里**一条规则都没有** ⇒ 屏幕上那一页落回**浏览器默认样式**。
+   *    ⚠️ 这个 36 是**当时的现读数**（`.cache/knife/t10/csscoverage.mjs`，那把仪器不在
+   *    版本控制里）—— 断言本身量的是**当下**这一份源码，不依赖那个数。
+   * ⚠️ 判据是"**这个类名在 `styles.css` 里有一条规则**"（先剥注释），不是"字符串在文件里"：
+   *    后者对本脚本里那些**逐字写着类名**的注释恒绿（§5.82 那个假绿）。
+   * ⚠️★ 下面的排除表**只放"规则住在别处"的那几条**（全局按钮 / 徽章基础类 / 跨页共用），
+   *    而且有一条"排除表不许烂掉"的探针钉着它 —— 死条目会静默挡掉一个新的缺失类名。
+   * ⚠️★ **过期的排除条目**（第一版写进去、被上面那条探针抓出来的四条，逐条记在这里，
+   *    免得下一个人再往里塞）：`px`（组件里根本没用，那是 `.px` 工具类）、
+   *    `mcsr-btn` / `mcsr-btn--sm`（这两个组件用的是 `.cta` / `.ghostbtn`）、
+   *    `badge--dim`（今天没有组件用它）。
+   * ⚠️ 代价（认）：这条扫描**够不到**"类名拼错了但两边都错"（那要靠人看一眼），
+   *    也够不到"规则在、但属性写错了"（属性由 52e 那四条 + 52f 的字体抽查守）。
+   */
+  const D1_COMPONENTS = [
+    'InstancePicker.tsx',
+    'LauncherBindingPanel.tsx',
+    'AllFoldersView.tsx',
+    'VersionFolderList.tsx',
+    'ModPacksSection.tsx',
+  ];
+  /** 有意排除的那些：**规则住在别处**的全局类（见上面那一段）。⚠️ 不许塞死条目。 */
+  const SHARED_CLASSES = new Set([
+    'badge',
+    'badge--problem',
+    'cta',
+    'ghostbtn',
+    'state',
+    'state--empty',
+    'folderlist',
+    'filetable__err',
+    'filters__select',
+  ]);
+  const usedClasses = new Map<string, string[]>();
+  for (const file of D1_COMPONENTS) {
+    const source = withoutComments(
+      readFileSync(new URL(`../src/components/${file}`, import.meta.url), 'utf8'),
+    );
+    for (const m of source.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
+      for (const cls of (m[1] ?? m[2] ?? '').split(/\s+/)) {
+        if (!/^[A-Za-z][\w-]*$/.test(cls)) continue;
+        usedClasses.set(cls, [...(usedClasses.get(cls) ?? []), file]);
+      }
+    }
+  }
+  const cssNoComments = withoutCssComments(stylesCode);
+  const definedClasses = new Set(
+    [...cssNoComments.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]),
+  );
+  const missingClasses = [...usedClasses.keys()]
+    .filter((cls) => !SHARED_CLASSES.has(cls) && !definedClasses.has(cls))
+    .sort();
+  assert.deepEqual(
+    missingClasses,
+    [],
+    `52f-2 ★★★ 这五个组件里用到的**每一个**类名在 \`apps/web/src/styles.css\` 里都有规则 —— ` +
+      `现读用了 ${String(usedClasses.size)} 个，缺规则的这些必须逐条补上（读数：${JSON.stringify(missingClasses)}）`,
+  );
+  /*
+   * ★ 排除表**不许烂掉**：表里每一个类名都必须真的被这五个组件用到 —— 否则它是死条目，
+   *   而"死条目"的代价是它悄悄把一个新的缺失类名挡在门外（那种假绿没有任何信号）。
+   */
+  const deadExclusions = [...SHARED_CLASSES].filter((cls) => !usedClasses.has(cls));
+  assert.deepEqual(
+    deadExclusions,
+    [],
+    `52f-2 探针：排除表里每个类名都**真的**被这五个组件用到了（死条目会静默挡掉新的缺失类名）—— ` +
+      `现读过期的：${JSON.stringify(deadExclusions)}`,
+  );
+  ok(
+    `52f-2 ★★★ ${String(usedClasses.size)} 个类名逐条对账：五个 D1 组件用到的每一个都在 ` +
+      `\`styles.css\` 里有规则（T7/T8 那 36 个缺口的全量判据；排除表 ${String(SHARED_CLASSES.size)} 条各有理由、且无死条目）`,
+  );
+
+  /* ---- 52g：★ mod 名那一格（第三段那张表）：长文件名不许把版本那一列推走 ---- */
+  /*
+   * ⚠️ 这一格**不在** A21 那句"实例名 / 路径"的字面里，但它在同一条判据里（spec §9：
+   *    "mod 名、包名"）。它是**磁盘上的文件名**，而文件名可以任意长。
+   * ⚠️★ 它的类名是 `.dlprogress__file`（T9 那一族）**之外**的另一格：`.jarrow__file`
+   *    （第一/第二部分的 jar 表）与第三段那张表里的文件名。
+   *    今天这三处各写着 `word-break: break-all`（"可断行"）—— **今天不动它们**：
+   *    spec A21 的字面判据由 52e 那四条守着，而这三处**没有超长夹具**
+   *    （动它们就是"改了没人守的东西"，见报告"不确定的地方"那一条）。
+   */
+  assert.ok(
+    withoutCssComments(stylesCode).match(/\.jarlist\s*\{[^}]*overflow-x:\s*auto/),
+    '52g ★ jar 表那一族**照旧**横向滚动（`overflow-x: auto` 在 `.jarlist` 上）—— ' +
+      '这一条是**回归哨**：T10 改的是显示长文本那几格，不许顺手把表的滚动改掉',
+  );
+  assert.ok(
+    withoutCssComments(stylesCode).match(/\.folderrow__path\s*\{[^}]*min-width:\s*180px/),
+    '52g ★ 那"文件夹路径"一族**照旧**是它的老形状（`min-width: 180px` + 可断行）—— ' +
+      'spec §9 点名说这一族"今天吃过一次"，而 T10 的处置是**新加**省略族、' +
+      '**不动**这一族（它由 ㉞/㊱ 那两族判据守着，改它风险大于收益）',
+  );
+  ok('52g ★ 回归哨：jar 表那一族与"文件夹路径"那一族的老形状一个字没动');
+}
+
+const expectedGroups = LANG === 'en' ? 56 : 55;
 assert.equal(
   pass,
   expectedGroups,

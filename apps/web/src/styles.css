@@ -10016,21 +10016,41 @@ html[data-theme='light'] {
   padding: 0;
 }
 
+/* 一行（启动器类型 + 实例名 + 版本 + 两条路径 + 扫描状态 + 两颗按钮）。
+   ★★ 2026-10-12（D1 的 **T10**）：`flex-wrap: wrap` 改成 `nowrap` + `overflow-x: auto`
+   —— spec §9 的最后一条（"窄窗口下：不串行、不重叠、**横向滚动优先于挤压**"）。
+   ⚠️ 换行那一版把这一行的七样摞成两三排，"版本/扫描状态/按钮"那一列在不同的行里
+   落在不同的横坐标上（A21 的"列宽稳定"就是不成立）；改成单行 + 滚动之后
+   右边那一组读数的位置**只由左边那些格子的固定宽度决定**。
+   ⚠️ 代价（认）：窗口窄到装不下这一行时，用户要**横向滚**才看得到最右边那颗按钮 ——
+   这正是 §9 选的那一支（而不是"挤压或换行"）。 */
 .allfolders__row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px 10px;
   padding: 4px 0;
+  overflow-x: auto;
 }
 
-/* 路径（同上：磁盘内容、等宽、可断行）。 */
+/* 路径（磁盘内容、等宽）。
+   ⚠️★ 2026-10-12（D1 的 **T10**）：**原地改**成单行省略 —— 这一格原来是
+   `word-break: break-all` + `min-width: 180px`（"可断行"那一族），而 spec §9 点名说
+   "文件夹路径那一族已经吃过一次"（长路径换行 ⇒ 把相邻列挤走 / 行长参差）。
+   ⚠️ 为什么是**改这一条**而不是在文件末尾加一条覆盖：同一格写两条规则正是本仓反复
+   点名的坏味道（见上面 `.tagchip` 那一段"这里原来有两份定义"）。
+   ⚠️ `min-width: 0` 是**必须的**：它在 `.allfolders__row` 那个 flex 行里，而 flex 项的
+   自动最小尺寸是 `min-content`（= 整条路径最长的那个不可断处）⇒ 不给它这一条，
+   路径会先把格子撑开，`text-overflow` 根本没机会出现（相邻列照样被挤走）。 */
 .allfolders__path {
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--fg);
-  word-break: break-all;
-  min-width: 180px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 版本徽章。⚠️ 它只是一个普通 `.badge`（颜色不承载语义：版本对不对是看数字的），
@@ -10125,6 +10145,424 @@ html[data-theme='light'] {
   color: var(--fg-faint);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* ==================================================================
+   D1 · T10：**布局简洁规整 + 长文本单行省略 / 悬浮看全 / 列宽稳定**（spec A21 / §9）
+
+   ★★ 这一节补的是**一个真实的缺口**（T8 的组件建了 616 行，样式一条都没有）：
+      现读 `.cache/knife/t10/csscoverage.mjs`（当时的仪器，不是产物）——
+      T7 的 `InstancePicker` 与 T8 的 `LauncherBindingPanel` 一共用了 **36** 个类名，
+      而 `styles.css` 里**一条规则都没有** ⇒ 屏幕上那一页落回浏览器默认样式：
+      `<h3>` 是默认标题、「添加启动器」那一节与上面的块之间没有间距、
+      实例行是竖着的默认块流（"徽章与按钮那一列"根本不存在）。
+      本节的四个族就是那 36 个里最外层的那四个（另外那些按同一条纪律逐个登记）。
+
+   ------------------------------------------------------------------
+   长文本：**一条纪律、一处写法**
+   ------------------------------------------------------------------
+   spec §9：**长文本一律单行省略 + 悬浮看全**（实例名 / 路径 / mod 名 / 包名 / loader 串）；
+   **不许**因为文本过长自动换行而把相邻列挤走。
+   ⇒ 省略族**只有一种写法**（三样同在那一条规则里）：
+
+       min-width: 0;              ← 它在 flex 行里（flex 项的自动最小尺寸是 min-content，
+                                    不给这一条，格子会先被内容撑开、省略号没机会出现）
+       overflow: hidden;          ← 缺它 `text-overflow` 什么都不做（规范：只在溢出且被裁剪时生效）
+       text-overflow: ellipsis;   ← 缺它文字被硬切、看不出"这里还有"
+       white-space: nowrap;       ← 缺它长文本**照旧换行**（= A21 点名要治的那一件事）
+
+   ⚠️ **`title` 是"悬浮看全"的唯一实现**（brief 的那一句）：省略之后用户唯一能看到全文的
+   入口就是它。⇒ 每一条省略规则对应的那一格上**必须**有 `title`，由渲染自检 52c 逐格钉住
+   （`title` 漏掉 = 用户根本看不到全路径 —— 比换行更坏）。
+
+   ⚠️★ 这一节**没有**自动化覆盖（本仓没有 CSS 门禁）：唯一的守是渲染自检 **52e / 52f**
+   那两条**读本文件**的断言（它们先剥注释再找规则，见 `foldersrender.tsx` 那一段）。
+   ⇒ 改这里的任何一个属性之前，先看一眼那两条断言会不会红；它们红了**不是**门禁坏了。
+
+   ------------------------------------------------------------------
+   窄窗口：**横向滚动优先于挤压 / 换行**（spec §9 的最后一条）
+   ------------------------------------------------------------------
+   · `overflow-x: auto` 落在**行容器**上（`.launcherinst` / `.allfolders__row`）；
+   · 行本身 `flex-wrap: nowrap`（换行 = 相邻列错位）；
+   · 徽章与按钮那一列 `flex: 0 0 auto`（**不许**被文本推走）。
+   ================================================================== */
+
+/* 「启动器绑定」那一整格（T8 的容器）。⚠️ 它是这一页的一个 tab 面板，
+   与兄弟面板（mod 下载 / 工具下载）同一条：块与块之间的间距由它自己给。 */
+.launcherbinding {
+  display: block;
+}
+
+/* 那条「正在读取…」（A14：枚举是异步的）。⚠️ 它排在两种空态**之前**（判据顺序是承重的：
+   还在读的时候宣称"一个实例都没勾"是在编结论，见 `LauncherBindingPanel` 的文件头）。 */
+.launcherbinding__reading {
+  color: var(--fg-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 8px 0;
+}
+
+/* 一个绑定的启动器那一块（类型 + 根 + 改根 / 移除 + 它名下的实例）。
+   ⚠️ 视觉照 `.folderbox`：它们是同一页上的同一种东西（一列"块"）。 */
+.launcherblock {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin: 0 0 12px;
+  padding: 12px;
+}
+
+/* 那一块的标题（启动器类型名）。⚠️ **像素字体**：这一页每一个兄弟标题都是它
+   （`.folderrow__title` / `.toolspanel__title` / 面板头），
+   "这一段是什么"的字长着两个样子是最容易看出来的那类不一致。 */
+.launcherblock__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0 0 8px;
+}
+
+/* 根路径那一组（`<label>`：名字 + 输入框）。⚠️ `flex: 1 1 320px` + `min-width: 0`：
+   输入框吃掉这一行剩下的宽度，而 `min-width: 0` 兜的是"根路径很长时不许把按钮推走"
+   （与 `.playlist` 那一处同一条）。 */
+.launcherblock__root {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 320px;
+  min-width: 0;
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-faint);
+}
+
+/* 输入框（磁盘上的内容、可编辑）。⚠️ 它**不吃**省略族：输入框里能选中、能横向滚动，
+   而"显示长文本"那一族（`<span>`）才需要 `text-overflow`。
+   ⚠️ 它与这一页别的文本输入框同一条外观（`.filters__search input` 那一族）。 */
+.launcherblock__input,
+.launcherinst__input,
+.launcheradd__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 6px 10px;
+  outline: none;
+}
+
+.launcherblock__input:focus,
+.launcherinst__input:focus,
+.launcheradd__input:focus {
+  border-color: var(--grass);
+  background: var(--surface-2);
+  box-shadow: var(--sh-glow);
+}
+
+/* 这一块**读不动**时的那一格（A14：原话 + 重试）。
+   ⚠️ 原话由主进程给（带路径），这里只负责让它看得见。 */
+.launcherblock__error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+/* "这一块一个实例都没有"（A8 的第二支空态在**块**这一级的对应物）。
+   ⚠️ 与"读不动"是两句话：`binding.error !== null` 时那一档一个字都不画。 */
+.launcherblock__none {
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 8px 0 0;
+}
+
+.launcherblock__list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+/* 一个实例那一行（A7 的六样 + 待确认那一对）。
+   ★★ 这一行是 A21 的**主战场**：
+     · `flex-wrap: nowrap` + `overflow-x: auto` ⇒ 窄窗口下**横向滚动**，不换行、不挤压；
+     · 名字那一格 `flex: 0 1 220px`（**可缩**）⇒ 它有稳定的起始宽度，长名字只影响它自己；
+     · 两个路径框 `flex: 0 1 320px`（同上）；
+     · 版本 / 勾选 / 待确认标 / 按钮一律 `flex: 0 0 auto` ⇒ **徽章与按钮那一列不许被推走**。 */
+.launcherinst {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  overflow-x: auto;
+}
+
+/* ★★ 实例名（磁盘上的内容、原样印）。**省略族 + `title`**。
+   ⚠️ `flex: 0 1 220px` 而不是 `flex: 1`：给它一个**可预期的**起始宽度
+   （A21 的"列宽稳定"：同一屏里那些格子不该随文本长短跳来跳去）。 */
+.launcherinst__name {
+  flex: 0 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+
+/* 版本那一格（A7 的**显示**：改版本的入口在实例层文件夹行那个下拉上）。 */
+.launcherinst__version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* 一组"名字 + 控件"（loader / `mods` / `saves` 三个框各自一组）。 */
+.launcherinst__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 320px;
+  min-width: 0;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* 勾选框那一组（A7 的第六样 + A9 的入口）。
+   ⚠️ `flex: 0 0 auto`：它是"徽章与按钮那一列"的一部分，**不许**被路径推走。 */
+.launcherinst__track {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* 底部的「添加启动器」那一节（候选 + 手动）。
+   ⚠️ 它永远在（spec §6：探测只扫常见位置，手动指定根是"一个都没命中"时唯一的出路）。 */
+.launcheradd {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 12px;
+  margin: 16px 0 0;
+}
+
+.launcheradd__title {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg);
+  margin: 0 0 8px;
+}
+
+/* "探测到一个候选都没有"那句。 */
+.launcheradd__none {
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 0 0 8px;
+}
+
+.launcheradd__list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+/* 一条候选（类型 + 根 + 一颗「添加」）。
+   ⚠️ 与 `.launcherinst` 同一条：`nowrap` + 省略 + 按钮 `flex: 0 0 auto`。 */
+.launcheradd__row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.launcheradd__kind {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* ★★ 候选的根路径（磁盘上的内容）。**省略族 + `title`**（渲染自检 52c 钉着那个 `title`）。 */
+.launcheradd__path {
+  flex: 0 1 420px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+/* 手动添加那一排（选类型 + 填路径 + 一颗「添加」）。
+   ⚠️ 它是"最后的出路"⇒ 宽度不够时**换行**（这一处要的是"永远够得着"，
+   而不是"永远不换行"：`nowrap` 会让那颗按钮被推到滚动区外面）。 */
+.launcheradd__manual {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.launcheradd__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 260px;
+  min-width: 0;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* ==================================================================
+   「版本 → 实例」那一层（T7 的 `InstancePicker`）与「显示全部实例」那一栏里
+   剩下的那几个类名 —— 同一条纪律：组件里出现的类名在这里必须有规则。
+   ⚠️ `AllFoldersView` 是 T3 建的、T7 换了数据源，它的 `.allfolders__path` 在**上面**那一节
+   （原地改成了单行省略）；这里补的是它**新加**的三格（类型 / 名字 / 扫描状态）。
+   ================================================================== */
+
+.instancepicker {
+  display: block;
+}
+
+.instancepicker__hint {
+  color: var(--fg-muted);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  margin: 0 0 10px;
+}
+
+.instancepicker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 一张实例卡（可点进"版本 → 实例"那一层）。⚠️ 视觉照 `.folderbox` 那一族的"块"。 */
+.instancepicker__card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+/* ★★ 实例名（磁盘上的内容）。**省略族 + `title`**。
+   ⚠️ `flex: 1 1 200px` + `min-width: 0`：这一行是 `flex-wrap: wrap` 的
+   （卡片上那几样在窄屏上换行是**可以的** —— 卡片不是"列"，没有相邻列会被挤走），
+   但名字**自己**仍然必须单行省略（A21 的字面）。 */
+.instancepicker__name {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+
+.instancepicker__kind {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* ★★ 那一格路径（`title` 由组件给）。同上：省略族。 */
+.instancepicker__path {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+/* ★ 「显示全部实例」每一行新加的三格（T7 换数据源时加的）。 */
+.allfolders__kind {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* ★★ 实例名 —— 与 `.allfolders__path` 同一条：省略族 + `title`（`AllFoldersView` 给的）。 */
+.allfolders__name {
+  flex: 0 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+}
+
+/* 扫描状态那一格（三档之一：已扫描 / 还没有读数 / 未追踪）。
+   ⚠️ `flex: 0 0 auto`：它是这一行右边那一组读数之一，不许被路径推走。 */
+.allfolders__scan {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  white-space: nowrap;
+}
+
+/* ==================================================================
+   「整合包」那一节（B2 的 `ModPacksSection`）的容器与标题
+   ------------------------------------------------------------------
+   ⚠️★ 现场（T10 开工时现读 `.cache/knife/t10/csscoverage.mjs`）：`.moddownload__packs`
+   是那一节**最外层那个 `<section>` 的类名**，而整份 `styles.css` 里**一条规则都没有**
+   —— 于是它里面那个 `<h3>`（`files.packsTitle`）落回**浏览器默认的 h3**，
+   而这一页每一个兄弟标题（`.modlist__title` / `.folderrow__title` / `.toolspanel__title`）
+   都是像素字体 + 弱化色 ⇒ 同一页上"这一段是什么"的字长着两个样子
+   （CT-12 在第三段那两格上记过**逐字相同**的一次）。
+   ⚠️ 数值照 `.modlist__title`（它们是同一页上的同一种标题）。
+   ⚠️ 为什么写后代选择器 `h3` 而不是给它加类名：**不改组件**（spec §12"顺手重构
+   与本次目标无关的代码"是非目标），而这一节里只有一个 `<h3>`（那一行就是它的标题）。
+   ================================================================== */
+.moddownload__packs {
+  margin: 24px 0 0;
+}
+
+.moddownload__packs > h3 {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-px-sm);
+  color: var(--fg-muted);
+  margin: 0 0 8px;
 }
 
 
