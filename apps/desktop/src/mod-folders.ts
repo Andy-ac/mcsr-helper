@@ -13,7 +13,7 @@
  *     ⚠️★ T6 删掉了第一部分那三条 —— `bindCatalogRow` / `unbindCatalogRow` /
  *     `updateCatalogRow`，契约 17 → 14，裁决 B；⚠️ C 的 T3 加 `onProgress`（15）、
  *     T4 加 `cancelDownload`（16）、**B2 的 T4** 加 `downloadPack`（17）—— 后三条**都没有**加 handler 之外的注册面；
- *     ★★ **D1 的 T4** 加那七条（`probeLaunchers` / `listInstances` / `setInstancePaths` /
+ *     ★★ **D1 的 T4** 加那七条（`probeLaunchers` / `listLauncherInstances` / `setInstancePaths` /
  *     `addLauncher` / `removeLauncher` / `setInstanceTracked` / `confirmInstance`）⇒
  *     契约 17 → **24**、handler 15 → **22**：**七条全是 handler**（这一组里只推不 handle 的
  *     仍然只有 `onStatus` / `onProgress` 那两条，所以"通道数 − 2 = handler 数"照旧成立））；
@@ -2650,7 +2650,7 @@ async function enumerateAll(bindings: readonly unknown[]): Promise<Enumeration> 
  *
  * ⚠️★ **它是唯一写 `enumeration` 的地方**（`refreshInstances()` 的调用点：模块初始化那一趟
  *    `startUp`、第一次 `getState`、`addLauncher` / `removeLauncher`、`confirmInstance` 之后，
- *    以及 `listInstances` 那条通道本身 = "用户点刷新"）。
+ *    以及 `listLauncherInstances` 那条通道本身 = "用户点刷新"）。
  *    ⚠️ **勾选 / 取消勾选不走这里**：勾选只动我们自己的状态（那两格），扫启动器目录是白费 I/O。
  * ⚠️ 串行：两条通道同时来（页面连点刷新 / 与 `addLauncher` 撞上）不会并发读同一批目录，
  *    也不会出现"谁后到谁说了算"的两份缓存。
@@ -3072,7 +3072,7 @@ function registerIpc(): void {
      *    而 `folders` 是从它派生的）—— 少了这一句，页面第一次拿到的那份状态里一个派生的
      *    folder 都没有（要等下一次推送才出现，而"下一次推送"可能要等到用户去点别的按钮）。
      * ⚠️ 只在**还没有跑过任何一趟**时做：之后各次不再重枚举（缓存现成；用户点「刷新」
-     *    走 `listInstances` 那条通道）。
+     *    走 `listLauncherInstances` 那条通道）。
      */
     if (enumeration === null) await refreshInstances();
     // 文件夹清单由这一侧给（`sortedFolders` 属于状态组装，见 `ensureScans` 的注释）
@@ -3161,7 +3161,7 @@ function registerIpc(): void {
    * `void`：状态由这些函数里的 `rebuild()` 推给页面（`onStatus`），页面读那一份
    * （状态只有一处真相，不必再从返回值里拿一次）。
    * ⚠️★ 只读纪律（A13）：这七条**一条都不写**启动器或实例的文件 ——
-   *    `probeLaunchers` / `listInstances` 只读盘，其余五条只写我们**自己那份**状态文件。
+   *    `probeLaunchers` / `listLauncherInstances` 只读盘，其余五条只写我们**自己那份**状态文件。
    */
   ipcMain.handle(MOD_FOLDERS_CHANNELS.probeLaunchers, () => probeLaunchersOnDisk());
   ipcMain.handle(MOD_FOLDERS_CHANNELS.listLauncherInstances, () => refreshInstances());

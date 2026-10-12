@@ -4800,6 +4800,13 @@ export const en: TranslationSchema = {
      * ⚠️ It does **not** say "everything above keeps working": this page is all
      *    there is today (tab skeleton + two modules), and when the client falls
      *    short **no tabs are drawn at all** (spec §9.12) - the sentence is the page.
+     * ⚠️★★ **Known debt (2026-10-12, wide review M-w4): that `0.2.0` is hard-coded**
+     *    and has **no coupling** to `apps/desktop/package.json`'s `version`
+     *    (which still reads `0.1.1`; **T11** bumps it at release time).
+     *    ⚠️ The criterion ("the two must match") is **not** added this round on purpose:
+     *      it would be red on a **correct** tree today (0.2.0 vs 0.1.1), and a criterion
+     *      that is bound to be red is not a criterion. It belongs to the version bump.
+     *    ⇒ Recorded here and in `.cache/d1-pending-section.md` (folded into `docs/pending.md`).
      */
     partTwoUnavailable:
       'This section needs desktop 0.2.0 (this client lacks the capabilities "Resource downloads" uses: binding launchers and instances).',
@@ -5142,6 +5149,12 @@ export const en: TranslationSchema = {
     launcherBlockError: 'This launcher cannot be read: {{reason}}',
     /** ★ A14: the retry button (re-enumerate, then re-probe candidates). */
     launcherRetry: 'Retry',
+    /**
+     * ★★ I-w7: the general "refresh the enumeration cache" button at the top of the panel.
+     * ⚠️ A different sentence from `launcherRetry`, but the *same* action: that one says
+     *   "this block cannot be read, try again", this one says "read the instances again".
+     */
+    launcherRefresh: 'Reload instances',
     /** ★★ A9 checkbox label. */
     instanceTrackLabel: 'Track this instance',
     /** ★ Label of the loader field (fabric / forge / quilt - the same word in both languages). */

@@ -341,7 +341,7 @@ export interface DesktopBridge {
      *   · ⚠️ `setInstancePaths` / `setInstanceTracked` / `confirmInstance` 收的是 `key`
      *     （`instance.key`，`<类型>:<相对根的路径>`）—— 它由主进程枚举出来、经 `state.instances`
      *     交给页面，页面**递不进一个自己编的 key**（主进程那一侧按枚举结果校验）。
-     *   · ★ `listInstances()` 是**主动重扫一遍**：界面渲染读的是 `state.instances`（低频状态里
+     *   · ★ `listLauncherInstances()` 是**主动重扫一遍**：界面渲染读的是 `state.instances`（低频状态里
      *     那一格），这条通道只是"用户点了刷新"的路 ⇒ 它返回的与 `state.instances` 是**同一份**
      *     枚举结果（两处各枚举一遍就会漂）。
      * ⚠️★ 只读纪律（spec A13）：这七条里**没有一条**会写启动器或实例的文件
@@ -499,7 +499,7 @@ export function desktopBridge(): DesktopBridge | null {
  *    对齐判据**：少写一条 / 多写一条都当场编译失败。
  * ⚠️ `bindFolder` 这个名字在两组里**各有一条**（新 UI 只调这一条），
  *    为什么允许重名、代价是什么，见 `DesktopBridge.modFolders` 上的那一段。
- * ★★ 2026-10-11（D1 的 T4）：这一组**加了七条** —— `probeLaunchers` / `listInstances` /
+ * ★★ 2026-10-11（D1 的 T4）：这一组**加了七条** —— `probeLaunchers` / `listLauncherInstances` /
  *    `setInstancePaths` / `addLauncher` / `removeLauncher` / `setInstanceTracked` /
  *    `confirmInstance`（启动器绑定与实例，见上面 `DesktopBridge.modFolders` 里那一段）。
  *    14（T6 之后）→ 17（C 的 T3/T4 + B2 的 T4）→ **24**（本轮的 +7）。

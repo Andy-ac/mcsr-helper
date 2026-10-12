@@ -329,9 +329,15 @@ console.log(
  *    ⚠️★ 口径与**数法**：这里说的是**本族**的 handler 数 ——
  *    **数法：契约成员数 − 2 条推送**（`onStatus` / `onProgress`，就是下面那个 `PUSH_CHANNELS`）；
  *    或者数"`main.cjs` 加载之后 `handlers` 里本族通道的条数"（`waitForHandlers()` 用的就是它）。
- *    ⚠️ **不要**拿 `grep "ipcMain.handle(MOD_FOLDERS_CHANNELS\."` 去数：本族有 **5 条注册是跨行写的**
+ *    ⚠️ **不要**拿 `grep "ipcMain.handle(MOD_FOLDERS_CHANNELS\."` 去数：本族有 **7 条注册是跨行写的**
  *    （`ipcMain.handle(` 换行之后才是 `MOD_FOLDERS_CHANNELS.<成员>`）⇒ 朴素 grep 会数出一个
  *    **比真值小**的数，然后下一个人以为注释又漂了。
+ *    ⚠️★ 上面这个 **7** 是 2026-10-12（宽修复轮 / 评审 I-w4）现数改准的（原稿写 **5**，是假话）。
+ *    数法是"**剥掉注释 + 配平括号**"，现读那七行在 `mod-folders.ts` 的
+ *    3094 / 3099 / 3117 / 3127 / 3141 / 3145 / 3175。
+ *    ⚠️★ 同一个数法下：**文件级实注册也是 22 条**（本族全部）——
+ *    `grep` 数出 **23** 的那一版把 `mod-folders.ts:2786` **注释里**那一句
+ *    `ipcMain.handle(..., () => probeLaunchersOnDisk())` 也算进去了（评审的第一版正是被它骗的）。
  *    ⚠️ 也**不是**下面那个 `handle:` 读数 —— 那一个是**整份 `main.cjs`** 里 `ipcMain.handle(`
  *    的出现次数（含别的通道族），两个数**不该相等**（§5.15 那一族：同一个名字两种口径就会有人对不上）。
  * ⚠️ 下面两个读数里的分母**现数**（`MOD_CH_COUNT`）而不是手抄 13/14：
@@ -492,6 +498,34 @@ const electronStub = {
     handle: (channel, fn) => handlers.set(channel, fn),
     on: () => {},
   },
+  /*
+   * ★★ I-w3（2026-10-12，整支宽评审）：**preload 那一侧的仪器**。
+   *
+   * ⚠️★ 现场：`preload.cjs` 的 24 个转发器"各自 invoke 哪一条通道"原来**零判据** ——
+   *    产物那一侧只数"通道串在不在里面"（24/24）。评审把 `probeLaunchers` 接到
+   *    `listLauncherInstances` 的常量上（**交叉接线**）⇒ 重建之后探针全绿、单测 87/87。
+   *    ⇒ 补法不是源码形状判据，而是**把 preload 真的加载起来、把 24 个方法各调一次、
+   *      看它们递给 `ipcRenderer` 的是哪一条通道**（见下面那一节）。
+   * ⚠️ `invoke` / `on` / `send` 三个入口都记（推送那两条走 `on`，其余 22 条走 `invoke`）。
+   */
+  contextBridge: {
+    exposeInMainWorld: (key, api) => {
+      exposedBridges.set(key, api);
+    },
+  },
+  ipcRenderer: {
+    invoke: (channel, ...args) => {
+      preloadIpc.push({ kind: 'invoke', channel, args });
+      return Promise.resolve(null);
+    },
+    on: (channel) => {
+      preloadIpc.push({ kind: 'on', channel });
+    },
+    off: () => {},
+    send: (channel) => {
+      preloadIpc.push({ kind: 'send', channel });
+    },
+  },
   dialog: {
     showOpenDialog: async (a, b) => {
       dialogCalls.push({ kind: 'open', options: b ?? a });
@@ -525,6 +559,14 @@ const electronStub = {
 
 /** `app.getPath('userData')` 要读的那个目录（每个相位一份临时目录）。 */
 let currentUserDataDir = '';
+
+/**
+ * ★★ I-w3：`contextBridge.exposeInMainWorld` 交出来的桥对象（`preload.cjs` 那一侧）。
+ * ⚠️ 它由 `electronStub.contextBridge` 填、只有在 `require(PRELOAD_CJS)` 之后才有东西。
+ */
+const exposedBridges = new Map();
+/** preload 这一趟递给 `ipcRenderer` 的**每一次**调用（原样记：`{kind, channel, args}`）。 */
+const preloadIpc = [];
 
 // ---------------------------------------------------------------------------
 // 夹具：真 zip 的 jar + 一份 v1 状态文件
@@ -1279,6 +1321,19 @@ function loadArtifact() {
  */
 const PUSH_CHANNELS = [MOD_CH.onStatus, MOD_CH.onProgress].filter((name) => name !== undefined);
 
+/**
+ * ★★ I-w4（2026-10-12，宽修复轮 / 宽评审）：**invoke 通道的条数是现算的**，不是手抄的。
+ *
+ * ⚠️★ 现场：这一份输出里原来有**三处手抄的数字**（两处"（前置）这一相位也把 **13** 条
+ *    invoke 通道注册起来了"、一处 `bail('**十四条** invoke 通道没注册上…')`），
+ *    而同一个文件里另一处写着 **22**（`:1282` 那一族）⇒ 那一句在**真失败**时
+ *    会对着使用者的脸说一句假话（§5.15 / §5.32 ④ 那一族）。
+ *    ⇒ 三处一律改成这个表达式（契约成员数 − 推送条数）：通道表以后加删，读数自动跟上。
+ *    ⚠️★ 它必须在**两个相位**里都可用 ⇒ 定义在模块层（`PUSH_CHANNELS` 的紧后面，
+ *    因为它用了它）。想改这三处的人：**再加一处手抄数就是这个缺陷又回来了**。
+ */
+const INVOKE_CHANNEL_COUNT = MOD_CH_COUNT - PUSH_CHANNELS.length;
+
 /** 等 **22** 条 invoke 通道注册好（两条推送不算）。 */
 async function waitForHandlers() {
   const expected = Object.values(MOD_CH).filter((name) => !PUSH_CHANNELS.includes(name));
@@ -1447,6 +1502,92 @@ async function mainPhase() {
         ? `handlers 共 ${String(handlers.size)} 条`
         : `缺 ${String(missing.length)} 条：${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ' …' : ''}；main.cjs 里命中 ${String(mainCounts.present)}/${String(MOD_CH_COUNT)}（preload.cjs ${String(preloadCounts ? preloadCounts.present : '?')}/${String(MOD_CH_COUNT)}）`,
     );
+  });
+
+  // =========================================================================
+  /*
+   * ★★ I-w3（2026-10-12，整支宽评审）：**preload 的逐条接线** —— 24 个转发器各自
+   *    到底把哪一条通道递给了 `ipcRenderer`。
+   *
+   * ⚠️★ 为什么必须补（评审的现场读数）：这一条原来是**零判据**。产物那一侧只数
+   *    "通道串在不在产物里"（`mainCounts` / `preloadCounts`，现读 24/24），而
+   *    "**哪个方法走哪条通道**"没有任何人看过 ⇒ 评审把 `probeLaunchers` 的转发接到
+   *    `listLauncherInstances` 的常量上（**交叉接线**），重建之后探针 `EXIT 0 / ✗ 0`、
+   *    两个 D1 测试文件 `87/87` —— 两处全绿。症状是"点刷新拿到别的数据 / 点了没反应"，
+   *    而转发那一行的 `as Promise<…>` 把类型也吃掉了（编译器看不见）。
+   *
+   * ⚠️★ 判据是**行为**、不是源码形状：把 `preload.cjs` **真的 require 起来**（`electron`
+   *    由上面那个桩顶替 ⇒ `contextBridge` / `ipcRenderer` 都是我的仪器），
+   *    然后**逐个方法调用一次**，看它递出去的是哪一条通道 —— 表驱动，逐条对契约。
+   *    · 22 条 invoke：调方法 ⇒ 记 `invoke` 收到的通道名；
+   *    · 2 条推送（`onStatus` / `onProgress`）：调方法 ⇒ 记 `on` 收到的通道名。
+   *    ⇒ 任意两条通道对调（那一把 K5 刀的形状）都会当场红。
+   * ⚠️ 代价（认）：它证的是**预加载脚本这一层**的接线；"主进程那一侧的 handler 收到的
+   *    参数对不对"由本文件其余几百条判据在**真 invoke** 上量（那一条链是完整的）。
+   * ⚠️★ 顺序：`require(MAIN_CJS)` 已经把 `Module._load` 换成了那个桩（它**不还原**）
+   *    ⇒ 这里 require preload 时拿到的也是同一个桩。
+   */
+  await section('★★ I-w3：preload 的逐条接线（每个转发器只许 invoke 自己那一格）', async () => {
+    let bridge = null;
+    try {
+      require(PRELOAD_CJS);
+      bridge = exposedBridges.get('mcsr') ?? null;
+    } catch (error) {
+      check(
+        'preload.cjs 加载得起来（加载不了时下面每一条都会空跑，所以这一条必须先响）',
+        false,
+        `抛了：${error?.message ?? String(error)}`,
+      );
+    }
+    check(
+      'preload 把桥挂在 `mcsr` 这个名字下（`contextBridge.exposeInMainWorld("mcsr", …)`）',
+      bridge !== null,
+      `现读挂上来的键：${JSON.stringify([...exposedBridges.keys()])}`,
+    );
+    const forwarders = bridge?.modFolders ?? {};
+    const methodNames = Object.keys(MOD_CH);
+    const absent = methodNames.filter((name) => typeof forwarders[name] !== 'function');
+    check(
+      `桥上的 \`modFolders\` 有**契约里那 ${String(methodNames.length)} 个方法**、一个不多一个不少（漏一个 = 页面点了没反应）`,
+      absent.length === 0 && Object.keys(forwarders).length === methodNames.length,
+      `缺：${JSON.stringify(absent)}；桥上有 ${String(Object.keys(forwarders).length)} 个键（契约 ${String(methodNames.length)}）`,
+    );
+    /*
+     * ⚠️★ 仪器自测（§5.38 那一族：报 0 之前先证明"这个 0 是测出来的"）：
+     *    先朝 stub 里**手动**打一次 invoke —— 记录器必须接住它。
+     *    少了这一条，"24 条接线全对"与"记录器根本没在工作"是同一个读数。
+     */
+    preloadIpc.length = 0;
+    void electronStub.ipcRenderer.invoke('mcsr:probe-recorder-selftest');
+    check(
+      '仪器自测：往 `ipcRenderer` 上打一次 invoke，记录器接得住（否则下面"24 条都对"可能只是没记到东西）',
+      preloadIpc.length === 1 && preloadIpc[0].channel === 'mcsr:probe-recorder-selftest',
+      JSON.stringify(preloadIpc),
+    );
+    for (const name of methodNames) {
+      if (typeof forwarders[name] !== 'function') continue;
+      preloadIpc.length = 0;
+      try {
+        /* 参数用占位串：这一条量的是**通道名**，不是参数（参数由主进程那几节验）。 */
+        forwarders[name].call(forwarders, 'ARG-1', 'ARG-2', 'ARG-3');
+      } catch (error) {
+        check(`\`modFolders.${name}\` 调得起来`, false, `抛了：${error?.message ?? String(error)}`);
+        continue;
+      }
+      const calls = preloadIpc.slice();
+      const record = calls[0] ?? null;
+      const expectedKind = PUSH_CHANNELS.includes(MOD_CH[name]) ? 'on' : 'invoke';
+      check(
+        `\`modFolders.${name}\` 走的是**它自己那一格**通道（\`${MOD_CH[name]}\`，经 \`${expectedKind}\`）`,
+        calls.length === 1 &&
+          record !== null &&
+          record.channel === MOD_CH[name] &&
+          record.kind === expectedKind,
+        record === null
+          ? '（这一次调用**一条 IPC 记录都没有** —— 要么转发器没接线，要么仪器坏了）'
+          : `现读：${JSON.stringify(calls.map((c) => `${c.kind}(${c.channel})`))}`,
+      );
+    }
   });
 
   // =========================================================================
@@ -3109,6 +3250,265 @@ await section('⑧ 三个开关与两个筛选器：改状态 → 重算 → 推
     },
   );
 
+    /*
+     * =========================================================================
+     * ★★ C-w1 / I-w1（2026-10-12，整支宽评审）：**"根整体不在"与"一块读不动"**
+     * =========================================================================
+     * ⚠️★ 现场（评审 C-w1）：`enumerateAll` 里那 6 行"实例父目录不在 ⇒ 记成**读不动**"
+     *    （`missingInstancesDir` 那道守卫）是**已修 Critical C1 的唯一防线**，而当时
+     *    三处门禁**一条判据都没有**：把它删掉 ⇒ 探针 `EXIT 0 / ✗ 0 / 13 行全成立`、
+     *    两个 D1 测试文件 `87/87`、整条 `pnpm -w check` `EXIT 0 / 1495 pass / fail 0`。
+     *    为什么它是 Critical：那 6 行防的是"启动器根被搬走 / 硬盘没挂"时
+     *    `realFs.listDir` 把 `ENOENT` 吞成 `[]` ⇒ 那一块被算成"成功、0 个实例"
+     *    ⇒ 对账把用户派生出来的 folder 与读数**删掉并落盘**，而界面上一句"我读不到它"
+     *    都没有（评审原话："一夜之间全没了"）。
+     * ⚠️★ 同一段代码的另一半（评审 I-w1 = A14 的"主进程那一半"）也一样空着：
+     *    探针全文**没有一条**断言 `state.launchers[].error`（`.error` 的命中全是
+     *    `console.error`），也没有"一块读不动"的夹具 ⇒ 两条一起补。
+     *
+     * ⇒ 这一节是**行为级**夹具（比源码形状判据硬），做法是"先真的读得动、勾上它、
+     *    再把整棵根删掉"：
+     *      ① 读得动时它派生出 folder（那正是用户会丢的东西）；
+     *      ② 把根删掉 ⇒ 实例父目录 `<根>\instances` 不在；
+     *      ③ 重新枚举 ⇒ 那一块**必须**记成读不动（`error` 非 null、带路径），
+     *         而它名下那条派生 folder **一条不少**（状态里 + 盘上那份 `file-tracking.json`）。
+     *    ⚠️★ 拔掉那 6 行守卫时这一节红在**两条**上（`error` 变 null + folder 被回收）——
+     *    那正是 C1 那个缺陷的两张脸。
+     *    ⚠️ 第四条量的是 A14 的另一半（I-w1）：**别的块照常**（其余绑定的 `error` 仍是 null、
+     *    它们的实例照旧枚举得出来）——"一个块坏掉不许让整页空"。
+     * ⚠️ 边界（如实写）：`goneRoot` **不在** A13 那串指纹根里（`fixtureRootPaths` 是五个夹具根
+     *    + `probeRoot`）⇒ 这一节证的**不是**"删根这一趟没有别人写盘"，只证上面那三件事。
+     */
+    await section(
+      '★★ C-w1 / I-w1：一条绑定的根被**整体删掉** ⇒ 那一块记成"读不动"、派生 folder 一条不少',
+      async () => {
+        /** 一个实例的 `mods` 目录的归一化形式（T10 那一节那份是它自己的局部量）。 */
+        const modsOfInstance = (path) =>
+          resolve(join(String(path), '.minecraft', 'mods')).toLowerCase();
+        /** 当刻那一份状态里、某一个根那条绑定的读数（`undefined` = 这条绑定不在）。 */
+        const bindingAt = async (root) =>
+          ((await invoke(MOD_CH.getState)).launchers ?? []).find((entry) =>
+            samePath(entry.rootPath, root),
+          );
+
+        const goneRoot = join(workRoot, 'MultiMC-gone');
+        const goneName = '1.16.1-gone';
+        const goneInstance = join(goneRoot, 'instances', goneName);
+        const goneMods = join(goneInstance, '.minecraft', 'mods');
+        mkdirSync(goneMods, { recursive: true });
+        writeFileSync(
+          join(goneInstance, 'mmc-pack.json'),
+          JSON.stringify({ components: [{ uid: 'net.minecraft', version: '1.16.1' }] }),
+        );
+        check(
+          '（前提）这一节的夹具根在那五条夹具根**之外**（A13 那串指纹不含它 ⇒ 见上面那段边界）',
+          !fixtureRoots.some(([, root]) => samePath(root, goneRoot)) &&
+            !samePath(probeRoot, goneRoot),
+          goneRoot,
+        );
+
+        await invoke(MOD_CH.addLauncher, 'multimc', goneRoot);
+        const beforeViews = await invoke(MOD_CH.listLauncherInstances);
+        const goneView = (beforeViews ?? []).find(
+          (view) => modsOfInstance(view.modsDir) === modsOfInstance(goneMods),
+        );
+        const goneBinding = await bindingAt(goneRoot);
+        check(
+          '（前置）那一块**本来读得动**：实例枚举出来了、而且 `launchers[].error === null` —— ' +
+            '少了这一半，"删根之后 error 非 null"就分不出"读不动"与"本来就没有这个根"',
+          goneView !== undefined && goneBinding !== undefined && goneBinding.error === null,
+          `view=${goneView === undefined ? '（没枚举到）' : goneView.key}；` +
+            `binding=${JSON.stringify(goneBinding ?? null)}`,
+        );
+        if (goneView === undefined || goneBinding === undefined) {
+          bail('这一节的夹具不成立：新加的那个根没有枚举出实例（后面每条判据都会空跑）');
+        }
+        const goneKey = goneView.key;
+        await invoke(MOD_CH.setInstanceTracked, goneKey, true);
+        const trackedState = await invoke(MOD_CH.getState);
+        const folderKeysBefore = Object.keys(readStateFileJson()?.folders ?? {});
+        check(
+          '（前置）勾上它 ⇒ 派生出一个 folder（**状态里与盘上都在**）—— 这就是"读不动时会被误删"的那份东西',
+          trackedState.folders.some((folder) => folder.folderId === goneKey) &&
+            folderKeysBefore.includes(goneKey),
+          `folders（状态里）=${JSON.stringify(trackedState.folders.map((f) => f.folderId))}；` +
+            `folders（盘上）=${JSON.stringify(folderKeysBefore)}`,
+        );
+
+        /*
+         * ① 把**整棵根**删掉（实例父目录随之不在）—— 这是"启动器被搬到别处 / 硬盘没挂"的形状。
+         *    ⚠️ 只删**我自己造的那一层**（`goneRoot`），它的祖先一个都不动。
+         */
+        rmSync(goneRoot, { recursive: true, force: true });
+        check(
+          '（前提）那一块的**实例父目录真的不在了**（在 ⇒ 下面那条"读不动"会变成一句假话，§5.79）',
+          !existsSync(join(goneRoot, 'instances')),
+          join(goneRoot, 'instances'),
+        );
+        await invoke(MOD_CH.listLauncherInstances);
+        const afterState = await invoke(MOD_CH.getState);
+        const afterBinding = (afterState.launchers ?? []).find((entry) =>
+          samePath(entry.rootPath, goneRoot),
+        );
+        check(
+          '★★ C-w1：那一块**记成"读不动"**（`state.launchers[].error` 非 null、而且那句话带着缺掉的路径）—— ' +
+            '少了 `missingInstancesDir` 那道守卫时它是 `null`（"这个启动器一个实例都没有"）',
+          afterBinding !== undefined &&
+            typeof afterBinding.error === 'string' &&
+            afterBinding.error.includes(join(goneRoot, 'instances')),
+          `error=${JSON.stringify(afterBinding?.error ?? null)}`,
+        );
+        const folderKeysAfter = Object.keys(readStateFileJson()?.folders ?? {});
+        check(
+          '★★ C-w1：它名下那条**派生的 folder 一条都不少**（状态里在 + 盘上那份 `file-tracking.json` 里也在）—— ' +
+            '这正是 Critical C1 的原话："对账把用户派生出来的 folder 与读数删掉**并落盘**"',
+          afterState.folders.some((folder) => folder.folderId === goneKey) &&
+            folderKeysAfter.includes(goneKey),
+          `folders（状态里）=${JSON.stringify(afterState.folders.map((f) => f.folderId))}；` +
+            `folders（盘上）=${JSON.stringify(folderKeysAfter)}`,
+        );
+        check(
+          '★ I-w1 / A14：而**别的块照常**（其余绑定的 `error` 仍是 null、它们的实例照旧枚举得出来）—— ' +
+            '"一个块坏掉不许让整页空"',
+          (afterState.launchers ?? []).every(
+            (entry) => samePath(entry.rootPath, goneRoot) || entry.error === null,
+          ) &&
+            (afterState.instances ?? []).some(
+              (instance) => modsOfInstance(instance.modsDir) === modsOfInstance(pclSharedMods),
+            ),
+          `launchers=${JSON.stringify((afterState.launchers ?? []).map((entry) => `${entry.id}:${String(entry.error)}`))}；` +
+            `instances=${JSON.stringify((afterState.instances ?? []).map((instance) => instance.key))}`,
+        );
+
+        /* 收尾：这一节自己加的那条绑定（它不在 `fixtureRoots` 里 ⇒ 下面那趟按表删的收尾不会碰它）。 */
+        await invoke(MOD_CH.removeLauncher, `multimc:${goneRoot}`);
+        const cleanedState = await invoke(MOD_CH.getState);
+        check(
+          '（收尾）这一节自己加的那条绑定移掉了（它不在 `fixtureRoots` 里，留着会污染后面几组）',
+          (cleanedState.launchers ?? []).every((entry) => !samePath(entry.rootPath, goneRoot)),
+          JSON.stringify((cleanedState.launchers ?? []).map((entry) => entry.id)),
+        );
+      },
+    );
+
+    /*
+     * =========================================================================
+     * ★★ I-w2（2026-10-12，整支宽评审）：`setInstancePaths` —— **逐格覆盖，不是整份替换**
+     * =========================================================================
+     * ⚠️★ 现场：这条通道是那 24 条里**唯一一条探针从不 invoke 的**（评审的脚本数出 **0** 次，
+     *    其余 23 条都 ≥1），而契约 `desktop.ts:373` 明写它"**逐格覆盖**：只给出来的那几格
+     *    才算覆盖，其余照旧用探测结果（**不是**整份替换）"。
+     *    ⇒ 把它写成 `{ ...clean }`（整份替换）时探针 `EXIT 0 / ✗ 0`、两个 D1 测试文件
+     *      `87/87` **两处全绿**，而用户"只改 saves"会**静默清掉**另外两格的覆盖。
+     *
+     * ⚠️★ 判据的形状（为什么只有这样才咬得住）：**先手改两格、再只改第三格** ——
+     *    · 逐格覆盖 ⇒ 前两格照旧是手改值（三格都是手改值）；
+     *    · 整份替换 ⇒ 前两格**掉回探测值** ⇒ 当场红。
+     *    ⚠️ 只改一格是**分不出**两种实现的（探测值恰好等于"没覆盖时的值"）——
+     *      那正是本仓反复踩的"几何造不出差别"那一类。
+     * ⚠️ 两格手改值**故意与探测值不同**（`<tmp>\hand\…` vs 实例内那份 `.minecraft\mods`）。
+     */
+    await section(
+      '★★ I-w2：`setInstancePaths`（A12 手改路径）—— 逐格覆盖，不是整份替换',
+      async () => {
+        const modsOfInstance = (path) =>
+          resolve(join(String(path), '.minecraft', 'mods')).toLowerCase();
+        const patchRoot = join(workRoot, 'MultiMC-patch');
+        const patchName = '1.16.1-patch';
+        const patchInstance = join(patchRoot, 'instances', patchName);
+        const patchMods = join(patchInstance, '.minecraft', 'mods');
+        const patchSaves = join(patchInstance, '.minecraft', 'saves');
+        mkdirSync(patchMods, { recursive: true });
+        mkdirSync(patchSaves, { recursive: true });
+        writeFileSync(
+          join(patchInstance, 'mmc-pack.json'),
+          JSON.stringify({
+            components: [
+              { uid: 'net.fabricmc.fabric-loader', version: MMC_LOADER_VERSION },
+              { uid: 'net.minecraft', version: '1.16.1' },
+            ],
+          }),
+        );
+        await invoke(MOD_CH.addLauncher, 'multimc', patchRoot);
+        const views = await invoke(MOD_CH.listLauncherInstances);
+        const probeView = (views ?? []).find(
+          (view) => modsOfInstance(view.modsDir) === modsOfInstance(patchMods),
+        );
+        check(
+          '（前置）那个实例枚举出来了、而且它的解析结果是**探测出来的那一份**' +
+            '（`modsDir` / `savesDir` / `loader` 都不是我手改的值）',
+          probeView !== undefined &&
+            samePath(probeView.modsDir, patchMods) &&
+            samePath(probeView.savesDir, patchSaves) &&
+            probeView.loader === `fabric ${MMC_LOADER_VERSION}`,
+          `modsDir=${String(probeView?.modsDir)} savesDir=${String(probeView?.savesDir)} loader=${String(probeView?.loader)}`,
+        );
+        if (probeView === undefined) {
+          bail('这一节的夹具不成立：新加的那个根没有枚举出实例（后面每条判据都会空跑）');
+        }
+        const key = probeView.key;
+        const HAND_MODS = join(workRoot, 'hand', 'mods');
+        const HAND_SAVES = join(workRoot, 'hand', 'saves');
+        const HAND_LOADER = 'fabric 9.9.9-hand';
+        /** 当刻那一份状态里、那个实例那一行。 */
+        const rowNow = async () =>
+          ((await invoke(MOD_CH.getState)).instances ?? []).find(
+            (instance) => instance.key === key,
+          );
+
+        await invoke(MOD_CH.setInstancePaths, key, {
+          modsDir: HAND_MODS,
+          savesDir: HAND_SAVES,
+        });
+        const afterFirst = await rowNow();
+        check(
+          'A12 ①：手改**路径**这条通道真的被 invoke 过、而且两格手改值**生效**（`instances[]` 里就是它们）',
+          afterFirst !== undefined &&
+            samePath(afterFirst.modsDir, HAND_MODS) &&
+            samePath(afterFirst.savesDir, HAND_SAVES),
+          `modsDir=${String(afterFirst?.modsDir)} savesDir=${String(afterFirst?.savesDir)}`,
+        );
+        check(
+          'A12 ① 的另一半（分辨力）：这两个值与**探测值不同** ⇒ 上面那一条不是"照抄探测结果"也能过',
+          !samePath(HAND_MODS, patchMods) && !samePath(HAND_SAVES, patchSaves),
+          `手改 ${HAND_MODS} / ${HAND_SAVES} vs 探测 ${patchMods} / ${patchSaves}`,
+        );
+
+        await invoke(MOD_CH.setInstancePaths, key, { loader: HAND_LOADER });
+        const afterSecond = await rowNow();
+        const prefOnDisk = (readStateFileJson()?.instancePrefs ?? {})[key] ?? null;
+        check(
+          '★★ I-w2（承重）：第二次**只**给 `loader` ⇒ 前一次那两格**照旧是手改值**' +
+            '（"逐格覆盖"的字面：省略 = 不改这一格）—— 整份替换的实现会让它们掉回探测值，这里当场红',
+          afterSecond !== undefined &&
+            samePath(afterSecond.modsDir, HAND_MODS) &&
+            samePath(afterSecond.savesDir, HAND_SAVES) &&
+            afterSecond.loader === HAND_LOADER,
+          `modsDir=${String(afterSecond?.modsDir)}（期望 ${HAND_MODS}）；` +
+            `savesDir=${String(afterSecond?.savesDir)}（期望 ${HAND_SAVES}）；` +
+            `loader=${String(afterSecond?.loader)}（期望 ${HAND_LOADER}）`,
+        );
+        check(
+          '★ 而这三格**都落了盘**（`file-tracking.json` 的 `instancePrefs[key]` 里三格同在）—— ' +
+            'A12 的"可手改并持久化"那半句',
+          prefOnDisk !== null &&
+            samePath(prefOnDisk.modsDir, HAND_MODS) &&
+            samePath(prefOnDisk.savesDir, HAND_SAVES) &&
+            prefOnDisk.loader === HAND_LOADER,
+          JSON.stringify(prefOnDisk),
+        );
+
+        /* 收尾：这一节自己加的那条绑定（它同样不在 `fixtureRoots` 里）。 */
+        await invoke(MOD_CH.removeLauncher, `multimc:${patchRoot}`);
+        const finalState = await invoke(MOD_CH.getState);
+        check(
+          '（收尾）这一节自己加的那条绑定移掉了',
+          (finalState.launchers ?? []).every((entry) => !samePath(entry.rootPath, patchRoot)),
+          `bindings=${JSON.stringify((finalState.launchers ?? []).map((entry) => entry.id))}`,
+        );
+      },
+    );
+
     // ---- 收尾：把这五条绑定移掉（后面那一组从干净状态起步）--------------------------
     /*
      * ⚠️★ 现读**当刻**的绑定表（不用上面那个 `state` 快照）：T10 那一节刚刚把 multimc
@@ -3256,7 +3656,10 @@ async function stateFilePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 13 条 invoke 通道注册起来了', registered);
+  check(
+    `（前置）这一相位也把 ${String(INVOKE_CHANNEL_COUNT)} 条 invoke 通道注册起来了`,
+    registered,
+  );
 
   // 给启动那一路（目录抓取 + 扫盘）一点时间落盘
   await new Promise((r) => setTimeout(r, 1500));
@@ -3475,6 +3878,50 @@ async function prefsPhase() {
    *    （理由见那里），而"原样"的判据就是**同一串字节** —— 重新拼一遍就成了另一份夹具（§5.44）。
    */
   const migrationBytes = JSON.stringify(migrationSeed, null, 2);
+  /*
+   * ★★ I-w5（2026-10-12，整支宽评审）：**case i 的第二次启动夹具** —— 一份 **post-D1** 的
+   *    状态文件，里面有一条**手工绑定的 folder**（没有 pref ⇒ 对账原样保留）。
+   *
+   * ⚠️★ 为什么必须给它一条**非空**的 `folders`（这是这一轮修的那个缺陷）：
+   *    修之前 case i 跑在 case h 迁移后的那份文件上 —— 那时 `folders` 已经**是空的**，
+   *    而它那两条判据读的都是**启动之前**抓的同一个 `before`（第二条的三个合取项还是
+   *    第一条的**真子集**）⇒ 那条 `check` 是一条**恒真**的断言（T5 评审 I1 / 宽评审 I-w5）。
+   *    更实的代价：一个"**每次读盘都清 `folders`**"的坏实现在这一趟上**看不出任何差别**
+   *    （清的是一份本来就空的东西）—— 而 A16 的"**一次性**"要防的正是它。
+   *    ⇒ 夹具改成"第二次启动时手里有一条**会丢的东西**"：这条手工绑定在正确的实现下
+   *      **必须活过这一趟**；"无条件清 `folders`"的实现会让它消失 ⇒ 当场红。
+   *
+   * ⚠️★ 为什么这份夹具可以在这里写（不是"重种夹具"那个坑）：它写在**本进程自己的
+   *    `loadArtifact()` 之前**（下面 `upstreamMode = 'ok'` 那一段才加载产物）⇒ 这一趟的
+   *    `startUp` **还没开始**，不会出现"两个写者抢同一个文件"。
+   *    ⚠️ case h 里那次失败的"重种"是**另一个形状**：它在自己 `startUp` 还在跑的时候
+   *    把字节写回去（那份文件的 mtime 与内容都被 h 自己的 `persist()` 覆盖）——
+   *    那一条的教训仍然成立，见 case h 上面那段。
+   * ⚠️ 那条 folder 的目录**真的在盘上**（否则"保住了"可能只是"它本来就不该在"）；
+   *    `autoUpdate: false` ⇒ 启动那趟不扫它（这一节只问"它还在不在"）。
+   * ⚠️★ 两格 `launchers` / `instancePrefs` **都在**（这是 post-D1 文件的定义，
+   *    也是"不许再清"的前提：`migrateState` 的判据正是"两格都不在"）。
+   */
+  const secondStartDir = join(workRoot, 'D1-second-start');
+  mkdirSync(secondStartDir, { recursive: true });
+  const secondStartSeed = {
+    version: 1,
+    stateVersion: 2,
+    items: {},
+    catalogBindings: {},
+    folders: {
+      'manual-second-start': {
+        path: secondStartDir,
+        gameVersion: '1.16.1',
+        autoUpdate: false,
+        boundAt: 11,
+      },
+    },
+    launchers: [],
+    instancePrefs: {},
+    prefs: prefsBase,
+  };
+  const secondStartBytes = JSON.stringify(secondStartSeed, null, 2);
   if (CASE === 'g' || CASE === 'i' || CASE === 'j') {
     /*
      * case g 是**真重启**：不预置任何东西，用 case f 留下的那份 `userData`（`--reuse-user-data`）。
@@ -3496,6 +3943,18 @@ async function prefsPhase() {
     console.log(
       `  它盘上有没有 D1 那两格：launchers=${String(Array.isArray(readStateFileJson()?.launchers))} instancePrefs=${String(typeof readStateFileJson()?.instancePrefs === 'object' && readStateFileJson()?.instancePrefs !== null)}`,
     );
+    if (CASE === 'i') {
+      /*
+       * ★★ I-w5：把这一趟要读的那份文件**本进程自己写下去**（`loadArtifact()` 还没跑 ⇒
+       *    这一趟的 `startUp` 还没开始，见上面 `secondStartSeed` 那一段的解释）。
+       *    ⚠️ 写的就是 `secondStartBytes` 那一串字节 ⇒ 下面那条"（前置）"比的正是它。
+       */
+      writeFileSync(stateFile(), secondStartBytes, 'utf8');
+      console.log(
+        `  ★ I-w5：这一趟的起点改写成一份 **post-D1** 文件（D1 两格都在 + 一条手工绑定 manual-second-start，${String(secondStartBytes.length)} 字节）—— ` +
+          '"每次读盘都清 folders"的实现在这一趟上必须露出来',
+      );
+    }
   } else if (CASE === 'h') {
     /*
      * ★★ **Task 5 / spec A16：一次性迁移**的起点 —— 一份"**D1 之前**写的 v2 文件"：
@@ -3524,7 +3983,10 @@ async function prefsPhase() {
   upstreamMode = 'ok';
   loadArtifact();
   const registered = await waitForHandlers();
-  check('（前置）这一相位也把 13 条 invoke 通道注册起来了', registered);
+  check(
+    `（前置）这一相位也把 ${String(INVOKE_CHANNEL_COUNT)} 条 invoke 通道注册起来了`,
+    registered,
+  );
 
   /*
    * 等 `startUp` 真正跑完：判据是**推给页面的那份状态**（`onStatus`）里
@@ -3551,16 +4013,22 @@ async function prefsPhase() {
      */
     const scanDone = (last?.folders ?? []).every((f) => f.hasReading === true || f.rows.length > 0);
     /*
-     * ⚠️★ **case h / i 还要多等一档"静默"**：它们的文件夹被 A16 迁移清空了 ⇒ 上面那个
-     *    `every` 对**空数组**恒真 ⇒ 它在**第一趟** `refreshInstances()` 的 rebuild 上就满足了，
-     *    而 `startUp` 后面还有 `adoptFolderGameVersion()` + 最后一趟 `rebuild()` —— 实测那样
-     *    读到的是 `catalogGameVersion: '1.8.9'`（**采纳还没发生**），于是那两条又红了 ✗。
+     * ⚠️★ **case h / i / j 还要多等一档"静默"**：它们的夹具里没有"会扫出读数"的文件夹
+     *    ⇒ 上面那个 `every` 在一个**没有读数**的（或空的）数组上就满足了，而 `startUp`
+     *    后面还有 `adoptFolderGameVersion()` + 最后一趟 `rebuild()` —— 实测那样读到的是
+     *    `catalogGameVersion: '1.8.9'`（**采纳还没发生**），于是那两条又红了 ✗。
      *    ⇒ 判据加上"**最近 400ms 没有新的推送**"：`startUp` 的每一趟都会推一帧
      *      （`refreshInstances()` 一次、最后 `rebuild()` 一次），而这一相位**不主动调
-     *      `getState`** ⇒ 帧停下来了就是它跑完了。只对 h / i 生效 ⇒ 其余 case 的时序**逐字不变**。
+     *      `getState`** ⇒ 帧停下来了就是它跑完了。
+     *    ⚠️★ 2026-10-12（宽修复轮 / I-w5）：`j` 也加进来了 —— 修 I-w5 时 case i 的夹具
+     *      多了一条**手工绑定的 folder**（`manual-second-start`，`autoUpdate: false`），
+     *      而它随 case i 的 userData 一路传到 case j ⇒ j 那一趟的 `folders` **不再空**、
+     *      那一格又**永远没有读数** ⇒ `scanDone` 恒假 ⇒ 少了这一档，j 会**等不到**任何一份
+     *      推送（实测：`✗ （前置）启动那一路跑完了 ——（等不到）`，而红的样子像"启动坏了"）。
+     *      其余 case 的时序**逐字不变**。
      */
     const quietLongEnough =
-      (CASE === 'h' || CASE === 'i') &&
+      (CASE === 'h' || CASE === 'i' || CASE === 'j') &&
       last !== null &&
       pushes.filter((p) => p.channel === MOD_CH.onStatus).length > 0 &&
       Date.now() - (pushes.filter((p) => p.channel === MOD_CH.onStatus).at(-1)?.at ?? 0) > 400;
@@ -3766,39 +4234,65 @@ async function prefsPhase() {
   }
   if (CASE === 'i') {
     /*
-     * ⚠️★ 这一趟的**起点是 h 的产物**（那份文件已经**被迁移过**：`folders` 空、两格在）——
-     *    所以下面的判据**不许**假设盘上还有 `manual-migration-folder`（第二版就是那么错的 ✗）。
+     * ★★ I-w5（2026-10-12，整支宽评审）：这一趟的判据**全部改成真读数**。
+     *
+     * ⚠️★ 修之前这里长什么样（T5 评审 I1 = 宽评审 I-w5，两轮都在 HEAD 上）：
+     *    两条 `check` 读的都是**启动之前**抓的同一个 `before = readStateFileJson()`，
+     *    而第二条的三个合取项是第一条的**真子集**（少了 `instancePrefs !== null`）
+     *    ⇒ 第一条过则第二条**必过** —— 一条恒真的断言（§5.32 ①）。
+     *    更实的代价：那时 `folders` 本来就空（case h 刚清过）⇒ "**每次读盘都清**"这个缺陷
+     *    在这一趟上**看不出任何差别**，而 A16 的"**一次性**"要防的正是它。
+     *
+     * ⇒ 现在的形状（两条腿，都是**启动之后**的读数）：
+     *    ① 起点是**本进程自己写下去的那串字节**（`secondStartBytes`，post-D1 + 一条手工绑定）；
+     *    ② 启动之后那条手工绑定**必须还在**（无条件清 `folders` 的实现 ⇒ 它消失 ⇒ 红）；
+     *    ③ 而它**逐格没被改**（path / gameVersion / autoUpdate / boundAt 四格全等）。
+     *    ⚠️ ③ 是"没把它写坏"那一半（②说的只是"还在"）：两半合起来才是"那份文件没被动过"。
+     *    ⚠️★ 判据住在**同一个观察者**里（本进程读自己那份盘上文件的前后两态，§5.44）。
      */
-    const before = readStateFileJson();
+    const asWritten = JSON.parse(secondStartBytes);
+    const onDisk = readStateFileJson();
+    const expectedKeys = Object.keys(asWritten.folders);
+    const onDiskKeys = Object.keys(onDisk?.folders ?? {});
     check(
-      '（前置）这一趟的起点是**h 迁移之后**的那份（`folders` 已清、D1 两格已在）',
-      Object.keys(before?.folders ?? {}).length === 0 &&
-        Array.isArray(before?.launchers) &&
-        typeof before?.instancePrefs === 'object' &&
-        before?.instancePrefs !== null,
-      `folders=${JSON.stringify(Object.keys(before?.folders ?? {}))} launchers=${JSON.stringify(before?.launchers ?? null)}`,
+      '（前置）这一趟的起点**真的是我刚写下去的那份 post-D1 文件**' +
+        '（`folders` 非空 + D1 两格都在 —— 少了任何一半，"不许再清"就没有可丢的东西）',
+      Object.keys(asWritten.folders).length === 1 &&
+        Array.isArray(asWritten.launchers) &&
+        typeof asWritten.instancePrefs === 'object' &&
+        expectedKeys.every((key) => onDiskKeys.includes(key)),
+      `写入时 folders=${JSON.stringify(expectedKeys)}；启动后 folders=${JSON.stringify(onDiskKeys)}`,
     );
-    /*
-     * ★★ **"一次性"的落点**：这一趟启动**不许**再动 `folders`。
-     *    ⚠️ 为什么"清成空"这种坏法在这里**看得见**：`migrateState` 那个缺陷的表现是
-     *    "**每次读盘都清**"，而这一趟读的是一份"两格已在"的文件 —— 它清不出东西来（本来就空）。
-     *    ⇒ 所以这一条量的其实是"**没把它写坏**"，而**真正**那一半（"重种一样东西进去、再启动一次，
-     *    它还在不在"）由 **case j 的逐字节比对**来量 —— 两处合起来才是完整的"一次性"。
-     */
     check(
-      '★ 第二次启动之后 `folders` 仍然是空的、且两格仍然在（这一趟没有把它写坏）',
-      Object.keys(before?.folders ?? {}).length === 0 &&
-        Array.isArray(before?.launchers) &&
-        typeof before?.instancePrefs === 'object',
-      JSON.stringify({ folders: Object.keys(before?.folders ?? {}), launchers: before?.launchers ?? null }),
+      '★★ I-w5 / A16：**第二次启动之后那条手工绑定的 folder 还在**（"一次性"= 这一趟不许再清 `folders`）' +
+        '—— "每次读盘都清"的实现会让它消失，这里当场红',
+      expectedKeys.every((key) => onDiskKeys.includes(key)),
+      `folders=${JSON.stringify(onDiskKeys)}（起点 ${JSON.stringify(expectedKeys)}）`,
+    );
+    const survivedEntry = onDisk?.folders?.[expectedKeys[0]] ?? null;
+    const writtenEntry = asWritten.folders[expectedKeys[0]];
+    check(
+      '★ 而它**逐格没被改**（path / gameVersion / autoUpdate / boundAt 四格全等）—— ' +
+        '这一条是"还在"之外的第二个方向：把那一格重写成默认值同样是"动了它"',
+      survivedEntry !== null &&
+        ['path', 'gameVersion', 'autoUpdate', 'boundAt'].every(
+          (field) => survivedEntry[field] === writtenEntry[field],
+        ),
+      `起点=${JSON.stringify(writtenEntry)}；读回=${JSON.stringify(survivedEntry)}`,
+    );
+    check(
+      '★ 而 D1 那两格仍然在（这一趟没有把 post-D1 的文件写成"上一版的形状"—— ' +
+        '那会让**下一次**启动把它当成"D1 之前"再清一次）',
+      Array.isArray(onDisk?.launchers) && typeof onDisk?.instancePrefs === 'object' && onDisk?.instancePrefs !== null,
+      `launchers=${JSON.stringify(onDisk?.launchers ?? null)} instancePrefs=${JSON.stringify(onDisk?.instancePrefs ?? null)}`,
     );
 
     /*
      * ---- 第三次启动（case j）：同一份 userData ⇒ 断言**那份文件逐字节没变** --------------
-     * ⚠️★ 这一条才是"**一次性**"最硬的读数：它是**同一个对象的前后两个字节**（§5.44 那一族）。
+     * ⚠️★ 这一条是"**一次性**"最硬的那条读数：它是**同一个对象的前后两个字节**（§5.44 那一族）。
      *    复现那把刀：把 `migrateState` 的判据改回"一律清"（缺陷那一版）⇒ 这一趟的
-     *    `folders` 被清（本来就空 ⇒ 看起来一样），但**只要**夹具里有一条会在启动时
-     *    被重新派生/写回的 entry，字节就会变；⇒ 下面同时断言"**两格的内容也逐字节相同**"。
+     *    `folders` 被清 —— ⚠️ 而**现在**夹具里真的有一条会被清掉的 entry（`manual-second-start`）
+     *    ⇒ 字节会变（上面那三条判据也会红）。两处合起来才是完整的"一次性"。
      */
     const bytesBefore = readFileSync(stateFile(), 'utf8');
     const third = spawnSync(
@@ -3977,7 +4471,11 @@ async function writePhase() {
 
   loadArtifact();
   const registered = await waitForHandlers();
-  if (!registered) bail('十四条 invoke 通道没注册上（写路径的判据全都要走 invoke）');
+  if (!registered) {
+    bail(
+      `${String(INVOKE_CHANNEL_COUNT)} 条 invoke 通道没注册上（写路径的判据全都要走 invoke）`,
+    );
+  }
 
   /** 绑一个夹具目录（走原生的目录对话框桩）。 */
   const bindAt = async (dir) => {

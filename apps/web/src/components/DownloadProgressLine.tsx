@@ -141,7 +141,12 @@ export function DownloadProgressLine({
        * 行内档（单项下载与"批量里的那一项"两档）都在这里补；汇总档批量与写盘的名字在句子里。
        */}
       {view.installing || batchSentence !== null ? null : (
-        <span className="dlprogress__file">{view.fileName}</span>
+        /* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。
+           ★★ A21：`title` 是"单行省略之后**悬浮看全**"的唯一实现（`.dlprogress__file`
+           那条规则给的是省略族）—— 一个 200 字符的文件名在这里必须看得到全文。 */
+        <span className="dlprogress__file" title={view.fileName}>
+          {view.fileName}
+        </span>
       )}
       <span className="dlprogress__text">
         {batchSentence === null ? null : `${batchSentence} `}

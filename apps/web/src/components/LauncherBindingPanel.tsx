@@ -585,6 +585,38 @@ export function LauncherBindingPanel({
     <section className="launcherbinding" data-launcher-binding={state.launchers.length}>
       {failure === null ? null : <Notice kind="bad">{failure}</Notice>}
       {/*
+        ★★ I-w7（2026-10-12，整支宽评审）：**枚举缓存的通用"刷新"入口**。
+
+        ⚠️★ 为什么必须有它（评审的读数）：`listLauncherInstances` 在界面上原来**只有一个**
+        调用点（`ModFoldersData.tsx` 的 `probeLaunchers`），而那一颗按钮只在
+        `binding.error !== null`（**坏块**）里画 ⇒ **健康绑定下没有那条路**：
+        用户在启动器里新建（或删掉）一个实例，界面**永远**是旧的那一份，
+        只有重启应用才会变 —— 而 `mod-folders.ts` 的拒绝对话与 pending 都写着
+        "（先刷新一次再操作）"，那句话当时**够不到**。
+
+        ⚠️★ 位置是**承重**的：它在**所有启动器块之前**（面板顶部），
+        所以"一个块都没坏"时它照样在（放进块里就回到原来那个够不到的状态了）。
+        ⚠️ 一条绑定都没有时**不画**它：那时枚举无事可做（没有根可读），
+        画一颗点了什么都不发生的按钮比不画更坏。
+        ⚠️★ 它发的是**既有**的动作 `probe-launchers`（零新通道）—— 那一条**先重新枚举、
+        再重扫候选**（顺序是承重的，见 `ModFoldersData.tsx` 里那一支的注释）。
+        ⚠️ 它与坏块里那颗「重试」是**同一个动作**：坏块那颗说的是"再试一次这一块"，
+        这一颗说的是"重新读一遍实例"。两句话都对，共用一条通道。
+      */}
+      {state.launchers.length === 0 ? null : (
+        <div className="launcherbinding__refresh" data-launcher-refresh="yes">
+          <button
+            type="button"
+            className="ghostbtn"
+            data-action="probe-launchers"
+            disabled={busy}
+            onClick={() => void run({ kind: 'probe-launchers' })}
+          >
+            {t('files.launcherRefresh')}
+          </button>
+        </div>
+      )}
+      {/*
         ⚠️★ 两条空态 + "正在读取"，判据的顺序是**承重**的（见文件头第 ③ 条）：
         还在读的时候不能说"一个实例都没勾"（那是编结论）。
       */}

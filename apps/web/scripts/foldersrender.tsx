@@ -64,12 +64,14 @@
  * ===========================================================================
  * 组数（手抄的，见文件末尾那条探针）
  * ===========================================================================
- * 现读：zh **55** 组、en **56** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；权威是文件末尾那条
+ * 现读：zh **57** 组、en **58** 组（㉛ 零汉字扫描只在 `--en` 那一遍跑；权威是文件末尾那条
  * `expectedGroups` 探针 —— 它数的是 `ok()` 的条数，数错时会把 `actual` / `expected` 都印出来）。
  * ⚠️★ 这一格**已经过期过两次**（T6 瘦身与 T7 加 ㊿ 之后仍写着 15/16 —— 那是 A 的 T6 之前的
  *    数）⇒ T8 加 ㊾h 与 51a–51g 时**同批**改准（本仓的"手抄的现数要同批改"那条纪律）。
  * ⚠️★ 2026-10-12（D1 的 **T10**）：再加 **52** 一组（A21 长文本 / 省略 / 列宽稳定，8 条）、
  *    外加交接来的 **51h / 51i** 两条 ⇒ 45/46 → **55/56**（现数，同批改准）。
+ * ⚠️★ 2026-10-12（D1 的 **宽修复轮**）：再加 **51j**（枚举的通用刷新入口，I-w7）与
+ *    **53**（A21 的另一半：mod 名 / 包名，I-w8）⇒ 55/56 → **57/58**（现数，同批改准）。
  * ⚠️ 组号是**顺序**，不是历史编号 —— 现读的清单见文件末尾那条探针上面那一段。
  */
 import assert from 'node:assert/strict';
@@ -3921,8 +3923,11 @@ if (LANG === 'en') {
  *    ⚠️★★ 2026-10-12（D1 的 **T6 修复轮**）：㉝ 与 ⑰ 那两条**换了量法**（"整页第一帧 =
  *    正在扫描…"被 A8 的默认 tab 规则否掉 ⇒ 改成渲染那一格的载荷 + 源码形状钉三支的分派）；
  *    ⑰ 自己仍然是一个 `ok()`、㉝ 也仍然是一个 ⇒ **组数不变**。㊾ 里**加了 1 条** `ok()`
- *    （㊾f/㊾g 合并成 "A1 的另外两半"：页面标题 + 短名）⇒ 现数 **zh 37 / en 38**
- *    （差 1 仍是 ㉛；⛔ 这个数也是现读的，改了脚本**重跑**再抄）。
+ *    （㊾f/㊾g 合并成 "A1 的另外两半"：页面标题 + 短名）。
+ *    ⚠️★ 这一段当时写着"现数 zh 37 / en 38" —— **那个数早就过期了**（T8 的 ㊾h 与 51a–51g、
+ *    T10 的 51h/51i 与 52、宽修复轮的 51j 与 53 都在这之后加的）。⛔ 这里**不再手抄**：
+ *    权威只有一个 —— 文件末尾那条 `expectedGroups`（现读 zh **57** / en **58**，
+ *    数错时它会把 `actual` / `expected` 都印出来）。
  */
 // ---------------------------------------------------------------------------
 // ㊷ ★★ B2（整合包）：「整合包」那一节（spec 断言 14–16）
@@ -4382,9 +4387,18 @@ console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门
   );
 
   /* ---- ㊾e：那句词条得说清新版本号 ---- */
+  /*
+   * ⚠️★ 边界（2026-10-12，整支宽评审 M-w4，如实写）：这一条**只自证**那句词条里有
+   *    `'0.2.0'` —— 它**没有**与 `apps/desktop/package.json` 的 `version` 对齐
+   *    （现读那份还是 `0.1.1`，由 **T11** 在收口时翻到 0.2.0）。
+   *    ⇒ 一条"两处必须一致"的判据**今天加不了**：它在**正确的树**上就是红的。
+   *      加它的时机是版本号真的翻到 0.2.0 那一刻（做法写在那两份 i18n 的注释里）
+   *      —— 今天这条欠账如实记在 `files.partTwoUnavailable` 的注释与 pending 草案里。
+   */
   assert.ok(
     t('files.partTwoUnavailable').includes('0.2.0'),
-    '㊾e 那条"需要桌面版"的话必须说清 **0.2.0**（D1 的安装包版本；T6 之前写的是 0.0.5 ⇒ 同批改准）',
+    '㊾e 那条"需要桌面版"的话必须说清 **0.2.0**（D1 的安装包版本；T6 之前写的是 0.0.5 ⇒ 同批改准）' +
+      '⚠️ 它只自证词条里有这个串，**不**证明它与 apps/desktop/package.json 对齐（M-w4 的已知欠账）',
   );
   ok(`㊾e "需要桌面版 0.2.0"那句词条已经改准（${t('files.partTwoUnavailable').slice(0, 24)}）`);
 }
@@ -5449,6 +5463,61 @@ function inputTagOf(markup: string, attr: string, value: string): string {
   );
   ok('51d A14：坏掉的那一块画出原话 + 一颗重试，而**别的块照常渲染**（一个块坏掉不许整页空）');
 
+  /* ---- 51j：★★ I-w7 —— 枚举缓存的**通用刷新入口**（健康绑定下也够得着）---- */
+  /*
+   * ⚠️★ 现场（整支宽评审 I-w7 的读数）：`listLauncherInstances` 在界面上原来只有**一个**
+   *    调用点（`ModFoldersData.tsx` 的 `probeLaunchers`），而触发它的那颗按钮长在
+   *    **坏块**里（`binding.error !== null` 才画）⇒ **健康绑定下没有那条路**：
+   *    用户在启动器里新建一个实例，界面永远是旧的那一份，**只能重启应用**
+   *    —— 而 `mod-folders.ts` 的拒绝对话与 pending 都写着"（先刷新一次再操作）"。
+   *
+   * ⚠️★ 判据的形状是**位置** + **身份** + **反面**三样，缺一条就会退化成空话：
+   *    · 位置：那颗按钮必须在**第一个启动器块之前**（放进块里 = 回到"只有坏块才有"）；
+   *      ⚠️ 它同时解释了 51d 那条反面为什么还成立（好块那一段里没有它）；
+   *    · 身份：文案是 `files.launcherRefresh`、机器读数是 `data-action="probe-launchers"`
+   *      （**同一个动作**，零新通道 ⇒ 不需要新的接线判据，51g 那一条覆盖它）；
+   *    · 反面：一条绑定都没有时**不画**（那时枚举无事可做 —— 一颗点了什么都不发生的按钮
+   *      比不画更坏）。
+   */
+  const refreshAt = panelHtml.indexOf('data-launcher-refresh="yes"');
+  const firstBlockAt = panelHtml.indexOf('data-launcher-block="');
+  assert.notEqual(
+    refreshAt,
+    -1,
+    '51j ★★ 健康绑定下**必须有**一颗「重新读取实例」（枚举缓存的通用刷新入口）—— ' +
+      '少了它，用户在启动器里新建的实例只能靠重启应用才出现（I-w7 的现场）',
+  );
+  assert.notEqual(
+    firstBlockAt,
+    -1,
+    '51j 夹具自钉：那一份产物里连一个启动器块都没有（后面那条位置断言会空跑）',
+  );
+  assert.ok(
+    refreshAt < firstBlockAt,
+    `51j ★★ 而它必须画在**所有启动器块之前**（面板级入口）—— 现读：刷新那颗在偏移 ${String(refreshAt)}、` +
+      `第一个块在 ${String(firstBlockAt)}。⚠️ 画进块里就回到"只有坏块才有"那个够不到的状态`,
+  );
+  const refreshSpan = panelHtml.slice(refreshAt, panelHtml.indexOf('</div>', refreshAt));
+  assert.ok(
+    refreshSpan.includes('data-action="probe-launchers"') &&
+      textOf(refreshSpan).includes(textOf(resolved('files.launcherRefresh'))),
+    '51j ★ 它是**一颗真的按钮**：机器读数 `data-action="probe-launchers"`（既有动作、零新通道）' +
+      `+ 文案 \`files.launcherRefresh\`（现读那一格：${refreshSpan.slice(0, 160)}…）`,
+  );
+  const noBindingHtml = launcherBindingHtml({
+    state: launcherPanelState({ launchers: [], instances: [] }),
+  });
+  assert.equal(
+    noBindingHtml.includes('data-launcher-refresh'),
+    false,
+    '51j 反面：**一条绑定都没有**时不画它（那时枚举无事可做 —— 一颗点了什么都不发生的按钮' +
+      '比不画更坏；那一档画的是"先去绑一个启动器"）',
+  );
+  ok(
+    '51j ★★ I-w7：枚举缓存有一颗**够得着**的刷新入口（面板顶部、健康绑定下也在、' +
+      '发既有动作 `probe-launchers`），而一条绑定都没有时不画它',
+  );
+
   /* ---- 51e：A15 —— 浏览器 / 老桌面壳里那一句 + 装桌面版的引导 ---- */
   /*
    * ⚠️★★ 这一支的**边界**（如实写，不粉饰）：产品里它**够不到** —— 页面在
@@ -5787,8 +5856,8 @@ function inputTagOf(markup: string, attr: string, value: string): string {
    *    ⚠️ 为什么不能更松也不能更紧：更松（只认"出现 `hidden`"）会把 `overflow: clip`
    *      这种**行为正确**的实现判红；更紧（只认 `hidden`）会把 `overflow-x: hidden` 判红。
    *      两者都是评审实测出来的（`clip` 假绿 / `overflow-x: hidden` 假红）。
-   * ⚠️★ 清单里的**六格**都是"显示长文本"的那一族（`<span>`）—— `input` 不吃省略族
-   *    （它靠选中与横滚），见 52d。
+   * ⚠️★ 清单里的**八格**都是"显示长文本"的那一族（七格是 `<span>`，`.jarrow__file`
+   *    是 `<td>`）—— `input` 不吃省略族（它靠选中与横滚），见 52d。
    */
   const longTextRules: readonly (readonly [string, string])[] = [
     ['launcherinst__name', '实例行的实例名（T8 建的组件，T10 之前一条规则都没有）'],
@@ -5799,6 +5868,15 @@ function inputTagOf(markup: string, attr: string, value: string): string {
        而 52e 的清单里没有它们 ⇒ 它们的效果面**没有判据**（只有 52f-2 的"类名有规则"）。 */
     ['instancepicker__name', '「版本 → 实例」那张卡的实例名（T7 建的组件）'],
     ['instancepicker__path', '同一张卡上的 `mods` 路径'],
+    /*
+     * ★★ 2026-10-12（整支宽评审 **I-w8** 的清单第 2 条）：**A21 的另一半** —— spec §9 点名的
+     *    "**mod 名 / 包名**"两格。它们原来是 `word-break: break-all`（允许断行 = A21 要治的
+     *    那一件事）、组件侧也没有 `title` ⇒ 今天补成同一族的四样。
+     *    ⚠️★ 它们的**超长夹具**在下面 **53** 那一组（200 字符的文件名 + `title` + 全文在场）：
+     *    这一条量的是规则里的属性，那一条量的是产物 —— 两半缺一不可（同 52b/52c 的关系）。
+     */
+    ['jarrow__file', 'jar 表里那一格文件名（第一/第二部分那张表与第三段那张表都印它）'],
+    ['dlprogress__file', '进度行里那一格文件名（行内档）'],
   ];
   for (const [selector, why] of longTextRules) {
     const rule = withoutCssComments(stylesCode).match(
@@ -5854,7 +5932,7 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     );
   }
   /*
-   * ★★ 这六格是 **flex 项** ⇒ 还必须有 `min-width: 0`。
+   * ★★ 这几格是 **flex 项** ⇒ 还必须有 `min-width: 0`。
    *    现场：flex 项的自动最小尺寸是 `min-content`（**整个最长单词的宽度**）——
    *    `overflow: hidden` 与 `text-overflow` 都拦不住它：格子会先被那个 200 字符的名字撑开，
    *    省略号根本没机会出现，而被挤走的正是右边那一列（A21 说的"挤压相邻列"）。
@@ -5871,6 +5949,11 @@ function inputTagOf(markup: string, attr: string, value: string): string {
     ['launcheradd__path', '它在 `.launcheradd__row` 那个 flex 行里'],
     ['instancepicker__name', '它在 `.instancepicker__card` 那个 flex 行里'],
     ['instancepicker__path', '同上'],
+    /* ⚠️ 2026-10-12（I-w8 第 2 条）：进度行那一格也是 flex 项（`.dlprogress` 是 flex 容器）
+       ⇒ 它同样需要 `min-width: 0`，否则 200 字符的文件名会先把格子撑开、把「取消」推走。
+       ⚠️ `.jarrow__file` **不在**这一张表里：它是 `<td>`（不是 flex 项），
+       它那一格用的是 `max-width` + 表格自己的横向滚动（见 52g 那条回归哨）。 */
+    ['dlprogress__file', '它在 `.dlprogress` 那个 flex 行里'],
   ] as const) {
     const rule = withoutCssComments(stylesCode).match(
       new RegExp(`\\.${selector.replace(/[.\-_]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`),
@@ -6059,29 +6142,147 @@ function inputTagOf(markup: string, attr: string, value: string): string {
    *    "mod 名、包名"）。它是**磁盘上的文件名**，而文件名可以任意长。
    * ⚠️★ 它的类名是 `.dlprogress__file`（T9 那一族）**之外**的另一格：`.jarrow__file`
    *    （第一/第二部分的 jar 表）与第三段那张表里的文件名。
-   *    今天这三处各写着 `word-break: break-all`（"可断行"）—— **T10 不动它们**：
-   *    spec A21 的**那一半**（mod 名 / 包名）**没做**，而这三处**没有超长夹具**
-   *    （动它们就是"改了没人守的东西"）。
-   * ⚠️★ T10 修复轮（评审 M1）：这条欠账**不再只活在报告里** —— 它已经写进
-   *    `styles.css` 那两条规则**上方**（`.jarrow__file` 与 `.dlprogress__file` 各一段指针，
-   *    逐条列了"今天缺哪三样、要做的顺序是什么"）⇒ 下一个读样式表的人不会把它读成
-   *    "有意这样"。下面这两条 `assert.ok` 是**回归哨**（老形状不许被顺手改掉）。
+   *    ★★ **2026-10-12（整支宽评审 I-w8 第 2 条）：这三处已经改成省略族了** ——
+   *    T10 时它们是 `word-break: break-all`（允许断行）而**没有超长夹具**，
+   *    所以当时只留下欠账指针；这一轮先补夹具与 `title`（下面 **53** 那一组），
+   *    再改规则（52e 的清单里现在有这两格）。
+   * ⚠️★ 下面这两条 `assert.ok` 是**回归哨**（老形状不许被顺手改掉）——
+   *    它们与"这一格改成了省略族"**不冲突**：`52g` 量的是 `.jarlist` 与
+   *    `.folderrow__path` 这两族的**老形状**，而那两族这一轮一个字没动。
    */
   assert.ok(
     withoutCssComments(stylesCode).match(/\.jarlist\s*\{[^}]*overflow-x:\s*auto/),
     '52g ★ jar 表那一族**照旧**横向滚动（`overflow-x: auto` 在 `.jarlist` 上）—— ' +
-      '这一条是**回归哨**：T10 改的是显示长文本那几格，不许顺手把表的滚动改掉',
+      '这一条是**回归哨**：改的是那一格文件名（省略族），不许顺手把表的滚动改掉' +
+      '（`.jarrow__file` 的 `max-width` 撑宽表格时，接住它的正是这一条）',
   );
   assert.ok(
     withoutCssComments(stylesCode).match(/\.folderrow__path\s*\{[^}]*min-width:\s*180px/),
     '52g ★ 那"文件夹路径"一族**照旧**是它的老形状（`min-width: 180px` + 可断行）—— ' +
-      'spec §9 点名说这一族"今天吃过一次"，而 T10 的处置是**新加**省略族、' +
+      'spec §9 点名说这一族"今天吃过一次"，而处置是**新加**省略族、' +
       '**不动**这一族（它由 ㉞/㊱ 那两族判据守着，改它风险大于收益）',
   );
   ok('52g ★ 回归哨：jar 表那一族与"文件夹路径"那一族的老形状一个字没动');
 }
 
-const expectedGroups = LANG === 'en' ? 56 : 55;
+// ---------------------------------------------------------------------------
+// 53 ★★ 2026-10-12（整支宽评审 I-w8 第 2 条）：A21 的另一半 —— mod 名 / 包名
+// ---------------------------------------------------------------------------
+/*
+ * ★★ 这一组补的是 spec §9 那句"**mod 名 / 包名**一律单行省略 + 悬浮看全"的**产物那一半**：
+ *    · 规则里的三个属性（`overflow: hidden` / `text-overflow: ellipsis` / `white-space: nowrap`）
+ *      由上面 52e 的清单钉住（`.jarrow__file` / `.dlprogress__file` 现在在那张清单里）；
+ *    · 这一组钉**产物**：200 字符的文件名**一个字符不少**地在场、而那一格自己带着 `title`。
+ *
+ * ⚠️★ 为什么两半缺一不可（与 52b/52c 逐字同一条理由）：
+ *    · 只有规则没有 `title` ⇒ 用户**看不到全名**（那比换行更坏）；
+ *    · 只有 `title` 而把名字截断（`name.slice(0, 40)`）⇒ `title` 里也是截断的那一份。
+ *
+ * ⚠️★ 夹具一律 **ASCII**（㉛ 那条零汉字扫描要在 `--en` 那一遍过）。
+ * ⚠️ 名字与"带后缀的兄弟名"**互为前缀**（`X` 与 `X-unknown`）⇒ 每条断言都带**闭合引号**
+ *    （`title="X"`）或走 `textOf`，否则"其中一个命中"会让另一条**恒真**。
+ */
+{
+  console.log(`【${LANG}】53 ★★ A21 的另一半：mod 名 / 包名的长文本（省略族的产物那一半）`);
+
+  const LONG_JAR_NAME = `${'Cobblemon-Elite-Ranked-'.repeat(10)}.jar`;
+  const LONG_UNKNOWN_NAME = `${LONG_JAR_NAME}-unknown`;
+  const LONG_PACK_FILE = `${'mcsr-ranked-pack-'.repeat(12)}pack.jar`;
+  /* ---- 53a：夹具自钉（短夹具上"省略"这件事根本没有东西可省）---- */
+  for (const [what, value] of [
+    ['已识别那一行的文件名', LONG_JAR_NAME],
+    ['未识别那一行的文件名', LONG_UNKNOWN_NAME],
+    ['进度行那一格的文件名', LONG_PACK_FILE],
+  ] as const) {
+    assert.ok(
+      value.length >= 200,
+      `53a 探针：夹具「${what}」真的有 200 个字符（实测 ${String(value.length)} 个）—— ` +
+        '短夹具上这一组每一条都会退化成空跑',
+    );
+    assert.ok(
+      /^[\x20-\x7e]+$/.test(value),
+      `53a 探针：夹具「${what}」必须是 ASCII（㉛ 那条零汉字扫描要在 --en 那一遍过；实测 ${JSON.stringify(value.slice(0, 40))}…）`,
+    );
+  }
+  assert.ok(
+    LONG_UNKNOWN_NAME.startsWith(LONG_JAR_NAME) && LONG_UNKNOWN_NAME !== LONG_JAR_NAME,
+    '53a 探针：两个夹具名**互为前缀**（这正是下面每条断言都必须带闭合引号的理由）',
+  );
+  ok(
+    `53a ★ 超长文件名夹具：jar 表 ${String(LONG_JAR_NAME.length)} 个字符、` +
+      `进度行 ${String(LONG_PACK_FILE.length)} 个字符`,
+  );
+
+  /* ---- 53b：★★ 两处文件名：全文在场 + 那一格自己带 `title` ---- */
+  const longJarState = stateOf([rowWithHome], {
+    folders: [
+      folder({
+        folderId: 'f-long-jar',
+        rows: [folderRow({ modid: 'sodium', name: 'Sodium', fileName: LONG_JAR_NAME })],
+        unrecognized: [{ fileName: LONG_UNKNOWN_NAME, reason: 'not-in-catalog' }],
+      }),
+    ],
+  });
+  const longJarHtml = jarListHtmlOf(longJarState, 'f-long-jar');
+  /*
+   * ⚠️★ 判据打在**那一格自己的标签**上（`<td class="jarrow__file" …>`）——
+   *    "产物里某处有 `title`"是松的（那一行里 mod 名 / 版本 / 链接都可能带 title）。
+   */
+  const fileCells = [...longJarHtml.matchAll(/<td class="jarrow__file"[^>]*>/g)].map((m) => m[0]);
+  assert.equal(
+    fileCells.length,
+    2,
+    `53b 夹具自钉：那张表里应当有**两格**文件名（一个已识别 + 一个未识别），现读 ${String(fileCells.length)} 格`,
+  );
+  assert.ok(
+    fileCells[0].includes(`title="${LONG_JAR_NAME}"`),
+    `53b ★★ 已识别那一行的文件名那一格自己带着 \`title\`（**全文**）—— 现读那一格：${fileCells[0]}。` +
+      '少了它，被省略的那 200 个字符用户**永远看不到**（比换行更坏）',
+  );
+  assert.ok(
+    fileCells[1].includes(`title="${LONG_UNKNOWN_NAME}"`),
+    `53b ★★ 未识别那一行的文件名那一格也带着 \`title\`（同一个组件的第二个渲染点）—— 现读：${fileCells[1]}`,
+  );
+  assert.ok(
+    textOf(longJarHtml).includes(LONG_JAR_NAME) && textOf(longJarHtml).includes(LONG_UNKNOWN_NAME),
+    '53b ★★ 而两个文件名**一个字符不少**地在产物里（省略的是**视觉**，不是数据）—— ' +
+      '把长名字截成 40 个字符再渲染的实现在这里红',
+  );
+
+  const longLineHtml = keep(
+    html(
+      React.createElement(DownloadProgressLine, {
+        progress: {
+          frame: progressFrameOf({ fileName: LONG_PACK_FILE }),
+          samples: [progressSample(11_400_000, NOW - 1000), progressSample(12_400_000, NOW)],
+        },
+        onCancel: noop,
+        now: NOW,
+      }),
+    ),
+  );
+  const lineFileSpan = /<span class="dlprogress__file"[^>]*>/.exec(longLineHtml)?.[0] ?? '';
+  assert.notEqual(
+    lineFileSpan,
+    '',
+    '53b 夹具自钉：进度行那一格（`<span class="dlprogress__file">`）没画出来 —— ' +
+      '行内档才会画它（`itemCount: 1` + 不在写盘相位），夹具形状改了要跟着改这里',
+  );
+  assert.ok(
+    lineFileSpan.includes(`title="${LONG_PACK_FILE}"`),
+    `53b ★★ 进度行那一格的文件名也带着 \`title\`（全文）—— 现读那一格：${lineFileSpan}`,
+  );
+  assert.ok(
+    textOf(longLineHtml).includes(LONG_PACK_FILE),
+    '53b ★★ 而它的 200 个字符也在产物里（与 jar 表那两格同一条：省略的是视觉，不是数据）',
+  );
+  ok(
+    '53b ★★ A21 的另一半：jar 表两格 + 进度行一格的 200 字符文件名**全文在场**、' +
+      '三格各自带 `title`（悬浮看全）',
+  );
+}
+
+const expectedGroups = LANG === 'en' ? 59 : 58;
 assert.equal(
   pass,
   expectedGroups,

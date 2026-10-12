@@ -149,8 +149,12 @@ export function FolderJarList({
               data-jar-unrecognized="true"
               data-unrecognized-reason={entry.reason}
             >
-              {/* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。 */}
-              <td className="jarrow__file">{entry.fileName}</td>
+              {/* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。
+                  ★★ A21：`title` 是"单行省略之后**悬浮看全**"的唯一实现（与
+                  `.launcherinst__name` 那一族同一条）—— 少了它，用户看不到完整文件名。 */}
+              <td className="jarrow__file" title={entry.fileName}>
+                {entry.fileName}
+              </td>
               <td className="jarrow__note" colSpan={JAR_COLUMNS - 1}>
                 <span className="badge badge--problem">{t('files.jarUnrecognized')}</span>
                 {/*
@@ -248,8 +252,11 @@ function JarRow({
 
   return (
     <tr className="jarrow" data-jar={row.modid} data-verdict={row.verdict.kind}>
-      {/* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。 */}
-      <td className="jarrow__file">{row.fileName}</td>
+      {/* ⚠️ 文件名是磁盘上的内容，原样印（不翻译）。
+          ★★ A21：与未识别那一行同一条 —— 省略族 + `title`（悬浮看全）。 */}
+      <td className="jarrow__file" title={row.fileName}>
+        {row.fileName}
+      </td>
       {/* ⚠️ mod 名是产品名，不翻译（与第三段那张表同一条）。 */}
       <td>{row.name}</td>
       {/* ⚠️ 读不出来就是 `null` ⇒ `—`：**不许**填 0、也不许拿目标版本顶上"本地版本"。 */}

@@ -9916,20 +9916,26 @@ html[data-theme='light'] {
   color: var(--fg);
 }
 
-/* 文件名：磁盘上的内容（与 `.folderrow__path` 同一条：等宽、可断行）。
+/* 文件名：磁盘上的内容（等宽）。
    ------------------------------------------------------------------
-   ⚠️★★ **A21 的欠账（T10 如实留下的指针，别把它读成"有意这样"）**：
-   spec §9 的字面是"**mod 名** / 包名一律**单行省略 + 悬浮看全**"，而这一格今天
-   **三样都没有**：① `word-break: break-all`（= 允许换行，正是 A21 要治的那一件事）；
-   ② 组件那一侧**没有 `title`**（`FolderJarList.tsx` 印文件名的那两处）；
-   ③ **没有超长夹具** ⇒ 改它**没有任何判据守得住**（改了也没人喊）。
-   ⇒ 处置：T10 **没做**这一格，只把欠账写在这里。要做的话顺序是
-   **先补超长夹具 + `title`，再改成省略族**（`.launcherinst__name` 那一条是同族的样板）。
-   同族的另一处是下面的 `.dlprogress__file`；`docs/pending.md` 里记着这条欠账。
+   ★★ A21 的另一半（2026-10-12，整支宽评审 I-w8 的清单第 2 条）：**做完了**。
+   这一格原来是 `word-break: break-all`（"允许断行"那一族）而组件侧没有 `title`
+   ⇒ spec §9 那句"**mod 名** / 包名一律单行省略 + 悬浮看全"在这一格上**没做**。
+   今天它补上了与 `.launcherinst__name` / `.allfolders__path` 同一族的四样：
+   `overflow: hidden` + `text-overflow: ellipsis` + `white-space: nowrap` + `title`
+   （`title` 由 `FolderJarList` 那两个渲染点给）—— 四样**逐条**由渲染自检 52e / 53b 钉住
+   （`.cache` 那套仪器换成了版本控制里的判据）。
+   ⚠️★ `max-width` 那一格是**这一格特有**的：它在 `<td>` 里，而表格是 auto 布局
+   ⇒ 没有宽度上限时列会跟着最长那个文件名长下去（`text-overflow` 于是没有机会出现），
+   表格宽过容器之后由 `.jarlist` 的 `overflow-x: auto` 接住（52g 那条回归哨钉着它）。
+   ⚠️ 判据量的是**写法**不是浏览器里画出来的效果（52e 那段注释写着这条边界）。
    ------------------------------------------------------------------ */
 .jarrow__file {
   font-family: var(--font-mono);
-  word-break: break-all;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   min-width: 150px;
 }
 
@@ -10114,17 +10120,23 @@ html[data-theme='light'] {
    ⚠️ 汇总档**非批量**时 `batchSentence` 是 `null`（那一句要 `itemCount > 1`）⇒ 名字其实也落在
    这一格上；而那个状态**从唯一调用点不可达**（`VersionFolderList` 只把汇总档给批量那一行），
    所以这一句按今天可达的两档写。
-   ⚠️ 与 `.folderrow__path` 同一条：磁盘上的内容 ⇒ 等宽、可断行。
    ------------------------------------------------------------------
-   ⚠️★★ **A21 的欠账（与上面 `.jarrow__file` 同一族，T10 如实留下的指针）**：
-   spec §9 说"**包名**一律单行省略 + 悬浮看全"，而这一格今天三样都没有 ——
-   ① `word-break: break-all`；② `DownloadProgressLine.tsx` 印文件名那一处**没有 `title`**；
-   ③ **没有超长夹具**。⇒ T10 **没做**它（做了没人守）。要与 `.jarrow__file` 一起做。
+   ★★ A21 的另一半（2026-10-12，整支宽评审 I-w8 的清单第 2 条）：**做完了**。
+   与上面 `.jarrow__file` 逐条同一条：原来是 `word-break: break-all`、组件侧没有 `title`
+   （`DownloadProgressLine.tsx` 印文件名那一处）⇒ 今天补上省略族四样（`title` 由组件给），
+   判据在渲染自检 52e / 53b。
+   ⚠️★ `min-width: 0` 是**必须的**（与 `.allfolders__path` 同一条理由）：它在 `.dlprogress`
+   那个 flex 行里，而 flex 项的自动最小尺寸是 `min-content`（= 最长的那个不可断处）
+   ⇒ 不给它这一条，一个 200 字符的文件名会先把格子撑开、省略号根本没机会出现，
+   被推走的正是右边那颗「取消」。
    ------------------------------------------------------------------ */
 .dlprogress__file {
   font-family: var(--font-mono);
   color: var(--fg-faint);
-  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 取消那一颗。⚠️ 它同时带 `.ghostbtn`（复用现成的那一套外观）——
@@ -10216,6 +10228,18 @@ html[data-theme='light'] {
   font-family: var(--font-pixel);
   font-size: var(--fs-px-sm);
   margin: 8px 0;
+}
+
+/* ★★ I-w7（2026-10-12）：面板顶部那条「重新读取实例」。
+   ⚠️★ 它**不在任何一个块里**（`LauncherBindingPanel` 把它画在所有 `data-launcher-block`
+   之前）—— 那正是"健康绑定下也够得着"这条要求的落地：原来唯一那颗刷新按钮长在**坏块**里，
+   于是一个块都没坏时用户在启动器里新建的实例**只能靠重启应用**才出现。
+   ⚠️ 靠右放（`justify-content: flex-end`）：它是一条**面板级**的动作，不该抢在
+   "这一页是干什么的"前面；右边那颗位置与每一块里那两颗按钮同一条视线。 */
+.launcherbinding__refresh {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
 }
 
 /* 一个绑定的启动器那一块（类型 + 根 + 改根 / 移除 + 它名下的实例）。
