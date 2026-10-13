@@ -108,6 +108,27 @@ const SeedsPage = lazy(() => import('@/routes/Seeds').then((m) => ({ default: m.
 const LivePage = lazy(() => import('@/routes/Live').then((m) => ({ default: m.Live })));
 
 /**
+ * ★★ 三个**新栏目的骨架**（2026-10-12）—— 用户要求"尽快加上界面骨架、不需要内容，
+ *    前端即将重构" ⇒ 三页都只有标题 + 一句"施工中"。
+ *
+ * ⚠️★ 懒加载的理由与其它次级页面相同（它们都不是首屏）。
+ * ⚠️★ 这三条 `path="/…"` 的字面量**必须**与 `lib/nav.ts` 里那三行的 `to` 逐字相同 ——
+ *    `apps/web/scripts/homerender.tsx` 有一条"可点的栏目必须在 App.tsx 里真的有路由"的守卫，
+ *    它读的就是这个文件里的这些字符串（写成 `/competition` 只会 404，没有任何别的东西会红）。
+ * ⚠️ `/competitive` 是**重定向**（照 `/ranked` 的先例）：三个子标签各是真路由，
+ *    分享 / 刷新 / 前进后退都落在同一屏上（理由写在 `routes/Competitive.tsx` 顶部）。
+ */
+const CompetitivePage = lazy(() =>
+  import('@/routes/Competitive').then((m) => ({ default: m.Competitive })),
+);
+const CommunityPage = lazy(() =>
+  import('@/routes/Community').then((m) => ({ default: m.Community })),
+);
+const PluginMarketPage = lazy(() =>
+  import('@/routes/PluginMarket').then((m) => ({ default: m.PluginMarket })),
+);
+
+/**
  * 「实时分享」（2026-09-15）—— 介绍页 `/shares` **与两个看板**。
  *
  * ⚠️★ 介绍页**公开**，而两个看板要登录（§7.1）—— 那是这一栏唯一的一条线。
@@ -423,6 +444,58 @@ export default function App() {
           <Route path="/ranked/elo" element={<Ranked tab="elo" />} />
           <Route path="/ranked/weekly" element={<Ranked tab="weekly" />} />
           <Route path="/ranked/weekly/:id" element={<RankedWeekPage />} />
+          {/* ================================================================
+             三个新栏目的骨架（2026-10-12）
+              ================================================================
+             ① `/competitive`（竞技项目）—— 一个重定向 + 三条真路由（三个子标签）。
+                ⚠️★ 与 `/ranked` 同一条理由：子标签做成真路由，分享 / 刷新 / 前进后退
+                   才落在同一屏上（写成组件内 state 的话那个错没有任何门禁看得见）。
+                ⚠️★ `/seeds` 与 `/ranked/*` **一条都没删** ✓ —— 它们的内容现在也出现在
+                   `/competitive/ranked` 里，但旧链接仍然可达（见 `lib/nav.ts` 那一段）。
+             ② `/community`（社区信息推送）与 ③ `/plugins`（插件市场）—— 各一条空页面。
+                ⚠️ 三条 `path` 的字面量与 `lib/nav.ts` 的 `to` 必须逐字相同（homerender 的守卫）。
+          */}
+          <Route path="/competitive" element={<Navigate to="/competitive/leaderboard" replace />} />
+          <Route
+            path="/competitive/leaderboard"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CompetitivePage tab="leaderboard" />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/competitive/ranked"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CompetitivePage tab="ranked" />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/competitive/draftout"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CompetitivePage tab="draftout" />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/community"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <CommunityPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/plugins"
+            element={
+              <Suspense fallback={<p className="state">…</p>}>
+                <PluginMarketPage />
+              </Suspense>
+            }
+          />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

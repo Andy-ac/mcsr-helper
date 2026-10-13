@@ -97,8 +97,18 @@ export function ModFoldersUnavailable() {
   );
 }
 
-/** 三个 tab（顺序即 spec §4 那个图：启动器绑定 → mod 下载 → 工具下载）。 */
-export type ModTab = 'launchers' | 'mods' | 'tools';
+/**
+ * 四个 tab（顺序即渲染顺序：启动器绑定 → mod 下载 → 工具下载 → **练习图下载**）。
+ *
+ * ★★ 第四个是 2026-10-12 的**骨架**（用户要求"尽快加上界面骨架、不需要内容，
+ *    前端即将重构 ⇒ 最小改动、别过度设计"）⇒ 它只有一格空态，**别在这里长功能** ✗。
+ * ⚠️ 加一格要**同批**动四处，少一处要么是死词条、要么是一格点了没反应的空 tab：
+ *    ① 这个联合类型；② `ModTabs` 的 `items`；③ 页面里那条渲染分支
+ *    （⚠️ 现有分支是"launchers / tools / **其余都算 mods**"⇒ 不加分支的话，
+ *     点「练习图下载」会**画出 mod 下载那一格** —— 一个没有任何门禁看得见的错 ✗）；
+ *    ④ 两份字典里的 `files.tabPractice`。
+ */
+export type ModTab = 'launchers' | 'mods' | 'tools' | 'practice';
 
 /**
  * ★ D1（spec A8）：**默认**落在哪个 tab。
@@ -134,6 +144,8 @@ export function ModTabs({ tab, onSelect }: { tab: ModTab; onSelect: (next: ModTa
     { id: 'launchers', label: t('files.tabLaunchers') },
     { id: 'mods', label: t('files.tabMods') },
     { id: 'tools', label: t('files.tabTools') },
+    /* ★ 第四格是骨架（2026-10-12）：名字在字典里，内容是一格空态。 */
+    { id: 'practice', label: t('files.tabPractice') },
   ];
   return (
     <div className="modtabs" role="tablist">
@@ -461,6 +473,20 @@ export function Files() {
                     notice={mods.actionError}
                   />
                 )}
+              </div>
+            ) : selected === 'practice' ? (
+              /*
+               * ★★ 第四格：**骨架**（2026-10-12，用户要求"尽快加上界面骨架、不需要内容，
+               *    前端即将重构"）⇒ 只有一格空态 + 一个锚点。
+               * ⚠️★ 这一支**必须**在"其余都算 mods"那条兜底之前判 ✗ —— 否则点这一格
+               *    会画出 mod 下载那一格的内容，而那种错不会有任何门禁变红（见 `ModTab` 那段）。
+               * ⚠️ 锚点画在**外面**这一层（与 `launchers` 那一格同一条理由）：
+               *    自检接在它上面，而面板本身可能有 loading / failed 支路。
+               */
+              <div data-tab-panel="practice">
+                <p className="state" data-empty="files-practice">
+                  {t('files.practiceEmpty')}
+                </p>
               </div>
             ) : selected === 'tools' ? (
               <ToolsPanel />

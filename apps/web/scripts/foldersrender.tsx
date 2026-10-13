@@ -1224,8 +1224,9 @@ assert.equal(
 assert.ok(
   textOf(modTabShellHtml).includes(textOf(resolved('files.tabMods'))) &&
     textOf(modTabShellHtml).includes(textOf(resolved('files.tabTools'))),
-  '★ 三个 tab 都在页面外壳上（判据是两条旧词条都**解析出了译文**，不是"含某个字符串"；' +
-    '第三条 `files.tabLaunchers` 由 ㊾a 钉）',
+  '★ 两个老 tab 都在页面外壳上（判据是两条旧词条都**解析出了译文**，不是"含某个字符串"；' +
+    '`files.tabLaunchers` 与 `files.tabPractice` 由 ㊾a 钉 —— 2026-10-12 骨架任务加了第四格，' +
+    '所以这里不再说"三个都"）',
 );
 assert.equal(
   oldShellTabHtml.includes('data-tab='),
@@ -1343,7 +1344,7 @@ assert.ok(
   '★ 「工具下载」那一格是占位卡、而且写明"待更新"（绝不留空白：空白分不出"还没做"与"坏了"）',
 );
 ok(
-  '㉝ tab 骨架：三个 tab 都在、默认选中「启动器绑定」、不画 tab 的壳上一个都没有、工具下载写明"待更新"、桩与契约逐条对账',
+  '㉝ tab 骨架：四个 tab 都在（第四格 2026-10-12 骨架）、默认选中「启动器绑定」、不画 tab 的壳上一个都没有、工具下载写明"待更新"、桩与契约逐条对账',
 );
 
 // ---------------------------------------------------------------------------
@@ -4213,19 +4214,28 @@ const FOLDER_CANDIDATE = {
  */
 console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门`);
 {
-  /* ---- ㊾a：三个 tab 的顺序 + 选中态 ---- */
+  /* ---- ㊾a：四个 tab 的顺序 + 选中态 ---- */
   const tabsHtml = keep(
     html(React.createElement(ModTabs, { tab: 'mods', onSelect: () => undefined })),
   );
-  const order = ['launchers', 'mods', 'tools'].map((id) => tabsHtml.indexOf(`data-tab="${id}"`));
+  /*
+   * ⚠️★★ 2026-10-12（骨架任务）：这一条原来只查**三个** id（`launchers`/`mods`/`tools`），
+   *    而它是**包含式**的 ⇒ 给 `ModTabs` 加第四格时它**照样绿** ✗ ——
+   *    实测过：加完 `practice` 之后这一组仍然「通过 58 项」。
+   *    ⇒ 第四格必须**进这个列表**：这样"把 `practice` 从 `ModTabs` 里删掉"
+   *      才会让 `indexOf` 拿到 -1、当场红 ✓（判据能红，才算数）。
+   */
+  const order = ['launchers', 'mods', 'tools', 'practice'].map((id) =>
+    tabsHtml.indexOf(`data-tab="${id}"`),
+  );
   assert.ok(
     order.every((at) => at >= 0),
-    '㊾a 三个 tab 都要在（启动器绑定 / mod 下载 / 工具下载）',
+    '㊾a 四个 tab 都要在（启动器绑定 / mod 下载 / 工具下载 / 练习图下载）',
   );
   assert.deepEqual(
     [...order].sort((a, b) => a - b),
     order,
-    '㊾a 顺序必须是 启动器绑定 → mod 下载 → 工具下载（`ModTab` 那个联合的书写顺序就是它）',
+    '㊾a 顺序必须是 启动器绑定 → mod 下载 → 工具下载 → 练习图下载（`ModTab` 那个联合的书写顺序就是它）',
   );
   assert.ok(
     /data-tab="mods"[^>]*aria-selected="true"/.test(tabsHtml),
@@ -4236,7 +4246,20 @@ console.log(`【${LANG}】㊾ 资源下载的三个 tab 与老桌面壳能力门
     1,
     '㊾a 反面：`aria-selected="true"` 只许有一个（两个都 true 是最容易漏的假通过）',
   );
-  ok('㊾a 三个 tab 顺序正确（启动器绑定 → mod 下载 → 工具下载），选中态落在当前那个上');
+  /*
+   * ★★ 第四格那一格**面板**的锚点：`ModTabs` 只画 tab 条，锚点在页面那条 `practice` 分支里，
+   *    而那条分支只有 `selected === 'practice'` 才到得了（`selected` 是 `useState`，
+   *    静态渲染喂不进去）⇒ 照本仓既有的做法用**源码形状**判据（与 T4/T6/T9 那几处同族）。
+   * ⚠️ 能红的刀：把页面里那个 `data-tab-panel="practice"` 那一支删掉 ⇒ 这一条当场红。
+   */
+  const filesSrc = readFileSync(new URL('../src/routes/Files.tsx', import.meta.url), 'utf8');
+  assert.ok(
+    filesSrc.includes('data-tab-panel="practice"') && filesSrc.includes("t('files.practiceEmpty')"),
+    '㊾a 第四格必须有自己的面板锚点 `data-tab-panel="practice"` 与那句空态（骨架：只有空态）',
+  );
+  ok(
+    '㊾a 四个 tab 顺序正确（启动器绑定 → mod 下载 → 工具下载 → 练习图下载），选中态落在当前那个上，第四格有面板锚点',
+  );
 
   /* ---- ㊾b：默认 tab 规则（纯函数，两支都要）---- */
   assert.equal(

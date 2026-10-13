@@ -104,6 +104,22 @@ export const en: TranslationSchema = {
      *   the next person adding a section can see where it goes.
      */
     files: 'Resource downloads',
+    /*
+     * ★★ Skeleton for three **new sections** (2026-10-12) -- the user asked for
+     *    UI skeletons only ("no content needed, the front end is about to be
+     *    rebuilt"), so nothing beyond a title and an empty state may grow here.
+     *
+     * ⚠️★ Adding a section touches **four** places in the same commit (each one
+     *    has a guard in `homerender.tsx`):
+     *   ① this dictionary (`nav.<x>`), ② `lib/nav.ts`'s `NAV_SECTIONS`,
+     *   ③ `home.desc.<block>` (checked in **both** directions), and
+     *   ④ a **real route** in `App.tsx` ("a clickable section must not 404").
+     * ⚠️ `block` also names the sidebar square's CSS rule
+     *    (`.sidebar__block--<block>`) -- add that too, or the square is unstyled.
+     */
+    competitive: 'Competitive',
+    community: 'Community feed',
+    plugins: 'Plugin market',
     profile: 'Profile',
     admin: 'Admin',
     /*
@@ -169,20 +185,22 @@ export const en: TranslationSchema = {
        */
       shares:
         'Room codes and world seeds people put up for a few minutes — they vanish on their own, and you have to log in to see inside.',
-      seeds: 'Search world seeds, and see the ones people shared along with their times.',
       /*
-       * ⚠️ This entry and the sidebar row (`lib/nav.ts`, `block: 'ranked'`) have to
-       *    land in the same commit: `check:home` checks the correspondence in both
-       *    directions -- without this line the home page prints a raw key, and
-       *    with this line but no nav row it is equally red (measured earlier:
-       *    dictionary-only, `check:home` exits 1).
-       * ⚠️ The wording follows the section's four tabs (status and count / live
-       *    matches / leaderboard / weekly race) rather than "an intro to MCSR
-       *    Ranked": this section answers what is happening right now, and a
-       *    blurb that reads like an explainer points at a page that does not exist.
+       * ★★ 2026-10-12 (skeleton task): the `seeds` and `ranked` blurbs are gone
+       *    **together with their sidebar rows** -- their content now lives under
+       *    "Competitive" ▸ "MCSR Ranked"; ⚠️ both **routes stay reachable**
+       *    (`/seeds`, `/ranked/*` are untouched in `App.tsx`) -- only the sidebar
+       *    entries were dropped.
+       * ⚠️★ Why the blurbs had to go too: `homerender` checks the
+       *    `home.desc.*` keys against the nav blocks in **both** directions, so
+       *    dropping a nav row while keeping its blurb is just as red.
+       * ⚠️ The **names** `nav.seeds` / `nav.ranked` are kept: `nav.ranked` is
+       *    still used by `components/RankedPanels.tsx` (its page heading), and an
+       *    unused key is not an error in this repo.
        */
-      ranked:
-        'Who is playing right now: live matches, online count, leaderboards and the weekly race.',
+      competitive: 'Official leaderboard / MCSR Ranked (seeds plus live info) / Draftout',
+      community: 'Messages pushed in from the community (skeleton, no content yet)',
+      plugins: 'Plugin market (skeleton, no content yet)',
       /*
        * ⚠️ This line is required by `block: 'files'` in `lib/nav.ts` (the home
        *    page looks each row up by `home.desc.<block>`; without it the page
@@ -4831,6 +4849,16 @@ export const en: TranslationSchema = {
     tabMods: 'Mod downloads',
     tabTools: 'Tool downloads',
     /*
+     * ★★ The fourth tab (2026-10-12 skeleton): **skeleton only, no content**
+     *    (the front end is about to be rebuilt).
+     * ⚠️ It has to land together with the `ModTab` union, the `ModTabs` items
+     *    list and the `data-tab-panel="practice"` branch in the page -- miss one
+     *    and you get either a dead key or a tab that does nothing when clicked.
+     */
+    tabPractice: 'Practice maps',
+    /** ★ The empty state for that fourth panel (skeleton only - replaced with the panel). */
+    practiceEmpty: 'Practice maps are still under construction - this panel is a skeleton.',
+    /*
      * ⚠️ A placeholder card must say why it is empty: a blank tab cannot be told
      * apart from a broken one (docs/pending.md §5.63).
      */
@@ -5163,5 +5191,39 @@ export const en: TranslationSchema = {
     instanceSavePaths: 'Save paths',
     /** ★★ The explicit "confirm this path" action. */
     instanceConfirmPath: 'Confirm this path',
+  },
+
+  /*
+   * ---------------------------------------------------------------------------
+   * ★★ Skeletons for the three **new sections** (2026-10-12) -- the user asked
+   *    for UI skeletons "as soon as possible, no content needed, the front end
+   *    is about to be rebuilt", so this batch is deliberately titles plus one
+   *    "under construction" line. Do not grow features here.
+   * ---------------------------------------------------------------------------
+   * ⚠️ Both dictionaries (`zh-CN.ts` / `en.ts`) must line up key for key
+   *    (`i18n-keys.test.ts` guards that).
+   * ⚠️ No `⇒` (U+21D2) or `▾` (U+25BE) in values: they are outside the pixel
+   *    font subset, so `check-font-coverage` goes red.
+   * ⚠️ The `data-*` anchors used to locate things during the rebuild
+   *    (`data-tab-panel` / `data-tab` / `data-page`) live in the components, not here.
+   */
+  competitive: {
+    title: 'Competitive',
+    tabLeaderboard: 'Official leaderboard',
+    tabRanked: 'MCSR Ranked',
+    tabDraftout: 'Draftout',
+    leaderboardEmpty:
+      'The official leaderboard is still under construction - this panel is a skeleton.',
+    draftoutEmpty: 'Draftout is still under construction - this panel is a skeleton.',
+    rankedSeedsTitle: 'Ranked seeds',
+    rankedLiveTitle: 'Ranked live info',
+  },
+  community: {
+    title: 'Community feed',
+    empty: 'This section is still under construction - for now it is an empty shell.',
+  },
+  plugins: {
+    title: 'Plugin market',
+    empty: 'The plugin market is still under construction - for now it is an empty shell.',
   },
 };

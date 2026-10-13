@@ -63,17 +63,32 @@ export const NAV_SECTIONS = [
    *   路由一落地它自己就绿了。
    */
   { to: '/shares', labelKey: 'nav.shares', block: 'shares', milestone: '' },
-  { to: '/seeds', labelKey: 'nav.seeds', block: 'seeds', milestone: '' },
   /*
-   * 「Ranked 实时信息」（2026-09-16）—— 紧挨着「排位赛种子」（都是 MCSR Ranked 的消息），
-   * 而这一栏讲的是"现在正在发生什么"，所以放在它**下面**。
+   * ★★ 「竞技项目」（2026-10-12，**骨架任务**：用户要求"尽快加上界面骨架、不需要内容，
+   *    前端即将重构" ⇒ 只立入口与空面板，别往这里长功能 ✗）。
    *
-   * ⚠️ 短名 `ranked` 同时连着四样东西（改它等于同时改四处）：侧栏小方块的 CSS
-   *    （`.sidebar__block--ranked`）、首页那一句说明（`home.desc.ranked` ——
-   *    少了首页会印裸 key，check:home 会红）、词条命名空间（`ranked.*`）、
-   *    以及 `/ranked` 路由（App.tsx 里必须真有，homerender 有一条守卫）。
+   * ⚠️★ 它**取代**了原来那两行 ——「排位赛种子」（`/seeds`）与「Ranked 实时信息」（`/ranked`）：
+   *    那两页的**内容**现在住在本栏的「MCSR Ranked」子标签里（`routes/Competitive.tsx`）。
+   * ⚠️★ **两条旧路由一个字节都没删**：`/seeds` 与 `/ranked/*` 仍然可达 ✓ ——
+   *    撤的只是**侧栏入口**，老链接 / 老书签 / 分享出去的 URL 照旧能用 ✓
+   *    （用户给的两条路"保留重定向或保留可达"里，这里选了**保留可达**：
+   *     最小破坏，而且 `/ranked` 本来就有一条指向 `/ranked/status` 的重定向）。
+   * ⚠️ 加这一行要**同批**加三样（`homerender.tsx` 各有一条守卫）：
+   *    ① `home.desc.competitive`（`home.desc.*` 与导航 block **两个方向都查**）；
+   *    ② `App.tsx` 里的真路由（"可点的栏目点进去不能是 404"）；
+   *    ③ `.sidebar__block--competitive` 那条 CSS（`block` 同时是短名与 CSS 后缀）。
+   * ⚠️ 撤掉 `seeds` / `ranked` 那两行时，**它们的 `home.desc.*` 词条也必须一起撤** ✗
+   *    （只撤导航行会红 —— 见上面那条"两个方向都查"）；
+   *    而 `nav.seeds` / `nav.ranked` 这两个**名字**保留（后者还被 `RankedPanels.tsx` 用着 ✓）。
    */
-  { to: '/ranked', labelKey: 'nav.ranked', block: 'ranked', milestone: '' },
+  { to: '/competitive', labelKey: 'nav.competitive', block: 'competitive', milestone: '' },
+  /*
+   * ★★ 另两个新栏目（同一批骨架）：社区信息推送 / 插件市场 —— 各自只有一张空页面。
+   * ⚠️ 加栏目那四处（字典 / 本表 / `home.desc.*` / `App.tsx` 路由）与上一条相同，
+   *    别忘了 CSS 方块那一步 ✓。
+   */
+  { to: '/community', labelKey: 'nav.community', block: 'community', milestone: '' },
+  { to: '/plugins', labelKey: 'nav.plugins', block: 'plugins', milestone: '' },
   /*
    * 「文件更新」（2026-09-24）—— 放在「我的」之前：它是**工具**，不属于社区内容。
    *
